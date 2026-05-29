@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from agent.rate_limit_tracker import RateLimitBucket, RateLimitState, parse_rate_limit_headers
 from cli import HermesCLI
 
 
@@ -29,6 +30,7 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    rate_limit_state: RateLimitState | None = None,
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
@@ -42,7 +44,7 @@ def _attach_agent(
         session_completion_tokens=completion_tokens,
         session_total_tokens=total_tokens,
         session_api_calls=api_calls,
-        get_rate_limit_state=lambda: None,
+        get_rate_limit_state=lambda: rate_limit_state,
         context_compressor=SimpleNamespace(
             last_prompt_tokens=context_tokens,
             context_length=context_length,
@@ -166,6 +168,122 @@ class TestCLIStatusBar:
              patch("shutil.get_terminal_size") as mock_shutil:
             assert _input_height() == 2
         mock_shutil.assert_not_called()
+
+    def test_build_status_bar_text_no_limit_indicators_without_data(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "5h" not in text
+        assert "W " not in text
+
+    def test_build_status_bar_text_includes_provider_limits_when_present(self):
+        now = time.time()
+        rate_limits = RateLimitState(
+            requests_5h=RateLimitBucket(limit=100, remaining=20, reset_seconds=8222, captured_at=now),
+            tokens_week=RateLimitBucket(limit=200, remaining=130, reset_seconds=520389, captured_at=now),
+            captured_at=now,
+        )
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            rate_limit_state=rate_limits,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "5h 80% ↻2h17m" in text
+        assert "W 35% ↻6.0d" in text
+
+    def test_build_status_bar_text_renders_openai_codex_percent_headers(self):
+        rate_limits = parse_rate_limit_headers(
+            {
+                "x-codex-primary-used-percent": "16",
+                "x-codex-primary-window-minutes": "300",
+                "x-codex-primary-reset-after-seconds": "8222",
+                "x-codex-secondary-used-percent": "5",
+                "x-codex-secondary-window-minutes": "10080",
+                "x-codex-secondary-reset-after-seconds": "520389",
+            },
+            provider="openai-codex",
+        )
+        assert rate_limits is not None
+        cli_obj = _attach_agent(
+            _make_cli(model="openai-codex/gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            rate_limit_state=rate_limits,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "5h 16% ↻2h17m" in text
+        assert "W 5% ↻6.0d" in text
+
+    def test_build_status_bar_text_omits_provider_limits_on_narrow_terminal(self):
+        rate_limits = RateLimitState(
+            requests_5h=RateLimitBucket(limit=100, remaining=20, captured_at=time.time()),
+            tokens_week=RateLimitBucket(limit=200, remaining=130, captured_at=time.time()),
+            captured_at=time.time(),
+        )
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            rate_limit_state=rate_limits,
+        )
+
+        text = cli_obj._build_status_bar_text(width=50)
+
+        assert "5h" not in text
+        assert "W " not in text
+
+    def test_provider_limit_fragments_use_threshold_styles(self):
+        now = time.time()
+        rate_limits = RateLimitState(
+            requests_5h=RateLimitBucket(limit=100, remaining=5, reset_seconds=4000, captured_at=now),
+            tokens_week=RateLimitBucket(limit=200, remaining=80, reset_seconds=90000, captured_at=now),
+            captured_at=now,
+        )
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            rate_limit_state=rate_limits,
+        )
+        cli_obj._status_bar_visible = True
+
+        with patch.object(cli_obj, "_get_tui_terminal_width", return_value=120):
+            frags = cli_obj._get_status_bar_fragments()
+
+        frag_styles = {text: style for style, text in frags}
+        assert frag_styles["5h 95% ↻1h6m"] == "class:status-bar-critical"
+        assert frag_styles["W 60% ↻1.0d"] == "class:status-bar-warn"
 
     def test_build_status_bar_text_no_cost_in_status_bar(self):
         cli_obj = _attach_agent(

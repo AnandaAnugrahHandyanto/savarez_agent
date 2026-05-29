@@ -31,6 +31,15 @@ NOUS_HEADERS = {
     "x-ratelimit-reset-tokens-1h": "3490.0",
 }
 
+CODEX_HEADERS = {
+    "x-codex-primary-used-percent": "16",
+    "x-codex-primary-window-minutes": "300",
+    "x-codex-primary-reset-after-seconds": "8222",
+    "x-codex-secondary-used-percent": "5",
+    "x-codex-secondary-window-minutes": "10080",
+    "x-codex-secondary-reset-after-seconds": "520389",
+}
+
 
 class TestParseHeaders:
     def test_basic_parsing(self):
@@ -52,6 +61,45 @@ class TestParseHeaders:
         assert state.tokens_hour.limit == 336000000
         assert state.tokens_hour.remaining == 335999000
         assert state.tokens_hour.reset_seconds == 3490.0
+
+    def test_openai_codex_percent_headers_populate_five_hour_and_weekly_requests(self):
+        state = parse_rate_limit_headers(CODEX_HEADERS, provider="openai-codex")
+
+        assert state is not None
+        assert state.provider == "openai-codex"
+        assert state.has_data
+        assert state.requests_5h.limit == 100
+        assert state.requests_5h.remaining == 84
+        assert state.requests_5h.reset_seconds == 8222
+        assert state.requests_5h.usage_pct == pytest.approx(16.0)
+        assert state.requests_week.limit == 100
+        assert state.requests_week.remaining == 95
+        assert state.requests_week.reset_seconds == 520389
+        assert state.requests_week.usage_pct == pytest.approx(5.0)
+
+    def test_openai_codex_percent_headers_do_not_populate_unrecognized_windows(self):
+        headers = {
+            **CODEX_HEADERS,
+            "x-codex-primary-window-minutes": "60",
+            "x-codex-secondary-window-minutes": "1440",
+        }
+
+        state = parse_rate_limit_headers(headers)
+
+        assert state is not None
+        assert state.has_data
+        assert state.requests_5h.limit == 0
+        assert state.requests_week.limit == 0
+
+    def test_x_ratelimit_parsing_still_populates_existing_buckets(self):
+        state = parse_rate_limit_headers(NOUS_HEADERS, provider="nous")
+
+        assert state is not None
+        assert state.has_data
+        assert state.requests_min.usage_pct == pytest.approx(0.625)
+        assert state.requests_hour.usage_pct == pytest.approx(0.02976190476190476)
+        assert state.tokens_min.usage_pct == pytest.approx(0.00625)
+        assert state.tokens_hour.usage_pct == pytest.approx(0.00029761904761904765)
 
     def test_no_headers(self):
         state = parse_rate_limit_headers({})
@@ -76,6 +124,40 @@ class TestParseHeaders:
         }
         state = parse_rate_limit_headers(headers)
         assert state is None
+
+    def test_parses_five_hour_and_weekly_aliases(self):
+        headers = {
+            "x-ratelimit-limit-requests-5h": "100",
+            "x-ratelimit-remaining-requests-5h": "20",
+            "x-ratelimit-reset-requests-5h": "1200",
+            "x-ratelimit-limit-tokens-weekly": "1000",
+            "x-ratelimit-remaining-tokens-weekly": "650",
+        }
+
+        state = parse_rate_limit_headers(headers)
+
+        assert state is not None
+        assert state.requests_5h.limit == 100
+        assert state.requests_5h.remaining == 20
+        assert state.requests_5h.reset_seconds == 1200
+        assert state.tokens_week.limit == 1000
+        assert state.tokens_week.remaining == 650
+
+    def test_parses_alternate_five_hour_and_weekly_suffixes(self):
+        headers = {
+            "x-ratelimit-limit-tokens-5hours": "500",
+            "x-ratelimit-remaining-tokens-5hours": "100",
+            "x-ratelimit-limit-requests-7d": "70",
+            "x-ratelimit-remaining-requests-7d": "35",
+        }
+
+        state = parse_rate_limit_headers(headers)
+
+        assert state is not None
+        assert state.tokens_5h.limit == 500
+        assert state.tokens_5h.remaining == 100
+        assert state.requests_week.limit == 70
+        assert state.requests_week.remaining == 35
 
     def test_malformed_values(self):
         headers = {
@@ -152,6 +234,7 @@ class TestFormatting:
 
     def test_format_display_with_data(self):
         state = parse_rate_limit_headers(NOUS_HEADERS, provider="nous")
+        assert state is not None
         result = format_rate_limit_display(state)
         assert "Nous" in result
         assert "Requests/min" in result
@@ -160,22 +243,50 @@ class TestFormatting:
         assert "Tokens/hr" in result
         assert "resets in" in result
 
+    def test_format_display_includes_five_hour_and_weekly_windows(self):
+        state = parse_rate_limit_headers(
+            {
+                "x-ratelimit-limit-requests-5h": "100",
+                "x-ratelimit-remaining-requests-5h": "20",
+                "x-ratelimit-reset-requests-5h": "1200",
+                "x-ratelimit-limit-tokens-weekly": "1000",
+                "x-ratelimit-remaining-tokens-weekly": "650",
+                "x-ratelimit-reset-tokens-weekly": "520389",
+            },
+            provider="openai-codex",
+        )
+        assert state is not None
+        result = format_rate_limit_display(state)
+        assert "Requests/5h" in result
+        assert "Tokens/week" in result
+        assert "resets in" in result
+
     def test_format_display_warning_on_high_usage(self):
         headers = {
             **NOUS_HEADERS,
             "x-ratelimit-remaining-requests": "50",  # 750/800 used = 93.75%
         }
         state = parse_rate_limit_headers(headers)
+        assert state is not None
         result = format_rate_limit_display(state)
         assert "⚠" in result
 
     def test_format_compact(self):
         state = parse_rate_limit_headers(NOUS_HEADERS, provider="nous")
+        assert state is not None
         result = format_rate_limit_compact(state)
         assert "RPM:" in result
         assert "RPH:" in result
         assert "TPM:" in result
         assert "TPH:" in result
+        assert "resets" in result
+
+    def test_format_compact_includes_codex_five_hour_and_weekly_resets(self):
+        state = parse_rate_limit_headers(CODEX_HEADERS, provider="openai-codex")
+        assert state is not None
+        result = format_rate_limit_compact(state)
+        assert "R5H: 84/100" in result
+        assert "RW: 95/100" in result
         assert "resets" in result
 
     def test_format_compact_no_data(self):

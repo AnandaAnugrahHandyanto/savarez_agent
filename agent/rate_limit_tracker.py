@@ -1,9 +1,9 @@
 """Rate limit tracking for inference API responses.
 
-Captures x-ratelimit-* headers from provider responses and provides
+Captures x-ratelimit-* and x-codex-* headers from provider responses and provides
 formatted display for the /usage slash command.  Currently supports
 the Nous Portal header format (also used by OpenRouter and OpenAI-compatible
-APIs that follow the same convention).
+APIs that follow the same convention) and OpenAI Codex percent-window headers.
 
 Header schema (12 headers total):
     x-ratelimit-limit-requests          RPM cap
@@ -59,8 +59,12 @@ class RateLimitState:
 
     requests_min: RateLimitBucket = field(default_factory=RateLimitBucket)
     requests_hour: RateLimitBucket = field(default_factory=RateLimitBucket)
+    requests_5h: RateLimitBucket = field(default_factory=RateLimitBucket)
+    requests_week: RateLimitBucket = field(default_factory=RateLimitBucket)
     tokens_min: RateLimitBucket = field(default_factory=RateLimitBucket)
     tokens_hour: RateLimitBucket = field(default_factory=RateLimitBucket)
+    tokens_5h: RateLimitBucket = field(default_factory=RateLimitBucket)
+    tokens_week: RateLimitBucket = field(default_factory=RateLimitBucket)
     captured_at: float = 0.0  # when the headers were captured
     provider: str = ""
 
@@ -89,11 +93,26 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _codex_percent_bucket(prefix: str, window_minutes: int, lowered: Mapping[str, str], now: float) -> RateLimitBucket:
+    percent_key = f"x-codex-{prefix}-used-percent"
+    window_key = f"x-codex-{prefix}-window-minutes"
+    if percent_key not in lowered or _safe_int(lowered.get(window_key)) != window_minutes:
+        return RateLimitBucket(captured_at=now)
+
+    used_percent = max(0, min(100, _safe_int(lowered.get(percent_key))))
+    return RateLimitBucket(
+        limit=100,
+        remaining=100 - used_percent,
+        reset_seconds=_safe_float(lowered.get(f"x-codex-{prefix}-reset-after-seconds")),
+        captured_at=now,
+    )
+
+
 def parse_rate_limit_headers(
     headers: Mapping[str, str],
     provider: str = "",
 ) -> Optional[RateLimitState]:
-    """Parse x-ratelimit-* headers into a RateLimitState.
+    """Parse x-ratelimit-* and x-codex-* headers into a RateLimitState.
 
     Returns None if no rate limit headers are present.
     """
@@ -101,8 +120,8 @@ def parse_rate_limit_headers(
     # capitalises headers (HTTP header names are case-insensitive per RFC 7230).
     lowered = {k.lower(): v for k, v in headers.items()}
 
-    # Quick check: at least one rate limit header must exist
-    has_any = any(k.startswith("x-ratelimit-") for k in lowered)
+    # Quick check: at least one supported rate-limit header must exist.
+    has_any = any(k.startswith("x-ratelimit-") or k.startswith("x-codex-") for k in lowered)
     if not has_any:
         return None
 
@@ -119,14 +138,40 @@ def parse_rate_limit_headers(
             captured_at=now,
         )
 
-    return RateLimitState(
+    def _bucket_any(resource: str, suffixes: tuple[str, ...]) -> RateLimitBucket:
+        for suffix in suffixes:
+            tag = f"{resource}{suffix}"
+            if any(
+                f"x-ratelimit-{field}-{tag}" in lowered
+                for field in ("limit", "remaining", "reset")
+            ):
+                return _bucket(resource, suffix)
+        return RateLimitBucket(captured_at=now)
+
+    five_hour_suffixes = ("-5h", "-5hr", "-5hour", "-5hours")
+    week_suffixes = ("-1w", "-7d", "-week", "-weekly")
+
+    state = RateLimitState(
         requests_min=_bucket("requests"),
         requests_hour=_bucket("requests", "-1h"),
+        requests_5h=_bucket_any("requests", five_hour_suffixes),
+        requests_week=_bucket_any("requests", week_suffixes),
         tokens_min=_bucket("tokens"),
         tokens_hour=_bucket("tokens", "-1h"),
+        tokens_5h=_bucket_any("tokens", five_hour_suffixes),
+        tokens_week=_bucket_any("tokens", week_suffixes),
         captured_at=now,
         provider=provider,
     )
+
+    codex_primary = _codex_percent_bucket("primary", 300, lowered, now)
+    if codex_primary.limit > 0:
+        state.requests_5h = codex_primary
+    codex_secondary = _codex_percent_bucket("secondary", 10080, lowered, now)
+    if codex_secondary.limit > 0:
+        state.requests_week = codex_secondary
+
+    return state
 
 
 # ── Formatting ──────────────────────────────────────────────────────────
@@ -199,18 +244,32 @@ def format_rate_limit_display(state: RateLimitState) -> str:
         "",
         _bucket_line("Requests/min", state.requests_min),
         _bucket_line("Requests/hr", state.requests_hour),
+    ]
+    if state.requests_5h.limit > 0:
+        lines.append(_bucket_line("Requests/5h", state.requests_5h))
+    if state.requests_week.limit > 0:
+        lines.append(_bucket_line("Requests/week", state.requests_week))
+    lines.extend([
         "",
         _bucket_line("Tokens/min", state.tokens_min),
         _bucket_line("Tokens/hr", state.tokens_hour),
-    ]
+    ])
+    if state.tokens_5h.limit > 0:
+        lines.append(_bucket_line("Tokens/5h", state.tokens_5h))
+    if state.tokens_week.limit > 0:
+        lines.append(_bucket_line("Tokens/week", state.tokens_week))
 
     # Add warnings if any bucket is getting hot
     warnings = []
     for label, bucket in [
         ("requests/min", state.requests_min),
         ("requests/hr", state.requests_hour),
+        ("requests/5h", state.requests_5h),
+        ("requests/week", state.requests_week),
         ("tokens/min", state.tokens_min),
         ("tokens/hr", state.tokens_hour),
+        ("tokens/5h", state.tokens_5h),
+        ("tokens/week", state.tokens_week),
     ]:
         if bucket.limit > 0 and bucket.usage_pct >= 80:
             reset = _fmt_seconds(bucket.remaining_seconds_now)
@@ -232,6 +291,10 @@ def format_rate_limit_compact(state: RateLimitState) -> str:
     tm = state.tokens_min
     rh = state.requests_hour
     th = state.tokens_hour
+    r5h = state.requests_5h
+    t5h = state.tokens_5h
+    rw = state.requests_week
+    tw = state.tokens_week
 
     parts = []
     if rm.limit > 0:
@@ -242,5 +305,13 @@ def format_rate_limit_compact(state: RateLimitState) -> str:
         parts.append(f"TPM: {_fmt_count(tm.remaining)}/{_fmt_count(tm.limit)}")
     if th.limit > 0:
         parts.append(f"TPH: {_fmt_count(th.remaining)}/{_fmt_count(th.limit)} (resets {_fmt_seconds(th.remaining_seconds_now)})")
+    if r5h.limit > 0:
+        parts.append(f"R5H: {_fmt_count(r5h.remaining)}/{_fmt_count(r5h.limit)} (resets {_fmt_seconds(r5h.remaining_seconds_now)})")
+    if t5h.limit > 0:
+        parts.append(f"T5H: {_fmt_count(t5h.remaining)}/{_fmt_count(t5h.limit)} (resets {_fmt_seconds(t5h.remaining_seconds_now)})")
+    if rw.limit > 0:
+        parts.append(f"RW: {_fmt_count(rw.remaining)}/{_fmt_count(rw.limit)} (resets {_fmt_seconds(rw.remaining_seconds_now)})")
+    if tw.limit > 0:
+        parts.append(f"TW: {_fmt_count(tw.remaining)}/{_fmt_count(tw.limit)} (resets {_fmt_seconds(tw.remaining_seconds_now)})")
 
     return " | ".join(parts)

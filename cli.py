@@ -3438,6 +3438,57 @@ class HermesCLI:
             return "class:status-bar-warn"
         return "class:status-bar-good"
 
+    def _status_bar_limit_style(self, percent_used: Optional[int]) -> str:
+        return self._status_bar_context_style(percent_used)
+
+    @staticmethod
+    def _format_provider_limit_reset(bucket: Any) -> str:
+        """Return a compact reset countdown for a provider-limit bucket."""
+        reset_seconds = float(getattr(bucket, "remaining_seconds_now", 0.0) or 0.0)
+        if reset_seconds <= 0:
+            return ""
+        return format_duration_compact(reset_seconds).replace(" ", "")
+
+    @staticmethod
+    def _provider_limit_indicator(label: str, *buckets: Any) -> Optional[Dict[str, Any]]:
+        best_bucket = None
+        best_pct = -1.0
+        for bucket in buckets:
+            if getattr(bucket, "limit", 0) <= 0:
+                continue
+            pct = float(getattr(bucket, "usage_pct", 0.0) or 0.0)
+            if pct > best_pct:
+                best_bucket = bucket
+                best_pct = pct
+        if best_bucket is None:
+            return None
+        percent = max(0, min(100, round(best_pct)))
+        reset = HermesCLI._format_provider_limit_reset(best_bucket)
+        label_text = f"{label} {percent}%"
+        if reset:
+            label_text += f" ↻{reset}"
+        return {"label": label_text, "percent": percent, "reset": reset}
+
+    def _build_provider_limit_indicators(self, rate_limit_state: Any) -> List[Dict[str, Any]]:
+        if not rate_limit_state or not getattr(rate_limit_state, "has_data", False):
+            return []
+        indicators = []
+        five_hour = self._provider_limit_indicator(
+            "5h",
+            getattr(rate_limit_state, "requests_5h", None),
+            getattr(rate_limit_state, "tokens_5h", None),
+        )
+        week = self._provider_limit_indicator(
+            "W",
+            getattr(rate_limit_state, "requests_week", None),
+            getattr(rate_limit_state, "tokens_week", None),
+        )
+        if five_hour:
+            indicators.append(five_hour)
+        if week:
+            indicators.append(week)
+        return indicators
+
     @staticmethod
     def _compression_count_style(count: int) -> str:
         """Return a style class reflecting context compression pressure."""
@@ -3525,6 +3576,7 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "provider_limit_indicators": [],
             "active_background_tasks": 0,
             "active_background_processes": 0,
         }
@@ -3568,6 +3620,15 @@ class HermesCLI:
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+
+        get_rate_limit_state = getattr(agent, "get_rate_limit_state", None)
+        if callable(get_rate_limit_state):
+            try:
+                snapshot["provider_limit_indicators"] = self._build_provider_limit_indicators(
+                    get_rate_limit_state()
+                )
+            except Exception:
+                snapshot["provider_limit_indicators"] = []
 
         return snapshot
 
@@ -3779,6 +3840,10 @@ class HermesCLI:
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                provider_limits = snapshot.get("provider_limit_indicators", [])
+                if provider_limits:
+                    hottest = max(provider_limits, key=lambda item: item.get("percent", 0))
+                    parts.append(hottest["label"])
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -3801,7 +3866,9 @@ class HermesCLI:
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
+            provider_limits = snapshot.get("provider_limit_indicators", [])
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts.extend(item["label"] for item in provider_limits)
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -3852,12 +3919,17 @@ class HermesCLI:
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
+                    provider_limits = snapshot.get("provider_limit_indicators", [])
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
+                    if provider_limits:
+                        hottest = max(provider_limits, key=lambda item: item.get("percent", 0))
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append((self._status_bar_limit_style(hottest.get("percent")), hottest["label"]))
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -3887,6 +3959,7 @@ class HermesCLI:
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
+                    provider_limits = snapshot.get("provider_limit_indicators", [])
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
@@ -3897,6 +3970,10 @@ class HermesCLI:
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    if provider_limits:
+                        for item in provider_limits:
+                            frags.append(("class:status-bar-dim", " │ "))
+                            frags.append((self._status_bar_limit_style(item.get("percent")), item["label"]))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
