@@ -2302,10 +2302,10 @@ def test_acquire_lease_prefers_unleased_entry(tmp_path, monkeypatch):
     first = pool.acquire_lease()
     second = pool.acquire_lease()
 
-    assert first == "cred-1"
-    assert second == "cred-2"
-    assert pool._active_leases.get("cred-1", 0) == 1
-    assert pool._active_leases.get("cred-2", 0) == 1
+    assert first == ("cred-1", "manual")
+    assert second == ("cred-2", "manual")
+    assert pool._active_leases.get(("cred-1", "manual"), 0) == 1
+    assert pool._active_leases.get(("cred-2", "manual"), 0) == 1
 
 
 
@@ -2334,11 +2334,52 @@ def test_release_lease_decrements_counter(tmp_path, monkeypatch):
 
     pool = load_pool("openrouter")
     leased = pool.acquire_lease()
-    assert leased == "cred-1"
-    assert pool._active_leases.get("cred-1", 0) == 1
+    assert leased == ("cred-1", "manual")
+    assert pool._active_leases.get(("cred-1", "manual"), 0) == 1
 
-    pool.release_lease("cred-1")
-    assert pool._active_leases.get("cred-1", 0) == 0
+    pool.release_lease(("cred-1", "manual"))
+    assert pool._active_leases.get(("cred-1", "manual"), 0) == 0
+
+
+def test_colliding_ids_use_independent_lease_handles_and_ambiguous_target():
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    pool = CredentialPool("openai-codex", [
+        PooledCredential.from_dict("openai-codex", {
+            "id": "colliding-id",
+            "source": "device_code",
+            "auth_type": "api_key",
+            "priority": 0,
+            "access_token": "shared-at",
+        }),
+        PooledCredential.from_dict("openai-codex", {
+            "id": "colliding-id",
+            "source": "manual:device_code",
+            "auth_type": "api_key",
+            "priority": 1,
+            "access_token": "manual-at",
+        }),
+    ])
+
+    index, entry, error = pool.resolve_target("colliding-id")
+    assert index is None
+    assert entry is None
+    assert error == 'Ambiguous credential id "colliding-id". Use the numeric index instead.'
+    assert pool.acquire_lease("colliding-id") is None
+
+    first = pool.acquire_lease()
+    second = pool.acquire_lease()
+
+    assert first == ("colliding-id", "device_code")
+    assert second == ("colliding-id", "manual:device_code")
+    assert pool._active_leases == {
+        ("colliding-id", "device_code"): 1,
+        ("colliding-id", "manual:device_code"): 1,
+    }
+
+    pool.release_lease(first)
+    pool.release_lease(second)
+    assert pool._active_leases == {}
 
 
 def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_path, monkeypatch):

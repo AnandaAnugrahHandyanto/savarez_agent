@@ -4248,15 +4248,22 @@ def _remove_codex_linked_legacy_aliases(
                 profile_auth_file = profile_dir / "auth.json"
                 if not profile_dir.is_dir() or not profile_auth_file.exists():
                     continue
-                with _file_lock(
-                    profile_auth_file.with_suffix(".lock"),
-                    threading.local(),
-                    AUTH_LOCK_TIMEOUT_SECONDS,
-                    f"Timed out waiting for Codex profile auth lock: {profile_auth_file}",
-                ):
-                    auth_store = _load_auth_store(profile_auth_file)
-                    if _remove_from_store(auth_store):
-                        _save_auth_store(auth_store, auth_file=profile_auth_file)
+                try:
+                    with _file_lock(
+                        profile_auth_file.with_suffix(".lock"),
+                        threading.local(),
+                        AUTH_LOCK_TIMEOUT_SECONDS,
+                        f"Timed out waiting for Codex profile auth lock: {profile_auth_file}",
+                    ):
+                        auth_store = _load_auth_store(profile_auth_file)
+                        if _remove_from_store(auth_store):
+                            _save_auth_store(auth_store, auth_file=profile_auth_file)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to remove linked Codex credentials in %s: %s",
+                        profile_auth_file,
+                        exc,
+                    )
 
         if _remove_from_store(root_auth_store):
             _save_auth_store(root_auth_store, auth_file=auth_file)

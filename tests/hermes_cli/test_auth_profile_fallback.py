@@ -1356,3 +1356,86 @@ def test_clear_codex_auth_removes_linked_aliases_from_sibling_profiles(profile_e
     assert [
         entry["id"] for entry in sibling_data["credential_pool"]["openai-codex"]
     ] == ["sibling-independent"]
+
+
+def test_clear_codex_auth_continues_after_sibling_alias_cleanup_failure(
+    profile_env, monkeypatch,
+):
+    """One busy sibling profile must not block canonical Codex logout."""
+    from contextlib import contextmanager
+    import hermes_cli.auth as auth_mod
+
+    blocked = profile_env["global"] / "profiles" / "blocked"
+    healthy = profile_env["global"] / "profiles" / "healthy"
+    blocked.mkdir()
+    healthy.mkdir()
+    _write(profile_env["global"] / "auth.json", {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "shared-at",
+                    "refresh_token": "shared-rt",
+                },
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "root-linked",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "root-linked-at",
+                "refresh_token": "shared-rt",
+            }, {
+                "id": "shared-codex",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "shared-at",
+                "refresh_token": "shared-rt",
+            }],
+        },
+    })
+    for profile in (blocked, healthy):
+        _write(profile / "auth.json", {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [{
+                    "id": f"{profile.name}-linked",
+                    "source": "manual:device_code",
+                    "auth_type": "oauth",
+                    "access_token": f"{profile.name}-linked-at",
+                    "refresh_token": "shared-rt",
+                }, {
+                    "id": f"{profile.name}-independent",
+                    "source": "manual:device_code",
+                    "auth_type": "oauth",
+                    "access_token": f"{profile.name}-independent-at",
+                    "refresh_token": f"{profile.name}-independent-rt",
+                }],
+            },
+        })
+
+    original_file_lock = auth_mod._file_lock
+
+    @contextmanager
+    def _file_lock(lock_path, *args, **kwargs):
+        if lock_path == (blocked / "auth.lock"):
+            raise TimeoutError("blocked sibling")
+        with original_file_lock(lock_path, *args, **kwargs):
+            yield
+
+    monkeypatch.setattr(auth_mod, "_file_lock", _file_lock)
+
+    assert auth_mod.clear_provider_auth("openai-codex") is True
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    assert "openai-codex" not in global_data["providers"]
+    assert global_data["credential_pool"]["openai-codex"] == []
+    blocked_data = json.loads((blocked / "auth.json").read_text())
+    assert [
+        entry["id"] for entry in blocked_data["credential_pool"]["openai-codex"]
+    ] == ["blocked-linked", "blocked-independent"]
+    healthy_data = json.loads((healthy / "auth.json").read_text())
+    assert [
+        entry["id"] for entry in healthy_data["credential_pool"]["openai-codex"]
+    ] == ["healthy-independent"]

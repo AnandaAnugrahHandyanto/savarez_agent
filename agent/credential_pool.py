@@ -464,7 +464,7 @@ class CredentialPool:
         self._current_identity: Optional[Tuple[str, str]] = None
         self._strategy = get_pool_strategy(provider)
         self._lock = threading.Lock()
-        self._active_leases: Dict[str, int] = {}
+        self._active_leases: Dict[Tuple[str, str], int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
 
     def has_credentials(self) -> bool:
@@ -1633,25 +1633,31 @@ class CredentialPool:
                 logger.info("credential pool: rotated to %s", _next_label)
             return next_entry
 
-    def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:
+    def acquire_lease(
+        self,
+        credential_id: Optional[str] = None,
+    ) -> Optional[Tuple[str, str]]:
         """Acquire a soft lease on a credential.
 
-        If a specific credential_id is provided, lease that entry directly.
+        If a specific credential_id is provided, lease that entry directly when
+        it is unambiguous. Return the composite identity used as the release
+        handle so merged rows with colliding IDs remain independent.
         Otherwise prefer the least-leased available credential, using priority as
         a stable tie-breaker. When every credential is already at the soft cap,
         still return the least-leased one instead of blocking.
         """
         with self._lock:
             if credential_id:
-                self._active_leases[credential_id] = self._active_leases.get(credential_id, 0) + 1
-                entry = next(
-                    (entry for entry in self._entries if entry.id == credential_id),
-                    None,
-                )
-                self._current_identity = (
-                    _credential_identity(entry) if entry is not None else None
-                )
-                return credential_id
+                matches = [
+                    entry for entry in self._entries
+                    if entry.id == credential_id
+                ]
+                if len(matches) != 1:
+                    return None
+                identity = _credential_identity(matches[0])
+                self._active_leases[identity] = self._active_leases.get(identity, 0) + 1
+                self._current_identity = identity
+                return identity
 
             available = self._available_entries(clear_expired=True, refresh=True)
             if not available:
@@ -1659,25 +1665,29 @@ class CredentialPool:
 
             below_cap = [
                 entry for entry in available
-                if self._active_leases.get(entry.id, 0) < self._max_concurrent
+                if self._active_leases.get(_credential_identity(entry), 0) < self._max_concurrent
             ]
             candidates = below_cap if below_cap else available
             chosen = min(
                 candidates,
-                key=lambda entry: (self._active_leases.get(entry.id, 0), entry.priority),
+                key=lambda entry: (
+                    self._active_leases.get(_credential_identity(entry), 0),
+                    entry.priority,
+                ),
             )
-            self._active_leases[chosen.id] = self._active_leases.get(chosen.id, 0) + 1
-            self._current_identity = _credential_identity(chosen)
-            return chosen.id
+            identity = _credential_identity(chosen)
+            self._active_leases[identity] = self._active_leases.get(identity, 0) + 1
+            self._current_identity = identity
+            return identity
 
-    def release_lease(self, credential_id: str) -> None:
+    def release_lease(self, credential_identity: Tuple[str, str]) -> None:
         """Release a previously acquired credential lease."""
         with self._lock:
-            count = self._active_leases.get(credential_id, 0)
+            count = self._active_leases.get(credential_identity, 0)
             if count <= 1:
-                self._active_leases.pop(credential_id, None)
+                self._active_leases.pop(credential_identity, None)
             else:
-                self._active_leases[credential_id] = count - 1
+                self._active_leases[credential_identity] = count - 1
 
     def try_refresh_current(self) -> Optional[PooledCredential]:
         with self._lock:
@@ -1775,9 +1785,15 @@ class CredentialPool:
         if not raw:
             return None, None, "No credential target provided."
 
-        for idx, entry in enumerate(self._entries, start=1):
-            if entry.id == raw:
-                return idx, entry, None
+        id_matches = [
+            (idx, entry)
+            for idx, entry in enumerate(self._entries, start=1)
+            if entry.id == raw
+        ]
+        if len(id_matches) == 1:
+            return id_matches[0][0], id_matches[0][1], None
+        if len(id_matches) > 1:
+            return None, None, f'Ambiguous credential id "{raw}". Use the numeric index instead.'
 
         label_matches = [
             (idx, entry)
