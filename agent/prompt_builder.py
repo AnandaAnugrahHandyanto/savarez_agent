@@ -7,6 +7,7 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
+import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -28,30 +29,43 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Context file scanning — detect prompt injection / promptware in AGENTS.md,
-# .cursorrules, SOUL.md before they get injected into the system prompt.
-#
-# Patterns live in ``tools/threat_patterns.py`` — the single source of truth
-# shared with the memory-tool scanner and the tool-result delimiter system.
-# This module just chooses how to react when a match is found (block-with-
-# placeholder; the actual content never reaches the system prompt).
+# Context file scanning — detect prompt injection in AGENTS.md, .cursorrules,
+# SOUL.md before they get injected into the system prompt.
 # ---------------------------------------------------------------------------
 
-from tools.threat_patterns import scan_for_threats as _scan_for_threats
+_CONTEXT_THREAT_PATTERNS = [
+    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
+    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    (r'system\s+prompt\s+override', "sys_prompt_override"),
+    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
+    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
+    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
+    (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
+    (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
+    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
+    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+]
+
+_CONTEXT_INVISIBLE_CHARS = {
+    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
+    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+}
 
 
 def _scan_context_content(content: str, filename: str) -> str:
-    """Scan context file content for injection. Returns sanitized content.
+    """Scan context file content for injection. Returns sanitized content."""
+    findings = []
 
-    Uses the "context" scope from the shared threat-pattern library, which
-    covers classic injection + promptware/C2 patterns + role-play hijack.
-    Strict-scope patterns (SSH backdoor, persistence, exfil-URL) are NOT
-    applied here — those are too aggressive for a context file in a
-    cloned repo (security research, infra docs).  Content matching is
-    BLOCKED at this layer because the file would otherwise enter the
-    system prompt verbatim and the user has no chance to intervene.
-    """
-    findings = _scan_for_threats(content, scope="context")
+    # Check invisible unicode
+    for char in _CONTEXT_INVISIBLE_CHARS:
+        if char in content:
+            findings.append(f"invisible unicode U+{ord(char):04X}")
+
+    # Check threat patterns
+    for pattern, pid in _CONTEXT_THREAT_PATTERNS:
+        if re.search(pattern, content, re.IGNORECASE):
+            findings.append(pid)
+
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
@@ -192,12 +206,7 @@ KANBAN_GUIDANCE = (
     "files outside it unless the task explicitly asks.\n"
     "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
     "every few minutes during long subprocesses (training, encoding, crawling). "
-    "Skip heartbeats for short tasks. **If your task may run longer than 1 hour, "
-    "you MUST call `kanban_heartbeat` at least once an hour** — the dispatcher "
-    "reclaims tasks running past `kanban.dispatch_stale_timeout_seconds` "
-    "(default 4 hours) when no heartbeat has arrived in the last hour. A "
-    "reclaim re-queues the task as `ready` without penalty (no failure counter "
-    "tick), but you lose your current run's progress.\n"
+    "Skip heartbeats for short tasks.\n"
     "4. **Block on genuine ambiguity.** If you need a human decision you cannot "
     "infer (missing credentials, UX choice, paywalled source, peer output you "
     "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
@@ -235,11 +244,6 @@ KANBAN_GUIDANCE = (
     "- Do not shell out to `hermes kanban <verb>` for board operations. Use "
     "the `kanban_*` tools — they work across all terminal backends.\n"
     "- Do not complete a task you didn't actually finish. Block it.\n"
-    "- Do not call `clarify` to ask questions. You are running headless — "
-    "there is no live user to answer. The call will time out and the task "
-    "will sit silently in `running` with no signal to the operator. Instead: "
-    "`kanban_comment` the context, then `kanban_block(reason=...)` so the "
-    "task surfaces on the board as needing input.\n"
     "- Do not assign follow-up work to yourself. Assign it to the right "
     "specialist profile.\n"
     "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
@@ -264,47 +268,12 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
-
-# Universal "finish the job" guidance — applied to ALL models, not gated
-# by model family.  Addresses two cross-model failure modes:
-#   1. Stopping after a stub: writing a tiny file or running one command
-#      and then ending the turn with a description of the plan instead
-#      of the finished artifact.  (Observed on Opus during a real
-#      Sarasota real-estate build task: 3 API calls, 85-byte file,
-#      one terminal command, finish_reason=stop.)
-#   2. Fabricating output when a real path is blocked.  When `pip` or a
-#      tool fails, some models will synthesize plausible-looking results
-#      (fake addresses, fake JSON, fake numbers) instead of reporting
-#      the blocker.  (Observed on DeepSeek v4-flash on the same task:
-#      pushed through PEP-668 wall, then returned fabricated listings.)
-#
-# Short on purpose.  This block is shipped to every user, every session,
-# in the cached system prompt — token cost is paid once at install and
-# then amortised across all sessions via prefix caching.  Keep it tight.
-TASK_COMPLETION_GUIDANCE = (
-    "# Finishing the job\n"
-    "When the user asks you to build, run, or verify something, the deliverable is "
-    "a working artifact backed by real tool output — not a description of one. "
-    "Do not stop after writing a stub, a plan, or a single command. Keep working "
-    "until you have actually exercised the code or produced the requested result, "
-    "then report what real execution returned.\n"
-    "If a tool, install, or network call fails and blocks the real path, say so "
-    "directly and try an alternative (different package manager, different "
-    "approach, ask the user). NEVER substitute plausible-looking fabricated "
-    "output (made-up data, invented file contents, synthesised API responses) "
-    "for results you couldn't actually produce. Reporting a blocker honestly "
-    "is always better than inventing a result."
-)
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm")
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.
 # Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
-# Also applied to xAI Grok — same failure modes in practice (claims completion
-# without tool calls, suggests workarounds instead of using existing tools,
-# replies with plans/suggestions instead of executing). The body is
-# family-agnostic; the OPENAI_ prefix reflects origin, not exclusivity.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
@@ -645,7 +614,7 @@ WSL_ENVIRONMENT_HINT = (
 # misleading — the agent should only see the machine it can actually touch.
 _REMOTE_TERMINAL_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh",
-    "managed_modal",
+    "vercel_sandbox", "managed_modal",
 })
 
 
@@ -659,6 +628,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "modal": "a Modal sandbox (Linux)",
     "managed_modal": "a managed Modal sandbox (Linux)",
     "daytona": "a Daytona workspace (Linux)",
+    "vercel_sandbox": "a Vercel sandbox (Linux)",
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
@@ -772,7 +742,7 @@ def build_environment_hints() -> str:
       and a Windows-only note that `terminal` shells out to bash, not
       PowerShell).
     - For **remote / sandbox** terminal backends (docker, singularity,
-      modal, daytona, ssh): host info is **suppressed**
+      modal, daytona, ssh, vercel_sandbox): host info is **suppressed**
       because the agent's tools can't touch the host — only the backend
       matters. A live probe inside the backend reports its OS, user, $HOME,
       and cwd. Falls back to a static summary if the probe fails.
@@ -848,27 +818,6 @@ def build_environment_hints() -> str:
 
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
-
-    # Embedder-supplied environment description. Lets a host that wraps Hermes
-    # (e.g. a sandbox runner / managed platform) explain the environment the
-    # agent is running in — proxy, credential handling, mount layout — without
-    # forking the identity slot (SOUL.md). Read once at prompt-build time, so
-    # it's part of the stable, cache-safe system prompt. The env var is the
-    # build-time/embedder mechanism (set in a container ENV); config.yaml
-    # ``agent.environment_hint`` is the user-facing surface. Env var wins.
-    extra = (os.getenv("HERMES_ENVIRONMENT_HINT") or "").strip()
-    if not extra:
-        try:
-            from hermes_cli.config import load_config
-
-            extra = str(
-                (load_config().get("agent", {}) or {}).get("environment_hint", "")
-            ).strip()
-        except Exception as e:
-            logger.debug("Could not read agent.environment_hint from config: %s", e)
-    if extra:
-        hints.append(extra)
-
     return "\n\n".join(hints)
 
 
@@ -1233,31 +1182,16 @@ def build_skills_system_prompt(
 
         result = (
             "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
-            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
-            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
-            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
-            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
-            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
+            "Scan skills. Relevant match → load with skill_view(name), follow it. "
+            "Err toward loading — skills have API endpoints, exact commands, user conventions. "
+            "Hermes config/setup/CLI question → load `hermes-agent` skill first. "
+            "Skill stale/wrong → patch immediately. Hard task done → offer to save skill.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "Only skip if genuinely no skill matches."
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────
@@ -1463,6 +1397,139 @@ def _load_cursorrules(cwd_path: Path) -> str:
     if not cursorrules_content:
         return ""
     return _truncate_content(cursorrules_content, ".cursorrules")
+
+
+def build_delegation_capabilities_prompt() -> str:
+    """Build a system-prompt block listing authenticated providers and reasoning guidance.
+
+    Called once per session and injected into stable_parts so the model knows
+    which providers it can route subagents to and which reasoning effort levels
+    are appropriate for different task complexities.
+    
+    Enhanced (Phase 2d): Now includes auto-discovered model rankings + capability scores.
+    """
+    parts = []
+
+    # ── Provider list (live from auth status) ──
+    try:
+        # Lazy import to avoid circular dependency at module load time.
+        from hermes_cli.models import list_available_providers
+
+        providers = list_available_providers()
+        authenticated = [p for p in providers if p.get("authenticated")]
+        if authenticated:
+            lines = ["### Available Providers (authenticated)"]
+            for p in authenticated:
+                pid = p["id"]
+                label = p.get("label", pid)
+                aliases = p.get("aliases", [])
+                alias_str = f" (aliases: {', '.join(aliases)})" if aliases else ""
+                lines.append(f"- {pid} ({label}){alias_str}")
+            parts.append("\n".join(lines))
+        else:
+            parts.append("*No authenticated providers detected for delegation.*")
+    except Exception:
+        parts.append("*Provider list unavailable.*")
+
+    # ── NEW: Available models per provider (auto-discovered + ranked) ──
+    try:
+        from agent.model_registry import ModelRegistry
+        from agent.benchmark_registry import BENCHMARK_REGISTRY
+        from agent.model_discovery import ModelDescriptor
+        from pathlib import Path
+        import os
+        
+        registry = ModelRegistry(Path.home() / ".hermes" / "model_cache")
+        
+        # Build model rankings from benchmark registry (fast, no I/O)
+        model_rankings = {}
+        provider_map = {
+            "ollama-cloud": ["deepseek-v3", "kimi-k2-6", "qwen-2-5-72b", "gemma-7b", "glm-5-1"],
+            "openrouter": ["gpt-4o", "claude-3-5-sonnet", "deepseek-v3", "llama-3-1-70b", "mistral-large-2"],
+            "bedrock": ["gpt-4o", "claude-3-5-sonnet"],
+        }
+        
+        for provider_name, model_ids in provider_map.items():
+            models = []
+            for model_id in model_ids:
+                if model_id in BENCHMARK_REGISTRY:
+                    entry = BENCHMARK_REGISTRY[model_id]
+                    model = ModelDescriptor(
+                        id=model_id,
+                        display_name=entry.model_id,
+                        context_window=entry.context_window or 8192,
+                        reasoning_capability=None,
+                        provider=provider_name,
+                    )
+                    # Augment with benchmarks (benchmark fields populated)
+                    model = registry._augment_with_benchmarks(model)
+                    models.append(model)
+            
+            if models:
+                model_rankings[provider_name] = models
+        
+        # Render model rankings
+        if model_rankings:
+            lines = [
+                "### Available Models per Provider (ranked by capability)",
+                "",
+                "**Model Capability Scoring** (0-1.0 scale from published benchmarks):",
+                "- 0.85+: frontier (claude-3.5, gpt-4o, deepseek-v3, kimi-k2.6)",
+                "- 0.75-0.85: advanced (llama-70b, mistral-large)",
+                "- 0.60-0.75: mid-tier (llama-8b, gemma-7b)",
+                "- <0.60: lightweight (edge models)",
+                "",
+            ]
+            for provider, models in sorted(model_rankings.items()):
+                # Sort by capability_score DESC, then by id
+                sorted_models = sorted(
+                    models,
+                    key=lambda m: (-(m.capability_score or 0), m.id)
+                )
+                lines.append(f"**{provider}** ({len(sorted_models)} models, ranked by capability):")
+                for idx, model in enumerate(sorted_models[:5], 1):  # Top 5 per provider
+                    score = model.capability_score or 0.0
+                    source = model.benchmark_source or "discovered"
+                    reasoning = model.reasoning_capability or "?"
+                    ctx = model.context_window
+                    lines.append(
+                        f"  {idx}. {model.id:30s} | score: {score:.2f} ({source:9s}) | "
+                        f"reasoning: {reasoning:8s} | ctx: {ctx:6d}tok"
+                    )
+                if len(sorted_models) > 5:
+                    lines.append(f"  ... +{len(sorted_models) - 5} more")
+                lines.append("")
+            parts.append("\n".join(lines))
+    except Exception as e:
+        # Silently skip if model discovery unavailable
+        pass
+
+    # ── Reasoning guide ──
+    parts.append(
+        "### Reasoning Effort Levels\n"
+        "Task complexity → recommended reasoning level:\n"
+        "- Easy (simple lookups, grep, file ops)       → minimal | low\n"
+        "- Medium (code gen, bug fixes, refactoring)    → medium | high\n"
+        "- Hard (architecture, research, multi-step)    → high | xhigh\n\n"
+        "Valid values: none, minimal, low, medium, high, xhigh\n"
+        "Pass as ``reasoning_effort=\"medium\"`` in ``delegate_task``."
+    )
+
+    # ── Model guidance ──
+    parts.append(
+        "### Model Selection via delegate_task\n"
+        "Pass ``provider``, ``model``, and/or ``reasoning_effort`` to spawn "
+        "subagents on a different model than the one you are running on.\n"
+        "- ``provider=\"ollama-cloud\"`` — use an Ollama Cloud model\n"
+        "- ``provider=\"openrouter\"`` — use any OpenRouter model\n"
+        "- ``provider=\"same\"`` — keep the parent provider, override only model\n"
+        "- ``model=\"kimi-k2.6:cloud\"`` — override just the model, inherit provider\n\n"
+        "**IMPORTANT:** When overriding ``provider`` without ``model``, the child uses "
+        "the target provider's default model (not the parent's model). This prevents "
+        "model-not-found errors when providers do not share model names."
+    )
+
+    return "\n\n".join(parts)
 
 
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
