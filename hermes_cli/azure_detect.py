@@ -158,7 +158,7 @@ def _http_get_json(url: str,
     _apply_auth_headers(req, token, mode)
     req.add_header("User-Agent", "hermes-agent/azure-detect")
     try:
-        with urllib_request.urlopen(req, timeout=timeout) as resp:
+        with urllib_request.urlopen(req, timeout=timeout) as resp:  # SSRF: add IP block check
             body = resp.read()
             try:
                 return resp.status, json.loads(body.decode("utf-8", errors="replace"))

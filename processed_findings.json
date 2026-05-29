@@ -460,5 +460,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34945",
     "pr_number": 34945,
     "run_id": "20260529_222900"
+  },
+  "SSRF-azure_detect.py-272": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34946",
+    "pr_number": 34946,
+    "run_id": "20260529_222900"
   }
 }
