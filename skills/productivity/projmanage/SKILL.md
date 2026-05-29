@@ -65,7 +65,30 @@ projmanage proj update <project_id> [--name "新名称"] [--desc "新描述"]
 ```bash
 projmanage proj delete <project_id> [--force]
 ```
-> cascades and deletes all milestones and tasks in that project
+> `-` cascades and deletes all milestones, tasks, and attachment files in that project
+
+---
+
+## Attachment Commands
+
+### Add attachment (copy file to project folder, record in task)
+```bash
+projmanage task add-attachment <task_id> <local_file_path>
+```
+> The file is copied (not referenced) to `~/.projmanage/projects/{project_id}/attachments/{timestamp}_{filename}`. The path stored in the task is the absolute path to the stored copy.
+
+### Remove attachment (deletes file + DB record)
+```bash
+projmanage task remove-attachment <attachment_id> [--force]
+```
+> `task view` shows `[attachment_id]` next to each file — use that ID.
+
+### Attachment display
+`task view <task_id>` automatically shows all attachments inline (filename + path + size).
+
+### Cascade behavior
+- Deleting a task → attachment files + DB records auto-deleted
+- Deleting a project → entire attachments folder deleted
 
 ---
 
@@ -315,7 +338,7 @@ Schema files:
 - `/root/.projmanage/schema.py` — SQLAlchemy models
 - `/root/.projmanage/db.py` — all DB operations
 
-Key tables: `projects`, `milestones`, `tasks`, `members`, `task_links`, `task_events`, `task_comments`
+Key tables: `projects`, `milestones`, `tasks`, `members`, `task_links`, `task_events`, `task_comments`, `attachments`
 
 ---
 
@@ -339,9 +362,11 @@ Key tables: `projects`, `milestones`, `tasks`, `members`, `task_links`, `task_ev
 
 4. **Assuming `task new` accepts `--status`.** It does not. Task status is set via `task start/done/block/unblock` after creation.
 
-5. **Assuming `task new` accepts `--status`.** It does not. Task status is set via `task start/done/block/unblock` after creation.
+5. **Migrating a task to a milestone in a different project.** The FK constraint doesn't prevent cross-project assignment, but the business logic assumes milestones are per-project. Don't do this.
 
-6. **Migrating a task to a milestone in a different project.** The FK constraint doesn't prevent cross-project assignment, but the business logic assumes milestones are per-project. Don't do this.
+6. **Passing a non-existent file to `add-attachment`.** The file must exist locally. Click validates with `exists=True` in the argument definition.
+
+7. **Forgetting the attachment ID on `remove-attachment`.** Run `task view <task_id>` first to see the `[attachment_id]` for each file.
 
 ---
 
