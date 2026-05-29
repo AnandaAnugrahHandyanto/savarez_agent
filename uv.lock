@@ -1596,6 +1596,7 @@ dependencies = [
     { name = "fire" },
     { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
+    { name = "mcp" },
     { name = "openai" },
     { name = "prompt-toolkit" },
     { name = "psutil" },
@@ -1703,9 +1704,6 @@ matrix = [
     { name = "markdown" },
     { name = "mautrix", extra = ["encryption"] },
 ]
-mcp = [
-    { name = "mcp" },
-]
 messaging = [
     { name = "aiohttp" },
     { name = "brotlicffi" },
@@ -1736,7 +1734,6 @@ sms = [
 termux = [
     { name = "agent-client-protocol" },
     { name = "honcho-ai" },
-    { name = "mcp" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
     { name = "python-telegram-bot", extra = ["webhooks"] },
     { name = "pywinpty", marker = "sys_platform == 'win32'" },
@@ -1750,7 +1747,6 @@ termux-all = [
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
     { name = "honcho-ai" },
-    { name = "mcp" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
     { name = "python-telegram-bot", extra = ["webhooks"] },
     { name = "pywinpty", marker = "sys_platform == 'win32'" },
@@ -1837,9 +1833,9 @@ requires-dist = [
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.5.3" },
     { name = "markdown", marker = "extra == 'matrix'", specifier = "==3.10.2" },
     { name = "mautrix", extras = ["encryption"], marker = "extra == 'matrix'", specifier = "==0.21.0" },
+    { name = "mcp", specifier = "==1.26.0" },
     { name = "mcp", marker = "extra == 'computer-use'", specifier = "==1.26.0" },
     { name = "mcp", marker = "extra == 'dev'", specifier = "==1.26.0" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = "==1.26.0" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "openai", specifier = "==2.24.0" },

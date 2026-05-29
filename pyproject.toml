@@ -64,6 +64,10 @@ dependencies = [
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
+  # MCP server mode is advertised through the root server.json manifest. Keep
+  # the SDK in the base wheel so registry clients that install plain
+  # `hermes-agent` can actually run `hermes mcp serve`.
+  "mcp==1.26.0",
 ]
 
 [project.optional-dependencies]
@@ -108,7 +112,10 @@ pty = [
   "pywinpty==2.0.15; sys_platform == 'win32'",
 ]
 honcho = ["honcho-ai==2.0.1"]
-mcp = ["mcp==1.26.0"]
+# MCP SDK is a core dependency because root server.json advertises the PyPI
+# package to registry clients. Keep the extra for backwards compatibility with
+# existing install docs and commands such as `pip install hermes-agent[mcp]`.
+mcp = []
 homeassistant = ["aiohttp==3.13.3"]
 sms = ["aiohttp==3.13.3"]
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
@@ -213,7 +220,10 @@ all = [
 
 [project.scripts]
 hermes = "hermes_cli.main:main"
-hermes-agent = "run_agent:main"
+# Alias the distribution-name executable to the primary CLI so PyPI/MCP
+# registry launchers that infer `hermes-agent` from the package name still
+# dispatch subcommands such as `mcp serve` correctly.
+hermes-agent = "hermes_cli.main:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
