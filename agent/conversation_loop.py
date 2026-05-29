@@ -1124,6 +1124,7 @@ def run_conversation(
         multimodal_tool_content_retry_attempted = False
         oauth_1m_beta_retry_attempted = False
         llama_cpp_grammar_retry_attempted = False
+        invalid_reasoning_config_retry_attempted = False
         has_retried_429 = False
         restart_with_compressed_messages = False
         restart_with_length_continuation = False
@@ -2526,6 +2527,29 @@ def run_conversation(
                         "keywords to strip — falling through to normal retry",
                         agent.log_prefix,
                     )
+
+                # ── Invalid reasoning/thinking config recovery ───────────
+                # Provider rejected the request because of an incompatible
+                # reasoning_effort, thinking toggle, or dual-parameter conflict.
+                # Strip the reasoning config and retry once on the same provider.
+                if (
+                    classified.reason == FailoverReason.invalid_reasoning_config
+                    and not invalid_reasoning_config_retry_attempted
+                ):
+                    invalid_reasoning_config_retry_attempted = True
+                    _old_reasoning = agent.reasoning_config
+                    agent.reasoning_config = None
+                    agent._vprint(
+                        f"{agent.log_prefix}⚠️  Provider rejected reasoning config "
+                        f"({_old_reasoning}) — retrying with reasoning disabled...",
+                        force=True,
+                    )
+                    logger.warning(
+                        "%sInvalid reasoning config recovery: cleared "
+                        "reasoning_config (was %s), retrying on same provider",
+                        agent.log_prefix, _old_reasoning,
+                    )
+                    continue
 
                 retry_count += 1
                 elapsed_time = time.time() - api_start_time

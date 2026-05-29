@@ -59,6 +59,7 @@ class FailoverReason(enum.Enum):
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
+    invalid_reasoning_config = "invalid_reasoning_config"  # Provider rejected reasoning/thinking parameters — strip reasoning config and retry
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -361,6 +362,25 @@ _TIMEOUT_MESSAGE_PATTERNS = [
     "upstream timed out",
 ]
 
+# Reasoning/thinking config patterns — provider rejected the request because
+# of incompatible or unsupported reasoning parameters.
+_REASONING_CONFIG_PATTERNS = [
+    "cannot specify both 'thinking' and 'reasoning_effort'",
+    "cannot use both 'thinking' and 'reasoning_effort'",
+    "does not support parameter reasoningeffort",
+    "does not support parameter reasoning",
+    "does not support reasoning_effort",
+    "reasoning_effort is not supported",
+    "reasoning is not supported",
+    "unknown parameter: reasoning_effort",
+    "unknown parameter: thinking",
+    "unsupported parameter: reasoning_effort",
+    "unsupported parameter: thinking",
+    "invalid reasoning_effort",
+    "invalid thinking",
+    "thinking is not supported",
+]
+
 # Transport error type names
 _TRANSPORT_ERROR_TYPES = frozenset({
     "ReadTimeout", "ConnectTimeout", "PoolTimeout",
@@ -613,6 +633,17 @@ def classify_api_error(
     ):
         return _result(
             FailoverReason.llama_cpp_grammar_pattern,
+            retryable=True,
+            should_compress=False,
+        )
+
+    # Provider rejected reasoning/thinking parameters (HTTP 400).
+    # When a model or endpoint does not support the requested reasoning
+    # effort, thinking toggle, or reasoning_effort, we strip the config and
+    # retry once on the same provider instead of immediately falling back.
+    if status_code == 400 and any(p in error_msg for p in _REASONING_CONFIG_PATTERNS):
+        return _result(
+            FailoverReason.invalid_reasoning_config,
             retryable=True,
             should_compress=False,
         )
@@ -1115,6 +1146,14 @@ def _classify_by_message(
         return result_fn(
             FailoverReason.multimodal_tool_content_unsupported,
             retryable=True,
+        )
+
+    # Reasoning/thinking config patterns (from message text when no status_code)
+    if any(p in error_msg for p in _REASONING_CONFIG_PATTERNS):
+        return result_fn(
+            FailoverReason.invalid_reasoning_config,
+            retryable=True,
+            should_compress=False,
         )
 
     # Image-too-large patterns (from message text when no status_code)

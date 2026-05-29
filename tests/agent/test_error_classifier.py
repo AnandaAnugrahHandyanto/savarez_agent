@@ -63,6 +63,7 @@ class TestFailoverReason:
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
+            "invalid_reasoning_config",
             "unknown",
         }
         actual = {r.value for r in FailoverReason}
@@ -1567,3 +1568,57 @@ class TestMultimodalToolContentUnsupported:
         e = MockAPIError("bad request: missing field 'model'", status_code=400)
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
         assert result.reason != FailoverReason.multimodal_tool_content_unsupported
+
+
+# ── Test: invalid_reasoning_config pattern ──────────────────────────────
+
+class TestInvalidReasoningConfig:
+    """Provider rejects the request because of incompatible reasoning parameters."""
+
+    def test_opencode_go_kimi_dual_parameter_conflict(self):
+        e = MockAPIError(
+            "Error from provider: cannot specify both 'thinking' and 'reasoning_effort'",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="opencode-go", model="kimi-k2.6")
+        assert result.reason == FailoverReason.invalid_reasoning_config
+        assert result.retryable is True
+        assert result.should_fallback is False
+
+    def test_xai_grok_unsupported_reasoning_effort(self):
+        e = MockAPIError(
+            "Model does not support parameter reasoningEffort",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="xai", model="grok-4-1-fast")
+        assert result.reason == FailoverReason.invalid_reasoning_config
+        assert result.retryable is True
+
+    def test_unknown_parameter_reasoning_effort(self):
+        e = MockAPIError(
+            "Unknown parameter: reasoning_effort",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="local-llm")
+        assert result.reason == FailoverReason.invalid_reasoning_config
+        assert result.retryable is True
+
+    def test_unsupported_parameter_thinking(self):
+        e = MockAPIError(
+            "Unsupported parameter: thinking",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="qwen3")
+        assert result.reason == FailoverReason.invalid_reasoning_config
+        assert result.retryable is True
+
+    def test_no_status_code_path_also_classifies(self):
+        """Message-only classifier must catch reasoning errors even without HTTP status."""
+        e = Exception("does not support reasoning_effort")
+        result = classify_api_error(e, provider="openrouter", model="cerebras/gpt-oss-120b")
+        assert result.reason == FailoverReason.invalid_reasoning_config
+
+    def test_unrelated_400_is_not_misclassified(self):
+        e = MockAPIError("bad request: missing field 'messages'", status_code=400)
+        result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
+        assert result.reason != FailoverReason.invalid_reasoning_config
