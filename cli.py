@@ -2977,6 +2977,7 @@ class HermesCLI:
         # cached so the prompt_toolkit render path never blocks on network.
         self._account_limits_lock = threading.Lock()
         self._account_limits_label: str | None = None
+        self._account_limits_style: str = "class:status-bar-good"
         self._account_limits_provider: str | None = None
         self._account_limits_checked_at: float = 0.0
         self._account_limits_refreshing = False
@@ -3169,10 +3170,23 @@ class HermesCLI:
             return ""
         return f"Acct {' '.join(parts[:2])}"
 
+    @staticmethod
+    def _account_limits_badge_style(label: str) -> str:
+        """Return status-bar style for the account-limit badge.
+
+        A depleted Codex session or weekly window is operationally critical:
+        make the quota badge red as soon as either compact value reaches 0%.
+        """
+        if re.search(r"(?<!\w)[SW]0%(?!\d)", label or ""):
+            return "class:status-bar-critical"
+        return "class:status-bar-good"
+
     def _maybe_refresh_account_limits_badge(self, agent: Any) -> str:
         """Return cached account limits and refresh them in the background if stale."""
         provider = (getattr(agent, "provider", None) or getattr(self, "provider", None) or "").strip()
         if not provider:
+            return ""
+        if not hasattr(self, "_account_limits_lock"):
             return ""
         # Keep this intentionally broad: fetch_account_usage() returns None for
         # unsupported providers, while supported account-backed providers get
@@ -3191,12 +3205,14 @@ class HermesCLI:
 
         def _worker() -> None:
             label = ""
+            style = "class:status-bar-good"
             success = False
             try:
                 from agent.account_usage import fetch_account_usage
                 snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
                 if snapshot:
                     label = self._format_account_limits_badge(snapshot)
+                    style = self._account_limits_badge_style(label)
                     success = bool(label)
             except Exception:
                 label = ""
@@ -3207,11 +3223,13 @@ class HermesCLI:
                     # after a transient network/auth/quota endpoint failure.
                     if success:
                         self._account_limits_label = label
+                        self._account_limits_style = style
                         self._account_limits_provider = provider
                         self._account_limits_checked_at = time.monotonic()
                     else:
                         if self._account_limits_provider != provider:
                             self._account_limits_label = None
+                            self._account_limits_style = "class:status-bar-good"
                             self._account_limits_provider = provider
                         # Empty/failing fetches should retry quickly. The normal
                         # successful cache remains 5 minutes via the stale check.
@@ -3303,6 +3321,7 @@ class HermesCLI:
             "compressions": 0,
             "active_background_tasks": 0,
             "account_limits": "",
+            "account_limits_style": getattr(self, "_account_limits_style", "class:status-bar-good"),
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -3617,6 +3636,7 @@ class HermesCLI:
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
                     account_limits = snapshot.get("account_limits")
+                    account_limits_style = snapshot.get("account_limits_style", "class:status-bar-good")
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     frags = [
@@ -3627,7 +3647,7 @@ class HermesCLI:
                     ]
                     if account_limits:
                         frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-good", account_limits))
+                        frags.append((account_limits_style, account_limits))
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -3652,6 +3672,7 @@ class HermesCLI:
 
                     bar_style = self._status_bar_context_style(percent)
                     account_limits = snapshot.get("account_limits")
+                    account_limits_style = snapshot.get("account_limits_style", "class:status-bar-good")
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     frags = [
@@ -3666,7 +3687,7 @@ class HermesCLI:
                     ]
                     if account_limits:
                         frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-good", account_limits))
+                        frags.append((account_limits_style, account_limits))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
