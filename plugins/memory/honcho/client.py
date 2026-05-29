@@ -896,8 +896,8 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     if _is_local:
         # Check if the host block has its own apiKey (explicit local auth)
         _raw = config.raw or {}
-        _host_block = (_root_config.get("hosts") or {}).get(config.host, {})
-        _host_has_key = bool(_host_config.get("apiKey"))
+        _host_block = (_raw.get("hosts") or {}).get(config.host, {})
+        _host_has_key = bool(_host_block.get("apiKey"))
         effective_api_key = config.api_key if _host_has_key else "local"
     else:
         effective_api_key = config.api_key
