@@ -368,6 +368,11 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
             or 17
         ),
     )
+    monkeypatch.setattr(
+        main_mod,
+        "_exit_after_oneshot",
+        lambda rc: (_ for _ in ()).throw(SystemExit(rc)),
+    )
 
     with pytest.raises(SystemExit) as exc:
         main_mod._try_termux_fast_cli_launch()
@@ -607,6 +612,17 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
             or 0
         ),
     )
+    monkeypatch.setattr(
+        main_mod,
+        "_exit_after_oneshot",
+        lambda rc: (_ for _ in ()).throw(SystemExit(rc)),
+    )
+
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, _chat_parser = build_top_level_parser()
+    args = parser.parse_args(["-z", "hello", "--toolsets", "web,terminal"])
+    assert args.oneshot == "hello"
 
     with pytest.raises(SystemExit) as exc:
         main_mod.main()

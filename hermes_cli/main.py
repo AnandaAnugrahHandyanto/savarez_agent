@@ -65,6 +65,23 @@ import os
 import sys
 
 
+def _exit_after_oneshot(rc: object) -> None:
+    """Terminate a one-shot process without running fragile finalizers.
+
+    ``hermes -z`` / ``hermes chat -q`` are subprocess-style entry points: once
+    the answer has printed and stdout/stderr are flushed, there is no useful
+    interactive state left for Python teardown to preserve. Using ``os._exit``
+    here avoids late native-extension finalizer crashes being misreported as a
+    failed one-shot run.
+    """
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(rc if isinstance(rc, int) else 0)
+
+
 # Mouse-tracking residue suppression — runs BEFORE every other import on the
 # TUI hot path so the terminal stops emitting SGR/X10 mouse reports while the
 # Python launcher is still doing imports (≈100–300ms in cooked + echo mode,
@@ -11202,14 +11219,13 @@ def _try_termux_fast_cli_launch() -> bool:
         _prepare_agent_startup(args)
         from hermes_cli.oneshot import run_oneshot
 
-        sys.exit(
-            run_oneshot(
-                args.oneshot,
-                model=getattr(args, "model", None),
-                provider=getattr(args, "provider", None),
-                toolsets=getattr(args, "toolsets", None),
-            )
+        rc = run_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
         )
+        _exit_after_oneshot(rc)
 
     if (args.resume or args.continue_last) and args.command is None:
         args.command = "chat"
@@ -14307,14 +14323,13 @@ Examples:
     if getattr(args, "oneshot", None):
         from hermes_cli.oneshot import run_oneshot
 
-        sys.exit(
-            run_oneshot(
-                args.oneshot,
-                model=getattr(args, "model", None),
-                provider=getattr(args, "provider", None),
-                toolsets=getattr(args, "toolsets", None),
-            )
+        rc = run_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
         )
+        _exit_after_oneshot(rc)
 
     # Handle top-level --resume / --continue as shortcut to chat
     if (args.resume or args.continue_last) and args.command is None:
