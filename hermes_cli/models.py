@@ -2651,7 +2651,7 @@ def ensure_lmstudio_model_loaded(
     load_headers = dict(headers)
     load_headers["Content-Type"] = "application/json"
     try:
-        with urllib.request.urlopen(
+        with urllib.request.urlopen(  # SSRF: add IP block check
             urllib.request.Request(
                 server_root + "/api/v1/models/load",
                 data=body,
