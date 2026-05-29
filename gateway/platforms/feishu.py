@@ -1412,6 +1412,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.
     _SPLIT_THRESHOLD = 4000
+    CHAT_DICT_MAX_SIZE = 1000
 
     # =========================================================================
     # Lifecycle — init / settings / connect / disconnect
@@ -1445,7 +1446,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_inbound_lock = threading.Lock()
         self._pending_drain_scheduled = False
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
-        self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
+        self._chat_locks: OrderedDict[str, asyncio.Lock] = OrderedDict()  # chat_id → lock (per-chat serial processing, LRU-bounded)
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
@@ -2835,11 +2836,25 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _get_chat_lock(self, chat_id: str) -> asyncio.Lock:
-        """Return (creating if needed) the per-chat asyncio.Lock for serial message processing."""
-        lock = self._chat_locks.get(chat_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._chat_locks[chat_id] = lock
+        """Return (creating if needed) the per-chat asyncio.Lock for serial message processing.
+
+        Uses LRU eviction (same pattern as Yuanbao) to bound memory in
+        long-running gateways that handle many one-time chats.
+        """
+        if chat_id in self._chat_locks:
+            self._chat_locks.move_to_end(chat_id)
+            return self._chat_locks[chat_id]
+        if len(self._chat_locks) >= self.CHAT_DICT_MAX_SIZE:
+            # Evict oldest unlocked entry first
+            for key in list(self._chat_locks):
+                if not self._chat_locks[key].locked():
+                    self._chat_locks.pop(key)
+                    break
+            else:
+                # All locked — force-evict oldest
+                self._chat_locks.pop(next(iter(self._chat_locks)))
+        lock = asyncio.Lock()
+        self._chat_locks[chat_id] = lock
         return lock
 
     async def _handle_message_with_guards(self, event: MessageEvent) -> None:
