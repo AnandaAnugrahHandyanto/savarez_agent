@@ -24,6 +24,8 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATRIX_ALLOWED_USERS",
         "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
         "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS",
+        "WEIXIN_ALLOWED_USERS",
+        "YUANBAO_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "TELEGRAM_ALLOW_ALL_USERS",
         "DISCORD_ALLOW_ALL_USERS",
@@ -36,6 +38,8 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATRIX_ALLOW_ALL_USERS",
         "DINGTALK_ALLOW_ALL_USERS", "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS",
         "QQ_ALLOW_ALL_USERS",
+        "WEIXIN_ALLOW_ALL_USERS",
+        "YUANBAO_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -178,6 +182,222 @@ def test_qq_group_allowlist_does_not_authorize_other_groups(monkeypatch):
     )
 
     assert runner._is_user_authorized(source) is False
+
+
+def test_wecom_config_dm_allowlist_authorizes_without_env_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    runner, _adapter = _make_runner(
+        Platform.WECOM,
+        GatewayConfig(
+            platforms={
+                Platform.WECOM: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "dm_policy": "allowlist",
+                        "allow_from": ["user-1"],
+                    },
+                )
+            }
+        ),
+    )
+
+    source = SessionSource(
+        platform=Platform.WECOM,
+        user_id="user-1",
+        chat_id="dm-chat-1",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+@pytest.mark.asyncio
+async def test_wecom_config_dm_allowlist_rejects_without_pairing_prompt(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={
+            Platform.WECOM: PlatformConfig(
+                enabled=True,
+                extra={
+                    "dm_policy": "allowlist",
+                    "allow_from": ["user-1"],
+                },
+            )
+        }
+    )
+    runner, adapter = _make_runner(Platform.WECOM, config)
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.WECOM,
+            "user-2",
+            "dm-chat-2",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+def test_weixin_config_group_allowlist_authorizes_without_env_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    runner, _adapter = _make_runner(
+        Platform.WEIXIN,
+        GatewayConfig(
+            platforms={
+                Platform.WEIXIN: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "group_policy": "allowlist",
+                        "group_allow_from": ["group-1"],
+                    },
+                )
+            }
+        ),
+    )
+
+    source = SessionSource(
+        platform=Platform.WEIXIN,
+        user_id="wxid-user-1",
+        chat_id="group-1",
+        user_name="tester",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_wecom_config_group_sender_allowlist_authorizes_without_env_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    runner, _adapter = _make_runner(
+        Platform.WECOM,
+        GatewayConfig(
+            platforms={
+                Platform.WECOM: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "group_policy": "allowlist",
+                        "group_allow_from": ["group-1"],
+                        "groups": {
+                            "group-1": {
+                                "allow_from": ["user-1"],
+                            }
+                        },
+                    },
+                )
+            }
+        ),
+    )
+
+    source = SessionSource(
+        platform=Platform.WECOM,
+        user_id="user-1",
+        chat_id="group-1",
+        user_name="tester",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_yuanbao_config_dm_open_authorizes_without_env_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    runner, _adapter = _make_runner(
+        Platform.YUANBAO,
+        GatewayConfig(
+            platforms={
+                Platform.YUANBAO: PlatformConfig(
+                    enabled=True,
+                    extra={"dm_policy": "open"},
+                )
+            }
+        ),
+    )
+
+    source = SessionSource(
+        platform=Platform.YUANBAO,
+        user_id="account-1",
+        chat_id="direct:account-1",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_qq_config_group_allowlist_authorizes_without_env_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    runner, _adapter = _make_runner(
+        Platform.QQBOT,
+        GatewayConfig(
+            platforms={
+                Platform.QQBOT: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "group_policy": "allowlist",
+                        "group_allow_from": ["group-openid-1"],
+                    },
+                )
+            }
+        ),
+    )
+
+    source = SessionSource(
+        platform=Platform.QQBOT,
+        user_id="member-openid-999",
+        chat_id="group-openid-1",
+        user_name="tester",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_get_unauthorized_dm_behavior_uses_config_dm_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={
+            Platform.WECOM: PlatformConfig(
+                enabled=True,
+                extra={
+                    "dm_policy": "allowlist",
+                    "allow_from": ["user-1"],
+                },
+            )
+        },
+    )
+    runner, _adapter = _make_runner(Platform.WECOM, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.WECOM)
+    assert behavior == "ignore"
+
+
+def test_get_unauthorized_dm_behavior_uses_config_pairing_policy(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={
+            Platform.WECOM: PlatformConfig(
+                enabled=True,
+                extra={
+                    "dm_policy": "pairing",
+                },
+            )
+        },
+    )
+    runner, _adapter = _make_runner(Platform.WECOM, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.WECOM)
+    assert behavior == "pair"
 
 
 def test_telegram_group_user_allowlist_authorizes_forum_sender_without_dm_allowlist(monkeypatch):

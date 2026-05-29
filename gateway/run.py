@@ -6515,6 +6515,210 @@ class GatewayRunner:
             return YuanbaoAdapter(config)
 
         return None
+
+    @staticmethod
+    def _coerce_access_list(value: Any) -> list[str]:
+        """Coerce config allowlist values into a trimmed string list."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        text = str(value).strip()
+        return [text] if text else []
+
+    @staticmethod
+    def _match_access_list(
+        entries: list[str],
+        target: str,
+        *,
+        case_insensitive: bool = False,
+        strip_prefixes: tuple[str, ...] = (),
+    ) -> bool:
+        """Return True when *target* matches any configured allowlist entry."""
+        candidate = str(target or "").strip()
+        if not candidate:
+            return False
+        if case_insensitive:
+            candidate = candidate.lower()
+        for entry in entries:
+            normalized = str(entry or "").strip()
+            if not normalized:
+                continue
+            if strip_prefixes:
+                lowered = normalized.lower()
+                for prefix in strip_prefixes:
+                    if lowered.startswith(prefix):
+                        normalized = normalized[len(prefix):].strip()
+                        lowered = normalized.lower()
+                        break
+            if case_insensitive:
+                normalized = normalized.lower()
+            if normalized == "*" or normalized == candidate:
+                return True
+        return False
+
+    def _authorize_via_platform_access_policy(self, source: SessionSource) -> Optional[bool]:
+        """Evaluate config-driven DM/group policies before falling back to env allowlists.
+
+        Several adapters expose documented access controls through
+        ``PlatformConfig.extra`` (for example ``dm_policy`` / ``allow_from`` /
+        ``group_policy`` / ``group_allow_from``).  Gateway auth runs before the
+        adapter, so if we ignore those keys here the request is denied before the
+        adapter's own policy has a chance to run.
+
+        Returns:
+          - ``True`` / ``False`` when the platform declares an explicit policy.
+          - ``None`` when the platform does not use this policy surface and the
+            caller should keep evaluating the legacy env-based allowlists.
+        """
+        config = getattr(self, "config", None)
+        platforms = getattr(config, "platforms", None)
+        if not isinstance(platforms, dict):
+            return None
+        platform_cfg = platforms.get(source.platform)
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+        if not isinstance(extra, dict) or not extra:
+            return None
+
+        platform = source.platform
+        chat_type = str(source.chat_type or "").lower()
+        is_dm = chat_type == "dm"
+        is_groupish = chat_type in {"group", "forum", "channel"}
+
+        if platform == Platform.WECOM:
+            if is_dm and "dm_policy" in extra:
+                policy = str(extra.get("dm_policy") or "").strip().lower()
+                allow_from = self._coerce_access_list(
+                    extra.get("allow_from") or extra.get("allowFrom")
+                )
+                if policy == "disabled":
+                    return False
+                if policy == "allowlist":
+                    return self._match_access_list(
+                        allow_from,
+                        str(source.user_id or ""),
+                        case_insensitive=True,
+                        strip_prefixes=("wecom:", "user:", "group:"),
+                    )
+                if policy == "pairing":
+                    return False
+                if policy == "open":
+                    return True
+                return None
+            if is_groupish and "group_policy" in extra:
+                policy = str(extra.get("group_policy") or "").strip().lower()
+                group_allow = self._coerce_access_list(
+                    extra.get("group_allow_from") or extra.get("groupAllowFrom")
+                )
+                if policy == "disabled":
+                    return False
+                if policy == "allowlist" and not self._match_access_list(
+                    group_allow,
+                    str(source.chat_id or ""),
+                    case_insensitive=True,
+                    strip_prefixes=("wecom:", "group:", "user:"),
+                ):
+                    return False
+                groups_cfg = extra.get("groups") if isinstance(extra.get("groups"), dict) else {}
+                group_cfg = groups_cfg.get(str(source.chat_id or "")) or groups_cfg.get("*") or {}
+                sender_allow = self._coerce_access_list(
+                    group_cfg.get("allow_from") or group_cfg.get("allowFrom")
+                ) if isinstance(group_cfg, dict) else []
+                if sender_allow:
+                    return self._match_access_list(
+                        sender_allow,
+                        str(source.user_id or ""),
+                        case_insensitive=True,
+                        strip_prefixes=("wecom:", "user:", "group:"),
+                    )
+                if policy in {"open", "allowlist"}:
+                    return True
+                return None
+
+        if platform == Platform.WEIXIN:
+            if is_dm and "dm_policy" in extra:
+                policy = str(extra.get("dm_policy") or "").strip().lower()
+                allow_from = self._coerce_access_list(extra.get("allow_from"))
+                if policy == "disabled":
+                    return False
+                if policy == "allowlist":
+                    return self._match_access_list(allow_from, str(source.user_id or ""))
+                if policy == "pairing":
+                    return False
+                if policy == "open":
+                    return True
+                return None
+            if is_groupish and "group_policy" in extra:
+                policy = str(extra.get("group_policy") or "").strip().lower()
+                group_allow = self._coerce_access_list(extra.get("group_allow_from"))
+                if policy == "disabled":
+                    return False
+                if policy == "allowlist":
+                    return self._match_access_list(group_allow, str(source.chat_id or ""))
+                if policy == "open":
+                    return True
+                return None
+
+        if platform == Platform.YUANBAO:
+            if is_dm and "dm_policy" in extra:
+                policy = str(extra.get("dm_policy") or "").strip().lower()
+                allow_from = self._coerce_access_list(extra.get("dm_allow_from"))
+                if policy == "disabled":
+                    return False
+                if policy == "allowlist":
+                    return self._match_access_list(allow_from, str(source.user_id or ""))
+                if policy == "open":
+                    return True
+                return None
+            if is_groupish and "group_policy" in extra:
+                policy = str(extra.get("group_policy") or "").strip().lower()
+                group_allow = self._coerce_access_list(extra.get("group_allow_from"))
+                if policy == "disabled":
+                    return False
+                if policy == "allowlist":
+                    return self._match_access_list(group_allow, str(source.chat_id or ""))
+                if policy == "open":
+                    return True
+                return None
+
+        if platform == Platform.QQBOT:
+            if is_dm and "dm_policy" in extra:
+                policy = str(extra.get("dm_policy") or "").strip().lower()
+                allow_from = self._coerce_access_list(
+                    extra.get("allow_from") or extra.get("allowFrom")
+                )
+                if policy == "disabled":
+                    return False
+                if policy == "allowlist":
+                    return self._match_access_list(
+                        allow_from,
+                        str(source.user_id or ""),
+                        case_insensitive=True,
+                    )
+                if policy == "open":
+                    return True
+                return None
+            if is_groupish and "group_policy" in extra:
+                policy = str(extra.get("group_policy") or "").strip().lower()
+                group_allow = self._coerce_access_list(
+                    extra.get("group_allow_from") or extra.get("groupAllowFrom")
+                )
+                if policy == "disabled":
+                    return False
+                if policy == "allowlist":
+                    return self._match_access_list(
+                        group_allow,
+                        str(source.chat_id or ""),
+                        case_insensitive=True,
+                    )
+                if policy == "open":
+                    return True
+                return None
+
+        return None
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -6654,6 +6858,9 @@ class GatewayRunner:
         global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
 
         if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
+            policy_result = self._authorize_via_platform_access_policy(source)
+            if policy_result is not None:
+                return policy_result
             # No allowlists configured -- check global allow-all flag
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
@@ -6760,6 +6967,16 @@ class GatewayRunner:
         if config and hasattr(config, "unauthorized_dm_behavior"):
             if config.unauthorized_dm_behavior != "pair":  # non-default → explicit override
                 return config.unauthorized_dm_behavior
+
+        if platform and config and hasattr(config, "platforms"):
+            platform_cfg = config.platforms.get(platform)
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                dm_policy = str(extra.get("dm_policy") or "").strip().lower()
+                if dm_policy == "pairing":
+                    return "pair"
+                if dm_policy in {"allowlist", "disabled"}:
+                    return "ignore"
 
         # No explicit override.  Fall back to allowlist-aware default:
         # if any allowlist is configured for this platform, silently drop
