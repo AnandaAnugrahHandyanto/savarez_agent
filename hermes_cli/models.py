@@ -2288,7 +2288,7 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
             "https://api.anthropic.com/v1/models",
             headers=h,
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # SSRF: add IP block check
             return json.loads(resp.read().decode())
 
     try:
