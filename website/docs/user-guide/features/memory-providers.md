@@ -344,7 +344,7 @@ hermes config set memory.provider hindsight
 echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
-The setup wizard installs dependencies automatically and only installs what's needed for the selected mode (`hindsight-client` for cloud, `hindsight-all` for local). Requires `hindsight-client >= 0.4.22` (auto-upgraded on session start if outdated).
+The setup wizard installs dependencies automatically and only installs what's needed for the selected mode (`hindsight-client` for cloud, `hindsight-all` for local). Requires `hindsight-client >= 0.6.1, < 0.8.0` (auto-upgraded on session start if outdated).
 
 **Local mode UI:** `hindsight-embed -p hermes ui start`
 
@@ -358,6 +358,7 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `memory_mode` | `hybrid` | `hybrid` (context + tools), `context` (auto-inject only), `tools` (tools only) |
 | `auto_retain` | `true` | Automatically retain conversation turns |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
+| `injection_model_id` | — | Optional mental model ID to inject ahead of recalled memory context. Not supported in `local_embedded` mode. |
 | `retain_async` | `true` | Process retain asynchronously on the server |
 | `retain_context` | `conversation between Hermes Agent and the User` | Context label for retained memories |
 | `retain_tags` | — | Default tags applied to retained memories; merged with per-call tool tags |
@@ -365,6 +366,21 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
+| `timeout` | `120` | Seconds to wait for each Hindsight API call before timing out. Increase if you see timeout errors in `errors.log` during `/sync` or session switches. |
+| `idle_timeout` | `300` | Idle timeout (seconds) for the local embedded Hindsight daemon. Only applies when `mode` is `local_embedded`. |
+
+If `injection_model_id` is set, the plugin fetches that mental model from your bank and injects its content ahead of the usual recall/reflect block. The result is cached for 5 minutes and re-fetched automatically after expiry. Injection works independently of `auto_recall`, so you can surface a stable, pre-computed summary even with automatic recall turned off.
+
+> **Note:** Mental models are created and managed in Hindsight — this feature only reads a model you have already set up. A mental model is a saved reflect response: a pre-computed summary generated from a `source_query` against your bank's memories. They can be as simple or as complex as you need. A good starting point for a user-profile model is:
+>
+> - **Source query:** *"Who is this person? What are their preferences, goals, and working style?"*
+> - **Fact types:** World, Experience, and Observation
+> - **Exclude other mental models** from the reflect source (so the model is built only from raw facts and observations)
+> - **`refresh_after_consolidation: true`** so it stays current as new memories are retained
+> - **`mode: delta`** so only changed sections are rewritten on each refresh, keeping stable content byte-identical
+> - **`max_tokens: 2048`** recommended — keeps the injected model compact enough to leave room for recall results within the combined context budget
+>
+> Once the model exists, copy its ID and set it as `injection_model_id`. See the [Hindsight mental models docs](https://hindsight.vectorize.io/developer/api/mental-models) for full creation options.
 
 See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
 

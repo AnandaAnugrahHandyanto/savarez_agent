@@ -11,6 +11,7 @@ Original PR #1811 by benfrank241, adapted to MemoryProvider ABC.
 
 Config via environment variables:
   HINDSIGHT_API_KEY                — API key for Hindsight Cloud
+  HINDSIGHT_API_INJECTION_MODEL_ID — mental model ID to inject into prefetched context
   HINDSIGHT_BANK_ID                — memory bank identifier (default: hermes)
   HINDSIGHT_BUDGET                 — recall budget: low/mid/high (default: mid)
   HINDSIGHT_API_URL                — API endpoint
@@ -36,6 +37,7 @@ import logging
 import os
 import queue
 import threading
+import time
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -49,9 +51,12 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
-_MIN_CLIENT_VERSION = "0.4.22"
+_MIN_CLIENT_VERSION = "0.6.1"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
+_DEFAULT_PREFETCH_CONTEXT_MAX_CHARS = 16384  # Approximately 4096 tokens
+_INJECTION_MODEL_CACHE_TTL = 300  # 5 minutes
+_INJECTION_MODEL_ERROR_TTL = 30   # 30 seconds — recover quickly from transient failures
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
 # Without it, reusing a stable session-scoped document_id silently
@@ -323,6 +328,7 @@ def _load_config() -> dict:
     return {
         "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
         "apiKey": os.environ.get("HINDSIGHT_API_KEY", ""),
+        "injection_model_id": os.environ.get("HINDSIGHT_API_INJECTION_MODEL_ID", ""),
         "timeout": _parse_int_setting(os.environ.get("HINDSIGHT_TIMEOUT"), _DEFAULT_TIMEOUT),
         "idle_timeout": _parse_int_setting(os.environ.get("HINDSIGHT_IDLE_TIMEOUT"), _DEFAULT_IDLE_TIMEOUT),
         "retain_tags": os.environ.get("HINDSIGHT_RETAIN_TAGS", ""),
@@ -478,6 +484,36 @@ def _sanitize_bank_segment(value: str) -> str:
     return "".join(out).strip("-_")
 
 
+def _truncate_to_line_boundary(text: str, limit: int) -> str:
+    """Truncate *text* to *limit* chars, aligning to a line boundary.
+
+    After cutting, walks back to the last newline (if it falls past the
+    midpoint of the budget, so we don't discard too much).  Then strips
+    any trailing section headers (lines starting with ``##``) that were
+    left with no content beneath them, including the degenerate case where
+    the entire remaining string is a lone header.
+    """
+    if len(text) <= limit:
+        return text
+    text = text[:limit]
+    newline_pos = text.rfind("\n")
+    if newline_pos > limit // 2:
+        text = text[:newline_pos]
+    while True:
+        stripped = text.rstrip()
+        last_nl = stripped.rfind("\n")
+        if last_nl == -1:
+            if stripped.lstrip().startswith("##"):
+                text = ""
+            break
+        last_line = stripped[last_nl + 1:].lstrip()
+        if last_line.startswith("##"):
+            text = stripped[:last_nl]
+        else:
+            break
+    return text.strip()
+
+
 def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str) -> str:
     """Resolve a bank_id template string with the given placeholders.
 
@@ -548,6 +584,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
+        self._prefetch_seq: int = 0
         # Single-writer model for retain. sync_turn() enqueues; the writer
         # thread drains sequentially. Avoids spawning ad-hoc threads that
         # can race the interpreter shutdown and emit "cannot schedule new
@@ -582,6 +619,11 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_types: list[str] | None = None
         self._recall_prompt_preamble = ""
         self._recall_max_input_chars = 800
+        self._injection_model_id = ""
+        self._cached_injection_model_key: tuple[str, str] | None = None
+        self._cached_injection_model_text = ""
+        self._cached_injection_model_fetched_at: float = 0.0
+        self._prefetch_context_max_chars = _DEFAULT_PREFETCH_CONTEXT_MAX_CHARS
 
         # Bank
         self._bank_mission = ""
@@ -662,8 +704,7 @@ class HindsightMemoryProvider(MemoryProvider):
         env_writes: dict = {}
 
         # Step 2: Install/upgrade deps for selected mode
-        _MIN_CLIENT_VERSION = "0.4.22"
-        cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION}"
+        cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION},<0.8.0"
         local_dep = "hindsight-all"
         if mode == "local_embedded":
             deps_to_install = [local_dep]
@@ -850,6 +891,12 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
+            {
+                "key": "injection_model_id",
+                "description": "Optional Hindsight mental model ID to inject before recall context",
+                "default": "",
+                "env_var": "HINDSIGHT_API_INJECTION_MODEL_ID",
+            },
             {"key": "retain_tags", "description": "Default tags applied to retained memories (comma-separated)", "default": ""},
             {"key": "retain_source", "description": "Metadata source value attached to retained memories", "default": ""},
             {"key": "retain_user_prefix", "description": "Label used before user turns in retained transcripts", "default": "User"},
@@ -1057,6 +1104,120 @@ class HindsightMemoryProvider(MemoryProvider):
             return self._session_id, "append"
         return fallback_document_id, None
 
+    def _resolve_bank_id(self) -> str:
+        banks = cfg_get(self._config, "banks", "hermes", default={})
+        static_bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
+        return _resolve_bank_id_template(
+            self._bank_id_template,
+            fallback=static_bank_id,
+            profile=self._agent_identity,
+            workspace=self._agent_workspace,
+            platform=self._platform,
+            user=self._user_id,
+            session=self._session_id,
+        )
+
+    def _reset_injection_model_cache(self) -> None:
+        with self._prefetch_lock:
+            self._cached_injection_model_key = None
+            self._cached_injection_model_text = ""
+            self._cached_injection_model_fetched_at = 0.0
+
+    def _prefetch_enabled(self) -> bool:
+        return bool(self._auto_recall or self._injection_model_id)
+
+    def _load_injection_model_text(self, *, enqueued_session_id: str, bank_id: str) -> str:
+        if not self._injection_model_id:
+            return ""
+
+        with self._prefetch_lock:
+            cache_key = (bank_id, self._injection_model_id)
+            if (
+                self._cached_injection_model_key == cache_key
+                and time.time() - self._cached_injection_model_fetched_at < _INJECTION_MODEL_CACHE_TTL
+            ):
+                return self._cached_injection_model_text
+
+        # Note: local_embedded daemon does not expose the mental_models API.
+        if self._mode == "local_embedded":
+            logger.debug("Hindsight local_embedded mode does not support mental models; skipping injection")
+            return ""
+
+        text = ""
+        try:
+            response = self._run_hindsight_operation(
+                lambda client: client.mental_models.get_mental_model(
+                    bank_id,
+                    self._injection_model_id,
+                    _request_timeout=float(self._timeout),
+                )
+            )
+            text = str(getattr(response, "content", "") or "").strip()
+            if not text:
+                reflect_response = getattr(response, "reflect_response", None)
+                if reflect_response is not None:
+                    for key in ("text", "content", "response"):
+                        value = (
+                            reflect_response.get(key)
+                            if isinstance(reflect_response, dict)
+                            else getattr(reflect_response, key, None)
+                        )
+                        if value:
+                            text = str(value).strip()
+                            break
+        except Exception as exc:
+            logger.warning(
+                "Hindsight injection model fetch failed: bank=%s model=%s error=%s",
+                bank_id,
+                self._injection_model_id,
+                exc,
+            )
+
+        fetched_at = time.time()
+        if not text:
+            # Backdate so the TTL check fires in ERROR_TTL seconds, not CACHE_TTL.
+            fetched_at -= _INJECTION_MODEL_CACHE_TTL - _INJECTION_MODEL_ERROR_TTL
+        with self._prefetch_lock:
+            if enqueued_session_id and self._session_id == enqueued_session_id:
+                self._cached_injection_model_key = cache_key
+                self._cached_injection_model_text = text
+                self._cached_injection_model_fetched_at = fetched_at
+            elif enqueued_session_id:
+                logger.debug(
+                    "Hindsight injection model fetch: session changed during fetch; discarding cache write"
+                )
+        return text
+
+    def _build_prefetch_result(
+        self,
+        *,
+        injection_text: str,
+        recall_text: str,
+    ) -> str:
+        sections: list[str] = []
+        if injection_text:
+            sections.append(f"## User Mental Model\n{injection_text}")
+        if recall_text:
+            if injection_text:
+                title = (
+                    "## Retrieved Memory Reflection"
+                    if self._prefetch_method == "reflect"
+                    else "## Retrieved Memories"
+                )
+                sections.append(f"{title}\n{recall_text}")
+            else:
+                sections.append(recall_text)
+        combined = "\n\n".join(section.strip() for section in sections if section and section.strip())
+        if not combined:
+            return ""
+        if len(combined) > self._prefetch_context_max_chars:
+            logger.debug(
+                "Hindsight prefetch context exceeded %d chars; truncating",
+                self._prefetch_context_max_chars,
+            )
+            combined = _truncate_to_line_boundary(combined, self._prefetch_context_max_chars)
+        return combined or ""
+
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = str(session_id or "").strip()
         self._parent_session_id = str(kwargs.get("parent_session_id", "") or "").strip()
@@ -1085,15 +1246,15 @@ class HindsightMemoryProvider(MemoryProvider):
                     try:
                         subprocess.run(
                             [uv_path, "pip", "install", "--python", sys.executable,
-                             "--quiet", "--upgrade", f"hindsight-client>={_MIN_CLIENT_VERSION}"],
+                             "--quiet", "--upgrade", f"hindsight-client>={_MIN_CLIENT_VERSION},<0.8.0"],
                             check=True, timeout=120, capture_output=True,
                         )
                         logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
                     except Exception as e:
-                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
+                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s,<0.8.0'",
                                        e, _MIN_CLIENT_VERSION)
                 else:
-                    logger.warning("uv not found. Run: pip install 'hindsight-client>=%s'", _MIN_CLIENT_VERSION)
+                    logger.warning("uv not found. Run: pip install 'hindsight-client>=%s,<0.8.0'", _MIN_CLIENT_VERSION)
         except Exception:
             pass  # packaging not available or other issue — proceed anyway
 
@@ -1136,18 +1297,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
         self._llm_base_url = self._config.get("llm_base_url", "")
 
-        banks = cfg_get(self._config, "banks", "hermes", default={})
-        static_bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
         self._bank_id_template = self._config.get("bank_id_template", "") or ""
-        self._bank_id = _resolve_bank_id_template(
-            self._bank_id_template,
-            fallback=static_bank_id,
-            profile=self._agent_identity,
-            workspace=self._agent_workspace,
-            platform=self._platform,
-            user=self._user_id,
-            session=self._session_id,
-        )
+        self._bank_id = self._resolve_bank_id()
+        banks = cfg_get(self._config, "banks", "hermes", default={})
         budget = self._config.get("recall_budget") or self._config.get("budget") or banks.get("budget", "mid")
         self._budget = budget if budget in _VALID_BUDGETS else "mid"
 
@@ -1190,6 +1342,19 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_types = self._config.get("recall_types") or None
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
+        self._injection_model_id = str(
+            self._config.get("injection_model_id")
+            or os.environ.get("HINDSIGHT_API_INJECTION_MODEL_ID", "")
+        ).strip()
+        if self._injection_model_id and not all(
+            c.isalnum() or c in "-_" for c in self._injection_model_id
+        ):
+            logger.warning(
+                "Hindsight injection_model_id %r contains invalid characters; disabling injection.",
+                self._injection_model_id,
+            )
+            self._injection_model_id = ""
+        self._reset_injection_model_cache()
         self._retain_async = self._config.get("retain_async", True)
 
         _client_version = "unknown"
@@ -1205,10 +1370,10 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, injection_model_id=%s, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
                      self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
-                     self._tags, self._recall_tags)
+                     self._injection_model_id, self._tags, self._recall_tags)
 
         # For local mode, start the embedded daemon in the background so it
         # doesn't block the chat. Redirect stdout/stderr to a log file to
@@ -1300,46 +1465,63 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._memory_mode == "tools":
             logger.debug("Prefetch: skipped (tools-only mode)")
             return
-        if not self._auto_recall:
-            logger.debug("Prefetch: skipped (auto_recall disabled)")
+        if not self._prefetch_enabled():
+            logger.debug("Prefetch: skipped (auto_recall and injection model disabled)")
             return
         if self._shutting_down.is_set():
             logger.debug("Prefetch: skipped (shutting down)")
             return
         # Truncate query to max chars
-        if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
+        if self._auto_recall and self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
+
+        with self._prefetch_lock:
+            self._prefetch_seq += 1
+            enqueued_seq = self._prefetch_seq
+            self._prefetch_result = ""
+            enqueued_session_id = self._session_id
+            enqueued_bank_id = self._bank_id
+            enqueued_budget = self._budget
 
         def _run():
             try:
-                if self._prefetch_method == "reflect":
-                    logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                    resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
-                    text = resp.text or ""
-                else:
-                    recall_kwargs: dict = {
-                        "bank_id": self._bank_id, "query": query,
-                        "budget": self._budget, "max_tokens": self._recall_max_tokens,
-                    }
-                    if self._recall_tags:
-                        recall_kwargs["tags"] = self._recall_tags
-                        recall_kwargs["tags_match"] = self._recall_tags_match
-                    if self._recall_types:
-                        recall_kwargs["types"] = self._recall_types
-                    logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
-                                 self._bank_id, len(query), self._budget)
-                    resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                    num_results = len(resp.results) if resp.results else 0
-                    logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
-                if text:
-                    with self._prefetch_lock:
-                        self._prefetch_result = text
+                injection_text = self._load_injection_model_text(enqueued_session_id=enqueued_session_id, bank_id=enqueued_bank_id)
+                recall_text = ""
+                if self._auto_recall:
+                    if self._prefetch_method == "reflect":
+                        logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", enqueued_bank_id, len(query))
+                        resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=enqueued_bank_id, query=query, budget=enqueued_budget))
+                        recall_text = resp.text or ""
+                    else:
+                        recall_kwargs: dict = {
+                            "bank_id": enqueued_bank_id, "query": query,
+                            "budget": enqueued_budget, "max_tokens": self._recall_max_tokens,
+                        }
+                        if self._recall_tags:
+                            recall_kwargs["tags"] = self._recall_tags
+                            recall_kwargs["tags_match"] = self._recall_tags_match
+                        if self._recall_types:
+                            recall_kwargs["types"] = self._recall_types
+                        logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
+                                     enqueued_bank_id, len(query), enqueued_budget)
+                        resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+                        num_results = len(resp.results) if resp.results else 0
+                        logger.debug("Prefetch: recall returned %d results", num_results)
+                        recall_text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                with self._prefetch_lock:
+                    if self._prefetch_seq == enqueued_seq:
+                        self._prefetch_result = self._build_prefetch_result(
+                            injection_text=injection_text,
+                            recall_text=recall_text,
+                        )
+                    else:
+                        logger.debug("Prefetch: stale result discarded (seq %d != %d)", enqueued_seq, self._prefetch_seq)
             except Exception as e:
                 logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)
 
-        self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
-        self._prefetch_thread.start()
+        with self._prefetch_lock:
+            self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
+            self._prefetch_thread.start()
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
@@ -1672,10 +1854,14 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # 2. Drain any in-flight prefetch from the old session and drop
         # its cached result so the new session doesn't see stale recall.
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
+        # Increment seq first so any still-running thread discards its result
+        # even if join() times out and the thread outlives the switch.
         with self._prefetch_lock:
+            self._prefetch_seq += 1
             self._prefetch_result = ""
+            thread = self._prefetch_thread
+        if thread and thread.is_alive():
+            thread.join(timeout=3.0)
 
         # 3. Now rotate to the new session.
         if parent_session_id:
@@ -1683,12 +1869,14 @@ class HindsightMemoryProvider(MemoryProvider):
         self._session_id = new_id
         start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self._document_id = f"{self._session_id}-{start_ts}"
+        self._bank_id = self._resolve_bank_id()
+        self._reset_injection_model_cache()
         self._session_turns = []
         self._turn_counter = 0
         self._turn_index = 0
         logger.debug(
-            "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
-            self._session_id, self._parent_session_id, reset, self._document_id,
+            "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s bank=%s",
+            self._session_id, self._parent_session_id, reset, self._document_id, self._bank_id,
         )
 
     def shutdown(self) -> None:

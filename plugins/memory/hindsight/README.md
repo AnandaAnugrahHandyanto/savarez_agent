@@ -54,6 +54,8 @@ Config file: `~/.hermes/hindsight/config.json`
 |-----|---------|-------------|
 | `mode` | `cloud` | `cloud`, `local_embedded`, or `local_external` |
 | `api_url` | `https://api.hindsight.vectorize.io` | API URL (cloud and local_external modes) |
+| `timeout` | `120` | Timeout in seconds for Hindsight API calls |
+| `idle_timeout` | `300` | Idle timeout in seconds before the embedded daemon shuts down; `0` disables auto-shutdown (`local_embedded` mode only) |
 
 ### Memory Bank
 
@@ -72,6 +74,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_prefetch_method` | `recall` | Auto-recall method: `recall` (raw facts) or `reflect` (LLM synthesis) |
 | `recall_max_tokens` | `4096` | Maximum tokens for recall results |
 | `recall_max_input_chars` | `800` | Maximum input query length for auto-recall |
+| `injection_model_id` | — | Optional Hindsight mental model ID to inject into context before recall/reflect results. Not supported in `local_embedded` mode. |
 | `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |
 | `recall_tags` | — | Tags to filter when searching memories |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |
@@ -101,6 +104,19 @@ Config file: `~/.hermes/hindsight/config.json`
 - `context` — automatic injection only, no tools exposed
 - `tools` — tools only, no automatic injection
 
+When `injection_model_id` is configured, the plugin fetches that mental model from your bank and injects its content ahead of the normal recall/reflect block. The result is cached for 5 minutes and re-fetched automatically after expiry. Injection works independently of `auto_recall`, so you can surface a stable, pre-computed summary even with automatic recall turned off.
+
+> **Note:** Mental models are created and managed in Hindsight — this feature only reads a model you have already set up. A mental model is a saved reflect response: a pre-computed summary generated from a `source_query` against your bank's memories. They can be as simple or as complex as you need. A good starting point for a user-profile model is:
+>
+> - **Source query:** *"Who is this person? What are their preferences, goals, and working style?"*
+> - **Fact types:** World, Experience, and Observation
+> - **Exclude other mental models** from the reflect source (so the model is built only from raw facts and observations)
+> - **`refresh_after_consolidation: true`** so it stays current as new memories are retained
+> - **`mode: delta`** so only changed sections are rewritten on each refresh, keeping stable content byte-identical
+> - **`max_tokens: 2048`** recommended — keeps the injected model compact enough to leave room for recall results within the combined context budget
+>
+> Once the model exists, copy its ID and set it as `injection_model_id`. See the [Hindsight mental models docs](https://hindsight.vectorize.io/developer/api/mental-models) for full creation options.
+
 ### Local Embedded LLM
 
 | Key | Default | Description |
@@ -126,13 +142,17 @@ Available in `hybrid` and `tools` memory modes:
 | Variable | Description |
 |----------|-------------|
 | `HINDSIGHT_API_KEY` | API key for Hindsight Cloud |
+| `HINDSIGHT_API_INJECTION_MODEL_ID` | Mental model ID to inject into prefetched context |
 | `HINDSIGHT_LLM_API_KEY` | LLM API key for local mode |
 | `HINDSIGHT_API_LLM_BASE_URL` | LLM Base URL for local mode (e.g. OpenRouter) |
 | `HINDSIGHT_API_URL` | Override API endpoint |
 | `HINDSIGHT_BANK_ID` | Override bank name |
 | `HINDSIGHT_BUDGET` | Override recall budget |
 | `HINDSIGHT_MODE` | Override mode (`cloud`, `local_embedded`, `local_external`) |
+| `HINDSIGHT_TIMEOUT` | Timeout in seconds for API calls (default: `120`) |
+| `HINDSIGHT_IDLE_TIMEOUT` | Embedded daemon idle timeout in seconds; `0` disables auto-shutdown (default: `300`, `local_embedded` mode only) |
+
 
 ## Client Version
 
-Requires `hindsight-client >= 0.4.22`. The plugin auto-upgrades on session start if an older version is detected.
+Requires `hindsight-client >= 0.6.1, < 0.8.0`. The plugin auto-upgrades on session start if an older version is detected.

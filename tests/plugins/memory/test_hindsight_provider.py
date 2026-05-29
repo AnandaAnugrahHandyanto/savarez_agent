@@ -8,6 +8,7 @@ turn counting, tags), and schema completeness.
 import json
 import re
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -38,6 +39,7 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
         "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_TIMEOUT",
         "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
+        "HINDSIGHT_API_INJECTION_MODEL_ID",
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
     ):
@@ -72,6 +74,11 @@ def _make_mock_client():
     )
     client.areflect = AsyncMock(
         return_value=SimpleNamespace(text="Synthesized answer")
+    )
+    client.mental_models = SimpleNamespace(
+        get_mental_model=AsyncMock(
+            return_value=SimpleNamespace(content="", reflect_response=None)
+        )
     )
     client.aretain_batch = AsyncMock()
     client.aclose = AsyncMock()
@@ -195,6 +202,7 @@ class TestConfig:
         assert provider._retain_every_n_turns == 1
         assert provider._recall_max_tokens == 4096
         assert provider._recall_max_input_chars == 800
+        assert provider._injection_model_id == ""
         assert provider._tags is None
         assert provider._recall_tags is None
         assert provider._bank_mission == ""
@@ -218,6 +226,7 @@ class TestConfig:
             recall_types=["world", "experience"],
             recall_prompt_preamble="Custom preamble:",
             recall_max_input_chars=500,
+            injection_model_id="user-profile",
             bank_mission="Test agent mission",
         )
         assert p._tags == ["tag1", "tag2"]
@@ -236,6 +245,7 @@ class TestConfig:
         assert p._recall_types == ["world", "experience"]
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
+        assert p._injection_model_id == "user-profile"
         assert p._bank_mission == "Test agent mission"
 
     def test_config_from_env_fallback(self, tmp_path, monkeypatch):
@@ -248,11 +258,35 @@ class TestConfig:
         monkeypatch.setenv("HINDSIGHT_API_KEY", "env-key")
         monkeypatch.setenv("HINDSIGHT_BANK_ID", "env-bank")
         monkeypatch.setenv("HINDSIGHT_BUDGET", "high")
+        monkeypatch.setenv("HINDSIGHT_API_INJECTION_MODEL_ID", "env-model")
 
         cfg = _load_config()
         assert cfg["apiKey"] == "env-key"
+        assert cfg["injection_model_id"] == "env-model"
         assert cfg["banks"]["hermes"]["bankId"] == "env-bank"
         assert cfg["banks"]["hermes"]["budget"] == "high"
+
+    def test_config_file_injection_model_id_wins_over_env(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "mode": "cloud",
+            "apiKey": "test-key",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+            "budget": "mid",
+            "memory_mode": "hybrid",
+            "injection_model_id": "config-model",
+        }))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setenv("HINDSIGHT_API_INJECTION_MODEL_ID", "env-model")
+
+        p = HindsightMemoryProvider()
+        p.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+
+        assert p._injection_model_id == "config-model"
 
     def test_embedded_profile_env_includes_idle_timeout_from_config(self):
         env = _build_embedded_profile_env({
@@ -602,6 +636,104 @@ class TestPrefetch:
         p = provider_with_config(auto_recall=False)
         p.queue_prefetch("test")
         assert p._prefetch_thread is None
+
+    def test_queue_prefetch_uses_injection_model_when_auto_recall_off(self, provider_with_config):
+        p = provider_with_config(auto_recall=False, injection_model_id="user-profile")
+        p._client.mental_models.get_mental_model.return_value = SimpleNamespace(
+            content="User prefers terse updates."
+        )
+
+        p.queue_prefetch("test")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        result = p.prefetch("test")
+        assert "## User Mental Model" in result
+        assert "User prefers terse updates." in result
+        p._client.arecall.assert_not_called()
+
+    def test_queue_prefetch_injects_mental_model_before_recall(self, provider_with_config):
+        p = provider_with_config(injection_model_id="user-profile")
+        p._client.mental_models.get_mental_model.return_value = SimpleNamespace(
+            content="User prefers terse updates."
+        )
+
+        p.queue_prefetch("test")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        result = p.prefetch("test")
+        assert result.index("## User Mental Model") < result.index("## Retrieved Memories")
+        assert result.index("User prefers terse updates.") < result.index("- Memory 1")
+
+    def test_queue_prefetch_caches_injection_model(self, provider_with_config):
+        p = provider_with_config(injection_model_id="user-profile")
+        p._client.mental_models.get_mental_model.return_value = SimpleNamespace(
+            content="Cached profile"
+        )
+
+        p.queue_prefetch("first")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+        p.prefetch("first")
+
+        p.queue_prefetch("second")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert p._client.mental_models.get_mental_model.await_count == 1
+
+    def test_queue_prefetch_cache_expires_after_ttl(self, provider_with_config):
+        p = provider_with_config(injection_model_id="user-profile")
+        p._client.mental_models.get_mental_model.return_value = SimpleNamespace(
+            content="Fresh profile"
+        )
+
+        p.queue_prefetch("first")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+        p.prefetch("first")
+
+        # Simulate TTL expiry by back-dating the timestamp
+        import plugins.memory.hindsight as _h
+        p._cached_injection_model_fetched_at -= _h._INJECTION_MODEL_CACHE_TTL + 1
+
+        p.queue_prefetch("second")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert p._client.mental_models.get_mental_model.await_count == 2
+
+    def test_queue_prefetch_falls_back_to_recall_when_model_fetch_fails(self, provider_with_config):
+        p = provider_with_config(injection_model_id="user-profile")
+        p._client.mental_models.get_mental_model.side_effect = RuntimeError("boom")
+
+        p.queue_prefetch("test")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        result = p.prefetch("test")
+        assert "Memory 1" in result
+        assert "## User Mental Model" not in result
+
+    def test_queue_prefetch_truncates_injection_model_text(self, provider_with_config):
+        p = provider_with_config(injection_model_id="user-profile")
+        # Limit must be large enough that the newline after the header is past
+        # the midpoint (limit//2), so we don't walk back and lose all content.
+        # "## User Mental Model\n" = 21 chars; limit=40 keeps some content.
+        p._prefetch_context_max_chars = 40
+        p._client.mental_models.get_mental_model.return_value = SimpleNamespace(
+            content="abcdefghijklmnopqrstuvwxyz"
+        )
+
+        p.queue_prefetch("test")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        result = p._prefetch_result  # inspect before prefetch() prepends its header
+        assert len(result) <= 40
+        assert "abcde" in result  # some injection content made it in
+        assert not result.rstrip().endswith("##")  # no orphaned header
 
     def test_queue_prefetch_truncates_query(self, provider_with_config):
         p = provider_with_config(recall_max_input_chars=10)
@@ -989,27 +1121,43 @@ class TestSessionSwitchBufferFlush:
         # And subsequent prefetch() should now report empty, not the leftover.
         assert provider.prefetch("anything") == ""
 
+    def test_injection_model_cache_cleared_on_switch(self, provider_with_config):
+        p = provider_with_config(injection_model_id="user-profile")
+        p._cached_injection_model_key = ("test-bank", "user-profile")
+        p._cached_injection_model_text = "old cached model"
+
+        p.on_session_switch("new-sid")
+
+        assert p._cached_injection_model_key is None
+        assert p._cached_injection_model_text == ""
+
     def test_in_flight_prefetch_thread_drained_on_switch(self, provider, monkeypatch):
-        """on_session_switch must wait for an in-flight prefetch from the
-        old session to settle before clearing _prefetch_result, otherwise
-        the thread can race and re-populate the field after the clear."""
+        """on_session_switch must invalidate an in-flight prefetch from the
+        old session so the thread cannot race and re-populate _prefetch_result
+        after the switch clears it.  The seq counter guards the write."""
         import threading
-        import time as _time
 
         gate = threading.Event()
         finished = threading.Event()
 
+        # Capture the seq as it would be at enqueue time, before on_session_switch
+        # increments it.
+        enqueued_seq = provider._prefetch_seq
+
         def _slow_prefetch():
             gate.wait(timeout=5.0)
             with provider._prefetch_lock:
-                provider._prefetch_result = "old-session recall"
+                # Mirrors the seq check in _run(): only commit if still current.
+                if provider._prefetch_seq == enqueued_seq:
+                    provider._prefetch_result = "old-session recall"
             finished.set()
 
         provider._prefetch_thread = threading.Thread(target=_slow_prefetch, daemon=True)
         provider._prefetch_thread.start()
 
-        # Release the prefetch worker so it writes _prefetch_result, then
-        # call on_session_switch — it must join the thread before clearing.
+        # Release the prefetch worker, then switch sessions immediately.
+        # on_session_switch increments _prefetch_seq under the lock before
+        # joining, so the thread's seq check will fail and discard the write.
         gate.set()
         provider.on_session_switch("new-sid")
 
@@ -1214,6 +1362,7 @@ class TestConfigSchema:
             "mode", "api_url", "api_key", "llm_provider", "llm_api_key",
             "llm_model", "bank_id", "bank_id_template", "bank_mission", "bank_retain_mission",
             "recall_budget", "memory_mode", "recall_prefetch_method",
+            "injection_model_id",
             "retain_tags", "retain_source",
             "retain_user_prefix", "retain_assistant_prefix",
             "recall_tags", "recall_tags_match",
@@ -1548,4 +1697,3 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert embedded._client is None
         assert provider._client is None
-

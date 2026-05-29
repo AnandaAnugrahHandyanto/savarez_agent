@@ -344,7 +344,7 @@ hermes config set memory.provider hindsight
 echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
-安装向导会自动安装依赖，并仅安装所选模式所需的内容（云端用 `hindsight-client`，本地用 `hindsight-all`）。需要 `hindsight-client >= 0.4.22`（会话启动时若版本过旧则自动升级）。
+安装向导会自动安装依赖，并仅安装所选模式所需的内容（云端用 `hindsight-client`，本地用 `hindsight-all`）。需要 `hindsight-client >= 0.6.1, < 0.8.0`（会话启动时若版本过旧则自动升级）。
 
 **本地模式 UI：** `hindsight-embed -p hermes ui start`
 
@@ -365,6 +365,22 @@ echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 | `retain_user_prefix` | `User` | 自动保留的对话记录中用户轮次前的标签 |
 | `retain_assistant_prefix` | `Assistant` | 自动保留的对话记录中助手轮次前的标签 |
 | `recall_tags` | — | 召回时用于过滤的标签 |
+| `timeout` | `120` | API 调用超时（秒）。如果在 `/sync` 或会话切换期间出现超时错误，请增大此值。 |
+| `idle_timeout` | `300` | 本地嵌入式 Hindsight 守护进程的空闲超时（秒）。仅在 `mode` 为 `local_embedded` 时适用。 |
+| `injection_model_id` | — | 要注入预取上下文的 Hindsight 心智模型 ID（可选）。设置后，模型内容将在每次 AI 回应前自动添加到上下文中。 |
+
+如果设置了 `injection_model_id`，插件会从你的记忆库中获取该心智模型，并在常规 recall/reflect 块之前注入其内容。结果会缓存 5 分钟，过期后会自动重新获取。注入功能独立于 `auto_recall` 工作，因此即使关闭自动召回，也可以提供稳定、预先计算好的摘要。
+
+> **注意：** 心智模型在 Hindsight 中创建和管理——此功能只会读取你已经设置好的模型。心智模型本质上是保存下来的 reflect 响应：基于针对记忆库执行的 `source_query` 生成的预计算摘要。它可以根据需要简单或复杂。一个适合作为用户画像模型的起点是：
+>
+> - **Source query：** *“这个人是谁？他们的偏好、目标和工作风格是什么？”*
+> - **事实类型：** World、Experience 和 Observation
+> - **从 reflect 源中排除其他心智模型**（这样模型只基于原始事实和观察构建）
+> - **`refresh_after_consolidation: true`**，这样在保留新记忆后它会保持最新
+> - **`mode: delta`**，这样每次刷新只重写发生变化的部分，保持稳定内容按字节完全一致
+> - **建议 `max_tokens: 2048`**——让注入的模型足够紧凑，从而在组合上下文预算内为召回结果留出空间
+>
+> 模型创建完成后，复制它的 ID 并将其设置为 `injection_model_id`。完整创建选项请参阅 [Hindsight mental models 文档](https://hindsight.vectorize.io/developer/api/mental-models)。
 
 完整配置参考参见[插件 README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md)。
 

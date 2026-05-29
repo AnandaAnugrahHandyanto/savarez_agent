@@ -151,7 +151,9 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `GITHUB_TOKEN` | Skills Hub 的 GitHub token（更高 API 速率限制，技能发布） |
 | `HONCHO_API_KEY` | 跨会话用户建模（[honcho.dev](https://honcho.dev/)） |
 | `HONCHO_BASE_URL` | 自托管 Honcho 实例的 base URL（默认：Honcho 云）。本地实例无需 API 密钥 |
-| `HINDSIGHT_TIMEOUT` | Hindsight 内存提供商 API 调用超时（秒，默认：`60`）。如果 Hindsight 实例在 `/sync` 或 `on_session_switch` 期间响应缓慢并出现超时，请增大此值，并检查 `errors.log`。 |
+| `HINDSIGHT_TIMEOUT` | Hindsight 内存提供商 API 调用超时（秒，默认：`120`）。如果 Hindsight 实例在 `/sync` 或 `on_session_switch` 期间响应缓慢并出现超时，请增大此值，并检查 `errors.log`。 |
+| `HINDSIGHT_IDLE_TIMEOUT` | Hindsight 本地嵌入式守护进程的空闲超时（秒，默认：`300`）。仅在 `mode` 为 `local_embedded` 时适用。 |
+| `HINDSIGHT_API_INJECTION_MODEL_ID` | 要注入预取上下文的 Hindsight 心智模型 ID（可选）。等效于 config.json 中的 `injection_model_id` 键。 |
 | `SUPERMEMORY_API_KEY` | 支持 profile 召回和会话摄取的语义长期记忆（[supermemory.ai](https://supermemory.ai)） |
 | `DAYTONA_API_KEY` | Daytona 云沙箱（[daytona.io](https://daytona.io/)） |
 
