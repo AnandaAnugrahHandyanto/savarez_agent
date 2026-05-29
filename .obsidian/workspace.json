@@ -178,6 +178,20 @@
   },
   "active": "cfcbfdc91ecd312f",
   "lastOpenFiles": [
+    "website/docs/user-guide/skills/bundled/software-development/software-development-hermes-s6-container-supervision.md",
+    "tools/env_probe.py",
+    "tests/tools/test_stage2_hook_puid_pgid.py",
+    "tests/tools/test_docker_orphan_reaper_integration.py",
+    "tests/hermes_cli/test_run_with_idle_timeout.py",
+    "tests/hermes_cli/test_psutil_android_extract.py",
+    "tests/hermes_cli/test_plugins_cmd_list.py",
+    "tests/hermes_cli/test_kanban_worker_image_extraction.py",
+    "tests/hermes_cli/test_kanban_per_profile_cap.py",
+    "tests/hermes_cli/test_kanban_default_assignee.py",
+    "tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py",
+    "docs/security/network-egress-isolation.md",
+    "RELEASE_v0.15.1.md",
+    "RELEASE_v0.15.0.md",
     "2026-05-29.md",
     "Untitled.canvas"
   ]
