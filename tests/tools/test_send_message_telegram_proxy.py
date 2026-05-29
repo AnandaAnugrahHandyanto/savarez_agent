@@ -53,6 +53,7 @@ def _install_telegram_mock_with_request(
 def _make_bot() -> MagicMock:
     bot = MagicMock()
     bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+    bot.send_document = AsyncMock(return_value=SimpleNamespace(message_id=43))
     return bot
 
 
@@ -155,3 +156,45 @@ class TestSendTelegramStandaloneProxy:
         assert "get_updates_request" not in call_kwargs
         httpx_request_factory.assert_not_called()
         bot.send_message.assert_awaited_once()
+
+    def test_markdown_media_path_sends_native_document(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """A MEDIA-extracted .md attachment must use Telegram send_document,
+        not leak back to the user as plain text.
+        """
+        from tools.send_message_tool import _send_telegram
+
+        for var in (
+            "TELEGRAM_PROXY",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        spec = tmp_path / "the-pult-spec.md"
+        spec.write_text("# Spec\n", encoding="utf-8")
+
+        bot = _make_bot()
+        bot_factory = MagicMock(return_value=bot)
+        httpx_request_factory = MagicMock(side_effect=lambda **kw: MagicMock(_kw=kw))
+        _install_telegram_mock_with_request(monkeypatch, bot_factory, httpx_request_factory)
+
+        result: dict[str, Any] = asyncio.run(
+            _send_telegram("tok", "123", "", media_files=[(str(spec), False)])
+        )
+
+        assert result["success"] is True
+        bot.send_message.assert_not_awaited()
+        bot.send_document.assert_awaited_once()
+        kwargs = bot.send_document.await_args.kwargs
+        assert kwargs["chat_id"] == 123
+        assert kwargs["document"].name == str(spec)

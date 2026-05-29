@@ -330,6 +330,19 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_supports_unquoted_markdown_document_paths(self):
+        content = "Here is spec:\nMEDIA:/tmp/the-pult-spec.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/the-pult-spec.md", False)]
+        assert "MEDIA:" not in cleaned
+        assert "Here is spec" in cleaned
+
+    def test_media_tag_supports_unquoted_markdown_extension_paths(self):
+        content = "MEDIA:/tmp/the-pult-spec.markdown"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/the-pult-spec.markdown", False)]
+        assert cleaned == ""
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the
