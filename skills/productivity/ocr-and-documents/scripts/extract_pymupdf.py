@@ -12,6 +12,21 @@ Usage:
 import sys
 import json
 
+
+def parse_pages(page_spec: str) -> list[int]:
+    pages = []
+    for part in page_spec.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if "-" in token:
+            start, end = token.split("-", 1)
+            pages.extend(range(int(start), int(end) + 1))
+        else:
+            pages.append(int(token))
+    return pages
+
+
 def extract_text(path, pages=None):
     import pymupdf
     doc = pymupdf.open(path)
@@ -77,12 +92,7 @@ if __name__ == "__main__":
 
     if "--pages" in args:
         idx = args.index("--pages")
-        p = args[idx + 1]
-        if "-" in p:
-            start, end = p.split("-")
-            pages = list(range(int(start), int(end) + 1))
-        else:
-            pages = [int(p)]
+        pages = parse_pages(args[idx + 1])
 
     if "--metadata" in args:
         show_metadata(path)

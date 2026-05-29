@@ -1,7 +1,7 @@
 ---
 name: ocr-and-documents
-description: "Extract text from PDFs/scans (pymupdf, marker-pdf)."
-version: 2.3.0
+description: "Extract text from PDFs and scanned documents."
+version: 2.4.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -32,27 +32,57 @@ Only use local extraction when: the file is local, web_extract fails, or you nee
 
 ## Step 2: Choose Local Extractor
 
-| Feature | pymupdf (~25MB) | marker-pdf (~3-5GB) |
-|---------|-----------------|---------------------|
-| **Text-based PDF** | ✅ | ✅ |
-| **Scanned PDF (OCR)** | ❌ | ✅ (90+ languages) |
-| **Tables** | ✅ (basic) | ✅ (high accuracy) |
-| **Equations / LaTeX** | ❌ | ✅ |
-| **Code blocks** | ❌ | ✅ |
-| **Forms** | ❌ | ✅ |
-| **Headers/footers removal** | ❌ | ✅ |
-| **Reading order detection** | ❌ | ✅ |
-| **Images extraction** | ✅ (embedded) | ✅ (with context) |
-| **Images → text (OCR)** | ❌ | ✅ |
-| **EPUB** | ✅ | ✅ |
-| **Markdown output** | ✅ (via pymupdf4llm) | ✅ (native, higher quality) |
-| **Install size** | ~25MB | ~3-5GB (PyTorch + models) |
-| **Speed** | Instant | ~1-14s/page (CPU), ~0.2s/page (GPU) |
+| Feature | LiteParse (`lit`, optional) | pymupdf (~25MB) | marker-pdf (~3-5GB) |
+|---------|-----------------------------|-----------------|---------------------|
+| **Text-based PDF** | ✅ fast, spatial JSON/text | ✅ | ✅ |
+| **Scanned PDF (OCR)** | Optional OCR; tessdata may be required | ❌ | ✅ (90+ languages) |
+| **Tables** | ✅ layout/bbox metadata | ✅ (basic) | ✅ (high accuracy) |
+| **Equations / LaTeX** | ❌ | ❌ | ✅ |
+| **Code blocks** | ❌ | ❌ | ✅ |
+| **Forms** | ❌ | ❌ | ✅ |
+| **Headers/footers removal** | ❌ | ❌ | ✅ |
+| **Reading order detection** | Basic spatial ordering | ❌ | ✅ |
+| **Images extraction** | Page screenshots | ✅ (embedded) | ✅ (with context) |
+| **Images → text (OCR)** | Optional OCR; depends on OCR data/server | ❌ | ✅ |
+| **EPUB** | Via conversion only | ✅ | ✅ |
+| **Markdown output** | ❌ (text/JSON only) | ✅ (via pymupdf4llm) | ✅ (native, higher quality) |
+| **Install size** | Small optional CLI/package | ~25MB | ~3-5GB (PyTorch + models) |
+| **Speed** | Fast local PDFium path | Instant | ~1-14s/page (CPU), ~0.2s/page (GPU) |
 
-**Decision**: Use pymupdf unless you need OCR, equations, forms, or complex layout analysis.
+**Decision**: For local text-based PDFs, try LiteParse first if `lit` is already installed. Use pymupdf when LiteParse is unavailable, when you need PDF edits such as split/merge/search, or when you need markdown. Use marker-pdf for OCR-heavy scans, equations, forms, or complex layout analysis.
 
 If the user needs marker capabilities but the system lacks ~5GB free disk:
 > "This document needs OCR/advanced extraction (marker-pdf), which requires ~5GB for PyTorch and models. Your system has [X]GB free. Options: free up space, provide a URL so I can use web_extract, or I can try pymupdf which works for text-based PDFs but not scanned documents or equations."
+
+---
+
+## LiteParse (optional fast text path)
+
+LiteParse is an optional local parser. Do not require it for existing PDF extraction: the helper script falls back to pymupdf for plain text when `lit` is missing. It is read-only; keep using pymupdf/nano-pdf for PDF creation, splitting, merging, search, and edits.
+
+```bash
+# Optional install path; do not install unless the user wants this backend.
+pip install liteparse
+```
+
+**Via helper script**:
+```bash
+python scripts/extract_liteparse.py --check
+python scripts/extract_liteparse.py document.pdf              # Text, no OCR, falls back to pymupdf
+python scripts/extract_liteparse.py document.pdf --json       # Structured JSON with boxes/font metadata
+python scripts/extract_liteparse.py document.pdf --pages 1-5  # LiteParse uses 1-based page selectors
+python scripts/extract_liteparse.py document.pdf --output out.txt
+python scripts/extract_liteparse.py document.pdf --screenshots screenshots/
+```
+
+**Direct CLI**:
+```bash
+lit parse document.pdf --format text --no-ocr
+lit parse document.pdf --format json -o output.json --no-ocr
+lit screenshot document.pdf -o screenshots/
+```
+
+Use `--ocr` only when OCR is explicitly needed and the local LiteParse install has usable Tesseract data or an OCR server configured. This skill does not install OCR data.
 
 ---
 
@@ -164,9 +194,10 @@ No extra dependencies needed — pymupdf covers split, merge, search, and text e
 ## Notes
 
 - `web_extract` is always first choice for URLs
+- LiteParse is optional and fast for local text-based PDFs; use it only when `lit` is already available or the user asks to install it
 - pymupdf is the safe default — instant, no models, works everywhere
 - marker-pdf is for OCR, scanned docs, equations, complex layouts — install only when needed
-- Both helper scripts accept `--help` for full usage
+- Helper scripts accept `--help` for full usage
 - marker-pdf downloads ~2.5GB of models to `~/.cache/huggingface/` on first use
 - For Word docs: `pip install python-docx` (better than OCR — parses actual structure)
 - For PowerPoint: see the `powerpoint` skill (uses python-pptx)
