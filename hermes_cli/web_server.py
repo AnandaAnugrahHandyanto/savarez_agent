@@ -3379,10 +3379,6 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Loopback mode: only loopback clients allowed — the legacy
-    ``?token=<_SESSION_TOKEN>`` path is the only auth we have, so we
-    don't want LAN hosts guessing tokens.
-
     Gated mode: any peer is allowed — uvicorn's ``proxy_headers=True``
     (enabled when the OAuth gate is active so cookies can pick up
     ``X-Forwarded-Proto``) rewrites ``ws.client.host`` to the
@@ -3390,11 +3386,24 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     OAuth gate + single-use ``?ticket=`` is the auth at that point; the
     Host/Origin guard in :func:`_ws_host_origin_is_allowed` is what
     blocks DNS-rebinding here, not the peer IP.
+
+    Loopback / ``--insecure`` mode: the legacy ``?token=<_SESSION_TOKEN>``
+    query parameter is the auth. In ``--insecure`` mode the operator has
+    chosen to terminate auth at the proxy layer (SSO, mTLS, basic auth,
+    etc.) and the WS arrives from the proxy's IP, not 127.0.0.1. The IP
+    check is dropped so the same ``?token=`` check used on every other
+    HTTP endpoint is the sole auth gate for WS in this mode.
     """
     if getattr(app.state, "auth_required", False):
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
+        return True
+    # In --insecure/loopback mode, rely on the ?token= check in _ws_auth_ok
+    # rather than IP-restricting the WS. Reverse proxies terminate auth at
+    # the proxy layer and forward with the proxy IP as the client host.
+    allow_public = getattr(app.state, "allow_public", False)
+    if allow_public:
         return True
     return client_host in _LOOPBACK_HOSTS
 
