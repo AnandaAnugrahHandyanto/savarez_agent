@@ -23,3 +23,18 @@ def test_browser_cdp_tool_has_zero_f401_violations():
         "tools/browser_cdp_tool.py has F401 violation(s):\n"
         + result.stdout
     )
+
+
+def test_env_probe_has_zero_f401_violations():
+    """tools/env_probe.py must have zero F401 (unused-import) violations."""
+    result = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--select=F401",
+         "--output-format=concise", "tools/env_probe.py"],
+        capture_output=True, text=True, check=False,
+        cwd=str(PROJECT_ROOT),
+    )
+
+    assert result.returncode == 0, (
+        "tools/env_probe.py has F401 violation(s):\n"
+        + result.stdout
+    )
