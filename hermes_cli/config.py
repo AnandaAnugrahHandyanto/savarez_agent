@@ -283,12 +283,20 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     """Detect how Hermes was installed: 'docker', 'nixos', 'homebrew', 'git', or 'pip'.
 
     Resolution order:
-    1. Stamped ``~/.hermes/.install_method`` file (written by installers)
-    2. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
-    3. Container detection (/.dockerenv, /run/.containerenv, cgroup)
-    4. .git directory presence -> 'git'
+    1. .git directory presence -> 'git' (strongest signal: live checkout)
+    2. Stamped ``~/.hermes/.install_method`` file (written by installers)
+    3. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
+    4. Container detection (/.dockerenv, /run/.containerenv, cgroup)
     5. Fallback -> 'pip'
+
+    The .git check comes first because a live checkout is the most reliable
+    signal — the stamp file can be stale (e.g. ``docker`` from a previous
+    Docker install that was later switched to a git-based setup).
     """
+    if project_root is None:
+        project_root = Path(__file__).parent.parent.resolve()
+    if (project_root / ".git").is_dir():
+        return "git"
     stamp = get_hermes_home() / ".install_method"
     try:
         method = stamp.read_text(encoding="utf-8").strip().lower()
@@ -302,10 +310,6 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     from hermes_constants import is_container
     if is_container():
         return "docker"
-    if project_root is None:
-        project_root = Path(__file__).parent.parent.resolve()
-    if (project_root / ".git").is_dir():
-        return "git"
     return "pip"
 
 
