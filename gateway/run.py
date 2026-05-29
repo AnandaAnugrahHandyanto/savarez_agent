@@ -924,6 +924,8 @@ if _config_path.exists():
                 os.environ["HERMES_GATEWAY_BUSY_TEXT_MODE"] = str(_display_cfg["busy_text_mode"])
             if "busy_ack_enabled" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_ACK_ENABLED"] = str(_display_cfg["busy_ack_enabled"])
+            if "busy_buttons" in _display_cfg:
+                os.environ["HERMES_GATEWAY_BUSY_BUTTONS"] = str(_display_cfg["busy_buttons"])
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         _tz_cfg = _cfg.get("timezone", "")
         if _tz_cfg and isinstance(_tz_cfg, str):
@@ -1035,6 +1037,16 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+from gateway.session_handoff import (
+    build_session_handoff_note,
+    generate_compaction_handoff_summary,
+)
+from gateway.afk_followup import (
+    AfkFollowupConfig,
+    build_afk_followup_prompt,
+    next_afk_followup,
+    parse_afk_followup_config,
+)
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -1044,6 +1056,17 @@ from gateway.platforms.base import (
     _reply_anchor_for_event,
     merge_pending_message_event,
 )
+from gateway.busy_session_buttons import (
+    PRIMITIVE_INTERRUPT,
+    PRIMITIVE_STEER,
+    PRIMITIVE_STOP,
+    REACTION_INTERRUPT,
+    REACTION_STEER,
+    REACTION_STOP,
+    reaction_for as _busy_button_reaction_for,
+    status_text as _busy_button_status_text,
+)
+from gateway.stop_phrases import matches_stop_phrase
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
@@ -1599,7 +1622,13 @@ def _normalize_empty_agent_response(
     if api_calls > 0 and not agent_result.get("interrupted"):
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+            err_text = str(err)
+            if "truncat" in err_text.lower() and "length" in err_text.lower():
+                return (
+                    "⚠️ The response hit the model output limit before it finished. "
+                    "Send `continue` to resume, or ask for a shorter answer/attached file."
+                )
+            return f"⚠️ Processing stopped: {err_text[:200]}. Try again."
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again."
@@ -1671,8 +1700,8 @@ class GatewayRunner:
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
-    _busy_input_mode: str = "interrupt"
-    _busy_text_mode: str = "interrupt"
+    _busy_input_mode: str = "queue"
+    _busy_text_mode: str = "queue"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -1742,6 +1771,12 @@ class GatewayRunner:
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
+        # When a user sends a follow-up while the agent is busy but before
+        # the first tool-progress bubble exists, briefly wait for that bubble
+        # so the controls can land on the tool flow instead of a standalone
+        # queue notice.  Keeps Telegram chats linear without losing the
+        # fallback ack for genuinely pre-tool/streaming waits.
+        self._busy_ack_tool_bubble_defer_seconds = 1.8
         self._session_run_generation: Dict[str, int] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
@@ -1750,6 +1785,26 @@ class GatewayRunner:
         # cannot grow unbounded over a long-running gateway lifetime.
         self._session_sources: "OrderedDict[str, SessionSource]" = OrderedDict()
         self._session_sources_max = 512
+
+        # Per-session tool-progress bubble msg_id (single growing message
+        # edited as tools fire). Written by send_progress_messages() and
+        # read by the busy-session button-attach path so it knows which
+        # message to anchor the [/steer][/interrupt][/stop] keyboard to.
+        self._tool_bubble_msg_ids: Dict[str, str] = {}
+
+        # Per-session list of ack-message ids that currently hold a
+        # busy-session keyboard.  A long-running turn with multiple
+        # follow-ups across the 30s ack-cooldown can produce more than
+        # one ack message — every ack still has its own keyboard, so
+        # cleanup must clear all of them, not just the most recent.
+        self._busy_control_bubble_ids: Dict[str, List[str]] = {}
+
+        # Per-session FIFO of follow-up MessageEvents that arrived while
+        # the agent was busy.  A button tap acts on ALL of them — texts
+        # are joined, the chosen primitive fires once, and a reaction is
+        # emitted on each event's message_id so every follow-up gets an
+        # acknowledgement.
+        self._pending_followups: Dict[str, List[MessageEvent]] = {}
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -2997,11 +3052,11 @@ class GatewayRunner:
         if not mode:
             cfg = _load_gateway_runtime_config()
             mode = str(cfg_get(cfg, "display", "busy_input_mode", default="") or "").strip().lower()
-        if mode == "queue":
-            return "queue"
+        if mode == "interrupt":
+            return "interrupt"
         if mode == "steer":
             return "steer"
-        return "interrupt"
+        return "queue"
 
     @staticmethod
     def _load_busy_text_mode() -> str:
@@ -3147,7 +3202,36 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
-    async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+    async def _handle_busy_slash_command_followup(self, event: MessageEvent, session_key: str) -> None:
+        """Treat a blocked mid-run slash command as an intentional follow-up."""
+        state = getattr(self, "__dict__", {})
+        had_busy_text_mode = "_busy_text_mode" in state
+        previous_busy_text_mode = str(state.get("_busy_text_mode", "interrupt"))
+        self._busy_text_mode = "interrupt"
+        try:
+            handled = await self._handle_active_session_busy_message(
+                event,
+                session_key,
+                force_busy_ack=True,
+            )
+        finally:
+            if had_busy_text_mode:
+                self._busy_text_mode = previous_busy_text_mode
+            else:
+                try:
+                    delattr(self, "_busy_text_mode")
+                except AttributeError:
+                    pass
+        if not handled:
+            self._queue_or_replace_pending_event(session_key, event)
+
+    async def _handle_active_session_busy_message(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        force_busy_ack: bool = False,
+    ) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;
@@ -3163,6 +3247,19 @@ class GatewayRunner:
                 session_key,
             )
             return True  # handled (silently dropped); do not fall through
+
+        # --- Multilingual halt-phrase pre-flight ---
+        # A short message that matches a literal stop intent (English "stop",
+        # Spanish "alto", Japanese "止まれ", lone "/", empty msg, etc.) halts
+        # the running agent immediately, no matter what busy_input_mode is
+        # configured.  This is the language-neutral equivalent of /stop —
+        # users on phones rarely remember the slash command.
+        msg_type = getattr(event, "message_type", None)
+        if msg_type is None or msg_type == MessageType.TEXT or event.text:
+            halt_lang = matches_stop_phrase(event.text)
+            if halt_lang is not None:
+                if await self._handle_halt_phrase_match(event, session_key, halt_lang):
+                    return True
 
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
@@ -3200,11 +3297,12 @@ class GatewayRunner:
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
-        busy_text_mode = getattr(self, "_busy_text_mode", "queue")
+        busy_text_mode = getattr(self, "__dict__", {}).get("_busy_text_mode", "interrupt")
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
             and effective_mode != "steer"
+            and not force_busy_ack
         ):
             return False
 
@@ -3273,6 +3371,20 @@ class GatewayRunner:
                 running_agent.interrupt(event.text)
             except Exception:
                 pass  # don't let interrupt failure block the ack
+
+        # Track this follow-up for the button-tap path (a tap acts on every
+        # follow-up that arrived during the current busy turn) and ensure
+        # the [/steer][/interrupt][/stop] keyboard is attached to the
+        # active tool bubble — or a standalone control bubble if no tool
+        # has fired yet.  Best-effort: failures are logged and don't block
+        # the busy ack.
+        try:
+            _pf = getattr(self, "_pending_followups", None)
+            if _pf is not None:
+                _pf.setdefault(session_key, []).append(event)
+            await self._ensure_busy_session_controls(session_key, event)
+        except Exception as _bs_err:
+            logger.debug("Busy-session control attach failed for %s: %s", session_key, _bs_err)
 
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
@@ -3378,8 +3490,43 @@ class GatewayRunner:
 
         reply_anchor = self._reply_anchor_for_event(event)
         thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+
+        # Queue-mode follow-ups often arrive just before the first tool
+        # progress bubble is sent.  If we emit the ack immediately, Telegram
+        # shows a standalone queue bubble followed by the tool-flow bubble a
+        # moment later.  Briefly wait for that next bot/tool message; if it
+        # appears, anchor the keyboard there and suppress the standalone ack.
+        if is_queue_mode:
+            try:
+                defer_seconds = float(getattr(self, "_busy_ack_tool_bubble_defer_seconds", 0.0) or 0.0)
+            except Exception:
+                defer_seconds = 0.0
+            if defer_seconds > 0:
+                _tbm = getattr(self, "_tool_bubble_msg_ids", None)
+                if not (_tbm and _tbm.get(session_key)):
+                    try:
+                        await asyncio.sleep(defer_seconds)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        pass
+                _tbm = getattr(self, "_tool_bubble_msg_ids", None)
+                bubble_id = _tbm.get(session_key) if _tbm else None
+                if bubble_id:
+                    try:
+                        await self._ensure_busy_session_controls(session_key, event)
+                    except Exception as _bs_err:
+                        logger.debug(
+                            "Deferred busy ack tool-bubble anchor failed for %s: %s",
+                            session_key,
+                            _bs_err,
+                        )
+                    self._busy_ack_ts[session_key] = time.time()
+                    return True
+
+        self._busy_ack_ts[session_key] = time.time()
         try:
-            await adapter._send_with_retry(
+            ack_result = await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
                 reply_to=(
@@ -3393,8 +3540,476 @@ class GatewayRunner:
             )
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
+            ack_result = None
+
+        # Attach the busy-session keyboard to the ack message (or use
+        # the tool bubble as the anchor if one exists).  This makes the
+        # ack message itself the per-message control surface, so we
+        # never produce a duplicate "/queue'd: ..." + standalone-control
+        # message pair.
+        if ack_result is not None and getattr(ack_result, "success", False):
+            ack_msg_id = getattr(ack_result, "message_id", None)
+            if ack_msg_id:
+                try:
+                    await self._anchor_busy_session_buttons_to_ack(
+                        session_key, event, str(ack_msg_id)
+                    )
+                except Exception as _bs_err:
+                    logger.debug(
+                        "Anchoring busy-session keyboard to ack failed for %s: %s",
+                        session_key,
+                        _bs_err,
+                    )
 
         return True
+
+    # ------------------------------------------------------------------
+    # Busy-session controls — halt-phrase + per-message buttons
+    # ------------------------------------------------------------------
+
+    async def _handle_halt_phrase_match(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        lang: str,
+    ) -> bool:
+        """Halt the running agent in response to a literal stop intent.
+
+        Triggered from the busy handler when ``matches_stop_phrase()``
+        returns non-None.  Bypasses the configured ``busy_input_mode`` —
+        a stop intent is unconditional.
+        """
+        running_agent = self._running_agents.get(session_key)
+        adapter = self.adapters.get(event.source.platform) if event.source else None
+
+        # Acknowledge with the stop reaction directly on the user's
+        # message before tearing things down — emoji on the user's
+        # original message is the only feedback they get if the rest
+        # of the cleanup races their next action.
+        if adapter is not None and hasattr(adapter, "set_busy_reaction"):
+            try:
+                await adapter.set_busy_reaction(event, REACTION_STOP)
+            except Exception as exc:
+                logger.debug("Halt-phrase reaction failed for %s: %s", session_key, exc)
+
+        # Make sure the halt event is visible to platform-side
+        # ``_chat_id_for_session`` lookups during cleanup — without
+        # this, a halt phrase that fires before any other follow-up
+        # has been registered leaves no chat_id source for
+        # ``clear_busy_session_buttons`` to use.
+        if hasattr(self, "_pending_followups"):
+            self._pending_followups.setdefault(session_key, []).append(event)
+
+        # Run the FULL stop path so the chat unlocks even when the
+        # agent is wedged inside a tool or still represented by the
+        # pending sentinel: invalidates the run generation, calls
+        # interrupt_session_activity, drops queued events, and frees
+        # the running-state slot.  Mirrors `/stop` and the [Stop]
+        # button so all three paths converge behaviorally.
+        try:
+            await self._interrupt_and_clear_session(
+                session_key,
+                event.source,
+                interrupt_reason=_INTERRUPT_REASON_STOP,
+                invalidation_reason=f"halt-phrase: {lang}",
+            )
+        except Exception as exc:
+            logger.debug("Halt-phrase clear-session failed for %s: %s", session_key, exc)
+            # Best-effort fallback so the agent at least stops.
+            try:
+                if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                    running_agent.interrupt(None)
+            except Exception:
+                pass
+
+        logger.info(
+            "Busy-session halt-phrase matched (lang=%s) for session %s",
+            lang,
+            session_key,
+        )
+        return True
+
+    async def _ensure_busy_session_controls(
+        self,
+        session_key: str,
+        event: MessageEvent,
+    ) -> None:
+        """Attach the [/steer][/interrupt][/stop] keyboard for the session.
+
+        Anchors the keyboard to the current tool-progress bubble when one
+        exists.  When no tool bubble is live yet (pre-first-tool / mid-
+        streaming-response), the upstream busy-ack message itself becomes
+        the anchor — see ``_anchor_busy_session_buttons_to_ack`` invoked
+        from ``_handle_active_session_busy_message`` after the ack send.
+        A busy session must have exactly one live button surface; when a
+        tool bubble takes over, any ack-message keyboard is cleared.
+        """
+        adapter = self.adapters.get(event.source.platform) if event.source else None
+        if adapter is None:
+            return
+
+        _tbm = getattr(self, "_tool_bubble_msg_ids", None)
+        bubble_id = _tbm.get(session_key) if _tbm else None
+        if bubble_id and hasattr(adapter, "attach_busy_session_buttons"):
+            try:
+                await adapter.attach_busy_session_buttons(session_key, bubble_id)
+                _bcb = getattr(self, "_busy_control_bubble_ids", None)
+                old_ack_ids = list(_bcb.get(session_key, [])) if _bcb else []
+                if old_ack_ids and hasattr(adapter, "clear_busy_session_buttons"):
+                    for ack_id in old_ack_ids:
+                        if str(ack_id) == str(bubble_id):
+                            continue
+                        try:
+                            await adapter.clear_busy_session_buttons(session_key, ack_id)
+                        except Exception:
+                            pass
+                    _bcb.pop(session_key, None)
+            except Exception as exc:
+                logger.debug(
+                    "attach_busy_session_buttons failed for %s on %s: %s",
+                    session_key,
+                    bubble_id,
+                    exc,
+                )
+
+    async def _anchor_busy_session_buttons_to_ack(
+        self,
+        session_key: str,
+        event: MessageEvent,
+        ack_msg_id: str,
+    ) -> None:
+        """Treat the upstream busy-ack message as the keyboard anchor.
+
+        Avoids the duplicate "queue'd / control-bubble" pair by reusing
+        the message that's already going to be sent.  Only one busy-session
+        keyboard may be live at a time: a current tool bubble wins over an
+        ack, and a newer ack replaces older ack keyboards.
+        """
+        adapter = self.adapters.get(event.source.platform) if event.source else None
+        if adapter is None:
+            return
+        if not hasattr(adapter, "attach_busy_session_buttons"):
+            return
+
+        _tbm = getattr(self, "_tool_bubble_msg_ids", None)
+        bubble_id = _tbm.get(session_key) if _tbm else None
+        if bubble_id:
+            await self._ensure_busy_session_controls(session_key, event)
+            return
+
+        _bcb = getattr(self, "_busy_control_bubble_ids", None)
+        old_ack_ids = list(_bcb.get(session_key, [])) if _bcb else []
+        try:
+            await adapter.attach_busy_session_buttons(session_key, ack_msg_id)
+        except Exception as exc:
+            logger.debug(
+                "ack-anchor attach failed for %s on %s: %s",
+                session_key,
+                ack_msg_id,
+                exc,
+            )
+            return
+        if _bcb is not None:
+            if old_ack_ids and hasattr(adapter, "clear_busy_session_buttons"):
+                for old_ack_id in old_ack_ids:
+                    if str(old_ack_id) == str(ack_msg_id):
+                        continue
+                    try:
+                        await adapter.clear_busy_session_buttons(session_key, old_ack_id)
+                    except Exception:
+                        pass
+            _bcb[session_key] = [ack_msg_id]
+
+    async def _handle_busy_session_button_tap(
+        self,
+        session_key: str,
+        primitive: str,
+        source: SessionSource,
+    ) -> str:
+        """Apply a busy-session button tap to a session.
+
+        Drains every follow-up that arrived during the current busy
+        turn, joins their texts, and dispatches the selected primitive
+        once.  Emits an acknowledgement reaction on each follow-up.
+        Returns a short status string suitable for a callback toast.
+        """
+        if primitive not in (PRIMITIVE_STEER, PRIMITIVE_INTERRUPT, PRIMITIVE_STOP):
+            return "Unknown action."
+
+        # Ownership gate: in shared channels with per-user session keys,
+        # user A's busy-session buttons are visible to user B.  An
+        # otherwise-authorized user B could otherwise tap them and
+        # control A's run.  Resolve the session_key for the tapping user
+        # the SAME way inbound messages do (via the runner-configured
+        # resolver that honors `group_sessions_per_user` / `thread_sessions_per_user`
+        # from the session store) and compare against the target key.
+        try:
+            tapper_key = self._session_key_for_source(source) if source else None
+        except Exception:
+            tapper_key = None
+        if tapper_key and tapper_key != session_key:
+            logger.warning(
+                "Busy-session button cross-user tap rejected: "
+                "tapper=%s wants to control session=%s (their own session=%s)",
+                getattr(source, "user_id", "?"),
+                session_key,
+                tapper_key,
+            )
+            return "⛔ This isn't your session."
+
+        adapter = self.adapters.get(source.platform) if source else None
+        _pf = getattr(self, "_pending_followups", None)
+        # Take a copy of the follow-ups but DO NOT pop yet — platform
+        # ``_chat_id_for_session`` resolves the chat_id from this list
+        # during ``_clear_busy_session_controls``.  Popping early would
+        # leave stale keyboards in chat.  ``_clear_busy_session_controls``
+        # itself pops at the end of cleanup.
+        followups = list(_pf.get(session_key, []) or []) if _pf else []
+        joined_text = "\n\n".join(
+            (e.text or "").strip() for e in followups if (e.text or "").strip()
+        )
+
+        # Capture the ack anchors BEFORE applying the primitive — the stop
+        # path runs ``_interrupt_and_clear_session`` which itself calls
+        # ``_clear_busy_session_controls`` and pops the control-bubble
+        # list, so by the time the finally block runs we'd otherwise have
+        # lost the msg_ids needed to rewrite ack text.
+        _bcb = getattr(self, "_busy_control_bubble_ids", None)
+        ack_msg_ids_for_rewrite: List[str] = (
+            list(_bcb.get(session_key) or []) if _bcb else []
+        )
+
+        running_agent = self._running_agents.get(session_key)
+        ok = True
+        try:
+            if primitive == PRIMITIVE_STEER:
+                steered = False
+                if (
+                    running_agent
+                    and running_agent is not _AGENT_PENDING_SENTINEL
+                    and hasattr(running_agent, "steer")
+                    and joined_text
+                ):
+                    try:
+                        steered = bool(running_agent.steer(joined_text))
+                    except Exception as exc:
+                        logger.debug("Button-tap steer failed for %s: %s", session_key, exc)
+                if steered:
+                    # The text landed inside the run.  Normally we then
+                    # pop the queued copy so it isn't ALSO replayed as
+                    # the next-turn prompt.  Exception: if the queued
+                    # event carries media (steer is text-only and can't
+                    # ferry an image/document), KEEP the event queued so
+                    # the next turn still gets the attachment — only
+                    # null the text portion that already landed via steer.
+                    if adapter is not None and hasattr(adapter, "_pending_messages"):
+                        pending = adapter._pending_messages.get(session_key)
+                        has_media = bool(getattr(pending, "media_urls", None))
+                        if has_media:
+                            try:
+                                pending.text = ""  # text already steered in
+                            except Exception:
+                                pass
+                        else:
+                            adapter._pending_messages.pop(session_key, None)
+                else:
+                    ok = False
+
+            elif primitive == PRIMITIVE_INTERRUPT:
+                if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                    try:
+                        running_agent.interrupt(joined_text or None)
+                    except Exception as exc:
+                        logger.debug(
+                            "Button-tap interrupt failed for %s: %s", session_key, exc
+                        )
+                        ok = False
+                # Replace the adapter's queued event (single-slot, holds
+                # only the latest follow-up because merge_pending_message_event
+                # defaults to text-replace) with the JOINED text so the
+                # post-run drain promotes the full set, not just the last
+                # message.  Without this, "first follow-up\n\nsecond"
+                # gets truncated to just "second" on next-turn replay.
+                if (
+                    adapter is not None
+                    and joined_text
+                    and hasattr(adapter, "_pending_messages")
+                ):
+                    pending = adapter._pending_messages.get(session_key)
+                    if pending is not None and hasattr(pending, "text"):
+                        try:
+                            pending.text = joined_text
+                        except Exception:
+                            pass
+
+            elif primitive == PRIMITIVE_STOP:
+                # /stop semantics: halt without replay; clear queued slot.
+                try:
+                    await self._interrupt_and_clear_session(
+                        session_key,
+                        source,
+                        interrupt_reason=_INTERRUPT_REASON_STOP,
+                        invalidation_reason="busy-session button: stop",
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "Button-tap stop failed for %s: %s", session_key, exc
+                    )
+                    ok = False
+        finally:
+            # Emit acknowledgement reactions on every follow-up, even on
+            # failure — the user pressed a button and deserves feedback.
+            if adapter is not None and hasattr(adapter, "set_busy_reaction"):
+                emoji = _busy_button_reaction_for(primitive)
+                if emoji:
+                    for fu in followups:
+                        try:
+                            await adapter.set_busy_reaction(fu, emoji)
+                        except Exception as exc:
+                            logger.debug(
+                                "Busy-session reaction failed for %s: %s",
+                                session_key,
+                                exc,
+                            )
+            # Update the ack message body so the user can see what actually
+            # happened — without this the message keeps saying "Queued for
+            # the next turn..." even after a steer / interrupt / stop tap.
+            for _ack_id in ack_msg_ids_for_rewrite:
+                await self._update_busy_session_ack_text(
+                    session_key,
+                    source,
+                    primitive,
+                    ok,
+                    ack_msg_id=_ack_id,
+                )
+            await self._clear_busy_session_controls(session_key, source)
+
+        if not ok:
+            return "Couldn't apply that — the run may have already finished."
+        return _busy_button_status_text(primitive)
+
+    async def _update_busy_session_ack_text(
+        self,
+        session_key: str,
+        source: Optional[SessionSource],
+        primitive: str,
+        ok: bool,
+        *,
+        ack_msg_id: Optional[str] = None,
+    ) -> None:
+        """Edit the ack message body to reflect the chosen primitive.
+
+        The upstream ack starts as "⏳ Queued for the next turn..." which
+        is correct for the default queue path but misleading after a
+        Steer / Interrupt / Stop tap.  Rewriting it makes the chat
+        history readable: "⏩ Steered..." / "⚡ Interrupted..." / "🛑 Stopped."
+        """
+        if source is None:
+            return
+        adapter = self.adapters.get(source.platform)
+        if adapter is None or not hasattr(adapter, "edit_message"):
+            return
+        if ack_msg_id is None:
+            _bcb = getattr(self, "_busy_control_bubble_ids", None)
+            ids = _bcb.get(session_key) if _bcb else None
+            ack_msg_id = (ids[-1] if ids else None) if ids else None
+        if not ack_msg_id:
+            return
+        chat_id = getattr(source, "chat_id", None)
+        if not chat_id:
+            return
+        new_text = self._busy_session_ack_text(primitive, ok)
+        if not new_text:
+            return
+        # Detach the keyboard FIRST.  Telegram's edit_message override
+        # re-attaches the keyboard from _busy_session_button_map; without
+        # the pre-clear, the keyboard would survive the body edit.
+        if hasattr(adapter, "clear_busy_session_buttons"):
+            try:
+                await adapter.clear_busy_session_buttons(session_key, ack_msg_id)
+            except Exception:
+                pass
+        try:
+            await adapter.edit_message(
+                chat_id=chat_id,
+                message_id=ack_msg_id,
+                content=new_text,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Updating busy-ack text failed for %s on %s: %s",
+                session_key,
+                ack_msg_id,
+                exc,
+            )
+
+    @staticmethod
+    def _busy_session_ack_text(primitive: str, ok: bool) -> str:
+        if not ok:
+            return "⚠️ Couldn't apply that — the run may have already finished."
+        if primitive == PRIMITIVE_STEER:
+            return "⏩ Steered into the current run."
+        if primitive == PRIMITIVE_INTERRUPT:
+            return "⚡ Interrupted — your message starts the next turn."
+        if primitive == PRIMITIVE_STOP:
+            return "🛑 Stopped."
+        return ""
+
+    async def _clear_busy_session_controls(
+        self,
+        session_key: str,
+        source: Optional[SessionSource],
+    ) -> None:
+        """Tear down keyboard + control bubble + follow-up state for a session.
+
+        Called from the button-tap path, the halt-phrase path, and the
+        end-of-turn cleanup in ``_release_running_agent_state``.  Best-effort.
+        """
+        # Test fixtures that bypass __init__ (e.g. object.__new__(GatewayRunner))
+        # may not have these attributes; guard reads via getattr(...).
+        tool_bubbles = getattr(self, "_tool_bubble_msg_ids", None)
+        control_bubbles = getattr(self, "_busy_control_bubble_ids", None)
+        followups = getattr(self, "_pending_followups", None)
+
+        adapter = None
+        if source is not None:
+            adapter = self.adapters.get(source.platform) if hasattr(self, "adapters") else None
+
+        # Detach the keyboard from EVERY potential anchor: the tool-progress
+        # bubble (set by send_progress_messages) and every upstream busy-ack
+        # message (set by _anchor_busy_session_buttons_to_ack — a long
+        # turn that crosses the 30s ack-cooldown can produce more than
+        # one).  Each is a real chat message we DO NOT own — only the
+        # keyboard goes away, the message body stays so the conversation
+        # history is preserved.
+        anchor_ids: list[str] = []
+        if tool_bubbles is not None:
+            tb = tool_bubbles.pop(session_key, None)
+            if tb:
+                anchor_ids.append(tb)
+        if control_bubbles is not None:
+            cbs = control_bubbles.pop(session_key, None) or []
+            # ``cbs`` may be a list (current shape) or a bare str from a
+            # legacy gateway snapshot; normalize.
+            if isinstance(cbs, str):
+                cbs = [cbs]
+            for cb in cbs:
+                if cb and cb not in anchor_ids:
+                    anchor_ids.append(cb)
+        if adapter is not None and hasattr(adapter, "clear_busy_session_buttons"):
+            for anchor_id in anchor_ids:
+                try:
+                    await adapter.clear_busy_session_buttons(session_key, anchor_id)
+                except Exception as exc:
+                    logger.debug(
+                        "clear_busy_session_buttons failed for %s on %s: %s",
+                        session_key,
+                        anchor_id,
+                        exc,
+                    )
+
+        if followups is not None:
+            followups.pop(session_key, None)
 
     async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
@@ -4686,6 +5301,124 @@ class GatewayRunner:
         if not getattr(result, "success", True):
             err = getattr(result, "error", "send returned success=False")
             raise RuntimeError(f"adapter.send failed: {err}")
+
+    async def _afk_followup_watcher(self) -> None:
+        """Inject bounded synthetic follow-up turns for idle gateway sessions."""
+        config = getattr(self, "_afk_followup_config", AfkFollowupConfig())
+        # Let adapters finish connecting and avoid surprising users with an
+        # immediate AFK burst during gateway startup/replacement.
+        await asyncio.sleep(min(max(config.interval_seconds, 1.0), 60.0))
+        while self._running:
+            try:
+                await self._afk_followup_tick()
+            except Exception as exc:
+                logger.debug("AFK follow-up watcher tick failed: %s", exc)
+            sleep_for = max(float(getattr(config, "interval_seconds", 60.0) or 60.0), 1.0)
+            elapsed = 0.0
+            while self._running and elapsed < sleep_for:
+                step = min(1.0, sleep_for - elapsed)
+                await asyncio.sleep(step)
+                elapsed += step
+
+    async def _afk_followup_tick(self) -> None:
+        """Run one AFK scheduling pass.
+
+        Exposed as a small method for tests and for future manual diagnostics.
+        """
+        config = getattr(self, "_afk_followup_config", AfkFollowupConfig())
+        if not config.enabled:
+            return
+
+        session_store = getattr(self, "session_store", None)
+        if session_store is None:
+            return
+        try:
+            session_store._ensure_loaded()
+        except Exception as exc:
+            logger.debug("AFK follow-up: session store unavailable: %s", exc)
+            return
+
+        entries = list(getattr(session_store, "_entries", {}).items())
+        running_session_keys = set(getattr(self, "_running_agents", {}) or {})
+        queued_session_keys = set(getattr(self, "_queued_events", {}) or {})
+        adapters = getattr(self, "adapters", {}) or {}
+        for adapter in adapters.values():
+            pending = getattr(adapter, "_pending_messages", None)
+            if isinstance(pending, dict):
+                queued_session_keys.update(pending.keys())
+        now = datetime.now()
+
+        for session_key, entry in entries:
+            fired_map = getattr(self, "_afk_fired_thresholds", None)
+            if fired_map is None:
+                fired_map = {}
+                self._afk_fired_thresholds = fired_map
+            fired = fired_map.setdefault(session_key, set())
+            decision = next_afk_followup(
+                entry,
+                now=now,
+                thresholds_minutes=config.thresholds_minutes,
+                fired_thresholds=fired,
+                running_session_keys=running_session_keys,
+                queued_session_keys=queued_session_keys,
+            )
+            if decision is None:
+                continue
+
+            origin = getattr(entry, "origin", None)
+            source = self._source_from_afk_origin(origin)
+            if source is None:
+                logger.debug("AFK follow-up: no routable source for %s", session_key)
+                continue
+            adapter = adapters.get(source.platform)
+            if adapter is None:
+                logger.debug("AFK follow-up: no adapter for %s (%s)", session_key, source.platform)
+                continue
+
+            cycle_index = sorted(config.thresholds_minutes).index(decision.threshold_minutes) + 1
+            prompt = build_afk_followup_prompt(decision.idle_label, cycle_index=cycle_index)
+            event = MessageEvent(
+                text=prompt,
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=f"afk:{decision.threshold_minutes}:{int(time.time())}",
+                internal=True,
+            )
+            logger.info(
+                "AFK follow-up: injecting %s virtual turn for %s",
+                decision.idle_label,
+                session_key,
+            )
+            await adapter.handle_message(event)
+            fired.add(decision.due_minutes)
+
+    @staticmethod
+    def _source_from_afk_origin(origin) -> Optional[SessionSource]:
+        if isinstance(origin, SessionSource):
+            return origin
+        if origin is None:
+            return None
+        platform = getattr(origin, "platform", None)
+        if platform is None:
+            return None
+        if not isinstance(platform, Platform):
+            try:
+                platform = Platform(str(platform))
+            except ValueError:
+                return None
+        chat_id = getattr(origin, "chat_id", None)
+        if not chat_id:
+            return None
+        return SessionSource(
+            platform=platform,
+            chat_id=str(chat_id),
+            chat_name=getattr(origin, "chat_name", None),
+            chat_type=getattr(origin, "chat_type", "dm") or "dm",
+            user_id=getattr(origin, "user_id", None),
+            user_name=getattr(origin, "user_name", None),
+            thread_id=getattr(origin, "thread_id", None),
+            chat_topic=getattr(origin, "chat_topic", None),
+        )
 
     async def _session_expiry_watcher(self, interval: int = 300):
         """Background task that finalizes expired sessions.
@@ -7090,26 +7823,28 @@ class GatewayRunner:
                     )
                 _update_prompts.pop(_quick_key, None)
 
-        # Intercept messages that are responses to a pending clarify
-        # request that is awaiting free-form text (either an open-ended
-        # clarify with no choices, or one where the user picked the
-        # "Other" button).  The first non-empty user message in the
-        # session resolves the clarify and unblocks the agent thread —
-        # we do NOT route it to the agent as a new turn.
+        # Intercept messages that are responses to a pending clarify.
+        # Open-ended prompts and "Other" responses are captured as free text;
+        # direct replies to multi-choice prompts are accepted too ("2" maps
+        # to the second option, arbitrary text becomes a custom answer). Slash
+        # commands still bypass this path so /stop and friends keep working.
+        _clarify_mod = None
         try:
             from tools import clarify_gateway as _clarify_mod
-            _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key)
+            _pending_clarify = _clarify_mod.get_pending_for_session(
+                _quick_key, include_choice_prompts=True,
+            )
         except Exception:
             _pending_clarify = None
-        if _pending_clarify is not None:
+        if _pending_clarify is not None and _clarify_mod is not None:
             _raw_clarify_reply = (event.text or "").strip()
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks
             # with an empty response.
             if _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
-                _resolved = _clarify_mod.resolve_gateway_clarify(
-                    _pending_clarify.clarify_id, _raw_clarify_reply,
+                _resolved = _clarify_mod.resolve_text_response_for_session(
+                    _quick_key, _raw_clarify_reply,
                 )
                 if _resolved:
                     logger.info(
@@ -7361,15 +8096,14 @@ class GatewayRunner:
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
 
-            # /model must not be used while the agent is running.
-            if _cmd_def_inner and _cmd_def_inner.name == "model":
-                return "Agent is running — wait or /stop first, then switch models."
-
-            # /codex-runtime must not be used while the agent is running.
-            # Switching mid-turn would split a turn across two transports.
-            if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
-                return ("Agent is running — wait or /stop first, then "
-                        "change runtime.")
+            # /model and /codex-runtime must not execute while the agent is
+            # running: switching mid-turn would split one turn across two model
+            # transports. Treat the slash command as a busy follow-up instead,
+            # so the user can choose queue/interrupt/steer via the normal busy
+            # controls rather than hitting a dead-end warning.
+            if _cmd_def_inner and _cmd_def_inner.name in {"model", "codex-runtime"}:
+                await self._handle_busy_slash_command_followup(event, _quick_key)
+                return None
 
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
@@ -7408,7 +8142,8 @@ class GatewayRunner:
                 _goal_arg = (event.get_command_args() or "").strip().lower()
                 if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
                     return await self._handle_goal_command(event)
-                return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+                await self._handle_busy_slash_command_followup(event, _quick_key)
+                return None
 
             # /subgoal is safe mid-run — it only modifies the goal's
             # subgoals list, which the judge reads at the next turn
@@ -7424,11 +8159,13 @@ class GatewayRunner:
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose"}:
+            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose", "attachments"}:
                 if _cmd_def_inner.name == "yolo":
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
                     return await self._handle_verbose_command(event)
+                if _cmd_def_inner.name == "attachments":
+                    return await self._handle_attachments_command(event)
                 if _cmd_def_inner.name == "footer":
                     return await self._handle_footer_command(event)
 
@@ -7445,19 +8182,14 @@ class GatewayRunner:
                     return await self._handle_update_command(event)
 
             # Catch-all: any other recognized slash command reached the
-            # running-agent guard. Reject gracefully rather than falling
-            # through to interrupt + discard. Without this, commands
-            # like /model, /reasoning, /voice, /insights, /title,
-            # /resume, /retry, /undo, /compress, /usage,
-            # /reload-mcp, /sethome, /reset (all registered as Discord
-            # slash commands) would interrupt the agent AND get
-            # silently discarded by the slash-command safety net,
-            # producing a zero-char response. See #5057, #6252, #10370.
+            # running-agent guard. Treat it as a busy follow-up, not a hard
+            # block: a user typing /undo, /retry, /model, etc. mid-run is
+            # expressing intent for the session. Queue/interrupt/stop buttons
+            # give them the same choice ordinary text receives while keeping
+            # the command text queued for execution at the selected boundary.
             if _cmd_def_inner:
-                return (
-                    f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
-                    f"mid-turn. Wait for the current response or `/stop` first."
-                )
+                await self._handle_busy_slash_command_followup(event, _quick_key)
+                return None
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
@@ -7727,6 +8459,9 @@ class GatewayRunner:
 
         if canonical == "footer":
             return await self._handle_footer_command(event)
+
+        if canonical == "attachments":
+            return await self._handle_attachments_command(event)
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
@@ -8480,7 +9215,51 @@ class GatewayRunner:
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
             else:
                 context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
-            context_prompt = context_note + "\n\n" + context_prompt
+
+            handoff_note = None
+            try:
+                handoff_cfg = getattr(self.session_store.config, "session_handoff", None)
+                handoff_mode = getattr(handoff_cfg, "mode", "none")
+                parent_session_id = getattr(session_entry, "parent_session_id", None)
+                if handoff_mode != "none" and parent_session_id:
+                    parent_messages = self.session_store.load_transcript(parent_session_id)
+                    summary_text = None
+                    if handoff_mode == "summary":
+                        try:
+                            _handoff_user_config = _load_gateway_config()
+                            _handoff_model, _handoff_runtime = self._resolve_session_agent_runtime(
+                                source=source,
+                                user_config=_handoff_user_config,
+                            )
+                            summary_text = generate_compaction_handoff_summary(
+                                parent_messages,
+                                model=_handoff_model,
+                                runtime_kwargs=_handoff_runtime,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Session compaction handoff summary failed; using fallback: %s",
+                                e,
+                            )
+                    handoff_note = build_session_handoff_note(
+                        mode=handoff_mode,
+                        parent_session_id=parent_session_id,
+                        reset_reason=reset_reason,
+                        parent_messages=parent_messages,
+                        previous_updated_at=getattr(session_entry, "parent_updated_at", None),
+                        now=datetime.now(),
+                        max_chars=getattr(handoff_cfg, "max_chars", 2400),
+                        last_messages=getattr(handoff_cfg, "last_messages", 8),
+                        summary_text=summary_text,
+                    )
+            except Exception as e:
+                logger.debug("Session handoff generation failed (non-fatal): %s", e)
+                handoff_note = None
+
+            if handoff_note:
+                context_prompt = handoff_note + "\n\n" + context_prompt
+            else:
+                context_prompt = context_note + "\n\n" + context_prompt
 
             # Send a user-facing notification explaining the reset, unless:
             # - notifications are disabled in config
@@ -11746,8 +12525,10 @@ class GatewayRunner:
             media_files, _ = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             _, cleaned = adapter.extract_images(response)
-            local_files, _ = adapter.extract_local_files(cleaned)
-            local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
+            local_files = []
+            if BasePlatformAdapter.auto_attach_local_paths_enabled():
+                local_files, _ = adapter.extract_local_files(cleaned)
+                local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
@@ -12435,6 +13216,65 @@ class GatewayRunner:
             if preview:
                 example = t("gateway.footer.example_line", preview=preview)
         return t("gateway.footer.saved", state=state, example=example)
+
+    async def _handle_attachments_command(self, event: MessageEvent) -> str:
+        """Handle /attachments command — toggle bare local path auto-attachments."""
+        config_path = _hermes_home / "config.yaml"
+        profile_name = os.getenv("HERMES_PROFILE") or "default"
+
+        arg = ""
+        try:
+            text = (getattr(event, "message", None) or getattr(event, "text", None) or "").strip()
+            if text.startswith("/"):
+                parts = text.split(None, 1)
+                if len(parts) > 1:
+                    arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        try:
+            user_config: dict = _load_gateway_config()
+        except Exception as e:
+            return t("gateway.config_read_failed", error=e)
+
+        gateway_cfg = user_config.get("gateway") if isinstance(user_config, dict) else {}
+        if not isinstance(gateway_cfg, dict):
+            gateway_cfg = {}
+        current = bool(gateway_cfg.get("auto_attach_local_paths", True))
+
+        if arg in {"status", "?"}:
+            state = "on" if current else "off"
+            return (
+                f"Local path auto-attachments are {state} for this bot/profile "
+                f"(`{profile_name}`).\n"
+                "Use `/attachments on` or `/attachments off`."
+            )
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg == "":
+            new_state = not current
+        else:
+            return "Usage: `/attachments [on|off|status]`"
+
+        try:
+            if not isinstance(user_config.get("gateway"), dict):
+                user_config["gateway"] = {}
+            user_config["gateway"]["auto_attach_local_paths"] = new_state
+            atomic_yaml_write(config_path, user_config)
+            os.environ["HERMES_AUTO_ATTACH_LOCAL_PATHS"] = "1" if new_state else "0"
+        except Exception as e:
+            logger.warning("Failed to save gateway.auto_attach_local_paths: %s", e)
+            return t("gateway.config_save_failed", error=e)
+
+        state = "enabled" if new_state else "disabled"
+        if new_state:
+            detail = "Bare local paths in replies can be sent as native files."
+        else:
+            detail = "Only explicit `MEDIA:/path` attachments will be sent as files."
+        return f"Local path auto-attachments {state} for this bot/profile (`{profile_name}`).\n{detail}"
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.
@@ -15138,9 +15978,10 @@ class GatewayRunner:
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
 
-        if notify_mode == "off" and not agent_notify:
-            # Still wait for the process to exit so we can log it, but don't
-            # push any messages to the user.
+        if notify_mode == "off":
+            # User-visible gateway notifications are absolutely disabled, even
+            # when a tool run requested notify_on_complete. Still wait for exit
+            # so the watcher can retire quietly.
             while True:
                 await asyncio.sleep(interval)
                 session = process_registry.get(session_id)
@@ -15481,6 +16322,21 @@ class GatewayRunner:
         self._running_agents_ts.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
+        # Clear busy-session UI bookkeeping in-memory.  Adapter-side
+        # teardown (deleting the control bubble, removing the keyboard)
+        # is handled by the async ``_clear_busy_session_controls`` from
+        # ``_run_agent``'s finally block and from
+        # ``_interrupt_and_clear_session``; this sync path runs from
+        # contexts that have no event loop access.  ``hasattr`` guards
+        # mirror the ``_busy_ack_ts`` pattern so test fixtures that
+        # bypass ``__init__`` (object.__new__(GatewayRunner)) don't
+        # AttributeError on cleanup paths.
+        if hasattr(self, "_tool_bubble_msg_ids"):
+            self._tool_bubble_msg_ids.pop(session_key, None)
+        if hasattr(self, "_busy_control_bubble_ids"):
+            self._busy_control_bubble_ids.pop(session_key, None)
+        if hasattr(self, "_pending_followups"):
+            self._pending_followups.pop(session_key, None)
         return True
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
@@ -15605,6 +16461,8 @@ class GatewayRunner:
         if adapter and hasattr(adapter, "get_pending_message"):
             adapter.get_pending_message(session_key)  # consume and discard
         self._pending_messages.pop(session_key, None)
+        # Tear down busy-session UI now that the run is being aborted.
+        await self._clear_busy_session_controls(session_key, source)
         if release_running_state:
             self._release_running_agent_state(session_key)
 
@@ -16544,6 +17402,21 @@ class GatewayRunner:
                         # order. Mirrors GatewayStreamConsumer.on_segment_break
                         # on the content side. (Issue: tool + content
                         # linearization regression after PR #7885.)
+                        # Detach any busy-session keyboard from the prior
+                        # bubble — the next tool will create a new bubble
+                        # and the keyboard will re-anchor there.
+                        if session_key and progress_msg_id and adapter is not None:
+                            if hasattr(adapter, "clear_busy_session_buttons"):
+                                try:
+                                    await adapter.clear_busy_session_buttons(
+                                        session_key, progress_msg_id
+                                    )
+                                except Exception:
+                                    pass
+                        if session_key:
+                            _tbm = getattr(self, "_tool_bubble_msg_ids", None)
+                            if _tbm is not None:
+                                _tbm.pop(session_key, None)
                         progress_msg_id = None
                         progress_lines = []
                         last_progress_msg[0] = None
@@ -16637,6 +17510,18 @@ class GatewayRunner:
                             progress_msg_id = result.message_id
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(str(result.message_id))
+                            # Publish the bubble id so the busy-session
+                            # button-attach path can anchor [/steer]
+                            # [/interrupt][/stop] to this message instead
+                            # of falling back to a standalone control
+                            # bubble.  Cleared on turn end.  ``getattr``
+                            # guard mirrors the rest of the busy-session
+                            # state — test fixtures that bypass __init__
+                            # don't carry these dicts.
+                            if session_key:
+                                _tbm = getattr(self, "_tool_bubble_msg_ids", None)
+                                if _tbm is not None:
+                                    _tbm[session_key] = progress_msg_id
 
                     _last_edit_ts = time.monotonic()
 
@@ -18216,6 +19101,17 @@ class GatewayRunner:
                     except Exception:
                         pass
 
+                # The previous turn is fully drained; clear the busy-session
+                # tracking now so a button tap during the queued follow-up
+                # turn doesn't pick up the prior turn's already-consumed
+                # follow-ups (they would otherwise be re-injected into a
+                # steer/interrupt prompt).  The outer ``finally`` will run
+                # again after the queued turn returns.
+                try:
+                    await self._clear_busy_session_controls(session_key, source)
+                except Exception:
+                    pass
+
                 followup_result = await self._run_agent(
                     message=next_message,
                     context_prompt=context_prompt,
@@ -18267,6 +19163,17 @@ class GatewayRunner:
             # Clean up tracking
             tracking_task.cancel()
             if session_key:
+                # Tear down any busy-session UI (keyboard / control bubble)
+                # before releasing the running-state slot so the cleanup
+                # has access to bubble ids that release would clear.
+                try:
+                    await self._clear_busy_session_controls(session_key, source)
+                except Exception as _bs_err:
+                    logger.debug(
+                        "Busy-session control teardown failed for %s: %s",
+                        session_key,
+                        _bs_err,
+                    )
                 # Only release the slot if this run's generation still owns
                 # it.  A /stop or /new that bumped the generation while we
                 # were unwinding has already installed its own state; this

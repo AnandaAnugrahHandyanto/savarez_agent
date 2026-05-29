@@ -641,6 +641,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
     wrap_response = True
+    user_cfg = {}
     try:
         user_cfg = load_config()
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
@@ -664,6 +665,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    auto_attach_local_paths = True
+    try:
+        gateway_cfg = user_cfg.get("gateway", {}) if isinstance(user_cfg, dict) else {}
+        auto_attach_local_paths = gateway_cfg.get("auto_attach_local_paths", True)
+    except Exception:
+        auto_attach_local_paths = True
+    if auto_attach_local_paths and BasePlatformAdapter.auto_attach_local_paths_enabled():
+        local_files, cleaned_delivery_content = BasePlatformAdapter.extract_local_files(cleaned_delivery_content)
+        local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
+        media_files.extend((path, False) for path in local_files)
 
     try:
         config = load_gateway_config()
@@ -1952,7 +1963,22 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        # Delivery must respect the job's runtime profile too.
+                        # Otherwise a Scorandum cron with profile=scorandum can run
+                        # with Scorandum context but deliver through the scheduler's
+                        # default/Nagatha Telegram token. That sends the right chat_id
+                        # to the wrong bot conversation. Keep the same profile env
+                        # bridge used during run_job() for load_gateway_config() and
+                        # standalone platform sends.
+                        with _job_profile_context(job["id"], job.get("profile")):
+                            delivery_adapters = None if job.get("profile") else adapters
+                            delivery_loop = None if job.get("profile") else loop
+                            delivery_error = _deliver_result(
+                                job,
+                                deliver_content,
+                                adapters=delivery_adapters,
+                                loop=delivery_loop,
+                            )
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)

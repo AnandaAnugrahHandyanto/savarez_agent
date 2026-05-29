@@ -251,6 +251,18 @@ def _handle_send(args):
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    auto_attach_local_paths = True
+    try:
+        from hermes_cli.config import load_config
+        raw_cfg = load_config() or {}
+        gateway_cfg = raw_cfg.get("gateway", {}) if isinstance(raw_cfg, dict) else {}
+        auto_attach_local_paths = gateway_cfg.get("auto_attach_local_paths", True)
+    except Exception:
+        auto_attach_local_paths = True
+    if auto_attach_local_paths and BasePlatformAdapter.auto_attach_local_paths_enabled():
+        local_files, cleaned_message = BasePlatformAdapter.extract_local_files(cleaned_message)
+        local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
+        media_files.extend((path, False) for path in local_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False

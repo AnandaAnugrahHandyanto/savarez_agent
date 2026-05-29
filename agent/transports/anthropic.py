@@ -88,7 +88,8 @@ class AnthropicTransport(ProviderTransport):
         from agent.transports.types import ToolCall
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
-        _MCP_PREFIX = "mcp_"
+        _HERMES_MCP_PREFIX = "mcp__hermes__"
+        _OAUTH_MCP_PREFIX = "mcp_"
 
         text_parts = []
         reasoning_parts = []
@@ -105,18 +106,21 @@ class AnthropicTransport(ProviderTransport):
                     reasoning_details.append(block_dict)
             elif block.type == "tool_use":
                 name = block.name
-                if strip_tool_prefix and name.startswith(_MCP_PREFIX):
-                    stripped = name[len(_MCP_PREFIX):]
-                    # Only strip the mcp_ prefix for OAuth-injected tools
-                    # (where Hermes adds the prefix when sending to Anthropic
-                    # and must remove it on the way back).  Native MCP server
-                    # tools (from mcp_servers: in config.yaml) are registered
-                    # in the tool registry under their FULL mcp_<server>_<tool>
-                    # name and must NOT be stripped.  GH-25255.
-                    from tools.registry import registry as _tool_registry
-                    if (_tool_registry.get_entry(stripped)
-                            and not _tool_registry.get_entry(name)):
-                        name = stripped
+                if strip_tool_prefix:
+                    if name.startswith(_HERMES_MCP_PREFIX):
+                        name = name[len(_HERMES_MCP_PREFIX):]
+                    elif name.startswith(_OAUTH_MCP_PREFIX):
+                        stripped = name[len(_OAUTH_MCP_PREFIX):]
+                        # Only strip the mcp_ prefix for OAuth-injected tools
+                        # (where Hermes adds the prefix when sending to Anthropic
+                        # and must remove it on the way back). Native MCP server
+                        # tools (from mcp_servers: in config.yaml) are registered
+                        # in the tool registry under their FULL mcp_<server>_<tool>
+                        # name and must NOT be stripped. GH-25255.
+                        from tools.registry import registry as _tool_registry
+                        if (_tool_registry.get_entry(stripped)
+                                and not _tool_registry.get_entry(name)):
+                            name = stripped
                 tool_calls.append(
                     ToolCall(
                         id=block.id,

@@ -3613,6 +3613,35 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
     )
 
 
+def test_gateway_kanban_scoped_board_slugs_default_and_explicit(tmp_path, monkeypatch):
+    from gateway.run import GatewayRunner
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "nagaklas"))
+    monkeypatch.delenv("HERMES_KANBAN_DISPATCH_BOARDS", raising=False)
+    kb._INITIALIZED_PATHS.clear()
+
+    assert GatewayRunner._kanban_scoped_board_slugs(
+        {"default_board": "klasificados"}, "dispatch_boards", kb
+    ) == ["klasificados"]
+    assert GatewayRunner._kanban_scoped_board_slugs(
+        {"dispatch_boards": "alpha,beta"}, "dispatch_boards", kb
+    ) == ["alpha", "beta"]
+
+
+def test_gateway_kanban_scoped_board_slugs_star_lists_all(tmp_path, monkeypatch):
+    from gateway.run import GatewayRunner
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    kb._INITIALIZED_PATHS.clear()
+    kb.create_board("alpha")
+    kb.create_board("beta")
+
+    assert GatewayRunner._kanban_scoped_board_slugs(
+        {"dispatch_boards": ["*"]}, "dispatch_boards", kb
+    ) == ["default", "alpha", "beta"]
+
+
 @pytest.mark.parametrize("corrupt_exc", ["sqlite", "guard"])
 def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     monkeypatch, tmp_path, caplog, corrupt_exc
@@ -3638,6 +3667,7 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
             "kanban": {
                 "dispatch_in_gateway": True,
                 "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
             }
         },
     )
@@ -3698,13 +3728,10 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     assert sum("not a valid SQLite database" in msg for msg in messages) == 1
     assert not any("tick failed on board" in msg for msg in messages)
     assert not any(record.exc_info for record in caplog.records)
-    # First tick connect (dispatch) + two probes per `_has_ready_work` call
-    # (ready then review, both via _kb.connect). The second dispatch tick
-    # skips the dispatch connect because the corrupt board fingerprint is
-    # disabled, but the ready/review probes still each connect. PR f55d94a1e
-    # added the review-column probe alongside the existing ready-column
-    # probe, bumping this from 3 → 5.
-    assert calls["connect"] == 5
+    # First tick connect + two ready-queue probes. The second dispatch tick
+    # skips connect because the corrupt board fingerprint is disabled.
+    assert calls["connect"] == 3
+
 
 
 def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
@@ -4475,6 +4502,17 @@ def test_dispatch_once_integrates_stale_detection(kanban_home, monkeypatch):
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(
+        _kb,
+        "_terminate_reclaimed_worker",
+        lambda pid, claim_lock, **kwargs: {
+            "prev_pid": int(pid) if pid else None,
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": True,
+            "sigkill": False,
+        },
+    )
 
     with kb.connect() as conn:
         t = kb.create_task(conn, title="stale-dispatch", assignee="worker")

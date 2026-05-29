@@ -1177,7 +1177,16 @@ DEFAULT_CONFIG = {
         # when an exchange was tool-heavy. Set False to restore the legacy
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
-        "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        "busy_input_mode": "queue",  # queue (default) | steer | interrupt
+        # When true, gateway platforms with inline-UI support (Telegram,
+        # Discord, Slack) render [Steer][Interrupt][Stop] buttons on the
+        # running tool bubble so the user can override busy_input_mode
+        # per message. See gateway/busy_session_buttons.py.
+        "busy_buttons": True,
+        # When set to "interrupt", normal text sent while a session is busy
+        # interrupts/replays immediately. Default queue preserves composed
+        # follow-ups unless the user taps Interrupt.
+        "busy_text_mode": "queue",
         # When true, `hermes --tui` auto-resumes the most recent human-
         # facing session on launch instead of forging a fresh one.
         # Mirrors `hermes -c` muscle memory.  Default off so existing

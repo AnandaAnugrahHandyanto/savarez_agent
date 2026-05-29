@@ -89,6 +89,7 @@ class TestModuleSurface:
             "kanban_create",
             "kanban_show",
             "kanban_list",
+            "kanban_search",
             "kanban_unblock",
             "kanban_link",
         ):

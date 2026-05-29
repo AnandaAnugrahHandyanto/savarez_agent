@@ -471,6 +471,13 @@ def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
     """Run ``hermes kanban …`` with PYTHONPATH pinned to the worktree."""
     env = dict(os.environ)
     env["PYTHONPATH"] = str(_WORKTREE)
+    for var in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_BOARD",
+    ):
+        env.pop(var, None)
     if env_extra:
         env.update(env_extra)
     return subprocess.run(
@@ -557,3 +564,77 @@ class TestCLI:
         res = _cli(["boards", "list", "--json"], env_extra=env)
         slugs = [b["slug"] for b in json.loads(res.stdout)]
         assert "rmme" not in slugs
+
+
+# ---------------------------------------------------------------------------
+# Profile-scoped defaults / contamination prevention
+# ---------------------------------------------------------------------------
+
+def _write_profile_config(profile_home: Path, default_board: str) -> None:
+    profile_home.mkdir(parents=True, exist_ok=True)
+    (profile_home / "config.yaml").write_text(
+        f"kanban:\n  default_board: {default_board}\n  dispatch_boards: []\n  notify_boards: []\n",
+        encoding="utf-8",
+    )
+
+
+class TestProfileScopedDefaults:
+    def test_configured_default_board_is_profile_scoped(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        alpha_home = root / "profiles" / "alpha"
+        beta_home = root / "profiles" / "beta"
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(root))
+        monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_WORKSPACES_ROOT", raising=False)
+        kb._INITIALIZED_PATHS.clear()
+
+        monkeypatch.setenv("HERMES_HOME", str(alpha_home))
+        kb.create_board("alpha-board")
+        kb.create_board("beta-board")
+        _write_profile_config(alpha_home, "alpha-board")
+        _write_profile_config(beta_home, "beta-board")
+
+        assert kb.get_current_board() == "alpha-board"
+        with kb.connect() as conn:
+            kb.create_task(conn, title="alpha-only")
+
+        monkeypatch.setenv("HERMES_HOME", str(beta_home))
+        assert kb.get_current_board() == "beta-board"
+        with kb.connect() as conn:
+            kb.create_task(conn, title="beta-only")
+
+        with kb.connect(board="alpha-board") as conn:
+            assert [t.title for t in kb.list_tasks(conn)] == ["alpha-only"]
+        with kb.connect(board="beta-board") as conn:
+            assert [t.title for t in kb.list_tasks(conn)] == ["beta-only"]
+
+    def test_boards_switch_writes_profile_local_pointer(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        alpha_home = root / "profiles" / "alpha"
+        beta_home = root / "profiles" / "beta"
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(root))
+        monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(alpha_home))
+        kb._INITIALIZED_PATHS.clear()
+        kb.create_board("shared-board")
+        kb.set_current_board("shared-board")
+        assert (alpha_home / "kanban" / "current").read_text(encoding="utf-8").strip() == "shared-board"
+        assert not (root / "kanban" / "current").exists()
+
+        monkeypatch.setenv("HERMES_HOME", str(beta_home))
+        assert kb.get_current_board() == "default"
+
+    def test_cli_mutation_names_target_board_and_json_stays_parseable(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        assert _cli(["boards", "create", "ops"], env_extra=env).returncode == 0
+
+        human = _cli(["--board", "ops", "create", "Human Task"], env_extra=env)
+        assert human.returncode == 0, human.stderr
+        assert "Target board: ops" in human.stdout
+
+        machine = _cli(["--board", "ops", "create", "JSON Task", "--json"], env_extra=env)
+        assert machine.returncode == 0, machine.stderr
+        data = json.loads(machine.stdout)
+        assert data["title"] == "JSON Task"

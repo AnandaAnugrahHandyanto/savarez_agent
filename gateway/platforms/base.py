@@ -837,6 +837,7 @@ MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
 # injection from one user could exfiltrate the host's secrets to that same
 # user should set this to true.
 MEDIA_DELIVERY_STRICT_ENV = "HERMES_MEDIA_DELIVERY_STRICT"
+MEDIA_DELIVERY_AUTO_ATTACH_LOCAL_PATHS_ENV = "HERMES_AUTO_ATTACH_LOCAL_PATHS"
 MEDIA_DELIVERY_SAFE_ROOTS = (
     IMAGE_CACHE_DIR,
     AUDIO_CACHE_DIR,
@@ -997,6 +998,17 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def auto_attach_local_paths_enabled() -> bool:
+    """Return whether bare local file paths in outbound text become attachments.
+
+    ``MEDIA:<path>`` remains explicit and always goes through the media delivery
+    path. This flag only controls opportunistic detection of plain paths like
+    ``Full report: /tmp/report.pdf`` in agent/gateway output.
+    """
+    raw = os.environ.get(MEDIA_DELIVERY_AUTO_ATTACH_LOCAL_PATHS_ENV, "1")
+    return str(raw).strip().lower() not in {"0", "false", "no", "off", ""}
 
 
 def validate_media_delivery_path(path: str) -> Optional[str]:
@@ -1903,6 +1915,71 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    # ------------------------------------------------------------------
+    # Busy-session controls (per-message inline buttons + reactions)
+    #
+    # Default implementations are no-ops so platforms without inline-UI
+    # support (Matrix, Feishu, DingTalk, WhatsApp, iMessage…) inherit
+    # silently and the runner's busy handler can call them
+    # unconditionally.  Telegram, Discord, and Slack override.
+    # ------------------------------------------------------------------
+
+    async def set_busy_reaction(self, event: "MessageEvent", emoji: str) -> bool:
+        """Emit an acknowledgement reaction on a user follow-up message.
+
+        Called from the runner after a busy-session button tap (👍 / ⚡
+        / 🙊) and after a halt-phrase match.  Returns True on success,
+        False on failure.  Default: no-op.
+        """
+        return False
+
+    async def attach_busy_session_buttons(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        """Attach the [/steer][/interrupt][/stop] keyboard to ``message_id``.
+
+        ``message_id`` is the current tool-progress bubble for the session.
+        Default: no-op.
+        """
+        return False
+
+    async def clear_busy_session_buttons(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        """Remove the busy-session keyboard from ``message_id``.
+
+        Called on turn end and on every tool-bubble reset.  Default: no-op.
+        """
+        return False
+
+    async def send_or_update_busy_control_bubble(
+        self,
+        session_key: str,
+        source: Any,  # SessionSource — kept as Any to avoid circular import.
+        summary_text: str,
+    ) -> Optional[str]:
+        """Send a standalone control message when no tool bubble exists.
+
+        Returns the platform's message id of the control bubble so the
+        runner can edit / delete it later.  Default: no-op (returns
+        None).
+        """
+        return None
+
+    async def delete_busy_control_bubble(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        """Delete the standalone control bubble previously sent by
+        ``send_or_update_busy_control_bubble``.  Default: no-op.
+        """
+        return False
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -2505,6 +2582,11 @@ class BasePlatformAdapter(ABC):
         return safe_paths
 
     @staticmethod
+    def auto_attach_local_paths_enabled() -> bool:
+        """Whether bare local file paths should be promoted to attachments."""
+        return auto_attach_local_paths_enabled()
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
@@ -2542,9 +2624,25 @@ class BasePlatformAdapter(ABC):
         cleaned = cleaned.replace("[[as_document]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
-        # and quoted/backticked paths for LLM-formatted outputs.
+        # and quoted/backticked paths for LLM-formatted outputs. Keep this in
+        # sync with platform document support instead of growing a stale manual
+        # regex every time agents start emitting another text/data artifact.
+        media_exts = {
+            ext.lstrip(".")
+            for ext in (
+                set(SUPPORTED_DOCUMENT_TYPES)
+                | set(SUPPORTED_IMAGE_DOCUMENT_TYPES)
+                | {
+                    ".mp4", ".mov", ".avi", ".mkv", ".webm",
+                    ".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac",
+                    ".epub", ".rar", ".7z", ".apk", ".ipa",
+                }
+            )
+        }
+        ext_pattern = "|".join(re.escape(ext) for ext in sorted(media_exts, key=lambda e: (-len(e), e)))
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
+            rf'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:{ext_pattern})(?=[\s`"',;:)\]}}]|$))[`"']?''',
+            re.IGNORECASE,
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -3701,6 +3799,7 @@ class BasePlatformAdapter(ABC):
             # is processed by the pending-message handler below (#8221/#2483).
             if (
                 response
+                and not getattr(event, "internal", False)
                 and interrupt_event.is_set()
                 and session_key in self._pending_messages
             ):
@@ -3734,9 +3833,13 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
                 # Auto-detect bare local file paths for native media delivery
-                # (helps small models that don't use MEDIA: syntax)
-                local_files, text_content = self.extract_local_files(text_content)
-                local_files = self.filter_local_delivery_paths(local_files)
+                # (helps small models that don't use MEDIA: syntax). Gated so
+                # operators can disable opportunistic path scraping while keeping
+                # explicit MEDIA:<path> delivery available.
+                local_files = []
+                if self.auto_attach_local_paths_enabled():
+                    local_files, text_content = self.extract_local_files(text_content)
+                    local_files = self.filter_local_delivery_paths(local_files)
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 

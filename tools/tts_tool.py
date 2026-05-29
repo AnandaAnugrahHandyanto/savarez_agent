@@ -44,6 +44,7 @@ import queue
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -685,7 +686,30 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
             proc.kill()
         return
 
-    import psutil
+    try:
+        import psutil
+    except ImportError:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except Exception:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=2)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return
+
     try:
         parent = psutil.Process(proc.pid)
         for child in parent.children(recursive=True):
@@ -1848,6 +1872,21 @@ def text_to_speech_tool(
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
 
+    # ElevenLabs is often copied across migrations as a provider choice without
+    # the matching secret. If the configured premium provider is unusable but
+    # Edge TTS is installed, fall back before choosing output paths so Telegram
+    # voice conversion still uses the right file extension.
+    if provider == "elevenlabs" and not get_env_value("ELEVENLABS_API_KEY"):
+        try:
+            _import_edge_tts()
+        except ImportError:
+            pass
+        else:
+            logger.warning(
+                "ElevenLabs TTS selected but ELEVENLABS_API_KEY is not set; falling back to Edge TTS"
+            )
+            provider = "edge"
+
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here
     # so a user's ``tts.providers.openai.command`` can't override the real
@@ -1900,6 +1939,13 @@ def text_to_speech_tool(
             file_path = _configured_command_tts_output_path(
                 file_path, command_provider_config
             )
+        elif file_path.suffix.lower() == ".ogg" and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}:
+            # These providers do not write Telegram-ready Opus directly.  If a
+            # caller asks for .ogg, generate an intermediate file first; the
+            # conversion block below will create the requested .ogg.  Writing
+            # MP3/WAV bytes directly to a .ogg path makes Telegram voice mode
+            # receive a mislabeled file.
+            file_path = file_path.with_suffix(".mp3")
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)

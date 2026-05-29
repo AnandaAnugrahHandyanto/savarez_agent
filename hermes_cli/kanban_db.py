@@ -248,13 +248,74 @@ def boards_root() -> Path:
 
 
 def current_board_path() -> Path:
-    """Return the path to ``<root>/kanban/current``.
+    """Return the path to this profile's ``kanban/current`` pointer.
 
     One-line text file written by ``hermes kanban boards switch <slug>``
-    to persist the user's board selection across CLI invocations. Absent
-    by default (meaning: active board is ``default``).
+    to persist the user's board selection across CLI invocations for the
+    active profile only. Older Hermes releases wrote a global pointer under
+    ``<root>/kanban/current``; see :func:`legacy_current_board_path` for the
+    read-only compatibility path.
     """
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "kanban" / "current"
+
+
+def legacy_current_board_path() -> Path:
+    """Return the pre-profile-scoping global current-board pointer path."""
     return kanban_home() / "kanban" / "current"
+
+
+def get_profile_default_board() -> str:
+    """Return this profile's configured/inferred default board.
+
+    Reads ``kanban.default_board`` from the active profile's config. When it
+    is unset, infer a profile-local board from the active profile name. Root
+    installs still use ``default``; profile homes under ``profiles/<name>``
+    use ``<name>``. This is deliberately separate from the mutable
+    ``boards switch`` pointer: default board is the profile's home lane;
+    switching is an explicit operator choice.
+    """
+    return _get_configured_profile_default_board() or _infer_profile_default_board()
+
+
+def _infer_profile_default_board() -> str:
+    """Infer a default board from the active profile, or ``default``."""
+    profile = ""
+    try:
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+        if home.parent.name == "profiles":
+            profile = home.name
+    except Exception:
+        pass
+    profile = str(profile).strip().lower()
+    aliases = {
+        "nagatha": "hermes",
+        "hermes": "hermes",
+        "klasificados": "klasificados",
+        "nagaklas": "klasificados",
+        "nagovernor": "governor",
+        "governor": "governor",
+        "skippy": "skippy",
+    }
+    try:
+        return _normalize_board_slug(aliases.get(profile, profile)) or DEFAULT_BOARD
+    except ValueError:
+        return DEFAULT_BOARD
+
+
+def _get_configured_profile_default_board() -> Optional[str]:
+    """Return a valid configured profile default board, or ``None``."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        raw = (cfg.get("kanban", {}) if isinstance(cfg, dict) else {}).get("default_board")
+        normed = _normalize_board_slug(raw)
+        if normed:
+            return normed
+    except Exception:
+        pass
+    return None
 
 
 def get_current_board() -> str:
@@ -283,6 +344,22 @@ def get_current_board() -> str:
     try:
         f = current_board_path()
         if f.exists():
+            val = f.read_text(encoding="utf-8").strip()
+            if val:
+                try:
+                    normed = _normalize_board_slug(val)
+                    if normed and board_exists(normed):
+                        return normed
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    configured = _get_configured_profile_default_board()
+    if configured:
+        return configured
+    try:
+        f = legacy_current_board_path()
+        if f.exists() and f != current_board_path():
             val = f.read_text(encoding="utf-8").strip()
             if val:
                 try:
@@ -2065,6 +2142,71 @@ def list_tasks(
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()
     return [Task.from_row(r) for r in rows]
+
+
+def search_tasks(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    fields: Optional[Iterable[str]] = None,
+    assignee: Optional[str] = None,
+    status: Optional[str] = None,
+    tenant: Optional[str] = None,
+    include_archived: bool = False,
+    limit: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    """Search tasks by title/body/comments and return compact match metadata.
+
+    This is the kernel-backed API for agent-facing search tools. It keeps
+    callers away from direct ``kanban.db`` SQL while preserving the same core
+    filtering semantics as :func:`list_tasks`.
+    """
+    needle = (query or "").strip()
+    if not needle:
+        raise ValueError("query is required")
+
+    valid_fields = {"title", "body", "comments"}
+    selected = set(fields or valid_fields)
+    invalid = sorted(selected - valid_fields)
+    if invalid:
+        raise ValueError(f"fields must be a subset of {sorted(valid_fields)}; got {invalid}")
+
+    tasks = list_tasks(
+        conn,
+        assignee=assignee,
+        status=status,
+        tenant=tenant,
+        include_archived=include_archived,
+        limit=None,
+    )
+    needle_l = needle.lower()
+    results: list[dict[str, Any]] = []
+    for task in tasks:
+        haystacks: list[tuple[str, str]] = []
+        if "title" in selected:
+            haystacks.append(("title", task.title or ""))
+        if "body" in selected:
+            haystacks.append(("body", task.body or ""))
+        if "comments" in selected:
+            comments_text = "\n".join(c.body for c in list_comments(conn, task.id))
+            haystacks.append(("comments", comments_text))
+
+        for field, text in haystacks:
+            idx = text.lower().find(needle_l)
+            if idx < 0:
+                continue
+            start = max(0, idx - 80)
+            end = min(len(text), idx + len(needle) + 80)
+            snippet = text[start:end].replace("\n", " ").strip()
+            if start > 0:
+                snippet = "…" + snippet
+            if end < len(text):
+                snippet += "…"
+            results.append({"task": task, "field": field, "snippet": snippet})
+            break
+        if limit and len(results) >= int(limit):
+            break
+    return results
 
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
@@ -4481,7 +4623,11 @@ def _pid_alive(pid: Optional[int]) -> bool:
     if not pid or pid <= 0:
         return False
     from gateway.status import _pid_exists
-    if not _pid_exists(int(pid)):
+    try:
+        exists = _pid_exists(int(pid))
+    except Exception:
+        return False
+    if not exists:
         return False
     # Still here → process exists. Check for zombie on platforms
     # where we have a cheap, deterministic process-state probe.
@@ -6114,13 +6260,7 @@ def _default_spawn(
     # at a different/additional skill via config if they want —
     # --skills is additive to the profile's default skill set.
     #
-    # Only add the flag when the skill actually resolves for the home
-    # the worker runs under: the bundled skill is absent from many
-    # profile-scoped skills dirs, and preloading a missing skill is
-    # fatal at CLI startup. Omitting it is safe — the lifecycle
-    # contract still ships via KANBAN_GUIDANCE.
-    if _kanban_worker_skill_available(env.get("HERMES_HOME")):
-        cmd.extend(["--skills", "kanban-worker"])
+    cmd.extend(["--skills", "kanban-worker"])
     # Per-task force-loaded skills. Each name goes in its own
     # `--skills X` pair rather than a single comma-joined arg: the CLI
     # accepts both forms (action='append' + comma-split), but

@@ -491,6 +491,38 @@ class TestTextToSpeechToolWithCommandProvider:
         assert "tts.providers.broken.command is not configured" not in err
 
 
+    def test_edge_output_path_ogg_uses_intermediate_before_opus(self, tmp_path):
+        """MP3-only providers must not write MP3 bytes directly to a .ogg path."""
+        cfg = {"provider": "edge", "edge": {"voice": "en-US-AriaNeural"}}
+        requested = tmp_path / "clip.ogg"
+        generated_inputs = []
+
+        async def fake_edge(text, output_path, tts_config):
+            generated_inputs.append(Path(output_path))
+            Path(output_path).write_bytes(b"fake mp3")
+            return output_path
+
+        def fake_convert(path):
+            source = Path(path)
+            assert source.suffix == ".mp3"
+            out = source.with_suffix(".ogg")
+            out.write_bytes(b"fake opus")
+            return str(out)
+
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg), \
+             patch("tools.tts_tool._import_edge_tts", return_value=object()), \
+             patch("tools.tts_tool._generate_edge_tts", side_effect=fake_edge), \
+             patch("tools.tts_tool._convert_to_opus", side_effect=fake_convert):
+            result = text_to_speech_tool(text="hi", output_path=str(requested))
+
+        data = json.loads(result)
+        assert data["success"] is True, data
+        assert generated_inputs == [tmp_path / "clip.mp3"]
+        assert data["file_path"] == str(requested)
+        assert data["voice_compatible"] is True
+        assert data["media_tag"].startswith("[[audio_as_voice]]")
+
+
 class TestCheckTtsRequirements:
     def test_configured_command_provider_satisfies_requirement(self):
         cfg = {"providers": {"x": {"type": "command", "command": "echo x"}}}

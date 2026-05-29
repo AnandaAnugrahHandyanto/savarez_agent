@@ -275,3 +275,35 @@ class TestRegressionGuard:
              patch.object(tts_tool, "_check_neutts_available", return_value=False), \
              patch.object(tts_tool, "_check_kittentts_available", return_value=False):
             assert tts_tool.check_tts_requirements() is True
+
+
+class TestProviderFallbacks:
+    def test_elevenlabs_without_key_falls_back_to_edge_before_output_path(self, tmp_path, monkeypatch):
+        """Provider-only ElevenLabs migrations should not break TTS when the key is absent."""
+        import json
+        import importlib
+        from pathlib import Path
+        from tools import tts_tool
+
+        importlib.reload(tts_tool)
+        monkeypatch.setattr(
+            tts_tool,
+            "_load_tts_config",
+            lambda: {"provider": "elevenlabs", "edge": {"voice": "en-US-AriaNeural"}},
+        )
+        monkeypatch.setattr(tts_tool, "get_env_value", lambda key: "" if key == "ELEVENLABS_API_KEY" else "")
+        monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: object())
+
+        async def fake_edge(text, output_path, config):
+            Path(output_path).write_bytes(b"mp3-data")
+            return output_path
+
+        monkeypatch.setattr(tts_tool, "_generate_edge_tts", fake_edge)
+        monkeypatch.setattr(tts_tool, "_convert_to_opus", lambda path: None)
+        monkeypatch.setattr(tts_tool, "_import_elevenlabs", lambda: (_ for _ in ()).throw(AssertionError("should not use ElevenLabs without key")))
+
+        result = json.loads(tts_tool.text_to_speech_tool("hi", output_path=str(tmp_path / "clip.mp3")))
+
+        assert result["success"] is True, result
+        assert result["provider"] == "edge"
+        assert Path(result["file_path"]).read_bytes() == b"mp3-data"

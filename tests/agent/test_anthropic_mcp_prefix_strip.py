@@ -78,6 +78,19 @@ class TestAnthropicMcpPrefixStrip:
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0].name == "read_file"
 
+    def test_strips_hermes_namespace_for_fork_oauth_tool(self):
+        """Fork OAuth tools: mcp__hermes__read_file -> read_file (stripped)."""
+        transport = self._get_transport()
+        block = _make_tool_use_block("mcp__hermes__read_file")
+        response = _make_response(block)
+
+        registry = _FakeRegistry({"read_file", "terminal", "web_search"})
+        with patch("tools.registry.registry", registry):
+            result = transport.normalize_response(response, strip_tool_prefix=True)
+
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "read_file"
+
     def test_preserves_native_mcp_server_tool_name(self):
         """Native MCP tools: mcp_composio_SEARCH -> mcp_composio_SEARCH (kept).
 
@@ -206,7 +219,7 @@ class TestAnthropicOAuthOutgoingPrefix:
             "function": {"name": "read_file", "description": "x", "parameters": {}},
         }])
         names = [t["name"] for t in kwargs["tools"]]
-        assert names == ["mcp_read_file"]
+        assert names == ["mcp__hermes__read_file"]
 
     def test_oauth_does_not_double_prefix_native_mcp_tool(self):
         """OAuth + already-prefixed native MCP name → left alone."""
@@ -234,7 +247,7 @@ class TestAnthropicOAuthOutgoingPrefix:
                                                "description": "z", "parameters": {}}},
         ])
         names = sorted(t["name"] for t in kwargs["tools"])
-        assert names == ["mcp_composio_SEARCH", "mcp_read_file", "mcp_terminal"]
+        assert names == ["mcp__hermes__read_file", "mcp__hermes__terminal", "mcp_composio_SEARCH"]
 
     def test_non_oauth_path_untouched(self):
         """Non-OAuth requests never get the prefix — schemas pass through as-is."""

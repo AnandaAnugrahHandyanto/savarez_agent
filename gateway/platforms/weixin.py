@@ -1640,8 +1640,11 @@ class WeixinAdapter(BasePlatformAdapter):
         media_files, cleaned_content = self.extract_media(content)
         media_files = self.filter_media_delivery_paths(media_files)
         _, image_cleaned = self.extract_images(cleaned_content)
-        local_files, final_content = self.extract_local_files(image_cleaned)
-        local_files = self.filter_local_delivery_paths(local_files)
+        local_files = []
+        final_content = image_cleaned
+        if self.auto_attach_local_paths_enabled():
+            local_files, final_content = self.extract_local_files(image_cleaned)
+            local_files = self.filter_local_delivery_paths(local_files)
 
         _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
         _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
