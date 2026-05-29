@@ -162,7 +162,7 @@ def windows_detach_popen_kwargs() -> dict:
 
     .. code-block:: python
 
-        subprocess.Popen(..., start_new_session=True)
+        subprocess.Popen(..., start_new_session=True)  # PATH: add realpath validation
 
     which silently fails to detach on Windows (the flag is accepted but
     has no effect — the child stays attached to the parent's console
