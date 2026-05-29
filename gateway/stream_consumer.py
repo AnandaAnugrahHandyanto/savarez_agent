@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
+from gateway.platforms.base import _MEDIA_TAG_RE
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -645,10 +646,10 @@ class GatewayStreamConsumer:
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
 
-    # Pattern to strip MEDIA:<path> tags (including optional surrounding quotes).
-    # Matches the simple cleanup regex used by the non-streaming path in
-    # gateway/platforms/base.py for post-processing.
-    _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+    # Shared with base.extract_media() so streaming display and the
+    # non-streaming final text strip MEDIA: tags identically (one object,
+    # zero drift). Extension-anchored + space-aware; see _MEDIA_TAG_RE.
+    _MEDIA_RE = _MEDIA_TAG_RE
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
