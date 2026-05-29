@@ -62,7 +62,7 @@ def _post(body: dict) -> dict:
         headers={"Content-Type": "application/json", "User-Agent": "hermes-agent osint-investigation"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with urllib.request.urlopen(req, timeout=60) as resp:  # SSRF: add IP block check
         return json.loads(resp.read().decode("utf-8"))
 
 
