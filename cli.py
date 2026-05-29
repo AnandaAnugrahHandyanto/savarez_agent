@@ -531,6 +531,19 @@ def load_cli_config() -> Dict[str, Any]:
                 and agent_file_config.get("max_turns") is not None
             ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
+
+            # Backfill clarify.timeout from agent.clarify_timeout (Issue #25859).
+            # CLI reads `clarify.timeout` (default 120s); Gateway reads
+            # `agent.clarify_timeout` (default 600s). Users who follow the docs
+            # and set only `agent.clarify_timeout` get silently ignored by CLI.
+            # This bridges the two keys so one setting governs both paths.
+            if (
+                isinstance(file_config.get("agent"), dict)
+                and "clarify_timeout" in file_config["agent"]
+            ):
+                defaults.setdefault("clarify", {})["timeout"] = (
+                    file_config["agent"]["clarify_timeout"]
+                )
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
