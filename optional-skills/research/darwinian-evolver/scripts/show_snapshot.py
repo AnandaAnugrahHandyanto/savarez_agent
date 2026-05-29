@@ -11,9 +11,16 @@ target a different attribute (e.g. `regex_pattern`, `sql_query`, `code_block`).
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
+import os
 import pickle
 import sys
 from pathlib import Path
+
+
+HERMES_SNAPSHOT_SECRET = "HERMES_SNAPSHOT_SECRET"
 
 
 def main() -> int:
@@ -45,6 +52,41 @@ def main() -> int:
             "code from the snapshot file. Only proceed if you created/control this "
             "file, then re-run with --i-trust-this-file.\n"
             f"  file: {args.snapshot}"
+        )
+
+    # Verify HMAC integrity before unpickling
+    secret = os.environ.get(HERMES_SNAPSHOT_SECRET)
+    if secret:
+        raw_bytes = args.snapshot.read_bytes()
+        try:
+            outer = pickle.loads(raw_bytes)
+            if isinstance(outer, dict) and "population_snapshot" in outer:
+                expected_hmac = outer.get("hmac")
+                if expected_hmac:
+                    computed = hmac.new(
+                        secret.encode(),
+                        outer["population_snapshot"],
+                        hashlib.sha256,
+                    ).hexdigest()
+                    if not hmac.compare_digest(computed, expected_hmac):
+                        sys.exit(
+                            f"HMAC verification failed for {args.snapshot} — "
+                            "snapshot may have been tampered with or corrupted."
+                        )
+                else:
+                    sys.exit(
+                        f"snapshot {args.snapshot} is missing HMAC signature "
+                        "(HERMES_SNAPSHOT_SECRET is set but snapshot has no hmac field)"
+                    )
+            else:
+                sys.exit(f"snapshot {args.snapshot} is not a valid darwinian-evolver snapshot")
+        except Exception as e:
+            sys.exit(f"failed to verify HMAC for {args.snapshot}: {e}")
+    else:
+        print(
+            f"WARNING: HERMES_SNAPSHOT_SECRET is not set — skipping HMAC verification "
+            f"for {args.snapshot}. Set the environment variable to enable integrity checks.",
+            file=sys.stderr,
         )
 
     print(
