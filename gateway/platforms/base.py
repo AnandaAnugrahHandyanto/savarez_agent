@@ -850,9 +850,11 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
 )
 
 # Single source of truth for "what counts as a deliverable file" across every
-# MEDIA: extraction site. Intentionally EXCLUDES source/config extensions
-# (.py .sh .ts .toml .ini .cfg .log): those are inbound-MIME-only in
-# SUPPORTED_DOCUMENT_TYPES, and auto-delivering them outbound is a regression.
+# MEDIA: extraction site. Curated as the union of what extract_media and
+# extract_local_files already delivered, so source/script/config extensions
+# (.py .sh .ts .toml .ini .cfg .log) — never in either list — stay excluded:
+# delivering them outbound would be new behavior, and scripts/config often
+# carry secrets.
 _DELIVERY_MEDIA_EXTS = frozenset({
     # Images (embed inline where supported)
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",
