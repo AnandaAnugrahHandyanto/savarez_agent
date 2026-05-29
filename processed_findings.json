@@ -526,5 +526,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34956",
     "pr_number": 34956,
     "run_id": "20260529_222900"
+  },
+  "PATH-docker.py-1045": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34957",
+    "pr_number": 34957,
+    "run_id": "20260529_222900"
   }
 }
