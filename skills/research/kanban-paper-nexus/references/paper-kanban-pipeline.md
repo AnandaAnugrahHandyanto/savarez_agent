@@ -100,6 +100,7 @@ Downstream: `kanban_show` 读父任务 handoff；**禁止**编造父任务未出
 
 1. 读 `lark-shared`、`lark-doc`、`feishu-doc-bilingual-template.md`
 2. 合并 T0–T4 handoff，**替换** skeleton 中【待填】（可先 `build_bilingual_doc_md.py` 出骨架再手改）
+3. 最终写飞书文档时，默认走 `paper_feishu_doc_sync.py --handoff handoff.json`；不要直接手搓 `lark-cli docs +create` 整篇正文，否则容易退化成“摘要版”而漏掉公式 / 边界 / Delta 节。
 3. `paper_feishu_doc_sync.py --handoff handoff.json` — 在线文档名 `[canonical_id] title_zh`；遵守 create/append
 4. 核心总结 5 条必须中文可读；English mirror
 

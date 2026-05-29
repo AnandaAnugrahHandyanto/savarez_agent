@@ -1,13 +1,13 @@
 ---
 name: paper-search
-description: Ranked paper search by topic; Feishu IM only.
+description: Ranked paper search with bilingual Feishu quick view.
 version: 1.0.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [paper, search, literature, semantic-scholar, feishu, arxiv]
+    tags: [paper, search, literature, semantic-scholar, openalex, feishu, arxiv]
     category: research
     related_skills: [arxiv, literature-review, kanban-paper-nexus]
 ---
@@ -16,7 +16,7 @@ metadata:
 
 **入口：`/paper-search <主题或类别>`**（必须 `/` 触发）。
 
-按 **相关性 + 引用 + 高影响引用 + 时效 + 可下载** 综合排序，把 Top 论文列表推到飞书 IM。**不**创建飞书在线文档、**不**走 Kanban 精读流水线。
+按 **相关性 + 引用 + 高影响引用 + 时效 + 可下载** 综合排序，把 Top 论文列表推到飞书 IM。候选主来源为 **Semantic Scholar + OpenAlex**，不足时用 arXiv 补齐。默认输出是 **双语 IM 快览**：前 5 篇给中文题意 + 英文原题 + 中英一句话导读，剩余候选用简表折叠。**不**默认创建飞书在线文档、**不**走 Kanban 精读流水线。
 
 ## 打分方案（默认）
 
@@ -43,8 +43,10 @@ metadata:
 ## Prerequisites
 
 - `lark-cli` 已登录；Gateway 飞书 DM 有 `HERMES_SESSION_CHAT_ID`
-- 网络可访问 Semantic Scholar、arXiv
+- 网络可访问 Semantic Scholar、OpenAlex、arXiv
 - 可选 `SEMANTIC_SCHOLAR_API_KEY`（降低 429、带引用数排序）
+- 可选 `OPENALEX_API_KEY`（进入 polite pool / 提高 OpenAlex 稳定性）
+- 可选 `OPENALEX_MAILTO` / `CROSSREF_MAILTO`（学术 API 联系邮箱）
 
 ## Procedure（编排 / 单轮 agent）
 
@@ -55,17 +57,20 @@ python3 skills/research/paper-literature-search/scripts/paper_search_pipeline.py
   "<检索式>" --chat-id "$HERMES_SESSION_CHAT_ID" --top 8
 ```
 3. 或分步：`paper_search_rank.py` → 检查 JSON → `paper_search_feishu_deliver.py --json-in`
-4. 回复用户：已推送 Top N；精读某篇用 `/kanban-paper-nexus <arxiv_id>`
+4. 若 deliver stdout 返回 `no_hit=true` / `next_action=stop_no_manual_fallback`：**到此为止**，只告诉用户“当前论文库未命中精确候选”，建议缩检索式；**不要**继续 broaden、不要自己手工补榜单。
+5. 若有命中：回复用户已推送 Top N；精读某篇用 `/kanban-paper-nexus <arxiv_id>`
 
 ## 飞书实时（与 paper-nexus 同款）
 
-`kanban-feishu-live` board=`paper-search`：进度 3 条 + 结果 1 条长消息。见 `references/feishu-delivery.md`。
+`kanban-feishu-live` board=`paper-search`：进度 3 条 + 结果 1 条 **双语快览消息**。见 `references/feishu-delivery.md`。
 
 ## Forbidden
 
 - `docs +create` / `paper_feishu_doc_sync`
 - `kanban_create` 全套 T0–T6（本 skill 无看板精读）
 - 把 PDF/摘要全文贴进 IM
+- 在 `no_hit=true` 后继续 `web_search` / `browser_*` / `send_message` 手工补榜单
+- 在飞书 IM 里输出 LaTeX / MathJax（如 `$\\pi$`）；一律改成纯文本 `pi` 或 `π`
 
 ## Verification
 

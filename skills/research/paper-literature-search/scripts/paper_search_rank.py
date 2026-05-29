@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rank papers for a topic via Semantic Scholar (+ optional arXiv backfill)."""
+"""Rank papers for a topic via Semantic Scholar + OpenAlex (+ arXiv backfill)."""
 
 from __future__ import annotations
 
@@ -17,16 +17,24 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 _S2_SEARCH = "https://api.semanticscholar.org/graph/v1/paper/search"
+_OPENALEX_SEARCH = "https://api.openalex.org/works"
 _ARXIV_NS = {"a": "http://www.w3.org/2005/Atom"}
 _WEIGHTS = {"rel": 0.35, "cite": 0.30, "infl": 0.15, "rec": 0.15, "oa": 0.05}
+_BOOL_TOKEN_RE = re.compile(r'"[^"]+"|\(|\)|\bAND\b|\bOR\b|\bNOT\b|[^\s()]+', re.I)
+_QUERY_STOPWORDS = {"and", "or", "not"}
 
 
-def _get_json(url: str, timeout: int = 45, *, retries: int = 2) -> dict:
-    headers = {"User-Agent": "hermes-paper-search/1.0"}
-    key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "").strip()
-    if key:
-        headers["x-api-key"] = key
-    req = urllib.request.Request(url, headers=headers)
+def _get_json(
+    url: str,
+    timeout: int = 45,
+    *,
+    retries: int = 2,
+    headers: dict[str, str] | None = None,
+) -> dict:
+    req_headers = {"User-Agent": "hermes-paper-search/1.0"}
+    if headers:
+        req_headers.update(headers)
+    req = urllib.request.Request(url, headers=req_headers)
     last_err: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -85,6 +93,51 @@ def _arxiv_id_from_external(ext: dict | None) -> str:
     return str(arx).strip()
 
 
+def _openalex_abstract(inv: dict | None) -> str:
+    if not isinstance(inv, dict) or not inv:
+        return ""
+    words: list[tuple[int, str]] = []
+    for token, positions in inv.items():
+        if not isinstance(positions, list):
+            continue
+        for pos in positions:
+            if isinstance(pos, int):
+                words.append((pos, token))
+    words.sort()
+    return " ".join(token for _, token in words).strip()
+
+
+def _arxiv_id_from_openalex_ids(ids: dict | None) -> str:
+    if not isinstance(ids, dict):
+        return ""
+    for key in ("arxiv", "ArXiv"):
+        raw = ids.get(key)
+        if not raw:
+            continue
+        m = re.search(r"(?:arxiv\.org/(?:abs|pdf)/)?(\d{4}\.\d{4,5}(?:v\d+)?)", str(raw), re.I)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def _openalex_search_url(query: str, *, limit: int) -> str:
+    params = {
+        "search": query,
+        "per-page": str(min(50, max(5, limit))),
+        "filter": "is_paratext:false",
+    }
+    api_key = os.environ.get("OPENALEX_API_KEY", "").strip()
+    mailto = (
+        os.environ.get("OPENALEX_MAILTO", "").strip()
+        or os.environ.get("CROSSREF_MAILTO", "").strip()
+    )
+    if api_key:
+        params["api_key"] = api_key
+    if mailto:
+        params["mailto"] = mailto
+    return f"{_OPENALEX_SEARCH}?{urllib.parse.urlencode(params)}"
+
+
 def _keyword_rel(query: str, title: str, abstract: str) -> float:
     qtokens = {t.lower() for t in re.findall(r"[\w\u4e00-\u9fff]{2,}", query)}
     if not qtokens:
@@ -92,6 +145,131 @@ def _keyword_rel(query: str, title: str, abstract: str) -> float:
     text = f"{title} {abstract}".lower()
     hit = sum(1 for t in qtokens if t in text)
     return min(1.0, hit / max(1, len(qtokens)))
+
+
+def _normalize_match_text(text: str) -> str:
+    text = (text or "").lower()
+    text = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return f" {text} "
+
+
+def _term_variants(term: str) -> list[str]:
+    raw = (term or "").strip().strip('"').strip()
+    if not raw:
+        return []
+    variants = {raw.lower()}
+    simplified = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", raw.lower()).strip()
+    if simplified:
+        variants.add(simplified)
+    if "." in raw:
+        variants.add(raw.lower().replace(".", " "))
+        variants.add(raw.lower().replace(".", ""))
+    if "-" in raw:
+        variants.add(raw.lower().replace("-", " "))
+        variants.add(raw.lower().replace("-", ""))
+    return [v for v in variants if v]
+
+
+def _extract_clause_terms(clause: str) -> list[str]:
+    terms: list[str] = []
+    for tok in _BOOL_TOKEN_RE.findall(clause):
+        up = tok.upper()
+        if up in {"AND", "OR", "NOT", "(", ")"}:
+            continue
+        term = tok.strip().strip('"').strip()
+        if term:
+            terms.append(term)
+    return terms
+
+
+def parse_query_spec(query: str) -> dict:
+    tokens = _BOOL_TOKEN_RE.findall(query or "")
+    if not tokens:
+        return {"positive_groups": [], "negative_terms": [], "search_query": (query or "").strip()}
+    groups: list[tuple[bool, str]] = []
+    current: list[str] = []
+    depth = 0
+    next_negated = False
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        up = tok.upper()
+        if tok == "(":
+            depth += 1
+            current.append(tok)
+        elif tok == ")":
+            depth = max(0, depth - 1)
+            current.append(tok)
+        elif depth == 0 and up == "AND":
+            clause = " ".join(current).strip()
+            if clause:
+                groups.append((next_negated, clause))
+            current = []
+            next_negated = i + 1 < len(tokens) and tokens[i + 1].upper() == "NOT"
+            if next_negated:
+                i += 1
+        else:
+            current.append(tok)
+        i += 1
+    clause = " ".join(current).strip()
+    if clause:
+        groups.append((next_negated, clause))
+    positive_groups: list[list[str]] = []
+    negative_terms: list[str] = []
+    for negated, clause_text in groups:
+        terms = _extract_clause_terms(clause_text)
+        if not terms:
+            continue
+        if negated:
+            negative_terms.extend(terms)
+        else:
+            positive_groups.append(terms)
+    if not positive_groups and not negative_terms:
+        positive_groups = [_extract_clause_terms(query)]
+    search_terms: list[str] = []
+    for group in positive_groups:
+        for term in group:
+            low = term.lower()
+            if low in _QUERY_STOPWORDS or low in search_terms:
+                continue
+            search_terms.append(term)
+    return {
+        "positive_groups": positive_groups,
+        "negative_terms": negative_terms,
+        "search_query": " ".join(search_terms).strip() or (query or "").strip(),
+    }
+
+
+def build_candidate_queries(spec: dict, *, max_queries: int = 6) -> list[str]:
+    base = (spec.get("search_query") or "").strip()
+    queries: list[str] = [base] if base else []
+    groups = spec.get("positive_groups") or []
+    if len(groups) < 2:
+        return queries or [base]
+    anchors = groups[0][:max_queries]
+    context_terms: list[str] = []
+    for group in groups[1:]:
+        for term in group[:2]:
+            if term not in context_terms:
+                context_terms.append(term)
+    context = " ".join(context_terms).strip()
+    for anchor in anchors:
+        q = " ".join(part for part in (anchor, context) if part).strip()
+        if q and q not in queries:
+            queries.append(q)
+    return queries[: max_queries + 1]
+
+
+def _paper_matches_query_spec(paper: dict, spec: dict) -> bool:
+    text = _normalize_match_text(f"{paper.get('title', '')} {paper.get('abstract', '')}")
+    for group in spec.get("positive_groups") or []:
+        if group and not any(any(f" {v} " in text for v in _term_variants(term)) for term in group):
+            return False
+    for term in spec.get("negative_terms") or []:
+        if any(f" {v} " in text for v in _term_variants(term)):
+            return False
+    return True
 
 
 def search_semantic_scholar(query: str, *, limit: int = 40) -> list[dict]:
@@ -113,7 +291,11 @@ def search_semantic_scholar(query: str, *, limit: int = 40) -> list[dict]:
         "fields": fields,
     })
     url = f"{_S2_SEARCH}?{params}"
-    data = _get_json(url)
+    headers = {}
+    key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "").strip()
+    if key:
+        headers["x-api-key"] = key
+    data = _get_json(url, headers=headers)
     papers = []
     for item in data.get("data") or []:
         ext = item.get("externalIds") or {}
@@ -141,6 +323,53 @@ def search_semantic_scholar(query: str, *, limit: int = 40) -> list[dict]:
             if isinstance(item.get("publicationVenue"), dict)
             else "",
             "authors": author_names,
+        })
+    return papers
+
+
+def search_openalex(query: str, *, limit: int = 25) -> list[dict]:
+    url = _openalex_search_url(query, limit=limit)
+    data = _get_json(url, headers={"User-Agent": "hermes-paper-search/1.1"})
+    papers = []
+    for item in data.get("results") or []:
+        ids = item.get("ids") or {}
+        arxiv = _arxiv_id_from_openalex_ids(ids)
+        authors = []
+        for authorship in (item.get("authorships") or [])[:6]:
+            if not isinstance(authorship, dict):
+                continue
+            author = authorship.get("author") or {}
+            name = str(author.get("display_name") or "").strip()
+            if name:
+                authors.append(name)
+        best_oa = item.get("best_oa_location") or {}
+        primary_loc = item.get("primary_location") or {}
+        pdf_url = str(best_oa.get("pdf_url") or primary_loc.get("pdf_url") or "").strip()
+        landing_url = str(
+            best_oa.get("landing_page_url")
+            or primary_loc.get("landing_page_url")
+            or item.get("id")
+            or ""
+        ).strip()
+        venue = ""
+        source = primary_loc.get("source") or {}
+        if isinstance(source, dict):
+            venue = str(source.get("display_name") or "").strip()
+        papers.append({
+            "source": "openalex",
+            "paper_id": str(item.get("id") or "").rsplit("/", 1)[-1],
+            "title": str(item.get("display_name") or "").strip(),
+            "year": item.get("publication_year"),
+            "abstract": _openalex_abstract(item.get("abstract_inverted_index"))[:800],
+            "citation_count": int(item.get("cited_by_count") or 0),
+            "influential_citation_count": 0,
+            "relevance": 0.0,
+            "url": landing_url,
+            "arxiv_id": arxiv,
+            "arxiv_abs": f"https://arxiv.org/abs/{arxiv}" if arxiv else "",
+            "pdf_url": pdf_url,
+            "venue": venue,
+            "authors": authors,
         })
     return papers
 
@@ -277,25 +506,47 @@ def run_search(
     query = (query or "").strip()
     if not query:
         raise ValueError("empty query")
+    spec = parse_query_spec(query)
+    search_query = spec["search_query"]
+    search_queries = build_candidate_queries(spec)
+    per_query_limit = min(
+        candidate_limit,
+        max(8, math.ceil(candidate_limit / max(1, len(search_queries))) + 2),
+    )
 
     papers: list[dict] = []
-    try:
-        papers = search_semantic_scholar(query, limit=candidate_limit)
-    except urllib.error.HTTPError as exc:
-        if exc.code != 429:
-            raise
+    for provider_query in search_queries:
+        try:
+            papers.extend(search_semantic_scholar(provider_query, limit=per_query_limit))
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429:
+                raise
+        if len(dedupe_papers(papers)) >= candidate_limit:
+            break
     papers = list(papers)
     if len(papers) < max(10, top):
+        for provider_query in search_queries:
+            try:
+                papers.extend(search_openalex(provider_query, limit=min(per_query_limit, 25)))
+            except Exception:
+                pass
+            if len(dedupe_papers(papers)) >= candidate_limit:
+                break
+    if len(papers) < max(10, top):
         time.sleep(0.3)
-        try:
-            papers.extend(search_arxiv_backfill(query, limit=arxiv_backfill))
-        except Exception:
-            pass
+        for provider_query in search_queries:
+            try:
+                papers.extend(search_arxiv_backfill(provider_query, limit=arxiv_backfill))
+            except Exception:
+                pass
+            if len(dedupe_papers(papers)) >= candidate_limit:
+                break
 
     papers = [p for p in papers if p.get("title") and p.get("source") != "error"]
     papers = dedupe_papers(papers)
+    papers = [p for p in papers if _paper_matches_query_spec(p, spec)]
     ranked = rank_papers(
-        query,
+        search_query,
         papers,
         profile=profile,
         boost_recency=boost_recency,

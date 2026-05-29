@@ -16,6 +16,7 @@ enabled:
   - kanban-orchestrator
   - feishu-finance-kanban
   - feishu-finance-nexus
+  - feishu-rich-report
   - china-stock-analysis
   - stock-monitoring
   # 飞书 lark-cli（含 PPT；不含 lark-vc/calendar/minutes 等）

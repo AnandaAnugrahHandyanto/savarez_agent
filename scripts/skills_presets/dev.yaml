@@ -21,6 +21,7 @@ enabled:
   - react-best-practices
   - plan
   - hermes-agent
+  - feishu-rich-report
   - claude-code
   - domain-intel
   - scrapling

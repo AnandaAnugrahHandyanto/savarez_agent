@@ -14,6 +14,11 @@ enabled:
   - stock-monitoring
   - stock-analysis
   - feishu-finance-kanban
+  - feishu-finance-nexus
+  - feishu-rich-report
+  - vectorbt-backtest
+  - qlib-backtest
+  - finance-quant-workflow
   - kanban
   - kanban-orchestrator
   - kanban-stock-nexus

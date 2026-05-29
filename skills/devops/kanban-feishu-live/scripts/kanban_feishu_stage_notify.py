@@ -133,20 +133,32 @@ def send_feishu_text(
     dry_run: bool = False,
 ) -> dict:
     if dry_run:
-        return {"dry_run": True, "chat_id": chat_id, "text": text}
-    args = [
-        "lark-cli",
-        "im",
-        "+messages-send",
-        "--as",
-        as_identity,
-        "--chat-id",
-        chat_id,
-        "--text",
-        text,
-    ]
+        return {"dry_run": True, "chat_id": chat_id, "thread_id": thread_id, "text": text}
     if thread_id:
-        args.extend(["--thread-id", thread_id])
+        args = [
+            "lark-cli",
+            "im",
+            "+messages-reply",
+            "--as",
+            as_identity,
+            "--message-id",
+            thread_id,
+            "--reply-in-thread",
+            "--text",
+            text,
+        ]
+    else:
+        args = [
+            "lark-cli",
+            "im",
+            "+messages-send",
+            "--as",
+            as_identity,
+            "--chat-id",
+            chat_id,
+            "--text",
+            text,
+        ]
     proc = subprocess.run(args, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"

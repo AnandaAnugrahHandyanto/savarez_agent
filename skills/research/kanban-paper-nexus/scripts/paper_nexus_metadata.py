@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Fetch paper metadata for kanban-paper-nexus (arXiv + Semantic Scholar URLs)."""
+"""Fetch paper metadata for kanban-paper-nexus.
+
+Supports:
+- arXiv id / URL
+- Semantic Scholar paper URL / paper id
+- DOI raw string / doi.org URL
+- OpenAlex work URL / id
+"""
 
 from __future__ import annotations
 
@@ -12,6 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from html import unescape
 
 _NS = {"a": "http://www.w3.org/2005/Atom"}
 _ARXIV_ID = re.compile(
@@ -22,8 +30,16 @@ _S2_PAPER = re.compile(
     r"semanticscholar\.org/paper/(?:[^/]+/)?([0-9a-f]{40})",
     re.I,
 )
+_DOI = re.compile(
+    r"^(?:https?://(?:dx\.)?doi\.org/)?(10\.\d{4,9}/[-._;()/:A-Z0-9]+)$",
+    re.I,
+)
+_OPENALEX_WORK = re.compile(
+    r"^(?:https?://openalex\.org/)?(W\d+)$",
+    re.I,
+)
 _S2_FIELDS = (
-    "title,year,abstract,authors,externalIds,url,citationCount,"
+    "paperId,title,year,abstract,authors,externalIds,url,citationCount,"
     "influentialCitationCount,publicationVenue,openAccessPdf"
 )
 
@@ -36,8 +52,11 @@ def _s2_headers() -> dict[str, str]:
     return h
 
 
-def _get_json(url: str, timeout: int = 45) -> dict:
-    req = urllib.request.Request(url, headers=_s2_headers())
+def _get_json(url: str, timeout: int = 45, *, headers: dict[str, str] | None = None) -> dict:
+    req_headers = dict(_s2_headers())
+    if headers:
+        req_headers.update(headers)
+    req = urllib.request.Request(url, headers=req_headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -55,6 +74,23 @@ def _get_json(url: str, timeout: int = 45) -> dict:
         raise
 
 
+def _doi_from_raw(raw: str) -> str | None:
+    raw = (raw or "").strip()
+    raw = raw.rstrip(").,;]")
+    m = _DOI.match(raw)
+    if not m:
+        return None
+    return m.group(1).lower()
+
+
+def _openalex_from_raw(raw: str) -> str | None:
+    raw = (raw or "").strip().rstrip("/").rstrip(").,;]")
+    m = _OPENALEX_WORK.match(raw)
+    if not m:
+        return None
+    return m.group(1).upper()
+
+
 def resolve_canonical_id(raw: str) -> str:
     """Parse canonical id locally (no network)."""
     raw = (raw or "").strip()
@@ -68,9 +104,15 @@ def resolve_canonical_id(raw: str) -> str:
         return raw.lower()
     if re.match(r"^[0-9a-f]{40}$", raw, re.I):
         return f"s2:{raw.lower()}"
+    doi = _doi_from_raw(raw)
+    if doi:
+        return f"doi:{doi}"
+    openalex = _openalex_from_raw(raw)
+    if openalex:
+        return f"openalex:{openalex.lower()}"
     raise ValueError(
         f"Cannot parse paper id from: {raw!r}. "
-        "Use arXiv id/URL or https://www.semanticscholar.org/paper/<40-char-id>"
+        "Use arXiv id/URL, DOI, OpenAlex work URL/id, or https://www.semanticscholar.org/paper/<40-char-id>"
     )
 
 
@@ -94,16 +136,204 @@ def _s2_corpus_from_raw(raw: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
-def fetch_s2_entry(corpus_id: str) -> dict:
-    cid = corpus_id.strip().lower()
+def _crossref_headers() -> dict[str, str]:
+    mailto = os.environ.get("CROSSREF_MAILTO", "").strip() or "noreply@example.com"
+    return {
+        "User-Agent": f"hermes-paper-nexus/1.2 (mailto:{mailto})",
+        "Accept": "application/json",
+    }
+
+
+def _crossref_url(doi: str) -> str:
+    params = {}
+    mailto = os.environ.get("CROSSREF_MAILTO", "").strip()
+    if mailto:
+        params["mailto"] = mailto
+    q = urllib.parse.urlencode(params)
+    base = f"https://api.crossref.org/works/{urllib.parse.quote(doi, safe='')}"
+    return f"{base}?{q}" if q else base
+
+
+def _openalex_url(path: str, *, params: dict[str, str] | None = None) -> str:
+    query = dict(params or {})
+    api_key = os.environ.get("OPENALEX_API_KEY", "").strip()
+    mailto = (
+        os.environ.get("OPENALEX_MAILTO", "").strip()
+        or os.environ.get("CROSSREF_MAILTO", "").strip()
+    )
+    if api_key:
+        query["api_key"] = api_key
+    if mailto:
+        query["mailto"] = mailto
+    q = urllib.parse.urlencode(query)
+    return f"https://api.openalex.org/{path}?{q}" if q else f"https://api.openalex.org/{path}"
+
+
+def _clean_crossref_abstract(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r"<[^>]+>", " ", unescape(text))
+    return " ".join(cleaned.split()).strip()
+
+
+def _crossref_date(msg: dict) -> str:
+    parts = (
+        (msg.get("published-print") or {}).get("date-parts")
+        or (msg.get("published-online") or {}).get("date-parts")
+        or (msg.get("issued") or {}).get("date-parts")
+        or []
+    )
+    if not parts or not parts[0]:
+        return ""
+    vals = [str(x) for x in parts[0][:3]]
+    if len(vals) == 1:
+        return vals[0]
+    if len(vals) == 2:
+        return f"{vals[0]}-{vals[1].zfill(2)}"
+    return f"{vals[0]}-{vals[1].zfill(2)}-{vals[2].zfill(2)}"
+
+
+def _openalex_abstract(inv: dict | None) -> str:
+    if not isinstance(inv, dict) or not inv:
+        return ""
+    words: list[tuple[int, str]] = []
+    for token, positions in inv.items():
+        if not isinstance(positions, list):
+            continue
+        for pos in positions:
+            if isinstance(pos, int):
+                words.append((pos, token))
+    words.sort()
+    return " ".join(token for _, token in words).strip()
+
+
+def _arxiv_from_openalex_ids(ids: dict | None) -> str:
+    if not isinstance(ids, dict):
+        return ""
+    for key in ("arxiv", "ArXiv"):
+        raw = ids.get(key)
+        if raw:
+            aid = _arxiv_from_raw(str(raw))
+            if aid:
+                return aid
+    return ""
+
+
+def fetch_crossref_entry(doi: str) -> dict:
+    url = _crossref_url(doi)
+    req = urllib.request.Request(url, headers=_crossref_headers())
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    msg = payload.get("message") or {}
+    titles = msg.get("title") or []
+    title = str(titles[0] if titles else "").strip()
+    authors = []
+    for author in (msg.get("author") or [])[:12]:
+        if not isinstance(author, dict):
+            continue
+        name = " ".join(
+            part for part in (author.get("given", ""), author.get("family", "")) if part
+        ).strip()
+        if not name:
+            name = str(author.get("name") or "").strip()
+        if name:
+            authors.append(name)
+    venue = ""
+    containers = msg.get("container-title") or []
+    if containers:
+        venue = str(containers[0]).strip()
+    doi_url = f"https://doi.org/{doi}"
+    return {
+        "paper_id": f"doi:{doi}",
+        "canonical_id": f"doi:{doi}",
+        "source": "crossref",
+        "title": title,
+        "summary": _clean_crossref_abstract(str(msg.get("abstract") or "")),
+        "published": _crossref_date(msg),
+        "authors": authors,
+        "categories": [],
+        "arxiv_abs": "",
+        "arxiv_pdf": "",
+        "s2_url": "",
+        "doi": doi,
+        "doi_url": doi_url,
+        "venue": venue,
+        "citation_count": 0,
+        "influential_citation_count": 0,
+    }
+
+
+def fetch_openalex_entry(work_ref: str) -> dict:
+    wid = work_ref.strip()
+    if wid.lower().startswith("openalex:"):
+        wid = wid.split(":", 1)[1]
+    if wid.lower().startswith("https://openalex.org/"):
+        wid = wid.rsplit("/", 1)[-1]
+    wid = wid.upper()
+    url = _openalex_url(f"works/{urllib.parse.quote(wid, safe='')}")
+    item = _get_json(url, headers={"User-Agent": "hermes-paper-nexus/1.2"})
+    ids = item.get("ids") or {}
+    arxiv = _arxiv_from_openalex_ids(ids)
+    doi = _doi_from_raw(str(ids.get("doi") or ""))
+    authors = []
+    for authorship in (item.get("authorships") or [])[:12]:
+        if not isinstance(authorship, dict):
+            continue
+        author = authorship.get("author") or {}
+        name = str(author.get("display_name") or "").strip()
+        if name:
+            authors.append(name)
+    best_oa = item.get("best_oa_location") or {}
+    primary_loc = item.get("primary_location") or {}
+    source = primary_loc.get("source") or {}
+    pdf_url = str(best_oa.get("pdf_url") or primary_loc.get("pdf_url") or "").strip()
+    landing = str(
+        best_oa.get("landing_page_url")
+        or primary_loc.get("landing_page_url")
+        or item.get("id")
+        or f"https://openalex.org/{wid}"
+    ).strip()
+    canonical = (
+        re.sub(r"v\d+$", "", arxiv, flags=re.I)
+        if arxiv
+        else (f"doi:{doi}" if doi else f"openalex:{wid.lower()}")
+    )
+    paper_id = arxiv or (f"doi:{doi}" if doi else f"openalex:{wid.lower()}")
+    venue = str(source.get("display_name") or item.get("host_venue", {}).get("display_name") or "").strip()
+    return {
+        "paper_id": paper_id,
+        "canonical_id": canonical,
+        "source": "openalex",
+        "openalex_id": wid.lower(),
+        "title": str(item.get("display_name") or "").strip(),
+        "summary": _openalex_abstract(item.get("abstract_inverted_index")),
+        "published": str(item.get("publication_year") or "")[:4],
+        "authors": authors,
+        "categories": [],
+        "arxiv_abs": f"https://arxiv.org/abs/{arxiv}" if arxiv else "",
+        "arxiv_pdf": f"https://arxiv.org/pdf/{arxiv}" if arxiv else pdf_url,
+        "s2_url": "",
+        "doi": doi or "",
+        "doi_url": f"https://doi.org/{doi}" if doi else "",
+        "venue": venue,
+        "citation_count": int(item.get("cited_by_count") or 0),
+        "influential_citation_count": 0,
+        "url": landing,
+    }
+
+
+def fetch_s2_entry(paper_ref: str) -> dict:
+    paper_ref = paper_ref.strip()
+    cid = paper_ref.lower()
     url = (
         "https://api.semanticscholar.org/graph/v1/paper/"
-        f"{urllib.parse.quote(cid)}?fields={_S2_FIELDS}"
+        f"{urllib.parse.quote(paper_ref, safe='')}?fields={_S2_FIELDS}"
     )
     item = _get_json(url)
     ext = item.get("externalIds") or {}
     arxiv = str(ext.get("ArXiv") or ext.get("arXiv") or "").strip()
     doi = str(ext.get("DOI") or "").strip()
+    paper_id = str(item.get("paperId") or "").strip().lower()
     authors = [
         a.get("name", "") if isinstance(a, dict) else str(a)
         for a in (item.get("authors") or [])[:12]
@@ -112,13 +342,16 @@ def fetch_s2_entry(corpus_id: str) -> dict:
     venue_name = venue.get("name", "") if isinstance(venue, dict) else ""
     oa = item.get("openAccessPdf") or {}
     pdf_url = (oa.get("url") if isinstance(oa, dict) else "") or ""
-    canonical = re.sub(r"v\d+$", "", arxiv, flags=re.I) if arxiv else f"s2:{cid}"
+    s2_id = paper_id or (cid if re.match(r"^[0-9a-f]{40}$", cid, re.I) else "")
+    canonical = re.sub(r"v\d+$", "", arxiv, flags=re.I) if arxiv else (
+        f"s2:{s2_id}" if s2_id else (f"doi:{doi.lower()}" if doi else cid)
+    )
     published = str(item.get("year") or "")[:4]
     return {
-        "paper_id": arxiv or f"s2:{cid}",
+        "paper_id": arxiv or (f"s2:{s2_id}" if s2_id else canonical),
         "canonical_id": canonical,
         "source": "semantic_scholar",
-        "s2_corpus_id": cid,
+        "s2_corpus_id": s2_id or cid,
         "title": (item.get("title") or "").replace("\n", " ").strip(),
         "summary": (item.get("abstract") or "").strip(),
         "published": published,
@@ -126,8 +359,9 @@ def fetch_s2_entry(corpus_id: str) -> dict:
         "categories": [],
         "arxiv_abs": f"https://arxiv.org/abs/{arxiv}" if arxiv else "",
         "arxiv_pdf": f"https://arxiv.org/pdf/{arxiv}" if arxiv else pdf_url,
-        "s2_url": item.get("url") or f"https://www.semanticscholar.org/paper/{cid}",
-        "doi": doi,
+        "s2_url": item.get("url") or (f"https://www.semanticscholar.org/paper/{s2_id}" if s2_id else ""),
+        "doi": doi.lower(),
+        "doi_url": f"https://doi.org/{doi.lower()}" if doi else "",
         "venue": venue_name,
         "citation_count": int(item.get("citationCount") or 0),
         "influential_citation_count": int(item.get("influentialCitationCount") or 0),
@@ -174,7 +408,7 @@ def fetch_entry(paper_id: str) -> dict:
 
 
 def resolve_and_fetch(raw: str) -> dict:
-    """Resolve arXiv id, S2 URL/hash, or fail with clear error."""
+    """Resolve arXiv id, DOI, OpenAlex, S2 URL/hash, or fail with clear error."""
     raw = (raw or "").strip()
     arxiv = _arxiv_from_raw(raw)
     if arxiv:
@@ -200,16 +434,27 @@ def resolve_and_fetch(raw: str) -> dict:
     if re.match(r"^[0-9a-f]{40}$", raw, re.I):
         return fetch_s2_entry(raw)
 
+    doi = _doi_from_raw(raw)
+    if doi:
+        try:
+            return fetch_s2_entry(f"DOI:{doi}")
+        except Exception:
+            return fetch_crossref_entry(doi)
+
+    openalex = _openalex_from_raw(raw)
+    if openalex:
+        return fetch_openalex_entry(openalex)
+
     raise ValueError(
         f"Cannot parse paper id from: {raw!r}. "
-        "Use arXiv id/URL or https://www.semanticscholar.org/paper/<40-char-id>"
+        "Use arXiv id/URL, DOI, OpenAlex work URL/id, or https://www.semanticscholar.org/paper/<40-char-id>"
     )
 
 
 def main() -> int:
     if len(sys.argv) < 2:
         print(
-            "Usage: paper_nexus_metadata.py <arxiv_or_semanticscholar_url>",
+            "Usage: paper_nexus_metadata.py <arxiv|doi|openalex|semanticscholar>",
             file=sys.stderr,
         )
         return 2

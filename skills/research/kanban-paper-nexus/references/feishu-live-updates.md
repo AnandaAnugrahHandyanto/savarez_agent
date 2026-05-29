@@ -17,15 +17,24 @@
 
 共享脚本：`skills/devops/kanban-feishu-live/scripts/`（paper shim：`paper_feishu_*.py` 自动带 `--board paper-nexus`）。
 
+**推荐单入口（避免漏步骤）：**
+
 ```bash
-# 1) 登记 chat + 任务映射（--title-zh 写入 session，IM 头也用中文名）
+python3 skills/research/kanban-paper-nexus/scripts/paper_feishu_live_init.py \
+  2402.03300 \
+  --title-zh "DeepSeekMath 开放数学推理" \
+  --tasks-inline '{"T0":"t_xxx","T1":"t_yyy",...}'
+```
+
+它会顺序执行：`init` → `subscribe` → `pipeline_started`。
+
+```bash
+# 手动分步版（仅当你需要逐步 debug 时）
 python3 skills/devops/kanban-feishu-live/scripts/kanban_feishu_stage_notify.py \
   --board paper-nexus init 2402.03300 \
   --title-zh "DeepSeekMath 开放数学推理" \
   --tasks-inline '{"T0":"t_xxx","T1":"t_yyy",...}'
-
 python3 skills/devops/kanban-feishu-live/scripts/kanban_feishu_subscribe.py --board paper-nexus 2402.03300
-
 python3 skills/devops/kanban-feishu-live/scripts/kanban_feishu_stage_notify.py \
   --board paper-nexus notify --entity-id 2402.03300 --event pipeline_started
 ```
@@ -87,7 +96,7 @@ T6 收尾：
 
 ## Pitfalls
 
-- 未 `init` 就 `notify` → 脚本退出；编排必须先 init。
+- 漏掉 `init / subscribe / pipeline_started` 任一步，飞书实时都会残缺；编排优先用 `paper_feishu_live_init.py`。
 - 工人未装 `lark-cli` 或未登录 → 只写 handoff，在 comment 留 `[feishu-notify-skipped]`。
 - 不要用 Memory / skill 全文当 `search_memory` query（见 `memory-os.md`）。
 - T5 长文只进飞书 **doc**，IM 仍是一条短更新 + 链接。

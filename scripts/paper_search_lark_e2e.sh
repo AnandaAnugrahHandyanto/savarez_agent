@@ -37,7 +37,9 @@ python3 "$SCRIPTS/paper_search_pipeline.py" "$QUERY" \
 
 echo "--- 4) Verify chat messages ---"
 sleep 2
-lark-cli im +chat-messages-list --as bot --chat-id "$FEISHU_CHAT_ID" --page-size 12 2>/dev/null | \
-  rg -F "文献检索" | head -5 || rg -F "$QUERY" | head -5 || echo "WARN: verify grep empty"
+VERIFY_MSGS=$(lark-cli im +chat-messages-list --as bot --chat-id "$FEISHU_CHAT_ID" --page-size 12 2>/dev/null || echo '{}')
+echo "$VERIFY_MSGS" | grep -F "文献检索" | head -5 || \
+  echo "$VERIFY_MSGS" | grep -F "$QUERY" | head -5 || \
+  echo "WARN: verify grep empty (chat may not show yet)"
 
 echo "=== PASS. Log: $LOG ==="
