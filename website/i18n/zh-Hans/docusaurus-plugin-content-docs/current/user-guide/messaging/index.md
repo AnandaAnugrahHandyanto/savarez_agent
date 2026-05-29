@@ -261,7 +261,7 @@ gateway:
 
 ## 中断 Agent
 
-在 agent 工作时发送任意消息即可中断它。关键行为：
+如果你希望在 agent 工作时发送的消息中断当前运行，请设置 `display.busy_input_mode: interrupt`。关键行为：
 
 - **正在执行的终端命令立即终止**（SIGTERM，1 秒后 SIGKILL）
 - **工具调用被取消** — 仅当前正在执行的工具调用会运行，其余跳过
@@ -270,14 +270,15 @@ gateway:
 
 ### 队列 vs 中断 vs 引导（繁忙输入模式）
 
-默认情况下，向繁忙的 agent 发送消息会中断它。另有两种模式可用：
+默认情况下，向繁忙的 agent 发送消息会排队到下一轮，并立即发送可见确认。也可以使用其他模式：
 
 - `queue` — 后续消息等待，在当前任务完成后作为下一轮运行。
+- `interrupt` — 后续消息中断当前运行并立即处理。
 - `steer` — 后续消息通过 `/steer` 注入当前运行，在下一次工具调用后到达 agent。不中断，不开新轮次。如果 agent 尚未开始，则回退为 `queue` 行为。
 
 ```yaml
 display:
-  busy_input_mode: steer   # 或 queue，或 interrupt（默认）
+  busy_input_mode: steer   # 或 queue（默认），或 interrupt
   busy_ack_enabled: true   # 设为 false 可完全抑制 ⚡/⏳/⏩ 聊天回复
 ```
 

@@ -265,7 +265,7 @@ Use `/whoami` from any platform to see the active scope, your tier (admin / user
 
 ## Interrupting the Agent
 
-Send any message while the agent is working to interrupt it. Key behaviors:
+Set `display.busy_input_mode: interrupt` if you want messages sent while the agent is working to interrupt it. Key behaviors:
 
 - **In-progress terminal commands are killed immediately** (SIGTERM, then SIGKILL after 1s)
 - **Tool calls are cancelled** — only the currently-executing one runs, the rest are skipped
@@ -274,14 +274,15 @@ Send any message while the agent is working to interrupt it. Key behaviors:
 
 ### Queue vs interrupt vs steer (busy-input mode)
 
-By default, messaging a busy agent interrupts it. Two other modes are available:
+By default, messaging a busy agent queues the follow-up for the next turn and sends a visible acknowledgment. Other modes are available:
 
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes.
+- `interrupt` — follow-up messages interrupt the current run and are processed immediately.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
 
 ```yaml
 display:
-  busy_input_mode: steer   # or queue, or interrupt (default)
+  busy_input_mode: steer   # or queue (default), or interrupt
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
 ```
 

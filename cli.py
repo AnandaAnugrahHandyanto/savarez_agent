@@ -423,7 +423,7 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_skip_tool_only": True,
             "show_reasoning": False,
             "streaming": True,
-            "busy_input_mode": "interrupt",
+            "busy_input_mode": "queue",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
 
@@ -2934,16 +2934,18 @@ class HermesCLI:
             enabled=CLI_CONFIG["display"].get("persistent_output", True),
             max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),
         )
-        # busy_input_mode: "interrupt" (Enter interrupts current run),
-        # "queue" (Enter queues for next turn), or "steer" (Enter injects
-        # mid-run via /steer, arriving after the next tool call).
-        _bim = str(CLI_CONFIG["display"].get("busy_input_mode", "interrupt")).strip().lower()
+        # busy_input_mode: "queue" (Enter queues for next turn),
+        # "steer" (Enter injects after the next tool call), or
+        # "interrupt" (Enter interrupts the current run).
+        _bim = str(CLI_CONFIG["display"].get("busy_input_mode", "queue")).strip().lower()
         if _bim == "queue":
             self.busy_input_mode = "queue"
         elif _bim == "steer":
             self.busy_input_mode = "steer"
-        else:
+        elif _bim == "interrupt":
             self.busy_input_mode = "interrupt"
+        else:
+            self.busy_input_mode = "queue"
 
         # self.verbose ONLY controls global DEBUG logging (root logger level).
         # display.tool_progress="verbose" controls tool-call rendering (full args,
@@ -9780,7 +9782,7 @@ class HermesCLI:
             /busy status        Show current busy input mode
             /busy queue         Queue input for the next turn instead of interrupting
             /busy steer         Inject Enter mid-run via /steer (after next tool call)
-            /busy interrupt     Interrupt the current run on Enter (default)
+            /busy interrupt     Interrupt the current run on Enter
         """
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
@@ -12187,7 +12189,7 @@ class HermesCLI:
 
             # Re-queue the interrupt message (and any that arrived while we were
             # processing the first) as the next prompt for process_loop.
-            # Only reached when busy_input_mode == "interrupt" (the default).
+            # Only reached when busy_input_mode == "interrupt".
             # In "queue" mode Enter routes directly to _pending_input so this
             # block is never hit.
             if pending_message and hasattr(self, '_pending_input'):

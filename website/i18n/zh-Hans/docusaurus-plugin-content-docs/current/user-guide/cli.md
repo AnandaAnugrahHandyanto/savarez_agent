@@ -239,7 +239,7 @@ personalities:
 
 你可以在任意时刻中断 agent：
 
-- **输入新消息 + Enter**，在 agent 工作时——中断并处理你的新指令
+- **设置 `display.busy_input_mode: interrupt` 后输入新消息 + Enter**，在 agent 工作时——中断并处理你的新指令
 - **`Ctrl+C`**——中断当前操作（2 秒内双击强制退出）
 - 正在进行的终端命令会立即被终止（SIGTERM，1 秒后 SIGKILL）
 - 中断期间输入的多条消息会合并为一条 prompt
@@ -250,17 +250,17 @@ personalities:
 
 | 模式 | 行为 |
 |------|----------|
-| `"interrupt"`（默认） | 你的消息中断当前操作并立即处理 |
-| `"queue"` | 你的消息被静默排队，在 agent 完成后作为下一轮发送 |
+| `"queue"`（默认） | 你的消息被排队，在 agent 完成后作为下一轮发送 |
+| `"interrupt"` | 你的消息中断当前操作并立即处理 |
 | `"steer"` | 你的消息通过 `/steer` 注入当前运行，在下一次工具调用后到达 agent——不中断，不开启新轮次 |
 
 ```yaml
 # ~/.hermes/config.yaml
 display:
-  busy_input_mode: "steer"   # 或 "queue" 或 "interrupt"（默认）
+  busy_input_mode: "steer"   # 或 "queue"（默认）或 "interrupt"
 ```
 
-`"queue"` 模式适合在不意外取消进行中工作的情况下准备后续消息。`"steer"` 模式适合在不中断的情况下在任务执行中途重定向 agent——例如在它还在编辑代码时说"顺便也检查一下测试"。未知值会回退到 `"interrupt"`。
+`"queue"` 模式适合在不意外取消进行中工作的情况下准备后续消息。`"steer"` 模式适合在不中断的情况下在任务执行中途重定向 agent——例如在它还在编辑代码时说"顺便也检查一下测试"。未知值会回退到 `"queue"`。
 
 `"steer"` 有两个自动回退：如果 agent 尚未启动，或附有图片，消息会回退到 `"queue"` 行为，确保内容不丢失。
 
@@ -274,7 +274,7 @@ display:
 ```
 
 :::tip 首次提示
-第一次在 Hermes 工作时按下 Enter，Hermes 会打印一行提示，说明 `/busy` 选项（`"(tip) Your message interrupted the current run…"`）。每次安装只触发一次——`config.yaml` 中 `onboarding.seen.busy_input_prompt` 下的标志会锁定它。删除该键可再次看到提示。
+第一次在 Hermes 工作时按下 Enter，Hermes 会打印一行提示，说明 `/busy` 选项。每次安装只触发一次——`config.yaml` 中 `onboarding.seen.busy_input_prompt` 下的标志会锁定它。删除该键可再次看到提示。
 :::
 
 ### 挂起到后台

@@ -122,6 +122,31 @@ class TestBusySessionAck:
         running_agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_handle_message_priority_path_sends_queue_ack(self):
+        """The runner-level active-agent guard should visibly ack queued text."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        event = _make_event(text="queue this while busy")
+        sk = build_session_key(event.source)
+
+        running_agent = MagicMock()
+        runner._running_agents[sk] = running_agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        assert result is None
+        assert adapter._pending_messages[sk] is event
+        running_agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_called_once()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queued for the next turn" in content
+
+    @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
         """First message during busy session should get a status ack."""
         runner, sentinel = _make_runner()
@@ -190,10 +215,10 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
-    async def test_busy_text_mode_queue_delegates_to_adapter_handle_message(self):
-        """busy_text_mode=queue lets the adapter debounce text silently."""
+    async def test_busy_text_mode_queue_acknowledges_and_queues(self):
+        """Queue-mode busy text now gets an immediate visible ack."""
         runner, sentinel = _make_runner()
-        runner._busy_input_mode = "interrupt"
+        runner._busy_input_mode = "queue"
         runner._busy_text_mode = "queue"
         adapter = _make_adapter()
 
@@ -209,11 +234,13 @@ class TestBusySessionAck:
         result1 = await runner._handle_active_session_busy_message(first, sk)
         result2 = await runner._handle_active_session_busy_message(second, sk)
 
-        assert result1 is False
-        assert result2 is False
-        assert sk not in adapter._pending_messages
+        assert result1 is True
+        assert result2 is True
+        assert adapter._pending_messages[sk].text == "part one\npart two"
         agent.interrupt.assert_not_called()
-        adapter._send_with_retry.assert_not_called()
+        adapter._send_with_retry.assert_called_once()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queued for the next turn" in content
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):

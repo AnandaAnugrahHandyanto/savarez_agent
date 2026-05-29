@@ -1669,8 +1669,8 @@ class GatewayRunner:
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
-    _busy_input_mode: str = "interrupt"
-    _busy_text_mode: str = "interrupt"
+    _busy_input_mode: str = "queue"
+    _busy_text_mode: str = "queue"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -2946,7 +2946,9 @@ class GatewayRunner:
             return "queue"
         if mode == "steer":
             return "steer"
-        return "interrupt"
+        if mode == "interrupt":
+            return "interrupt"
+        return "queue"
 
     @staticmethod
     def _load_busy_text_mode() -> str:
@@ -3145,14 +3147,8 @@ class GatewayRunner:
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
-        busy_text_mode = getattr(self, "_busy_text_mode", "queue")
-        if (
-            event.message_type == MessageType.TEXT
-            and busy_text_mode == "queue"
-            and effective_mode != "steer"
-        ):
-            return False
-
+        if effective_mode not in {"queue", "steer", "interrupt"}:
+            effective_mode = "queue"
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
@@ -3231,6 +3227,8 @@ class GatewayRunner:
         # to avoid spamming the user when they send multiple messages quickly
         _BUSY_ACK_COOLDOWN = 30
         now = time.time()
+        if not hasattr(self, "_busy_ack_ts") or self._busy_ack_ts is None:
+            self._busy_ack_ts = {}
         last_ack = self._busy_ack_ts.get(session_key, 0)
         if now - last_ack < _BUSY_ACK_COOLDOWN:
             return True  # interrupt sent (if not queue), ack already delivered recently
@@ -7016,12 +7014,9 @@ class GatewayRunner:
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
         # PRIORITY handling when an agent is already running for this session.
-        # Default behavior is to interrupt immediately so user text/stop messages
-        # are handled with minimal latency.
-        #
-        # Special case: Telegram/photo bursts often arrive as multiple near-
-        # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
-        # let the adapter-level batching/queueing logic absorb them.
+        # Default behavior is to queue normal follow-up messages for the next
+        # turn and acknowledge them immediately. Explicit /stop, /queue, and
+        # /steer keep their dedicated control-plane semantics.
 
         # Staleness eviction: detect leaked locks from hung/crashed handlers.
         # With inactivity-based timeout, active tasks can run for hours, so
@@ -7309,109 +7304,8 @@ class GatewayRunner:
                     f"mid-turn. Wait for the current response or `/stop` first."
                 )
 
-            if event.message_type == MessageType.PHOTO:
-                logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+            if await self._handle_active_session_busy_message(event, _quick_key):
                 return None
-
-            _telegram_followup_grace = float(
-                os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
-            )
-            _started_at = self._running_agents_ts.get(_quick_key, 0)
-            if (
-                source.platform == Platform.TELEGRAM
-                and event.message_type == MessageType.TEXT
-                and _telegram_followup_grace > 0
-                and _started_at
-                and (time.time() - _started_at) <= _telegram_followup_grace
-            ):
-                logger.debug(
-                    "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
-                    time.time() - _started_at,
-                    _quick_key,
-                )
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    merge_pending_message_event(
-                        adapter._pending_messages,
-                        _quick_key,
-                        event,
-                        merge_text=True,
-                    )
-                return None
-
-            running_agent = self._running_agents.get(_quick_key)
-            if running_agent is _AGENT_PENDING_SENTINEL:
-                # Agent is being set up but not ready yet.
-                if event.get_command() == "stop":
-                    # Force-clean the sentinel so the session is unlocked.
-                    self._release_running_agent_state(_quick_key)
-                    logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
-                    return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
-                # Queue the message so it will be picked up after the
-                # agent starts.
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    merge_pending_message_event(
-                        adapter._pending_messages,
-                        _quick_key,
-                        event,
-                        merge_text=True,
-                    )
-                return None
-            if self._draining:
-                if self._queue_during_drain_enabled():
-                    self._queue_or_replace_pending_event(_quick_key, event)
-                return (
-                    f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-                    if self._queue_during_drain_enabled()
-                    else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
-                )
-            if self._busy_input_mode == "queue":
-                logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
-                return None
-            if self._busy_input_mode == "steer":
-                # Steer mode: inject text into the running agent mid-run via
-                # agent.steer().  Falls back to queue semantics if the payload
-                # is empty, the agent lacks steer(), or steer() rejects.
-                steer_text = (event.text or "").strip()
-                steered = False
-                if steer_text and hasattr(running_agent, "steer"):
-                    try:
-                        steered = bool(running_agent.steer(steer_text))
-                    except Exception as exc:
-                        logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
-                        steered = False
-                if steered:
-                    logger.debug("PRIORITY steer for session %s", _quick_key)
-                    return None
-                logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
-                return None
-            # #30170 — Subagent protection (PRIORITY path). Same rationale
-            # as ``_handle_active_session_busy_message``: an interrupt
-            # cascades through ``_active_children`` and aborts in-flight
-            # delegate_task work. Demote to queue semantics when the
-            # parent is currently driving subagents so a conversational
-            # follow-up doesn't destroy minutes of subagent progress.
-            # /stop reaches its dedicated handler above, so the operator
-            # still has a clean escape hatch.
-            if self._agent_has_active_subagents(running_agent):
-                logger.info(
-                    "PRIORITY interrupt demoted to queue for session %s "
-                    "because the running agent has active subagents (#30170)",
-                    _quick_key,
-                )
-                self._queue_or_replace_pending_event(_quick_key, event)
-                return None
-            logger.debug("PRIORITY interrupt for session %s", _quick_key)
-            running_agent.interrupt(event.text)
-            # NOTE: self._pending_messages was write-only (never consumed).
-            # The actual interrupt message is delivered via adapter._pending_messages
-            # which is read by _run_agent. Removed to prevent unbounded growth.
             return None
 
         # Check for commands
