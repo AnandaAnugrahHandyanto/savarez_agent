@@ -603,7 +603,7 @@ def _check_cua_driver_asset_for_arch() -> bool:
     )
     try:
         req = urllib.request.Request(api_url, headers={"Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # SSRF: add IP block check
             release = _json.loads(resp.read().decode())
         tag = release.get("tag_name", "")
         assets = release.get("assets", [])
