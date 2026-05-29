@@ -48,6 +48,7 @@ from hermes_time import parse_utc_z
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
+from .memory_router import classify as classify_memory
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +289,10 @@ RETAIN_SCHEMA = {
                 "type": "string",
                 "enum": ["append", "replace"],
                 "description": "Advanced Hindsight update mode. 'replace' uses the backend default overwrite behavior.",
+            },
+            "strategy": {
+                "type": "string",
+                "description": "Optional configured Hindsight retain strategy name for this call.",
             },
             "tags": {
                 "type": "array",
@@ -878,6 +883,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_dedupe_context_tags = list(_DEFAULT_PREFETCH_DEDUPE_CONTEXT_TAGS)
         self._prefetch_dedupe_enabled = True
         self._retain_autokey_context_tags: list[str] = []
+        self._memory_router_enabled = False
         self._correction_visibility = "suppressive"
         self._memory_hygiene_path = Path(
             os.environ.get(
@@ -1180,6 +1186,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "prefetch_dedupe_context_tags", "description": "Context tags whose recurring memories are deduplicated before injection", "default": _DEFAULT_PREFETCH_DEDUPE_CONTEXT_TAGS},
             {"key": "prefetch_dedupe_enabled", "description": "Deduplicate recurring persona context memories before injection", "default": True},
             {"key": "retain_autokey_context_tags", "description": "Opt-in tags whose tool retains get a stable document_id derived from tag and context/source/context_id when none is supplied", "default": ""},
+            {"key": "memory_router_enabled", "description": "Enrich retained memories with deterministic class, priority, and tags", "default": False},
             {"key": "correction_visibility", "description": "How memory hygiene corrections are injected: suppressive, visible, or visible_first", "default": "suppressive"},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
             {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
@@ -1851,6 +1858,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_autokey_context_tags = _normalize_retain_tags(
             self._config.get("retain_autokey_context_tags")
         )
+        self._memory_router_enabled = _parse_bool_setting(
+            self._config.get("memory_router_enabled"),
+            False,
+        )
         correction_visibility = str(self._config.get("correction_visibility") or "suppressive").strip()
         if correction_visibility not in _VALID_CORRECTION_VISIBILITY:
             logger.warning(
@@ -2091,6 +2102,7 @@ class HindsightMemoryProvider(MemoryProvider):
         tags: List[str] | None = None,
         visibility: str | None = None,
         update_mode: str | None = None,
+        strategy: str | None = None,
         retain_async: bool | None = None,
     ) -> Dict[str, Any]:
         metadata = metadata or self._build_metadata(message_count=1, turn_index=self._turn_index)
@@ -2108,6 +2120,14 @@ class HindsightMemoryProvider(MemoryProvider):
             if tag not in merged_tags:
                 merged_tags.append(tag)
         merged_tags = self._apply_visibility_to_retain(metadata, merged_tags, visibility)
+        router_result: dict[str, Any] | None = None
+        if self._memory_router_enabled:
+            router_result = classify_memory(content, context or "")
+            metadata["memory_class"] = str(router_result.get("class") or "")
+            metadata["memory_priority"] = str(router_result.get("priority") or "")
+            for tag in _normalize_retain_tags(router_result.get("tags")):
+                if tag not in merged_tags:
+                    merged_tags.append(tag)
         document_id = str(document_id or "").strip() or self._derive_retain_document_id(
             context=context,
             metadata=metadata,
@@ -2117,6 +2137,15 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["document_id"] = document_id
         if update_mode and update_mode != "replace":
             kwargs["update_mode"] = update_mode
+        strategy = str(strategy or "").strip()
+        if (
+            not strategy
+            and router_result
+            and router_result.get("class") in {"identity", "relation"}
+        ):
+            strategy = "self-events"
+        if strategy:
+            kwargs["strategy"] = strategy
         if merged_tags:
             kwargs["tags"] = merged_tags
         return kwargs
@@ -2234,6 +2263,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     tags=args.get("tags"),
                     visibility=args.get("visibility"),
                     update_mode=update_mode or None,
+                    strategy=str(args.get("strategy") or "").strip() or None,
                 )
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
