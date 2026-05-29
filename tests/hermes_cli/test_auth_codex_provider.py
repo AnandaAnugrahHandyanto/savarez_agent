@@ -3,6 +3,8 @@
 import json
 import time
 import base64
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -695,6 +697,93 @@ def test_save_codex_tokens_migrates_linked_aliases_in_named_profiles(tmp_path, m
         }
         assert entries[f"{profile.name}-linked"]["refresh_token"] == "new-rt"
         assert entries[f"{profile.name}-independent"]["refresh_token"] == f"{profile.name}-rt"
+
+
+def test_file_lock_zero_timeout_does_not_retry(tmp_path, monkeypatch):
+    """Zero-timeout best-effort locks make one immediate acquisition attempt."""
+    import hermes_cli.auth as auth_mod
+
+    attempts = {"count": 0}
+
+    class _BusyFcntl:
+        LOCK_EX = 1
+        LOCK_NB = 2
+        LOCK_UN = 4
+
+        @staticmethod
+        def flock(_fileno, operation):
+            assert operation == _BusyFcntl.LOCK_EX | _BusyFcntl.LOCK_NB
+            attempts["count"] += 1
+            raise BlockingIOError
+
+    monkeypatch.setattr(auth_mod, "fcntl", _BusyFcntl)
+    monkeypatch.setattr(auth_mod, "msvcrt", None)
+
+    with pytest.raises(TimeoutError):
+        with auth_mod._file_lock(
+            tmp_path / "busy.lock",
+            threading.local(),
+            0.0,
+            "busy lock",
+        ):
+            pytest.fail("busy lock must not be acquired")
+
+    assert attempts["count"] == 1
+
+
+def test_save_codex_tokens_skips_busy_profile_alias_migration(tmp_path, monkeypatch):
+    """Busy sibling migration must not delay canonical token persistence."""
+    import hermes_cli.auth as auth_mod
+
+    root_home = tmp_path / "hermes"
+    blocked = root_home / "profiles" / "blocked"
+    healthy = root_home / "profiles" / "healthy"
+    for profile in (blocked, healthy):
+        profile.mkdir(parents=True)
+        (profile / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [{
+                    "id": f"{profile.name}-linked",
+                    "source": "manual:device_code",
+                    "access_token": f"{profile.name}-stale-at",
+                    "refresh_token": "old-rt",
+                }],
+            },
+        }))
+    (root_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
+            },
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(root_home))
+
+    original_file_lock = auth_mod._file_lock
+
+    @contextmanager
+    def _file_lock(lock_path, holder, timeout_seconds, timeout_message):
+        if lock_path == blocked / "auth.lock":
+            assert timeout_seconds == 0.0
+            raise TimeoutError("blocked sibling")
+        with original_file_lock(lock_path, holder, timeout_seconds, timeout_message):
+            yield
+
+    monkeypatch.setattr(auth_mod, "_file_lock", _file_lock)
+
+    _save_codex_tokens({"access_token": "new-at", "refresh_token": "new-rt"})
+
+    root = json.loads((root_home / "auth.json").read_text())
+    assert root["providers"]["openai-codex"]["tokens"] == {
+        "access_token": "new-at",
+        "refresh_token": "new-rt",
+    }
+    blocked_auth = json.loads((blocked / "auth.json").read_text())
+    assert blocked_auth["credential_pool"]["openai-codex"][0]["refresh_token"] == "old-rt"
+    healthy_auth = json.loads((healthy / "auth.json").read_text())
+    assert healthy_auth["credential_pool"]["openai-codex"][0]["refresh_token"] == "new-rt"
 
 
 def test_codex_tokens_not_written_to_shared_file(tmp_path, monkeypatch):
