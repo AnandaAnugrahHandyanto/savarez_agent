@@ -22,6 +22,7 @@ import {
   newSessionRowIndex,
   orchestratorRowClickAction,
   orchestratorVisibleRowIndexes,
+  resumableSessionsHint,
   selectedSessionRowStyle
 } from '../components/activeSessionSwitcher.js'
 
@@ -31,6 +32,16 @@ describe('session orchestrator helpers', () => {
     expect(activeSessionCountLabel(1)).toBe('1 live session')
     expect(activeSessionCountLabel(3)).toBe('3 live sessions')
     expect(activeSessionCountLabel(1)).not.toContain('in this TUI')
+  })
+
+  it('points the empty orchestrator at /resume when resumable sessions exist (#34647)', () => {
+    expect(resumableSessionsHint(null)).toBeNull()
+    expect(resumableSessionsHint(0)).toBeNull()
+    expect(resumableSessionsHint(1)).toBe('1 resumable session saved — use /resume to reopen one')
+    expect(resumableSessionsHint(3)).toBe('3 resumable sessions saved — use /resume to reopen one')
+    // Negative counts can't happen from session.list, but guard against a bad
+    // RPC payload rendering a nonsensical "-1 resumable sessions" line.
+    expect(resumableSessionsHint(-2)).toBeNull()
   })
 
   it('keeps session orchestrator hotkey hints short and contextual', () => {

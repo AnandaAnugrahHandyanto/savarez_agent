@@ -3,7 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SessionActiveItem, SessionActiveListResponse, SessionCloseResponse } from '../gatewayTypes.js'
+import type {
+  SessionActiveItem,
+  SessionActiveListResponse,
+  SessionCloseResponse,
+  SessionListResponse
+} from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -39,6 +44,20 @@ export const fixedSessionColumnStyle = () => ({ flexShrink: 0 })
 
 export const activeSessionCountLabel = (count: number) =>
   `${count} live ${count === 1 ? 'session' : 'sessions'}`
+
+// The orchestrator switches between *live* in-memory sessions only
+// (``session.activate`` attaches to a process-local agent; it cannot reopen a
+// persisted session). After a TUI restart there are no live siblings, so the
+// overlay would otherwise look empty even when resumable transcripts exist in
+// the DB — users then don't realise ``/resume`` is the way back in (#34647).
+// Surface the DB count from ``session.list`` so the empty state points there.
+export const resumableSessionsHint = (count: null | number): null | string => {
+  if (!count || count <= 0) {
+    return null
+  }
+
+  return `${count} resumable ${count === 1 ? 'session' : 'sessions'} saved — use /resume to reopen one`
+}
 
 export type OrchestratorHintRole = 'hotkey' | 'label' | 'text'
 
@@ -250,6 +269,7 @@ export function ActiveSessionSwitcher({
   const [draftModel, setDraftModel] = useState('')
   const [pickingModel, setPickingModel] = useState(false)
   const [closingId, setClosingId] = useState('')
+  const [resumableCount, setResumableCount] = useState<null | number>(null)
   const initialSelectionAppliedRef = useRef(false)
   const { stdout } = useStdout()
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
@@ -303,6 +323,28 @@ export function ActiveSessionSwitcher({
 
     return () => clearInterval(timer)
   }, [load])
+
+  // Fetch the historical session count once. This is the DB-backed list that
+  // ``/resume`` and ``hermes sessions list`` use; it is not part of the live
+  // poll above (no need to re-query the DB every 1.5s) and is best-effort —
+  // a failed lookup just leaves the empty state without the resumable hint.
+  useEffect(() => {
+    let cancelled = false
+
+    gw.request<SessionListResponse>('session.list', {})
+      .then(raw => {
+        const r = asRpcResult<SessionListResponse>(raw)
+
+        if (!cancelled && r) {
+          setResumableCount(r.sessions?.length ?? 0)
+        }
+      })
+      .catch(() => {})
+
+    return () => {
+      cancelled = true
+    }
+  }, [gw])
 
   const submitDraft = useCallback(
     (value: string) => {
@@ -463,6 +505,7 @@ export function ActiveSessionSwitcher({
   const totalRows = items.length + 1
   const offset = windowOffset(totalRows, sel, VISIBLE)
   const visibleRows = orchestratorVisibleRowIndexes(items.length, sel, VISIBLE)
+  const resumableHint = resumableSessionsHint(resumableCount)
 
   return (
     <Box flexDirection="column" width={width}>
@@ -473,7 +516,10 @@ export function ActiveSessionSwitcher({
 
       {err && <Text color={t.color.label}>error: {err}</Text>}
       {!items.length && (
-        <Text color={t.color.muted}>no live sessions — closed TUIs only leave resumable transcripts</Text>
+        <>
+          <Text color={t.color.muted}>no live sessions — closed TUIs only leave resumable transcripts</Text>
+          {resumableHint && <Text color={t.color.label}>{resumableHint}</Text>}
+        </>
       )}
       {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
 
