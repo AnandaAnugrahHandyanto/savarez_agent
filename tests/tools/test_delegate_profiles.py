@@ -456,6 +456,63 @@ class TestDelegateTaskProfileRouting:
             f"Expected profile toolsets=[] to be passed, got {captured_toolsets[0]!r}"
         )
 
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_profile_max_iterations_overrides_global(self, mock_creds):
+        """Profile with max_iterations overrides delegation.max_iterations."""
+        _cfg = {
+            "max_iterations": 10,
+            "profiles": {
+                "heavy": {
+                    "model": "gpt-4o",
+                    "provider": "openai",
+                    "max_iterations": 25,
+                }
+            },
+        }
+        mock_creds.return_value = {
+            "model": "gpt-4o", "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-test", "api_mode": "chat_completions",
+        }
+        captured = []
+        with patch("tools.delegate_tool._load_config", return_value=_cfg), \
+             patch("tools.delegate_tool._build_child_agent", wraps=None) as mock_build:
+            def capture(*args, **kwargs):
+                captured.append(kwargs.get("max_iterations"))
+                return _mock_child()
+            mock_build.side_effect = capture
+            delegate_task(goal="Work", profile="heavy", parent_agent=_make_mock_parent())
+
+        assert captured == [25], f"Expected max_iterations=25 from profile, got {captured}"
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_profile_without_max_iterations_uses_global(self, mock_creds):
+        """Profile without max_iterations falls back to delegation.max_iterations."""
+        _cfg = {
+            "max_iterations": 10,
+            "profiles": {
+                "light": {
+                    "model": "gpt-4o-mini",
+                    "provider": "openai",
+                }
+            },
+        }
+        mock_creds.return_value = {
+            "model": "gpt-4o-mini", "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-test", "api_mode": "chat_completions",
+        }
+        captured = []
+        with patch("tools.delegate_tool._load_config", return_value=_cfg), \
+             patch("tools.delegate_tool._build_child_agent", wraps=None) as mock_build:
+            def capture(*args, **kwargs):
+                captured.append(kwargs.get("max_iterations"))
+                return _mock_child()
+            mock_build.side_effect = capture
+            delegate_task(goal="Work", profile="light", parent_agent=_make_mock_parent())
+
+        assert captured == [10], f"Expected global max_iterations=10, got {captured}"
+
 
 class TestDelegateTaskSchema:
     def test_profile_in_root_properties(self):

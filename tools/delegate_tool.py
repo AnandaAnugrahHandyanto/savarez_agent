@@ -2160,13 +2160,19 @@ def delegate_task(
             # Proxy from profile (v1: warning logged inside _build_child_agent, not applied)
             _task_proxy = _profile_cfg.get("proxy") if _profile_cfg else None
 
+            # max_iterations: profile override > global delegation.max_iterations
+            _task_max_iter = (
+                _profile_cfg.get("max_iterations", effective_max_iter)
+                if _profile_cfg else effective_max_iter
+            )
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=_task_toolsets,
                 model=_task_creds["model"],
-                max_iterations=effective_max_iter,
+                max_iterations=_task_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
                 override_provider=_task_creds["provider"],
