@@ -2686,5 +2686,45 @@ class TestLoadConfig(unittest.TestCase):
                 self.assertEqual(dt._load_config(), {"model": "x"})
 
 
+class TestExplicitEndpointSkipsPool(unittest.TestCase):
+    def test_explicit_base_url_disables_credential_pool(self):
+        """A child built with an explicit override_base_url must not get a pool,
+        so a later lease/swap can't clobber the configured endpoint."""
+        parent = _make_mock_parent(depth=0)
+        # Pretend a pool WOULD resolve if asked.
+        with patch("tools.delegate_tool._resolve_child_credential_pool",
+                   return_value=object()) as mock_pool:
+            child = _build_child_agent(
+                task_index=0,
+                goal="x",
+                context=None,
+                toolsets=None,
+                model="qwen2.5-coder",
+                max_iterations=5,
+                task_count=1,
+                parent_agent=parent,
+                override_provider="custom",
+                override_base_url="http://localhost:1234/v1",
+                override_api_key="local-key",
+                override_api_mode="chat_completions",
+            )
+        self.assertIsNone(getattr(child, "_credential_pool", None))
+        mock_pool.assert_not_called()
+
+    def test_no_override_base_url_still_attaches_pool(self):
+        """Regression: without an explicit endpoint, pool attachment is unchanged."""
+        parent = _make_mock_parent(depth=0)
+        sentinel = object()
+        with patch("tools.delegate_tool._resolve_child_credential_pool",
+                   return_value=sentinel):
+            child = _build_child_agent(
+                task_index=0, goal="x", context=None, toolsets=None,
+                model=None, max_iterations=5, task_count=1, parent_agent=parent,
+                override_provider=None, override_base_url=None,
+                override_api_key=None, override_api_mode=None,
+            )
+        self.assertIs(getattr(child, "_credential_pool", None), sentinel)
+
+
 if __name__ == "__main__":
     unittest.main()

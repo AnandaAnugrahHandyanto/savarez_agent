@@ -1149,7 +1149,14 @@ def _build_child_agent(
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
-    child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
+    # EXCEPTION: when delegation routes the child to an explicit endpoint
+    # (override_base_url), do NOT attach a pool — a lease/swap (_swap_credential)
+    # would overwrite the configured base_url with the leased entry's, silently
+    # redirecting the child off the intended endpoint. Fixes #7833 / #20558.
+    if override_base_url:
+        child_pool = None
+    else:
+        child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
     if child_pool is not None:
         child._credential_pool = child_pool
 
