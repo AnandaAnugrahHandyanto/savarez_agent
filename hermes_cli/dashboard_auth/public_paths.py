@@ -46,4 +46,8 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Read-only theme + plugin manifests for the dashboard skin engine.
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
+    # Read-only per-action log poller used by the post-update progress modal.
+    # The operator already has filesystem access to ~/.hermes/logs/<action>.log;
+    # this endpoint just streams it over the dashboard WS RPC without auth.
+    "/api/actions/{name}/status",
 })
