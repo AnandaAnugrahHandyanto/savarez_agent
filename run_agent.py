@@ -5234,6 +5234,38 @@ class AIAgent:
                     exc,
                 )
                 return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            except TypeError as exc:
+                # The chatgpt.com/backend-api/codex endpoint sends
+                # response.completed with output=None, which causes the
+                # OpenAI SDK's parse_response() to fail with
+                # "TypeError: 'NoneType' object is not iterable".
+                # All content has already arrived via response.output_item.done
+                # events (collected in collected_output_items) and text deltas
+                # (in self._codex_streamed_text_parts). Build a synthetic
+                # response from that collected data instead of failing.
+                if "'NoneType' object is not iterable" not in str(exc):
+                    raise
+                logger.debug(
+                    "Codex stream: response.completed had output=None; "
+                    "building response from %d collected output items "
+                    "and %d text-delta parts. %s",
+                    len(collected_output_items),
+                    len(self._codex_streamed_text_parts),
+                    self._client_log_context(),
+                )
+                synthetic = SimpleNamespace(output=[], status="completed", output_text=None)
+                if collected_output_items:
+                    synthetic.output = list(collected_output_items)
+                elif self._codex_streamed_text_parts and not has_tool_calls:
+                    assembled = "".join(self._codex_streamed_text_parts)
+                    synthetic.output = [SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=assembled)],
+                    )]
+                    synthetic.output_text = assembled
+                return synthetic
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
