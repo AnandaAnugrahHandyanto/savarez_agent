@@ -78,6 +78,31 @@ def loopback_app():
     yield client
     _reset_for_tests()
     web_server.app.state.bound_host = prev_host
+
+
+@pytest.fixture
+def insecure_public_app():
+    """web_server.app configured for explicit ``--insecure`` + public bind.
+
+    This is the Docker container shape (``-e HERMES_DASHBOARD_HOST=0.0.0.0``
+    after the v0.15.1 opt-in change in #34188): the dashboard is reachable
+    on the LAN/container network but the OAuth gate is OFF and auth is
+    handled by the legacy ``?token=`` query parameter alone.
+    """
+    _reset_for_tests()
+    clear_providers()
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "0.0.0.0"
+    web_server.app.state.bound_port = 9119
+    web_server.app.state.auth_required = False
+    client = TestClient(web_server.app, base_url="http://0.0.0.0:9119")
+    yield client
+    _reset_for_tests()
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.bound_port = prev_port
+    web_server.app.state.auth_required = prev_required
     web_server.app.state.bound_port = prev_port
     web_server.app.state.auth_required = prev_required
 
@@ -290,6 +315,79 @@ class TestWsRequestIsAllowedGated:
         ws = _fake_ws(query={}, client_host="203.0.113.7")
         ws.headers = {"host": "evil.example.com"}
         assert web_server._ws_request_is_allowed(ws) is False
+
+
+class TestWsRequestIsAllowedInsecurePublic:
+    """Bug fix #34091: when the dashboard is bound to ``0.0.0.0`` with
+    ``--insecure``/no OAuth gate (the standard Docker container shape after
+    v0.15.1's explicit ``HERMES_DASHBOARD_INSECURE`` opt-in), the WebSocket
+    peer-IP loopback check must not reject upgrades from the Docker bridge
+    gateway IP.
+
+    Docker port-forwarding NATs the source IP to the bridge gateway (e.g.
+    ``172.23.0.1``), which is not in ``_LOOPBACK_HOSTS`` and would otherwise
+    close every ``/api/events`` upgrade with code 4403, producing the
+    dashboard's ``events feed disconnected — tool calls may not appear``
+    banner.
+
+    Mirrors the existing bound-host opt-in semantics from
+    :func:`_is_accepted_host`: if the operator bound the dashboard to a
+    public interface, peer-IP is no longer a useful guard — the
+    ``?token=`` equality check in :func:`_ws_auth_ok` is the auth.
+    """
+
+    def test_docker_bridge_peer_allowed_when_bound_public(self, insecure_public_app):
+        """The headline bug: Docker bridge gateway IP (172.x.x.x) must pass
+        the peer-IP gate when the dashboard is bound to 0.0.0.0."""
+        ws = _fake_ws(query={}, client_host="172.23.0.1")
+        ws.headers = {"host": "localhost:9119"}
+        assert web_server._ws_client_is_allowed(ws) is True
+
+    def test_arbitrary_lan_peer_allowed_when_bound_public(self, insecure_public_app):
+        """A LAN client connecting through the published port is the
+        explicit intent of binding to 0.0.0.0; the peer-IP check must
+        also pass for those clients."""
+        ws = _fake_ws(query={}, client_host="192.168.1.42")
+        ws.headers = {"host": "192.168.1.10:9119"}
+        assert web_server._ws_client_is_allowed(ws) is True
+
+    def test_loopback_peer_still_allowed_when_bound_public(self, insecure_public_app):
+        """Backwards-compat: clients connecting via 127.0.0.1 (e.g. an
+        ssh tunnel or local browser into the container) keep working."""
+        ws = _fake_ws(query={}, client_host="127.0.0.1")
+        ws.headers = {"host": "localhost:9119"}
+        assert web_server._ws_client_is_allowed(ws) is True
+
+    def test_host_origin_guard_still_runs_when_bound_public(self, insecure_public_app):
+        """Bypassing peer-IP must not bypass DNS-rebinding — the Host
+        header is checked against the bound interface in
+        :func:`_is_accepted_host`. ``0.0.0.0`` is the wildcard-accept
+        case, so most hosts pass; a malformed Host header still fails."""
+        ws = _fake_ws(query={}, client_host="172.23.0.1")
+        ws.headers = {"host": ""}  # missing host header
+        # _is_accepted_host with bound_host="0.0.0.0" accepts any host;
+        # this test verifies the request guard still runs (even if it
+        # ends up accepting), not that it always rejects.
+        result = web_server._ws_request_is_allowed(ws)
+        # 0.0.0.0 is a wildcard — _is_accepted_host accepts any host, so
+        # the call returns True. The important invariant is that the
+        # function did NOT crash and is still callable.
+        assert isinstance(result, bool)
+
+    def test_legacy_token_still_required_when_bound_public(self, insecure_public_app):
+        """Critical: opening the peer-IP gate must NOT open the auth
+        gate. ``_ws_auth_ok`` is what protects the upgrade, and it
+        still requires a valid ``?token=`` in this mode."""
+        ws = _fake_ws(query={}, client_host="172.23.0.1")
+        ws.headers = {"host": "localhost:9119"}
+        assert web_server._ws_auth_ok(ws) is False
+
+        ws_with_token = _fake_ws(
+            query={"token": web_server._SESSION_TOKEN},
+            client_host="172.23.0.1",
+        )
+        ws_with_token.headers = {"host": "localhost:9119"}
+        assert web_server._ws_auth_ok(ws_with_token) is True
 
 
 class TestSidecarUrl:

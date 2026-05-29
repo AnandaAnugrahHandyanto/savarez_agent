@@ -3390,6 +3390,22 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """
     if getattr(app.state, "auth_required", False):
         return True
+    # When the dashboard is bound to a non-loopback interface (typically
+    # ``0.0.0.0`` inside a Docker container running with ``--insecure``), the
+    # operator has explicitly opted into LAN-accessible mode.  Docker's port
+    # forwarding NATs the source IP to the bridge gateway (e.g. 172.x.x.x),
+    # which is not in :data:`_LOOPBACK_HOSTS` and would otherwise close every
+    # WebSocket upgrade with code 4403, producing the dashboard's
+    # "events feed disconnected — tool calls may not appear" banner.
+    #
+    # Mirror the existing bound-host opt-in semantics from
+    # :func:`_is_accepted_host`: if we bound to a public interface, accept any
+    # client peer.  The legacy ``?token=`` equality check in
+    # :func:`_ws_auth_ok` still runs on every upgrade in this mode, so this
+    # does not introduce an auth bypass.
+    bound_host = getattr(app.state, "bound_host", None)
+    if bound_host and bound_host not in _LOOPBACK_HOST_VALUES:
+        return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
