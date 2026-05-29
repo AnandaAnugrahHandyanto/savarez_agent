@@ -210,6 +210,15 @@ def _add_schema_backed_tool(
     if signature is not None:
         handler.__signature__ = signature
 
+    # FastMCP (mcp SDK, tested against the 1.x line) builds a tool's input
+    # schema from the callable signature and exposes no public API to register
+    # a tool with an explicit JSON schema. The synthetic signature above already
+    # makes the PUBLIC add_tool advertise correct argument names; when the
+    # private tool manager is present we additionally restore Hermes' exact JSON
+    # schema (types/descriptions/required) on the returned Tool. This private
+    # access is intentional and guarded — if a future SDK drops `_tool_manager`,
+    # we degrade to the public path (correct names, reduced schema fidelity)
+    # rather than break.
     tool_manager = getattr(mcp, "_tool_manager", None)
     if tool_manager is not None and hasattr(tool_manager, "add_tool"):
         tool = tool_manager.add_tool(
@@ -219,12 +228,20 @@ def _add_schema_backed_tool(
         )
         try:
             tool.parameters = params_schema
-        except Exception:  # pragma: no cover - SDK compatibility guard
-            pass
+        except Exception as exc:  # pragma: no cover - SDK compatibility guard
+            logger.debug(
+                "hermes-tools: could not pin JSON schema on tool %s: %r", name, exc
+            )
         return
 
-    # Fallback for unusual SDKs/fakes without the private manager. The
-    # synthetic signature still gives FastMCP the right argument names.
+    # Fallback for SDKs/fakes without the private manager. The synthetic
+    # signature still gives FastMCP the right argument names, but the exact
+    # JSON schema (types/descriptions) is not restored.
+    logger.debug(
+        "hermes-tools: FastMCP _tool_manager unavailable; registering %s via "
+        "public add_tool (reduced schema fidelity)",
+        name,
+    )
     mcp.add_tool(handler, name=name, description=description)
 
 

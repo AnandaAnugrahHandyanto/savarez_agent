@@ -22,7 +22,50 @@ from agent.transports.codex_app_server_session import (
     _ServerRequestRouting,
     _approval_choice_to_codex_decision,
     _coerce_turn_input_text,
+    _kanban_worker_hermes_tools_mcp_args,
 )
+
+
+def _mcp_env_from_args(args):
+    """Extract the injected ``mcp_servers.hermes-tools.env.*`` map from the
+    ``-c key=value`` override list emitted for a Kanban worker."""
+    prefix = "mcp_servers.hermes-tools.env."
+    env = {}
+    for override in args[1::2]:
+        key, _, value = override.partition("=")
+        if key.startswith(prefix):
+            env[key[len(prefix):]] = json.loads(value)
+    return env
+
+
+class TestKanbanWorkerMcpArgs:
+    def test_no_args_without_kanban_task(self, monkeypatch):
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        assert _kanban_worker_hermes_tools_mcp_args() == []
+
+    def test_disabled_via_env_returns_no_args(self, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_12345678")
+        monkeypatch.setenv("HERMES_KANBAN_WORKER_MCP", "0")
+        assert _kanban_worker_hermes_tools_mcp_args() == []
+        monkeypatch.setenv("HERMES_KANBAN_WORKER_MCP", "false")
+        assert _kanban_worker_hermes_tools_mcp_args() == []
+
+    def test_env_allowlist_filters_non_allowlisted_vars(self, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_12345678")
+        monkeypatch.delenv("HERMES_KANBAN_WORKER_MCP", raising=False)
+        # A secret that is NOT on the allowlist must not be forwarded.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-must-not-leak")
+        monkeypatch.setenv("SOME_RANDOM_SECRET", "nope")
+
+        env = _mcp_env_from_args(_kanban_worker_hermes_tools_mcp_args())
+
+        assert "OPENAI_API_KEY" not in env
+        assert "SOME_RANDOM_SECRET" not in env
+        # Required runtime + safety defaults are always present.
+        assert env["HERMES_KANBAN_TASK"] == "t_12345678"
+        assert env["HERMES_REDACT_SECRETS"] == "true"
+        assert env["HERMES_QUIET"] == "1"
+        assert "PYTHONPATH" in env and env["PYTHONPATH"]
 
 
 class FakeClient:

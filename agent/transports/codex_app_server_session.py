@@ -198,6 +198,21 @@ def _classify_oauth_failure(*parts: str) -> Optional[str]:
     return None
 
 
+def _kanban_worker_mcp_enabled() -> bool:
+    """Whether to inject the Hermes MCP bridge into Codex worker sessions.
+
+    Defaults on. Operators can disable it at runtime with
+    ``HERMES_KANBAN_WORKER_MCP=0`` (also accepts false/no/off) — an escape hatch
+    if the injected bridge ever misbehaves, without requiring a code change.
+    """
+    return os.getenv("HERMES_KANBAN_WORKER_MCP", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _kanban_worker_hermes_tools_mcp_args() -> list[str]:
     """Register Hermes' MCP bridge for dispatcher-spawned Codex workers.
 
@@ -208,6 +223,8 @@ def _kanban_worker_hermes_tools_mcp_args() -> list[str]:
     ``kanban_complete`` / ``kanban_block`` visible inside the turn.
     """
     if not os.getenv("HERMES_KANBAN_TASK"):
+        return []
+    if not _kanban_worker_mcp_enabled():
         return []
 
     args: list[str] = [
