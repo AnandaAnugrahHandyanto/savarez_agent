@@ -584,6 +584,21 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 state.set(error=f"navigate failed: {e}", exited=True)
                 return 4
 
+            # Pre-join auth-stale check. If Google bounced us to an identity
+            # verify page before we ever reached meet.google.com, fail fast
+            # with a clear error instead of waiting out the lobby timeout.
+            if _detect_auth_stale(page):
+                state.set(
+                    error=(
+                        "auth_stale: storage_state cookies expired, "
+                        "Google requires re-verification. Re-run "
+                        "`hermes meet auth` then retry."
+                    ),
+                    leave_reason="auth_stale",
+                    exited=True,
+                )
+                return 5
+
             # Guest-mode: Meet shows a name field before "Ask to join". When
             # we're authed, we instead see "Join now".
             _try_guest_name(page, guest_name)
@@ -654,10 +669,25 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                             lobby_waiting=False,
                             joined_at=now,
                         )
+                    elif _detect_auth_stale(page):
+                        # Stale storage_state cookies, Google bounced us to
+                        # an identity-verify page before we ever reached
+                        # meet.google.com. Surface clearly so the operator
+                        # knows to re-run `hermes meet auth` instead of
+                        # blaming the host or guessing.
+                        state.set(
+                            error=(
+                                "auth_stale: storage_state cookies expired, "
+                                "Google requires re-verification. Re-run "
+                                "`hermes meet auth` then retry."
+                            ),
+                            leave_reason="auth_stale",
+                        )
+                        break
                     elif now > lobby_deadline:
                         state.set(
                             error=(
-                                "lobby timeout — host never admitted the bot "
+                                "lobby timeout, host never admitted the bot "
                                 f"within {int(lobby_deadline - state.join_attempted_at) if state.join_attempted_at else 0}s"
                             ),
                             leave_reason="lobby_timeout",
@@ -798,11 +828,43 @@ def _detect_denied(page) -> bool:
     probe = r"""
     (() => {
       const text = document.body ? document.body.innerText || '' : '';
-      // English only — matches what shows up when the host denies or
+      // English only, matches what shows up when the host denies or
       // removes a guest.
       if (/You can't join this video call/i.test(text)) return true;
       if (/You were removed from the meeting/i.test(text)) return true;
       if (/No one responded to your request to join/i.test(text)) return true;
+      return false;
+    })();
+    """
+    try:
+        return bool(page.evaluate(probe))
+    except Exception:
+        return False
+
+
+def _detect_auth_stale(page) -> bool:
+    """True when Google is intercepting the navigation with a 'verify it's you'
+    or sign-in challenge instead of letting us reach meet.google.com.
+
+    Most common cause is stale storage_state cookies. Symptom: the page URL is
+    accounts.google.com/v3/signin/... and body text contains 'Verify it's you'
+    or 'sign in again to continue'. The bot can't recover from this in-process;
+    the operator must re-run `hermes meet auth`.
+    """
+    probe = r"""
+    (() => {
+      const url = location.href || '';
+      const text = document.body ? document.body.innerText || '' : '';
+      // Intercept URL family covers both v3 signin and the older identifier
+      // re-prompt flow.
+      if (/accounts\.google\.com\/(v3\/)?signin/i.test(url)) {
+        if (/Verify it.s you/i.test(text)) return true;
+        if (/sign in again to continue/i.test(text)) return true;
+        if (/Choose an account/i.test(text)) return true;
+        // URL alone, when we navigated to meet.google.com and got bounced to
+        // accounts.google.com, is enough signal.
+        return true;
+      }
       return false;
     })();
     """
