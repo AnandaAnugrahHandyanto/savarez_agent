@@ -142,6 +142,33 @@ def test_run_once_records_failed_job(tmp_path: Path) -> None:
     assert failed["stderr_tail"] == "missing asset"
 
 
+def test_run_once_preserves_existing_terminal_manifest_on_name_collision(tmp_path: Path) -> None:
+    module = load_module()
+    queue_root = tmp_path / "windows" / "cavalry" / "jobs"
+    module.submit_job(
+        queue_root=queue_root,
+        job_id="collision-job",
+        command=["Cavalry.exe", "--run", "broken.cav"],
+        cwd=tmp_path,
+    )
+    existing_failed = queue_root / "failed" / "collision-job.json"
+    existing_failed.parent.mkdir(parents=True, exist_ok=True)
+    existing_failed.write_text(json.dumps({"id": "previous", "status": "failed"}) + "\n")
+
+    def fake_runner(command, *, cwd, timeout_seconds):
+        return module.RunResult(returncode=9, stderr="new failure")
+
+    result = module.run_once(queue_root=queue_root, runner=fake_runner)
+
+    assert result["processed"] is True
+    assert result["status"] == "failed"
+    assert result["path"].endswith("collision-job-2.json")
+    assert json.loads(existing_failed.read_text())["id"] == "previous"
+    failed = json.loads((queue_root / "failed" / "collision-job-2.json").read_text())
+    assert failed["id"] == "collision-job"
+    assert failed["stderr_tail"] == "new failure"
+
+
 def test_run_once_records_runner_exception_as_failed_job(tmp_path: Path) -> None:
     module = load_module()
     queue_root = tmp_path / "windows" / "cavalry" / "jobs"

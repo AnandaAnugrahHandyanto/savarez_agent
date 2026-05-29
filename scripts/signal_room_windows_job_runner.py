@@ -142,6 +142,22 @@ def next_queued_job(queue_root: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
+def terminal_job_path(queue_root: Path, status: str, filename: str) -> Path:
+    destination_dir = queue_root / status
+    candidate = destination_dir / filename
+    if not candidate.exists():
+        return candidate
+
+    suffix = candidate.suffix
+    stem = candidate.stem
+    index = 2
+    while True:
+        candidate = destination_dir / f"{stem}-{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
 def claim_job(queue_root: Path, queued_path: Path) -> tuple[Path, dict[str, Any]]:
     try:
         job = read_json(queued_path)
@@ -246,7 +262,7 @@ def finish_job(queue_root: Path, running_path: Path, job: dict[str, Any], result
             "stderr_tail": tail(result.stderr or ""),
         }
     )
-    final_path = queue_root / finished_status / running_path.name
+    final_path = terminal_job_path(queue_root, finished_status, running_path.name)
     write_json(running_path, job)
     running_path.replace(final_path)
     return {
