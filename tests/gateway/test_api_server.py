@@ -3641,3 +3641,63 @@ class TestPerUserMemoryIsolation:
         long_id = "u" * 400
         kw = await _post_chat(_isolation_adapter(True), {"X-OpenWebUI-User-Id": long_id})
         assert kw["user_id"] == "u" * 256
+
+
+async def _post_responses(adapter, headers):
+    """Drive POST /v1/responses with _run_agent stubbed; return its kwargs."""
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (
+                {"final_response": "ok", "messages": [], "api_calls": 1},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+            resp = await cli.post(
+                "/v1/responses",
+                headers={"Authorization": "Bearer sk-secret", **headers},
+                json={"model": "hermes-agent", "input": "hello", "store": False},
+            )
+        assert resp.status == 200, await resp.text()
+        return mock_run.call_args.kwargs
+
+
+class TestResponsesPerUserMemoryIsolation:
+    @pytest.mark.asyncio
+    async def test_disabled_ignores_user_header(self):
+        kw = await _post_responses(_isolation_adapter(False), {"X-OpenWebUI-User-Id": "alice"})
+        assert kw["user_id"] is None
+        assert kw["gateway_session_key"] is None
+
+    @pytest.mark.asyncio
+    async def test_enabled_scopes_by_user(self):
+        kw = await _post_responses(_isolation_adapter(True), {"X-OpenWebUI-User-Id": "alice"})
+        assert kw["user_id"] == "alice"
+        assert kw["gateway_session_key"] == "owui-user:alice"
+
+    @pytest.mark.asyncio
+    async def test_enabled_namespaces_provided_session_key(self):
+        kw = await _post_responses(
+            _isolation_adapter(True),
+            {"X-OpenWebUI-User-Id": "alice", "X-Hermes-Session-Key": "chan-1"},
+        )
+        assert kw["user_id"] == "alice"
+        assert kw["gateway_session_key"] == "chan-1:owui-user:alice"
+
+    @pytest.mark.asyncio
+    async def test_enabled_without_header_falls_back_to_shared(self):
+        kw = await _post_responses(_isolation_adapter(True), {})
+        assert kw["user_id"] is None
+        assert kw["gateway_session_key"] is None
+
+
+class TestScopeMemoryKey:
+    def test_noop_without_user_scope(self):
+        assert APIServerAdapter._scope_memory_key("chan-1", None) == "chan-1"
+        assert APIServerAdapter._scope_memory_key(None, None) is None
+        assert APIServerAdapter._scope_memory_key(None, "") is None
+
+    def test_derives_key_when_none_provided(self):
+        assert APIServerAdapter._scope_memory_key(None, "alice") == "owui-user:alice"
+
+    def test_namespaces_provided_key(self):
+        assert APIServerAdapter._scope_memory_key("chan-1", "alice") == "chan-1:owui-user:alice"
