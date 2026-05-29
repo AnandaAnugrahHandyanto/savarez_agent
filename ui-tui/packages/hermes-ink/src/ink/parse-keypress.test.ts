@@ -133,4 +133,31 @@ describe('fragmented SGR mouse recovery', () => {
 
     expect(key).toMatchObject({ kind: 'key', sequence: '1234;56;78M9;10;11M' })
   })
+
+  it('silently drops corrupted mouse garbage before a valid burst', () => {
+    // '5;34M;34M' has only one semicolon per fragment (malformed) but is
+    // pure mouse-data characters; the subsequent burst is valid and should
+    // be recovered as mouse events without the garbage leaking as text.
+    const [events] = parseMultipleKeypresses(INITIAL_STATE, '5;34M;34M35;16;35M35;18;35M')
+
+    expect(events).toHaveLength(2)
+    expect(events[0]).toMatchObject({ kind: 'mouse', button: 35, col: 16, row: 35 })
+    expect(events[1]).toMatchObject({ kind: 'mouse', button: 35, col: 18, row: 35 })
+  })
+
+  it('silently drops trailing corrupted mouse garbage after a valid burst', () => {
+    // '36M' has only one number (missing the full btn;col;rowM shape) but
+    // consists entirely of mouse-data characters — drop it, not a key event.
+    const [events] = parseMultipleKeypresses(INITIAL_STATE, '<35;16;35M35;18;35M36M')
+
+    expect(events.every(e => e.kind === 'mouse')).toBe(true)
+  })
+
+  it('preserves real text trailing a valid burst even when mouse garbage precedes it', () => {
+    // 'typed' must still reach the composer; only the garbage chars before
+    // it within the same chunk should be dropped.
+    const [events] = parseMultipleKeypresses(INITIAL_STATE, '5;34M;34M35;16;35M35;18;35Mtyped')
+
+    expect(events.at(-1)).toMatchObject({ kind: 'key', sequence: 'typed' })
+  })
 })

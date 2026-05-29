@@ -64,6 +64,11 @@ const XTVERSION_RE = /^\x1bP>\|(.*?)(?:\x07|\x1b\\)$/s
 // eslint-disable-next-line no-control-regex
 const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/
 const SGR_MOUSE_FRAGMENT_RE = /(?<!\d)(?:\[<|<)?(?:[0-9]|[1-9][0-9]|1\d{2}|2[0-4]\d|25[0-5]);\d+;\d+[Mm]/g
+// Text consisting solely of characters that appear in corrupted/concatenated
+// SGR mouse event streams. Under heavy render backpressure, partial fragments
+// accumulate and concatenate in ways the fragment regex can't fully match;
+// those leftovers should be dropped rather than leaked into the composer.
+const MOUSE_GARBAGE_RE = /^[\d;Mm\[<]+$/
 
 function createPasteKey(content: string): ParsedKey {
   return {
@@ -674,7 +679,10 @@ function parseTextWithSgrMouseFragments(text: string): ParsedInput[] | null {
     }
 
     if (first.index! > cursor) {
-      parsed.push(parseKeypress(text.slice(cursor, first.index!)))
+      const gap = text.slice(cursor, first.index!)
+      if (!MOUSE_GARBAGE_RE.test(gap)) {
+        parsed.push(parseKeypress(gap))
+      }
     }
 
     for (const match of run) {
@@ -690,7 +698,10 @@ function parseTextWithSgrMouseFragments(text: string): ParsedInput[] | null {
   }
 
   if (cursor < text.length) {
-    parsed.push(parseKeypress(text.slice(cursor)))
+    const tail = text.slice(cursor)
+    if (!MOUSE_GARBAGE_RE.test(tail)) {
+      parsed.push(parseKeypress(tail))
+    }
   }
 
   return parsed
