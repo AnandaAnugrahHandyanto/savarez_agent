@@ -1,7 +1,12 @@
 from pathlib import Path
 import tomllib
 
-from setuptools import find_packages
+import pytest
+
+# setuptools is a build-time dependency, not guaranteed in the test venv
+# (uv-managed interpreters don't seed it). Skip this module rather than error
+# during collection when it's absent.
+find_packages = pytest.importorskip("setuptools").find_packages
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
