@@ -13,6 +13,7 @@ concurrently under distinct configurations).
 
 import hashlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -39,6 +40,7 @@ _gateway_lock_handle = None
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
+logger = logging.getLogger(__name__)
 
 
 def _get_pid_path() -> Path:
@@ -164,12 +166,12 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
-def _looks_like_gateway_process(pid: int) -> bool:
-    """Return True when the live PID still looks like the Hermes gateway."""
-    cmdline = _read_process_cmdline(pid)
+def _cmdline_looks_like_gateway(cmdline: str) -> bool:
+    """Return True when a command line looks like a Hermes gateway."""
     if not cmdline:
         return False
-
+    # Normalize Windows backslashes so patterns match cross-platform.
+    cmdline = cmdline.replace("\\", "/")
     patterns = (
         "hermes_cli.main gateway",
         "hermes_cli/main.py gateway",
@@ -178,6 +180,12 @@ def _looks_like_gateway_process(pid: int) -> bool:
         "gateway/run.py",
     )
     return any(pattern in cmdline for pattern in patterns)
+
+
+def _looks_like_gateway_process(pid: int) -> bool:
+    """Return True when the live PID still looks like the Hermes gateway."""
+    cmdline = _read_process_cmdline(pid)
+    return _cmdline_looks_like_gateway(cmdline or "")
 
 
 def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
@@ -191,13 +199,7 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
 
     # Normalize Windows backslashes so patterns match cross-platform.
     cmdline = " ".join(str(part) for part in argv).replace("\\", "/")
-    patterns = (
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
-        "hermes gateway",
-        "gateway/run.py",
-    )
-    return any(pattern in cmdline for pattern in patterns)
+    return _cmdline_looks_like_gateway(cmdline)
 
 
 def _build_pid_record() -> dict:
@@ -283,7 +285,12 @@ def _pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:
         return None
 
 
-def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
+def _cleanup_invalid_pid_path(
+    pid_path: Path,
+    *,
+    cleanup_stale: bool,
+    reason: str = "not a live Hermes gateway",
+) -> None:
     """Delete a stale gateway PID file (and its sibling lock metadata).
 
     Called from ``get_running_pid()`` after the runtime lock has already been
@@ -295,12 +302,29 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
     """
     if not cleanup_stale:
         return
+    lock_path = _get_gateway_lock_path(pid_path)
+    if pid_path.exists() or lock_path.exists():
+        record = _read_pid_record(pid_path)
+        pid = _pid_from_record(record)
+        if pid is not None:
+            logger.warning(
+                "⚠ Stale gateway pidfile detected (PID %s: %s); cleaning up %s",
+                pid,
+                reason,
+                pid_path,
+            )
+        else:
+            logger.warning(
+                "⚠ Stale gateway pidfile detected (%s); cleaning up %s",
+                reason,
+                pid_path,
+            )
     try:
         pid_path.unlink(missing_ok=True)
     except Exception:
         pass
     try:
-        _get_gateway_lock_path(pid_path).unlink(missing_ok=True)
+        lock_path.unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -1010,29 +1034,50 @@ def get_running_pid(
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     lock_active = is_gateway_runtime_lock_active(resolved_lock_path)
     if not lock_active:
-        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
+        _cleanup_invalid_pid_path(
+            resolved_pid_path,
+            cleanup_stale=cleanup_stale,
+            reason="runtime lock is not held",
+        )
         return None
 
     primary_record = _read_pid_record(resolved_pid_path)
     fallback_record = _read_gateway_lock_record(resolved_lock_path)
 
+    stale_reason = "recorded PID is not a live Hermes gateway"
     for record in (primary_record, fallback_record):
         pid = _pid_from_record(record)
         if pid is None:
             continue
 
         if not _pid_exists(pid):
+            stale_reason = f"PID {pid} is not running"
             continue
 
         recorded_start = record.get("start_time")
         current_start = _get_process_start_time(pid)
         if recorded_start is not None and current_start is not None and current_start != recorded_start:
+            stale_reason = f"PID {pid} start time changed"
             continue
 
-        if _looks_like_gateway_process(pid) or _record_looks_like_gateway(record):
+        cmdline = _read_process_cmdline(pid)
+        if cmdline is not None:
+            if _cmdline_looks_like_gateway(cmdline):
+                return pid
+            stale_reason = f"PID {pid} is not a Hermes gateway process"
+            continue
+
+        # Only trust pidfile metadata when the platform cannot provide a
+        # command line. If we *can* read cmdline and it says "not gateway",
+        # the pidfile is stale even when its own argv claims otherwise.
+        if _record_looks_like_gateway(record):
             return pid
 
-    _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
+    _cleanup_invalid_pid_path(
+        resolved_pid_path,
+        cleanup_stale=cleanup_stale,
+        reason=stale_reason,
+    )
     return None
 
 

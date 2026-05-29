@@ -1051,6 +1051,125 @@ _CUDA_LIB_ERROR_MARKERS = (
     "CUDA driver version is insufficient",
 )
 
+# Conservative local-STT defaults for live voice.  Discord voice often carries
+# music/rhythm from the room; without VAD and segment confidence checks, small
+# local Whisper models are prone to lyric-like hallucinations on that audio.
+DEFAULT_LOCAL_VAD_FILTER = True
+DEFAULT_LOCAL_NO_SPEECH_THRESHOLD = 0.6
+DEFAULT_LOCAL_HALLUCINATION_SILENCE_THRESHOLD = 1.0
+DEFAULT_LOCAL_CONDITION_ON_PREVIOUS_TEXT = False
+DEFAULT_LOCAL_REPETITION_PENALTY = 1.15
+DEFAULT_LOCAL_NO_REPEAT_NGRAM_SIZE = 3
+DEFAULT_LOCAL_SEGMENT_NO_SPEECH_THRESHOLD = 0.85
+DEFAULT_LOCAL_SEGMENT_LOG_PROB_THRESHOLD = -0.5
+
+
+def _get_float_setting(config: dict, key: str, default: float) -> float:
+    try:
+        return float(config.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_int_setting(config: dict, key: str, default: int) -> int:
+    try:
+        return int(config.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _numeric_segment_attr(segment: object, attr_name: str) -> Optional[float]:
+    value = getattr(segment, attr_name, None)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _should_filter_local_segment(segment: object, local_cfg: dict) -> bool:
+    """Return True for probable music/no-speech hallucination segments."""
+    text = str(getattr(segment, "text", "") or "").strip()
+    if not text:
+        return True
+
+    no_speech_prob = _numeric_segment_attr(segment, "no_speech_prob")
+    avg_logprob = _numeric_segment_attr(segment, "avg_logprob")
+    no_speech_threshold = _get_float_setting(
+        local_cfg,
+        "segment_no_speech_threshold",
+        DEFAULT_LOCAL_SEGMENT_NO_SPEECH_THRESHOLD,
+    )
+    low_confidence_threshold = _get_float_setting(
+        local_cfg,
+        "segment_log_prob_threshold",
+        DEFAULT_LOCAL_SEGMENT_LOG_PROB_THRESHOLD,
+    )
+
+    if no_speech_prob is not None and no_speech_prob >= no_speech_threshold:
+        if avg_logprob is None or avg_logprob <= low_confidence_threshold:
+            return True
+
+    return False
+
+
+def _collect_local_transcript(segments, local_cfg: dict) -> tuple[str, int]:
+    kept_text = []
+    filtered = 0
+    for segment in segments:
+        if _should_filter_local_segment(segment, local_cfg):
+            filtered += 1
+            continue
+        kept_text.append(str(segment.text).strip())
+    return " ".join(text for text in kept_text if text).strip(), filtered
+
+
+def _local_transcribe_kwargs(local_cfg: dict) -> Dict[str, Any]:
+    vad_filter = is_truthy_value(
+        local_cfg.get("vad_filter", DEFAULT_LOCAL_VAD_FILTER),
+        default=DEFAULT_LOCAL_VAD_FILTER,
+    )
+    kwargs: Dict[str, Any] = {
+        "beam_size": _get_int_setting(local_cfg, "beam_size", 5),
+        "temperature": _get_float_setting(local_cfg, "temperature", 0.0),
+        "condition_on_previous_text": is_truthy_value(
+            local_cfg.get(
+                "condition_on_previous_text",
+                DEFAULT_LOCAL_CONDITION_ON_PREVIOUS_TEXT,
+            ),
+            default=DEFAULT_LOCAL_CONDITION_ON_PREVIOUS_TEXT,
+        ),
+        "vad_filter": vad_filter,
+        "no_speech_threshold": _get_float_setting(
+            local_cfg,
+            "no_speech_threshold",
+            DEFAULT_LOCAL_NO_SPEECH_THRESHOLD,
+        ),
+        "log_prob_threshold": _get_float_setting(local_cfg, "log_prob_threshold", -1.0),
+        "compression_ratio_threshold": _get_float_setting(
+            local_cfg,
+            "compression_ratio_threshold",
+            2.4,
+        ),
+        "hallucination_silence_threshold": _get_float_setting(
+            local_cfg,
+            "hallucination_silence_threshold",
+            DEFAULT_LOCAL_HALLUCINATION_SILENCE_THRESHOLD,
+        ),
+        "repetition_penalty": _get_float_setting(
+            local_cfg,
+            "repetition_penalty",
+            DEFAULT_LOCAL_REPETITION_PENALTY,
+        ),
+        "no_repeat_ngram_size": _get_int_setting(
+            local_cfg,
+            "no_repeat_ngram_size",
+            DEFAULT_LOCAL_NO_REPEAT_NGRAM_SIZE,
+        ),
+    }
+    vad_parameters = local_cfg.get("vad_parameters")
+    if vad_filter and isinstance(vad_parameters, dict):
+        kwargs["vad_parameters"] = vad_parameters
+    return kwargs
+
 
 def _looks_like_cuda_lib_error(exc: BaseException) -> bool:
     """Heuristic: is this exception a missing/broken CUDA runtime library?
@@ -1107,18 +1226,20 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
+        stt_config = _load_stt_config()
+        local_cfg = stt_config.get("local", {}) if isinstance(stt_config.get("local"), dict) else {}
         _forced_lang = (
-            _load_stt_config().get("local", {}).get("language")
+            local_cfg.get("language")
             or os.getenv(LOCAL_STT_LANGUAGE_ENV)
             or None
         )
-        transcribe_kwargs = {"beam_size": 5}
+        transcribe_kwargs = _local_transcribe_kwargs(local_cfg)
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
 
         try:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
-            transcript = " ".join(segment.text.strip() for segment in segments)
+            transcript, filtered_segments = _collect_local_transcript(segments, local_cfg)
         except Exception as exc:
             # CUDA runtime libs sometimes only fail at dlopen-on-first-use,
             # AFTER the model loaded successfully.  Evict the broken cached
@@ -1138,14 +1259,26 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
             _local_model_name = model_name
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
-            transcript = " ".join(segment.text.strip() for segment in segments)
+            transcript, filtered_segments = _collect_local_transcript(segments, local_cfg)
+
+        if filtered_segments:
+            logger.info(
+                "Filtered %d low-confidence/no-speech local STT segment(s) from %s",
+                filtered_segments,
+                Path(file_path).name,
+            )
 
         logger.info(
             "Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
             Path(file_path).name, model_name, info.language, info.duration,
         )
 
-        return {"success": True, "transcript": transcript, "provider": "local"}
+        return {
+            "success": True,
+            "transcript": transcript,
+            "provider": "local",
+            "filtered": bool(filtered_segments and not transcript),
+        }
 
     except Exception as e:
         logger.error("Local transcription failed: %s", e, exc_info=True)

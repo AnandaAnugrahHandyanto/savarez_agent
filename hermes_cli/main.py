@@ -11516,6 +11516,12 @@ def main():
     _add_accept_hooks_flag(gateway_run)
     _add_accept_hooks_flag(gateway_parser)
 
+    gateway_subparsers.add_parser(
+        "_cleanup-pidfile",
+        help=argparse.SUPPRESS,
+        description="Internal systemd preflight for stale gateway pidfiles",
+    )
+
     # gateway start
     gateway_start = gateway_subparsers.add_parser(
         "start", help="Start the installed systemd/launchd background service"

@@ -524,6 +524,62 @@ class TestTranscribeLocalExtended:
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
 
+    def test_local_uses_noise_resistant_defaults_for_music_backgrounds(self, tmp_path):
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "real speech"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([seg], info)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", return_value=mock_model), \
+             patch("tools.transcription_tools._load_stt_config", return_value={"local": {}}), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        kwargs = mock_model.transcribe.call_args.kwargs
+        assert kwargs["vad_filter"] is True
+        assert kwargs["condition_on_previous_text"] is False
+        assert kwargs["temperature"] == 0.0
+        assert kwargs["no_speech_threshold"] >= 0.6
+        assert kwargs["hallucination_silence_threshold"] >= 0.5
+
+    def test_local_filters_high_no_speech_low_confidence_segments(self, tmp_path):
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        music_hallucination = MagicMock()
+        music_hallucination.text = "Thank you, boys, for being here. Thank you."
+        music_hallucination.no_speech_prob = 0.96
+        music_hallucination.avg_logprob = -1.25
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 4.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([music_hallucination], info)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", return_value=mock_model), \
+             patch("tools.transcription_tools._load_stt_config", return_value={"local": {}}), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == ""
+        assert result.get("filtered") is True
+
     def test_load_time_cuda_lib_failure_falls_back_to_cpu(self, tmp_path):
         """Missing libcublas at load time → reload on CPU, succeed."""
         audio = tmp_path / "test.ogg"

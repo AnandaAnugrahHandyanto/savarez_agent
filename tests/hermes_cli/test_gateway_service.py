@@ -324,6 +324,8 @@ class TestGeneratedSystemdUnits:
         unit = gateway_cli.generate_systemd_unit(system=False)
 
         assert "ExecStart=" in unit
+        assert "ExecStartPre=" in unit
+        assert "gateway _cleanup-pidfile" in unit
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
@@ -379,12 +381,19 @@ class TestGeneratedSystemdUnits:
     def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
         monkeypatch.setattr(
             gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
             "_get_restart_drain_timeout",
             lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
         )
-        unit = gateway_cli.generate_systemd_unit(system=True)
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
         assert "ExecStart=" in unit
+        assert "ExecStartPre=" in unit
+        assert "gateway _cleanup-pidfile" in unit
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
@@ -1308,10 +1317,15 @@ class TestGeneratedUnitIncludesLocalBin:
     def test_system_unit_includes_local_bin_in_path(self, monkeypatch):
         monkeypatch.setattr(
             gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
             "_build_user_local_paths",
             lambda home_path, existing: [str(home_path / ".local" / "bin")],
         )
-        unit = gateway_cli.generate_systemd_unit(system=True)
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
         # System unit uses the resolved home dir from _system_service_identity
         assert "/.local/bin" in unit
 
