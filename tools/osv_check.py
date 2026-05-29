@@ -147,7 +147,7 @@ def _query_osv(
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # SSRF: add IP block check
         result = json.loads(resp.read())
 
     vulns = result.get("vulns", [])
