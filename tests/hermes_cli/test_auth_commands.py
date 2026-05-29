@@ -1079,8 +1079,8 @@ def test_auth_remove_codex_device_code_suppresses_reseed(tmp_path, monkeypatch):
     assert "openai-codex" not in updated.get("providers", {})
 
 
-def test_auth_remove_codex_manual_source_suppresses_reseed(tmp_path, monkeypatch):
-    """Removing a manually-added (`manual:device_code`) openai-codex credential must also suppress."""
+def test_auth_remove_codex_manual_source_keeps_singleton_state(tmp_path, monkeypatch):
+    """Removing a manual Codex credential must not suppress the shared singleton."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setattr(
         "agent.credential_pool._seed_from_singletons",
@@ -1120,10 +1120,9 @@ def test_auth_remove_codex_manual_source_suppresses_reseed(tmp_path, monkeypatch
 
     updated = json.loads((hermes_home / "auth.json").read_text())
     suppressed = updated.get("suppressed_sources", {})
-    # Critical: manual:device_code source must also trigger the suppression path
-    assert "openai-codex" in suppressed
-    assert "device_code" in suppressed["openai-codex"]
-    assert "openai-codex" not in updated.get("providers", {})
+    assert "openai-codex" not in suppressed
+    assert "openai-codex" in updated.get("providers", {})
+    assert updated["credential_pool"]["openai-codex"] == []
 
 
 def test_auth_remove_codex_device_code_clears_canonical_root_in_profile_mode(tmp_path, monkeypatch):
@@ -1176,6 +1175,65 @@ def test_auth_remove_codex_device_code_clears_canonical_root_in_profile_mode(tmp
     with pytest.raises(AuthError) as exc:
         resolve_codex_runtime_credentials()
     assert exc.value.code == "codex_auth_missing"
+
+
+def test_auth_remove_codex_manual_device_code_stays_profile_local(tmp_path, monkeypatch):
+    """Removing a profile-local manual Codex entry must leave the shared family intact."""
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    (root_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "shared-at",
+                    "refresh_token": "shared-rt",
+                },
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "shared-device",
+                "label": "shared-device",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "device_code",
+                "access_token": "shared-at",
+                "refresh_token": "shared-rt",
+            }],
+        },
+    }))
+    (profile_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "profile-manual",
+                "label": "profile-manual",
+                "auth_type": "oauth",
+                "priority": 1,
+                "source": "manual:device_code",
+                "access_token": "profile-at",
+                "refresh_token": "profile-rt",
+            }],
+        },
+    }))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="openai-codex", target="profile-manual"))
+
+    root_payload = json.loads((root_home / "auth.json").read_text())
+    assert "openai-codex" in root_payload["providers"]
+    assert root_payload["providers"]["openai-codex"]["tokens"]["refresh_token"] == "shared-rt"
+    assert [entry["id"] for entry in root_payload["credential_pool"]["openai-codex"]] == [
+        "shared-device",
+    ]
+    assert "openai-codex" not in root_payload.get("suppressed_sources", {})
+    profile_payload = json.loads((profile_home / "auth.json").read_text())
+    assert profile_payload["credential_pool"]["openai-codex"] == []
 
 
 def test_auth_add_codex_clears_suppression_marker(tmp_path, monkeypatch):
@@ -1698,10 +1756,9 @@ def test_auth_add_clears_all_suppressions_including_non_env(tmp_path, monkeypatc
     assert not is_source_suppressed("copilot", "env:COPILOT_GITHUB_TOKEN")
 
 
-def test_auth_remove_codex_manual_device_code_suppresses_canonical(tmp_path, monkeypatch):
+def test_auth_remove_codex_manual_device_code_does_not_suppress_canonical(tmp_path, monkeypatch):
     """Removing a manual:device_code entry (from `hermes auth add openai-codex`)
-    must suppress the canonical ``device_code`` key, not ``manual:device_code``.
-    The re-seed gate in _seed_from_singletons checks ``device_code``.
+    must not suppress the independent canonical ``device_code`` family.
     """
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
@@ -1730,4 +1787,4 @@ def test_auth_remove_codex_manual_device_code_suppresses_canonical(tmp_path, mon
     from hermes_cli.auth_commands import auth_remove_command
 
     auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
-    assert is_source_suppressed("openai-codex", "device_code")
+    assert not is_source_suppressed("openai-codex", "device_code")

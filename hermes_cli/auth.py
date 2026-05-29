@@ -3535,7 +3535,9 @@ def _sync_codex_pool_entries(
     auth_store: Dict[str, Any],
     tokens: Dict[str, str],
     last_refresh: Optional[str],
-) -> None:
+    *,
+    refreshable_sources: FrozenSet[str] = frozenset({"device_code", "manual:device_code"}),
+) -> bool:
     """Mirror a fresh Codex re-auth into the credential_pool OAuth entries.
 
     The runtime selects credentials from ``credential_pool.openai-codex``, not
@@ -3563,31 +3565,31 @@ def _sync_codex_pool_entries(
       are independent credentials (an explicit API key, a different ChatGPT
       account, etc.) and must not be overwritten by a single re-auth.
 
+    Callers scope ``refreshable_sources`` to the store they are mutating. In
+    named-profile mode, the root store contains the shared ``device_code``
+    family while ``manual:device_code`` rows stay local to the active profile.
+
     Error markers (``last_status``, ``last_error_*``) are also cleared on
-    every device-code-backed entry — even those whose tokens we did not
-    rewrite — so that an interactive re-auth gives every relevant pool entry
-    a fresh selection chance instead of leaving them marked unhealthy from a
-    pre-re-auth 401.
+    every refreshed entry so that an interactive re-auth gives each relevant
+    pool row a fresh selection chance instead of leaving it marked unhealthy
+    from a pre-re-auth 401.
     """
     access_token = tokens.get("access_token")
     if not access_token:
-        return
+        return False
     refresh_token = tokens.get("refresh_token")
     pool = auth_store.get("credential_pool")
     if not isinstance(pool, dict):
-        return
+        return False
     entries = pool.get("openai-codex")
     if not isinstance(entries, list):
-        return
-    # Sources whose tokens should be rewritten by a fresh Codex device-code
-    # OAuth re-auth.  ``manual:api_key`` and unknown sources are intentionally
-    # excluded — they represent independent credentials.
-    REFRESHABLE_SOURCES = {"device_code", "manual:device_code"}
+        return False
+    changed = False
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         source = entry.get("source")
-        if source not in REFRESHABLE_SOURCES:
+        if source not in refreshable_sources:
             continue
         entry["access_token"] = access_token
         if refresh_token:
@@ -3600,6 +3602,8 @@ def _sync_codex_pool_entries(
         entry["last_error_reason"] = None
         entry["last_error_message"] = None
         entry["last_error_reset_at"] = None
+        changed = True
+    return changed
 
 
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
@@ -3615,7 +3619,25 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         state["auth_mode"] = "chatgpt"
         state["refresh_owner"] = CODEX_REFRESH_OWNER
         _store_provider_state(auth_store, "openai-codex", state, set_active=False)
-        _sync_codex_pool_entries(auth_store, tokens, last_refresh)
+        local_auth_file = _auth_file_path()
+        if auth_file == local_auth_file:
+            _sync_codex_pool_entries(auth_store, tokens, last_refresh)
+        else:
+            _sync_codex_pool_entries(
+                auth_store,
+                tokens,
+                last_refresh,
+                refreshable_sources=frozenset({"device_code"}),
+            )
+            with _auth_store_lock():
+                local_auth_store = _load_auth_store(local_auth_file)
+                if _sync_codex_pool_entries(
+                    local_auth_store,
+                    tokens,
+                    last_refresh,
+                    refreshable_sources=frozenset({"manual:device_code"}),
+                ):
+                    _save_auth_store(local_auth_store, auth_file=local_auth_file)
         _save_auth_store(auth_store, auth_file=auth_file)
 
 

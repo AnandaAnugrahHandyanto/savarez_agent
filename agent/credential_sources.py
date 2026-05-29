@@ -303,12 +303,9 @@ def _remove_codex_device_code(provider: str, removed) -> RemovalResult:
     """Clear Hermes-owned Codex tokens and suppress singleton re-seeding.
 
     The canonical source name in ``_seed_from_singletons`` is
-    ``"device_code"`` (no prefix).  Entries may show up in the pool as
-    either ``"device_code"`` (seeded) or ``"manual:device_code"`` (added
-    via ``hermes auth add openai-codex``), but in both cases the re-seed
-    gate lives at the ``"device_code"`` suppression key.  We suppress
-    that canonical key here; the central dispatcher also suppresses
-    ``removed.source`` which is fine — belt-and-suspenders, idempotent.
+    ``"device_code"`` (no prefix). Independent ``manual:*`` entries are
+    profile-local and intentionally do not dispatch here: removing one must
+    not clear or suppress the canonical family used by other profiles.
     """
     from hermes_cli.auth import suppress_credential_source
 
@@ -420,7 +417,6 @@ def _register_all_sources() -> None:
     ))
     register(RemovalStep(
         provider="openai-codex", source_id="device_code",
-        match_fn=lambda src: src == "device_code" or src.endswith(":device_code"),
         remove_fn=_remove_codex_device_code,
         description="auth.json providers.openai-codex",
     ))

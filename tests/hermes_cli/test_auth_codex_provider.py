@@ -257,6 +257,73 @@ def test_save_codex_tokens_targets_canonical_root_in_profile_mode(tmp_path, monk
     assert _read_codex_tokens()["tokens"]["refresh_token"] == "profile-rt"
 
 
+def test_save_codex_tokens_syncs_only_active_profile_manual_entries(tmp_path, monkeypatch):
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    sibling_home = root_home / "profiles" / "sibling"
+    profile_home.mkdir(parents=True)
+    sibling_home.mkdir(parents=True)
+    (root_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {
+            "openai-codex": {
+                "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "shared-device",
+                "source": "device_code",
+                "access_token": "old-at",
+                "refresh_token": "old-rt",
+            }, {
+                "id": "root-manual",
+                "source": "manual:device_code",
+                "access_token": "root-manual-at",
+                "refresh_token": "root-manual-rt",
+            }],
+        },
+    }))
+    (profile_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "profile-manual",
+                "source": "manual:device_code",
+                "access_token": "profile-manual-at",
+                "refresh_token": "profile-manual-rt",
+            }],
+        },
+    }))
+    (sibling_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "sibling-manual",
+                "source": "manual:device_code",
+                "access_token": "sibling-manual-at",
+                "refresh_token": "sibling-manual-rt",
+            }],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    _save_codex_tokens({"access_token": "new-at", "refresh_token": "new-rt"})
+
+    root_auth = json.loads((root_home / "auth.json").read_text())
+    root_entries = {
+        entry["id"]: entry
+        for entry in root_auth["credential_pool"]["openai-codex"]
+    }
+    assert root_entries["shared-device"]["refresh_token"] == "new-rt"
+    assert root_entries["root-manual"]["refresh_token"] == "root-manual-rt"
+    profile_auth = json.loads((profile_home / "auth.json").read_text())
+    assert profile_auth["credential_pool"]["openai-codex"][0]["refresh_token"] == "new-rt"
+    sibling_auth = json.loads((sibling_home / "auth.json").read_text())
+    assert sibling_auth["credential_pool"]["openai-codex"][0]["refresh_token"] == "sibling-manual-rt"
+
+
 def test_profile_mode_refuses_to_refresh_unclaimed_legacy_tokens(tmp_path, monkeypatch):
     root_home = tmp_path / "hermes"
     profile_home = root_home / "profiles" / "worker"
