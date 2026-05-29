@@ -1617,6 +1617,64 @@ def detect_provider_for_model(
     if not name:
         return None
 
+    name_lower = name.lower()
+
+    # --- Step 0a: check if name is slash-prefixed with a user provider or custom provider ---
+    if "/" in name:
+        prefix, rest = name.split("/", 1)
+        prefix = prefix.strip().lower()
+        rest = rest.strip()
+        if prefix and rest:
+            try:
+                from hermes_cli.config import load_config
+                config = load_config()
+                # Check user providers dict
+                user_provs = config.get("providers") or {}
+                if prefix in user_provs:
+                    return (prefix, rest)
+                # Check custom providers list
+                custom_provs = config.get("custom_providers") or []
+                for entry in custom_provs:
+                    if isinstance(entry, dict):
+                        entry_name = entry.get("name", "").strip().lower()
+                        if entry_name == prefix:
+                            return (f"custom:{entry_name}", rest)
+            except Exception:
+                pass
+
+    # --- Step 0b: check if name is a bare model name listed in user or custom providers ---
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        # Check user providers dict
+        user_provs = config.get("providers") or {}
+        for ep_name, ep_cfg in user_provs.items():
+            if isinstance(ep_cfg, dict):
+                dm = ep_cfg.get("default_model") or ep_cfg.get("model")
+                if dm and dm.lower() == name_lower:
+                    return (ep_name, dm)
+                cfg_models = ep_cfg.get("models", [])
+                if isinstance(cfg_models, dict) and name in cfg_models:
+                    return (ep_name, name)
+                elif isinstance(cfg_models, list) and name in cfg_models:
+                    return (ep_name, name)
+        # Check custom providers list
+        custom_provs = config.get("custom_providers") or []
+        for entry in custom_provs:
+            if isinstance(entry, dict):
+                entry_name = entry.get("name", "").strip().lower()
+                if entry_name:
+                    dm = entry.get("model")
+                    if dm and dm.lower() == name_lower:
+                        return (f"custom:{entry_name}", dm)
+                    cfg_models = entry.get("models", {})
+                    if isinstance(cfg_models, dict) and name in cfg_models:
+                        return (f"custom:{entry_name}", name)
+                    elif isinstance(cfg_models, list) and name in cfg_models:
+                        return (f"custom:{entry_name}", name)
+    except Exception:
+        pass
+
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
         return static_match
