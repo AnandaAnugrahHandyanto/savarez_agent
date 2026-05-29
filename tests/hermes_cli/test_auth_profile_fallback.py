@@ -1111,3 +1111,90 @@ def test_clear_codex_auth_clears_profile_entries_and_shared_root_state(profile_e
     assert "openai-codex" not in profile_data["providers"]
     assert "openai-codex" not in profile_data["credential_pool"]
     assert read_credential_pool("openai-codex") == []
+
+
+def test_clear_codex_auth_removes_linked_aliases_from_sibling_profiles(profile_env):
+    from hermes_cli.auth import clear_provider_auth
+
+    sibling = profile_env["global"] / "profiles" / "sibling"
+    sibling.mkdir()
+    _write(profile_env["global"] / "auth.json", {
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "shared-at",
+                    "refresh_token": "shared-rt",
+                },
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "root-linked",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "root-stale-at",
+                "refresh_token": "shared-rt",
+            }, {
+                "id": "root-independent",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "root-independent-at",
+                "refresh_token": "root-independent-rt",
+            }, {
+                "id": "shared-codex",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "shared-at",
+                "refresh_token": "shared-rt",
+            }],
+        },
+    })
+    _write(profile_env["profile"] / "auth.json", {
+        "version": 1,
+        "active_provider": "openai-codex",
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "profile-linked",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "profile-stale-at",
+                "refresh_token": "shared-rt",
+            }],
+        },
+    })
+    _write(sibling / "auth.json", {
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "sibling-linked",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "sibling-stale-at",
+                "refresh_token": "shared-rt",
+            }, {
+                "id": "sibling-independent",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "sibling-independent-at",
+                "refresh_token": "sibling-independent-rt",
+            }],
+        },
+    })
+
+    assert clear_provider_auth("openai-codex") is True
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    assert global_data["active_provider"] == "nous"
+    assert "openai-codex" not in global_data["providers"]
+    assert [
+        entry["id"] for entry in global_data["credential_pool"]["openai-codex"]
+    ] == ["root-independent"]
+    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert profile_data["active_provider"] is None
+    assert "openai-codex" not in profile_data["credential_pool"]
+    sibling_data = json.loads((sibling / "auth.json").read_text())
+    assert [
+        entry["id"] for entry in sibling_data["credential_pool"]["openai-codex"]
+    ] == ["sibling-independent"]

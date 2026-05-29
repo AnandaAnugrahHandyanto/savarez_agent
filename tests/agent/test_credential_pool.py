@@ -3311,6 +3311,71 @@ def test_codex_manual_pool_refresh_serializes_within_named_profile(tmp_path, mon
     assert profile_entry["refresh_token"] == "refresh-1"
 
 
+def test_codex_profile_manual_refresh_ignores_shared_id_collision(tmp_path, monkeypatch):
+    """A profile-local row must not adopt a colliding shared-row identity."""
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    auth_store = _codex_auth_store("shared-at", "shared-rt")
+    auth_store["credential_pool"] = {
+        "openai-codex": [{
+            "id": "colliding-id",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "shared-at",
+            "refresh_token": "shared-rt",
+            "last_status": "dead",
+            "last_status_at": time.time(),
+        }],
+    }
+    (root_home / "auth.json").write_text(json.dumps(auth_store, indent=2))
+    (profile_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "colliding-id",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "manual-at",
+                "refresh_token": "manual-rt",
+            }],
+        },
+    }, indent=2))
+
+    import hermes_cli.auth as auth_mod
+    from agent.credential_pool import load_pool
+
+    refresh_tokens = []
+
+    def _refresh(_access_token, refresh_token, **_kwargs):
+        refresh_tokens.append(refresh_token)
+        return {
+            "access_token": "manual-new-at",
+            "refresh_token": "manual-new-rt",
+            "last_refresh": "2026-05-29T00:00:00Z",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _refresh)
+    pool = load_pool("openai-codex")
+    manual = next(entry for entry in pool.entries() if entry.source == "manual:device_code")
+
+    selected = pool.select()
+    assert selected is manual
+    assert pool.current() is manual
+
+    refreshed = pool.try_refresh_current()
+
+    assert refreshed is not None
+    assert refreshed.source == "manual:device_code"
+    assert refreshed.refresh_token == "manual-new-rt"
+    assert refresh_tokens == ["manual-rt"]
+    root_payload = json.loads((root_home / "auth.json").read_text())
+    assert root_payload["credential_pool"]["openai-codex"][0]["refresh_token"] == "shared-rt"
+    profile_payload = json.loads((profile_home / "auth.json").read_text())
+    assert profile_payload["credential_pool"]["openai-codex"][0]["refresh_token"] == "manual-new-rt"
+
+
 def test_codex_linked_manual_alias_refresh_updates_canonical_family(tmp_path, monkeypatch):
     """A migrated alias spends and saves through the shared canonical family."""
     root_home = tmp_path / "hermes"
@@ -3852,7 +3917,7 @@ def test_codex_manual_terminal_refresh_preserves_shared_family(tmp_path, monkeyp
 
     pool = load_pool("openai-codex")
     manual = next(entry for entry in pool.entries() if entry.id == "manual-codex")
-    pool._current_id = manual.id
+    pool._current_identity = (manual.id, manual.source)
 
     def _terminal_refresh_failure(*_args, **_kwargs):
         raise AuthError(
@@ -3915,7 +3980,7 @@ def test_codex_superseded_manual_alias_fails_before_refresh_post(tmp_path, monke
 
     pool = load_pool("openai-codex")
     manual = next(entry for entry in pool.entries() if entry.id == "manual-codex")
-    pool._current_id = manual.id
+    pool._current_identity = (manual.id, manual.source)
     monkeypatch.setattr(
         auth_mod,
         "refresh_codex_oauth_pure",
@@ -3965,7 +4030,7 @@ def test_codex_shared_terminal_refresh_preserves_newer_manual_entries(tmp_path, 
 
     stale = load_pool("openai-codex")
     shared = next(entry for entry in stale.entries() if entry.id == "shared-codex")
-    stale._current_id = shared.id
+    stale._current_identity = (shared.id, shared.source)
     auth_store["credential_pool"]["openai-codex"][1]["access_token"] = "manual-new-access"
     auth_store["credential_pool"]["openai-codex"][1]["refresh_token"] = "manual-new-refresh"
     auth_store["credential_pool"]["openai-codex"].append({

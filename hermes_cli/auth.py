@@ -1915,6 +1915,27 @@ def _clear_provider_auth_store(
     return cleared
 
 
+def _codex_canonical_refresh_token(auth_store: Dict[str, Any]) -> Optional[str]:
+    providers = auth_store.get("providers")
+    state = providers.get("openai-codex") if isinstance(providers, dict) else None
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    refresh_token = tokens.get("refresh_token") if isinstance(tokens, dict) else None
+    if isinstance(refresh_token, str) and refresh_token:
+        return refresh_token
+
+    pool = auth_store.get("credential_pool")
+    entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not _is_shared_credential_pool_entry("openai-codex", entry):
+            continue
+        refresh_token = entry.get("refresh_token")
+        if isinstance(refresh_token, str) and refresh_token:
+            return refresh_token
+    return None
+
+
 def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
     """
     Clear auth state for a provider. Used by `hermes logout`.
@@ -1934,6 +1955,11 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
     lock = _codex_auth_store_lock if auth_file is not None else _auth_store_lock
     with lock():
         auth_store = _load_auth_store(auth_file)
+        if target == "openai-codex":
+            _remove_codex_linked_legacy_aliases(
+                _codex_canonical_refresh_token(auth_store),
+            )
+            auth_store = _load_auth_store(auth_file)
         split_shared_store = auth_file is not None and auth_file != local_auth_file
         cleared = _clear_provider_auth_store(
             auth_store,
