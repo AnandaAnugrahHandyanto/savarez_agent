@@ -356,6 +356,13 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     return session
 
 
+def _is_camofox_server_error(exc: requests.HTTPError) -> bool:
+    """Return whether a Camofox HTTP error is likely server-side/transient."""
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    return isinstance(status_code, int) and 500 <= status_code < 600
+
+
 def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """Remove and return session info."""
     task_id = task_id or "default"
@@ -426,9 +433,24 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
         browser_url, rewrite_info = _rewrite_loopback_url_for_camofox(url)
         session = _get_session(task_id)
         if not session["tab_id"]:
-            # Create tab with the target URL directly
-            session = _ensure_tab(task_id, browser_url)
-            data = {"ok": True, "url": browser_url}
+            # Prefer direct creation with the target URL, but some Camofox
+            # server builds can return a 500 from POST /tabs while trying to
+            # load the initial URL. In that case, create a blank tab first and
+            # use the dedicated navigate endpoint so browser_navigate does not
+            # fail before a recoverable page navigation even starts.
+            try:
+                session = _ensure_tab(task_id, browser_url)
+                data = {"ok": True, "url": browser_url}
+            except requests.HTTPError as exc:
+                if not _is_camofox_server_error(exc):
+                    raise
+                logger.debug("Camofox target-tab creation failed; retrying via about:blank", exc_info=True)
+                session = _ensure_tab(task_id, "about:blank")
+                data = _post(
+                    f"/tabs/{session['tab_id']}/navigate",
+                    {"userId": session["user_id"], "url": browser_url},
+                    timeout=60,
+                )
         else:
             # Navigate existing tab
             data = _post(

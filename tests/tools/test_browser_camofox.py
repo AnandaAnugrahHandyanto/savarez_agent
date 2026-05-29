@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import requests
+
 
 from tools.browser_camofox import (
     camofox_back,
@@ -170,6 +172,49 @@ class TestCamofoxNavigate:
         result = json.loads(camofox_navigate("https://b.com", task_id="t2"))
         assert result["success"] is True
         assert result["url"] == "https://b.com"
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_retries_tab_creation_500_via_blank_tab_then_navigate(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        server_error_response = _mock_response(status=500)
+        server_error_response.raise_for_status.side_effect = requests.HTTPError(
+            "500 Server Error: Internal Server Error for url: http://localhost:9377/tabs",
+            response=server_error_response,
+        )
+        mock_post.side_effect = [
+            server_error_response,
+            _mock_response(json_data={"tabId": "tab-retry", "url": "about:blank"}),
+            _mock_response(json_data={"ok": True, "url": "https://example.com", "title": "Example"}),
+        ]
+
+        result = json.loads(camofox_navigate("https://example.com", task_id="t_retry_tabs_500"))
+
+        assert result["success"] is True
+        assert result["url"] == "https://example.com"
+        assert result["title"] == "Example"
+        assert mock_post.call_args_list[0].kwargs["json"]["url"] == "https://example.com"
+        assert mock_post.call_args_list[1].kwargs["json"]["url"] == "about:blank"
+        assert mock_post.call_args_list[2].args[0] == "http://localhost:9377/tabs/tab-retry/navigate"
+        assert mock_post.call_args_list[2].kwargs["json"] == {
+            "userId": mock_post.call_args_list[0].kwargs["json"]["userId"],
+            "url": "https://example.com",
+        }
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_tab_creation_4xx_is_not_retried(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        client_error_response = _mock_response(status=400)
+        client_error_response.raise_for_status.side_effect = requests.HTTPError(
+            "400 Client Error: Bad Request for url: http://localhost:9377/tabs",
+            response=client_error_response,
+        )
+        mock_post.return_value = client_error_response
+
+        result = json.loads(camofox_navigate("https://example.com", task_id="t_no_retry_400"))
+
+        assert result["success"] is False
+        assert "Navigation failed" in result["error"]
+        assert mock_post.call_count == 1
 
     def test_connection_error_returns_helpful_message(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
