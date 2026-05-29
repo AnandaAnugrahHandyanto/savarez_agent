@@ -224,6 +224,39 @@ def test_recover_stale_running_jobs_marks_old_claim_failed(tmp_path: Path) -> No
     assert "stale running job recovered" in failed["stderr_tail"]
 
 
+def test_run_once_records_empty_command_manifest_as_failed_job(tmp_path: Path) -> None:
+    module = load_module()
+    queue_root = tmp_path / "windows" / "cavalry" / "jobs"
+    queued_dir = queue_root / "queued"
+    queued_dir.mkdir(parents=True)
+    (queue_root / "running").mkdir()
+    (queue_root / "done").mkdir()
+    (queue_root / "failed").mkdir()
+    (queued_dir / "empty-command.json").write_text(
+        json.dumps(
+            {
+                "id": "empty-command",
+                "job_type": "cavalry",
+                "status": "queued",
+                "public_release": False,
+                "attempts": 0,
+                "command": [],
+            }
+        )
+        + "\n"
+    )
+
+    result = module.run_once(queue_root=queue_root)
+
+    assert result["processed"] is True
+    assert result["status"] == "failed"
+    failed = json.loads((queue_root / "failed" / "empty-command.json").read_text())
+    assert failed["status"] == "failed"
+    assert failed["returncode"] == -1
+    assert "command must contain at least one argument" in failed["stderr_tail"]
+    assert not (queue_root / "running" / "empty-command.json").exists()
+
+
 def test_write_windows_worker_bundle_points_to_queue_root(tmp_path: Path) -> None:
     module = load_module()
     queue_root = tmp_path / "windows" / "cavalry" / "jobs"

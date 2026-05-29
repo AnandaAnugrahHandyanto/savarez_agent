@@ -262,8 +262,8 @@ def run_once(
         return {"processed": False, "queue_root": str(queue_root)}
 
     running_path, job = claimed
-    command = validate_command(job.get("command") or [])
     try:
+        command = validate_command(job.get("command") or [])
         result = runner(
             command,
             cwd=job.get("cwd"),
