@@ -269,6 +269,74 @@ def test_api_gmail_get_reads_headers_case_insensitively(api_module, capsys, head
     assert result["date"] == "Fri, 29 May 2026 12:00:00 +0000"
 
 
+@pytest.mark.parametrize(
+    "header_names",
+    [
+        ("from", "to", "subject", "date"),
+        ("From", "To", "Subject", "Date"),
+    ],
+)
+def test_api_gmail_search_reads_headers_case_insensitively(
+    api_module,
+    capsys,
+    header_names,
+):
+    from_name, to_name, subject_name, date_name = header_names
+    calls = []
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append({"parts": parts, "params": params, "body": body})
+        if parts == ["gmail", "users", "messages", "list"]:
+            assert params == {"userId": "me", "q": "from:sender", "maxResults": 5}
+            return {"messages": [{"id": "msg-1"}]}
+
+        assert parts == ["gmail", "users", "messages", "get"]
+        assert params == {
+            "userId": "me",
+            "id": "msg-1",
+            "format": "metadata",
+            "metadataHeaders": ["From", "To", "Subject", "Date"],
+        }
+        return {
+            "id": "msg-1",
+            "threadId": "thread-1",
+            "labelIds": ["INBOX"],
+            "snippet": "preview",
+            "payload": {
+                "headers": [
+                    {"name": from_name, "value": "sender@example.com"},
+                    {"name": to_name, "value": "recipient@example.com"},
+                    {"name": subject_name, "value": "case bug"},
+                    {"name": date_name, "value": "Fri, 29 May 2026 12:00:00 +0000"},
+                ],
+            },
+        }
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        query="from:sender",
+        max=5,
+        func=api_module.gmail_search,
+    )
+
+    api_module.gmail_search(args)
+
+    assert len(calls) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result == [
+        {
+            "id": "msg-1",
+            "threadId": "thread-1",
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "subject": "case bug",
+            "date": "Fri, 29 May 2026 12:00:00 +0000",
+            "snippet": "preview",
+            "labels": ["INBOX"],
+        }
+    ]
+
+
 def test_api_gmail_send_uses_conventional_mime_header_casing(api_module):
     captured = {}
 
