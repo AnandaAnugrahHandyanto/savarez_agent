@@ -890,6 +890,12 @@ def load_gateway_config() -> GatewayConfig:
                     if entry.apply_yaml_config_fn is None:
                         continue
                     platform_cfg = yaml_cfg.get(entry.name)
+                    if not isinstance(platform_cfg, dict) and isinstance(yaml_platforms, dict):
+                        candidate_platform = yaml_platforms.get(entry.name)
+                        if isinstance(candidate_platform, dict):
+                            candidate_extra = candidate_platform.get("extra")
+                            if isinstance(candidate_extra, dict):
+                                platform_cfg = candidate_extra
                     if not isinstance(platform_cfg, dict):
                         continue
                     try:

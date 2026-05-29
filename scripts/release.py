@@ -115,6 +115,7 @@ AUTHOR_MAP = {
     "openhands@all-hands.dev": "YLChen-007",
     "3153586+xzessmedia@users.noreply.github.com": "xzessmedia",
     "AdamPlatin123@outlook.com": "AdamPlatin123",
+    "byquenox@gmail.com": "quen0xi",
     "32711803+waefrebeorn@users.noreply.github.com": "waefrebeorn",
     "32869278+dusterbloom@users.noreply.github.com": "dusterbloom",
     "liuhao1024@users.noreply.github.com": "liuhao1024",
