@@ -411,6 +411,36 @@ class TestHTTP413Compression:
         assert result.get("partial") is True
         assert "413" in result["error"]
 
+    def test_gateway_413_compression_halts_instead_of_retrying_heavy_turn(self, agent):
+        """Gateway turns should stop after automatic compression recovery."""
+        agent.platform = "qqbot"
+        err_413 = _make_413_error()
+        agent.client.chat.completions.create.side_effect = [err_413]
+
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "compressed summary"}],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert agent.client.chat.completions.create.call_count == 1
+        assert result["compression_circuit_breaker"] is True
+        assert result["completed"] is False
+        assert "context 刚压缩恢复" in result["final_response"]
+        assert "Codex" in result["final_response"]
+
 
 class TestPreflightCompression:
     """Preflight compression should compress history before the first API call."""
@@ -492,6 +522,158 @@ class TestPreflightCompression:
             ev == "lifecycle" and "预先压缩 context" in msg
             for ev, msg in status_messages
         )
+
+    def test_gateway_preflight_compression_halts_before_first_api_call(self, agent):
+        """Gateway preflight compression should ask for a new stage, not continue."""
+        agent.platform = "qqbot"
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 2000
+        agent.context_compressor.threshold_tokens = 200
+
+        big_history = []
+        for i in range(20):
+            big_history.append({"role": "user", "content": f"Message number {i} with padding"})
+            big_history.append({"role": "assistant", "content": f"Response number {i} with padding"})
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [
+                    {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "new system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        mock_compress.assert_called_once()
+        agent.client.chat.completions.create.assert_not_called()
+        assert result["compression_circuit_breaker"] is True
+        assert "继续下一阶段" in result["final_response"]
+
+    def test_gateway_preflight_uses_session_context_platform(self, agent):
+        """Gateway ContextVar platform should trigger the breaker even without agent.platform."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        agent.platform = None
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 2000
+        agent.context_compressor.threshold_tokens = 200
+        big_history = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i} padding"}
+            for i in range(40)
+        ]
+
+        tokens = set_session_vars(platform="qqbot")
+        try:
+            with (
+                patch.object(agent, "_compress_context") as mock_compress,
+                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+            ):
+                mock_compress.return_value = (
+                    [
+                        {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
+                        {"role": "user", "content": "hello"},
+                    ],
+                    "new system prompt",
+                )
+                result = agent.run_conversation("hello", conversation_history=big_history)
+        finally:
+            clear_session_vars(tokens)
+
+        mock_compress.assert_called_once()
+        agent.client.chat.completions.create.assert_not_called()
+        assert result["compression_circuit_breaker"] is True
+
+    def test_gateway_preflight_breaker_can_be_disabled_by_env(self, agent, monkeypatch):
+        """Operators can opt out when they need transparent gateway compression."""
+        agent.platform = "qqbot"
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 2000
+        agent.context_compressor.threshold_tokens = 300
+        monkeypatch.setenv("HERMES_DISABLE_COMPRESSION_CIRCUIT_BREAKER", "true")
+        big_history = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i} padding"}
+            for i in range(40)
+        ]
+        ok_resp = _mock_response(content="continued", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [
+                    {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "new system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        mock_compress.assert_called_once()
+        agent.client.chat.completions.create.assert_called_once()
+        assert result["completed"] is True
+        assert result["final_response"] == "continued"
+
+    def test_compression_breaker_resolves_env_platform_sources(self, agent, monkeypatch):
+        """Platform resolver should cover env fallbacks and trim whitespace."""
+        from agent.conversation_loop import _compression_circuit_breaker_enabled
+
+        agent.platform = None
+        monkeypatch.delenv("HERMES_DISABLE_COMPRESSION_CIRCUIT_BREAKER", raising=False)
+        monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", " qqbot ")
+        assert _compression_circuit_breaker_enabled(agent) is True
+
+        monkeypatch.setenv("HERMES_PLATFORM", " webui ")
+        assert _compression_circuit_breaker_enabled(agent) is False
+
+        monkeypatch.setenv("HERMES_PLATFORM", " telegram ")
+        assert _compression_circuit_breaker_enabled(agent) is True
+
+    @pytest.mark.parametrize("platform", ["cli", "webui", "local"])
+    def test_preflight_compression_continues_for_direct_platforms(self, agent, platform):
+        """Direct interfaces keep the historical transparent compression behavior."""
+        agent.platform = platform
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 2000
+        agent.context_compressor.threshold_tokens = 300
+        big_history = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i} padding"}
+            for i in range(40)
+        ]
+        ok_resp = _mock_response(content="continued", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [
+                    {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "new system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        mock_compress.assert_called_once()
+        agent.client.chat.completions.create.assert_called_once()
+        assert result["completed"] is True
+        assert result["final_response"] == "continued"
 
     def test_no_preflight_when_under_threshold(self, agent):
         """When history fits within context, no preflight compression needed."""
