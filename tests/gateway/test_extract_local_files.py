@@ -59,6 +59,18 @@ class TestBasicDetection:
         assert paths == ["/home/user/photos/cat.jpg"]
         assert "~/photos/cat.jpg" not in cleaned
 
+    def test_windows_drive_path(self):
+        paths, cleaned = _extract("Report at D:/hermes-workspace/report.txt attached")
+        assert paths == ["D:/hermes-workspace/report.txt"]
+        assert "D:/hermes-workspace/report.txt" not in cleaned
+        assert "Report at" in cleaned
+
+    def test_windows_backslash_path(self):
+        text = r"Report at D:\hermes-workspace\report.txt attached"
+        paths, cleaned = _extract(text)
+        assert paths == [r"D:\hermes-workspace\report.txt"]
+        assert r"D:\hermes-workspace\report.txt" not in cleaned
+
     def test_video_extensions(self):
         for ext in (".mp4", ".mov", ".avi", ".mkv", ".webm"):
             text = f"Video at /tmp/clip{ext} here"
@@ -336,10 +348,10 @@ class TestEdgeCases:
         paths, _ = _extract("File at /tmp/my file.png here")
         assert paths == []
 
-    def test_windows_path_not_matched(self):
-        """Windows-style paths should not match."""
+    def test_windows_path_matched(self):
+        """Windows-style drive paths are supported for Windows hosts."""
         paths, _ = _extract("See C:\\Users\\test\\image.png")
-        assert paths == []
+        assert paths == ["C:\\Users\\test\\image.png"]
 
     def test_relative_path_not_matched(self):
         """Relative paths like ./image.png should not match."""

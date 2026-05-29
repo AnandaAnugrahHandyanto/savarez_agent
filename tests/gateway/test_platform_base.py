@@ -330,6 +330,19 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_supports_windows_drive_paths(self):
+        content = "Report attached\nMEDIA:D:/hermes-workspace/report.txt"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("D:/hermes-workspace/report.txt", False)]
+        assert "MEDIA:" not in cleaned
+        assert "Report attached" in cleaned
+
+    def test_media_tag_supports_windows_backslash_paths(self):
+        content = r"MEDIA:D:\hermes-workspace\report.txt"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [(r"D:\hermes-workspace\report.txt", False)]
+        assert cleaned == ""
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the
