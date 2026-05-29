@@ -21,6 +21,7 @@ Output is saved under ``$HERMES_HOME/cache/images/`` using the requested
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import mimetypes
 import os
@@ -153,22 +154,13 @@ def _read_codex_access_token() -> Optional[str]:
 
 
 def _build_codex_client():
-    """Return an OpenAI client pointed at the ChatGPT/Codex backend, or None."""
-    token = _read_codex_access_token()
-    if not token:
-        return None
-    try:
-        import openai
-        from agent.auxiliary_client import _codex_cloudflare_headers
+    """Return the Codex token used by the raw Responses client, or None.
 
-        return openai.OpenAI(
-            api_key=token,
-            base_url=_CODEX_BASE_URL,
-            default_headers=_codex_cloudflare_headers(token),
-        )
-    except Exception as exc:
-        logger.debug("Could not build Codex image client: %s", exc)
-        return None
+    Kept as a narrow test seam for callers that monkeypatch the old SDK client
+    path; production now streams raw SSE via httpx because the ChatGPT/Codex
+    backend can emit image-generation events newer than the pinned OpenAI SDK.
+    """
+    return _read_codex_access_token()
 
 
 def _reference_image_to_input_item(reference: str) -> Dict[str, str]:
@@ -287,8 +279,7 @@ def _mask_image_to_tool_config(mask_image: str) -> Dict[str, str]:
     return {"image_url": item["image_url"]}
 
 
-def _collect_image_b64(
-    client: Any,
+def _build_responses_payload(
     *,
     prompt: str,
     size: str,
@@ -297,10 +288,8 @@ def _collect_image_b64(
     n: int = 1,
     output_format: str = "png",
     mask_image: Optional[str] = None,
-) -> List[str]:
-    """Stream a Codex Responses image_generation call and return b64 images."""
-    images_b64: List[str] = []
-    partial_b64: Optional[str] = None
+) -> Dict[str, Any]:
+    """Build the Codex Responses request body for an image_generation call."""
     tool: Dict[str, Any] = {
         "type": "image_generation",
         "model": API_MODEL,
@@ -315,52 +304,228 @@ def _collect_image_b64(
     if mask_image:
         tool["input_image_mask"] = _mask_image_to_tool_config(mask_image)
 
-    with client.responses.stream(
-        model=_CODEX_CHAT_MODEL,
-        store=False,
-        instructions=_CODEX_INSTRUCTIONS,
-        input=[{
+    return {
+        "model": _CODEX_CHAT_MODEL,
+        "store": False,
+        "instructions": _CODEX_INSTRUCTIONS,
+        "input": [{
             "type": "message",
             "role": "user",
             "content": _build_input_content(prompt, reference_images),
         }],
-        tools=[tool],
-        tool_choice={
+        "tools": [tool],
+        "tool_choice": {
             "type": "allowed_tools",
             "mode": "required",
             "tools": [{"type": "image_generation"}],
         },
-    ) as stream:
-        for event in stream:
-            event_type = getattr(event, "type", "")
-            if event_type == "response.output_item.done":
-                item = getattr(event, "item", None)
-                if getattr(item, "type", None) == "image_generation_call":
-                    result = getattr(item, "result", None)
-                    if isinstance(result, str) and result:
-                        images_b64.append(result)
-            elif event_type == "response.image_generation_call.partial_image":
-                partial = getattr(event, "partial_image_b64", None)
-                if isinstance(partial, str) and partial:
-                    partial_b64 = partial
-        final = stream.get_final_response()
+        "stream": True,
+    }
 
-    # Final-response sweep covers both missing stream events and partial stream
-    # coverage. Codex can stream one image_generation_call.done while the final
-    # response contains more images for n>1.
-    final_images: List[str] = []
-    for item in getattr(final, "output", None) or []:
-        if getattr(item, "type", None) == "image_generation_call":
-            result = getattr(item, "result", None)
+
+def _extract_image_b64(value: Any) -> Optional[str]:
+    """Return the newest image b64 embedded in a Responses event payload."""
+    found: Optional[str] = None
+    if isinstance(value, dict):
+        if value.get("type") == "image_generation_call":
+            result = value.get("result")
             if isinstance(result, str) and result:
-                final_images.append(result)
-    if final_images:
-        if not images_b64:
-            images_b64 = final_images
-        elif final_images[: len(images_b64)] == images_b64:
-            images_b64.extend(final_images[len(images_b64):])
-        else:
-            images_b64.extend(final_images)
+                found = result
+        partial = value.get("partial_image_b64")
+        if isinstance(partial, str) and partial:
+            found = partial
+        for child in value.values():
+            nested = _extract_image_b64(child)
+            if nested:
+                found = nested
+    elif isinstance(value, list):
+        for child in value:
+            nested = _extract_image_b64(child)
+            if nested:
+                found = nested
+    return found
+
+
+def _extract_image_results(value: Any) -> List[str]:
+    """Return completed image_generation_call results from a nested payload."""
+    results: List[str] = []
+    if isinstance(value, dict):
+        if value.get("type") == "image_generation_call":
+            result = value.get("result")
+            if isinstance(result, str) and result:
+                results.append(result)
+        for child in value.values():
+            results.extend(_extract_image_results(child))
+    elif isinstance(value, list):
+        for child in value:
+            results.extend(_extract_image_results(child))
+    return results
+
+
+def _merge_image_results(images_b64: List[str], new_images: List[str]) -> List[str]:
+    """Merge stream and final-response images without dropping duplicate outputs."""
+    if not new_images:
+        return images_b64
+    if not images_b64:
+        return list(new_images)
+    if new_images[: len(images_b64)] == images_b64:
+        return images_b64 + new_images[len(images_b64):]
+    return images_b64 + new_images
+
+
+def _iter_sse_json(response: Any):
+    """Yield JSON payloads from an SSE response without OpenAI SDK parsing.
+
+    The ChatGPT/Codex backend can emit image-generation events newer than the
+    pinned Python SDK understands. Parsing raw SSE keeps this provider tolerant
+    of those event-shape changes.
+    """
+    event_name: Optional[str] = None
+    data_lines: List[str] = []
+
+    def flush():
+        nonlocal event_name, data_lines
+        if not data_lines:
+            event_name = None
+            return None
+        raw = "\n".join(data_lines).strip()
+        event = event_name
+        event_name = None
+        data_lines = []
+        if not raw or raw == "[DONE]":
+            return None
+        payload = json.loads(raw)
+        if isinstance(payload, dict) and event and "type" not in payload:
+            payload["type"] = event
+        return payload
+
+    for line in response.iter_lines():
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", errors="replace")
+        line = str(line)
+        if line == "":
+            payload = flush()
+            if payload is not None:
+                yield payload
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event_name = line[len("event:"):].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[len("data:"):].lstrip())
+
+    payload = flush()
+    if payload is not None:
+        yield payload
+
+
+def _collect_image_b64(
+    client: Any,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    reference_images: Optional[List[str]] = None,
+    n: int = 1,
+    output_format: str = "png",
+    mask_image: Optional[str] = None,
+) -> List[str]:
+    """Stream a Codex Responses image_generation call and return b64 images."""
+    if not isinstance(client, str) and hasattr(client, "responses"):
+        # Backward-compatible test seam for the old SDK stream shape.
+        images_b64: List[str] = []
+        partial_b64: Optional[str] = None
+        with client.responses.stream(
+            model=_CODEX_CHAT_MODEL,
+            store=False,
+            instructions=_CODEX_INSTRUCTIONS,
+            input=[{
+                "type": "message",
+                "role": "user",
+                "content": _build_input_content(prompt, reference_images),
+            }],
+            tools=[_build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                reference_images=reference_images,
+                n=n,
+                output_format=output_format,
+                mask_image=mask_image,
+            )["tools"][0]],
+            tool_choice={
+                "type": "allowed_tools",
+                "mode": "required",
+                "tools": [{"type": "image_generation"}],
+            },
+        ) as stream:
+            for event in stream:
+                event_type = getattr(event, "type", "")
+                if event_type == "response.output_item.done":
+                    item = getattr(event, "item", None)
+                    if getattr(item, "type", None) == "image_generation_call":
+                        result = getattr(item, "result", None)
+                        if isinstance(result, str) and result:
+                            images_b64.append(result)
+                elif event_type == "response.image_generation_call.partial_image":
+                    partial = getattr(event, "partial_image_b64", None)
+                    if isinstance(partial, str) and partial:
+                        partial_b64 = partial
+            final = stream.get_final_response()
+
+        final_images: List[str] = []
+        for item in getattr(final, "output", None) or []:
+            if getattr(item, "type", None) == "image_generation_call":
+                result = getattr(item, "result", None)
+                if isinstance(result, str) and result:
+                    final_images.append(result)
+        images_b64 = _merge_image_results(images_b64, final_images)
+        if not images_b64 and partial_b64:
+            images_b64.append(partial_b64)
+        return images_b64
+
+    import httpx
+    from agent.auxiliary_client import _codex_cloudflare_headers
+
+    token = client
+    headers = _codex_cloudflare_headers(token)
+    headers.update({
+        "Accept": "text/event-stream",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    })
+    payload = _build_responses_payload(
+        prompt=prompt,
+        size=size,
+        quality=quality,
+        reference_images=reference_images,
+        n=n,
+        output_format=output_format,
+        mask_image=mask_image,
+    )
+    timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
+
+    images_b64: List[str] = []
+    partial_b64: Optional[str] = None
+    with httpx.Client(timeout=timeout, headers=headers) as http:
+        with http.stream("POST", f"{_CODEX_BASE_URL}/responses", json=payload) as response:
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                exc.response.read()
+                body = exc.response.text[:500]
+                raise RuntimeError(
+                    f"Codex Responses API returned HTTP {exc.response.status_code}: {body}"
+                ) from exc
+            for event in _iter_sse_json(response):
+                results = _extract_image_results(event)
+                if results:
+                    images_b64 = _merge_image_results(images_b64, results)
+                else:
+                    partial = _extract_image_b64(event)
+                    if isinstance(partial, str) and partial:
+                        partial_b64 = partial
 
     if not images_b64 and partial_b64:
         images_b64.append(partial_b64)
@@ -387,7 +552,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         if not _read_codex_access_token():
             return False
         try:
-            import openai  # noqa: F401
+            import httpx  # noqa: F401
         except ImportError:
             return False
         return True
@@ -448,10 +613,10 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         try:
-            import openai  # noqa: F401
+            import httpx  # noqa: F401
         except ImportError:
             return error_response(
-                error="openai Python package not installed (pip install openai)",
+                error="httpx Python package not installed (pip install httpx)",
                 error_type="missing_dependency",
                 provider="openai-codex",
                 aspect_ratio=aspect,
@@ -486,17 +651,23 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
+        collect_kwargs: Dict[str, Any] = {
+            "prompt": prompt,
+            "size": size,
+            "quality": quality,
+        }
+        if reference_images is not None:
+            collect_kwargs["reference_images"] = reference_images
+        if n != 1:
+            collect_kwargs["n"] = n
+        if output_format != "png":
+            collect_kwargs["output_format"] = output_format
+        if mask_image:
+            collect_kwargs["mask_image"] = mask_image
+
         try:
-            b64_images = _collect_image_b64(
-                client,
-                prompt=prompt,
-                size=size,
-                quality=quality,
-                reference_images=reference_images,
-                n=n,
-                output_format=output_format,
-                mask_image=mask_image,
-            )
+            b64_result = _collect_image_b64(client, **collect_kwargs)
+            b64_images = [b64_result] if isinstance(b64_result, str) and b64_result else list(b64_result or [])
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
             return error_response(
