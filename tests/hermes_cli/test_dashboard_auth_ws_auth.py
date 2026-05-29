@@ -80,6 +80,25 @@ def loopback_app():
     web_server.app.state.auth_required = prev_required
 
 
+@pytest.fixture
+def insecure_app():
+    """web_server.app configured for insecure mode (--insecure, 0.0.0.0)."""
+    _reset_for_tests()
+    clear_providers()
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "0.0.0.0"
+    web_server.app.state.bound_port = 9119
+    web_server.app.state.auth_required = False
+    client = TestClient(web_server.app, base_url="http://0.0.0.0:9119")
+    yield client
+    _reset_for_tests()
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.bound_port = prev_port
+    web_server.app.state.auth_required = prev_required
+
+
 def _logged_in(client: TestClient) -> None:
     """Drive the stub OAuth round trip so the client holds session cookies."""
     r1 = client.get("/auth/login?provider=stub", follow_redirects=False)
@@ -288,6 +307,29 @@ class TestWsRequestIsAllowedGated:
         ws = _fake_ws(query={}, client_host="203.0.113.7")
         ws.headers = {"host": "evil.example.com"}
         assert web_server._ws_request_is_allowed(ws) is False
+
+    def test_non_loopback_peer_allowed_in_insecure_mode(self, insecure_app):
+        """Insecure mode (--insecure, bound to 0.0.0.0) must allow
+        non-loopback peers — the operator explicitly opted into
+        all-interfaces access."""
+        ws = _fake_ws(query={}, client_host="192.168.1.42")
+        ws.headers = {"host": "192.168.1.42:9119"}
+        assert web_server._ws_request_is_allowed(ws) is True
+
+    def test_loopback_peer_allowed_in_insecure_mode(self, insecure_app):
+        ws = _fake_ws(query={}, client_host="127.0.0.1")
+        ws.headers = {"host": "127.0.0.1:9119"}
+        assert web_server._ws_request_is_allowed(ws) is True
+
+    def test_host_origin_guard_bypassed_in_insecure_mode(self, insecure_app):
+        """When bound to 0.0.0.0 (--insecure), the Host header guard
+        accepts any hostname — consistent with host_header_middleware
+        which also returns True for 0.0.0.0 binds.  The operator has
+        explicitly opted into all-interfaces access; DNS-rebinding
+        protection is not possible at this layer."""
+        ws = _fake_ws(query={}, client_host="192.168.1.42")
+        ws.headers = {"host": "evil.example.com"}
+        assert web_server._ws_request_is_allowed(ws) is True
 
 
 class TestSidecarUrl:

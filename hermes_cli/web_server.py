@@ -3389,8 +3389,16 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     OAuth gate + single-use ``?ticket=`` is the auth at that point; the
     Host/Origin guard in :func:`_ws_host_origin_is_allowed` is what
     blocks DNS-rebinding here, not the peer IP.
+
+    Insecure mode (``--insecure``, bound to ``0.0.0.0`` / ``::``): any
+    peer is allowed — the operator explicitly opted into all-interfaces
+    access; the ``?token=`` check on each endpoint is the auth at that
+    point, same as loopback mode but without the peer-IP restriction.
     """
     if getattr(app.state, "auth_required", False):
+        return True
+    bound_host = getattr(app.state, "bound_host", None)
+    if bound_host in {"0.0.0.0", "::"}:
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
