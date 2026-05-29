@@ -4934,13 +4934,13 @@ class TestCompetitionConsultingSkillRouting(unittest.TestCase):
         self.assertEqual(matched, "应急与安全科普创新大赛")
 
     def test_registration_keyword_routes(self):
-        """'报名' keyword triggers routing."""
+        """'白名单赛事' keyword triggers routing (ordered tuple: 白名单赛事 before 报名)."""
         from gateway.platforms.feishu import _competition_keyword_matches
 
         text = "老师您好，请问白名单赛事怎么报名？"
         matched = _competition_keyword_matches(text)
         self.assertIsNotNone(matched)
-        self.assertEqual(matched, "报名")
+        self.assertEqual(matched, "白名单赛事")
 
     def test_non_competition_message_no_match(self):
         """Regular message in competition group does NOT trigger skill routing."""
