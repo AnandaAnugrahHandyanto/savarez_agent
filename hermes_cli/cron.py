@@ -68,7 +68,9 @@ def cron_list(show_all: bool = False):
         repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
 
         deliver = job.get("deliver", ["local"])
-        if isinstance(deliver, str):
+        if deliver is None:
+            deliver = ["local"]
+        elif isinstance(deliver, str):
             deliver = [deliver]
         deliver_str = ", ".join(deliver)
 

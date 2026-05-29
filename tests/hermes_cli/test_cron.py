@@ -1,11 +1,13 @@
 """Tests for hermes_cli.cron command handling."""
 
+import json
 from argparse import Namespace
+from unittest.mock import patch
 
 import pytest
 
 from cron.jobs import create_job, get_job, list_jobs
-from hermes_cli.cron import cron_command
+from hermes_cli.cron import cron_command, cron_list
 
 
 @pytest.fixture()
@@ -111,3 +113,53 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
         assert jobs[0]["profile"] == "default"
+
+
+class TestCronListNullDeliver:
+    """Test that cron list handles null deliver field without crashing."""
+    
+    def test_cron_list_with_null_deliver(self, tmp_cron_dir, capsys):
+        """Test that cron list doesn't crash when job has null deliver field."""
+        job = create_job(prompt="Test job", schedule="every 1h")
+        
+        jobs_with_null_deliver = [{
+            **job,
+            "deliver": None
+        }]
+        
+        with patch('cron.jobs.list_jobs', return_value=jobs_with_null_deliver):
+            cron_list()
+            
+        out = capsys.readouterr().out
+        assert "local" in out
+        assert "Test job" in out
+    
+    def test_cron_list_with_string_deliver(self, tmp_cron_dir, capsys):
+        """Test that cron list handles string deliver field."""
+        job = create_job(prompt="Test job", schedule="every 1h")
+        
+        jobs_with_string_deliver = [{
+            **job,
+            "deliver": "telegram"
+        }]
+        
+        with patch('cron.jobs.list_jobs', return_value=jobs_with_string_deliver):
+            cron_list()
+            
+        out = capsys.readouterr().out
+        assert "telegram" in out
+    
+    def test_cron_list_with_list_deliver(self, tmp_cron_dir, capsys):
+        """Test that cron list handles list deliver field."""
+        job = create_job(prompt="Test job", schedule="every 1h")
+        
+        jobs_with_list_deliver = [{
+            **job,
+            "deliver": ["telegram", "discord"]
+        }]
+        
+        with patch('cron.jobs.list_jobs', return_value=jobs_with_list_deliver):
+            cron_list()
+            
+        out = capsys.readouterr().out
+        assert "telegram, discord" in out
