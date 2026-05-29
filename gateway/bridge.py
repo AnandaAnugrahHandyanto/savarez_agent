@@ -211,6 +211,94 @@ class BridgeStateStore:
                 (str(chat_id), str(user_id), _thread_key(thread_id)),
             ).fetchone()
 
+    def _format_binding_row(self, row: sqlite3.Row) -> str:
+        thread = row["telegram_thread_id"] or "-"
+        reason = f", reason={row['pause_reason']}" if row["pause_reason"] else ""
+        return (
+            f"bridge={row['bridge_id']}, session={row['hermes_session_id']}, "
+            f"status={row['status']}{reason}, chat={row['telegram_chat_id']}, "
+            f"user={row['telegram_user_id']}, thread={thread}, updated={row['updated_at']}"
+        )
+
+    def list_bindings_for_session(self, hermes_session_id: str) -> list[sqlite3.Row]:
+        """Return Telegram bridge bindings for one Hermes session."""
+        with self._connect() as conn:
+            return list(
+                conn.execute(
+                    """
+                    SELECT * FROM bindings
+                    WHERE hermes_session_id=?
+                    ORDER BY updated_at DESC, bridge_id ASC
+                    """,
+                    (str(hermes_session_id),),
+                ).fetchall()
+            )
+
+    def describe_session_status(self, hermes_session_id: str) -> str:
+        """Human-readable local CLI status for a Hermes session's bridge bindings."""
+        kill = "active" if self._kill_switch_active() else "inactive"
+        rows = self.list_bindings_for_session(hermes_session_id)
+        if not rows:
+            return (
+                f"Local bridge status for Hermes session `{hermes_session_id}`: no Telegram bindings.\n"
+                f"Kill switch: {kill}. Use /bridge bind telegram to create an opt-in token."
+            )
+        details = "\n".join(f"- {self._format_binding_row(row)}" for row in rows)
+        return f"Local bridge status for Hermes session `{hermes_session_id}`. Kill switch: {kill}.\n{details}"
+
+    def _delete_binding_rows(self, conn: sqlite3.Connection, bridge_ids: list[str]) -> None:
+        for bridge_id in bridge_ids:
+            conn.execute("DELETE FROM outbound_messages WHERE bridge_id=?", (bridge_id,))
+            conn.execute("DELETE FROM approvals WHERE bridge_id=?", (bridge_id,))
+            conn.execute("DELETE FROM bindings WHERE bridge_id=?", (bridge_id,))
+
+    def delete_binding(self, bridge_id: str) -> Optional[sqlite3.Row]:
+        """Delete one bridge binding by id and return the deleted row, if any."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM bindings WHERE bridge_id=?", (str(bridge_id),)).fetchone()
+            if row is None:
+                return None
+            self._delete_binding_rows(conn, [str(bridge_id)])
+            return row
+
+    def delete_bindings_for_session(self, hermes_session_id: str) -> list[sqlite3.Row]:
+        """Delete all Telegram bridge bindings for one Hermes session."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = list(
+                conn.execute(
+                    "SELECT * FROM bindings WHERE hermes_session_id=? ORDER BY updated_at DESC, bridge_id ASC",
+                    (str(hermes_session_id),),
+                ).fetchall()
+            )
+            self._delete_binding_rows(conn, [str(row["bridge_id"]) for row in rows])
+            return rows
+
+    def delete_binding_for_telegram(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        thread_id: Optional[str] = None,
+    ) -> Optional[sqlite3.Row]:
+        """Delete this Telegram identity's bridge binding and return it, if present."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT * FROM bindings
+                WHERE telegram_chat_id=? AND telegram_user_id=? AND telegram_thread_id=?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (str(chat_id), str(user_id), _thread_key(thread_id)),
+            ).fetchone()
+            if row is None:
+                return None
+            self._delete_binding_rows(conn, [str(row["bridge_id"])])
+            return row
+
     def describe_telegram_status(
         self,
         *,
@@ -224,13 +312,7 @@ class BridgeStateStore:
         row = self.binding_for_telegram(chat_id=chat_id, user_id=user_id, thread_id=thread_id)
         if row is None:
             return "No bridge binding is active for this Telegram chat/user."
-        status = row["status"]
-        session = row["hermes_session_id"]
-        reason = row["pause_reason"]
-        if status == "active":
-            return f"Bridge active for Hermes session `{session}`."
-        detail = f": {reason}" if reason else ""
-        return f"Bridge {status}{detail} for Hermes session `{session}`."
+        return f"Bridge binding: {self._format_binding_row(row)}"
 
     def validate_telegram_direct_input(
         self,

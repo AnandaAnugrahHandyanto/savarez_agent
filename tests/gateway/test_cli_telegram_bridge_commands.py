@@ -39,6 +39,10 @@ def test_bridge_command_is_registered_for_cli_and_gateway():
     assert not cmd.cli_only
     assert not cmd.gateway_only
 
+    disconnect = resolve_command("bridge_disconnect")
+    assert disconnect is not None
+    assert disconnect.gateway_only
+
 
 def test_local_bridge_bind_mints_single_use_token_limited_to_expected_telegram_identity(tmp_path):
     store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
@@ -93,6 +97,74 @@ def test_gateway_bridge_bind_consumes_token_and_status_reports_active(tmp_path):
     )
     assert "active" in status_out
     assert "cli-session" in status_out
+
+
+def test_gateway_bridge_status_includes_binding_details(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+        telegram_thread_id="42",
+    )
+
+    status_out = handle_gateway_bridge_command(
+        _telegram_event("/bridge_status", thread_id="42"),
+        store=store,
+    )
+
+    assert "bridge-cli-session" in status_out
+    assert "cli-session" in status_out
+    assert "chat=48264503" in status_out
+    assert "user=48264503" in status_out
+    assert "thread=42" in status_out
+    assert "updated=" in status_out
+
+
+def test_gateway_bridge_disconnect_removes_only_this_telegram_binding(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+    store.create_binding(
+        bridge_id="bridge-other-session",
+        hermes_session_id="other-session",
+        telegram_chat_id="999",
+        telegram_user_id="999",
+    )
+
+    out = handle_gateway_bridge_command(
+        _telegram_event("/bridge_disconnect"),
+        store=store,
+    )
+
+    assert "disconnected" in out.lower()
+    assert "cli-session" in out
+    assert store.binding_for_telegram(chat_id="48264503", user_id="48264503") is None
+    assert store.binding_for_telegram(chat_id="999", user_id="999") is not None
+
+
+def test_local_bridge_status_lists_bound_sessions_and_disconnects_by_session(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+
+    status_out = handle_local_bridge_command("/bridge status", session_id="cli-session", store=store)
+    assert "bridge-cli-session" in status_out
+    assert "chat=48264503" in status_out
+    assert "active" in status_out
+
+    disconnect_out = handle_local_bridge_command("/bridge disconnect", session_id="cli-session", store=store)
+    assert "disconnected" in disconnect_out.lower()
+    assert store.binding_for_telegram(chat_id="48264503", user_id="48264503") is None
 
 
 def test_gateway_bridge_off_creates_kill_switch_and_blocks_status(tmp_path):

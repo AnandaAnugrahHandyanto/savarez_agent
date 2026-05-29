@@ -75,6 +75,7 @@ def handle_local_bridge_command(
             "Usage:\n"
             "  /bridge bind telegram [--chat CHAT_ID] [--user USER_ID] [--ttl SECONDS]\n"
             "  /bridge status\n"
+            "  /bridge disconnect\n"
             "  /bridge off\n"
             "\nSafe A-mode: local CLI mints a short-lived token; Telegram consumes it with /bridge_bind <token>."
         )
@@ -120,7 +121,14 @@ def handle_local_bridge_command(
         )
 
     if sub == "status":
-        return "Local bridge state store is available. Use /bridge bind telegram to create an opt-in token."
+        return store.describe_session_status(session_id)
+
+    if sub in {"disconnect", "unlink", "unpair"}:
+        rows = store.delete_bindings_for_session(session_id)
+        if not rows:
+            return f"No Telegram bridge bindings found for Hermes session `{session_id}`."
+        sessions = ", ".join(row["hermes_session_id"] for row in rows)
+        return f"Bridge disconnected for Hermes session(s): {sessions}. Removed {len(rows)} Telegram binding(s)."
 
     if sub in {"off", "pause", "disable"}:
         store.disable_bridge()
@@ -249,4 +257,10 @@ def handle_gateway_bridge_command(
         store.resume_binding(row["bridge_id"])
         return f"Bridge resumed for Hermes session `{row['hermes_session_id']}`."
 
-    return "Unknown bridge command. Use /bridge_status or /bridge_bind <token>."
+    if command in {"bridge_disconnect", "bridge-disconnect"}:
+        row = store.delete_binding_for_telegram(chat_id=chat_id, user_id=user_id, thread_id=thread_id)
+        if row is None:
+            return "No bridge binding is active for this Telegram chat/user."
+        return f"Bridge disconnected from Hermes session `{row['hermes_session_id']}`. Plain DM text will use the normal Telegram session again."
+
+    return "Unknown bridge command. Use /bridge_status, /bridge_disconnect, or /bridge_bind <token>."

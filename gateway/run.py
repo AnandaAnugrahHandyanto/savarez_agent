@@ -7744,6 +7744,7 @@ class GatewayRunner:
             "bridge_off",
             "bridge_pause",
             "bridge_resume",
+            "bridge_disconnect",
         }:
             from gateway.bridge_commands import handle_gateway_bridge_command
             return handle_gateway_bridge_command(event)

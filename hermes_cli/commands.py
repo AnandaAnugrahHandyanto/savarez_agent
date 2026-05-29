@@ -81,6 +81,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("bridge-pause",)),
     CommandDef("bridge_resume", "Resume this Telegram bridge binding", "Session",
                gateway_only=True, aliases=("bridge-resume",)),
+    CommandDef("bridge_disconnect", "Disconnect this Telegram bridge binding", "Session",
+               gateway_only=True, aliases=("bridge-disconnect",)),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",

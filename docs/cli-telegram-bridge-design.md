@@ -1,6 +1,6 @@
 # CLI ↔ Telegram Bridge Safety Design
 
-Status: phase-3 safe plain-DM continuation implemented. This document describes the target design and the safety invariants enforced by `gateway.bridge.BridgeStateStore`.
+Status: phase-4 safe plain-DM continuation plus bridge UX controls implemented. This document describes the target design and the safety invariants enforced by `gateway.bridge.BridgeStateStore`.
 
 ## Goal
 
@@ -62,6 +62,31 @@ Rejected initially:
 - Pause/resume state per binding.
 - Filesystem kill switch support.
 
+## Implemented user flow
+
+Local CLI/TUI side:
+
+```text
+/bridge bind telegram [--chat CHAT_ID] [--user USER_ID] [--ttl SECONDS]
+/bridge status
+/bridge disconnect
+/bridge off
+/bridge on
+```
+
+Telegram DM side:
+
+```text
+/bridge_bind <token>
+/bridge_status
+/bridge_pause
+/bridge_resume
+/bridge_disconnect
+/bridge_off
+```
+
+`/bridge_status` and `/bridge status` include the bridge id, Hermes session id, binding state, Telegram chat/user/thread, and last update timestamp. `/bridge_disconnect` removes only the current Telegram DM binding. Local `/bridge disconnect` removes bindings for the current Hermes session. Both delete dependent reply/approval bridge state for the removed binding so stale prompts cannot be reused after disconnect.
+
 ## Control-plane rules
 
 1. Telegram text is untrusted user input, never local stdin.
@@ -83,12 +108,13 @@ Rejected initially:
 Recommended order:
 
 1. Keep `BridgeStateStore` as the deterministic safety layer.
-2. Add a Telegram command such as `/bridge bind` that can only complete after local CLI/TUI opt-in creates a one-time binding token.
-3. Add outbound “input prompt” messages to Telegram using `record_outbound_message(... input_expected=True ...)`.
-4. On bound Telegram plain DM text, call `validate_telegram_direct_input()` and re-bind that gateway session key to the CLI session id before the normal agent path runs.
-5. On Telegram reply to a future explicit input prompt, call `validate_reply_input()` before forwarding to any executor.
-6. Add approval UI using `create_approval()` and `consume_approval()` before resolving Hermes tool approvals.
-7. Only after these pass should an executor adapter be added:
+2. Add a Telegram command such as `/bridge bind` that can only complete after local CLI/TUI opt-in creates a one-time binding token. (Implemented as local `/bridge bind telegram` + Telegram `/bridge_bind <token>`.)
+3. On bound Telegram plain DM text, call `validate_telegram_direct_input()` and re-bind that gateway session key to the CLI session id before the normal agent path runs. (Implemented.)
+4. Add bridge UX controls for status, pause/resume, emergency off/on, and disconnect. (Implemented.)
+5. Add outbound “input prompt” messages to Telegram using `record_outbound_message(... input_expected=True ...)`.
+6. On Telegram reply to a future explicit input prompt, call `validate_reply_input()` before forwarding to any executor.
+7. Add approval UI using `create_approval()` and `consume_approval()` before resolving Hermes tool approvals.
+8. Only after these pass should an executor adapter be added:
    - preferred: structured TUI gateway/JSON-RPC or Gateway `MessageEvent` path
    - avoid: raw tmux/PTY keystroke injection
 
@@ -108,7 +134,9 @@ Recommended order:
 
 - `/bridge` registry exposure.
 - local token minting from CLI.
-- Telegram DM `/bridge_bind`, `/bridge_status`, `/bridge_off`, `/bridge_pause`, and `/bridge_resume`.
+- Telegram DM `/bridge_bind`, `/bridge_status`, `/bridge_off`, `/bridge_pause`, `/bridge_resume`, and `/bridge_disconnect`.
+- detailed local and Telegram bridge status output.
+- local and Telegram disconnect behavior scoped to the relevant binding/session.
 - bound Telegram DM plain text switches the gateway session key to the linked CLI session id.
 - slash commands are not bridge-routed and paused bindings reject plain text.
 
