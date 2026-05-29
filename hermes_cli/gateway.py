@@ -969,6 +969,29 @@ def _probe_launchd_service_running() -> bool:
     return result.returncode == 0
 
 
+def _ensure_launchd_service_loaded() -> bool:
+    """Ensure the macOS launchd job is loaded before self-signalling restarts.
+
+    A gateway-hosted restart is only safe if launchd is actively supervising
+    the current job. If the plist exists but the job was booted out/unloaded,
+    sending SIGUSR1 to the gateway makes it exit with the planned-restart code
+    and nothing is left to bring it back. Bootstrap first so launchd owns the
+    relaunch instead of relying on a fragile detached helper that can be killed
+    with the old gateway process.
+    """
+    plist_path = get_launchd_plist_path()
+    if not plist_path.exists():
+        return False
+    if _probe_launchd_service_running():
+        return True
+    subprocess.run(
+        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+        check=True,
+        timeout=30,
+    )
+    return True
+
+
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
     """Return a unified view of gateway liveness for the current profile."""
     gateway_pids = tuple(find_gateway_pids())
@@ -2868,6 +2891,8 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+        <key>HERMES_GATEWAY_SERVICE_MANAGER</key>
+        <string>launchd</string>
     </dict>
     
     <key>RunAtLoad</key>
@@ -3048,6 +3073,11 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     return True
 
 
+def _launchd_kickstart(target: str, *, timeout: int = 90) -> None:
+    """Force launchd to start/restart a loaded service target."""
+    subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=timeout)
+
+
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
@@ -3056,10 +3086,18 @@ def launchd_restart():
 
     try:
         pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
-            print("✓ Service restart requested")
-            return
-        if pid is not None:
+        if pid is not None and _ensure_launchd_service_loaded():
+            print(f"⏳ Launchd service restarting gracefully (PID {pid})...")
+            if _graceful_restart_via_sigusr1(pid, drain_timeout + 5):
+                # On this macOS/launchd combination, KeepAlive can leave the
+                # job loaded but not running after the gateway exits with
+                # EX_TEMPFAIL (75).  Do not return after the graceful drain;
+                # explicitly kickstart the loaded job so restart is
+                # deterministic instead of relying on launchd's semaphore.
+                print("↻ Graceful drain complete; kickstarting launchd job")
+            else:
+                print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
+        elif pid is not None:
             try:
                 terminate_pid(pid, force=False)
             except (ProcessLookupError, PermissionError, OSError):
@@ -3068,7 +3106,7 @@ def launchd_restart():
                 exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
                 if not exited:
                     print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        _launchd_kickstart(target)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if e.returncode not in {3, 113}:
@@ -3077,7 +3115,7 @@ def launchd_restart():
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        _launchd_kickstart(target, timeout=30)
         print("✓ Service restarted")
 
 def launchd_status(deep: bool = False):
