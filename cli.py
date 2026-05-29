@@ -3345,7 +3345,13 @@ class HermesCLI:
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
-        snapshot["account_limits"] = self._maybe_refresh_account_limits_badge(agent)
+        account_limits = self._maybe_refresh_account_limits_badge(agent)
+        snapshot["account_limits"] = account_limits
+        # Derive the render style from the label in the same snapshot so the
+        # status bar cannot show a freshly-depleted quota with the previous
+        # cached green style for one render tick.
+        if account_limits:
+            snapshot["account_limits_style"] = self._account_limits_badge_style(account_limits)
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -3712,7 +3718,14 @@ class HermesCLI:
             if total_width > width:
                 plain_text = "".join(text for _, text in frags)
                 trimmed = self._trim_status_bar_text(plain_text, width)
-                return [("class:status-bar", trimmed)]
+                overflow_style = "class:status-bar"
+                if snapshot.get("account_limits") and snapshot.get("account_limits_style") == "class:status-bar-critical":
+                    # When narrow terminals force us to collapse styled
+                    # fragments into a single trimmed string, preserve the
+                    # critical quota signal instead of falling back to the
+                    # default green/base status-bar style.
+                    overflow_style = "class:status-bar-critical"
+                return [(overflow_style, trimmed)]
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
