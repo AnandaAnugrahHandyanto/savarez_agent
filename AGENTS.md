@@ -688,10 +688,10 @@ violate them.
    `.env.example` versions are usually stale and edits outside the
    skill's own block must be dropped during salvage.
 
-The full salvage / modernization checklist for external skill PRs
-lives in the `hermes-agent-dev` skill at
-`references/new-skill-pr-salvage.md` — load it before polishing
-contributor skill PRs.
+For in-repo skill authoring (frontmatter rules, validator contract,
+where SKILL.md files belong in the source tree), load the
+`hermes-agent-skill-authoring` skill at
+`skills/software-development/hermes-agent-skill-authoring/SKILL.md`.
 
 ---
 
