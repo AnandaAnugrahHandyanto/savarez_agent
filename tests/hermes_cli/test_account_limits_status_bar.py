@@ -23,6 +23,12 @@ def test_format_account_limits_badge_uses_remaining_percentages() -> None:
     assert HermesCLI._format_account_limits_badge(_snapshot()) == "Acct S86% W98%"
 
 
+def test_account_limits_badge_style_turns_critical_for_depleted_session_or_weekly() -> None:
+    assert HermesCLI._account_limits_badge_style("Acct S0% W98%") == "class:status-bar-critical"
+    assert HermesCLI._account_limits_badge_style("Acct S86% W0%") == "class:status-bar-critical"
+    assert HermesCLI._account_limits_badge_style("Acct S86% W98%") == "class:status-bar-good"
+
+
 def test_format_account_limits_badge_falls_back_for_generic_provider() -> None:
     assert HermesCLI._format_account_limits_badge(_snapshot("anthropic")) == "Acct S86% W98%"
 
@@ -62,3 +68,30 @@ def test_status_bar_text_includes_cached_account_limits(monkeypatch) -> None:
     text = shell._build_status_bar_text(width=100)
 
     assert "Acct S86% W98%" in text
+
+
+def test_status_bar_fragments_render_depleted_account_limits_as_critical(monkeypatch) -> None:
+    shell = HermesCLI.__new__(HermesCLI)
+    shell._status_bar_visible = True
+    shell._model_picker_state = None
+    monkeypatch.setattr(shell, "_get_tui_terminal_width", lambda: 100)
+    monkeypatch.setattr(
+        shell,
+        "_get_status_bar_snapshot",
+        lambda: {
+            "model_short": "gpt-5.5-codex",
+            "context_percent": 12,
+            "context_length": 200_000,
+            "context_tokens": 24_000,
+            "account_limits": "Acct S0% W42%",
+            "account_limits_style": "class:status-bar-critical",
+            "compressions": 0,
+            "active_background_tasks": 0,
+            "duration": "1m",
+            "prompt_elapsed": "⏲ 0s",
+        },
+    )
+
+    frags = shell._get_status_bar_fragments()
+
+    assert ("class:status-bar-critical", "Acct S0% W42%") in frags
