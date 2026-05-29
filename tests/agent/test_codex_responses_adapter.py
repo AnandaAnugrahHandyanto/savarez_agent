@@ -3,8 +3,10 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_responses_adapter import (
+    _chat_messages_to_responses_input,
     _format_responses_error,
     _normalize_codex_response,
+    _preflight_codex_input_items,
 )
 
 
@@ -174,3 +176,64 @@ def test_normalize_codex_response_failed_with_message_only():
     )
     with pytest.raises(RuntimeError, match=r"^model error$"):
         _normalize_codex_response(response)
+
+
+def test_chat_messages_to_responses_input_strips_stored_message_item_ids():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "fallback answer",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "id": "msg_not_persisted",
+                    "role": "assistant",
+                    "status": "completed",
+                    "phase": "final",
+                    "content": [
+                        {"type": "output_text", "text": "fallback answer"},
+                    ],
+                }
+            ],
+        },
+        {"role": "user", "content": "next turn"},
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    assert items[0] == {
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "phase": "final",
+        "content": [{"type": "output_text", "text": "fallback answer"}],
+    }
+    assert "id" not in items[0]
+    assert items[1] == {"role": "user", "content": "next turn"}
+
+
+def test_preflight_codex_input_items_strips_message_item_ids_for_store_false():
+    raw_items = [
+        {
+            "type": "message",
+            "id": "msg_not_persisted",
+            "role": "assistant",
+            "status": "completed",
+            "phase": "final",
+            "content": [{"type": "output_text", "text": "hello"}],
+        }
+    ]
+
+    normalized = _preflight_codex_input_items(raw_items)
+
+    assert normalized == [
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "phase": "final",
+            "content": [{"type": "output_text", "text": "hello"}],
+        }
+    ]
+    assert "id" not in normalized[0]
+
