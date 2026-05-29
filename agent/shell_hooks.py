@@ -758,7 +758,8 @@ def _resolve_effective_accept(
     Precedence (any truthy source flips us on):
       1. ``--accept-hooks`` flag (CLI) / explicit argument
       2. ``HERMES_ACCEPT_HOOKS`` env var
-      3. ``hooks_auto_accept: true`` in ``cli-config.yaml``
+      3. ``hooks_auto_accept: true`` in ``~/.hermes/config.yaml``
+         (or the project-level ``cli-config.yaml`` fallback)
     """
     if accept_hooks_arg:
         return True
