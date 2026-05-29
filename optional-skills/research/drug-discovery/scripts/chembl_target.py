@@ -12,7 +12,7 @@ BASE = "https://www.ebi.ac.uk/chembl/api/data"
 def get(endpoint):
     try:
         req = urllib.request.Request(f"{BASE}{endpoint}", headers={"Accept":"application/json"})
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=15) as r:  # SSRF: add IP block check
             return json.loads(r.read())
     except Exception as e:
         print(f"API error: {e}", file=sys.stderr); return None
