@@ -7723,6 +7723,17 @@ class GatewayRunner:
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
+
+        if canonical in {
+            "bridge",
+            "bridge_bind",
+            "bridge_status",
+            "bridge_off",
+            "bridge_pause",
+            "bridge_resume",
+        }:
+            from gateway.bridge_commands import handle_gateway_bridge_command
+            return handle_gateway_bridge_command(event)
         
         if canonical == "help":
             return await self._handle_help_command(event)

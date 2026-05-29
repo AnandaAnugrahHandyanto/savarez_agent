@@ -69,6 +69,18 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
+    CommandDef("bridge", "Safely link this CLI session to Telegram (local opt-in)", "Session",
+               args_hint="[bind telegram|status|off|on]"),
+    CommandDef("bridge_bind", "Consume a local CLI bridge token from Telegram", "Session",
+               gateway_only=True, aliases=("bridge-bind",), args_hint="<token>"),
+    CommandDef("bridge_status", "Show CLI-Telegram bridge status", "Session",
+               gateway_only=True, aliases=("bridge-status",)),
+    CommandDef("bridge_off", "Emergency-disable CLI-Telegram bridge remote input", "Session",
+               gateway_only=True, aliases=("bridge-off",)),
+    CommandDef("bridge_pause", "Pause this Telegram bridge binding", "Session",
+               gateway_only=True, aliases=("bridge-pause",)),
+    CommandDef("bridge_resume", "Resume this Telegram bridge binding", "Session",
+               gateway_only=True, aliases=("bridge-resume",)),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -493,6 +505,8 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
+        if cmd.name in _SLACK_NATIVE_SKIP_COMMANDS:
+            continue
         if not _is_gateway_available(cmd, overrides):
             continue
         # Built-in arg-taking commands are included — their handlers show
@@ -1016,6 +1030,20 @@ _SLACK_RESERVED_COMMANDS = frozenset({
     "topic", "mute", "pro", "shortcuts",
 })
 
+_SLACK_NATIVE_SKIP_COMMANDS = frozenset({
+    # Telegram-DM-only bridge management commands stay reachable through
+    # /hermes <command> on Slack if typed manually, but should not consume
+    # scarce native Slack slash-command slots.
+    "bridge_bind",
+    "bridge_status",
+    "bridge_off",
+    "bridge_pause",
+    "bridge_resume",
+})
+
+_SLACK_NATIVE_PRIORITY_ALIASES = ("reset", "bg", "btw", "q")
+
+
 
 def _sanitize_slack_name(raw: str) -> str:
     """Convert a command name to a valid Slack slash command name.
@@ -1072,20 +1100,36 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
 
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:
+        if cmd.name in _SLACK_NATIVE_SKIP_COMMANDS:
+            continue
         if not _is_gateway_available(cmd, overrides):
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # Second pass: high-value aliases that should survive Slack's 50-command cap.
+    priority_aliases = set(_SLACK_NATIVE_PRIORITY_ALIASES)
+    for alias in _SLACK_NATIVE_PRIORITY_ALIASES:
+        cmd = resolve_command(alias)
+        if cmd is None or cmd.name in _SLACK_NATIVE_SKIP_COMMANDS:
+            continue
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+
+    # Third pass: remaining aliases.
     for cmd in COMMAND_REGISTRY:
+        if cmd.name in _SLACK_NATIVE_SKIP_COMMANDS:
+            continue
         if not _is_gateway_available(cmd, overrides):
             continue
         for alias in cmd.aliases:
+            if alias in priority_aliases:
+                continue
             # Skip aliases that only differ from canonical by case/punctuation
             # normalization (already covered by _add dedup).
             _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
-    # Third pass: plugin commands.
+    # Fourth pass: plugin commands.
     for name, description, args_hint in _iter_plugin_command_entries():
         _add(name, description, args_hint or "")
 

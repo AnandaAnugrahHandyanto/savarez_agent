@@ -1,0 +1,134 @@
+from datetime import datetime, timezone
+
+from gateway.bridge import BridgeStateStore, BridgeVerdict
+from gateway.config import Platform
+from gateway.session import SessionSource
+from gateway.platforms.base import MessageEvent
+from gateway.bridge_commands import (
+    handle_local_bridge_command,
+    handle_gateway_bridge_command,
+)
+from hermes_cli.commands import resolve_command
+
+
+def _now():
+    return datetime(2026, 5, 29, 12, 0, tzinfo=timezone.utc)
+
+
+def _telegram_event(text: str, *, chat_id="48264503", user_id="48264503", thread_id=None):
+    return MessageEvent(
+        text=text,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_type="dm",
+            user_id=user_id,
+            user_name="Boss",
+            thread_id=thread_id,
+        ),
+        message_id="200",
+        platform_update_id=1000,
+    )
+
+
+def test_bridge_command_is_registered_for_cli_and_gateway():
+    cmd = resolve_command("bridge")
+    assert cmd is not None
+    assert cmd.name == "bridge"
+    assert not cmd.cli_only
+    assert not cmd.gateway_only
+
+
+def test_local_bridge_bind_mints_single_use_token_limited_to_expected_telegram_identity(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+
+    out = handle_local_bridge_command(
+        "/bridge bind telegram --chat 48264503 --user 48264503",
+        session_id="cli-session",
+        store=store,
+    )
+
+    assert "Bridge binding token" in out
+    assert "/bridge_bind" in out
+    token = out.split("/bridge_bind ", 1)[1].split()[0]
+
+    wrong = store.consume_binding_token(
+        token=token,
+        telegram_chat_id="48264503",
+        telegram_user_id="999",
+    )
+    assert wrong.verdict is BridgeVerdict.REJECT
+
+    ok = store.consume_binding_token(
+        token=token,
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+    assert ok.verdict is BridgeVerdict.ACCEPT
+    assert ok.hermes_session_id == "cli-session"
+
+
+def test_gateway_bridge_bind_consumes_token_and_status_reports_active(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    token = store.create_binding_token(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        ttl_seconds=300,
+        token="bind-token",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+
+    bind_out = handle_gateway_bridge_command(
+        _telegram_event(f"/bridge_bind {token.token}"),
+        store=store,
+    )
+    assert "Bridge linked" in bind_out
+    assert "cli-session" in bind_out
+
+    status_out = handle_gateway_bridge_command(
+        _telegram_event("/bridge_status"),
+        store=store,
+    )
+    assert "active" in status_out
+    assert "cli-session" in status_out
+
+
+def test_gateway_bridge_off_creates_kill_switch_and_blocks_status(tmp_path):
+    kill_switch = tmp_path / "bridge.disabled"
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now, kill_switch_path=kill_switch)
+    store.create_binding(
+        bridge_id="b1",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+
+    off_out = handle_gateway_bridge_command(
+        _telegram_event("/bridge_off"),
+        store=store,
+    )
+    assert "disabled" in off_out.lower()
+    assert kill_switch.exists()
+
+    status_out = handle_gateway_bridge_command(
+        _telegram_event("/bridge_status"),
+        store=store,
+    )
+    assert "kill switch" in status_out.lower()
+
+
+def test_gateway_bridge_commands_are_telegram_dm_only(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    event = MessageEvent(
+        text="/bridge_status",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="discord-chat",
+            chat_type="dm",
+            user_id="48264503",
+        ),
+    )
+
+    out = handle_gateway_bridge_command(event, store=store)
+    assert "Telegram DM only" in out

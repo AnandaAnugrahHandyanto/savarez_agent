@@ -8432,6 +8432,9 @@ class HermesCLI:
             self.show_help()
         elif canonical == "profile":
             self._handle_profile_command()
+        elif canonical == "bridge":
+            from gateway.bridge_commands import handle_local_bridge_command
+            _cprint(handle_local_bridge_command(cmd_original, session_id=self.session_id or "default"))
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":

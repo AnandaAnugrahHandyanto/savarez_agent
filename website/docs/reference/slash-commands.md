@@ -59,6 +59,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/background <prompt>` (alias: `/bg`, `/btw`) | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/user-guide/cli#background-sessions). |
 | `/branch [name]` (alias: `/fork`) | Branch the current session (explore a different path) |
 | `/handoff <platform>` | **CLI only.** Hand the current session off to a messaging platform (Telegram, Discord, Slack, WhatsApp, Signal, Matrix). The gateway picks it up immediately, creates a fresh thread on platforms that support threads (Telegram topics, Discord text-channel threads, Slack message-anchored threads), re-binds the destination to your CLI session_id so the full role-aware transcript replays, and forges a synthetic user turn so the agent confirms it's working in the new place. Your CLI exits cleanly on success with a `/resume` hint; resume locally any time with `/resume <title>`. Refused mid-turn. Requires the gateway to be running and a home channel configured for the target platform (`/sethome` from the destination chat). See [Cross-Platform Handoff](/user-guide/sessions#cross-platform-handoff). |
+| `/bridge bind telegram [--chat CHAT_ID] [--user USER_ID] [--ttl SECONDS]` | Safe CLI→Telegram bridge opt-in. The local CLI mints a short-lived single-use token for the current session; send `/bridge_bind <token>` in a Telegram DM to complete the binding. `/bridge off` creates a filesystem kill switch, and `/bridge on` removes it. This A-mode does not forward arbitrary Telegram text into the CLI. |
 
 ### Configuration
 
@@ -208,6 +209,10 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/sethome` (alias: `/set-home`) | Mark the current chat as the platform home channel for deliveries. |
 | `/compress [here [N] \| focus topic]` | Manually compress conversation context. `/compress here [N]` keeps the most recent N exchanges (default 2) verbatim and summarizes the rest. A focus topic narrows what a full summary preserves. |
 | `/topic [off\|help\|session-id]` | **Telegram DM only.** Manage user-managed multi-session topic mode. `/topic` enables it or shows status; `/topic off` disables it and clears bindings; `/topic help` shows usage; `/topic <session-id>` inside a topic restores a previous session. See [Multi-session DM mode](/user-guide/messaging/telegram#multi-session-dm-mode-topic). |
+| `/bridge_bind <token>` | **Telegram DM only.** Consume a short-lived single-use token minted locally with `/bridge bind telegram`, creating an explicit CLI-session ↔ Telegram-user binding. |
+| `/bridge_status` | **Telegram DM only.** Show whether the current Telegram DM/user has an active CLI bridge binding, or whether the bridge kill switch is active. |
+| `/bridge_off` | **Telegram DM only.** Emergency-disable the CLI↔Telegram bridge by creating the filesystem kill switch; remote input is blocked until the local side removes it. |
+| `/bridge_pause` / `/bridge_resume` | **Telegram DM only.** Pause or resume the current Telegram bridge binding without deleting it. |
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |
 | `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits pulled live from the provider's API. |
@@ -237,8 +242,8 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 - `/skin`, `/snapshot`, `/gquota`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/skills`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/plugins`, `/busy`, `/indicator`, `/redraw`, `/clear`, `/history`, `/save`, `/copy`, `/handoff`, and `/quit` are **CLI-only** commands.
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
-- `/sethome`, `/update`, `/restart`, `/approve`, `/deny`, `/topic`, and `/commands` are **messaging-only** commands.
-- `/status`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
+- `/sethome`, `/update`, `/restart`, `/approve`, `/deny`, `/topic`, `/bridge_bind`, `/bridge_status`, `/bridge_off`, `/bridge_pause`, `/bridge_resume`, and `/commands` are **messaging-only** commands.
+- `/status`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/sessions`, `/bridge`, and `/yolo` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.
 - In the TUI, `/sessions` shows live sessions in the current TUI process. Use `/resume [name]` or `hermes --tui --resume <id-or-title>` for saved or closed transcripts.
 
