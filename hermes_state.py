@@ -16,22 +16,106 @@ Key design decisions:
 
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
+try:  # pragma: no cover - Windows fallback exercised by absence of fcntl
+    import fcntl
+except Exception:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+
+_STATE_DB_WRITE_LOCKS: Dict[str, threading.RLock] = {}
+_STATE_DB_WRITE_LOCKS_GUARD = threading.Lock()
+_STATE_DB_WRITE_LOCK_TIMEOUT_S = 30.0
+
+
+def _state_db_lock_key(db_path: Path) -> str:
+    """Return a stable key for all SessionDB instances targeting one file."""
+    try:
+        return str(Path(db_path).expanduser().resolve(strict=False))
+    except Exception:
+        return str(Path(db_path).expanduser().absolute())
+
+
+def _state_db_process_lock(db_path: Path) -> threading.RLock:
+    """Shared per-process lock keyed by resolved database path."""
+    key = _state_db_lock_key(db_path)
+    with _STATE_DB_WRITE_LOCKS_GUARD:
+        lock = _STATE_DB_WRITE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _STATE_DB_WRITE_LOCKS[key] = lock
+        return lock
+
+
+def _state_db_write_lock_timeout() -> float:
+    raw = os.getenv("HERMES_STATE_DB_WRITE_LOCK_TIMEOUT", "")
+    if raw:
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            pass
+    return _STATE_DB_WRITE_LOCK_TIMEOUT_S
+
+
+@contextmanager
+def _coordinated_state_db_write_lock(db_path: Path):
+    """Serialize state.db writers before they contend for SQLite's WAL lock.
+
+    SQLite WAL still has a single-writer bottleneck. Hermes creates many
+    SessionDB instances inside the gateway/API process and can also have CLI,
+    cron, and worker processes writing the same state.db. Instance-local locks
+    do not coordinate those writers, so they can all hit BEGIN IMMEDIATE at
+    once and surface intermittent ``database is locked`` warnings.
+
+    This outer guard queues writers by resolved DB path: first with a shared
+    process-local RLock, then (when available) with a best-effort filesystem
+    flock so separate processes also serialize before entering SQLite.
+    """
+    process_lock = _state_db_process_lock(db_path)
+    lock_path = Path(_state_db_lock_key(db_path) + ".write.lock")
+    with process_lock:
+        if fcntl is None:
+            yield
+            return
+
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        timeout = _state_db_write_lock_timeout()
+        deadline = time.monotonic() + timeout
+        with open(lock_path, "a", encoding="utf-8") as lock_fd:
+            while True:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    if time.monotonic() >= deadline:
+                        raise sqlite3.OperationalError(
+                            f"state.db write lock timed out after {timeout:.1f}s"
+                        ) from exc
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
 
 SCHEMA_VERSION = 14
 
@@ -395,10 +479,15 @@ class SessionDB:
                 isolation_level=None,
             )
             self._conn.row_factory = sqlite3.Row
-            apply_wal_with_fallback(self._conn, db_label="state.db")
-            self._conn.execute("PRAGMA foreign_keys=ON")
 
-            self._init_schema()
+            # WAL negotiation and schema creation/reconciliation can acquire
+            # SQLite write locks during SessionDB() construction. Coordinate
+            # the full startup write path so a burst of gateway/API/cron
+            # instances does not race through PRAGMA journal_mode or DDL.
+            with _coordinated_state_db_write_lock(self.db_path):
+                apply_wal_with_fallback(self._conn, db_label="state.db")
+                self._conn.execute("PRAGMA foreign_keys=ON")
+                self._init_schema()
         except Exception as exc:
             # Capture the cause so /resume and friends can surface WHY the
             # session DB is unavailable instead of a bare "Session database
@@ -433,37 +522,41 @@ class SessionDB:
         Returns whatever *fn* returns.
         """
         last_err: Optional[Exception] = None
-        for attempt in range(self._WRITE_MAX_RETRIES):
-            try:
-                with self._lock:
-                    self._conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        result = fn(self._conn)
-                        self._conn.commit()
-                    except BaseException:
+        with _coordinated_state_db_write_lock(self.db_path):
+            for attempt in range(self._WRITE_MAX_RETRIES):
+                try:
+                    with self._lock:
+                        conn = self._conn
+                        if conn is None:
+                            raise sqlite3.OperationalError("SessionDB connection is closed")
+                        conn.execute("BEGIN IMMEDIATE")
                         try:
-                            self._conn.rollback()
-                        except Exception:
-                            pass
-                        raise
-                # Success — periodic best-effort checkpoint.
-                self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
-                    self._try_wal_checkpoint()
-                return result
-            except sqlite3.OperationalError as exc:
-                err_msg = str(exc).lower()
-                if "locked" in err_msg or "busy" in err_msg:
-                    last_err = exc
-                    if attempt < self._WRITE_MAX_RETRIES - 1:
-                        jitter = random.uniform(
-                            self._WRITE_RETRY_MIN_S,
-                            self._WRITE_RETRY_MAX_S,
-                        )
-                        time.sleep(jitter)
-                        continue
-                # Non-lock error or retries exhausted — propagate.
-                raise
+                            result = fn(conn)
+                            conn.commit()
+                        except BaseException:
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
+                            raise
+                    # Success — periodic best-effort checkpoint.
+                    self._write_count += 1
+                    if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
+                        self._try_wal_checkpoint()
+                    return result
+                except sqlite3.OperationalError as exc:
+                    err_msg = str(exc).lower()
+                    if "locked" in err_msg or "busy" in err_msg:
+                        last_err = exc
+                        if attempt < self._WRITE_MAX_RETRIES - 1:
+                            jitter = random.uniform(
+                                self._WRITE_RETRY_MIN_S,
+                                self._WRITE_RETRY_MAX_S,
+                            )
+                            time.sleep(jitter)
+                            continue
+                    # Non-lock error or retries exhausted — propagate.
+                    raise
         # Retries exhausted (shouldn't normally reach here).
         raise last_err or sqlite3.OperationalError(
             "database is locked after max retries"
@@ -3313,9 +3406,9 @@ class SessionDB:
 
         VACUUM rewrites the entire DB, so it's expensive (seconds per
         100MB) and cannot run inside a transaction. It also acquires an
-        exclusive lock, so callers must ensure no other writers are
-        active. Safe to call at startup before the gateway/CLI starts
-        serving traffic.
+        exclusive lock; this method coordinates with normal SessionDB writers
+        before running it, but callers should still prefer startup/quiet
+        windows because readers may be delayed.
 
         FTS5 segments are merged first via :meth:`optimize_fts` so the
         subsequent VACUUM reclaims the pages freed by the merge. This is a
@@ -3332,13 +3425,17 @@ class SessionDB:
         except Exception as exc:
             logger.warning("FTS optimize before VACUUM failed: %s", exc)
         # VACUUM cannot be executed inside a transaction.
-        with self._lock:
-            # Best-effort WAL checkpoint first, then VACUUM.
-            try:
-                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except Exception:
-                pass
-            self._conn.execute("VACUUM")
+        with _coordinated_state_db_write_lock(self.db_path):
+            with self._lock:
+                conn = self._conn
+                if conn is None:
+                    raise sqlite3.OperationalError("SessionDB connection is closed")
+                # Best-effort WAL checkpoint first, then VACUUM.
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except Exception:
+                    pass
+                conn.execute("VACUUM")
         return optimized
 
     def maybe_auto_prune_and_vacuum(

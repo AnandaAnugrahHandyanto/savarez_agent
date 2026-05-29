@@ -1,9 +1,60 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from pathlib import Path
 import time
 import pytest
 
-from hermes_state import SessionDB
+from hermes_state import SessionDB, _state_db_process_lock
+
+
+def _append_messages_in_child_process(args):
+    """ProcessPool helper for state.db cross-process contention tests."""
+    db_path, session_id, worker_id, count = args
+    local = SessionDB(db_path=Path(db_path))
+    try:
+        for i in range(count):
+            local.append_message(
+                session_id,
+                role="user",
+                content=f"worker {worker_id} message {i}",
+            )
+    finally:
+        local.close()
+    return count
+
+
+def _hold_write_transaction_in_child_process(args):
+    """Hold a SessionDB write transaction open from a separate process."""
+    db_path, session_id, marker_path, hold_seconds = args
+    local = SessionDB(db_path=Path(db_path))
+    try:
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET title = title WHERE id = ?",
+                (session_id,),
+            )
+            Path(marker_path).write_text("locked", encoding="utf-8")
+            time.sleep(hold_seconds)
+
+        local._execute_write(_do)
+    finally:
+        local.close()
+    return True
+
+
+def _append_message_with_one_sqlite_attempt(args):
+    """Append from a child process with SQLite retry deliberately minimized."""
+    db_path, session_id = args
+    # This makes the regression deterministic against the old behavior: without
+    # the outer cross-process file lock, this process burns its single SQLite
+    # BEGIN IMMEDIATE attempt while the other process holds the write txn.
+    setattr(SessionDB, "_WRITE_MAX_RETRIES", 1)
+    local = SessionDB(db_path=Path(db_path))
+    try:
+        return local.append_message(session_id, role="user", content="after wait")
+    finally:
+        local.close()
 
 
 @pytest.fixture()
@@ -20,6 +71,117 @@ def db(tmp_path):
 # =========================================================================
 
 class TestSessionLifecycle:
+    def test_sessiondb_instances_share_process_write_lock_for_same_path(self, tmp_path):
+        db_path = tmp_path / "test_state.db"
+        a = db_path
+        b = tmp_path / "." / "test_state.db"
+
+        assert _state_db_process_lock(a) is _state_db_process_lock(b)
+
+    def test_many_sessiondb_instances_write_concurrently_without_lock_errors(self, tmp_path):
+        db_path = tmp_path / "test_state.db"
+        seed = SessionDB(db_path=db_path)
+        seed.create_session(session_id="s1", source="test")
+        seed.close()
+
+        def write_message(i: int) -> None:
+            local = SessionDB(db_path=db_path)
+            try:
+                local.append_message("s1", role="user", content=f"msg {i}")
+            finally:
+                local.close()
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(write_message, range(32)))
+
+        verify = SessionDB(db_path=db_path)
+        try:
+            assert len(verify.get_messages("s1")) == 32
+        finally:
+            verify.close()
+
+    def test_many_processes_write_concurrently_without_lock_errors(self, tmp_path):
+        """SessionDB coordinates independent processes writing one state.db.
+
+        Gateway/API, cron, CLI, and workers are separate processes that can all
+        create their own SessionDB instances for the same database. The
+        regression here exercises the same shape: independent connections in
+        different processes concurrently appending session messages. Every
+        append must land exactly once, without surfacing sqlite busy/locked
+        errors to the caller.
+        """
+        db_path = tmp_path / "test_state.db"
+        session_id = "s1"
+        workers = 6
+        messages_per_worker = 12
+
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session(session_id=session_id, source="test")
+        finally:
+            seed.close()
+
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(
+                    _append_messages_in_child_process,
+                    (str(db_path), session_id, worker_id, messages_per_worker),
+                )
+                for worker_id in range(workers)
+            ]
+            assert sum(f.result(timeout=20) for f in as_completed(futures)) == (
+                workers * messages_per_worker
+            )
+
+        verify = SessionDB(db_path=db_path)
+        try:
+            assert len(verify.get_messages(session_id)) == workers * messages_per_worker
+        finally:
+            verify.close()
+
+    def test_process_writer_waits_on_outer_lock_before_sqlite_busy_timeout(self, tmp_path):
+        """A contending process queues outside SQLite instead of surfacing BUSY.
+
+        This is the production failure mode: two independent Hermes processes
+        target one state.db. Before the outer DB-path lock, process B consumed
+        SQLite's short busy timeout while process A held BEGIN IMMEDIATE, so
+        callers saw ``database is locked`` and dropped session trace writes.
+        """
+        db_path = tmp_path / "test_state.db"
+        marker_path = tmp_path / "holder-started.txt"
+        session_id = "s1"
+
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session(session_id=session_id, source="test")
+        finally:
+            seed.close()
+
+        with ProcessPoolExecutor(max_workers=2) as pool:
+            holder = pool.submit(
+                _hold_write_transaction_in_child_process,
+                (str(db_path), session_id, str(marker_path), 2.0),
+            )
+            deadline = time.monotonic() + 5.0
+            while not marker_path.exists():
+                assert time.monotonic() < deadline
+                time.sleep(0.02)
+
+            append = pool.submit(
+                _append_message_with_one_sqlite_attempt,
+                (str(db_path), session_id),
+            )
+
+            assert append.result(timeout=10) > 0
+            assert holder.result(timeout=10) is True
+
+        verify = SessionDB(db_path=db_path)
+        try:
+            messages = verify.get_messages(session_id)
+        finally:
+            verify.close()
+        assert [m["content"] for m in messages] == ["after wait"]
+
     def test_create_and_get_session(self, db):
         sid = db.create_session(
             session_id="s1",
