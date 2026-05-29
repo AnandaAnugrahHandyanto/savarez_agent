@@ -17,7 +17,9 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -153,6 +155,164 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+
+
+# =============================================================================
+# Delivery metadata tracking for context handoff
+# =============================================================================
+
+def _get_delivery_metadata_path() -> Path:
+    """Return the path to the delivery metadata store."""
+    return _get_hermes_home() / "cron" / "delivery_metadata.json"
+
+
+def _save_delivery_metadata(
+    job: dict,
+    target: dict,
+    session_id: str,
+    output_path: Path,
+    preview_text: str,
+) -> None:
+    """Save delivery metadata for later context injection into interactive sessions.
+    
+    When a cron job delivers output to a channel, we store lightweight metadata
+    so the next interactive session in that channel can automatically see what
+    was just said. This prevents Mike from having to session_search or re-explain.
+    
+    Args:
+        job: The cron job dict
+        target: Delivery target {platform, chat_id, thread_id}
+        session_id: The cron session ID
+        output_path: Path to the saved output file
+        preview_text: First ~500 chars of the delivered content
+    """
+    channel_key = f"{target['platform']}:{target['chat_id']}"
+    if target.get("thread_id"):
+        channel_key += f":{target['thread_id']}"
+    
+    metadata_file = _get_delivery_metadata_path()
+    metadata_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Load existing metadata
+    data = {"channels": {}}
+    if metadata_file.exists():
+        try:
+            with open(metadata_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            logger.warning("Failed to load delivery metadata, starting fresh: %s", e)
+            data = {"channels": {}}
+    
+    # Build new delivery record
+    new_metadata = {
+        "job_id": job.get("id", ""),
+        "job_name": job.get("name", ""),
+        "session_id": session_id,
+        "delivered_at": _hermes_now().isoformat(),
+        "output_path": str(output_path),
+        "preview": preview_text[:500],  # Truncate to keep lightweight
+    }
+    
+    # Rotate: last → previous, new → last
+    channel_data = data["channels"].get(channel_key, {})
+    if "last_delivery" in channel_data:
+        channel_data["previous_delivery"] = channel_data["last_delivery"]
+    channel_data["last_delivery"] = new_metadata
+    data["channels"][channel_key] = channel_data
+    
+    # Atomic write
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(metadata_file.parent),
+            suffix=".tmp",
+            prefix=".delivery_metadata_",
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        from utils import atomic_replace
+        atomic_replace(tmp_path, metadata_file)
+        logger.debug(
+            "Saved delivery metadata for %s (job: %s)",
+            channel_key,
+            job.get("name", job.get("id")),
+        )
+    except Exception as e:
+        logger.warning("Failed to save delivery metadata: %s", e)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def _prune_stale_delivery_metadata() -> None:
+    """Remove delivery metadata older than 7 days.
+    
+    Called periodically during cron ticks to prevent unbounded growth.
+    """
+    metadata_file = _get_delivery_metadata_path()
+    if not metadata_file.exists():
+        return
+    
+    try:
+        with open(metadata_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.warning("Failed to load delivery metadata for pruning: %s", e)
+        return
+    
+    cutoff = _hermes_now() - timedelta(days=7)
+    pruned_channels = 0
+    pruned_deliveries = 0
+    
+    for channel_key in list(data.get("channels", {}).keys()):
+        channel_data = data["channels"][channel_key]
+        for slot in ["last_delivery", "previous_delivery"]:
+            delivery = channel_data.get(slot)
+            if delivery:
+                try:
+                    delivered_at = datetime.fromisoformat(delivery["delivered_at"])
+                    # Make naive timestamps timezone-aware for comparison
+                    if delivered_at.tzinfo is None:
+                        delivered_at = delivered_at.replace(tzinfo=cutoff.tzinfo)
+                    if delivered_at < cutoff:
+                        channel_data.pop(slot, None)
+                        pruned_deliveries += 1
+                except (ValueError, KeyError, TypeError):
+                    # Malformed timestamp, remove it
+                    channel_data.pop(slot, None)
+                    pruned_deliveries += 1
+        
+        # Remove channel entry if no deliveries remain
+        if not channel_data:
+            data["channels"].pop(channel_key)
+            pruned_channels += 1
+    
+    if pruned_channels or pruned_deliveries:
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(metadata_file.parent),
+                suffix=".tmp",
+                prefix=".delivery_metadata_",
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            from utils import atomic_replace
+            atomic_replace(tmp_path, metadata_file)
+            logger.debug(
+                "Pruned %d stale deliveries from %d channels",
+                pruned_deliveries,
+                pruned_channels,
+            )
+        except Exception as e:
+            logger.warning("Failed to save pruned delivery metadata: %s", e)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
@@ -615,7 +775,7 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(job: dict, content: str, adapters=None, loop=None, session_id: Optional[str] = None, output_path: Optional[Path] = None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -623,6 +783,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
+
+    Args:
+        job: The cron job dict
+        content: The content to deliver
+        adapters: Optional dict of platform adapters for live delivery
+        loop: Optional event loop for async delivery
+        session_id: Optional cron session ID for metadata tracking
+        output_path: Optional path to saved output for metadata tracking
 
     Returns None on success, or an error string on failure.
     """
@@ -804,6 +972,24 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            delivered = True
+        
+        # Save delivery metadata for context handoff to interactive sessions
+        if delivered and session_id and output_path:
+            try:
+                _save_delivery_metadata(
+                    job=job,
+                    target=target,
+                    session_id=session_id,
+                    output_path=output_path,
+                    preview_text=cleaned_delivery_content,
+                )
+            except Exception as e:
+                # Non-fatal: log but don't fail the delivery
+                logger.warning(
+                    "Job '%s': failed to save delivery metadata: %s",
+                    job["id"], e,
+                )
 
     if delivery_errors:
         return "; ".join(delivery_errors)
@@ -1937,6 +2123,9 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
+                # Build session ID for delivery metadata tracking
+                cron_session_id = f"cron_{job['id']}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
@@ -1952,7 +2141,14 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        delivery_error = _deliver_result(
+                            job, 
+                            deliver_content, 
+                            adapters=adapters, 
+                            loop=loop,
+                            session_id=cron_session_id,
+                            output_path=Path(output_file) if output_file else None,
+                        )
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
@@ -2019,6 +2215,12 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             _kill_orphaned_mcp_children()
         except Exception as _e:
             logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+
+        # Prune stale delivery metadata (runs periodically, non-fatal)
+        try:
+            _prune_stale_delivery_metadata()
+        except Exception as _prune_exc:
+            logger.debug("Delivery metadata pruning failed: %s", _prune_exc)
 
         return sum(_results)
     finally:
