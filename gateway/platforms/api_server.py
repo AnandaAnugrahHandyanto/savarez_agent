@@ -3522,17 +3522,40 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
-        # Enforce concurrency limit
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        raw_client_run_id = body.get("run_id")
+        if raw_client_run_id is not None:
+            if not isinstance(raw_client_run_id, str) or not re.fullmatch(
+                r"run_[A-Za-z0-9_-]{1,128}", raw_client_run_id
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "Invalid 'run_id'; expected run_[A-Za-z0-9_-]{1,128}",
+                        code="invalid_run_id",
+                    ),
+                    status=400,
+                )
+            existing_status = self._run_statuses.get(raw_client_run_id)
+            if existing_status is not None:
+                return web.json_response(
+                    {
+                        "run_id": raw_client_run_id,
+                        "status": existing_status.get("status", "running"),
+                    },
+                    status=202,
+                )
+
+        # Enforce concurrency limit after idempotent replay checks so clients can
+        # reattach to an existing run even when the active-run ceiling is full.
         if len(self._run_streams) >= self._MAX_CONCURRENT_RUNS:
             return web.json_response(
                 _openai_error(f"Too many concurrent runs (max {self._MAX_CONCURRENT_RUNS})", code="rate_limit_exceeded"),
                 status=429,
             )
-
-        try:
-            body = await request.json()
-        except Exception:
-            return web.json_response(_openai_error("Invalid JSON"), status=400)
 
         raw_input = body.get("input")
         if not raw_input:
@@ -3589,7 +3612,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
-        run_id = f"run_{uuid.uuid4().hex}"
+        run_id = raw_client_run_id or f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions

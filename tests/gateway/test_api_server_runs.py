@@ -189,6 +189,48 @@ class TestStartRun:
                 )
                 assert resp.status == 202
 
+    @pytest.mark.asyncio
+    async def test_start_accepts_client_run_id_and_reuses_active_run(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            mock_agent, ready, interrupted = _make_slow_agent()
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                first = await cli.post(
+                    "/v1/runs",
+                    json={"input": "long task", "run_id": "run_agent_run_1"},
+                )
+                assert first.status == 202
+                first_data = await first.json()
+                assert first_data == {"run_id": "run_agent_run_1", "status": "started"}
+                assert ready.wait(timeout=2)
+
+                second = await cli.post(
+                    "/v1/runs",
+                    json={"input": "long task", "run_id": "run_agent_run_1"},
+                )
+                assert second.status == 202
+                second_data = await second.json()
+                assert second_data == {"run_id": "run_agent_run_1", "status": "running"}
+
+                mock_agent.run_conversation.assert_called_once()
+                stop = await cli.post("/v1/runs/run_agent_run_1/stop")
+                assert stop.status == 200
+                assert interrupted.wait(timeout=2)
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_invalid_client_run_id(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"input": "hello", "run_id": "../../oops"},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+        assert "run_id" in data["error"]["message"]
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status
