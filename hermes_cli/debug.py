@@ -271,7 +271,7 @@ def _upload_paste_rs(content: str) -> str:
             "User-Agent": "hermes-agent/debug-share",
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:  # SSRF: add IP block check
         url = resp.read().decode("utf-8").strip()
     if not url.startswith("http"):
         raise ValueError(f"Unexpected response from paste.rs: {url[:200]}")
