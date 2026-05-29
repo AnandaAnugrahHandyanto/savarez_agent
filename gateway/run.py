@@ -13804,7 +13804,17 @@ class GatewayRunner:
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
+            _get_approval_config,
         )
+
+        # Admin-only gating: when admin_only is set (default True),
+        # only admin users may approve dangerous commands.
+        approval_cfg = _get_approval_config()
+        if approval_cfg.get("admin_only", True):
+            from gateway.slash_access import policy_for_source as _policy_for_source
+            _policy = _policy_for_source(self.config, source)
+            if _policy.enabled and not _policy.is_admin(source.user_id):
+                return "⛔ Not authorized — only admin users can approve/deny dangerous commands."
 
         if not has_blocking_approval(session_key):
             if session_key in self._pending_approvals:
@@ -13850,7 +13860,17 @@ class GatewayRunner:
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
+            _get_approval_config,
         )
+
+        # Admin-only gating: when admin_only is set (default True),
+        # only admin users may deny dangerous commands.
+        approval_cfg = _get_approval_config()
+        if approval_cfg.get("admin_only", True):
+            from gateway.slash_access import policy_for_source as _policy_for_source
+            _policy = _policy_for_source(self.config, source)
+            if _policy.enabled and not _policy.is_admin(source.user_id):
+                return "⛔ Not authorized — only admin users can approve/deny dangerous commands."
 
         if not has_blocking_approval(session_key):
             if session_key in self._pending_approvals:
