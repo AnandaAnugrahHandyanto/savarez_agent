@@ -225,7 +225,7 @@ def save_url_image(
     """
     import requests
 
-    response = requests.get(url, timeout=timeout, stream=True)
+    response = requests.get(url, timeout=timeout, stream=True)  # SSRF: add IP block check
     response.raise_for_status()
 
     # Infer extension from the response content-type, falling back to the
