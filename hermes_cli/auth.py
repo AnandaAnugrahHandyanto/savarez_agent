@@ -1285,14 +1285,35 @@ def _merge_shared_credential_pool_status(
     provider_id: str,
     current_entries: List[Dict[str, Any]],
     snapshot_entries: List[Dict[str, Any]],
+    auth_store: Dict[str, Any],
+    *,
+    update_status: bool,
 ) -> List[Dict[str, Any]]:
-    """Apply status-only snapshot updates without replaying stale OAuth tokens."""
+    """Merge shared snapshots without replaying stale OAuth tokens."""
     snapshots_by_id = {
         entry.get("id"): entry
         for entry in snapshot_entries
         if _is_shared_credential_pool_entry(provider_id, entry)
         and isinstance(entry.get("id"), str)
     }
+    providers = auth_store.get("providers")
+    state = providers.get(provider_id) if isinstance(providers, dict) else None
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+
+    def _matches_canonical(entry: Dict[str, Any]) -> bool:
+        if not isinstance(tokens, dict):
+            return False
+        access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token")
+        return (
+            isinstance(access_token, str)
+            and bool(access_token)
+            and isinstance(refresh_token, str)
+            and bool(refresh_token)
+            and entry.get("access_token") == access_token
+            and entry.get("refresh_token") == refresh_token
+        )
+
     merged = []
     for current in current_entries:
         updated = dict(current)
@@ -1300,6 +1321,13 @@ def _merge_shared_credential_pool_status(
         current_refresh = current.get("refresh_token")
         if (
             isinstance(snapshot, dict)
+            and _matches_canonical(snapshot)
+            and not _matches_canonical(current)
+        ):
+            updated = dict(snapshot)
+        elif (
+            update_status
+            and isinstance(snapshot, dict)
             and isinstance(current_refresh, str)
             and current_refresh
             and snapshot.get("access_token") == current.get("access_token")
@@ -1311,6 +1339,12 @@ def _merge_shared_credential_pool_status(
                 else:
                     updated.pop(field, None)
         merged.append(updated)
+    current_ids = {entry.get("id") for entry in current_entries}
+    merged.extend(
+        dict(snapshot)
+        for snapshot in snapshot_entries
+        if snapshot.get("id") not in current_ids and _matches_canonical(snapshot)
+    )
     return merged
 
 
@@ -1386,6 +1420,7 @@ def write_credential_pool(
     entries: List[Dict[str, Any]],
     *,
     preserve_shared_entries: bool = False,
+    update_shared_status: bool = False,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
@@ -1398,9 +1433,10 @@ def write_credential_pool(
         if isinstance(entry, dict) else entry
         for entry in entries
     ]
-    if provider_id in SHARED_CREDENTIAL_POOL_PROVIDERS and _global_auth_file_path() is not None:
+    if provider_id in SHARED_CREDENTIAL_POOL_PROVIDERS:
         shared_auth_file = _codex_auth_file_path()
         profile_auth_file = _auth_file_path()
+        split_shared_store = shared_auth_file != profile_auth_file
         shared_entries = [
             entry for entry in sanitized_entries
             if _is_shared_credential_pool_entry(provider_id, entry)
@@ -1437,11 +1473,17 @@ def write_credential_pool(
                     provider_id,
                     current_shared_entries,
                     shared_entries,
+                    shared_auth_store,
+                    update_status=update_shared_status,
                 )
-            shared_pool[provider_id] = root_profile_entries + shared_entries
+            shared_pool[provider_id] = (
+                root_profile_entries + shared_entries
+                if split_shared_store
+                else profile_entries + shared_entries
+            )
             _save_auth_store(shared_auth_store, auth_file=shared_auth_file)
 
-            if profile_entries or profile_auth_file.exists():
+            if split_shared_store and (profile_entries or profile_auth_file.exists()):
                 with _auth_store_lock():
                     profile_auth_store = _load_auth_store(profile_auth_file)
                     profile_pool = profile_auth_store.get("credential_pool")
@@ -1452,20 +1494,14 @@ def write_credential_pool(
                     return _save_auth_store(profile_auth_store, auth_file=profile_auth_file)
         return shared_auth_file
 
-    shared_auth_file = (
-        _codex_auth_file_path()
-        if provider_id in SHARED_CREDENTIAL_POOL_PROVIDERS
-        else None
-    )
-    lock = _codex_auth_store_lock if shared_auth_file is not None else _auth_store_lock
-    with lock():
-        auth_store = _load_auth_store(shared_auth_file)
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
             pool = {}
             auth_store["credential_pool"] = pool
         pool[provider_id] = sanitized_entries
-        return _save_auth_store(auth_store, auth_file=shared_auth_file)
+        return _save_auth_store(auth_store)
 
 
 def suppress_credential_source(provider_id: str, source: str) -> None:

@@ -2717,6 +2717,86 @@ def test_sync_codex_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypa
     assert synced.last_error_reset_at is None
 
 
+def test_sync_codex_device_code_prefers_singleton_over_stale_pool_row(tmp_path, monkeypatch):
+    """A stale root pool row must not override the canonical singleton token pair."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    auth_store = _codex_auth_store("access-NEW", "refresh-NEW")
+    auth_store["credential_pool"] = {
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "access-OLD",
+            "refresh_token": "refresh-OLD",
+        }],
+    }
+    _write_auth_store(tmp_path, auth_store)
+
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    entry = PooledCredential.from_dict("openai-codex", {
+        "id": "shared-codex",
+        "source": "device_code",
+        "auth_type": "oauth",
+        "access_token": "access-OLD",
+        "refresh_token": "refresh-OLD",
+    })
+    pool = CredentialPool("openai-codex", [entry])
+
+    synced = pool._sync_codex_entry_from_auth_store(entry)
+
+    assert synced.access_token == "access-NEW"
+    assert synced.refresh_token == "refresh-NEW"
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"][0]
+    assert persisted["access_token"] == "access-NEW"
+    assert persisted["refresh_token"] == "refresh-NEW"
+
+
+def test_codex_root_pool_flush_does_not_restore_stale_shared_entry(tmp_path, monkeypatch):
+    """A default-root process must not replay tokens rotated by a named profile."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    auth_store = _codex_auth_store("access-OLD", "refresh-OLD")
+    auth_store["credential_pool"] = {
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "access-OLD",
+            "refresh_token": "refresh-OLD",
+        }],
+    }
+    _write_auth_store(tmp_path, auth_store)
+
+    from agent.credential_pool import PooledCredential, load_pool
+
+    pool = load_pool("openai-codex")
+    rotated_store = _codex_auth_store("access-NEW", "refresh-NEW")
+    rotated_store["credential_pool"] = {
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "access-NEW",
+            "refresh_token": "refresh-NEW",
+        }],
+    }
+    _write_auth_store(tmp_path, rotated_store)
+
+    pool.add_entry(PooledCredential.from_dict("openai-codex", {
+        "id": "manual-key",
+        "source": "manual:api_key",
+        "auth_type": "api_key",
+        "access_token": "sk-profile",
+    }))
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = auth_payload["credential_pool"]["openai-codex"]
+    shared = next(entry for entry in entries if entry["source"] == "device_code")
+    assert shared["access_token"] == "access-NEW"
+    assert shared["refresh_token"] == "refresh-NEW"
+
+
 def test_sync_codex_entry_noop_when_tokens_match(tmp_path, monkeypatch):
     """When auth.json has the same tokens, sync should be a no-op."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -2925,7 +3005,7 @@ def test_codex_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatc
         last_error_reset_at=now + 3600,
     )
     pool._replace_entry(entry, exhausted)
-    pool._persist()
+    pool._persist(update_shared_status=True)
 
     # Sanity: before the reauth, _available_entries refuses to return
     # this entry because last_error_reset_at is in the future.
@@ -2967,7 +3047,7 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
         last_error_reset_at=now + 3600,
     )
     pool._replace_entry(entry, exhausted)
-    pool._persist()
+    pool._persist(update_shared_status=True)
 
     # auth.json unchanged → sync returns same entry → exhausted_until check
     # still skips it.

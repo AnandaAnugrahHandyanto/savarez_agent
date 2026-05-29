@@ -477,11 +477,17 @@ class CredentialPool:
                 self._entries[idx] = new
                 return
 
-    def _persist(self, *, replace_shared_entries: bool = False) -> None:
+    def _persist(
+        self,
+        *,
+        replace_shared_entries: bool = False,
+        update_shared_status: bool = False,
+    ) -> None:
         write_credential_pool(
             self.provider,
             [entry.to_dict() for entry in self._entries],
             preserve_shared_entries=not replace_shared_entries,
+            update_shared_status=update_shared_status,
         )
 
     def _is_terminal_auth_failure(
@@ -535,7 +541,7 @@ class CredentialPool:
             last_error_reset_at=normalized_error.get("reset_at"),
         )
         self._replace_entry(entry, updated)
-        self._persist()
+        self._persist(update_shared_status=True)
         return updated
 
     def _sync_anthropic_entry_from_credentials_file(self, entry: PooledCredential) -> PooledCredential:
@@ -617,7 +623,7 @@ class CredentialPool:
                             entry.id,
                         )
                         self._replace_entry(entry, persisted)
-                        return persisted
+                        entry = persisted
                     break
 
                 if entry.source != "device_code":
@@ -1416,7 +1422,7 @@ class CredentialPool:
             pruned_ids = set(entries_to_prune)
             self._entries = [e for e in self._entries if e.id not in pruned_ids]
         if cleared_any:
-            self._persist()
+            self._persist(update_shared_status=True)
         return available
 
     def _select_unlocked(self) -> Optional[PooledCredential]:
@@ -1579,7 +1585,7 @@ class CredentialPool:
                 new_entries.append(entry)
         if count:
             self._entries = new_entries
-            self._persist()
+            self._persist(update_shared_status=True)
         return count
 
     def remove_index(self, index: int) -> Optional[PooledCredential]:
