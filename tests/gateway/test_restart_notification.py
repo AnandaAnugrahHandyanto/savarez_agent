@@ -67,6 +67,7 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
     """Under systemd (INVOCATION_ID set), /restart uses via_service=True."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setenv("INVOCATION_ID", "abc123")
+    monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -84,10 +85,33 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypatch):
-    """Without systemd, /restart uses the detached subprocess approach."""
+async def test_restart_command_uses_service_restart_under_launchd(tmp_path, monkeypatch):
+    """Under launchd (XPC_SERVICE_NAME set), /restart uses via_service=True."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_uses_detached_without_service_manager(tmp_path, monkeypatch):
+    """Without systemd or launchd, /restart uses the detached subprocess approach."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
