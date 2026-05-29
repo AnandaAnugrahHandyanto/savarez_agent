@@ -73,8 +73,13 @@ _JAMES_VEHICLE_COMMANDS = {
     "licenca": "licenca",
     "licenciamento": "licenca",
     "transferencia": "transferencia",
+    "trasnferencia": "transferencia",
 }
+_JAMES_ADMIN_COMMANDS = frozenset({"james", "licenca", "transferencia", "status_james", "proposta"})
 _JAMES_RENAVAM_RE = re.compile(r"(?<!\d)(?:\d[.\-\s]?){9,11}(?!\d)")
+_JAMES_LONG_ID_RE = re.compile(r"(?<!\d)(?:\d[.\-\s]?){9,14}(?!\d)")
+_JAMES_PLATE_RE = re.compile(r"(?<![A-Z0-9])(?:[A-Z]{3}[-\s]?\d{4}|[A-Z]{3}\d[A-Z0-9]\d{2})(?![A-Z0-9])", re.I)
+_JAMES_SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|token|secret|password|passwd|senha)\s*[:=]\s*[^\s,;]+")
 
 
 def _normalize_james_vehicle_command(command: str | None) -> str | None:
@@ -93,6 +98,42 @@ def _extract_james_renavam(text: str) -> str | None:
         if 9 <= len(candidate) <= 11:
             return candidate
     return None
+
+
+def _collect_james_sensitive_values(value: Any) -> set[str]:
+    sensitive_keys = {"renavam", "placa", "documento", "cpf", "cnpj", "cpfcnpj", "nome", "token", "secret"}
+    found: set[str] = set()
+
+    def _walk(obj: Any, key_hint: str = "") -> None:
+        if isinstance(obj, dict):
+            for key, nested in obj.items():
+                _walk(nested, str(key).lower())
+            return
+        if isinstance(obj, list):
+            for nested in obj:
+                _walk(nested, key_hint)
+            return
+        if not key_hint or not any(part in key_hint.replace("_", "") for part in sensitive_keys):
+            return
+        text = str(obj or "").strip()
+        if len(text) >= 3:
+            found.add(text)
+
+    _walk(value)
+    return found
+
+
+def _sanitize_james_text(value: Any, sensitive_values: set[str] | None = None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    for raw in sorted(sensitive_values or set(), key=len, reverse=True):
+        if raw:
+            text = text.replace(raw, "[dado sensível ocultado]")
+    text = _JAMES_SECRET_RE.sub(lambda m: f"{m.group(1)}=[dado sensível ocultado]", text)
+    text = _JAMES_PLATE_RE.sub("[placa ocultada]", text)
+    text = _JAMES_LONG_ID_RE.sub("[dado sensível ocultado]", text)
+    return text
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -7470,6 +7511,13 @@ class GatewayRunner:
             if _denied is not None:
                 return _denied
 
+        # James operational commands are stricter than the generic slash ACL:
+        # deny non-admins before command hooks can observe or act on James input.
+        if canonical in _JAMES_ADMIN_COMMANDS:
+            _james_denied = self._check_james_admin_access(source, canonical)
+            if _james_denied is not None:
+                return _james_denied
+
         # Fire the ``command:<canonical>`` hook for any recognized slash
         # command — built-in OR plugin-registered. Handlers can return a
         # dict with ``{"decision": "deny" | "handled" | "rewrite", ...}``
@@ -7553,6 +7601,12 @@ class GatewayRunner:
 
         if canonical == "commands":
             return await self._handle_commands_command(event)
+
+        if canonical == "james":
+            _james_denied = self._check_james_admin_access(source, canonical)
+            if _james_denied is not None:
+                return _james_denied
+            return self._handle_james_help_command(event)
         
         if canonical == "profile":
             return await self._handle_profile_command(event)
@@ -7690,6 +7744,17 @@ class GatewayRunner:
 
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+
+        if canonical in _JAMES_ADMIN_COMMANDS:
+            _james_denied = self._check_james_admin_access(source, canonical)
+            if _james_denied is not None:
+                return _james_denied
+
+        if canonical == "status_james":
+            return await self._handle_james_status_command(event)
+
+        if canonical == "proposta":
+            return await self._handle_james_proposta_command(event)
 
         james_vehicle_command = _normalize_james_vehicle_command(command)
         if james_vehicle_command:
@@ -9366,6 +9431,21 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
+    def _handle_james_help_command(self, event: MessageEvent) -> str:
+        return (
+            "Comandos do James\n"
+            "Atalhos admin-only para uso local/lab.\n"
+            "Toque no comando e depois envie o RENAVAM quando solicitado.\n\n"
+            "/licenca — consultar licenciamento\n"
+            "/transferencia — consultar transferência\n"
+            "/status_james — checar saúde local/lab sem restart\n"
+            "/proposta — gerar rascunho local/lab, sem envio a cliente\n\n"
+            "Se já tiver o RENAVAM, pode mandar direto:\n"
+            "/licenca 123456789\n"
+            "/transferencia 123456789\n"
+            "/proposta 123456789"
+        )
+
     async def _handle_james_vehicle_direct_command(self, event: MessageEvent, command: str) -> str:
         args = event.get_command_args().strip()
         renavam = _extract_james_renavam(args)
@@ -9419,21 +9499,191 @@ class GatewayRunner:
         label = "Licenciamento" if command == "licenca" else "Transferência"
         status = result.get("status")
         body = str(result.get("body") or "")
+
+        def _money(value: Any) -> str | None:
+            if value is None:
+                return None
+            try:
+                amount = float(value)
+            except (TypeError, ValueError):
+                return None
+            formatted = f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            return f"R$ {formatted}"
+
         try:
-            parsed = json.loads(body)
-            body = json.dumps(parsed, ensure_ascii=False, indent=2, sort_keys=True)
+            parsed = json.loads(body) if body else {}
         except Exception:
-            pass
-        if len(body) > 3300:
-            body = body[:3300].rstrip() + "\n...[truncado]"
-        placa_note = "sem PLACA" if "placa" not in payload else f"PLACA {payload['placa']}"
-        return (
-            f"James direto — {label}\n"
-            f"Adapter: {path}\n"
-            f"Payload: RENAVAM {payload['renavam']} ({placa_note})\n"
-            f"HTTP: {status}\n"
-            f"Retorno:\n{body}"
+            parsed = {}
+
+        if not isinstance(parsed, dict):
+            parsed = {}
+
+        sensitive_values = _collect_james_sensitive_values(parsed)
+        ocorrencia = parsed.get("ocorrencia") if isinstance(parsed.get("ocorrencia"), dict) else {}
+        categoria = _sanitize_james_text(ocorrencia.get("categoria"), sensitive_values)
+        codigo = _sanitize_james_text(ocorrencia.get("codigo"), sensitive_values)
+        descricao = _sanitize_james_text(ocorrencia.get("descricao"), sensitive_values)
+        try:
+            status_code = int(status) if status is not None else None
+        except (TypeError, ValueError):
+            status_code = None
+        acao = "OK" if result.get("ok") and status_code and 200 <= status_code < 300 else "Falha"
+        resultado = descricao or categoria or ("consulta concluída" if acao == "OK" else "adapter não retornou JSON tratável")
+
+        lines = [
+            f"James direto — {label}",
+            f"Status: {acao} (HTTP {status or 'sem resposta'})",
+            f"Resultado: {resultado}",
+        ]
+        if codigo:
+            lines.append(f"Código: {codigo}")
+
+        value_lines: list[str] = []
+        for field, field_label in (
+            ("valorFinal", "Valor base retornado"),
+            ("valorTaxas", "Taxas"),
+            ("valorMultas", "Multas"),
+            ("valorIpvas", "IPVA"),
+        ):
+            formatted = _money(parsed.get(field))
+            if formatted is not None:
+                value_lines.append(f"{field_label}: {formatted}")
+        if value_lines:
+            lines.append("Valores:")
+            lines.extend(value_lines)
+            lines.append("Honorários do Despachante ainda devem ser somados antes de passar ao cliente.")
+
+        if not parsed and body:
+            lines.append("Retorno técnico sem JSON tratável ocultado para evitar exposição de dados sensíveis.")
+
+        lines.append("Dados sensíveis ocultados: RENAVAM, placa, CPF/CNPJ e nome.")
+        return "\n".join(lines)
+
+    async def _call_james_health_endpoint(self, base_url: str) -> dict[str, Any]:
+        url = f"{base_url.rstrip('/')}/health"
+
+        def _get() -> dict[str, Any]:
+            request = urllib.request.Request(
+                url,
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    raw = response.read().decode("utf-8", errors="replace")
+                    return {"ok": True, "status": response.status, "body": raw}
+            except urllib.error.HTTPError as exc:
+                raw = exc.read().decode("utf-8", errors="replace")
+                return {"ok": False, "status": exc.code, "body": raw}
+            except Exception as exc:
+                return {"ok": False, "status": None, "body": f"health_request_failed: {type(exc).__name__}"}
+
+        return await asyncio.to_thread(_get)
+
+    async def _handle_james_status_command(self, event: MessageEvent) -> str:
+        api_base = os.environ.get("JAMES_TELEGRAM_API_SERVER_BASE_URL", "http://127.0.0.1:8642").rstrip("/")
+        adapter_base = os.environ.get("JAMES_TELEGRAM_DIRECT_ADAPTER_BASE_URL", "http://127.0.0.1:18083").rstrip("/")
+        api_result, adapter_result = await asyncio.gather(
+            self._call_james_health_endpoint(api_base),
+            self._call_james_health_endpoint(adapter_base),
         )
+
+        def _line(label: str, result: dict[str, Any]) -> str:
+            status = result.get("status")
+            try:
+                status_code = int(status) if status is not None else None
+            except (TypeError, ValueError):
+                status_code = None
+            ok = bool(result.get("ok")) and status_code is not None and 200 <= status_code < 300
+            return f"{label}: {'OK' if ok else 'Falha'} (HTTP {status or 'sem resposta'})"
+
+        return "\n".join(
+            [
+                "Status James 2.0 — local/lab",
+                _line("API Server local/lab", api_result),
+                _line("Adapter James local/lab", adapter_result),
+                "Operação segura: somente health-check; sem restart, sem envio externo e sem side effects reais.",
+            ]
+        )
+
+    async def _handle_james_proposta_command(self, event: MessageEvent) -> str:
+        args = event.get_command_args().strip()
+        renavam = _extract_james_renavam(args)
+        if not renavam:
+            return (
+                "Me manda o RENAVAM para montar o rascunho local/lab.\n"
+                "Exemplo: /proposta 123456789\n"
+                "Nada será enviado ao cliente automaticamente."
+            )
+
+        service_path = "/api-interna/consultar-licenciamento"
+        result = await self._call_james_vehicle_direct_adapter(service_path, {"renavam": renavam})
+        return self._format_james_proposta_response(result)
+
+    def _format_james_proposta_response(self, result: dict[str, Any]) -> str:
+        status = result.get("status")
+        body = str(result.get("body") or "")
+
+        def _money(value: Any) -> str | None:
+            if value is None:
+                return None
+            try:
+                amount = float(value)
+            except (TypeError, ValueError):
+                return None
+            formatted = f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            return f"R$ {formatted}"
+
+        try:
+            parsed = json.loads(body) if body else {}
+        except Exception:
+            parsed = {}
+        if not isinstance(parsed, dict):
+            parsed = {}
+
+        try:
+            status_code = int(status) if status is not None else None
+        except (TypeError, ValueError):
+            status_code = None
+        ok = bool(result.get("ok")) and status_code is not None and 200 <= status_code < 300
+        sensitive_values = _collect_james_sensitive_values(parsed)
+        ocorrencia = parsed.get("ocorrencia") if isinstance(parsed.get("ocorrencia"), dict) else {}
+        descricao = _sanitize_james_text(ocorrencia.get("descricao"), sensitive_values)
+
+        lines = [
+            "Rascunho local/lab — proposta James",
+            "NÃO enviar ao cliente automaticamente; revisar valores, honorários e contexto antes de qualquer atendimento real.",
+            f"Status da consulta: {'OK' if ok else 'Falha'} (HTTP {status or 'sem resposta'})",
+        ]
+        if descricao:
+            lines.append(f"Base consultada: {descricao}")
+
+        value_lines: list[str] = []
+        for field, field_label in (
+            ("valorFinal", "Total base retornado"),
+            ("valorTaxas", "Taxas"),
+            ("valorMultas", "Multas"),
+            ("valorIpvas", "IPVA"),
+        ):
+            formatted = _money(parsed.get(field))
+            if formatted is not None:
+                value_lines.append(f"{field_label}: {formatted}")
+        if value_lines:
+            lines.append("Valores para rascunho:")
+            lines.extend(value_lines)
+            lines.append("Honorários do Despachante devem ser definidos/revisados manualmente antes da proposta final.")
+        else:
+            lines.append("Sem valores tratáveis no retorno; revisar manualmente antes de propor qualquer coisa ao cliente.")
+
+        lines.extend(
+            [
+                "Texto-base sugerido (editar antes de usar):",
+                "Conferi os débitos e taxas do veículo no ambiente local/lab. Posso te passar o fechamento após validar honorários e dados do atendimento.",
+                "Dados sensíveis ocultados: RENAVAM, placa, CPF/CNPJ e nome.",
+                "Side effects bloqueados: WhatsApp real, PIX real, campanha real e baixa financeira.",
+            ]
+        )
+        return "\n".join(lines)
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
@@ -9598,6 +9848,29 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
+
+    def _check_james_admin_access(self, source: SessionSource, canonical_cmd: str) -> Optional[str]:
+        """James operational shortcuts are admin-only when slash admin lists exist.
+
+        If a platform scope has no ``allow_admin_from`` configured, preserve the
+        existing gateway behavior: every already-authorized operator can use
+        gateway-only shortcuts. Once an admin list exists, James commands ignore
+        ``user_allowed_commands`` and require the sender to be in the admin list.
+        """
+        from gateway.slash_access import policy_for_source as _policy_for_source
+
+        if canonical_cmd not in _JAMES_ADMIN_COMMANDS:
+            return None
+        policy = _policy_for_source(self.config, source)
+        if not policy.enabled or policy.is_admin(source.user_id):
+            return None
+        logger.info(
+            "James command /%s denied for %s:%s (admin-only)",
+            canonical_cmd,
+            source.platform.value if source.platform else "?",
+            source.user_id,
+        )
+        return f"⛔ /{canonical_cmd} is admin-only here. Use /whoami to check your current access."
 
     def _check_slash_access(
         self, source: SessionSource, canonical_cmd: str

@@ -155,6 +155,29 @@ async def test_james_accented_license_command_prompts_for_renavam(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_james_help_command_lists_direct_shortcuts(monkeypatch):
+    """/james returns a compact James-only command menu for Telegram."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(side_effect=AssertionError("James help leaked to the agent"))
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/james"))
+
+    assert result is not None
+    assert "Comandos do James" in result
+    assert "/licenca" in result
+    assert "/transferencia" in result
+    assert "RENAVAM" in result
+    assert "Unknown command" not in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_james_transfer_command_calls_adapter_directly(monkeypatch):
     """/transferência <renavam> bypasses the agent/Core and calls Adapter."""
     import gateway.run as gateway_run
@@ -162,23 +185,245 @@ async def test_james_transfer_command_calls_adapter_directly(monkeypatch):
     runner = _make_runner()
     runner._run_agent = AsyncMock(side_effect=AssertionError("James shortcut leaked to the agent"))
     runner._call_james_vehicle_direct_adapter = AsyncMock(
-        return_value={"ok": True, "status": 200, "body": '{"valorFinal":469.91}'}
+        return_value={
+            "ok": True,
+            "status": 200,
+            "body": (
+                '{'
+                '"valorFinal":602.79,'
+                '"valorTaxas":469.91,'
+                '"valorMultas":132.88,'
+                '"valorIpvas":0,'
+                '"renavam":"123456789",'
+                '"placa":"ABC1D23",'
+                '"documento":"00000000000",'
+                '"documentoTipo":"CPF",'
+                '"nome":"CLIENTE TESTE",'
+                '"ocorrencia":{"codigo":"00","categoria":"sucesso","descricao":"TRANSAÇÃO CONFIRMADA E APROVADA"}'
+                '}'
+            ),
+        }
     )
 
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )
 
-    result = await runner._handle_message(_make_event("/transferência 123.456.789"))
+    result = await runner._handle_message(_make_event("/trasnferencia 123.456.789"))
 
     assert result is not None
     assert "James direto — Transferência" in result
-    assert "consultar-transferencia" in result
-    assert "123456789" in result
-    assert "valorFinal" in result
+    assert "Status: OK (HTTP 200)" in result
+    assert "TRANSAÇÃO CONFIRMADA E APROVADA" in result
+    assert "Valor base retornado: R$ 602,79" in result
+    assert "Taxas: R$ 469,91" in result
+    assert "Multas: R$ 132,88" in result
+    assert "Honorários do Despachante" in result
+    assert "Dados sensíveis ocultados" in result
+    assert "consultar-transferencia" not in result
+    assert "123456789" not in result
+    assert "ABC1D23" not in result
+    assert "00000000000" not in result
+    assert "CLIENTE TESTE" not in result
+    assert "valorFinal" not in result
     runner._call_james_vehicle_direct_adapter.assert_awaited_once_with(
         "/api-interna/consultar-transferencia", {"renavam": "123456789"}
     )
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_james_direct_command_hides_non_json_adapter_body(monkeypatch):
+    """Non-JSON adapter bodies may contain PII and must not be echoed to chat."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(side_effect=AssertionError("James shortcut leaked to the agent"))
+    runner._call_james_vehicle_direct_adapter = AsyncMock(
+        return_value={
+            "ok": False,
+            "status": 502,
+            "body": "erro RENAVAM 123456789 placa ABC1D23 cpf 00000000000 CLIENTE TESTE",
+        }
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/licenca 123456789"))
+
+    assert result is not None
+    assert "Retorno técnico sem JSON tratável ocultado" in result
+    assert "123456789" not in result
+    assert "ABC1D23" not in result
+    assert "00000000000" not in result
+    assert "CLIENTE TESTE" not in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_james_direct_command_sanitizes_occurrence_text(monkeypatch):
+    """PII copied into occurrence text must be redacted before chat output."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(side_effect=AssertionError("James shortcut leaked to the agent"))
+    runner._call_james_vehicle_direct_adapter = AsyncMock(
+        return_value={
+            "ok": True,
+            "status": 200,
+            "body": (
+                '{'
+                '"valorFinal":602.79,'
+                '"renavam":"123456789",'
+                '"placa":"ABC1D23",'
+                '"documento":"00000000000",'
+                '"nome":"CLIENTE TESTE",'
+                '"ocorrencia":{'
+                '"codigo":"token=abc123456",'
+                '"categoria":"placa ABC1D23",'
+                '"descricao":"RENAVAM 123456789 CPF 00000000000 CLIENTE TESTE"'
+                '}'
+                '}'
+            ),
+        }
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/licenca 123456789"))
+
+    assert result is not None
+    assert "token=abc123456" not in result
+    assert "123456789" not in result
+    assert "ABC1D23" not in result
+    assert "00000000000" not in result
+    assert "CLIENTE TESTE" not in result
+    assert "[dado sensível ocultado]" in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_james_status_command_reports_local_lab_health(monkeypatch):
+    """/status_james reports James lab health without invoking the agent."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(side_effect=AssertionError("James status leaked to the agent"))
+    runner._call_james_health_endpoint = AsyncMock(
+        side_effect=[
+            {"ok": True, "status": 200, "body": '{"ok":true}'},
+            {"ok": False, "status": 503, "body": "degraded"},
+        ]
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/status_james"))
+
+    assert result is not None
+    assert "Status James 2.0" in result
+    assert "API Server local/lab: OK (HTTP 200)" in result
+    assert "Adapter James local/lab: Falha (HTTP 503)" in result
+    assert "sem restart" in result
+    assert "Unknown command" not in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_james_proposta_generates_sanitized_local_draft(monkeypatch):
+    """/proposta <renavam> consults the lab adapter and returns only a local draft."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(side_effect=AssertionError("James proposta leaked to the agent"))
+    runner._call_james_vehicle_direct_adapter = AsyncMock(
+        return_value={
+            "ok": True,
+            "status": 200,
+            "body": (
+                '{'
+                '"valorFinal":602.79,'
+                '"valorTaxas":469.91,'
+                '"valorMultas":132.88,'
+                '"renavam":"123456789",'
+                '"placa":"ABC1D23",'
+                '"documento":"00000000000",'
+                '"nome":"CLIENTE TESTE",'
+                '"ocorrencia":{"descricao":"TRANSAÇÃO CONFIRMADA E APROVADA"}'
+                '}'
+            ),
+        }
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/proposta 123.456.789"))
+
+    assert result is not None
+    assert "Rascunho local/lab — proposta James" in result
+    assert "NÃO enviar ao cliente automaticamente" in result
+    assert "Total base retornado: R$ 602,79" in result
+    assert "Taxas: R$ 469,91" in result
+    assert "Multas: R$ 132,88" in result
+    assert "Honorários do Despachante" in result
+    assert "Dados sensíveis ocultados" in result
+    assert "123456789" not in result
+    assert "ABC1D23" not in result
+    assert "00000000000" not in result
+    assert "CLIENTE TESTE" not in result
+    assert "Unknown command" not in result
+    runner._call_james_vehicle_direct_adapter.assert_awaited_once_with(
+        "/api-interna/consultar-licenciamento", {"renavam": "123456789"}
+    )
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "canonical"),
+    [
+        ("/james", "james"),
+        ("/licenca 123456789", "licenca"),
+        ("/licença 123456789", "licenca"),
+        ("/transferencia 123456789", "transferencia"),
+        ("/transferência 123456789", "transferencia"),
+        ("/status_james", "status_james"),
+        ("/proposta 123456789", "proposta"),
+    ],
+)
+async def test_james_commands_require_admin_when_slash_admins_configured(monkeypatch, text, canonical):
+    """James operational shortcuts stay admin-only even if a non-admin has slash commands."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner.config.platforms[Platform.TELEGRAM].extra = {
+        "allow_admin_from": ["admin-user"],
+        "user_allowed_commands": ["james", "status_james", "proposta", "licenca", "transferencia"],
+    }
+    runner._run_agent = AsyncMock(side_effect=AssertionError("James shortcut leaked to the agent"))
+    runner._call_james_vehicle_direct_adapter = AsyncMock(side_effect=AssertionError("non-admin reached adapter"))
+    runner._call_james_health_endpoint = AsyncMock(side_effect=AssertionError("non-admin reached health check"))
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event(text))
+
+    assert result is not None
+    assert "admin-only" in result
+    assert f"/{canonical}" in result
+    runner._call_james_vehicle_direct_adapter.assert_not_called()
+    runner._call_james_health_endpoint.assert_not_called()
+    runner.hooks.emit_collect.assert_not_awaited()
     runner._run_agent.assert_not_called()
 
 

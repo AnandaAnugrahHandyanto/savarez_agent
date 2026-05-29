@@ -410,6 +410,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
+    app.router.add_post("/internal/notify", adapter._handle_internal_notify)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
@@ -563,8 +564,99 @@ class TestHealthDetailedEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# /v1/models endpoint
+# /internal/notify endpoint
 # ---------------------------------------------------------------------------
+
+
+class TestInternalNotifyEndpoint:
+    def _adapter(self) -> APIServerAdapter:
+        config = PlatformConfig(enabled=True, extra={
+            "internal_notify_token": "notify-secret",
+            "internal_notify_dedup_seconds": 300,
+            "internal_notify_allowed_ips": "127.0.0.1,::1",
+        })
+        return APIServerAdapter(config)
+
+    @staticmethod
+    def _payload(**overrides):
+        payload = {
+            "source": "api-watcher",
+            "severity": "warning",
+            "title": "Alerta Itamaraty",
+            "message": "2Captcha abaixo do saldo mínimo",
+            "details": {"status": "warning", "provider": "2captcha", "balance": 1.72},
+            "timestamp": "2026-05-27T20:00:00.000Z",
+        }
+        payload.update(overrides)
+        return payload
+
+    @pytest.mark.asyncio
+    async def test_requires_dedicated_token(self):
+        adapter = self._adapter()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/internal/notify", json=self._payload())
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_sends_alert_and_deduplicates(self):
+        adapter = self._adapter()
+        adapter._internal_notify_send_telegram = AsyncMock(return_value={"message_id": 123})
+        app = _create_app(adapter)
+        headers = {"Authorization": "Bearer notify-secret"}
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post("/internal/notify", json=self._payload(), headers=headers)
+            assert first.status == 200
+            first_data = await first.json()
+            assert first_data["sent"] is True
+            assert first_data["message_id"] == 123
+
+            second = await cli.post("/internal/notify", json=self._payload(), headers=headers)
+            assert second.status == 200
+            second_data = await second.json()
+            assert second_data["sent"] is False
+            assert second_data["deduplicated"] is True
+
+        adapter._internal_notify_send_telegram.assert_awaited_once()
+
+    def test_render_message_redacts_sensitive_detail_keys(self):
+        adapter = self._adapter()
+        text = adapter._internal_notify_render_message(self._payload(
+            details={
+                "status": "warning",
+                "provider": "2captcha",
+                "api_key": "SHOULD_NOT_APPEAR",
+                "cookie": "SHOULD_NOT_APPEAR",
+            },
+        ))
+        assert "[WARNING] api-watcher" in text
+        assert "2Captcha abaixo do saldo mínimo" in text
+        assert "provider: 2captcha" in text
+        assert "SHOULD_NOT_APPEAR" not in text
+        assert "api_key" not in text
+        assert "cookie" not in text
+
+    def test_render_message_redacts_pii_and_secret_patterns_everywhere(self):
+        adapter = self._adapter()
+        text = adapter._internal_notify_render_message(self._payload(
+            source="watcher ABC1D23",
+            title="CPF 00000000000 token=abc123",
+            message="RENAVAM 123456789 placa ABC1D23 telefone +55 16 99999-9999",
+            details={
+                "status": "critical token=abc123",
+                "cpf": "00000000000",
+                "placa": "ABC1D23",
+                "renavam": "123456789",
+                "safe_note": "documento 00000000000 placa ABC1D23 renavam 123456789 token=abc123",
+            },
+        ))
+
+        for leaked in ("00000000000", "123456789", "ABC1D23", "abc123"):
+            assert leaked not in text
+        for sensitive_key in ("cpf:", "placa:", "renavam:"):
+            assert sensitive_key not in text.lower()
+        assert "token=[dado sensível ocultado]" in text
+        assert "safe_note: documento [dado sensível ocultado]" in text
 
 
 class TestModelsEndpoint:

@@ -41,13 +41,16 @@ import re
 import sqlite3
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
+    import aiohttp
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
 except ImportError:
+    aiohttp = None  # type: ignore[assignment]
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
@@ -717,6 +720,40 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._internal_notify_token: str = str(
+            extra.get("internal_notify_token")
+            or os.getenv("INTERNAL_NOTIFY_TOKEN", "")
+        ).strip()
+        self._internal_notify_dedup_seconds: int = self._coerce_positive_int(
+            extra.get("internal_notify_dedup_seconds")
+            or os.getenv("INTERNAL_NOTIFY_DEDUP_SECONDS", "300"),
+            default=300,
+        )
+        self._internal_notify_allowed_ips: tuple[str, ...] = self._parse_csv_tuple(
+            extra.get("internal_notify_allowed_ips")
+            or os.getenv("INTERNAL_NOTIFY_ALLOWED_IPS", "127.0.0.1,::1"),
+        )
+        self._internal_notify_last_sent: Dict[str, float] = {}
+
+    @staticmethod
+    def _coerce_positive_int(value: Any, default: int) -> int:
+        try:
+            parsed = int(value)
+            return parsed if parsed > 0 else default
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _parse_csv_tuple(value: Any) -> tuple[str, ...]:
+        if not value:
+            return ()
+        if isinstance(value, str):
+            items = value.split(",")
+        elif isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            items = [str(value)]
+        return tuple(str(item).strip() for item in items if str(item).strip())
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1014,6 +1051,257 @@ class APIServerAdapter(BasePlatformAdapter):
             gateway_session_key=gateway_session_key,
         )
         return agent
+
+    # ------------------------------------------------------------------
+    # Internal notification helpers
+    # ------------------------------------------------------------------
+
+    _INTERNAL_NOTIFY_SEVERITIES = frozenset({"info", "warning", "critical", "resolved"})
+    _INTERNAL_NOTIFY_SENSITIVE_KEY_RE = re.compile(
+        r"(token|secret|password|passwd|senha|cookie|api[_-]?key|captcha[_-]?key|har|private|cert|a1|cpf|cnpj|renavam|placa|telefone|phone|celular|documento)",
+        re.IGNORECASE,
+    )
+    _INTERNAL_NOTIFY_SECRET_ASSIGNMENT_RE = re.compile(
+        r"\b(token|api[_-]?key|password|passwd|secret|senha)\s*[:=]\s*[^\s,;&]+",
+        re.IGNORECASE,
+    )
+    _INTERNAL_NOTIFY_CPF_RE = re.compile(r"(?<!\d)\d{3}\.?\d{3}\.?\d{3}-?\d{2}(?!\d)")
+    _INTERNAL_NOTIFY_CNPJ_RE = re.compile(r"(?<!\d)\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}(?!\d)")
+    _INTERNAL_NOTIFY_LONG_ID_RE = re.compile(r"(?<![\d.,])\d{9,14}(?![\d.,])")
+    _INTERNAL_NOTIFY_BR_PHONE_RE = re.compile(
+        r"(?<!\d)(?:\+?55[\s.-]?)?(?:\(?\d{2}\)?[\s.-]?)?(?:9\d{4}|[2-5]\d{3})[\s.-]?\d{4}(?!\d)"
+    )
+    _INTERNAL_NOTIFY_PLATE_RE = re.compile(r"\b[A-Z]{3}[-\s]?\d[A-Z0-9]\d{2}\b", re.IGNORECASE)
+
+    @classmethod
+    def _internal_notify_redact_text(cls, text: str) -> str:
+        """Redact PII/secrets before any /internal/notify text leaves the process."""
+        redacted = cls._INTERNAL_NOTIFY_SECRET_ASSIGNMENT_RE.sub(
+            lambda match: f"{match.group(1)}=[dado sensível ocultado]",
+            text,
+        )
+        for pattern in (
+            cls._INTERNAL_NOTIFY_CNPJ_RE,
+            cls._INTERNAL_NOTIFY_CPF_RE,
+            cls._INTERNAL_NOTIFY_BR_PHONE_RE,
+            cls._INTERNAL_NOTIFY_PLATE_RE,
+            cls._INTERNAL_NOTIFY_LONG_ID_RE,
+        ):
+            redacted = pattern.sub("[dado sensível ocultado]", redacted)
+        return redacted
+
+    def _internal_notify_auth_error(self, request: "web.Request") -> Optional["web.Response"]:
+        if not self._internal_notify_token:
+            return web.json_response(
+                {"error": {"message": "Internal notify endpoint is not configured", "code": "not_configured"}},
+                status=503,
+            )
+
+        peer_ip = self._request_audit_context(request).get("peer_ip") or self._request_audit_context(request).get("remote")
+        if self._internal_notify_allowed_ips and peer_ip not in self._internal_notify_allowed_ips:
+            logger.warning(
+                "Internal notify rejected disallowed source: %s",
+                self._request_audit_log_suffix(request),
+            )
+            return web.json_response(
+                {"error": {"message": "Source IP not allowed", "code": "source_not_allowed"}},
+                status=403,
+            )
+
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+            if hmac.compare_digest(token, self._internal_notify_token):
+                return None
+
+        logger.warning(
+            "Internal notify rejected invalid token: %s",
+            self._request_audit_log_suffix(request),
+        )
+        return web.json_response(
+            {"error": {"message": "Invalid internal notify token", "code": "invalid_token"}},
+            status=401,
+        )
+
+    @classmethod
+    def _internal_notify_clean_value(cls, value: Any, *, max_len: int = 240) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list, tuple, set)):
+            try:
+                text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                text = str(value)
+        else:
+            text = str(value)
+        text = text.replace("\r", " ").replace("\n", " ").strip()
+        text = cls._internal_notify_redact_text(text)
+        return text[:max_len]
+
+    @classmethod
+    def _internal_notify_safe_details_lines(cls, details: Any) -> list[str]:
+        if not isinstance(details, dict):
+            return []
+        lines: list[str] = []
+        for key in sorted(details):
+            if len(lines) >= 8:
+                break
+            key_text = str(key).strip()
+            if not key_text or cls._INTERNAL_NOTIFY_SENSITIVE_KEY_RE.search(key_text):
+                continue
+            value = details.get(key)
+            lines.append(f"{key_text}: {cls._internal_notify_clean_value(value, max_len=160)}")
+        return lines
+
+    @staticmethod
+    def _internal_notify_format_timestamp(value: Any) -> str:
+        if isinstance(value, str) and value.strip():
+            raw = value.strip()
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                local_dt = parsed.astimezone()
+                return local_dt.strftime("%d/%m/%Y %H:%M:%S %z")
+            except Exception:
+                return raw[:80]
+        return datetime.now(timezone.utc).astimezone().strftime("%d/%m/%Y %H:%M:%S %z")
+
+    def _internal_notify_render_message(self, payload: Dict[str, Any]) -> str:
+        severity = str(payload.get("severity") or "info").strip().lower()
+        source = self._internal_notify_clean_value(payload.get("source") or "unknown", max_len=80)
+        title = self._internal_notify_clean_value(payload.get("title") or "Alerta Hermes", max_len=120)
+        message = self._internal_notify_clean_value(payload.get("message") or "", max_len=1200)
+        details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
+        status = self._internal_notify_clean_value(details.get("status") if isinstance(details, dict) else severity, max_len=80) or severity
+        timestamp = self._internal_notify_format_timestamp(payload.get("timestamp"))
+
+        lines = [
+            f"[{severity.upper()}] {source}",
+            title,
+        ]
+        if message:
+            lines.extend(["", message])
+        lines.extend(["", f"Status geral: {status}", f"Horário: {timestamp}"])
+        safe_detail_lines = self._internal_notify_safe_details_lines(details)
+        if safe_detail_lines:
+            lines.extend(["", "Detalhes:", *safe_detail_lines])
+        return "\n".join(lines)[:3900]
+
+    def _internal_notify_dedup_key(self, payload: Dict[str, Any]) -> str:
+        source = str(payload.get("source") or "").strip().lower()
+        severity = str(payload.get("severity") or "info").strip().lower()
+        title = str(payload.get("title") or "").strip().lower()
+        raw = f"{source}\0{severity}\0{title}"
+        return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
+
+    def _internal_notify_is_duplicate(self, payload: Dict[str, Any]) -> tuple[bool, str, float]:
+        key = self._internal_notify_dedup_key(payload)
+        now = time.time()
+        last = self._internal_notify_last_sent.get(key, 0.0)
+        if last and now - last < self._internal_notify_dedup_seconds:
+            return True, key, self._internal_notify_dedup_seconds - (now - last)
+        return False, key, 0.0
+
+    async def _internal_notify_send_telegram(self, text: str) -> Dict[str, Any]:
+        from gateway.config import load_gateway_config
+
+        gateway_config = load_gateway_config()
+        telegram_config = gateway_config.platforms.get(Platform.TELEGRAM)
+        if not telegram_config or not telegram_config.enabled or not telegram_config.token:
+            raise RuntimeError("Telegram platform is not configured")
+        if not telegram_config.home_channel or not telegram_config.home_channel.chat_id:
+            raise RuntimeError("Telegram home channel is not configured")
+
+        body: Dict[str, Any] = {
+            "chat_id": telegram_config.home_channel.chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        if telegram_config.home_channel.thread_id:
+            try:
+                body["message_thread_id"] = int(telegram_config.home_channel.thread_id)
+            except ValueError:
+                body["message_thread_id"] = telegram_config.home_channel.thread_id
+
+        timeout = aiohttp.ClientTimeout(total=15) if "aiohttp" in globals() else None
+        async with aiohttp.ClientSession(timeout=timeout) as session:  # type: ignore[name-defined]
+            async with session.post(
+                f"https://api.telegram.org/bot{telegram_config.token}/sendMessage",
+                json=body,
+            ) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status >= 400 or not data.get("ok"):
+                    description = str(data.get("description") or f"HTTP {resp.status}")[:200]
+                    raise RuntimeError(f"Telegram send failed: {description}")
+                result = data.get("result") or {}
+                return {"message_id": result.get("message_id"), "chat_id": str((result.get("chat") or {}).get("id", ""))}
+
+    async def _handle_internal_notify(self, request: "web.Request") -> "web.Response":
+        """POST /internal/notify — authenticated internal alert ingress for host watchers."""
+        auth_err = self._internal_notify_auth_error(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response(
+                {"error": {"message": "Invalid JSON payload", "code": "invalid_json"}},
+                status=400,
+            )
+        if not isinstance(payload, dict):
+            return web.json_response(
+                {"error": {"message": "Payload must be a JSON object", "code": "invalid_payload"}},
+                status=400,
+            )
+
+        source = self._internal_notify_clean_value(payload.get("source") or "", max_len=80)
+        severity = str(payload.get("severity") or "info").strip().lower()
+        title = self._internal_notify_clean_value(payload.get("title") or "", max_len=120)
+        message = self._internal_notify_clean_value(payload.get("message") or "", max_len=1200)
+        if not source or not title or not message:
+            return web.json_response(
+                {"error": {"message": "source, title and message are required", "code": "missing_required_fields"}},
+                status=400,
+            )
+        if severity not in self._INTERNAL_NOTIFY_SEVERITIES:
+            return web.json_response(
+                {"error": {"message": "severity must be info, warning, critical or resolved", "code": "invalid_severity"}},
+                status=400,
+            )
+
+        duplicate, dedup_key, retry_after = self._internal_notify_is_duplicate(payload)
+        if duplicate:
+            return web.json_response({
+                "ok": True,
+                "sent": False,
+                "deduplicated": True,
+                "retry_after_seconds": int(retry_after),
+            })
+
+        text = self._internal_notify_render_message(payload)
+        try:
+            result = await self._internal_notify_send_telegram(text)
+        except Exception as exc:
+            logger.warning("Internal notify Telegram delivery failed: %s", exc)
+            return web.json_response(
+                {"error": {"message": "Telegram delivery failed", "code": "delivery_failed"}},
+                status=502,
+            )
+
+        self._internal_notify_last_sent[dedup_key] = time.time()
+        logger.info(
+            "Internal notify delivered: source=%r severity=%r title=%r message_id=%r",
+            source,
+            severity,
+            title,
+            result.get("message_id"),
+        )
+        return web.json_response({
+            "ok": True,
+            "sent": True,
+            "deduplicated": False,
+            "message_id": result.get("message_id"),
+        })
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -4050,6 +4338,7 @@ class APIServerAdapter(BasePlatformAdapter):
             assert self._app is not None
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
+            self._app.router.add_post("/internal/notify", self._handle_internal_notify)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
