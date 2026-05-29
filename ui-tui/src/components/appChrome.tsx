@@ -164,6 +164,10 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
   return t.color.statusGood
 }
 
+function statusSessionCountLabel(count: number) {
+  return `${count} ${count === 1 ? 'session' : 'sessions'}`
+}
+
 function ctxBar(pct: number | undefined, w = 10) {
   const p = Math.max(0, Math.min(100, pct ?? 0))
   const filled = Math.round((p / 100) * w)
@@ -319,6 +323,7 @@ export function StatusRule({
   modelReasoningEffort,
   usage,
   bgCount,
+  liveSessionCount,
   sessionStartedAt,
   showCost,
   turnStartedAt,
@@ -326,6 +331,7 @@ export function StatusRule({
   voiceProcessing,
   voiceEnabled,
   voiceTts,
+  onSessionCountClick,
   t
 }: StatusRuleProps) {
   const i18n = useI18n()
@@ -340,6 +346,21 @@ export function StatusRule({
 
   const bar = usage.context_max ? ctxBar(pct) : ''
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel)
+  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+  const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
+    event.stopImmediatePropagation?.()
+    onSessionCountClick?.()
+  }
+
+  const sessionCountNode = sessionCountText ? (
+    onSessionCountClick ? (
+      <Box flexShrink={0} onClick={handleSessionCountClick}>
+        <Text color={t.color.accent}> │ {sessionCountText}</Text>
+      </Box>
+    ) : (
+      <Text color={t.color.muted}> │ {sessionCountText}</Text>
+    )
+  ) : null
 
   // Computed inside I18nProvider so voice idle/on/off labels translate.
   const voiceLabel = voiceRecording
@@ -350,7 +371,7 @@ export function StatusRule({
 
   return (
     <Box height={1}>
-      <Box flexShrink={1} width={leftWidth}>
+      <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
         <Text color={t.color.border} wrap="truncate-end">
           {'─ '}
           {busy ? (
@@ -391,6 +412,7 @@ export function StatusRule({
               {voiceLabel}
             </Text>
           ) : null}
+          {sessionCountNode}
           {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} {i18n.t('background.short')}</Text> : null}
           {showCost && typeof usage.cost_usd === 'number' ? (
             <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
@@ -513,6 +535,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 
 interface StatusRuleProps {
   bgCount: number
+  liveSessionCount: number
   busy: boolean
   cols: number
   cwdLabel: string
@@ -530,6 +553,7 @@ interface StatusRuleProps {
   voiceProcessing: boolean
   voiceEnabled: boolean
   voiceTts: boolean
+  onSessionCountClick?: () => void
 }
 
 interface StickyPromptTrackerProps {

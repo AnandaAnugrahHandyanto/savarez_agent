@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
+import { Check } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { BottomPickSheet } from "@/components/BottomPickSheet";
-import { Typography } from "@/components/NouiTypography";
-import { useBelowBreakpoint } from "@/hooks/useBelowBreakpoint";
+import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
+import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useI18n } from "@/i18n/context";
 import { LOCALE_META } from "@/i18n";
 import type { Locale } from "@/i18n";
@@ -25,10 +27,11 @@ import { cn } from "@/lib/utils";
  * viewport / overflow ancestors. Below the `sm` breakpoint, `dropUp` uses a
  * bottom sheet portaled to `document.body` instead of an anchored dropdown.
  */
-export function LanguageSwitcher({ dropUp = false, onLocaleChange }: LanguageSwitcherProps) {
+export function LanguageSwitcher({ collapsed = false, dropUp = false, onLocaleChange }: LanguageSwitcherProps) {
   const { locale, setLocale, t } = useI18n();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const narrowViewport = useBelowBreakpoint(640);
   const useMobileSheet = Boolean(dropUp && narrowViewport);
 
@@ -41,15 +44,14 @@ export function LanguageSwitcher({ dropUp = false, onLocaleChange }: LanguageSwi
     return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
-  // Outside-click closing only for anchored dropdown — sheet uses backdrop + portal.
   useEffect(() => {
     if (!open || useMobileSheet) return;
 
     function onPointerDown(e: PointerEvent) {
-      if (!containerRef.current) return;
-      if (!containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      const target = e.target as Node;
+      if (containerRef.current?.contains(target)) return;
+      if (dropdownRef.current?.contains(target)) return;
+      setOpen(false);
     }
 
     document.addEventListener("pointerdown", onPointerDown);
@@ -69,7 +71,10 @@ export function LanguageSwitcher({ dropUp = false, onLocaleChange }: LanguageSwi
         aria-label={t.language.switchTo}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground"
+        className={cn(
+          "px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground",
+          collapsed && "hover:bg-transparent",
+        )}
       >
         <span className="inline-flex items-center gap-1.5">
           <Typography
@@ -82,7 +87,7 @@ export function LanguageSwitcher({ dropUp = false, onLocaleChange }: LanguageSwi
       </Button>
 
       {useMobileSheet && (
-        <BottomPickSheet
+        <BottomSheet
           backdropDismissLabel={t.common.close}
           onClose={() => setOpen(false)}
           open={open}
@@ -97,10 +102,10 @@ export function LanguageSwitcher({ dropUp = false, onLocaleChange }: LanguageSwi
               onLocaleChange={onLocaleChange}
             />
           </div>
-        </BottomPickSheet>
+        </BottomSheet>
       )}
 
-      {open && !useMobileSheet && (
+{open && !useMobileSheet && (
         <div
           aria-label={sheetTitle}
           className={cn(
@@ -137,10 +142,12 @@ function LanguageSwitcherOptions({
         return (
           <button
             aria-selected={selected}
-            className={
-              "w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-accent hover:text-accent-foreground transition-colors " +
-              (selected ? "font-semibold text-foreground" : "text-muted-foreground")
-            }
+            className={cn(
+              "w-full text-left px-3 py-1.5 flex items-center gap-2 cursor-pointer",
+              "font-mondwest text-display text-xs tracking-[0.08em]",
+              "hover:bg-accent hover:text-accent-foreground transition-colors",
+              selected ? "font-semibold text-foreground" : "text-muted-foreground",
+            )}
             key={code}
             onClick={() => {
               setLocale(code);
@@ -152,7 +159,7 @@ function LanguageSwitcherOptions({
           >
             <span className="truncate">{meta.name}</span>
 
-            {selected && <span className="ml-auto text-xs">✓</span>}
+            {selected && <Check className="ml-auto h-3 w-3 shrink-0 text-midground" />}
           </button>
         );
       })}
@@ -169,6 +176,7 @@ interface LanguageSwitcherOptionsProps {
 }
 
 interface LanguageSwitcherProps {
+  collapsed?: boolean;
   dropUp?: boolean;
   /** Fire-and-forget callback when user picks a locale.
    *  Called *after* the React state + localStorage are already updated.

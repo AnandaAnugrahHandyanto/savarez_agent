@@ -7,6 +7,7 @@ import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 import { useI18n } from '../i18n/index.js'
 
+import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
@@ -97,17 +98,39 @@ export function FloatingOverlays({
   cols,
   compIdx,
   completions,
+  onActiveSessionSelect,
+  onActiveSessionClose,
   onModelSelect,
+  onNewLiveSession,
+  onNewPromptSession,
   onPickerSelect,
   pagerPageSize
-}: Pick<AppOverlaysProps, 'cols' | 'compIdx' | 'completions' | 'onModelSelect' | 'onPickerSelect' | 'pagerPageSize'>) {
+}: Pick<
+  AppOverlaysProps,
+  | 'cols'
+  | 'compIdx'
+  | 'completions'
+  | 'onActiveSessionSelect'
+  | 'onActiveSessionClose'
+  | 'onModelSelect'
+  | 'onNewLiveSession'
+  | 'onNewPromptSession'
+  | 'onPickerSelect'
+  | 'pagerPageSize'
+>) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
   const sid = useStore($uiSessionId)
   const theme = useStore($uiTheme)
   const { t } = useI18n()
 
-  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || overlay.skillsHub || completions.length
+  const hasAny =
+    overlay.modelPicker ||
+    overlay.pager ||
+    overlay.picker ||
+    overlay.sessions ||
+    overlay.skillsHub ||
+    completions.length
 
   if (!hasAny) {
     return null
@@ -128,6 +151,21 @@ export function FloatingOverlays({
             gw={gw}
             onCancel={() => patchOverlayState({ picker: false })}
             onSelect={onPickerSelect}
+            t={theme}
+          />
+        </FloatBox>
+      )}
+
+      {overlay.sessions && (
+        <FloatBox color={theme.color.border}>
+          <ActiveSessionSwitcher
+            currentSessionId={sid}
+            gw={gw}
+            onCancel={() => patchOverlayState({ sessions: false })}
+            onClose={onActiveSessionClose}
+            onNew={onNewLiveSession}
+            onNewPrompt={onNewPromptSession}
+            onSelect={onActiveSessionSelect}
             t={theme}
           />
         </FloatBox>
