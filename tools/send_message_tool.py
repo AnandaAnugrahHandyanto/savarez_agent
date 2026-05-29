@@ -40,6 +40,7 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
@@ -339,6 +340,9 @@ def _handle_send(args):
         return json.dumps(_error(f"Send failed: {e}"))
 
 
+
+
+
 def _parse_target_ref(platform_name: str, target_ref: str):
     """Parse a tool target into chat_id/thread_id and whether it is explicit."""
     if platform_name == "telegram":
@@ -386,9 +390,13 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
-            # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
+            # Preserve the leading '+' — signal-cli and sms adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
+    # WhatsApp JIDs end with @lid, @s.whatsapp.net, or @g.us.
+    # Pass them through as-is — the bridge validates format on its end.
+    if platform_name == "whatsapp" and target_ref.strip().endswith(("@lid", "@s.whatsapp.net", "@g.us")):
+        return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
@@ -1057,17 +1065,27 @@ async def _send_slack(token, chat_id, message):
 
 
 async def _send_whatsapp(extra, chat_id, message):
-    """Send via the local WhatsApp bridge HTTP API."""
+    """Send via the local WhatsApp bridge HTTP API.
+
+    If *chat_id* lacks a JID suffix (``@lid`` or ``@s.whatsapp.net``),
+    a best-effort resolution is attempted via the bridge session's
+    ``lid-mapping-{phone}.json`` files.  If no mapping is found the
+    legacy ``@s.whatsapp.net`` suffix is appended as a last resort.
+    """
     try:
         import aiohttp
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
+        from gateway.whatsapp_identity import resolve_whatsapp_outbound_target
+        # Ensure chat_id is a valid WhatsApp JID by resolving through central identity helper.
+        resolved_chat_id = resolve_whatsapp_outbound_target(chat_id)
+
         bridge_port = extra.get("bridge_port", 3000)
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"http://localhost:{bridge_port}/send",
-                json={"chatId": chat_id, "message": message},
+                json={"chatId": resolved_chat_id, "message": message},
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status == 200:
@@ -1075,7 +1093,7 @@ async def _send_whatsapp(extra, chat_id, message):
                     return {
                         "success": True,
                         "platform": "whatsapp",
-                        "chat_id": chat_id,
+                        "chat_id": resolved_chat_id,
                         "message_id": data.get("messageId"),
                     }
                 body = await resp.text()
