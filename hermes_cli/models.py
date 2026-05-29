@@ -1214,7 +1214,7 @@ def fetch_models_with_pricing(
 
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # SSRF: add IP block check
             payload = json.loads(resp.read().decode())
     except Exception:
         _pricing_cache[cache_key] = {}
