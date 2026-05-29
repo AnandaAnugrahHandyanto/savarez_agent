@@ -1699,27 +1699,42 @@ def list_authenticated_providers(
             _grp_url_norm = _pair_key[1]
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
-            # Live model discovery from custom provider endpoints (matches
-            # Section 3 behavior for user ``providers:`` entries).
-            # Also probes when no api_key is set (e.g. local llama.cpp /
-            # Ollama servers) — the /models endpoint often works without
-            # auth.  The CLI's _model_flow_named_custom always probes, so
-            # the Telegram/Discord picker should do the same for parity.
             # Live-discovery policy:
-            # - With an api_key, the user has explicitly opted into the
-            #   endpoint and live /models is the source of truth — replace
-            #   the (possibly partial) ``models:`` subset configured for
-            #   context-length overrides with the full live catalog.
-            #   This is the Bifrost / aggregator-gateway case.
+            # - With an api_key AND discover_models not explicitly disabled
+            #   on *any* entry in this group, live /models is the source of
+            #   truth — replace the (possibly partial) ``models:`` subset
+            #   configured for context-length overrides with the full live
+            #   catalog.  This is the Bifrost / aggregator-gateway case.
+            # - When discover_models: false is set on any entry in this
+            #   group, skip live discovery and preserve the explicit
+            #   ``models:`` list, matching Section 3's behaviour for
+            #   ``providers:`` entries.
             # - Without an api_key but with an explicit ``models:`` list
             #   (or top-level ``model:``), the user is narrowing a public
-            #   endpoint to a specific subset (e.g. ollama.com /v1/models
-            #   returns 35 models but the user only wants 4). Preserve the
-            #   explicit list and skip live discovery.
+            #   endpoint to a specific subset.  Preserve the explicit list
+            #   and skip live discovery.
             # - Without an api_key AND no explicit models, fall through to
             #   live discovery so bare-endpoint custom providers (local
             #   llama.cpp / Ollama servers) still appear populated.
-            should_probe = bool(api_url) and (bool(api_key) or not grp["models"])
+            _discover = True
+            for _entry in custom_providers:
+                if not isinstance(_entry, dict):
+                    continue
+                _entry_url = (
+                    (_entry.get("base_url") or _entry.get("url")
+                     or _entry.get("api") or "").strip().rstrip("/")
+                )
+                if _entry_url != api_url:
+                    continue
+                _d = _entry.get("discover_models", True)
+                if isinstance(_d, str):
+                    _d = _d.lower() not in {"false", "no", "0"}
+                if not _d:
+                    _discover = False
+                    break
+            should_probe = bool(api_url) and _discover and (
+                bool(api_key) or not grp["models"]
+            )
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models
