@@ -849,6 +849,75 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     _HERMES_HOME / "browser_screenshots",
 )
 
+# Single curated source of truth for "what counts as a deliverable file" across
+# every MEDIA: extraction site (extract_media, extract_local_files,
+# stream_consumer display-stripping, run.py tool-JSON dedup). Manually curated
+# as the union of the historical extract_media list + _LOCAL_MEDIA_EXTS,
+# intentionally EXCLUDING source/config extensions (.py .sh .ts .toml .ini .cfg
+# .log) — those live in SUPPORTED_DOCUMENT_TYPES for *inbound* MIME routing
+# only; auto-delivering them outbound is a regression (see GRILME Q1).
+_DELIVERY_MEDIA_EXTS = frozenset({
+    # Images (embed inline where supported)
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",
+    # Video (embed inline where supported)
+    ".mp4", ".mov", ".avi", ".mkv", ".webm",
+    # Audio (voice/audio attachment)
+    ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac",
+    # Documents
+    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md",
+    # Spreadsheets / data
+    ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
+    # Presentations
+    ".pptx", ".ppt", ".odp", ".key",
+    # Archives
+    ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar",
+    # Web / rendered output
+    ".html", ".htm",
+    # Mobile packages
+    ".apk", ".ipa",
+    # Ebook
+    ".epub",
+})
+
+
+def _media_ext_alternation() -> str:
+    """Regex alternation of delivery extensions, longest-first (so 'html'
+    matches before 'htm', 'jpeg' before 'jpg'), each regex-escaped."""
+    return "|".join(
+        re.escape(ext.lstrip(".")) for ext in sorted(_DELIVERY_MEDIA_EXTS, key=len, reverse=True)
+    )
+
+
+_MEDIA_EXT_ALT = _media_ext_alternation()
+
+# Explicit MEDIA: tags in model/tool RESPONSE TEXT. Shared by extract_media()
+# and stream_consumer._clean_for_display(). `MEDIA:` is case-SENSITIVE (the
+# documented tag), but the extension match is case-insensitive via (?i:...)
+# so `.PNG`/`.png` both match. Optional **bold** wrappers and surrounding
+# quotes/backticks are consumed so they never leak into cleaned user text.
+_MEDIA_TAG_RE = re.compile(
+    r'''(?P<wrap>\*{0,2})[`"']?MEDIA:\s*'''
+    r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
+    r'''(?:~/|/)\S*?(?:[^\S\n]+\S+?)*?\.(?i:''' + _MEDIA_EXT_ALT + r''')'''
+    r'''(?=[\s`"',;:)\]}*]|$))[`"']?(?P=wrap)'''
+)
+
+# Bare local paths (no MEDIA: prefix) in response text. IGNORECASE is safe
+# here — there is no case-sensitive literal to protect.
+_LOCAL_PATH_RE = re.compile(
+    r'(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:' + _MEDIA_EXT_ALT + r')\b',
+    re.IGNORECASE,
+)
+
+# MEDIA: tags inside raw tool/function JSON content (run.py history-dedup +
+# salvage re-injection). Narrower grammar than _MEDIA_TAG_RE (no quoted
+# branches, no spaced paths — JSON paths are single tokens). Defined here so
+# it is built from the same frozenset and lives as one module-level object.
+_TOOL_MEDIA_RE = re.compile(
+    r'MEDIA:((?:/|~/)\S+\.(?:' + _MEDIA_EXT_ALT + r'))\b',
+    re.IGNORECASE,
+)
+
 # Default recency window for trusting freshly-produced files (seconds).
 # The agent's actual work generally completes well inside 10 minutes; legitimate
 # build artifacts (PDFs from pandoc, plots from matplotlib, etc.) almost always
