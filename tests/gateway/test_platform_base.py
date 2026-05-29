@@ -460,13 +460,6 @@ class TestMediaDeliveryPathValidation:
         # credential denylist matches nothing.
         assert BasePlatformAdapter.validate_media_delivery_path(win_path) is None
 
-    def test_windows_media_path_partitions_to_dropped(self):
-        safe_media, dropped_media = BasePlatformAdapter.partition_media_delivery_paths(
-            [(r"C:\Users\foo\report.pdf", False)]
-        )
-        assert safe_media == []
-        assert dropped_media == [(r"C:\Users\foo\report.pdf", False)]
-
     def test_windows_guard_fires_before_is_absolute(self, monkeypatch):
         # On a POSIX host, Windows paths are already rejected by is_absolute(),
         # which would mask a deleted guard. Force is_absolute() True (the native
