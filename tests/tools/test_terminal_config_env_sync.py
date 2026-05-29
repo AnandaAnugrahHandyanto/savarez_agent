@@ -613,3 +613,93 @@ class TestDaytonaImageBridgeStillWorks:
         gw_keys = _gateway_env_map_keys()
         assert "daytona_image" in cli_keys
         assert "daytona_image" in gw_keys
+
+
+def test_gateway_runtime_reload_reapplies_terminal_config_authority(monkeypatch, tmp_path):
+    """Gateway per-turn dotenv reload must not let stale .env Daytona values win."""
+    pytest.importorskip("httpx", reason="gateway/run.py requires httpx")
+    import gateway.run as gateway_run
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text(
+        "HERMES_MAX_ITERATIONS=5\n"
+        "TERMINAL_DAYTONA_SNAPSHOT=stale-env-snapshot\n"
+        "TERMINAL_DAYTONA_SYNC_CWD=false\n",
+        encoding="utf-8",
+    )
+    (hermes_home / "config.yaml").write_text(
+        "agent:\n"
+        "  max_turns: 42\n"
+        "terminal:\n"
+        "  backend: daytona\n"
+        "  daytona_snapshot: config-snapshot\n"
+        "  daytona_sync_cwd: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home, raising=False)
+    monkeypatch.setenv("HERMES_MAX_ITERATIONS", "old")
+    monkeypatch.setenv("TERMINAL_DAYTONA_SNAPSHOT", "old")
+    monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD", "old")
+
+    gateway_run._reload_runtime_env_preserving_config_authority()
+
+    assert os.environ["HERMES_MAX_ITERATIONS"] == "42"
+    assert os.environ["TERMINAL_DAYTONA_SNAPSHOT"] == "config-snapshot"
+    assert os.environ["TERMINAL_DAYTONA_SYNC_CWD"] == "True"
+
+
+def test_non_daytona_backend_ignores_malformed_daytona_json_env(monkeypatch):
+    """Malformed Daytona-only JSON must not break local/docker/etc backends."""
+    from tools.terminal_tool import _get_env_config
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_DAYTONA_LABELS", "{not-json")
+    monkeypatch.setenv("TERMINAL_DAYTONA_ENV_VARS", "[not-json")
+    monkeypatch.setenv("TERMINAL_DAYTONA_VOLUME_MOUNTS", "{not-json")
+
+    config = _get_env_config()
+
+    assert config["env_type"] == "local"
+    assert config["daytona_labels"] == {}
+    assert config["daytona_env_vars"] == {}
+    assert config["daytona_volume_mounts"] == []
+
+
+def test_daytona_json_parse_errors_redact_raw_secret_values(monkeypatch):
+    """Invalid JSON errors should identify the key without echoing secret text."""
+    from tools.terminal_tool import _get_env_config
+
+    monkeypatch.setenv("TERMINAL_ENV", "daytona")
+    monkeypatch.setenv("TERMINAL_DAYTONA_ENV_VARS", '{"TOKEN": "super-secret-token"')
+
+    with pytest.raises(ValueError) as excinfo:
+        _get_env_config()
+
+    message = str(excinfo.value)
+    assert "TERMINAL_DAYTONA_ENV_VARS" in message
+    assert "super-secret-token" not in message
+
+
+def test_daytona_host_cwd_requires_explicit_sync_source(monkeypatch, tmp_path):
+    """Daytona sanitizes TERMINAL_CWD and only preserves explicit sync source."""
+    from tools.terminal_tool import _get_env_config
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("TERMINAL_ENV", "daytona")
+    monkeypatch.setenv("TERMINAL_CWD", str(project))
+    monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD", "true")
+    monkeypatch.delenv("TERMINAL_DAYTONA_SYNC_CWD_SOURCE", raising=False)
+
+    config = _get_env_config()
+
+    assert config["cwd"] == "/root"
+    assert config["host_cwd"] is None
+
+    monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD_SOURCE", str(project))
+    config = _get_env_config()
+
+    assert config["cwd"] == "/root"
+    assert config["host_cwd"] == str(project.resolve())

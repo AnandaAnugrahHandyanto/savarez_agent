@@ -785,7 +785,12 @@ DEFAULT_CONFIG = {
         # because uploading host directories to cloud sandboxes has security and
         # cost implications — the user must consciously enable this.
         "daytona_sync_cwd": False,
-        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
+        # Explicit host-side source for Daytona CWD sync. TERMINAL_CWD is the
+        # sandbox command cwd and may default to $HOME in gateway mode; it is
+        # intentionally not used as an implicit upload source.
+        "daytona_sync_cwd_source": "",
+        "vercel_runtime": "node24",
+        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -5608,6 +5613,8 @@ def set_config_value(key: str, value: str):
         "terminal.daytona_volume_mounts": "TERMINAL_DAYTONA_VOLUME_MOUNTS",
         "terminal.daytona_gpu": "TERMINAL_DAYTONA_GPU",
         "terminal.daytona_sync_cwd": "TERMINAL_DAYTONA_SYNC_CWD",
+        "terminal.daytona_sync_cwd_source": "TERMINAL_DAYTONA_SYNC_CWD_SOURCE",
+        "terminal.vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "terminal.docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",

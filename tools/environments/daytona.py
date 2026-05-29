@@ -458,21 +458,13 @@ class DaytonaEnvironment(BaseEnvironment):
     # the user must manage their own file transfer.
     _CWD_MAX_BYTES: int = 100 * 1024 * 1024  # 100 MiB
 
-    @classmethod
-    def _is_cwd_excluded_file(cls, fname: str) -> bool:
-        """Return True when a CWD-sync basename must never be uploaded."""
-        lower_fname = fname.lower()
-        if lower_fname.startswith(".env"):
-            return True
-        if lower_fname in cls._CWD_EXCLUDE_FILES:
-            return True
-        if (
-            lower_fname.startswith("secret")
-            or ".secret." in lower_fname
-            or lower_fname.endswith((".secret", ".secrets", ".secrets.yaml", ".secrets.yml"))
-        ):
-            return True
-        return lower_fname.endswith(cls._CWD_EXCLUDE_EXTENSIONS)
+    def _is_excluded_cwd_path(self, path: str, root: str, *, is_dir: bool) -> bool:
+        """Return True if a CWD-sync path is excluded by basename or relative path."""
+        rel = os.path.relpath(path, root).replace(os.sep, "/").lower()
+        name = os.path.basename(path).lower()
+        patterns = self._CWD_EXCLUDE_DIRS if is_dir else self._CWD_EXCLUDE_FILES
+        lowered_patterns = {p.lower() for p in patterns}
+        return rel in lowered_patterns or name in lowered_patterns
 
     def _sync_cwd_to_sandbox(self) -> None:
         """Sync the host CWD into /workspace in the Daytona sandbox.
@@ -484,25 +476,27 @@ class DaytonaEnvironment(BaseEnvironment):
         """
         from hermes_constants import get_hermes_home
 
-        # Determine the source directory from terminal_tool's explicit
-        # host_cwd capture. TERMINAL_CWD is the remote/sandbox cwd and must not
-        # be reused as an upload source (gateway config may expand "~" to the
-        # operator's home directory).
-        if hasattr(self, "_host_cwd"):
-            host_cwd = self._host_cwd
-        else:
-            # Unit tests construct bare instances with __new__ to exercise the
-            # sync routine without SDK side effects. Production __init__ always
-            # defines _host_cwd, so this fallback does not affect real runs.
-            host_cwd = os.environ.get("TERMINAL_CWD")
+        # Determine the source directory. The terminal tool wires
+        # TERMINAL_DAYTONA_SYNC_CWD_SOURCE into self._host_cwd; direct
+        # construction can also set self._host_cwd. Do not fall back to
+        # TERMINAL_CWD or os.getcwd(): gateway/run.py may default TERMINAL_CWD
+        # to the operator home, and that must not trigger a home upload.
+        host_cwd = getattr(self, "_host_cwd", None) or os.environ.get("TERMINAL_DAYTONA_SYNC_CWD_SOURCE")
+        if host_cwd:
+            host_cwd = os.path.abspath(os.path.expanduser(host_cwd))
         if not host_cwd or not os.path.isdir(host_cwd):
-            logger.warning("Daytona sync_cwd: no valid host CWD (%r) — skipping sync", host_cwd)
+            logger.warning("Daytona sync_cwd: no explicit valid host CWD source (%r) — skipping sync", host_cwd)
             return
 
-        # Never sync the .hermes home directory itself — that's already
-        # handled by FileSyncManager above.
+        # Never sync the operator home or .hermes home directory. .hermes is
+        # already handled by FileSyncManager above; the home guard prevents a
+        # gateway-expanded TERMINAL_CWD=$HOME from becoming an upload source.
         hermes_home = str(get_hermes_home().resolve())
         resolved_host_cwd = os.path.realpath(host_cwd)
+        operator_home = os.path.realpath(str(Path.home()))
+        if resolved_host_cwd == operator_home:
+            logger.info("Daytona sync_cwd: host CWD is operator home — skipping")
+            return
         if resolved_host_cwd == os.path.realpath(hermes_home):
             logger.info("Daytona sync_cwd: host CWD is .hermes home — skipping (already synced)")
             return
@@ -525,7 +519,10 @@ class DaytonaEnvironment(BaseEnvironment):
 
             for fname in filenames:
                 # Skip excluded file patterns
-                if self._is_cwd_excluded_file(fname):
+                if self._is_excluded_cwd_path(os.path.join(dirpath, fname), host_cwd, is_dir=False):
+                    continue
+                # Skip files with excluded extensions (case-insensitive)
+                if any(fname.lower().endswith(ext) for ext in (".pem", ".key", ".p12", ".pfx")):
                     continue
 
                 local_path = os.path.join(dirpath, fname)

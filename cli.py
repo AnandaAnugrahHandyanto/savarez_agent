@@ -579,6 +579,8 @@ def load_cli_config() -> Dict[str, Any]:
         "daytona_volume_mounts": "TERMINAL_DAYTONA_VOLUME_MOUNTS",
         "daytona_gpu": "TERMINAL_DAYTONA_GPU",
         "daytona_sync_cwd": "TERMINAL_DAYTONA_SYNC_CWD",
+        "daytona_sync_cwd_source": "TERMINAL_DAYTONA_SYNC_CWD_SOURCE",
+        "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",

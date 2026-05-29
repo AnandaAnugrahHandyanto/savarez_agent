@@ -125,6 +125,23 @@ class TestDaytonaSyncCwdBridgeConsistency:
             "TERMINAL_DAYTONA_SYNC_CWD not read by terminal_tool._get_env_config()"
         )
 
+    def test_sync_source_bridged_and_consumed(self):
+        """Explicit Daytona sync source must be bridged and consumed."""
+        pytest.importorskip("requests", reason="terminal_tool requires requests")
+        from tests.tools.test_terminal_config_env_sync import (
+            _cli_env_map_keys,
+            _gateway_env_map_keys,
+            _save_config_env_sync_keys,
+            _terminal_tool_env_var_names,
+            skip_if_no_prompt_toolkit,
+        )
+
+        skip_if_no_prompt_toolkit()
+        assert "daytona_sync_cwd_source" in _save_config_env_sync_keys()
+        assert "daytona_sync_cwd_source" in _cli_env_map_keys()
+        assert "daytona_sync_cwd_source" in _gateway_env_map_keys()
+        assert "TERMINAL_DAYTONA_SYNC_CWD_SOURCE" in _terminal_tool_env_var_names()
+
     def test_terminal_tool_passes_daytona_expansion_config_to_create_environment(self, monkeypatch):
         """Real terminal_tool creation path must forward Daytona keys into container_config."""
         import json
@@ -191,6 +208,133 @@ class TestDaytonaSyncCwdBridgeConsistency:
         assert captured["daytona_gpu"] == 1
         assert captured["daytona_sync_cwd"] is True
         assert captured["host_cwd_arg"]
+
+    def test_file_tools_first_creator_forwards_daytona_expansion_config(self, monkeypatch):
+        """file_tools must forward full Daytona config when it creates the sandbox first."""
+        from tools import file_tools
+        from tools import terminal_tool as terminal_mod
+
+        captured = {}
+
+        class FakeEnv:
+            def execute(self, command, **kwargs):
+                return {"output": "", "returncode": 0}
+
+        def fake_create_environment(*args, **kwargs):
+            captured.update(kwargs.get("container_config") or {})
+            return FakeEnv()
+
+        with terminal_mod._env_lock:
+            terminal_mod._active_environments.clear()
+            terminal_mod._last_activity.clear()
+        file_tools.clear_file_ops_cache()
+
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
+        monkeypatch.setenv("TERMINAL_DAYTONA_CREATE_MODE", "snapshot")
+        monkeypatch.setenv("TERMINAL_DAYTONA_SNAPSHOT", "snap-file-tools")
+        monkeypatch.setenv("TERMINAL_DAYTONA_LANGUAGE", "python")
+        monkeypatch.setenv("TERMINAL_DAYTONA_NAME_PREFIX", "files")
+        monkeypatch.setenv("TERMINAL_DAYTONA_NAME_SCOPE", "profile")
+        monkeypatch.setenv("TERMINAL_DAYTONA_LABELS", '{"creator":"file_tools"}')
+        monkeypatch.setenv("TERMINAL_DAYTONA_AUTO_STOP_INTERVAL", "31")
+        monkeypatch.setenv("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL", "61")
+        monkeypatch.setenv("TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL", "121")
+        monkeypatch.setenv("TERMINAL_DAYTONA_EPHEMERAL", "true")
+        monkeypatch.setenv("TERMINAL_DAYTONA_ENV_VARS", '{"APP_ENV":"files"}')
+        monkeypatch.setenv("TERMINAL_DAYTONA_NETWORK_BLOCK_ALL", "true")
+        monkeypatch.setenv("TERMINAL_DAYTONA_NETWORK_ALLOW_LIST", "10.1.0.0/16")
+        monkeypatch.setenv("TERMINAL_DAYTONA_VOLUME_MOUNTS", '[{"containerPath":"/data","sourcePath":"/mnt/data"}]')
+        monkeypatch.setenv("TERMINAL_DAYTONA_GPU", "2")
+        monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD", "true")
+
+        monkeypatch.setattr(terminal_mod, "_create_environment", fake_create_environment)
+
+        try:
+            file_tools._get_file_ops("daytona-file-tools-parity")
+        finally:
+            with terminal_mod._env_lock:
+                terminal_mod._active_environments.clear()
+                terminal_mod._last_activity.clear()
+            file_tools.clear_file_ops_cache()
+
+        assert captured["daytona_create_mode"] == "snapshot"
+        assert captured["daytona_snapshot"] == "snap-file-tools"
+        assert captured["daytona_language"] == "python"
+        assert captured["daytona_name_prefix"] == "files"
+        assert captured["daytona_name_scope"] == "profile"
+        assert captured["daytona_labels"] == {"creator": "file_tools"}
+        assert captured["daytona_auto_stop_interval"] == 31
+        assert captured["daytona_auto_archive_interval"] == 61
+        assert captured["daytona_auto_delete_interval"] == 121
+        assert captured["daytona_ephemeral"] is True
+        assert captured["daytona_env_vars"] == {"APP_ENV": "files"}
+        assert captured["daytona_network_block_all"] is True
+        assert captured["daytona_network_allow_list"] == "10.1.0.0/16"
+        assert captured["daytona_volume_mounts"] == [{"containerPath": "/data", "sourcePath": "/mnt/data"}]
+        assert captured["daytona_gpu"] == 2
+        assert captured["daytona_sync_cwd"] is True
+
+    def test_execute_code_first_creator_forwards_daytona_expansion_config(self, monkeypatch):
+        """execute_code must forward full Daytona config when it creates the sandbox first."""
+        from tools import code_execution_tool
+        from tools import terminal_tool as terminal_mod
+
+        captured = {}
+
+        class FakeEnv:
+            pass
+
+        def fake_create_environment(*args, **kwargs):
+            captured.update(kwargs.get("container_config") or {})
+            return FakeEnv()
+
+        with terminal_mod._env_lock:
+            terminal_mod._active_environments.clear()
+            terminal_mod._last_activity.clear()
+
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
+        monkeypatch.setenv("TERMINAL_DAYTONA_CREATE_MODE", "snapshot")
+        monkeypatch.setenv("TERMINAL_DAYTONA_SNAPSHOT", "snap-execute-code")
+        monkeypatch.setenv("TERMINAL_DAYTONA_LANGUAGE", "python")
+        monkeypatch.setenv("TERMINAL_DAYTONA_NAME_PREFIX", "exec")
+        monkeypatch.setenv("TERMINAL_DAYTONA_NAME_SCOPE", "profile")
+        monkeypatch.setenv("TERMINAL_DAYTONA_LABELS", '{"creator":"execute_code"}')
+        monkeypatch.setenv("TERMINAL_DAYTONA_AUTO_STOP_INTERVAL", "32")
+        monkeypatch.setenv("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL", "62")
+        monkeypatch.setenv("TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL", "122")
+        monkeypatch.setenv("TERMINAL_DAYTONA_EPHEMERAL", "true")
+        monkeypatch.setenv("TERMINAL_DAYTONA_ENV_VARS", '{"APP_ENV":"exec"}')
+        monkeypatch.setenv("TERMINAL_DAYTONA_NETWORK_BLOCK_ALL", "true")
+        monkeypatch.setenv("TERMINAL_DAYTONA_NETWORK_ALLOW_LIST", "10.2.0.0/16")
+        monkeypatch.setenv("TERMINAL_DAYTONA_VOLUME_MOUNTS", '[{"containerPath":"/cache","sourcePath":"/mnt/cache"}]')
+        monkeypatch.setenv("TERMINAL_DAYTONA_GPU", "3")
+        monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD", "true")
+
+        monkeypatch.setattr(terminal_mod, "_create_environment", fake_create_environment)
+
+        try:
+            code_execution_tool._get_or_create_env("daytona-exec-parity")
+        finally:
+            with terminal_mod._env_lock:
+                terminal_mod._active_environments.clear()
+                terminal_mod._last_activity.clear()
+
+        assert captured["daytona_create_mode"] == "snapshot"
+        assert captured["daytona_snapshot"] == "snap-execute-code"
+        assert captured["daytona_language"] == "python"
+        assert captured["daytona_name_prefix"] == "exec"
+        assert captured["daytona_name_scope"] == "profile"
+        assert captured["daytona_labels"] == {"creator": "execute_code"}
+        assert captured["daytona_auto_stop_interval"] == 32
+        assert captured["daytona_auto_archive_interval"] == 62
+        assert captured["daytona_auto_delete_interval"] == 122
+        assert captured["daytona_ephemeral"] is True
+        assert captured["daytona_env_vars"] == {"APP_ENV": "exec"}
+        assert captured["daytona_network_block_all"] is True
+        assert captured["daytona_network_allow_list"] == "10.2.0.0/16"
+        assert captured["daytona_volume_mounts"] == [{"containerPath": "/cache", "sourcePath": "/mnt/cache"}]
+        assert captured["daytona_gpu"] == 3
+        assert captured["daytona_sync_cwd"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +584,7 @@ class TestDaytonaSyncCwdOverflowAbortsEntireUpload:
         # Build a bare-bones DaytonaEnvironment with __new__ to avoid __init__
         env = DaytonaEnvironment.__new__(DaytonaEnvironment)
         env._sync_cwd = True
+        env._host_cwd = str(tmp_path)
         env._CWD_MAX_BYTES = 100  # 100 bytes — well under the 4 KiB total
         env._sandbox = MagicMock()
 
@@ -468,6 +613,7 @@ class TestDaytonaSyncCwdOverflowAbortsEntireUpload:
 
         env = DaytonaEnvironment.__new__(DaytonaEnvironment)
         env._sync_cwd = True
+        env._host_cwd = str(tmp_path)
         env._CWD_MAX_BYTES = 100 * 1024 * 1024  # 100 MiB — well over
         env._sandbox = MagicMock()
 
@@ -495,6 +641,7 @@ class TestDaytonaSyncCwdOverflowAbortsEntireUpload:
 
         env = DaytonaEnvironment.__new__(DaytonaEnvironment)
         env._sync_cwd = True
+        env._host_cwd = str(tmp_path)
         env._CWD_MAX_BYTES = 100  # 100 bytes — well under total
         env._sandbox = MagicMock()
 
@@ -557,6 +704,7 @@ class TestDaytonaSyncCwdExclusionBehavior:
 
         env = DaytonaEnvironment.__new__(DaytonaEnvironment)
         env._sync_cwd = True
+        env._host_cwd = str(tmp_path)
         env._CWD_MAX_BYTES = 100 * 1024 * 1024  # 100 MiB — plenty
         env._sandbox = MagicMock()
 
@@ -596,6 +744,7 @@ class TestDaytonaSyncCwdExclusionBehavior:
 
         env = DaytonaEnvironment.__new__(DaytonaEnvironment)
         env._sync_cwd = True
+        env._host_cwd = str(tmp_path)
         env._CWD_MAX_BYTES = 100 * 1024 * 1024
         env._sandbox = MagicMock()
 
@@ -620,6 +769,118 @@ class TestDaytonaSyncCwdExclusionBehavior:
         assert remote_paths == expected, (
             f"Expected {expected}, got: {remote_paths}"
         )
+
+    def test_host_cwd_attribute_is_preferred_over_terminal_cwd_and_process_cwd(self, tmp_path):
+        """Explicit host_cwd must control the upload source for Daytona sync_cwd."""
+        from tools.environments.daytona import DaytonaEnvironment
+
+        source = tmp_path / "source"
+        env_var_dir = tmp_path / "env-var"
+        source.mkdir()
+        env_var_dir.mkdir()
+        (source / "README.md").write_text("source")
+        (env_var_dir / "WRONG.md").write_text("wrong")
+
+        env = DaytonaEnvironment.__new__(DaytonaEnvironment)
+        env._sync_cwd = True
+        env._host_cwd = str(source)
+        env._CWD_MAX_BYTES = 100 * 1024 * 1024
+        env._sandbox = MagicMock()
+        uploaded_files = []
+        def fake_bulk_upload(files):
+            uploaded_files.extend(files)
+        env._daytona_bulk_upload = fake_bulk_upload
+
+        with patch.dict(os.environ, {"TERMINAL_CWD": str(env_var_dir)}), \
+             patch("hermes_constants.get_hermes_home", return_value=Path("/fake/hermes/home")):
+            env._sync_cwd_to_sandbox()
+
+        assert [remote for _, remote in uploaded_files] == ["/workspace/README.md"]
+
+    def test_sensitive_credential_paths_not_uploaded(self, tmp_path):
+        """CWD sync must not upload common credential stores to cloud sandboxes."""
+        from tools.environments.daytona import DaytonaEnvironment
+
+        (tmp_path / "README.md").write_text("allowed")
+        for dirname in (".ssh", ".aws", ".docker", ".kube", Path(".config") / "gcloud"):
+            path = tmp_path / dirname
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "secret").write_text("do not upload")
+        for filename in (".npmrc", ".pypirc", ".netrc", ".git-credentials", "credentials.json", "id_rsa", "id_ed25519"):
+            (tmp_path / filename).write_text("do not upload")
+
+        env = DaytonaEnvironment.__new__(DaytonaEnvironment)
+        env._sync_cwd = True
+        env._host_cwd = str(tmp_path)
+        env._CWD_MAX_BYTES = 100 * 1024 * 1024
+        env._sandbox = MagicMock()
+        uploaded_files = []
+        def fake_bulk_upload(files):
+            uploaded_files.extend(files)
+        env._daytona_bulk_upload = fake_bulk_upload
+
+        with patch.dict(os.environ, {}, clear=False), \
+             patch("hermes_constants.get_hermes_home", return_value=Path("/fake/hermes/home")):
+            env._sync_cwd_to_sandbox()
+
+        assert [remote for _, remote in uploaded_files] == ["/workspace/README.md"]
+
+    def test_uppercase_secret_paths_not_uploaded(self, tmp_path):
+        """Secret basename/suffix exclusions must be case-insensitive."""
+        from tools.environments.daytona import DaytonaEnvironment
+
+        (tmp_path / "README.md").write_text("allowed")
+        for filename in (".ENV", ".NPMRC", "SERVER.PEM", "PROD.KEY"):
+            (tmp_path / filename).write_text("do not upload")
+
+        env = DaytonaEnvironment.__new__(DaytonaEnvironment)
+        env._sync_cwd = True
+        env._host_cwd = str(tmp_path)
+        env._CWD_MAX_BYTES = 100 * 1024 * 1024
+        env._sandbox = MagicMock()
+        uploaded_files = []
+
+        def fake_bulk_upload(files):
+            uploaded_files.extend(files)
+
+        env._daytona_bulk_upload = fake_bulk_upload
+
+        with patch.dict(os.environ, {}, clear=False), \
+             patch("hermes_constants.get_hermes_home", return_value=Path("/fake/hermes/home")):
+            env._sync_cwd_to_sandbox()
+
+        assert [remote for _, remote in uploaded_files] == ["/workspace/README.md"]
+
+    def test_terminal_cwd_home_is_not_used_as_implicit_sync_source(self, monkeypatch, tmp_path):
+        """Gateway-expanded home TERMINAL_CWD must not become Daytona sync source."""
+        from tools import terminal_tool as terminal_mod
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
+        monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD", "true")
+        monkeypatch.setenv("TERMINAL_CWD", str(home))
+        monkeypatch.delenv("TERMINAL_DAYTONA_SYNC_CWD_SOURCE", raising=False)
+
+        with patch("pathlib.Path.home", return_value=home):
+            config = terminal_mod._get_env_config()
+
+        assert config["host_cwd"] is None
+
+    def test_explicit_sync_source_controls_upload_source(self, monkeypatch, tmp_path):
+        """TERMINAL_DAYTONA_SYNC_CWD_SOURCE is the explicit host upload source."""
+        from tools import terminal_tool as terminal_mod
+
+        source = tmp_path / "project"
+        source.mkdir()
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
+        monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD", "true")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "home"))
+        monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD_SOURCE", str(source))
+
+        config = terminal_mod._get_env_config()
+
+        assert config["host_cwd"] == str(source.resolve())
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +912,7 @@ class TestDaytonaSyncCwdSymlinkContainment:
 
         env = DaytonaEnvironment.__new__(DaytonaEnvironment)
         env._sync_cwd = True
+        env._host_cwd = str(project)
         env._CWD_MAX_BYTES = 100 * 1024 * 1024
         env._sandbox = MagicMock()
 
@@ -693,6 +955,7 @@ class TestDaytonaSyncCwdSymlinkContainment:
 
         env = DaytonaEnvironment.__new__(DaytonaEnvironment)
         env._sync_cwd = True
+        env._host_cwd = str(project)
         env._CWD_MAX_BYTES = 100 * 1024 * 1024
         env._sandbox = MagicMock()
 
