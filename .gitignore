@@ -93,4 +93,3 @@ docs/superpowers/*
 # logs, and per-session caches are never artifacts of the codebase.
 .hermes/
 
-.plan_improvement/
