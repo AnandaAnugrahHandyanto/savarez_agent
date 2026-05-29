@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8650
-DEFAULT_FRAME_INTERVAL = 0.5  # seconds between pane capture broadcasts
+DEFAULT_FRAME_INTERVAL = 0.15  # seconds between pane capture broadcasts
 PANES_PER_SESSION = 4
 
 # Mapping from JS key names to tmux send-keys arguments.
@@ -319,6 +319,18 @@ class TmuxSessionManager:
         # Unrecognized key — ignore
         logger.debug("[webtmux] Ignoring unrecognized key: %r", key)
         return False
+
+    async def send_text(self, sid: str, pane_index: int, text: str) -> bool:
+        """Send a literal string to a tmux pane in one call (batch input)."""
+        info = self._sessions.get(sid)
+        if info is None:
+            return False
+        pane_ids = info["pane_ids"]
+        if pane_index >= len(pane_ids):
+            return False
+        if text:
+            self._tmux_cmd(["send-keys", "-l", "-t", pane_ids[pane_index], text])
+        return True
 
     async def resize_pane(self, sid: str, pane_index: int, width: int, height: int) -> None:
         info = self._sessions.get(sid)
@@ -733,6 +745,13 @@ class WebTmuxAdapter(BasePlatformAdapter):
             ctrl = payload.get("ctrl", False)
             if key:
                 await self._tmux.send_keys(sid, pane_index, key, ctrl=ctrl)
+
+        elif msg_type == "keys":
+            # Batch: send literal text string in one tmux call
+            pane_index = int(payload.get("pane", 0))
+            text = payload.get("text", "")
+            if text:
+                await self._tmux.send_text(sid, pane_index, text)
 
         elif msg_type == "resize":
             pane_index = int(payload.get("pane", 0))

@@ -123,6 +123,25 @@
   }
   .pane-content { display: block; }
 
+  /* ---- Optimistic input echo ---- */
+  .input-echo {
+    position: absolute;
+    bottom: 4px; left: 6px; right: 6px;
+    background: rgba(88,166,255,0.15);
+    color: var(--accent);
+    font-size: inherit;
+    line-height: 1.3;
+    padding: 2px 6px;
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 2;
+    white-space: pre;
+    overflow: hidden;
+    max-height: 1.6em;
+    display: none;
+  }
+  .pane.active-pane .input-echo.visible { display: block; }
+
   /* ---- Fullscreen pane ---- */
   .pane.fullscreen {
     position: absolute;
@@ -239,21 +258,25 @@
         <span class="pane-label">hermes</span>
         <button class="fullscreen-exit">X</button>
         <span class="pane-content"></span>
+        <span class="input-echo"></span>
       </div>
       <div class="pane" data-pane="1">
         <span class="pane-label">term</span>
         <button class="fullscreen-exit">X</button>
         <span class="pane-content"></span>
+        <span class="input-echo"></span>
       </div>
       <div class="pane" data-pane="2">
         <span class="pane-label">term</span>
         <button class="fullscreen-exit">X</button>
         <span class="pane-content"></span>
+        <span class="input-echo"></span>
       </div>
       <div class="pane" data-pane="3">
         <span class="pane-label">term</span>
         <button class="fullscreen-exit">X</button>
         <span class="pane-content"></span>
+        <span class="input-echo"></span>
       </div>
     </div>
   </div>
@@ -478,17 +501,76 @@
     return result;
   }
 
-  // ---- Message handling ----
+  // ---- Optimistic input echo state ----
+  var inputBuffer = '';      // chars typed since last snapshot
+  var inputFlushTimer = null;
+  var INPUT_FLUSH_MS = 80;   // batch chars for 80ms before sending
+
+  function showInputEcho(text) {
+    var el = document.querySelector('.pane[data-pane="' + activePane + '"] .input-echo');
+    if (!el) return;
+    if (text) {
+      el.textContent = text;
+      el.classList.add('visible');
+    } else {
+      el.textContent = '';
+      el.classList.remove('visible');
+    }
+  }
+
+  function flushInputBuffer() {
+    inputFlushTimer = null;
+    if (!inputBuffer || !currentSid) return;
+    // Send as a single batch instead of one WS message per char
+    sendWs({type: "keys", pane: activePane, text: inputBuffer});
+    inputBuffer = '';
+  }
+
+  function queueChar(ch) {
+    inputBuffer += ch;
+    showInputEcho(inputBuffer);
+    // Debounce: wait for more chars before sending
+    if (inputFlushTimer) clearTimeout(inputFlushTimer);
+    inputFlushTimer = setTimeout(flushInputBuffer, INPUT_FLUSH_MS);
+  }
+
+  function sendSpecialKey(key, ctrl) {
+    // Flush any pending literal chars first
+    if (inputBuffer) flushInputBuffer();
+    if (ctrl) {
+      sendWs({type: "key", pane: activePane, key: key, ctrl: true});
+    } else {
+      sendWs({type: "key", pane: activePane, key: key});
+    }
+    // Clear echo on Enter (command submitted)
+    if (key === 'Enter') showInputEcho('');
+  }
+
+  // ---- Message handling (debounced rendering) ----
+  var pendingSnapshot = null;
+  var renderRAF = null;
+
+  function renderSnapshot() {
+    renderRAF = null;
+    var msg = pendingSnapshot;
+    if (!msg) return;
+    pendingSnapshot = null;
+    for (var i = 0; i < msg.panes.length && i < 4; i++) {
+      var el = document.querySelector('.pane[data-pane="' + i + '"] .pane-content');
+      if (el) el.innerHTML = ansiToHtml(msg.panes[i]);
+    }
+    // Auto-scroll each pane to bottom
+    paneEls.forEach(function(p) { p.scrollTop = p.scrollHeight; });
+    // Clear input echo once tmux reflects the input
+    if (!inputBuffer) showInputEcho('');
+  }
+
   function handleMsg(msg) {
     if (msg.type === "pane_snapshot" && msg.sid === currentSid) {
-      for (var i = 0; i < msg.panes.length && i < 4; i++) {
-        var el = document.querySelector('.pane[data-pane="' + i + '"] .pane-content');
-        if (el) el.innerHTML = ansiToHtml(msg.panes[i]);
-      }
-      // Auto-scroll each pane to bottom
-      paneEls.forEach(function(p) { p.scrollTop = p.scrollHeight; });
+      // Debounce: only render on next animation frame
+      pendingSnapshot = msg;
+      if (!renderRAF) renderRAF = requestAnimationFrame(renderSnapshot);
     }
-    // chat_reply, chat_edit, typing — silently ignored (backward compat)
   }
 
   // ---- Tabs ----
@@ -617,7 +699,7 @@
         clickTimer = null;
         setActivePane(p);
         hiddenInput.focus();
-      }, 250);
+      }, 180);
     });
 
     // Double click: toggle fullscreen with tmux zoom
@@ -672,72 +754,54 @@
     "F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12"
   ];
 
-  hiddenInput.addEventListener("keydown", function(e) {
+  // Shared keydown handler for both hidden input and document fallback
+  function handleKeydown(e) {
     if (!currentSid) return;
 
     var key = e.key;
     var ctrl = e.ctrlKey || e.metaKey;
 
-    // Ctrl combos
+    // Ctrl combos — send immediately
     if (ctrl && key.length === 1) {
-      sendWs({type: "key", pane: activePane, key: key, ctrl: true});
+      sendSpecialKey(key, true);
       e.preventDefault();
       return;
     }
 
-    // Special keys
+    // Special keys — send immediately
     if (specials.indexOf(key) !== -1) {
-      sendWs({type: "key", pane: activePane, key: key});
+      sendSpecialKey(key, false);
       e.preventDefault();
       return;
     }
 
-    // Let printable characters go through to the input event
-  });
+    // Let printable characters go through to the input event (hidden textarea)
+    // or queue them directly (document fallback)
+    if (e.target !== hiddenInput && key.length === 1 && !e.altKey) {
+      queueChar(key);
+      e.preventDefault();
+      return;
+    }
+  }
+
+  hiddenInput.addEventListener("keydown", handleKeydown);
 
   hiddenInput.addEventListener("input", function(e) {
     if (!currentSid) return;
-
-    // Get whatever was typed and send each character
     var text = hiddenInput.value;
     if (text) {
       for (var i = 0; i < text.length; i++) {
-        sendWs({type: "key", pane: activePane, key: text[i]});
+        queueChar(text[i]);
       }
     }
-    // Clear the textarea so next input event gives us only new chars
     hiddenInput.value = "";
   });
 
-  // Also handle direct keyboard input when hidden input isn't focused
-  // (e.g., desktop users who haven't clicked a pane yet)
+  // Fallback for desktop users who haven't clicked a pane
   document.addEventListener("keydown", function(e) {
-    // If hidden input is focused, it handles everything
     if (document.activeElement === hiddenInput) return;
-    // Don't capture from other inputs (shouldn't exist, but safety)
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
-    if (!currentSid) return;
-
-    var key = e.key;
-    var ctrl = e.ctrlKey || e.metaKey;
-
-    if (ctrl && key.length === 1) {
-      sendWs({type: "key", pane: activePane, key: key, ctrl: true});
-      e.preventDefault();
-      return;
-    }
-
-    if (specials.indexOf(key) !== -1) {
-      sendWs({type: "key", pane: activePane, key: key});
-      e.preventDefault();
-      return;
-    }
-
-    if (key.length === 1 && !e.altKey) {
-      sendWs({type: "key", pane: activePane, key: key});
-      e.preventDefault();
-      return;
-    }
+    handleKeydown(e);
   });
 
   // ---- Init ----
