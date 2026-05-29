@@ -4265,9 +4265,9 @@ def schedule_task(
 # ---------------------------------------------------------------------------
 
 # After this many consecutive non-success attempts on a task/profile, the
-# dispatcher stops retrying and parks the task in ``blocked`` with a reason so
-# a human can investigate. Prevents retry storms when a worker repeatedly times
-# out, crashes, or cannot spawn.
+# dispatcher stops retrying and parks the task in non-human ``waiting`` with a
+# reason. Prevents retry storms when a worker repeatedly times out, crashes, or
+# cannot spawn without polluting the human-input ``blocked`` lane.
 DEFAULT_FAILURE_LIMIT = 2
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
@@ -5586,8 +5586,8 @@ def dispatch_once(
         # the task gets a chance to clear (rate limits often reset in
         # seconds-to-minutes); the existing consecutive_failures counter
         # still trips the non-human waiting circuit breaker after failure_limit
-        # consecutive failures, so a persistent auth error eventually
-        # blocks via the normal path rather than on first occurrence.
+        # consecutive failures, so a persistent auth error eventually parks in
+        # ``waiting`` rather than retrying forever or entering human ``blocked``.
         guard_reason = check_respawn_guard(conn, row["id"])
         if guard_reason is not None:
             result.respawn_guarded.append((row["id"], guard_reason))

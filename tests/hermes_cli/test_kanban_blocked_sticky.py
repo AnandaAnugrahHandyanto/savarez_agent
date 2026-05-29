@@ -161,8 +161,8 @@ def test_record_task_failure_breaker_uses_waiting_not_blocked(kanban_home: Path)
 def test_unblock_clears_sticky_state_and_lets_block_recover(kanban_home: Path) -> None:
     """``hermes kanban unblock`` (or the ``kanban_unblock`` tool) is
     the only legitimate way out of a worker-initiated block.  After
-    unblock, a *subsequent* circuit-breaker block on the same task
-    must again be eligible for auto-recovery."""
+    unblock, a *subsequent* non-human circuit-breaker wait on the same
+    task must again be eligible for auto-recovery."""
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="t")
         kb.claim_task(conn, tid)
@@ -205,7 +205,7 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
     3. Fresh worker exits cleanly without terminal tool call →
        ``protocol_violation`` event.
     4. ``_record_task_failure(failure_limit=1)`` → ``gave_up`` event,
-       status='blocked' again.
+       non-human waiting in current builds (legacy builds used blocked).
     5. (Bug) Dispatcher promotes again → infinite loop.
 
     With the fix in place, step 2 never happens — the test simulates
