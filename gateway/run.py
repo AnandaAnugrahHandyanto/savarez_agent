@@ -73,6 +73,16 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_CALENDAR_WAKEUP_INTERNAL_KIND = "calendar_wakeup"
+_DEFAULT_CALENDAR_WAKEUP_TOOLSETS = (
+    "web",
+    "vision",
+    "file",
+    "terminal",
+    "memory",
+    "calendar",
+    "session_search",
+)
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -1425,6 +1435,48 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 def _platform_config_key(platform: "Platform") -> str:
     """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
     return "cli" if platform == Platform.LOCAL else platform.value
+
+
+def _is_calendar_wakeup_source(source: Any) -> bool:
+    """Return True for synthetic calendar wakeup sessions."""
+    return getattr(source, "internal_kind", None) == _CALENDAR_WAKEUP_INTERNAL_KIND
+
+
+def _calendar_wakeup_toolsets_from_config(user_config: dict | None) -> set[str]:
+    """Return the required calendar wakeup toolset overlay.
+
+    ``calendar.wakeup_toolsets`` is an operator override, but the calendar
+    toolset itself is always forced so wakeups can call ``calendar_done``.
+    """
+    cfg = user_config if isinstance(user_config, dict) else {}
+    calendar_cfg = cfg.get("calendar") if isinstance(cfg.get("calendar"), dict) else {}
+    configured = calendar_cfg.get("wakeup_toolsets") if isinstance(calendar_cfg, dict) else None
+    if isinstance(configured, list):
+        toolsets = {str(item).strip() for item in configured if str(item).strip()}
+    else:
+        toolsets = set(_DEFAULT_CALENDAR_WAKEUP_TOOLSETS)
+    toolsets.add("calendar")
+    return toolsets
+
+
+def _resolve_gateway_enabled_toolsets(
+    user_config: dict | None,
+    platform_key: str,
+    source: Any,
+) -> list[str]:
+    """Resolve enabled toolsets for a gateway run, including wakeup overlays."""
+    from hermes_cli.tools_config import _get_platform_tools
+
+    cfg = user_config if isinstance(user_config, dict) else {}
+    enabled = set(_get_platform_tools(cfg, platform_key))
+    if _is_calendar_wakeup_source(source):
+        overlay = _calendar_wakeup_toolsets_from_config(cfg)
+        enabled |= overlay
+        agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+        disabled = {str(ts) for ts in (agent_cfg.get("disabled_toolsets") or [])}
+        if disabled:
+            enabled -= disabled
+    return sorted(enabled)
 
 
 def _teams_pipeline_plugin_enabled() -> bool:
@@ -4619,9 +4671,10 @@ class GatewayRunner:
                 chat_id=str(home.chat_id),
                 chat_name=home.name,
                 chat_type="dm",
-                user_id="system:calendar",
-                user_name="Calendar",
+                user_id=str(home.chat_id),
+                user_name=home.name or "Calendar",
                 thread_id=str(home.thread_id) if home.thread_id else None,
+                internal_kind=_CALENDAR_WAKEUP_INTERNAL_KIND,
             )
         return None, None
 
@@ -4664,11 +4717,12 @@ class GatewayRunner:
                 internal=True,
             )
             logger.info(
-                "Calendar wakeup %s dispatching to %s chat=%s thread=%s",
+                "Calendar wakeup %s dispatching to %s chat=%s thread=%s identity=%s",
                 event_id,
                 source.platform.value,
                 source.chat_id,
                 source.thread_id,
+                canonical_identity_key(source),
             )
             await adapter.handle_message(synth_event)
         except Exception:
@@ -12297,8 +12351,11 @@ class GatewayRunner:
 
             platform_key = _platform_config_key(source.platform)
 
-            from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = _resolve_gateway_enabled_toolsets(
+                user_config,
+                platform_key,
+                source,
+            )
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -16422,10 +16479,19 @@ class GatewayRunner:
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        enabled_toolsets = _resolve_gateway_enabled_toolsets(
+            user_config,
+            platform_key,
+            source,
+        )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        if _is_calendar_wakeup_source(source):
+            logger.info(
+                "Calendar wakeup agent context identity=%s toolsets=%s",
+                canonical_identity_key(source),
+                enabled_toolsets,
+            )
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
