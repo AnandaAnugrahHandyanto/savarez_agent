@@ -16,6 +16,7 @@ compatibility.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -24,6 +25,63 @@ from types import SimpleNamespace
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
+
+
+_PARSE_RESPONSE_NONE_GUARD_INSTALLED = False
+
+
+def _install_codex_parse_response_none_guard() -> None:
+    """Guard the OpenAI SDK streaming parser against ``response.output is None``.
+
+    The ChatGPT Codex backend (``chatgpt.com/backend-api/codex``) emits a
+    terminal ``response.completed`` event whose ``response.output`` is
+    ``null`` — the actual output items are streamed earlier via
+    ``response.output_item.done`` and not echoed in the completed frame.
+    OpenAI SDK 2.24's ``parse_response`` iterates the field unconditionally::
+
+        for output in response.output:   # TypeError: 'NoneType' object is not iterable
+
+    which aborts the whole turn with a non-retryable ``TypeError`` before
+    ``run_codex_stream`` can return. (Observed on gpt-5.5, 2026-05-27.)
+
+    Coerce a ``None`` output to ``[]`` so the SDK parses cleanly. The
+    streaming state machine has already accumulated the real items, and
+    ``run_codex_stream`` independently collects them from
+    ``response.output_item.done`` events and backfills the empty list (see
+    the ``collected_output_items`` path below) — so no output is lost and
+    usage accounting is preserved. The patch only fires when ``output`` is
+    ``None``, so it becomes a harmless no-op once the SDK guards this itself.
+    """
+    global _PARSE_RESPONSE_NONE_GUARD_INSTALLED
+    if _PARSE_RESPONSE_NONE_GUARD_INSTALLED:
+        return
+    try:
+        from openai.lib.streaming.responses import _responses as _sdk_stream_mod
+    except Exception:
+        return  # SDK layout changed — nothing to patch, fail open
+    _orig = getattr(_sdk_stream_mod, "parse_response", None)
+    if _orig is None:
+        return
+    if getattr(_orig, "_hermes_none_guard", False):
+        _PARSE_RESPONSE_NONE_GUARD_INSTALLED = True
+        return
+
+    @functools.wraps(_orig)
+    def _guarded_parse_response(*args, **kwargs):
+        resp = kwargs.get("response")
+        if resp is None and args:
+            resp = args[-1]
+        if resp is not None and getattr(resp, "output", None) is None:
+            try:
+                resp.output = []
+            except Exception:
+                pass
+        return _orig(*args, **kwargs)
+
+    _guarded_parse_response._hermes_none_guard = True
+    _sdk_stream_mod.parse_response = _guarded_parse_response
+    _PARSE_RESPONSE_NONE_GUARD_INSTALLED = True
+    logger.debug("Installed Codex parse_response None-output guard.")
 
 
 def run_codex_app_server_turn(
@@ -431,6 +489,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     """
     import httpx as _httpx
 
+    _install_codex_parse_response_none_guard()
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries = 1
     # Accumulate streamed text so callers / compat shims can read it.
