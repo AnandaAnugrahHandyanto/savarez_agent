@@ -50,7 +50,10 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("job manifest must be a JSON object")
+    return payload
 
 
 def tail(text: str, limit: int = 4000) -> str:
@@ -151,6 +154,16 @@ def claim_job(queue_root: Path, queued_path: Path) -> tuple[Path, dict[str, Any]
             "attempts": 0,
             "command": [],
             "manifest_error": f"invalid queued job manifest: {exc.msg}",
+        }
+    except ValueError:
+        job = {
+            "id": queued_path.stem,
+            "job_type": "unknown",
+            "status": "queued",
+            "public_release": False,
+            "attempts": 0,
+            "command": [],
+            "manifest_error": "queued job manifest must be a JSON object",
         }
     job["status"] = "running"
     job["claimed_at"] = now_utc()
