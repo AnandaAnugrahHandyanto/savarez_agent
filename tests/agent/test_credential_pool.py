@@ -1518,7 +1518,9 @@ def test_nous_pool_terminal_refresh_removes_device_code_entry(tmp_path, monkeypa
 
     monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _terminal_refresh_failure)
 
-    assert pool.try_refresh_current() is None
+    fallback = pool.try_refresh_current()
+    assert fallback is not None
+    assert fallback.id == "manual-key"
 
     assert [entry.id for entry in pool.entries()] == ["manual-key"]
 
@@ -1530,7 +1532,6 @@ def test_nous_pool_terminal_refresh_removes_device_code_entry(tmp_path, monkeypa
     assert nous_state["last_auth_error"]["code"] == "invalid_grant"
     assert [entry["id"] for entry in auth_payload["credential_pool"]["nous"]] == ["manual-key"]
 
-    assert pool.try_refresh_current() is None
     assert refresh_calls["count"] == 1
 
 
@@ -3755,7 +3756,9 @@ def test_xai_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
 
     monkeypatch.setattr(auth_mod, "refresh_xai_oauth_pure", _terminal_refresh_failure)
 
-    assert pool.try_refresh_current() is None
+    fallback = pool.try_refresh_current()
+    assert fallback is not None
+    assert fallback.id == "manual-key"
 
     # Only the manual entry survives.
     assert [entry.id for entry in pool.entries()] == ["manual-key"]
@@ -3772,9 +3775,6 @@ def test_xai_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     # Persisted pool must also have only the manual entry.
     assert [entry["id"] for entry in auth_payload["credential_pool"]["xai-oauth"]] == ["manual-key"]
 
-    # A second try_refresh_current must not call refresh_xai_oauth_pure again
-    # (pool is now empty of loopback entries and current is None).
-    assert pool.try_refresh_current() is None
     assert refresh_calls["count"] == 1
 
 
@@ -3903,7 +3903,9 @@ def test_codex_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
 
     monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _terminal_refresh_failure)
 
-    assert pool.try_refresh_current() is None
+    fallback = pool.try_refresh_current()
+    assert fallback is not None
+    assert fallback.id == "manual-key"
 
     # Only the manual entry survives.
     assert [entry.id for entry in pool.entries()] == ["manual-key"]
@@ -3920,8 +3922,6 @@ def test_codex_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     # Persisted pool must also have only the manual entry.
     assert [entry["id"] for entry in auth_payload["credential_pool"]["openai-codex"]] == ["manual-key"]
 
-    # A second try_refresh_current must not call refresh_codex_oauth_pure again.
-    assert pool.try_refresh_current() is None
     assert refresh_calls["count"] == 1
 
 
@@ -3948,6 +3948,12 @@ def test_codex_oauth_terminal_refresh_quarantines_stale_access_linked_alias(
             "priority": 1,
             "access_token": "stale-linked-access",
             "refresh_token": "shared-refresh",
+        }, {
+            "id": "manual-key",
+            "source": "manual:api_key",
+            "auth_type": "api_key",
+            "priority": 2,
+            "access_token": "sk-fallback",
         }],
     }
     _write_auth_store(tmp_path, auth_store)
@@ -3971,7 +3977,10 @@ def test_codex_oauth_terminal_refresh_quarantines_stale_access_linked_alias(
 
     monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _terminal_refresh_failure)
 
-    assert pool.try_refresh_current() is None
+    fallback = pool.try_refresh_current()
+    assert fallback is not None
+    assert fallback.id == "manual-key"
+    assert fallback.last_status is None
 
     auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     entries = {
@@ -3980,6 +3989,7 @@ def test_codex_oauth_terminal_refresh_quarantines_stale_access_linked_alias(
     }
     assert "shared-codex" not in entries
     assert "linked-alias" not in entries
+    assert entries["manual-key"].get("last_status") is None
 
 
 def test_codex_terminal_refresh_removes_linked_aliases_from_sibling_profiles(
@@ -4040,7 +4050,9 @@ def test_codex_terminal_refresh_removes_linked_aliases_from_sibling_profiles(
 
     monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _terminal_refresh_failure)
 
-    assert pool.try_refresh_current() is None
+    fallback = pool.try_refresh_current()
+    assert fallback is not None
+    assert fallback.id == "profile-independent"
 
     root_payload = json.loads((root_home / "auth.json").read_text())
     assert root_payload["credential_pool"]["openai-codex"] == []
@@ -4094,7 +4106,9 @@ def test_codex_manual_terminal_refresh_preserves_shared_family(tmp_path, monkeyp
 
     monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _terminal_refresh_failure)
 
-    assert pool.try_refresh_current() is None
+    fallback = pool.try_refresh_current()
+    assert fallback is not None
+    assert fallback.id == "shared-codex"
 
     auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     assert auth_payload["providers"]["openai-codex"]["tokens"] == {
@@ -4152,7 +4166,9 @@ def test_codex_superseded_manual_alias_fails_before_refresh_post(tmp_path, monke
         lambda *_args, **_kwargs: pytest.fail("superseded alias must fail before POST"),
     )
 
-    assert pool.try_refresh_current() is None
+    fallback = pool.try_refresh_current()
+    assert fallback is not None
+    assert fallback.id == "shared-codex"
 
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     entries = {
@@ -4217,7 +4233,9 @@ def test_codex_shared_terminal_refresh_preserves_newer_manual_entries(tmp_path, 
 
     monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _terminal_refresh_failure)
 
-    assert stale.try_refresh_current() is None
+    fallback = stale.try_refresh_current()
+    assert fallback is not None
+    assert fallback.id == "manual-codex"
 
     auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     entries = {

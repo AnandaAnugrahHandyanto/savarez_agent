@@ -1700,6 +1700,12 @@ class CredentialPool:
         refreshed = self._refresh_entry(entry, force=True)
         if refreshed is not None:
             self._current_identity = _credential_identity(refreshed)
+            return refreshed
+        # Terminal quarantine can remove the failing current credential.  In
+        # that case return a clean fallback directly so callers do not rotate
+        # again and attribute the original auth failure to the fallback.
+        if self.current() is None:
+            return self._select_unlocked()
         return refreshed
 
     def reset_statuses(self) -> int:
