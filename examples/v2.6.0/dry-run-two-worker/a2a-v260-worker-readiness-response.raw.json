@@ -1,0 +1,22 @@
+{
+  "jsonrpc": "2.0",
+  "id": "a2a-v260-worker-readiness-1780133267",
+  "result": {
+    "kind": "task",
+    "id": "dry-a2a-v260-worker-readiness",
+    "contextId": "dry-context-a2a-v260-worker-readiness",
+    "status": {
+      "state": "completed"
+    },
+    "artifacts": [
+      {
+        "parts": [
+          {
+            "kind": "text",
+            "text": "A2A_V260_READINESS_OK dry-run artifact for a2a-v260-worker-readiness"
+          }
+        ]
+      }
+    ]
+  }
+}

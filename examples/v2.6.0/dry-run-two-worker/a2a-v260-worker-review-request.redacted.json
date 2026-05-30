@@ -1,0 +1,37 @@
+{
+  "jsonrpc": "2.0",
+  "id": "a2a-v260-worker-review-1780133267",
+  "method": "message/send",
+  "params": {
+    "configuration": {
+      "blocking": true,
+      "acceptedOutputModes": [
+        "text/plain"
+      ],
+      "historyLength": 5
+    },
+    "message": {
+      "kind": "message",
+      "messageId": "1f5bee34-cc0c-4e62-9637-b34ef5947b6e",
+      "role": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Hermes-controller dispatch envelope v2.6.0\nTask ID: a2a-v260-worker-review\nGoal: Review the dispatch envelope boundary and identify unsafe or ambiguous instructions.\nContext: This is an offline/mock review of the v2.6.0 collaboration contract.\nAllowed actions: [\"read-only analysis\", \"write evidence files under examples/v2.6.0/\", \"produce bounded review notes\"]\nForbidden actions: [\"execute implementation\", \"trigger live A2A calls\", \"restart services\", \"create automation\", \"send platform messages directly\", \"print or persist secrets\", \"enable cron or recurring jobs\", \"create or trigger webhooks\"]\nExpected marker: A2A_V260_REVIEW_OK\n请只在上述边界内执行，返回简短中文结果，并明确包含 marker：A2A_V260_REVIEW_OK。\n不要输出任何凭据、token、Authorization header、连接字符串或平台发送目标。"
+        }
+      ],
+      "metadata": {
+        "source_agent": "hermes",
+        "target_agent": "openclaw-247-main",
+        "task_id": "a2a-v260-worker-review"
+      }
+    },
+    "metadata": {
+      "source_agent": "hermes",
+      "target_agent": "openclaw-247-main",
+      "task_id": "a2a-v260-worker-review",
+      "protocol": "a2a-jsonrpc",
+      "schema_version": "a2a-dispatch-envelope-v1"
+    }
+  }
+}

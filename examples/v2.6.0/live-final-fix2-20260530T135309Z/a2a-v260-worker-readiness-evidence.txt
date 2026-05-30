@@ -1,0 +1,6 @@
+A2A_V260_READINESS_OK
+http_status=200
+state=completed
+remote_task_id=50082285-d147-4c87-8ee2-dd47d27924f7
+remote_context_id=56686626-899e-4677-9210-a80b163e51b8
+preview_sha256=95b957e280d45aa5b25a17d730aebd0a87f344d99e9db656762319a963e3e9a1

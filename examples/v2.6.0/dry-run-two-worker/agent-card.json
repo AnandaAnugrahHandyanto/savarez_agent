@@ -1,0 +1,4 @@
+{
+  "dry_run": true,
+  "url": "http://192.168.31.247:18800/.well-known/agent-card.json"
+}

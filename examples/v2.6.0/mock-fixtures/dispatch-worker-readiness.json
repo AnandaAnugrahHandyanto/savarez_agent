@@ -1,0 +1,39 @@
+{
+  "schema_version": "a2a-dispatch-envelope-v1",
+  "task_id": "a2a-v260-worker-readiness",
+  "source_agent": "hermes",
+  "target_agent": "openclaw-247-main",
+  "goal": "Perform read-only readiness checks for the OpenClaw A2A endpoint and runtime state.",
+  "context": "Use only already available local/OpenClaw runtime status evidence. Do not modify services.",
+  "allowed_actions": [
+    "read-only checks",
+    "write evidence files under examples/v2.6.0/",
+    "run non-destructive validation commands"
+  ],
+  "forbidden_actions": [
+    "modify production config",
+    "restart gateway/systemd/cron/daemon/webhook",
+    "print or persist secrets",
+    "delete unknown files",
+    "send platform messages directly"
+  ],
+  "expected_outputs": [
+    "receipt JSON",
+    "artifact preview",
+    "evidence file path",
+    "A2A_V260_READINESS_OK"
+  ],
+  "acceptance_criteria": [
+    "state completed for success tasks",
+    "expected marker present",
+    "token_recorded=false",
+    "no authorization-header or bearer-token literals in evidence"
+  ],
+  "stop_conditions": [
+    "credential/token needed",
+    "destructive action required",
+    "service restart required",
+    "task scope ambiguous",
+    "evidence cannot be produced"
+  ]
+}

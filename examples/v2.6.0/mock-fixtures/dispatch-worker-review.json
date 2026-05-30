@@ -1,0 +1,41 @@
+{
+  "schema_version": "a2a-dispatch-envelope-v1",
+  "task_id": "a2a-v260-worker-review",
+  "source_agent": "hermes",
+  "target_agent": "openclaw-247-main",
+  "goal": "Review the dispatch envelope boundary and identify unsafe or ambiguous instructions.",
+  "context": "This is an offline/mock review of the v2.6.0 collaboration contract.",
+  "allowed_actions": [
+    "read-only analysis",
+    "write evidence files under examples/v2.6.0/",
+    "produce bounded review notes"
+  ],
+  "forbidden_actions": [
+    "execute implementation",
+    "trigger live A2A calls",
+    "restart services",
+    "create automation",
+    "send platform messages directly",
+    "print or persist secrets",
+    "enable cron or recurring jobs",
+    "create or trigger webhooks"
+  ],
+  "expected_outputs": [
+    "receipt JSON",
+    "artifact preview",
+    "evidence file path",
+    "A2A_V260_REVIEW_OK"
+  ],
+  "acceptance_criteria": [
+    "state completed for success tasks",
+    "expected marker present",
+    "token_recorded=false",
+    "no authorization-header or bearer-token literals in evidence"
+  ],
+  "stop_conditions": [
+    "scope too broad",
+    "live credentials required",
+    "external side effect required",
+    "evidence cannot be produced"
+  ]
+}

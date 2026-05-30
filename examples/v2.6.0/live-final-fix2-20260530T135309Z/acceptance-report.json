@@ -1,0 +1,32 @@
+{
+  "schema_version": "a2a-acceptance-report-v1",
+  "run_id": "a2a-v260-two-worker-20260530T135309Z",
+  "overall": "accepted_with_boundary",
+  "items": [
+    {
+      "task_id": "a2a-v260-worker-readiness",
+      "classification": "accepted",
+      "reason": "marker, state, credential boundary and evidence verified",
+      "evidence_path": "examples/v2.6.0/live-final-fix2-20260530T135309Z/a2a-v260-worker-readiness-evidence.txt"
+    },
+    {
+      "task_id": "a2a-v260-worker-review",
+      "classification": "accepted",
+      "reason": "marker, state, credential boundary and evidence verified",
+      "evidence_path": "examples/v2.6.0/live-final-fix2-20260530T135309Z/a2a-v260-worker-review-evidence.txt"
+    }
+  ],
+  "secret_scan": {
+    "ok": true,
+    "token_recorded": false,
+    "forbidden_literals_found": []
+  },
+  "external_side_effects": {
+    "gateway_restart": false,
+    "openclaw_restart": false,
+    "cron_enabled": false,
+    "platform_send": false,
+    "live_a2a_call": true
+  },
+  "next_step": "only freeze into queue CLI or Kanban/Swarm style template after explicit confirmation"
+}

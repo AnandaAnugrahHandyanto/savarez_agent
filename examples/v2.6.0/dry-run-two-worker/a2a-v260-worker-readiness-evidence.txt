@@ -1,0 +1,6 @@
+A2A_V260_READINESS_OK
+http_status=200
+state=completed
+remote_task_id=dry-a2a-v260-worker-readiness
+remote_context_id=dry-context-a2a-v260-worker-readiness
+preview_sha256=692474190e1294c3941bc3e61a0d914c4a8889a690dc8391ed20efc43da74289

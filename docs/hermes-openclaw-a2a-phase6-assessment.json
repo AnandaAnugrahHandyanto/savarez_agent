@@ -1,0 +1,32 @@
+{
+  "phase": "Phase 6",
+  "created_at": "2026-05-29T14:29:26.859791+00:00",
+  "assessment": "bounded two-turn Hermes-controlled A2A loop is already verified via Phase 1 live run; autonomous reverse routing is not enabled and should not be enabled by default.",
+  "decision": "accepted_with_boundary",
+  "enter_reverse_implementation": false,
+  "reasons": [
+    "Hermes remains controller and final acceptor.",
+    "Current live proof covers Hermes -> OpenClaw -> Hermes receipt/summary for two turns.",
+    "Failure paths and queue runner are verified.",
+    "Cron template exists and is paused.",
+    "OpenClaw-initiated reverse calls / autonomous loops still need explicit anti-loop, auth, target routing, and user approval before implementation."
+  ],
+  "required_before_reverse": [
+    "max_rounds and loop guard",
+    "dedupe ledger for reverse callbacks",
+    "strict allowlist of callable actions",
+    "origin delivery dry-run for reverse path",
+    "failure/unsafe classification for reverse requests"
+  ],
+  "evidence": {
+    "phase0_state_json": "docs/hermes-openclaw-a2a-current-state.json",
+    "phase1_evidence": "examples/live-phase1",
+    "phase3_evidence": "examples/v1.1.0",
+    "phase4_evidence": "examples/live-phase4-run",
+    "phase5_cron_job": "170596628792 paused",
+    "phase5_docs": [
+      "docs/hermes-openclaw-a2a-v240-recurring-cron-template.md",
+      "docs/hermes-openclaw-a2a-v250-cron-monitor-race-hardening.md"
+    ]
+  }
+}

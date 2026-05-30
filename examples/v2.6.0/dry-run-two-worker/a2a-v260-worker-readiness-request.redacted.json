@@ -1,0 +1,37 @@
+{
+  "jsonrpc": "2.0",
+  "id": "a2a-v260-worker-readiness-1780133267",
+  "method": "message/send",
+  "params": {
+    "configuration": {
+      "blocking": true,
+      "acceptedOutputModes": [
+        "text/plain"
+      ],
+      "historyLength": 5
+    },
+    "message": {
+      "kind": "message",
+      "messageId": "697ff6ca-980c-476b-bf1b-858f37d9a723",
+      "role": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Hermes-controller dispatch envelope v2.6.0\nTask ID: a2a-v260-worker-readiness\nGoal: Perform read-only readiness checks for the OpenClaw A2A endpoint and runtime state.\nContext: Use only already available local/OpenClaw runtime status evidence. Do not modify services.\nAllowed actions: [\"read-only checks\", \"write evidence files under examples/v2.6.0/\", \"run non-destructive validation commands\"]\nForbidden actions: [\"modify production config\", \"restart gateway/systemd/cron/daemon/webhook\", \"print or persist secrets\", \"delete unknown files\", \"send platform messages directly\"]\nExpected marker: A2A_V260_READINESS_OK\n请只在上述边界内执行，返回简短中文结果，并明确包含 marker：A2A_V260_READINESS_OK。\n不要输出任何凭据、token、Authorization header、连接字符串或平台发送目标。"
+        }
+      ],
+      "metadata": {
+        "source_agent": "hermes",
+        "target_agent": "openclaw-247-main",
+        "task_id": "a2a-v260-worker-readiness"
+      }
+    },
+    "metadata": {
+      "source_agent": "hermes",
+      "target_agent": "openclaw-247-main",
+      "task_id": "a2a-v260-worker-readiness",
+      "protocol": "a2a-jsonrpc",
+      "schema_version": "a2a-dispatch-envelope-v1"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "schema_version": "a2a-worker-receipt-v1",
+  "ok": true,
+  "task_id": "neg-side-effect-live",
+  "source_agent": "hermes",
+  "target_agent": "openclaw-247-main",
+  "protocol": "a2a-jsonrpc-negative-fixture",
+  "http_status": 200,
+  "remote_task_id": "negative-remote-task",
+  "remote_context_id": "negative-context",
+  "state": "completed",
+  "marker": "A2A_V262_NEGATIVE_MARKER",
+  "artifact_text_preview": "A2A_V262_NEGATIVE_MARKER positive-looking preview",
+  "evidence_path": "examples/v2.6.0/negative-fixtures/evidence-good.txt",
+  "auth": {
+    "type": "bearer",
+    "token_recorded": false
+  },
+  "error": null,
+  "external_side_effects": {
+    "gateway_restart": true,
+    "openclaw_restart": false,
+    "cron_enabled": false,
+    "platform_send": false,
+    "live_a2a_call": false
+  }
+}

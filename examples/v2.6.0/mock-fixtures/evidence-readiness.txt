@@ -1,0 +1,2 @@
+A2A_V260_READINESS_OK
+read-only mock evidence; no runtime side effects.

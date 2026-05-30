@@ -1,0 +1,32 @@
+{
+  "schema_version": "a2a-acceptance-report-v1",
+  "run_id": "a2a-v260-mock-fixture",
+  "overall": "accepted_with_boundary",
+  "items": [
+    {
+      "task_id": "a2a-v260-worker-readiness",
+      "classification": "accepted",
+      "reason": "mock marker and evidence path verified",
+      "evidence_path": "examples/v2.6.0/mock-fixtures/evidence-readiness.txt"
+    },
+    {
+      "task_id": "a2a-v260-worker-review",
+      "classification": "accepted",
+      "reason": "mock marker and evidence path verified",
+      "evidence_path": "examples/v2.6.0/mock-fixtures/evidence-review.txt"
+    }
+  ],
+  "secret_scan": {
+    "ok": true,
+    "token_recorded": false,
+    "forbidden_literals_found": []
+  },
+  "external_side_effects": {
+    "gateway_restart": false,
+    "openclaw_restart": false,
+    "cron_enabled": false,
+    "platform_send": false,
+    "live_a2a_call": false
+  },
+  "next_step": "Proceed to live two-worker sample only after explicit implementation start."
+}

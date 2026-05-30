@@ -1,0 +1,22 @@
+{
+  "jsonrpc": "2.0",
+  "id": "a2a-v260-worker-review-1780133267",
+  "result": {
+    "kind": "task",
+    "id": "dry-a2a-v260-worker-review",
+    "contextId": "dry-context-a2a-v260-worker-review",
+    "status": {
+      "state": "completed"
+    },
+    "artifacts": [
+      {
+        "parts": [
+          {
+            "kind": "text",
+            "text": "A2A_V260_REVIEW_OK dry-run artifact for a2a-v260-worker-review"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "jsonrpc": "2.0",
+  "id": "a2a-v260-worker-review-1780149345",
+  "result": {
+    "kind": "task",
+    "id": "c1c3565f-100b-460a-a979-4310054bce3a",
+    "contextId": "06db5a61-5bf7-41e9-8cbd-de4d0456741a",
+    "status": {
+      "state": "completed",
+      "message": {
+        "kind": "message",
+        "messageId": "a37d88e5-8250-4587-b5e1-811b72f137ab",
+        "role": "agent",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "已按离线/mock 边界完成只读审查，并仅在 `examples/v2.6.0/` 写入了脱敏证据文件。\n\n主要发现：\n- `read-only analysis` 与允许写证据文件的表述混杂，建议改成“只读系统分析 + 有界本地证据写入”。\n- 写入范围应明确禁止修改实现、配置、状态、任务队列、凭据文件和自动化定义。\n- `bounded review notes` 缺少具体边界：文件数、命名、长度、覆盖/追加规则。\n- offline/mock 应明确禁止网络 I/O、helper CLI 变更、安装包等隐性副作用。\n- 脱敏要求应同时覆盖最终回复和持久化证据。\n- marker 只能作为完成标记，不能作为越权许可。\n\n证据文件：`examples/v2.6.0/a2a-v260-worker-review-evidence-20260530T1355Z.md`\n\nA2A_V260_REVIEW_OK"
+          }
+        ],
+        "contextId": "06db5a61-5bf7-41e9-8cbd-de4d0456741a"
+      },
+      "timestamp": "2026-05-30T13:56:45.499Z"
+    },
+    "history": [
+      {
+        "kind": "message",
+        "messageId": "48514304-a7c1-44bc-af69-275a89fd6e6d",
+        "role": "user",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Hermes-controller dispatch envelope v2.6.0\nTask ID: a2a-v260-worker-review\nGoal: Review the dispatch envelope boundary and identify unsafe or ambiguous instructions.\nContext: This is an offline/mock review of the v2.6.0 collaboration contract.\nAllowed actions: [\"read-only analysis\", \"write evidence files under examples/v2.6.0/\", \"produce bounded review notes\"]\nForbidden actions: [\"execute implementation\", \"trigger live A2A calls\", \"restart services\", \"create automation\", \"send platform messages directly\", \"print or persist secrets\", \"enable cron or recurring jobs\", \"create or trigger webhooks\"]\nExpected marker: A2A_V260_REVIEW_OK\n请只在上述边界内执行，返回简短中文结果，并明确包含 marker：A2A_V260_REVIEW_OK。\n不要输出任何凭据、token、Authorization header、连接字符串或平台发送目标。"
+          }
+        ],
+        "metadata": {
+          "source_agent": "hermes",
+          "target_agent": "openclaw-247-main",
+          "task_id": "a2a-v260-worker-review"
+        }
+      }
+    ],
+    "artifacts": [
+      {
+        "artifactId": "c78e708b-6156-45af-bad3-b2b75ce16362",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "已按离线/mock 边界完成只读审查，并仅在 `examples/v2.6.0/` 写入了脱敏证据文件。\n\n主要发现：\n- `read-only analysis` 与允许写证据文件的表述混杂，建议改成“只读系统分析 + 有界本地证据写入”。\n- 写入范围应明确禁止修改实现、配置、状态、任务队列、凭据文件和自动化定义。\n- `bounded review notes` 缺少具体边界：文件数、命名、长度、覆盖/追加规则。\n- offline/mock 应明确禁止网络 I/O、helper CLI 变更、安装包等隐性副作用。\n- 脱敏要求应同时覆盖最终回复和持久化证据。\n- marker 只能作为完成标记，不能作为越权许可。\n\n证据文件：`examples/v2.6.0/a2a-v260-worker-review-evidence-20260530T1355Z.md`\n\nA2A_V260_REVIEW_OK"
+          }
+        ]
+      }
+    ]
+  }
+}

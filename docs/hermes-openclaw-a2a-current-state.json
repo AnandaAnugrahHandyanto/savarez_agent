@@ -1,0 +1,276 @@
+{
+  "repo_a2a_items": [
+    {
+      "path": "/.hermes/hermes-agent/docs/hermes-openclaw-a2a-task-plan-v1.0.0.md",
+      "type": "file",
+      "size": 8876
+    },
+    {
+      "path": "/.hermes/hermes-agent/docs/hermes-openclaw-a2a-task-plan-v1.1.0.md",
+      "type": "file",
+      "size": 13412
+    },
+    {
+      "path": "/.hermes/hermes-agent/docs/hermes-openclaw-a2a-v240-recurring-cron-template.md",
+      "type": "file",
+      "size": 3623
+    },
+    {
+      "path": "/.hermes/hermes-agent/docs/hermes-openclaw-a2a-v250-cron-monitor-race-hardening.md",
+      "type": "file",
+      "size": 3677
+    },
+    {
+      "path": "/.hermes/hermes-agent/docs/hermes-openclaw-a2a-worklog-and-architecture.md",
+      "type": "file",
+      "size": 9349
+    }
+  ],
+  "home_a2a_items": [
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-adaptive-dispatch-authorization-acceptance.md",
+      "type": "file",
+      "size": 3169
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-role-bound-dispatch-plan.md",
+      "type": "file",
+      "size": 1976
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v067.md",
+      "type": "file",
+      "size": 4105
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v070-callback-loop.md",
+      "type": "file",
+      "size": 3143
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v071-guarded-callback-send.md",
+      "type": "file",
+      "size": 3508
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v072-one-shot-runner.md",
+      "type": "file",
+      "size": 3331
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v100-bidirectional-minimal-loop.md",
+      "type": "file",
+      "size": 5245
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v110-failure-paths.md",
+      "type": "file",
+      "size": 3679
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v120-explicit-queue-runner.md",
+      "type": "file",
+      "size": 2235
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v120-local-queue-runner.md",
+      "type": "file",
+      "size": 4802
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v120-v130-queue-runners.md",
+      "type": "file",
+      "size": 4812
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v120-v200-queue-cli-cron.md",
+      "type": "file",
+      "size": 6738
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v130-mixed-queue-isolation.md",
+      "type": "file",
+      "size": 2615
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v140-queue-cli-schema.md",
+      "type": "file",
+      "size": 2774
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v210-dispatch-compact-callback.md",
+      "type": "file",
+      "size": 2744
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v220-compact-cron-callback.md",
+      "type": "file",
+      "size": 2302
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v230-compact-cronjob-boundary.md",
+      "type": "file",
+      "size": 2345
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v231-cron-scheduler-run-verification.md",
+      "type": "file",
+      "size": 1980
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v232-cron-runtime-monitor.md",
+      "type": "file",
+      "size": 2069
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v240-manual-cron-monitor-race.md",
+      "type": "file",
+      "size": 2670
+    },
+    {
+      "path": "/root/.hermes/skills/autonomous-ai-agents/agent-to-agent-a2a-bridging/references/hermes-openclaw-a2a-v260-controlled-manual-cron-run.md",
+      "type": "file",
+      "size": 2679
+    },
+    {
+      "path": "/root/.hermes/skills/software-development/hermes-platform-delivery-and-channel-routing/references/hermes-openclaw-a2a-receipt-callback.md",
+      "type": "file",
+      "size": 5256
+    },
+    {
+      "path": "/root/.hermes/skills/software-development/hermes-specialist-workflow-routing/references/hermes-openclaw-a2a-gateway-live-install.md",
+      "type": "file",
+      "size": 5559
+    },
+    {
+      "path": "/root/.hermes/skills/software-development/hermes-specialist-workflow-routing/references/hermes-openclaw-a2a-webhooks-bridge.md",
+      "type": "file",
+      "size": 4397
+    },
+    {
+      "path": "/root/.hermes/skills/software-development/hermes-specialist-workflow-routing/references/hermes-openclaw-a2a-webhooks-planning.md",
+      "type": "file",
+      "size": 3278
+    },
+    {
+      "path": "/root/.hermes/skills/software-development/hermes-specialist-workflow-routing/references/hermes-openclaw-node22-direct-upgrade-first.md",
+      "type": "file",
+      "size": 2351
+    },
+    {
+      "path": "/root/.hermes/skills/software-development/hermes-specialist-workflow-routing/references/hermes-openclaw-v062-readiness-assessment.md",
+      "type": "file",
+      "size": 3229
+    },
+    {
+      "path": "/root/.hermes/skills/software-development/hermes-specialist-workflow-routing/references/hermes-openclaw-v066-authenticated-a2a-ping.md",
+      "type": "file",
+      "size": 3203
+    },
+    {
+      "path": "/root/.hermes/skills/software-development/hermes-specialist-workflow-routing/references/hermes-openclaw-vaultwarden-ssh-node22-readiness.md",
+      "type": "file",
+      "size": 4140
+    }
+  ],
+  "scripts": [
+    {
+      "path": "/.hermes/hermes-agent/scripts/hermes_openclaw_v120_queue_runner.py",
+      "size": 10682
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/hermes_openclaw_v100_orchestrator.py",
+      "size": 13900
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/hermes_openclaw_queue_cron_v220.sh",
+      "size": 500
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/hermes_openclaw_queue_summary.py",
+      "size": 2931
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/hermes_openclaw_cron_monitor.py",
+      "size": 8590
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/hermes_openclaw_v130_mixed_queue_runner.py",
+      "size": 15179
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/hermes_openclaw_queue_cron_v200.sh",
+      "size": 266
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/hermes_openclaw_v110_failure_tests.py",
+      "size": 9957
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/hermes_openclaw_queue.py",
+      "size": 20988
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/__pycache__/hermes_openclaw_v110_failure_tests.cpython-311.pyc",
+      "size": 14784
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/__pycache__/hermes_openclaw_cron_monitor.cpython-311.pyc",
+      "size": 14537
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/__pycache__/hermes_openclaw_v130_mixed_queue_runner.cpython-311.pyc",
+      "size": 24773
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/__pycache__/hermes_openclaw_v100_orchestrator.cpython-311.pyc",
+      "size": 28450
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/__pycache__/hermes_openclaw_v120_queue_runner.cpython-311.pyc",
+      "size": 17464
+    },
+    {
+      "path": "/.hermes/hermes-agent/scripts/__pycache__/hermes_openclaw_queue.cpython-311.pyc",
+      "size": 46266
+    },
+    {
+      "path": "/root/.hermes/scripts/openclaw_queue_cron_v200.sh",
+      "size": 266
+    },
+    {
+      "path": "/root/.hermes/scripts/openclaw_queue_cron_v220.sh",
+      "size": 500
+    }
+  ],
+  "evidence_dirs_sample": [
+    {
+      "path": "/.hermes/hermes-agent/optional-skills/migration/openclaw-migration",
+      "mtime": 1779165541.222174
+    },
+    {
+      "path": "/.hermes/hermes-agent/optional-skills/migration/openclaw-migration/scripts",
+      "mtime": 1779165541.222174
+    }
+  ],
+  "git_status": {
+    "code": 0,
+    "out": "## main...origin/main [ahead 2, behind 973]\n M agent/conversation_loop.py\n M gateway/platforms/base.py\n M gateway/platforms/feishu.py\n M gateway/run.py\n M gateway/stream_consumer.py\n M hermes_cli/kanban_db.py\n M tools/approval.py\n?? curation-consolidation-report.md\n?? docs/dispatch-strategy-v2.1.0.md\n?? docs/execution-v1.0.0.md\n?? docs/execution-v1.1.0.md\n?? docs/execution-v1.2.0.md\n?? docs/execution-v1.3.0.md\n?? docs/execution-v1.4.0.md\n?? docs/execution-v1.6.0.md\n?? docs/execution-v1.7.0.md\n?? docs/execution-v1.9.0.md\n?? docs/execution-v2.0.0.md\n?? docs/execution-v2.2.0.md\n?? docs/execution-v2.3.0.md\n?? docs/execution-v2.3.1.md\n?? docs/execution-v2.3.2.md\n?? docs/hermes-openclaw-a2a-task-plan-v1.0.0.md\n?? docs/hermes-openclaw-a2a-task-plan-v1.1.0.md\n?? docs/hermes-openclaw-a2a-v240-recurring-cron-template.md\n?? docs/hermes-openclaw-a2a-v250-cron-monitor-race-hardening.md\n?? docs/hermes-openclaw-a2a-worklog-and-architecture.md\n?? docs/validation-v1.0.0.md\n?? docs/validation-v1.1.0.md\n?? docs/validation-v1.2.0.md\n?? docs/validation-v1.3.0.md\n?? docs/validation-v1.4.0.md\n?? docs/validation-v1.6.0.md\n?? docs/validation-v1.7.0.md\n?? docs/validation-v1.9.0.md\n?? docs/validation-v2.0.0.md\n?? docs/validation-v2.2.0.md\n?? docs/validation-v2.3.0.md\n?? docs/validation-v2.3.1.md\n?? docs/validation-v2.3.2.md\n?? gateway/platforms/feishu.py.bak\n?? gateway/platforms/feishu.py.bak.20260522_171805\n?? gateway/platforms/feishu.py.bak.20260522_171812\n?? gateway/platforms/feishu.py.bak2\n?? gateway/stream_consumer.py.bak\n?? scripts/hermes_openclaw_cron_monitor.py\n?? scripts/hermes_openclaw_queue.py\n?? scripts/hermes_openclaw_queue_cron_v200.sh\n?? scripts/hermes_openclaw_queue_cron_v220.sh\n?? scripts/hermes_openclaw_queue_summary.py\n?? scripts/hermes_openclaw_v100_orchestrator.py\n?? scripts/hermes_openclaw_v110_failure_tests.py\n?? scripts/hermes_openclaw_v120_queue_runner.py\n?? scripts/hermes_openclaw_v130_mixed_queue_runner.py\n?? skill-clusters-analysis.json\n"
+  },
+  "cron_list": {
+    "code": 0,
+    "out": "No scheduled jobs.\nCreate one with 'hermes cron create ...' or the /cron command in chat.\n"
+  },
+  "gateway_status": {
+    "code": 0,
+    "out": "me__, str(e))\\\\nPY2'\\\\''\\n}\\nfor k,cmd in cmds.items():\\n    try:\\n        r=subprocess.run(cmd,shell=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=30)\\n        report[k]={'\\\\''code'\\\\'':r.returncode,'\\\\''out'\\\\'':r.stdout[-4000:]}\\n    except Exception as e:\\n        report[k]={'\\\\''error'\\\\'':repr(e)}\\nout=Path('\\\\''/.hermes/hermes-agent/docs/hermes-openclaw-a2a-current-state.json'\\\\'')\\nout.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='\\\\''utf-8'\\\\'')\\nprint(out)\\nprint(out.stat().st_size)\\nprint('\\\\''docs'\\\\'', len(report.get('\\\\''repo_a2a_items'\\\\'',[])), '\\\\''home_items'\\\\'', len(report.get('\\\\''home_a2a_items'\\\\'',[])), '\\\\''scripts'\\\\'', len(scripts), '\\\\''evidence'\\\\'', len(report['\\\\''evidence_dirs_sample'\\\\'']))\\nprint('\\\\''port'\\\\'', report['\\\\''port_18789'\\\\''])\\nprint('\\\\''agent_card_first'\\\\'', report['\\\\''agent_card'\\\\'']['\\\\''out'\\\\''][:500] if '\\\\''out'\\\\'' in report['\\\\''agent_card'\\\\''] else report['\\\\''agent_card'\\\\''])\\nPY'\\n__hermes_ec=\\$?\\nexport -p > /tmp/hermes-snap-5a3c29d16380.sh 2>/dev/null || true\\npwd -P > /tmp/hermes-cwd-5a3c29d16380.txt 2>/dev/null || true\\nprintf '\\\\n__HERMES_CWD_5a3c29d16380__%s__HERMES_CWD_5a3c29d16380__\\\\n' \\\"\\$(pwd -P)\\\"\\nexit \\$__hermes_ec\"\n             ├─10427 python3 -\n             ├─10440 /bin/sh -c \"hermes gateway status\"\n             ├─10441 /.hermes/hermes-agent/venv/bin/python3 /root/.local/bin/hermes gateway status\n             └─10453 systemctl status hermes-gateway --no-pager\n\nMay 29 21:35:10 Hermes-248 python[1014]: WARNING agent.tool_executor: Tool terminal returned error (0.28s): {\"output\": \"/usr/bin/bash: line 24: examples/v2.2.0/manual-v220-stdout.md: No such file or directory\", \"exit_code\": 1, \"error\": null}\nMay 29 21:37:18 Hermes-248 python[1014]: WARNING agent.tool_executor: Tool skill_manage returned error (0.00s): {\"success\": false, \"error\": \"File must be under one of: assets, references, scripts, templates. Got: 'SKILL.md'\"}\nMay 29 21:37:48 Hermes-248 python[1014]: WARNING agent.tool_executor: Tool cronjob returned error (0.00s): {\"error\": \"Invalid schedule 'once at 2099-01-01 00:00'. Use:\\n  - Duration: '30m', '2h', '1d' (one-shot)\\n  - Interval: 'every 30m', 'every 2h' (recurring)\\n  - Cron: '0 9 * * *' (cron expression)\\n\nMay 29 21:38:45 Hermes-248 python[1014]: WARNING gateway.platforms.qqbot.adapter: [QQBot:1903759289] WebSocket closed: code=4009 reason=Session timed out\nMay 29 21:40:25 Hermes-248 python[1014]: WARNING agent.tool_executor: Tool skill_manage returned error (0.00s): {\"success\": false, \"error\": \"File must be under one of: assets, references, scripts, templates. Got: 'SKILL.md'\"}\nMay 29 21:48:24 Hermes-248 python[1014]: WARNING agent.tool_executor: Tool skill_manage returned error (0.00s): {\"success\": false, \"error\": \"File must be under one of: assets, references, scripts, templates. Got: 'SKILL.md'\"}\nMay 29 22:05:03 Hermes-248 python[1014]: WARNING agent.tool_executor: Tool terminal returned error (10.68s): {\"output\": \"\", \"exit_code\": 2, \"error\": null}\nMay 29 22:05:53 Hermes-248 python[1014]: WARNING agent.tool_executor: Tool terminal returned error (20.68s): {\"output\": \"monitor_exists True 2069\\nok False\\ndiagnosis process still running\\nexecution_observed False\\nnew_evidence ['cron-run-20260529T140519Z']\\nprocess_running_at_end True\\ninitial_count 3\\nfin\nMay 29 22:08:47 Hermes-248 python[1014]: WARNING gateway.platforms.qqbot.adapter: [QQBot:1903759289] WebSocket closed: code=4009 reason=Session timed out\nMay 29 22:16:08 Hermes-248 python[1014]: WARNING agent.tool_executor: Tool skill_manage returned error (0.00s): {\"success\": false, \"error\": \"File must be under one of: assets, references, scripts, templates. Got: 'SKILL.md'\"}\n⚠ Installing gateway service to run as root.\n    This is fine for LXC/container environments but not recommended on bare-metal hosts.\n✓ System gateway service is running\nConfigured to run as: root\n✓ System service starts at boot without requiring systemd linger\n"
+  },
+  "port_18789": {
+    "code": 0,
+    "out": "open\n"
+  },
+  "agent_card": {
+    "code": 0,
+    "out": "HTTPError HTTP Error 404: Not Found\n"
+  }
+}

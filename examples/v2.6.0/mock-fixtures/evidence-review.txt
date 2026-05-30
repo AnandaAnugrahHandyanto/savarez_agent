@@ -1,0 +1,2 @@
+A2A_V260_REVIEW_OK
+bounded envelope review mock evidence; no runtime side effects.

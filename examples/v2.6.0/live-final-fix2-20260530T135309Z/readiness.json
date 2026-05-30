@@ -1,0 +1,11 @@
+{
+  "run_id": "a2a-v260-two-worker-20260530T135309Z",
+  "dry_run": false,
+  "endpoint": "http://192.168.31.247:18800/a2a/jsonrpc",
+  "agent_card_url": "http://192.168.31.247:18800/.well-known/agent-card.json",
+  "created_at": "2026-05-30T13:53:09.872389+00:00",
+  "agent_card_http_status": 200,
+  "agent_card_live": true,
+  "credential_loaded": true,
+  "credential_recorded": false
+}

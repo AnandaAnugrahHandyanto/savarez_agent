@@ -1,0 +1,54 @@
+{
+  "jsonrpc": "2.0",
+  "id": "a2a-v260-worker-readiness-1780149196",
+  "result": {
+    "kind": "task",
+    "id": "50082285-d147-4c87-8ee2-dd47d27924f7",
+    "contextId": "56686626-899e-4677-9210-a80b163e51b8",
+    "status": {
+      "state": "completed",
+      "message": {
+        "kind": "message",
+        "messageId": "9d181f4f-cae7-4ba2-9415-5f4af7c0bca2",
+        "role": "agent",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "已完成只读 readiness 检查，未修改服务/配置、未重启、未外发平台消息、未输出凭据。\n\n结果：\n- OpenClaw runtime 可达，A2A 相关会话处于活动状态。\n- 本地监听端口包含 `18789 / 18800 / 18801`。\n- A2A Agent Card `/.well-known/agent.json` 可读取。\n- `/a2a/jsonrpc` 可达；未知方法按预期返回错误响应。\n- `plugins/a2a-gateway` 本地 P0 测试通过：2 pass / 0 fail。\n- 已写入脱敏证据文件：`examples/v2.6.0/a2a-v260-worker-readiness-evidence-20260530T135456Z.md`\n\nMarker: A2A_V260_READINESS_OK"
+          }
+        ],
+        "contextId": "56686626-899e-4677-9210-a80b163e51b8"
+      },
+      "timestamp": "2026-05-30T13:55:45.221Z"
+    },
+    "history": [
+      {
+        "kind": "message",
+        "messageId": "1e590332-8d79-4483-b837-53d395a09ab8",
+        "role": "user",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Hermes-controller dispatch envelope v2.6.0\nTask ID: a2a-v260-worker-readiness\nGoal: Perform read-only readiness checks for the OpenClaw A2A endpoint and runtime state.\nContext: Use only already available local/OpenClaw runtime status evidence. Do not modify services.\nAllowed actions: [\"read-only checks\", \"write evidence files under examples/v2.6.0/\", \"run non-destructive validation commands\"]\nForbidden actions: [\"modify production config\", \"restart gateway/systemd/cron/daemon/webhook\", \"print or persist secrets\", \"delete unknown files\", \"send platform messages directly\"]\nExpected marker: A2A_V260_READINESS_OK\n请只在上述边界内执行，返回简短中文结果，并明确包含 marker：A2A_V260_READINESS_OK。\n不要输出任何凭据、token、Authorization header、连接字符串或平台发送目标。"
+          }
+        ],
+        "metadata": {
+          "source_agent": "hermes",
+          "target_agent": "openclaw-247-main",
+          "task_id": "a2a-v260-worker-readiness"
+        }
+      }
+    ],
+    "artifacts": [
+      {
+        "artifactId": "b651e29c-90b3-453b-b959-cf05846686c5",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "已完成只读 readiness 检查，未修改服务/配置、未重启、未外发平台消息、未输出凭据。\n\n结果：\n- OpenClaw runtime 可达，A2A 相关会话处于活动状态。\n- 本地监听端口包含 `18789 / 18800 / 18801`。\n- A2A Agent Card `/.well-known/agent.json` 可读取。\n- `/a2a/jsonrpc` 可达；未知方法按预期返回错误响应。\n- `plugins/a2a-gateway` 本地 P0 测试通过：2 pass / 0 fail。\n- 已写入脱敏证据文件：`examples/v2.6.0/a2a-v260-worker-readiness-evidence-20260530T135456Z.md`\n\nMarker: A2A_V260_READINESS_OK"
+          }
+        ]
+      }
+    ]
+  }
+}

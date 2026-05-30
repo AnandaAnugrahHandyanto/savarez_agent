@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "fixture_dir": "examples/v2.6.0/mock-fixtures",
+  "dispatch_count": 2,
+  "receipt_count": 2,
+  "acceptance_overall": "accepted_with_boundary",
+  "errors": [],
+  "side_effects": {
+    "live_a2a_call": false,
+    "gateway_restart": false,
+    "openclaw_restart": false,
+    "cron_enabled": false,
+    "platform_send": false
+  }
+}
