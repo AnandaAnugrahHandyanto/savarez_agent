@@ -385,16 +385,25 @@ def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
     return True
 
 
-def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect") -> None:
+def _close_sessions_for_transport(
+    transport, *, end_reason: str = "ws_disconnect"
+) -> tuple[int, int]:
     """On transport disconnect, reap the sessions that opted into close_on_disconnect
-    (sidecar) and re-point the rest back to stdio so later emits don't hit a dead socket."""
+    (sidecar) and re-point the rest back to stdio so later emits don't hit a dead socket.
+
+    Returns ``(reaped, detached)`` counts for disconnect-path observability."""
     with _sessions_lock:
         owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
+    reaped = 0
+    detached = 0
     for sid, session in owned:
         if session.get("close_on_disconnect"):
             _close_session_by_id(sid, end_reason=end_reason)
+            reaped += 1
         else:
             session["transport"] = _stdio_transport
+            detached += 1
+    return reaped, detached
 
 
 def _shutdown_sessions() -> None:
