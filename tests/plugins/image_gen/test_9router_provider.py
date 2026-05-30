@@ -55,11 +55,37 @@ class TestAvailability:
     def test_requires_key(self, monkeypatch):
         monkeypatch.delenv("ROUTER_API_KEY", raising=False)
         monkeypatch.delenv("NINE_ROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("NINEROUTER_API_KEY", raising=False)
         monkeypatch.setattr(plugin, "_read_key_file", lambda path: None)
         assert plugin.NineRouterImageGenProvider().is_available() is False
 
     def test_available_with_env_key(self, monkeypatch):
         monkeypatch.setenv("ROUTER_API_KEY", "test-key")
+        assert plugin.NineRouterImageGenProvider().is_available() is True
+
+    def test_available_with_compact_env_key(self, monkeypatch):
+        monkeypatch.delenv("ROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("NINE_ROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("NINEROUTER_API_KEY", "test-key")
+        assert plugin.NineRouterImageGenProvider().is_available() is True
+
+    def test_available_with_provider_api_key_env(self, monkeypatch):
+        monkeypatch.delenv("ROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("NINE_ROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("NINEROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("CUSTOM_ROUTER_KEY", "test-key")
+        monkeypatch.setattr(
+            plugin,
+            "_load_config",
+            lambda: {
+                "providers": {
+                    "9router": {
+                        "base_url": "http://router.local/v1",
+                        "api_key_env": "CUSTOM_ROUTER_KEY",
+                    }
+                }
+            },
+        )
         assert plugin.NineRouterImageGenProvider().is_available() is True
 
 

@@ -138,6 +138,13 @@ def _literal_env(value: str) -> Optional[str]:
     return value or None
 
 
+def _env_from_ref(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    return os.environ.get(name) if name else None
+
+
 def _read_key_file(path: Path) -> Optional[str]:
     try:
         if path.exists():
@@ -151,11 +158,15 @@ def _read_key_file(path: Path) -> Optional[str]:
 def _resolve_api_key() -> Optional[str]:
     cfg = _image_config()
     sub = cfg.get("9router") if isinstance(cfg.get("9router"), dict) else {}
+    provider = _provider_config()
     candidates = [
         os.environ.get("ROUTER_API_KEY"),
         os.environ.get("NINE_ROUTER_API_KEY"),
+        os.environ.get("NINEROUTER_API_KEY"),
         sub.get("api_key") if isinstance(sub, dict) else None,
-        _provider_config().get("api_key"),
+        _env_from_ref(provider.get("key_env")),
+        _env_from_ref(provider.get("api_key_env")),
+        provider.get("api_key"),
         (_load_config().get("model") or {}).get("api_key") if isinstance(_load_config().get("model"), dict) else None,
     ]
     for value in candidates:
