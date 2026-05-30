@@ -1,4 +1,6 @@
 """Gateway-native context-fragmentation cleanup command tests."""
+import hashlib
+import json
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -70,6 +72,33 @@ def _make_runner():
     return runner
 
 
+def _write_verified_fragmentation_artifacts(tmp_path, old_session_id="sess-old"):
+    recovery = tmp_path / "recovery.md"
+    recovery.write_text("# Recovery\n\nContinue safely from compact state.\n", encoding="utf-8")
+    digest = hashlib.sha256(recovery.read_bytes()).hexdigest()
+    marker = tmp_path / "pending.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "recovery_path": str(recovery),
+                "recovery_size_bytes": recovery.stat().st_size,
+                "recovery_sha256": digest,
+                "old_session_id": old_session_id,
+                "reset_required": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "profile": "responsible_memory_rollout",
+        "recovery_path": str(recovery),
+        "recovery_size_bytes": recovery.stat().st_size,
+        "recovery_sha256": digest,
+        "pending_marker": str(marker),
+        "reset_required": True,
+    }
+
+
 @pytest.mark.asyncio
 async def test_fragmentation_finalize_reset_runs_finalizer_then_resets(monkeypatch, tmp_path):
     """/fragmentation finalize-reset should finalize recovery before rotating the live session."""
@@ -84,13 +113,7 @@ async def test_fragmentation_finalize_reset_runs_finalizer_then_resets(monkeypat
 
     async def fake_run_finalizer(**kwargs):
         calls.append(("finalize", kwargs))
-        return {
-            "profile": "responsible_memory_rollout",
-            "recovery_path": "/tmp/recovery.md",
-            "recovery_sha256": "abc123",
-            "pending_marker": "/tmp/pending.json",
-            "reset_required": True,
-        }
+        return _write_verified_fragmentation_artifacts(tmp_path)
 
     original_reset = runner._handle_reset_command
 
@@ -111,8 +134,11 @@ async def test_fragmentation_finalize_reset_runs_finalizer_then_resets(monkeypat
     assert calls[0][1]["note"] == "cleanup"
     assert calls[1] == ("reset", {"text": "/new"})
     assert "Fragmentation cleanup finalized" in str(result)
-    assert "/tmp/recovery.md" in str(result)
-    runner.session_store.reset_session.assert_called_once()
+    assert str(tmp_path / "recovery.md") in str(result)
+    reset_session = getattr(runner.session_store, "reset_session")
+    reset_session.assert_called_once()
+    method_calls = getattr(runner.session_store, "method_calls")
+    assert "delete_session" not in {call[0] for call in method_calls}
 
 
 @pytest.mark.asyncio
@@ -128,3 +154,59 @@ async def test_fragmentation_finalize_reset_rejects_other_profile(monkeypatch):
 
     assert "current live profile" in result
     runner._run_fragmentation_finalizer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fragmentation_finalize_reset_refuses_verification_failure_before_reset(tmp_path):
+    """The live reset must not rotate sessions if recovery/marker verification fails."""
+    runner = _make_runner()
+
+    async def fake_run_finalizer(**_kwargs):
+        return {
+            "profile": "responsible_memory_rollout",
+            "recovery_path": str(tmp_path / "missing-recovery.md"),
+            "recovery_size_bytes": 0,
+            "recovery_sha256": "bad",
+            "pending_marker": str(tmp_path / "missing-pending.json"),
+            "reset_required": True,
+        }
+
+    runner._run_fragmentation_finalizer = fake_run_finalizer
+
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="responsible_memory_rollout"):
+        result = await runner._handle_fragmentation_command(_make_event("/fragmentation finalize-reset"))
+
+    assert "failed before reset" in result
+    assert "recovery file does not exist" in result
+    getattr(runner.session_store, "reset_session").assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fragmentation_finalize_reset_requires_live_session_id(tmp_path):
+    """Live finalize-reset is tied to the current gateway session, not an empty/offline target."""
+    runner = _make_runner()
+    runner.session_store._entries = {}
+    runner._run_fragmentation_finalizer = AsyncMock(return_value=_write_verified_fragmentation_artifacts(tmp_path))
+
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="responsible_memory_rollout"):
+        result = await runner._handle_fragmentation_command(_make_event("/fragmentation finalize-reset"))
+
+    assert "No live gateway session is bound" in result
+    runner._run_fragmentation_finalizer.assert_not_called()
+    getattr(runner.session_store, "reset_session").assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fragmentation_finalize_reset_uses_reset_path_without_deleting_history(tmp_path):
+    """The live path should rotate the current mapping via reset_session, never delete historical rows."""
+    runner = _make_runner()
+    runner._run_fragmentation_finalizer = AsyncMock(
+        return_value=_write_verified_fragmentation_artifacts(tmp_path)
+    )
+
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="responsible_memory_rollout"):
+        await runner._handle_fragmentation_command(_make_event("/fragmentation finalize-reset"))
+
+    getattr(runner.session_store, "reset_session").assert_called_once()
+    method_calls = getattr(runner.session_store, "method_calls")
+    assert "delete_session" not in {call[0] for call in method_calls}

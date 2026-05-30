@@ -9877,6 +9877,69 @@ class GatewayRunner:
                 return candidate
         return None
 
+    def _verify_fragmentation_finalizer_result(
+        self,
+        result: Dict[str, Any],
+        *,
+        profile: str,
+        old_session_id: str,
+    ) -> None:
+        """Verify recovery + pending marker before live session rotation."""
+        import hashlib
+
+        if result.get("profile") not in (None, profile):
+            raise RuntimeError(
+                f"finalizer profile mismatch: expected {profile}, got {result.get('profile')}"
+            )
+
+        recovery_path_raw = str(result.get("recovery_path") or "").strip()
+        marker_path_raw = str(result.get("pending_marker") or "").strip()
+        if not recovery_path_raw:
+            raise RuntimeError("finalizer result missing recovery_path")
+        if not marker_path_raw:
+            raise RuntimeError("finalizer result missing pending_marker")
+
+        recovery_path = Path(recovery_path_raw).expanduser()
+        marker_path = Path(marker_path_raw).expanduser()
+        if not recovery_path.exists() or not recovery_path.is_file():
+            raise RuntimeError(f"recovery file does not exist: {recovery_path}")
+        recovery_size = recovery_path.stat().st_size
+        if recovery_size <= 0:
+            raise RuntimeError(f"recovery file is empty: {recovery_path}")
+        recovery_text = recovery_path.read_text(encoding="utf-8", errors="replace")
+        for pattern in _GATEWAY_SECRET_PATTERNS:
+            if pattern.search(recovery_text):
+                raise RuntimeError("recovery file failed secret-pattern guard")
+        digest = hashlib.sha256(recovery_path.read_bytes()).hexdigest()
+
+        if not marker_path.exists() or not marker_path.is_file():
+            raise RuntimeError(f"pending marker does not exist: {marker_path}")
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"pending marker is not valid JSON: {marker_path}") from exc
+        if not isinstance(marker, dict):
+            raise RuntimeError("pending marker JSON is not an object")
+
+        expected = {
+            "recovery_path": str(recovery_path),
+            "recovery_size_bytes": recovery_size,
+            "recovery_sha256": digest,
+            "old_session_id": old_session_id,
+            "reset_required": True,
+        }
+        for key, value in expected.items():
+            if marker.get(key) != value:
+                raise RuntimeError(
+                    f"pending marker verification failed for {key}: expected {value!r}, got {marker.get(key)!r}"
+                )
+        if result.get("recovery_size_bytes") != recovery_size:
+            raise RuntimeError("finalizer result recovery_size_bytes does not match recovery file")
+        if result.get("recovery_sha256") != digest:
+            raise RuntimeError("finalizer result recovery_sha256 does not match recovery file")
+        if result.get("reset_required") is not True:
+            raise RuntimeError("finalizer result reset_required must be true for live finalize-reset")
+
     async def _run_fragmentation_finalizer(
         self,
         *,
@@ -9975,6 +10038,11 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
         old_entry = getattr(self.session_store, "_entries", {}).get(session_key)
         old_session_id = getattr(old_entry, "session_id", "") or ""
+        if not old_session_id:
+            return (
+                "No live gateway session is bound to this room yet; send a normal message first "
+                "or use the offline fallback `fragmentation_finalize.py offline-reset-session` for stopped sessions."
+            )
 
         try:
             finalizer_result = await self._run_fragmentation_finalizer(
@@ -9982,6 +10050,11 @@ class GatewayRunner:
                 old_session_id=old_session_id,
                 source=source_path,
                 note=note,
+            )
+            self._verify_fragmentation_finalizer_result(
+                finalizer_result,
+                profile=profile,
+                old_session_id=old_session_id,
             )
         except Exception as exc:
             logger.warning("Fragmentation finalize-reset failed: %s", exc, exc_info=True)
