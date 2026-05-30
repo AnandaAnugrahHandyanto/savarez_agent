@@ -465,6 +465,23 @@ class ConsolidationEngine:
                                 or "")
                     facts_sorted = sorted(facts, key=_sort_key)
 
+                    # Fix 2: Prefer facts with LOWER engram strength
+                    # (they need consolidation most -- like sleep
+                    # prioritizes fragile memories for replay)
+                    def _engram_strength_key(fact_d: dict) -> float:
+                        try:
+                            ref = sha256(
+                                fact_d.get('content', '').encode()
+                            ).hexdigest()[:16]
+                            row = state._conn.execute(
+                                'SELECT strength FROM engram_strengths '
+                                'WHERE memory_ref = ?', (ref,)
+                            ).fetchone()
+                            return row['strength'] if row else 1.0
+                        except Exception:
+                            return 1.0
+                    facts_sorted.sort(key=_engram_strength_key)
+
                     # Get existing schema contents for dedup
                     existing = state._conn.execute(
                         "SELECT content FROM schemas ORDER BY updated_at DESC LIMIT 20"
@@ -836,6 +853,7 @@ class FeedbackCoordinator:
 
     def __init__(self) -> None:
         self._pending_predictions: list[str] = []
+        self._reconsolidation: 'ReconsolidationEngine | None' = None
         self._lock = threading.Lock()
 
     def predict(self, state: 'PipelineState', context: str) -> list[str]:
@@ -882,6 +900,31 @@ class FeedbackCoordinator:
                     f"Recent pattern (updated={row['updated_at']}, "
                     f"conf={row['confidence']:.2f}): {row['content'][:100]}"
                 )
+            # Fix 3: Include recently consolidated schemas as predictions
+            try:
+                last_run = state._conn.execute(
+                    "SELECT timestamp FROM consolidation_runs "
+                    "ORDER BY timestamp DESC LIMIT 1"
+                ).fetchone()
+                if last_run:
+                    recent_schemas = state._conn.execute(
+                        "SELECT content, confidence FROM schemas "
+                        "WHERE created_at >= ? OR updated_at >= ? "
+                        "ORDER BY confidence DESC LIMIT 3",
+                        (last_run["timestamp"], last_run["timestamp"]),
+                    ).fetchall()
+                    for srow in recent_schemas:
+                        sprefix = srow["content"][:50]
+                        if sprefix not in seen_prefixes:
+                            seen_prefixes.add(sprefix)
+                            predictions.append(
+                                f"Consolidated schema "
+                                f"(conf={srow['confidence']:.2f}): "
+                                f"{srow['content'][:100]}"
+                            )
+            except Exception as e:
+                logger.debug(
+                    "Consolidated schema prediction failed: %s", e)
             with self._lock:
                 self._pending_predictions = predictions
             return predictions
@@ -917,6 +960,18 @@ class FeedbackCoordinator:
                         "WHERE confidence > 0.3"
                     )
                     state._conn.commit()
+                # Fix 4: High prediction error triggers reconsolidation
+                if self._reconsolidation:
+                    try:
+                        self._reconsolidation.check_retrieval(
+                            state,
+                            pending[0][:200] if pending else "",
+                            actual[:200],
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            "Prediction-error reconsolidation "
+                            "failed: %s", e)
             elif max_error < 0.2:
                 # Low error: schema was right, increase confidence
                 with state._lock:
@@ -1558,6 +1613,9 @@ class MemoryPipeline:
         # Layer 5: FeedbackCoordinator
         if self._config.get("feedback", {}).get("enabled", True):
             self._feedback = FeedbackCoordinator()
+            # Fix 4 wiring: give FeedbackCoordinator access to reconsolidation
+            if self._reconsolidation:
+                self._feedback._reconsolidation = self._reconsolidation
 
         # Layer 6: ActivationGraph
         act_cfg = self._config.get("activation", {})
@@ -1695,6 +1753,19 @@ class MemoryPipeline:
                         ).start()
                 except Exception as e:
                     logger.debug("SleepScheduler failed: %s", e)
+
+            # Fix 6: Activation to Retrieval: expand query with
+            # co-activated terms before provider retrieval
+            if self._activation and self._state:
+                try:
+                    expansions = self._activation.expand_query(
+                        self._state, user)
+                    if expansions:
+                        meta["activation_expansions"] = expansions
+                except Exception as e:
+                    logger.debug(
+                        "Activation query expansion failed: %s", e)
+
             if self._state:
                 with self._state._lock:
                     self._state._conn.execute(
@@ -1744,6 +1815,41 @@ class MemoryPipeline:
                             logger.debug(
                                 "Semantic conflict detected: action=%s, score=%.2f",
                                 action, error_score)
+
+                        # Fix 5: Reconsolidation to Salience: update signal
+                        # weights after conflict resolution
+                        try:
+                            for sig in ("emotion", "novelty",
+                                        "importance"):
+                                adj = (-0.02 if error_score > 0.5
+                                       else 0.01)
+                                with self._state._lock:
+                                    self._state._conn.execute(
+                                        "INSERT INTO salience_weights "
+                                        "(signal_type, weight, "
+                                        "sample_count, success_count) "
+                                        "VALUES (?, 0.5, 1, ?) "
+                                        "ON CONFLICT(signal_type) "
+                                        "DO UPDATE SET "
+                                        "weight = MAX(0.1, "
+                                        "  MIN(1.0, weight + ?)), "
+                                        "sample_count = "
+                                        "  sample_count + 1, "
+                                        "success_count = "
+                                        "  success_count + ?, "
+                                        "updated_at = "
+                                        "  CURRENT_TIMESTAMP",
+                                        (sig,
+                                         1 if adj > 0 else 0,
+                                         adj,
+                                         1 if adj > 0 else 0),
+                                    )
+                                    self._state._conn.commit()
+                        except Exception as e:
+                            logger.debug(
+                                "Salience weight update "
+                                "failed: %s", e)
+
                 except Exception as e:
                     logger.debug("Semantic conflict detection failed: %s", e)
 
@@ -1786,6 +1892,32 @@ class MemoryPipeline:
                 emotional_valence=result.emotion,
             )
             meta["decay_affected"] = decay_affected
+
+            # --- Fix 1: Salience-to-Engram: initial strength from salience ---
+            if self._engrams and self._state:
+                try:
+                    sal = result.overall
+                    if sal > 0.5:
+                        init_str = 1.0
+                    elif sal > 0.2:
+                        init_str = 0.7
+                    else:
+                        init_str = 0.4
+                    ref = sha256(user_content.encode()).hexdigest()[:16]
+                    with self._state._lock:
+                        self._state._conn.execute(
+                            "INSERT INTO engram_strengths "
+                            "(memory_ref, provider, strength) "
+                            "VALUES (?, 'salience_init', ?) "
+                            "ON CONFLICT(memory_ref) DO UPDATE SET "
+                            "strength = MAX(strength, excluded.strength), "
+                            "last_accessed = CURRENT_TIMESTAMP",
+                            (ref, init_str),
+                        )
+                        self._state._conn.commit()
+                    meta["initial_engram_strength"] = init_str
+                except Exception as e:
+                    logger.debug("Salience-to-engram init failed: %s", e)
 
             logger.debug(
                 "sync_turn: emotion=%.3f, overall=%.3f, decay_affected=%d",
@@ -1910,6 +2042,29 @@ class MemoryPipeline:
                 try:
                     summary = f"Session {self._session_id}: {len(messages)} messages"
                     self._episodic.close_episode(summary=summary)
+                    # Fix 7: Episodic to Consolidation: mini-consolidation
+                    # on episode facts when episode closes
+                    if self._consolidation:
+                        try:
+                            epi_facts = []
+                            for msg in messages[-5:]:
+                                c = (msg.get("content", "")
+                                     if isinstance(msg, dict)
+                                     else str(msg))
+                                if c and len(c) > 15:
+                                    epi_facts.append(
+                                        {"content": c,
+                                         "domain": "episode"})
+                            min_req = max(
+                                2,
+                                self._consolidation._min_facts // 2)
+                            if len(epi_facts) >= min_req:
+                                self._consolidation.consolidate(
+                                    self._state, facts=epi_facts)
+                        except Exception as e:
+                            logger.debug(
+                                "Episodic mini-consolidation "
+                                "failed: %s", e)
                 except Exception as e:
                     logger.debug("Episodic close_episode failed: %s", e)
 
@@ -1917,10 +2072,43 @@ class MemoryPipeline:
             if self._dreaming:
                 try:
                     if self._dreaming.should_dream():
+                        # Fix 8: Dreaming to Schemas and Predictions:
+                        # wrap dream_cycle with post-processing that
+                        # updates schema confidences and adds dream
+                        # hypotheses to pending predictions
+                        def _dream_with_postprocessing():
+                            try:
+                                dr = self._dreaming.dream_cycle(
+                                    self._session_id)
+                                # Boost schema confidences after replay
+                                if self._state:
+                                    with self._state._lock:
+                                        self._state._conn.execute(
+                                            "UPDATE schemas SET "
+                                            "confidence = MIN(1.0, "
+                                            "  confidence + 0.02) "
+                                            "WHERE confidence > 0.5"
+                                        )
+                                        self._state._conn.commit()
+                                # Add dream hypotheses as predictions
+                                if self._feedback and dr:
+                                    hypo = getattr(
+                                        dr, "hypotheses", [])
+                                    if hypo:
+                                        with self._feedback._lock:
+                                            self._feedback \
+                                                ._pending_predictions \
+                                                .extend(
+                                                    [f"Dream: {h}"
+                                                     for h
+                                                     in hypo[:3]])
+                            except Exception as e:
+                                logger.debug(
+                                    "Dream post-processing "
+                                    "failed: %s", e)
                         import threading as _t
                         _t.Thread(
-                            target=self._dreaming.dream_cycle,
-                            args=(self._session_id,),
+                            target=_dream_with_postprocessing,
                             daemon=True,
                         ).start()
                 except Exception as e:
