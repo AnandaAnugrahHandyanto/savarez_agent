@@ -13229,6 +13229,14 @@ class GatewayRunner:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    # Mirror the title to the Telegram DM topic name (same as
+                    # auto-title does).  Best-effort; don't fail the command.
+                    try:
+                        await self._rename_telegram_topic_for_session_title(
+                            source, session_id, sanitized
+                        )
+                    except Exception:
+                        pass
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")
