@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import sqlite3
 import time
 from pathlib import Path
 
@@ -45,6 +46,121 @@ def test_init_creates_expected_tables(kanban_home):
         ).fetchall()
     names = {r["name"] for r in rows}
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
+
+
+def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
+    """All kanban connections should use the explicit busy-timeout knob.
+
+    A worker stampede should wait for SQLite's writer lock instead of failing
+    immediately with ``database is locked`` during first-connect/WAL/schema
+    setup.  The timeout must be queryable via PRAGMA so CLI, gateway, and tool
+    connections behave the same way.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_BUSY_TIMEOUT_MS", "123456")
+
+    with kb.connect() as conn:
+        row = conn.execute("PRAGMA busy_timeout").fetchone()
+
+    assert row[0] == 123456
+
+
+def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
+    """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    corrupt = home / "kanban.db"
+    corrupt.write_bytes(b"SQLit" + bytes.fromhex("17 03 03 00 13") + b"x" * 32)
+
+    with pytest.raises(sqlite3.DatabaseError) as exc_info:
+        kb.connect(board="default")
+
+    msg = str(exc_info.value)
+    assert "file is not a database" in msg
+    assert "TLS record header detected at byte offset 5" in msg
+    assert "53 51 4c 69 74 17 03 03 00 13" in msg
+
+
+def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
+    """Legacy DBs missing additive indexed columns must migrate cleanly.
+
+    SCHEMA_SQL runs in ``connect()`` before ``_migrate_add_optional_columns``.
+    Indexes over additive columns therefore must be created after the
+    migration adds those columns, or boards predating the column fail to
+    open before migration can run.
+
+    Covers the additive-column indexes present in this branch:
+    - ``tasks.tenant``           -> ``idx_tasks_tenant``        (#16081)
+    - ``tasks.idempotency_key``  -> ``idx_tasks_idempotency``   (#17805)
+    - ``task_events.run_id``     -> ``idx_events_run``          (#17805)
+    """
+    db_path = tmp_path / "legacy-kanban.db"
+    conn = sqlite3.connect(str(db_path))
+    # Pre-#16081 ``tasks`` shape: missing tenant, idempotency_key, session_id.
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER
+        )
+    """)
+    # Pre-#17805 ``task_events`` shape: missing run_id. Required because
+    # ``_migrate_add_optional_columns`` unconditionally runs PRAGMA on
+    # ``task_events`` for run_id back-fill.
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES ('legacy', 'old board task', 'ready', 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path) as migrated:
+        task_columns = {
+            row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")
+        }
+        event_columns = {
+            row["name"]
+            for row in migrated.execute("PRAGMA table_info(task_events)")
+        }
+        indexes = {
+            row["name"]
+            for row in migrated.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+
+    # Additive columns added by migration:
+    assert "tenant" in task_columns
+    assert "idempotency_key" in task_columns
+    assert "run_id" in event_columns
+    # And their indexes — the regression scope of this test:
+    assert "idx_tasks_tenant" in indexes
+    assert "idx_tasks_idempotency" in indexes
+    assert "idx_events_run" in indexes
 
 
 # ---------------------------------------------------------------------------

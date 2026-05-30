@@ -78,6 +78,7 @@ import secrets
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -870,13 +871,10 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_tenant          ON tasks(tenant);
-CREATE INDEX IF NOT EXISTS idx_tasks_idempotency     ON tasks(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_events_run            ON task_events(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
@@ -888,6 +886,246 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 # ---------------------------------------------------------------------------
 
 _INITIALIZED_PATHS: set[str] = set()
+_INIT_LOCK = threading.RLock()
+_SQLITE_HEADER = b"SQLite format 3\x00"
+DEFAULT_BUSY_TIMEOUT_MS = 120_000
+
+
+def _resolve_busy_timeout_ms() -> int:
+    """Return the SQLite busy timeout for Kanban connections.
+
+    Kanban is the shared cross-profile dispatch bus, so worker stampedes are
+    expected.  A long busy timeout lets SQLite serialize writers via WAL rather
+    than surfacing transient ``database is locked`` failures during bursts.
+    """
+    raw = os.environ.get("HERMES_KANBAN_BUSY_TIMEOUT_MS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = 0
+        if parsed > 0:
+            return parsed
+    return DEFAULT_BUSY_TIMEOUT_MS
+
+
+def _sqlite_connect(path: Path) -> sqlite3.Connection:
+    """Open a Kanban SQLite connection with consistent lock waiting."""
+    busy_timeout_ms = _resolve_busy_timeout_ms()
+    conn = sqlite3.connect(
+        str(path),
+        isolation_level=None,
+        timeout=busy_timeout_ms / 1000.0,
+    )
+    # ``sqlite3.connect(timeout=...)`` normally maps to busy_timeout, but set
+    # the PRAGMA explicitly so it is observable and survives future wrapper
+    # changes. Parameter binding is not supported for PRAGMA assignments.
+    conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+    return conn
+
+
+@contextlib.contextmanager
+def _cross_process_init_lock(path: Path):
+    """Serialize first-connect WAL/schema/integrity setup across processes.
+
+    ``_INIT_LOCK`` only protects threads inside one Python process. During a
+    dispatcher burst, many worker processes can all hit a fresh/legacy board at
+    once and each process has an empty ``_INITIALIZED_PATHS`` cache. This file
+    lock keeps header validation, integrity probing, WAL activation, and
+    additive migrations single-file/single-writer across the whole host while
+    leaving normal post-init DB usage concurrent under SQLite WAL.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".init.lock")
+    handle = lock_path.open("a+b")
+    try:
+        if not _IS_WINDOWS:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if not _IS_WINDOWS:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
+    """Return True for a TLS record header at ``data[offset:]``."""
+    if len(data) < offset + 5:
+        return False
+    content_type = data[offset]
+    major = data[offset + 1]
+    minor = data[offset + 2]
+    length = int.from_bytes(data[offset + 3:offset + 5], "big")
+    return (
+        content_type in {0x14, 0x15, 0x16, 0x17}
+        and major == 0x03
+        and minor in {0x00, 0x01, 0x02, 0x03, 0x04}
+        and 0 < length <= 18432
+    )
+
+
+def _validate_sqlite_header(path: Path) -> None:
+    """Fail early with an actionable error for non-SQLite Kanban DB files.
+
+    ``sqlite3.connect()`` creates missing and zero-byte files, so those are
+    allowed. Existing non-empty files must have the SQLite header before we
+    hand them to SQLite/WAL setup. This keeps corrupted page-0 failures from
+    being collapsed into a generic PRAGMA error and lets the gateway's corrupt
+    board handling identify the board by fingerprint.
+    """
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if stat.st_size == 0:
+        return
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(64)
+    except OSError:
+        return
+    if head.startswith(_SQLITE_HEADER):
+        return
+    signature = ""
+    if head.startswith(b"SQLit") and _looks_like_tls_record_at(head, 5):
+        signature = " (TLS record header detected at byte offset 5)"
+    elif _looks_like_tls_record_at(head, 0):
+        signature = " (TLS record header detected at byte offset 0)"
+    raise sqlite3.DatabaseError(
+        "file is not a database: invalid SQLite header for "
+        f"{path}{signature}; first_32={head[:32].hex(' ')}"
+    )
+
+
+class KanbanDbCorruptError(RuntimeError):
+    """Raised when an existing kanban DB file fails integrity checks.
+
+    Fail-closed guard against silent recreation of a corrupt board file,
+    which would otherwise destroy the user's tasks. Carries both the
+    original path and the timestamped backup we made before refusing.
+    """
+
+    def __init__(self, db_path: Path, backup_path: Optional[Path], reason: str):
+        self.db_path = db_path
+        self.backup_path = backup_path
+        self.reason = reason
+        backup_str = str(backup_path) if backup_path is not None else "<backup failed>"
+        super().__init__(
+            f"Refusing to open corrupt kanban DB at {db_path}: {reason}. "
+            f"Original preserved; backup at {backup_str}."
+        )
+
+
+def _backup_corrupt_db(path: Path) -> Optional[Path]:
+    """Copy a corrupt DB (and its WAL/SHM sidecars) to a timestamped backup.
+
+    Returns the backup path of the main DB file, or ``None`` if the copy
+    itself failed (the caller still raises loudly in that case).
+
+    Writes are confined to the original DB's parent directory. The
+    backup basename is derived purely from ``path.name``, never from
+    caller-supplied directory segments — no traversal is possible.
+    """
+    # Resolve once and pin the parent so subsequent path operations cannot
+    # escape it. ``Path.resolve()`` collapses any ``..`` segments and
+    # symlinks, and we only ever write inside ``parent``.
+    resolved = path.resolve()
+    parent = resolved.parent
+    base_name = resolved.name  # basename only
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = parent / f"{base_name}.corrupt.{stamp}.bak"
+    # Defensive: candidate must still be inside parent after construction.
+    # f-string interpolation of ``base_name`` cannot escape ``parent``
+    # because ``base_name`` is itself a resolved basename, but assert it
+    # anyway so static analyzers can see the containment guarantee.
+    if candidate.parent != parent:
+        return None
+    counter = 0
+    while candidate.exists():
+        counter += 1
+        candidate = parent / f"{base_name}.corrupt.{stamp}.{counter}.bak"
+        if candidate.parent != parent:
+            return None
+    try:
+        shutil.copy2(resolved, candidate)
+    except OSError:
+        return None
+    for suffix in ("-wal", "-shm"):
+        sidecar = parent / (base_name + suffix)
+        if sidecar.parent != parent or not sidecar.exists():
+            continue
+        try:
+            sidecar_backup = parent / (candidate.name + suffix)
+            if sidecar_backup.parent != parent:
+                continue
+            shutil.copy2(sidecar, sidecar_backup)
+        except OSError:
+            pass
+    return candidate
+
+
+def _guard_existing_db_is_healthy(path: Path) -> None:
+    """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
+
+    Opens the probe in read/write mode so SQLite can recover or
+    checkpoint a healthy WAL/hot-journal DB before we declare it
+    corrupt. If the file is malformed, copy it (and any WAL/SHM
+    sidecars) to a timestamped backup and raise
+    :class:`KanbanDbCorruptError` so callers cannot silently recreate
+    the schema on top of a damaged DB.
+
+    Transient lock/busy errors (``sqlite3.OperationalError``) are NOT
+    treated as corruption; they propagate raw so the caller sees a
+    normal lock failure and no spurious ``.corrupt`` backup is made.
+
+    No-op for missing files, zero-byte files (treated as fresh), and
+    paths already proven healthy this process (cache hit).
+
+    Path-trust note: ``path`` arrives via :func:`connect`, which itself
+    resolves it from an explicit ``db_path`` argument, the
+    :func:`kanban_db_path` env-var chain, or the kanban-home default —
+    all sources Hermes treats as user-controlled-but-trusted on the
+    user's own machine. We additionally resolve the path here and
+    confine all filesystem writes to its parent directory so any
+    accidental ``..`` segments are collapsed before any I/O happens.
+    """
+    # Resolve before any I/O. ``Path.resolve()`` normalizes ``..`` and
+    # symlinks, giving us a canonical path whose parent dir we can pin.
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return
+    try:
+        if not resolved.exists() or resolved.stat().st_size == 0:
+            return
+    except OSError:
+        return
+    if str(resolved) in _INITIALIZED_PATHS:
+        return
+    reason: Optional[str] = None
+    try:
+        probe = _sqlite_connect(resolved)
+        try:
+            row = probe.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            probe.close()
+        if not row or (row[0] or "").lower() != "ok":
+            reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
+    except sqlite3.OperationalError:
+        # Lock contention, busy, transient IO — not corruption. Let it propagate.
+        raise
+    except sqlite3.DatabaseError as exc:
+        reason = f"sqlite refused to open file: {exc}"
+    if reason is None:
+        return
+    backup = _backup_corrupt_db(resolved)
+    raise KanbanDbCorruptError(resolved, backup, reason)
 
 
 def connect(
@@ -918,24 +1156,52 @@ def connect(
     else:
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
-    resolved = str(path.resolve())
-    needs_init = resolved not in _INITIALIZED_PATHS
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
-    conn.row_factory = sqlite3.Row
-    # WAL doesn't work on network filesystems (NFS/SMB/FUSE).  Shared helper
-    # falls back to DELETE with one WARNING so kanban stays usable there.
-    # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-    from hermes_state import apply_wal_with_fallback
-    apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    if needs_init:
-        # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
-        # migrations. Cached so subsequent connect() calls in the same
-        # process are cheap.
-        conn.executescript(SCHEMA_SQL)
-        _migrate_add_optional_columns(conn)
-        _INITIALIZED_PATHS.add(resolved)
+    with _cross_process_init_lock(path):
+        # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
+        # and other invalid-header cases without opening a sqlite connection.
+        _validate_sqlite_header(path)
+        # Full integrity probe — catches corruption past the header (malformed
+        # pages, broken internal metadata). Cached per-path after first success
+        # via _INITIALIZED_PATHS so it only runs once per process per path.
+        _guard_existing_db_is_healthy(path)
+        resolved = str(path.resolve())
+        conn = _sqlite_connect(path)
+        try:
+            conn.row_factory = sqlite3.Row
+            with _INIT_LOCK:
+                # WAL activation can take an exclusive lock while SQLite creates the
+                # sidecar files for a fresh database. Keep it in the same process-local
+                # critical section as schema initialization so concurrent gateway
+                # startup threads do not race before _INITIALIZED_PATHS is populated.
+                # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
+                # falls back to DELETE with one WARNING so kanban stays usable there.
+                # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
+                from hermes_state import apply_wal_with_fallback
+                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                # FULL (was NORMAL): fsync before each checkpoint to narrow the
+                # crash window that can leave a b-tree page header torn.
+                conn.execute("PRAGMA synchronous=FULL")
+                conn.execute("PRAGMA wal_autocheckpoint=100")
+                conn.execute("PRAGMA foreign_keys=ON")
+                # Zero freed pages so a later torn write cannot expose stale
+                # cell content; persisted in the DB header for new DBs.
+                conn.execute("PRAGMA secure_delete=ON")
+                # Surface corrupt cells as read errors instead of silent
+                # wrong-data returns.
+                conn.execute("PRAGMA cell_size_check=ON")
+                needs_init = resolved not in _INITIALIZED_PATHS
+                if needs_init:
+                    # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
+                    # migrations. Cached so subsequent connect() calls in the same
+                    # process are cheap. The lock prevents same-process dispatcher
+                    # threads from racing through the additive ALTER TABLE pass with
+                    # stale PRAGMA snapshots during gateway startup.
+                    conn.executescript(SCHEMA_SQL)
+                    _migrate_add_optional_columns(conn)
+                    _INITIALIZED_PATHS.add(resolved)
+        except Exception:
+            conn.close()
+            raise
     return conn
 
 
@@ -1001,10 +1267,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
-            "ON tasks(idempotency_key)"
-        )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
+        "ON tasks(idempotency_key)"
+    )
     # Legacy column migration: ``spawn_failures`` → ``consecutive_failures``
     # and ``last_spawn_error`` → ``last_failure_error``.
     #
@@ -1082,10 +1349,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
     if "run_id" not in ev_cols:
         _add_column_if_missing(conn, "task_events", "run_id", "run_id INTEGER")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_events_run "
-            "ON task_events(run_id, id)"
-        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_run "
+        "ON task_events(run_id, id)"
+    )
 
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
