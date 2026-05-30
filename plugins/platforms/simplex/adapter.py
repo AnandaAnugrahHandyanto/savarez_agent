@@ -108,6 +108,23 @@ def _is_audio_ext(ext: str) -> bool:
     return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac"}
 
 
+def _handshake_status_code(exc: Exception) -> Optional[int]:
+    """Extract the HTTP status from a websockets handshake-rejection error.
+
+    websockets >= 14 raises ``InvalidStatus`` carrying ``.response.status_code``;
+    older releases raised ``InvalidStatusCode`` with a flat ``.status_code``.
+    Return the status as an int, or ``None`` if it cannot be determined.
+    """
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status is None:
+        status = getattr(exc, "status_code", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # SimpleX Adapter
 # ---------------------------------------------------------------------------
@@ -215,6 +232,17 @@ class SimplexAdapter(BasePlatformAdapter):
         """Maintain a persistent WebSocket connection to the daemon."""
         import websockets as _wsclient
         import websockets as _wsexc
+        # websockets >= 14 raises InvalidStatus on a rejected handshake
+        # (carrying a .response with .status_code). Older releases used
+        # InvalidStatusCode (with a .status_code attribute) and still expose
+        # the name as a deprecated alias; fall back to it so the adapter works
+        # against either version.
+        try:
+            from websockets.exceptions import InvalidStatus as _WSInvalidStatus
+        except ImportError:  # pragma: no cover - very old websockets
+            from websockets.exceptions import (  # type: ignore[attr-defined]
+                InvalidStatusCode as _WSInvalidStatus,
+            )
 
         backoff = WS_RETRY_DELAY_INITIAL
 
@@ -245,6 +273,25 @@ class SimplexAdapter(BasePlatformAdapter):
 
             except asyncio.CancelledError:
                 break
+            except _WSInvalidStatus as e:
+                # The daemon rejected the WebSocket handshake with an HTTP
+                # status. A 4xx is a permanent misconfiguration (bad path,
+                # auth, wrong endpoint) that will never succeed on retry —
+                # escalate to a gateway-visible fatal state instead of
+                # busy-looping forever. 5xx may be transient, so keep
+                # retrying those via the generic path below.
+                status = _handshake_status_code(e)
+                if status is not None and 400 <= status < 500:
+                    message = f"SimpleX daemon rejected WebSocket handshake (HTTP {status})"
+                    logger.error("SimpleX WS: %s — stopping reconnect", message)
+                    self._set_fatal_error("handshake_rejected", message, retryable=False)
+                    break
+                if self._running:
+                    logger.warning(
+                        "SimpleX WS: handshake rejected (HTTP %s) "
+                        "(reconnecting in %.0fs)",
+                        status, backoff,
+                    )
             except _wsexc.WebSocketException as e:
                 if self._running:
                     logger.warning(

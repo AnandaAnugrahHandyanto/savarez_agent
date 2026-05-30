@@ -321,6 +321,116 @@ async def test_standalone_send_missing_url(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 9b. Reconnect loop escalates a non-retryable handshake rejection
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ws_listener_escalates_4xx_handshake_rejection(monkeypatch):
+    """A 4xx WebSocket-handshake rejection is fatal, not an endless retry.
+
+    A permanently misconfigured daemon answers the handshake with an HTTP
+    4xx. That can never succeed on retry, so the listener must flag a
+    non-retryable fatal error and stop looping instead of busy-reconnecting
+    forever.
+    """
+    import asyncio
+
+    import websockets
+    from gateway.config import PlatformConfig
+
+    # Build a real handshake-rejection exception for the installed
+    # websockets version (InvalidStatus on >= 14, else InvalidStatusCode).
+    try:
+        from websockets.exceptions import InvalidStatus
+        from websockets.datastructures import Headers
+        from websockets.http11 import Response
+
+        rejection = InvalidStatus(Response(403, "Forbidden", Headers()))
+    except ImportError:  # pragma: no cover - very old websockets
+        from websockets.exceptions import InvalidStatusCode
+
+        rejection = InvalidStatusCode(403, Headers())  # type: ignore[call-arg]
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._running = True
+
+    # Every connect attempt is rejected with the 4xx handshake error.
+    def _raise_rejection(*args, **kwargs):
+        raise rejection
+
+    monkeypatch.setattr(websockets, "connect", _raise_rejection)
+
+    fatal_calls = []
+    monkeypatch.setattr(
+        adapter,
+        "_set_fatal_error",
+        lambda code, message, *, retryable: fatal_calls.append(
+            (code, message, retryable)
+        ),
+    )
+
+    # If the fix is missing the loop busy-retries forever — fail fast rather
+    # than hang the suite.
+    await asyncio.wait_for(adapter._ws_listener(), timeout=5.0)
+
+    assert len(fatal_calls) == 1, "expected exactly one fatal-error escalation"
+    code, _message, retryable = fatal_calls[0]
+    assert retryable is False
+    assert code == "handshake_rejected"
+
+
+@pytest.mark.asyncio
+async def test_ws_listener_retries_5xx_handshake_rejection(monkeypatch):
+    """A 5xx handshake rejection is transient — keep retrying, don't escalate."""
+    import asyncio
+
+    import websockets
+    from gateway.config import PlatformConfig
+
+    try:
+        from websockets.exceptions import InvalidStatus
+        from websockets.datastructures import Headers
+        from websockets.http11 import Response
+
+        rejection = InvalidStatus(Response(503, "Unavailable", Headers()))
+    except ImportError:  # pragma: no cover - very old websockets
+        from websockets.exceptions import InvalidStatusCode
+
+        rejection = InvalidStatusCode(503, Headers())  # type: ignore[call-arg]
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._running = True
+
+    attempts = 0
+
+    def _raise_rejection(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        # Stop the loop after it has demonstrated a retry rather than escalating.
+        if attempts >= 2:
+            adapter._running = False
+        raise rejection
+
+    monkeypatch.setattr(websockets, "connect", _raise_rejection)
+    # Don't actually sleep through the backoff.
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    fatal_calls = []
+    monkeypatch.setattr(
+        adapter,
+        "_set_fatal_error",
+        lambda code, message, *, retryable: fatal_calls.append(retryable),
+    )
+
+    await asyncio.wait_for(adapter._ws_listener(), timeout=5.0)
+
+    assert attempts >= 2, "5xx should be retried, not escalated on first hit"
+    assert fatal_calls == [], "5xx must not trigger a fatal escalation"
+
+
+# ---------------------------------------------------------------------------
 # 10. register() — plugin-side metadata
 # ---------------------------------------------------------------------------
 
