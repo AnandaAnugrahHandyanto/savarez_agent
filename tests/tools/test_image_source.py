@@ -7,6 +7,7 @@ from tools.image_source import (
     NotAnImage,
     ResolveContext,
     ResolvedImage,
+    SourceNotFound,
     SourceTooLarge,
     SourceUnsafe,
     UnsupportedScheme,
@@ -73,3 +74,38 @@ async def test_http_url_ssrf_blocked(monkeypatch):
     monkeypatch.setattr(image_source, "_is_safe_http", lambda u: False)
     with pytest.raises(SourceUnsafe):
         await resolve_image_source("http://169.254.169.254/x.png", ResolveContext())
+
+
+@pytest.mark.asyncio
+async def test_file_uri_resolves(tmp_path):
+    img = tmp_path / "cache" / "images" / "a.png"
+    img.parent.mkdir(parents=True)
+    img.write_bytes(base64.b64decode(PNG_B64))
+    res = await resolve_image_source(f"file://{img}", ResolveContext())
+    assert res.origin == "file"
+    assert res.mime == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_local_path_outside_cache_allowed_in_pr1(tmp_path):
+    # PR 1 preserves today's permissive behavior; the allowlist (PR 2) is a seam.
+    img = tmp_path / "Pictures" / "cat.png"
+    img.parent.mkdir(parents=True)
+    img.write_bytes(base64.b64decode(PNG_B64))
+    res = await resolve_image_source(str(img), ResolveContext())
+    assert res.origin == "file"
+
+
+@pytest.mark.asyncio
+async def test_tilde_path_expanded(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    img = tmp_path / "shot.png"
+    img.write_bytes(base64.b64decode(PNG_B64))
+    res = await resolve_image_source("~/shot.png", ResolveContext())
+    assert res.origin == "file"
+
+
+@pytest.mark.asyncio
+async def test_missing_local_file_not_found(tmp_path):
+    with pytest.raises(SourceNotFound):
+        await resolve_image_source(str(tmp_path / "nope.png"), ResolveContext())

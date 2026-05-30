@@ -8,7 +8,9 @@ once.  Returns raw bytes (not a path): the downstream step is base64 -> data URL
 from __future__ import annotations
 
 import base64
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 # Decoded payload cap, mirroring tools/vision_tools._MAX_BASE64_BYTES
@@ -67,7 +69,19 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
         if not _is_safe_http(s):
             raise SourceUnsafe("blocked: unsafe or private URL", src=s)
         return _finalize(await _download_to_bytes(s), "", "http", s)
-    # file / local / container branches added in Tasks 6-7.
+
+    candidate = s[len("file://"):] if s.startswith("file://") else s
+    if s.startswith("file://") or _looks_like_path(candidate):
+        p = Path(os.path.expanduser(candidate))
+        real = _maybe_translate_container_path(p, ctx).resolve()
+        if not _within_allowed_roots(real, ctx):  # SEAM: returns True in PR 1
+            raise SourceUnsafe(
+                f"reading '{real}' is not permitted (outside allowed image roots)", src=s)
+        if real.is_file():
+            return _finalize(real.read_bytes(), "", "file", s)
+        # No host file (tmpfs / root-owned / container-only) -> read inside the sandbox.
+        return await _resolve_container_fallback(p, ctx, s)
+
     raise UnsupportedScheme(
         "Unrecognized image source. Use an http(s) URL, a local file path, "
         "a file:// URI, or a data: URL.",
@@ -99,7 +113,6 @@ def _is_safe_http(url: str) -> bool:
 
 async def _download_to_bytes(url: str) -> bytes:
     import tempfile
-    from pathlib import Path
 
     from tools.vision_tools import _download_image
 
@@ -110,6 +123,32 @@ async def _download_to_bytes(url: str) -> bytes:
         return tmp.read_bytes()
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _looks_like_path(s: str) -> bool:
+    return s.startswith(("/", "~", "./", "../")) or (len(s) > 1 and s[1] == ":")
+
+
+def _within_allowed_roots(real: Path, ctx: ResolveContext) -> bool:
+    """SEAM. PR 1 is permissive (preserves today's behavior). PR 2 replaces the
+    body with the readable-root allowlist + its threat model + migration note."""
+    return True
+
+
+def _maybe_translate_container_path(p: Path, ctx: ResolveContext) -> Path:
+    # Cache-dir reverse map only. Every other container path (tmpfs /workspace,
+    # docker_volumes, root-owned) returns unchanged and falls through to the
+    # exec-read fallback — the universal mechanism.
+    from tools.credential_files import from_agent_visible_cache_path
+
+    return Path(from_agent_visible_cache_path(str(p)))
+
+
+async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) -> ResolvedImage:
+    """Host file is absent/unreadable; read the bytes inside the sandbox (Task 7)."""
+    raise SourceNotFound(
+        f"'{p}' is not reachable on the host and no active sandbox is available "
+        f"to read it", src=src, origin="container")
 
 
 def _finalize(data: bytes, declared_mime: str, origin: str, src: str) -> ResolvedImage:
