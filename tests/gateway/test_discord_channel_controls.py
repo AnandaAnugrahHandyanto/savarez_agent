@@ -281,6 +281,75 @@ async def test_no_thread_with_auto_thread_disabled_is_noop(adapter, monkeypatch)
     adapter.handle_message.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_auto_thread_threshold_keeps_simple_one_liner_inline(adapter, monkeypatch):
+    """auto_thread_min_* keeps truly short messages in the parent channel."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_MIN_WORDS", "3")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_MIN_CHARS", "14")
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(channel=FakeTextChannel(channel_id=900), content="확인")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_threshold_threads_substantial_message(adapter, monkeypatch):
+    """Messages over the configured threshold still get auto-threaded."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_MIN_WORDS", "3")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_MIN_CHARS", "14")
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(channel=FakeTextChannel(channel_id=900), content="자동 스레드 강화해줘")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_free_response_channel_can_auto_thread_when_enabled(adapter, monkeypatch):
+    """Free-response channels can opt into auto-threading for non-simple messages."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_FREE_RESPONSE_CHANNELS", "true")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD_MIN_WORDS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD_MIN_CHARS", raising=False)
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="mentionless free response task should become isolated",
+    )
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+
+
 # ── config.py bridging ───────────────────────────────────────────────
 
 
@@ -322,6 +391,37 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
+
+
+def test_config_bridges_auto_thread_controls(monkeypatch, tmp_path):
+    """gateway/config.py bridges Discord auto-thread tuning keys to env vars."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "auto_thread_free_response_channels": True,
+            "auto_thread_min_words": 3,
+            "auto_thread_min_chars": 14,
+            "auto_thread_archive_minutes": 10080,
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for key in (
+        "DISCORD_AUTO_THREAD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_AUTO_THREAD_MIN_WORDS",
+        "DISCORD_AUTO_THREAD_MIN_CHARS",
+        "DISCORD_AUTO_THREAD_ARCHIVE_MINUTES",
+    ):
+        monkeypatch.setenv(key, "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_AUTO_THREAD_FREE_RESPONSE_CHANNELS") == "true"
+    assert os.getenv("DISCORD_AUTO_THREAD_MIN_WORDS") == "3"
+    assert os.getenv("DISCORD_AUTO_THREAD_MIN_CHARS") == "14"
+    assert os.getenv("DISCORD_AUTO_THREAD_ARCHIVE_MINUTES") == "10080"
 
 
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):

@@ -3941,7 +3941,82 @@ class DiscordAdapter(BasePlatformAdapter):
     # Auto-thread helpers
     # ------------------------------------------------------------------
 
-    async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
+    def _discord_auto_thread_free_response_channels(self) -> bool:
+        """Return whether free-response channels may still auto-create threads."""
+        configured = self.config.extra.get("auto_thread_free_response_channels")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("DISCORD_AUTO_THREAD_FREE_RESPONSE_CHANNELS", "false").lower() in {
+            "true", "1", "yes", "on"
+        }
+
+    def _discord_auto_thread_min_words(self) -> int:
+        """Return minimum whitespace-delimited words required for auto-threading."""
+        configured = self.config.extra.get("auto_thread_min_words")
+        raw = configured if configured is not None else os.getenv("DISCORD_AUTO_THREAD_MIN_WORDS", "0")
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 0
+
+    def _discord_auto_thread_min_chars(self) -> int:
+        """Return minimum text length required for auto-threading."""
+        configured = self.config.extra.get("auto_thread_min_chars")
+        raw = configured if configured is not None else os.getenv("DISCORD_AUTO_THREAD_MIN_CHARS", "0")
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 0
+
+    def _discord_auto_thread_archive_minutes(self) -> int:
+        """Return the Discord auto-archive duration for auto-created threads."""
+        configured = self.config.extra.get("auto_thread_archive_minutes")
+        raw = configured if configured is not None else os.getenv("DISCORD_AUTO_THREAD_ARCHIVE_MINUTES", "1440")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 1440
+        if value not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+            logger.warning(
+                "[%s] Invalid Discord auto_thread_archive_minutes=%s; using 1440",
+                self.name,
+                raw,
+            )
+            return 1440
+        return value
+
+    def _discord_auto_thread_threshold_met(self, content: str, has_attachments: bool = False) -> bool:
+        """Return whether a message is substantial enough to auto-thread.
+
+        When both thresholds are unset/zero, preserves legacy behavior: every
+        eligible channel message auto-threads.  Otherwise, attachments always
+        qualify, and text qualifies when it reaches either the word or char
+        threshold. This lets configs keep truly short one-liners inline while
+        sending likely multi-turn work into a thread.
+        """
+        min_words = self._discord_auto_thread_min_words()
+        min_chars = self._discord_auto_thread_min_chars()
+        if min_words <= 0 and min_chars <= 0:
+            return True
+        if has_attachments:
+            return True
+        text = re.sub(r"<@[!&]?\d+>", "", content or "")
+        text = re.sub(r"<#\d+>", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        word_count = len(re.findall(r"\S+", text))
+        char_count = len(text)
+        return (min_words > 0 and word_count >= min_words) or (
+            min_chars > 0 and char_count >= min_chars
+        )
+
+    async def _auto_create_thread(
+        self,
+        message: Any,
+        *,
+        auto_archive_duration: Optional[int] = None,
+    ) -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
 
         Returns the created thread object, or ``None`` on failure.
@@ -3958,18 +4033,19 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name = content[:80] if content else "Hermes"
         if len(content) > 80:
             thread_name = thread_name[:77] + "..."
+        archive_minutes = auto_archive_duration or self._discord_auto_thread_archive_minutes()
 
         try:
-            thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+            thread = await message.create_thread(name=thread_name, auto_archive_duration=archive_minutes)
             return thread
         except Exception as direct_error:
             display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
             reason = f"Auto-threaded from mention by {display_name}"
             try:
-                seed_msg = await message.channel.send(f"\U0001f9f5 Thread created by Hermes: **{thread_name}**")
+                seed_msg = await message.channel.send(f"🧵 Thread created by Hermes: **{thread_name}**")
                 thread = await seed_msg.create_thread(
                     name=thread_name,
-                    auto_archive_duration=1440,
+                    auto_archive_duration=archive_minutes,
                     reason=reason,
                 )
                 return thread
@@ -4528,8 +4604,9 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        channel_ids = {str(message.channel.id)}
+        is_free_channel = False
         if not isinstance(message.channel, discord.DMChannel):
-            channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
@@ -4578,6 +4655,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
                     return
+        all_attachments = list(message.attachments) + snapshot_attachments
+
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
@@ -4586,19 +4665,29 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            auto_thread_free_channel = (
+                is_free_channel and self._discord_auto_thread_free_response_channels()
+            )
+            skip_thread = bool(channel_ids & no_thread_channels) or (
+                is_free_channel and not auto_thread_free_channel
+            )
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
-                thread = await self._auto_create_thread(message)
+            threshold_met = self._discord_auto_thread_threshold_met(
+                normalized_content,
+                has_attachments=bool(all_attachments),
+            )
+            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message and threshold_met:
+                thread = await self._auto_create_thread(
+                    message,
+                    auto_archive_duration=self._discord_auto_thread_archive_minutes(),
+                )
                 if thread:
                     parent_channel_id = str(message.channel.id)
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
-
-        all_attachments = list(message.attachments) + snapshot_attachments
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -6097,6 +6186,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_FREE_RESPONSE_CHANNELS``, ``DISCORD_AUTO_THREAD``,
     ``DISCORD_REACTIONS``, ``DISCORD_IGNORED_CHANNELS``,
     ``DISCORD_ALLOWED_CHANNELS``, ``DISCORD_NO_THREAD_CHANNELS``,
+    ``DISCORD_AUTO_THREAD_FREE_RESPONSE_CHANNELS``,
+    ``DISCORD_AUTO_THREAD_MIN_WORDS``, ``DISCORD_AUTO_THREAD_MIN_CHARS``,
+    ``DISCORD_AUTO_THREAD_ARCHIVE_MINUTES``,
     ``DISCORD_HISTORY_BACKFILL``, ``DISCORD_HISTORY_BACKFILL_LIMIT``,
     ``DISCORD_ALLOW_MENTION_*``, ``DISCORD_REPLY_TO_MODE``,
     ``DISCORD_THREAD_REQUIRE_MENTION``).  Rather than rewrite ~50 call sites
@@ -6120,6 +6212,17 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+    if "auto_thread_free_response_channels" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD_FREE_RESPONSE_CHANNELS"):
+        os.environ["DISCORD_AUTO_THREAD_FREE_RESPONSE_CHANNELS"] = str(discord_cfg["auto_thread_free_response_channels"]).lower()
+    atmw = discord_cfg.get("auto_thread_min_words")
+    if atmw is not None and not os.getenv("DISCORD_AUTO_THREAD_MIN_WORDS"):
+        os.environ["DISCORD_AUTO_THREAD_MIN_WORDS"] = str(atmw)
+    atmc = discord_cfg.get("auto_thread_min_chars")
+    if atmc is not None and not os.getenv("DISCORD_AUTO_THREAD_MIN_CHARS"):
+        os.environ["DISCORD_AUTO_THREAD_MIN_CHARS"] = str(atmc)
+    atam = discord_cfg.get("auto_thread_archive_minutes")
+    if atam is not None and not os.getenv("DISCORD_AUTO_THREAD_ARCHIVE_MINUTES"):
+        os.environ["DISCORD_AUTO_THREAD_ARCHIVE_MINUTES"] = str(atam)
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
     # ignored_channels: channels where bot never responds (even when mentioned)
@@ -6208,9 +6311,11 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of ``config.yaml``
         # ``discord:`` keys (require_mention, free_response_channels,
-        # auto_thread, reactions, ignored_channels, allowed_channels,
-        # no_thread_channels, allow_mentions.*, reply_to_mode,
-        # thread_require_mention) into ``DISCORD_*`` env vars that the
+        # auto_thread, auto_thread_free_response_channels,
+        # auto_thread_min_words, auto_thread_min_chars,
+        # auto_thread_archive_minutes, reactions, ignored_channels,
+        # allowed_channels, no_thread_channels, allow_mentions.*,
+        # reply_to_mode, thread_require_mention) into ``DISCORD_*`` env vars that the
         # adapter reads via ``os.getenv()``.  Replaces the hardcoded block
         # that used to live in ``gateway/config.py``.  Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,
