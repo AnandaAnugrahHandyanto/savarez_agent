@@ -91,7 +91,7 @@ const MOUSE_BURST_NOISE_RE = /^(?=[^]*\d)(?=[^]*;)(?=(?:[^]*[Mm]){3})[\d;<\[\]IM
 // digit AND at least one `M`/`m` — a prose gap like ` for details ` contains
 // disqualifying letters and never matches.
 // eslint-disable-next-line no-control-regex
-const MOUSE_BURST_RESIDUE_RE = /^(?=[^]*\d)(?=[^]*[Mm])[\d;<\[\]IMm \x1b]+$/
+const MOUSE_BURST_RESIDUE_RE = /^(?=[^\d]*\d)(?=[^Mm]*[Mm])[\d;<\[\]IMm \x1b]+$/
 
 function createPasteKey(content: string): ParsedKey {
   return {
