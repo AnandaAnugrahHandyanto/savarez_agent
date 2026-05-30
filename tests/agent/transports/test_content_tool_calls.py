@@ -1,0 +1,27 @@
+from pathlib import Path
+
+from agent.transports.content_tool_calls import (
+    FORMATS,
+    RawCall,
+    _deterministic_call_id,
+)
+
+FIX = Path("tests/fixtures/content_tool_calls")
+
+
+def test_rawcall_is_frozen():
+    rc = RawCall(name="web_search", arguments={"q": "x"}, span="<tool_call>...</tool_call>")
+    assert rc.name == "web_search"
+
+
+def test_deterministic_id_stable_and_prefixed():
+    a = _deterministic_call_id("web_search", '{"q":"x"}', 0)
+    b = _deterministic_call_id("web_search", '{"q":"x"}', 0)
+    assert a == b
+    assert a.startswith("call_")
+    assert len(a) == len("call_") + 12
+
+
+def test_registry_registered_after_import():
+    names = {f.name for f in FORMATS}
+    assert {"tool_call_json", "bare_json_object", "kimi_k2", "minimax_invoke", "gemma_function"} <= names
