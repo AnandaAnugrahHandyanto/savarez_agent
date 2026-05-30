@@ -224,6 +224,10 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
+# i18n translation catalogs — agent.i18n.t() loads locales/<lang>.yaml from
+# the repo root.  Without this entry the wheel omits them and gateway slash
+# commands display raw dotted keys (e.g. "gateway.model.switched").  See #35374.
+"." = ["locales/*.yaml"]
 plugins = [
   "*/dashboard/manifest.json",
   "*/dashboard/dist/*",

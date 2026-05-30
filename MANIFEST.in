@@ -5,5 +5,8 @@ graft optional-skills
 # built from the sdist (e.g. Homebrew, downstream packagers). package-data
 # below covers the wheel; this covers the sdist. See #34034 / #28149.
 recursive-include plugins plugin.yaml plugin.yml
+# i18n translation catalogs used by agent.i18n.t() — gateway slash commands
+# display raw dotted keys without these. See #35374.
+recursive-include locales *.yaml
 global-exclude __pycache__
 global-exclude *.py[cod]
