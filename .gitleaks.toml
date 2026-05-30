@@ -1,0 +1,6 @@
+# Gitleaks config — mesh secrets leak-guard (ADR-059). extend.useDefault keeps the
+# upstream rule pack (PATs, AWS keys, Stripe, JWTs, generic API-key heuristics).
+# Add a [[allowlists]] block (each with its own description) for documented
+# false positives; never blanket-allowlist a path holding live runtime config.
+[extend]
+useDefault = true
