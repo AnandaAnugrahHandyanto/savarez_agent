@@ -2825,6 +2825,12 @@ class FeishuAdapter(BasePlatformAdapter):
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
 
+        # Extract message_id from the event for card update
+        message_id = str(getattr(event, "message_id", "") or "")
+        if not message_id:
+            # Try to get from open_message_id in context
+            message_id = str(getattr(context, "open_message_id", "") or "")
+
         synthetic_text = f"/card {action_tag}"
         if action_value:
             try:
@@ -2853,6 +2859,22 @@ class FeishuAdapter(BasePlatformAdapter):
             timestamp=datetime.now(),
         )
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
+
+        # Proactively update the card via API as a fallback, since
+        # P2CardActionTriggerResponse may not sync to all clients over WebSocket.
+        # Build a simple "processed" card for generic card actions.
+        if message_id and chat_id:
+            user_name = sender_profile.get("user_name") or open_id
+            resolved_card = self._build_generic_processed_card(
+                action_tag=action_tag,
+                action_value=action_value,
+                user_name=user_name,
+            )
+            self._submit_on_loop(
+                asyncio.get_event_loop(),
+                self._update_card_message(chat_id=chat_id, message_id=message_id, card=resolved_card),
+            )
+
         await self._handle_message_with_guards(synthetic_event)
 
     # =========================================================================
@@ -4732,6 +4754,35 @@ class FeishuAdapter(BasePlatformAdapter):
                 .build()
             )
         return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    def _build_generic_processed_card(
+        self, *, action_tag: str, action_value: Dict[str, Any], user_name: str
+    ) -> Dict[str, Any]:
+        """Build a simple 'processed' card for generic card button clicks."""
+        action_desc = action_value.get("action", action_tag)
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "✅ 卡片已处理"},
+                "template": "green",
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": (
+                            f"**操作已执行**\n\n"
+                            f"- 操作类型: `{action_tag}`\n"
+                            f"- 操作标识: `{action_desc}`\n"
+                            f"- 操作人: {user_name}\n\n"
+                            f"---\n"
+                            f"*此卡片已自动更新*"
+                        ),
+                    },
+                },
+            ],
+        }
 
     async def _update_card_message(
         self, chat_id: str, message_id: str, card: Dict[str, Any]
