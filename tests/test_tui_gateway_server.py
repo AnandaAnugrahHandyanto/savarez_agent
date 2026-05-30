@@ -487,6 +487,10 @@ def test_tools_list_fails_closed_under_all_unknown_env(monkeypatch):
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
 
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "read_raw_config", lambda: {})
+
     resp = server.dispatch({"id": "1", "method": "tools.list", "params": {}})
 
     assert resp["error"]["code"] == 5031
