@@ -8,6 +8,7 @@ the provider's config schema. Writes config to config.yaml + .env.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import shlex
 from pathlib import Path
@@ -51,6 +52,12 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
+def _pip_requirement_name(dep: str) -> str:
+    """Return the distribution name from a PEP 508-ish dependency spec."""
+    match = re.match(r"\s*([A-Za-z0-9_.-]+)", str(dep))
+    return match.group(1) if match else str(dep)
+
+
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
     import subprocess
@@ -85,7 +92,8 @@ def _install_dependencies(provider_name: str) -> None:
     # Check which packages are missing
     missing = []
     for dep in pip_deps:
-        import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
+        dep_name = _pip_requirement_name(dep)
+        import_name = _IMPORT_NAMES.get(dep_name, dep_name.replace("-", "_"))
         try:
             __import__(import_name)
         except ImportError:
