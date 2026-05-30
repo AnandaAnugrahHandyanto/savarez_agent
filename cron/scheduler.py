@@ -626,6 +626,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     Returns None on success, or an error string on failure.
     """
+    # Ensure .env variables (e.g. DINGTALK_WEBHOOK_URL) are available for
+    # delivery.  _run_job_impl loads .env inside _job_profile_context which
+    # snapshots and restores os.environ on exit, so by the time delivery runs
+    # the vars have been wiped.  For no_agent jobs the .env load is skipped
+    # entirely (early return path).  Loading here with override=False only
+    # fills in missing vars -- it never overwrites values already in the
+    # process environment.
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+        _env_path = _get_hermes_home() / ".env"
+        if _env_path.exists():
+            _load_dotenv(str(_env_path), override=False)
+    except Exception:
+        pass
+
     targets = _resolve_delivery_targets(job)
     if not targets:
         if job.get("deliver", "local") != "local":
