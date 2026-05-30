@@ -5,6 +5,9 @@ const execFileAsync = promisify(execFile)
 const CLIPBOARD_MAX_BUFFER = 4 * 1024 * 1024
 const POWERSHELL_ARGS = ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'] as const
 
+const POWERSHELL_WRITE_UTF8_COMMAND =
+  '[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); Set-Clipboard -Value ([Console]::In.ReadToEnd())'
+
 type ClipboardRun = typeof execFileAsync
 
 export function isUsableClipboardText(text: null | string): text is string {
@@ -100,7 +103,7 @@ function writeClipboardCommands(
   }
 
   if (platform === 'win32') {
-    return [{ cmd: 'powershell', args: ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -Value $input'] }]
+    return [{ cmd: 'powershell', args: ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_WRITE_UTF8_COMMAND] }]
   }
 
   const attempts: Array<{ args: readonly string[]; cmd: string }> = []
@@ -108,7 +111,7 @@ function writeClipboardCommands(
   if (env.WSL_INTEROP || env.WSL_DISTRO_NAME) {
     attempts.push({
       cmd: 'powershell.exe',
-      args: ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -Value $input']
+      args: ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_WRITE_UTF8_COMMAND]
     })
   }
 

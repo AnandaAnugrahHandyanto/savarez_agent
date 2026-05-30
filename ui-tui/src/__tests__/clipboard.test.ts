@@ -269,6 +269,9 @@ describe('writeClipboardText', () => {
       expect.arrayContaining(['-NoProfile', '-NonInteractive']),
       expect.anything()
     )
+    expect(start.mock.calls[0][1]).toContain(
+      '[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); Set-Clipboard -Value ([Console]::In.ReadToEnd())'
+    )
     expect(stdin.end).toHaveBeenCalledWith('wsl text')
   })
 
@@ -324,6 +327,9 @@ describe('writeClipboardText', () => {
       'powershell',
       expect.arrayContaining(['-NoProfile', '-NonInteractive']),
       expect.anything()
+    )
+    expect(start.mock.calls[0][1]).toContain(
+      '[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); Set-Clipboard -Value ([Console]::In.ReadToEnd())'
     )
   })
 })
