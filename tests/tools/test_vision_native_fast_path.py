@@ -11,7 +11,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 from unittest.mock import patch
+
+import pytest
 
 
 from tools.vision_tools import (
@@ -186,6 +189,32 @@ class TestVisionAnalyzeNative:
             f"embedded image {len(url) / 1024 / 1024:.1f} MB exceeds embed cap "
             f"{_EMBED_TARGET_BYTES / 1024 / 1024:.0f} MB — would wedge sessions on Anthropic"
         )
+
+    def test_oversize_image_is_resized_not_rejected(self, tmp_path):
+        """Regression: a 20-50MB image must be resized through to a multimodal
+        envelope, NOT hard-rejected by the resolver before resize can run.
+
+        (The resolver used to cap raw bytes at 20MB inside ``_finalize``; the
+        ingest cap is now 50MB and the 20MB payload cap is enforced post-resize.)
+        """
+        pytest.importorskip("PIL")  # resize requires Pillow
+        from PIL import Image
+
+        # Incompressible noise so the raw PNG genuinely exceeds 20MB (a solid
+        # color would compress to a few KB and not exercise the resize path).
+        big = tmp_path / "big.png"
+        Image.frombytes("RGB", (3400, 3400), os.urandom(3400 * 3400 * 3)).save(
+            big, format="PNG")
+        assert big.stat().st_size > 20 * 1024 * 1024
+
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(big), "what is this?")
+        )
+        assert isinstance(result, dict), result  # not an error JSON string
+        assert result.get("_multimodal") is True
+        url = next(p["image_url"]["url"] for p in result["content"]
+                   if p.get("type") == "image_url")
+        assert len(url) <= 20 * 1024 * 1024  # resized under the payload cap
 
 
 # ─── task_id seam: dispatch must thread task_id to the resolver ──────────────

@@ -13,9 +13,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-# Decoded payload cap, mirroring tools/vision_tools._MAX_BASE64_BYTES
-# (Gemini inline-data limit, the most restrictive major provider).
-_MAX_BYTES = 20 * 1024 * 1024
+# Raw-bytes INGEST budget — what the resolver will load before handing off.
+# This is deliberately the 50MB download cap (tools/vision_tools._VISION_MAX_DOWNLOAD_BYTES),
+# NOT the 20MB provider payload cap. The 20MB cap (_MAX_BASE64_BYTES) is a
+# *post-resize* limit enforced at the call sites: an oversized raw image must
+# still reach _resize_image_bytes_for_vision so it can be downscaled under the
+# payload cap. Capping raw bytes at 20MB here would reject every 20-50MB photo
+# before resize can run — exactly the regression the plan flagged.
+_MAX_INGEST_BYTES = 50 * 1024 * 1024
 
 
 class ImageResolutionError(Exception):
@@ -66,8 +71,9 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
         data, mime = _resolve_data_url(s)
         return _finalize(data, mime, "data", s)
     if s.startswith(("http://", "https://")):
-        if not _is_safe_http(s):
-            raise SourceUnsafe("blocked: unsafe or private URL", src=s)
+        reason = _http_block_reason(s)
+        if reason:
+            raise SourceUnsafe(reason, src=s)
         return _finalize(await _download_to_bytes(s), "", "http", s)
 
     candidate = s[len("file://"):] if s.startswith("file://") else s
@@ -95,7 +101,7 @@ def _resolve_data_url(s: str) -> tuple[bytes, str]:
         raise NotAnImage("data: URL must be base64-encoded", src=s[:64])
     declared = header[len("data:"):].split(";", 1)[0].strip() or "application/octet-stream"
     # Cheap pre-decode size gate on the encoded length (~4/3 expansion).
-    if (len(payload) * 3) // 4 > _MAX_BYTES:
+    if (len(payload) * 3) // 4 > _MAX_INGEST_BYTES:
         raise SourceTooLarge("data: URL exceeds size limit", src=s[:64])
     try:
         data = base64.b64decode(payload, validate=True)
@@ -104,11 +110,21 @@ def _resolve_data_url(s: str) -> tuple[bytes, str]:
     return data, declared  # real mime verified in _finalize via magic bytes
 
 
-def _is_safe_http(url: str) -> bool:
+def _http_block_reason(url: str) -> Optional[str]:
+    """Return a human-readable block reason, or None when the URL is allowed.
+
+    Preserves the specific website-policy message (rather than collapsing it to
+    a generic string) so the agent sees *why* a fetch was refused.
+    """
     from tools.url_safety import is_safe_url
     from tools.website_policy import check_website_access
 
-    return is_safe_url(url) and not check_website_access(url)
+    if not is_safe_url(url):
+        return "blocked: unsafe or private URL"
+    blocked = check_website_access(url)
+    if blocked:
+        return blocked.get("message") or "blocked by website policy"
+    return None
 
 
 async def _download_to_bytes(url: str) -> bytes:
@@ -163,6 +179,7 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
     boundary. ``--`` stops a leading-dash path from being parsed as a ``base64``
     option; ``base64 -w0`` is GNU-only, so pipe through ``tr -d`` for BusyBox.
     """
+    import asyncio
     import shlex
 
     env = _get_active_env(ctx.task_id)
@@ -171,7 +188,10 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
             f"'{p}' is not reachable on the host and no active sandbox is available "
             f"to read it", src=src, origin="container")
 
-    res = env.execute(f"base64 -- {shlex.quote(str(p))} | tr -d '\\n'")
+    # env.execute is a blocking docker-exec; keep it off the event loop so a
+    # multi-MB base64 read doesn't stall every other coroutine.
+    res = await asyncio.to_thread(
+        env.execute, f"base64 -- {shlex.quote(str(p))} | tr -d '\\n'")
     if res.get("returncode", 1) != 0:
         raise SourceNotFound(f"could not read '{p}' inside the sandbox", src=src, origin="container")
     try:
@@ -182,10 +202,15 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
 
 
 def _finalize(data: bytes, declared_mime: str, origin: str, src: str) -> ResolvedImage:
-    """Intrinsic-correctness chokepoint: hard byte cap + magic-byte sniff."""
+    """Intrinsic-correctness chokepoint: ingest byte cap + magic-byte sniff.
+
+    The cap here is the generous 50MB *ingest* budget, not the 20MB provider
+    payload cap — a 20-50MB image must survive this step so the call site can
+    resize it under the payload cap. See _MAX_INGEST_BYTES.
+    """
     from tools.vision_tools import _detect_image_mime_type_from_bytes
 
-    if len(data) > _MAX_BYTES:
+    if len(data) > _MAX_INGEST_BYTES:
         raise SourceTooLarge("image exceeds size limit", src=src, origin=origin)
     sniffed = _detect_image_mime_type_from_bytes(data)
     if sniffed is None:

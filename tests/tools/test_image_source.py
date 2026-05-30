@@ -34,10 +34,24 @@ async def test_data_url_non_image_rejected():
 
 
 @pytest.mark.asyncio
-async def test_data_url_oversize_rejected():
-    big = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * (40 * 1024 * 1024)).decode()
+async def test_data_url_over_ingest_budget_rejected():
+    # > 50MB ingest budget -> rejected. (The 20MB *payload* cap is enforced
+    # post-resize at the call sites, not here — see test below.)
+    big = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * (60 * 1024 * 1024)).decode()
     with pytest.raises(SourceTooLarge):
         await resolve_image_source(f"data:image/png;base64,{big}", ResolveContext())
+
+
+@pytest.mark.asyncio
+async def test_data_url_within_ingest_budget_resolves():
+    # Regression guard: a 20-50MB image must NOT be rejected by the resolver —
+    # it has to reach the call site so it can be resized under the payload cap.
+    # (Previously _finalize hard-capped raw bytes at 20MB and broke this.)
+    big = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * (30 * 1024 * 1024)).decode()
+    res = await resolve_image_source(f"data:image/png;base64,{big}", ResolveContext())
+    assert res.origin == "data"
+    assert res.mime == "image/png"
+    assert len(res.data) > 20 * 1024 * 1024
 
 
 @pytest.mark.asyncio
@@ -61,7 +75,7 @@ async def test_http_url_downloads_bytes(monkeypatch):
     async def fake_download(url):
         return png
 
-    monkeypatch.setattr(image_source, "_is_safe_http", lambda u: True)
+    monkeypatch.setattr(image_source, "_http_block_reason", lambda u: None)
     monkeypatch.setattr(image_source, "_download_to_bytes", fake_download)
     res = await resolve_image_source("https://ex.com/a.png", ResolveContext())
     assert res.origin == "http"
@@ -72,9 +86,23 @@ async def test_http_url_downloads_bytes(monkeypatch):
 async def test_http_url_ssrf_blocked(monkeypatch):
     from tools import image_source
 
-    monkeypatch.setattr(image_source, "_is_safe_http", lambda u: False)
+    monkeypatch.setattr(
+        image_source, "_http_block_reason", lambda u: "blocked: unsafe or private URL")
     with pytest.raises(SourceUnsafe):
         await resolve_image_source("http://169.254.169.254/x.png", ResolveContext())
+
+
+@pytest.mark.asyncio
+async def test_http_policy_block_preserves_message(monkeypatch):
+    # The specific website-policy reason must survive (not collapse to a
+    # generic "blocked" string), so the agent sees *why* the fetch was refused.
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda u: True)
+    monkeypatch.setattr(
+        "tools.website_policy.check_website_access",
+        lambda u: {"message": "Blocked by website policy: example.com"})
+    with pytest.raises(SourceUnsafe) as ei:
+        await resolve_image_source("https://example.com/a.png", ResolveContext())
+    assert "Blocked by website policy: example.com" in str(ei.value)
 
 
 @pytest.mark.asyncio
