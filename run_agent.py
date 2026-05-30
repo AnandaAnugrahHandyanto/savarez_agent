@@ -6617,6 +6617,41 @@ class AIAgent:
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
 
+        # OpenAI SDK 2.28.x parse_response() crashes with
+        # `'NoneType' object is not iterable` when the ChatGPT codex backend
+        # (chatgpt.com/backend-api/codex) emits response.completed with
+        # response.output=None. Coerce None -> [] before the SDK sees it.
+        # Idempotent and safe to re-run.
+        try:
+            import openai.lib._parsing._responses as _hermes_p
+            if not getattr(_hermes_p, "_hermes_none_output_patched", False):
+                _hermes_orig_parse = _hermes_p.parse_response
+
+                def _hermes_safe_parse(*, text_format, input_tools, response):
+                    if getattr(response, "output", None) is None:
+                        try:
+                            response.output = []
+                        except Exception:
+                            try:
+                                object.__setattr__(response, "output", [])
+                            except Exception:
+                                pass
+                    return _hermes_orig_parse(
+                        text_format=text_format,
+                        input_tools=input_tools,
+                        response=response,
+                    )
+
+                _hermes_p.parse_response = _hermes_safe_parse
+                try:
+                    import openai.lib.streaming.responses._responses as _hermes_s
+                    _hermes_s.parse_response = _hermes_safe_parse
+                except Exception:
+                    pass
+                _hermes_p._hermes_none_output_patched = True
+        except Exception:
+            pass
+
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         max_stream_retries = 1
         has_tool_calls = False
@@ -6734,6 +6769,27 @@ class AIAgent:
                     logger.debug(
                         "Responses stream did not emit response.completed; falling back to create(stream=True). %s",
                         self._client_log_context(),
+                    )
+                    return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+                raise
+            except TypeError as exc:
+                # OpenAI SDK 2.28.x parse_response() raises
+                # `'NoneType' object is not iterable` when the ChatGPT codex
+                # backend (`chatgpt.com/backend-api/codex`) sends a
+                # `response.completed` event whose `response.output` is None
+                # (output items are streamed separately via
+                # `response.output_item.done`). Fall back to the raw
+                # `create(stream=True)` path which doesn't auto-parse.
+                import traceback as _tb
+                tb_text = "".join(_tb.format_tb(exc.__traceback__))
+                if (
+                    "openai/lib/_parsing/_responses.py" in tb_text
+                    or "openai/lib/streaming/responses/_responses.py" in tb_text
+                ):
+                    logger.debug(
+                        "Codex Responses stream hit OpenAI SDK None-output parser bug; "
+                        "falling back to create(stream=True). %s error=%s",
+                        self._client_log_context(), exc,
                     )
                     return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
                 raise
