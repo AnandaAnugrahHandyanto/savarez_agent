@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agent.transports.codex_app_server_session import CodexAppServerSession
 from run_agent import AIAgent
 
 
@@ -46,3 +47,62 @@ def test_close_closes_codex_app_server_session():
 
     assert codex_session.closed == 1
     assert agent._codex_session is None
+
+
+class CloseDuringTurnClient:
+    def __init__(self, session: CodexAppServerSession) -> None:
+        self.session = session
+
+    def request(self, _method, _params, timeout=None):
+        self.session._client = None
+        return {"turn": {"id": "turn-1"}}
+
+    def stderr_tail(self, _lines):
+        return []
+
+
+class CompletingClient:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def request(self, _method, _params, timeout=None):
+        return {"turn": {"id": "turn-1"}}
+
+    def is_alive(self):
+        return True
+
+    def take_server_request(self, timeout=0):
+        return None
+
+    def take_notification(self, timeout=0):
+        return {
+            "method": "turn/completed",
+            "params": {"turn": {"status": "completed"}},
+        }
+
+    def close(self):
+        self.closed = True
+
+
+def test_codex_app_server_turn_handles_client_closed_during_shutdown():
+    session = CodexAppServerSession(cwd="/tmp")
+    session._thread_id = "thread-1"
+    session._client = CloseDuringTurnClient(session)
+
+    result = session.run_turn("hello", turn_timeout=0.05, notification_poll_timeout=0)
+
+    assert result.interrupted is True
+    assert result.should_retire is True
+    assert result.error == "codex app-server session closed during turn"
+
+
+def test_codex_app_server_turn_does_not_close_client_on_success():
+    session = CodexAppServerSession(cwd="/tmp")
+    client = CompletingClient()
+    session._thread_id = "thread-1"
+    session._client = client
+
+    result = session.run_turn("hello", turn_timeout=0.05, notification_poll_timeout=0)
+
+    assert result.error is None
+    assert client.closed is False

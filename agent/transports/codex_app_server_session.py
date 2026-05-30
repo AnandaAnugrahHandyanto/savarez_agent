@@ -453,12 +453,19 @@ class CodexAppServerSession:
                 result.interrupted = True
                 break
 
+            client = self._client
+            if client is None:
+                result.interrupted = True
+                result.error = "codex app-server session closed during turn"
+                result.should_retire = True
+                break
+
             # Detect a dead subprocess between iterations. If codex exited
             # (e.g. crashed, segfaulted, or its auth refresh thread killed
             # the process), we won't get any more notifications — bail out
             # rather than waiting for the full turn deadline.
-            if not self._client.is_alive():
-                stderr_blob = "\n".join(self._client.stderr_tail(60))
+            if not client.is_alive():
+                stderr_blob = "\n".join(client.stderr_tail(60))
                 hint = _classify_oauth_failure(stderr_blob)
                 if hint is not None:
                     result.error = hint
@@ -490,14 +497,14 @@ class CodexAppServerSession:
 
             # Drain any server-initiated requests (approvals) before
             # reading notifications, so the codex side isn't blocked.
-            sreq = self._client.take_server_request(timeout=0)
+            sreq = client.take_server_request(timeout=0)
             if sreq is not None:
                 # Drain any pending notifications first so per-turn state
                 # (e.g. _pending_file_changes for fileChange approvals) is
                 # up to date when we make the approval decision. Bounded
                 # to avoid starving the server-request response.
                 for _ in range(8):
-                    pending = self._client.take_notification(timeout=0)
+                    pending = client.take_notification(timeout=0)
                     if pending is None:
                         break
                     self._track_pending_file_change(pending)
@@ -522,7 +529,7 @@ class CodexAppServerSession:
                 last_tool_completion_at = None
                 continue
 
-            note = self._client.take_notification(
+            note = client.take_notification(
                 timeout=notification_poll_timeout
             )
             if note is None:

@@ -562,6 +562,46 @@ Recommended sequence:
 5. No automatic restore: do not reattach, migrate, or restore missing session
    rows from stale mappings in this flow.
 
+## Maintenance Stop Failure Follow-up
+
+Post-recovery metadata checks after the maintenance-window archive attempt
+found that the archive attempt was not durable:
+
+- Current inventory remained at 146 mapped Discord thread sessions.
+- `matched_with_messages` remained 37.
+- `matched_zero_messages` remained 3.
+- `mapped_session_absent_from_db` remained 106.
+- The archive and backup files from `2026-05-30T15:23:28Z` existed, but all
+  10 archived keys were present again in current `sessions.json`.
+
+The service stop/restart was abnormal. Focused journal metadata showed:
+
+- `SIGTERM` initiated gateway shutdown.
+- A Discord shutdown notification send hit `404 Unknown Channel`.
+- Gateway drain timed out with an active agent.
+- Codex app-server turn handling failed during shutdown with
+  `AttributeError: 'NoneType' object has no attribute 'is_alive'`.
+- systemd reported gateway exit `status=1/FAILURE`.
+- The gateway later started again at `2026-05-31 00:05:39 PST`.
+
+The likely operational risk is that the service was still running, restarted,
+or still had an in-memory `SessionStore` writer active while the disk archive
+was attempted. A disk-only archive can therefore be overwritten by the live
+gateway when it later saves its in-memory session index.
+
+Do not run another archive execute command until the stop path is stable and
+the cleanup path is coordinated with the live session writer.
+
+Next safe procedure must use one of these paths:
+
+1. Live gateway admin operation: generate a fresh metadata-only plan, dry-run
+   the gateway-local admin archive operation against the live store instance,
+   verify selected mappings are only `mapped_session_absent_from_db`, then
+   execute only after explicit operator approval.
+2. Full maintenance stop: temporarily prevent automatic restart during the
+   maintenance window, stop the gateway, verify no gateway process remains,
+  run the disk archive, verify metadata-only inventory, then start the gateway
+  and confirm post-start counts.
 ## Operational Checks To Run From The VPS
 
 Run these only on the VPS/operator side, not from this audit session:

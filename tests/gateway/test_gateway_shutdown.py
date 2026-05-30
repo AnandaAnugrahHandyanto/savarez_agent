@@ -47,6 +47,21 @@ def test_cleanup_agent_resources_reaps_stale_aux_clients():
     cleanup_mock.assert_called_once()
 
 
+def test_cleanup_agent_resources_closes_codex_session_without_starting_turn():
+    runner, _adapter = make_restart_runner()
+    codex_session = MagicMock()
+    agent = MagicMock()
+    agent._codex_session = codex_session
+    agent.close.side_effect = codex_session.close
+
+    with patch("agent.auxiliary_client.cleanup_stale_async_clients"):
+        runner._cleanup_agent_resources(agent)
+
+    agent.close.assert_called_once()
+    codex_session.close.assert_called_once()
+    codex_session.run_turn.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks():
     runner, adapter = make_restart_runner()

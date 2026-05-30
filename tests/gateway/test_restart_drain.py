@@ -8,7 +8,7 @@ import pytest
 
 import gateway.run as gateway_run
 from agent.i18n import t
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.session import SessionEntry, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
@@ -283,6 +283,24 @@ async def test_shutdown_notification_send_failure_does_not_block():
 
     # Should not raise
     await runner._notify_active_sessions_of_shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_send_result_failure_does_not_block():
+    """Platform 404/Unknown Channel-style send failures stay non-fatal."""
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(
+        return_value=SendResult(
+            success=False,
+            error="404 Not Found (error code: 10003): Unknown Channel",
+        )
+    )
+    session_key = "agent:main:telegram:dm:999"
+    runner._running_agents[session_key] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once()
 
 
 @pytest.mark.asyncio
