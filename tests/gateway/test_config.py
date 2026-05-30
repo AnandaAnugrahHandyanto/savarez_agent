@@ -369,6 +369,27 @@ class TestLoadGatewayConfig:
             "123456789012345678,999888777666555444"
         )
 
+    def test_bridges_telegram_allow_from_env_template_from_config_yaml(self, tmp_path, monkeypatch):
+        """telegram.allow_from should expand ${VAR} before auth env bridging."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  token: fake-token\n"
+            "  allow_from: ${TG_ALLOWED_USER}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TG_ALLOWED_USER", "123456789")
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["allow_from"] == "123456789"
+        assert os.environ.get("TELEGRAM_ALLOWED_USERS") == "123456789"
+
     def test_bridges_discord_platform_extra_allow_from_to_env(self, tmp_path, monkeypatch):
         """platforms.discord.extra.allow_from should reach DISCORD_ALLOWED_USERS too."""
         hermes_home = tmp_path / ".hermes"
