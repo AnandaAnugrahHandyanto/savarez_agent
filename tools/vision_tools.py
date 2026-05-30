@@ -105,11 +105,14 @@ def _validate_image_url(url: str) -> bool:
     return True
 
 
-def _detect_image_mime_type(image_path: Path) -> Optional[str]:
-    """Return a MIME type when the file looks like a supported image."""
-    with image_path.open("rb") as f:
-        header = f.read(64)
+def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
+    """Magic-byte MIME sniff on raw bytes (authoritative; no extension trust).
 
+    Returns ``None`` for anything without a recognized image header — including
+    SVG, which has no magic bytes and is not ingestible as vision by any
+    provider.
+    """
+    header = data[:64]
     if header.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if header.startswith(b"\xff\xd8\xff"):
@@ -120,11 +123,17 @@ def _detect_image_mime_type(image_path: Path) -> Optional[str]:
         return "image/bmp"
     if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "image/webp"
-    if image_path.suffix.lower() == ".svg":
+    return None
+
+
+def _detect_image_mime_type(image_path: Path) -> Optional[str]:
+    """Return a MIME type when the file looks like a supported image."""
+    mime = _detect_image_mime_type_from_bytes(image_path.read_bytes()[:64])
+    if mime is None and image_path.suffix.lower() == ".svg":
         head = image_path.read_text(encoding="utf-8", errors="ignore")[:4096].lower()
         if "<svg" in head:
             return "image/svg+xml"
-    return None
+    return mime
 
 
 def _is_retryable_download_error(error: Exception) -> bool:
@@ -285,30 +294,16 @@ def _determine_mime_type(image_path: Path) -> str:
     return mime_types.get(extension, 'image/jpeg')
 
 
-def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None) -> str:
-    """
-    Convert an image file to a base64-encoded data URL.
-    
-    Args:
-        image_path (Path): Path to the image file
-        mime_type (Optional[str]): MIME type of the image (auto-detected if None)
-        
-    Returns:
-        str: Base64-encoded data URL (e.g., "data:image/jpeg;base64,...")
-    """
-    # Read the image as bytes
-    data = image_path.read_bytes()
-    
-    # Encode to base64
+def _image_bytes_to_base64_data_url(data: bytes, mime: str) -> str:
+    """Encode raw image bytes as an RFC 2397 base64 data URL."""
     encoded = base64.b64encode(data).decode("ascii")
-    
-    # Determine MIME type
+    return f"data:{mime};base64,{encoded}"
+
+
+def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None) -> str:
+    """Convert an image file to a base64-encoded data URL."""
     mime = mime_type or _determine_mime_type(image_path)
-    
-    # Create data URL
-    data_url = f"data:{mime};base64,{encoded}"
-    
-    return data_url
+    return _image_bytes_to_base64_data_url(image_path.read_bytes(), mime)
 
 
 # Absolute hard ceiling for vision API payloads (20 MB) — above this, no major
@@ -343,53 +338,44 @@ def _is_image_size_error(error: Exception) -> bool:
 
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               max_base64_bytes: int = _RESIZE_TARGET_BYTES) -> str:
-    """Convert an image to a base64 data URL, auto-resizing if too large.
+    """Path wrapper around :func:`_resize_image_bytes_for_vision`."""
+    mime = mime_type or _determine_mime_type(image_path)
+    return _resize_image_bytes_for_vision(image_path.read_bytes(), mime, max_base64_bytes)
+
+
+def _resize_image_bytes_for_vision(data: bytes, mime: str,
+                                   max_base64_bytes: int = _RESIZE_TARGET_BYTES) -> str:
+    """Encode image bytes as a base64 data URL, auto-resizing if too large.
 
     Tries Pillow first to progressively downscale oversized images.  If Pillow
     is not installed or resizing still exceeds the limit, falls back to the raw
     bytes and lets the caller handle the size check.
-
-    Returns the base64 data URL string.
     """
-    # Quick file-size estimate: base64 expands by ~4/3, plus data URL header.
-    # Skip the expensive full-read + encode if Pillow can resize directly.
-    file_size = image_path.stat().st_size
-    estimated_b64 = (file_size * 4) // 3 + 100  # ~header overhead
-    if estimated_b64 <= max_base64_bytes:
-        # Small enough — just encode directly.
-        data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+    # base64 expands by ~4/3, plus data URL header; skip Pillow if it already fits.
+    if (len(data) * 4) // 3 + 100 <= max_base64_bytes:
+        data_url = _image_bytes_to_base64_data_url(data, mime)
         if len(data_url) <= max_base64_bytes:
             return data_url
-    else:
-        data_url = None  # defer full encode; try Pillow resize first
 
-    # Attempt auto-resize with Pillow (soft dependency)
     try:
         from PIL import Image
         import io as _io
     except ImportError:
         logger.info("Pillow not installed — cannot auto-resize oversized image")
-        if data_url is None:
-            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
-        return data_url  # caller will raise the size error
+        return _image_bytes_to_base64_data_url(data, mime)  # caller raises the size error
 
-    logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB), auto-resizing...",
-                file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
-                max_base64_bytes / (1024 * 1024))
+    logger.info("Image is %.1f MB (limit %.1f MB), auto-resizing...",
+                len(data) / (1024 * 1024), max_base64_bytes / (1024 * 1024))
 
-    mime = mime_type or _determine_mime_type(image_path)
-    # Choose output format: JPEG for photos (smaller), PNG for transparency
+    # Choose output format: JPEG for photos (smaller), PNG for transparency.
     pil_format = "PNG" if mime == "image/png" else "JPEG"
     out_mime = "image/png" if pil_format == "PNG" else "image/jpeg"
 
     try:
-        img = Image.open(image_path)
+        img = Image.open(_io.BytesIO(data))
     except Exception as exc:
         logger.info("Pillow cannot open image for resizing: %s", exc)
-        if data_url is None:
-            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
-        return data_url  # fall through to size-check in caller
-    # Convert RGBA to RGB for JPEG output
+        return _image_bytes_to_base64_data_url(data, mime)  # caller does the size-check
     if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
         img = img.convert("RGB")
 
@@ -443,8 +429,8 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                        max_base64_bytes / (1024 * 1024), len(candidate) / (1024 * 1024))
         return candidate
 
-    # Shouldn't reach here, but fall back to full encode
-    return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
+    # Shouldn't reach here, but fall back to the unresized encode.
+    return _image_bytes_to_base64_data_url(data, mime)
 
 
 # ---------------------------------------------------------------------------
