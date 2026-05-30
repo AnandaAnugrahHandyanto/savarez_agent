@@ -1880,7 +1880,7 @@ def test_config_set_model_global_persists(monkeypatch):
 
     server._sessions["sid"] = _session(agent=_Agent())
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
 
@@ -1938,7 +1938,7 @@ def test_config_set_model_syncs_inference_provider_env(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
     )
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     server.handle_request(
@@ -1989,7 +1989,7 @@ def test_config_set_model_syncs_tui_provider_unconditionally(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
     )
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     server.handle_request(
@@ -2025,7 +2025,7 @@ def test_config_set_model_syncs_tui_provider_env(monkeypatch):
     agent = Agent()
     server._sessions["sid"] = _session(agent=agent)
     monkeypatch.setenv("HERMES_TUI_PROVIDER", "openai-codex")
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     def fake_switch_model(**kwargs):
@@ -2170,7 +2170,7 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
     monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
     restart_calls = []
     monkeypatch.setattr(
-        server, "_restart_slash_worker", lambda s: restart_calls.append(s)
+        server, "_restart_slash_worker", lambda sid, s: restart_calls.append(s)
     )
 
     try:
@@ -5417,6 +5417,46 @@ def test_attach_worker_stores_worker_on_live_session():
         assert live["slash_worker"] is worker
     finally:
         server._sessions.pop("live", None)
+
+
+def test_restart_slash_worker_closes_orphan_when_session_reaped(monkeypatch):
+    """Post-turn restart of a session reaped mid-flight (e.g. close_on_disconnect
+    fired while `running` flipped false) must close the fresh worker, not orphan it."""
+    closed = []
+
+    class _FakeWorker:
+        def __init__(self, *a, **k):
+            pass
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    server._sessions.pop("reaped", None)
+    reaped = {"session_key": "k"}  # not in _sessions -> torn down concurrently
+    server._restart_slash_worker("reaped", reaped)
+
+    assert closed == [True]
+    assert reaped.get("slash_worker") is None
+    assert "reaped" not in server._sessions
+
+
+def test_restart_slash_worker_stores_on_live_session(monkeypatch):
+    class _FakeWorker:
+        def __init__(self, *a, **k):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    live = {"session_key": "k", "slash_worker": None}
+    server._sessions["live-restart"] = live
+    try:
+        server._restart_slash_worker("live-restart", live)
+        assert isinstance(live["slash_worker"], _FakeWorker)
+    finally:
+        server._sessions.pop("live-restart", None)
 
 
 def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
