@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from gateway.bridge import BridgeStateStore, BridgeVerdict
 from gateway.config import Platform
@@ -19,7 +19,15 @@ def _now():
     return datetime(2026, 5, 29, 12, 0, tzinfo=timezone.utc)
 
 
-def _telegram_event(text: str, *, chat_id="48264503", user_id="48264503", thread_id=None):
+def _telegram_event(
+    text: str,
+    *,
+    chat_id="48264503",
+    user_id="48264503",
+    thread_id=None,
+    message_id="200",
+    reply_to_message_id=None,
+):
     return MessageEvent(
         text=text,
         source=SessionSource(
@@ -30,7 +38,8 @@ def _telegram_event(text: str, *, chat_id="48264503", user_id="48264503", thread
             user_name="Boss",
             thread_id=thread_id,
         ),
-        message_id="200",
+        message_id=message_id,
+        reply_to_message_id=reply_to_message_id,
         platform_update_id=1000,
     )
 
@@ -255,6 +264,80 @@ def test_bound_telegram_dm_plain_text_switches_to_cli_session(tmp_path):
     assert decision.verdict is BridgeVerdict.ACCEPT
     assert session_store.switches == [("agent:main:telegram:dm:48264503", "cli-session")]
     assert evicted == ["agent:main:telegram:dm:48264503"]
+
+
+def test_bound_telegram_reply_to_registered_input_prompt_switches_and_consumes_anchor(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+    store.record_outbound_message(
+        bridge_id="bridge-cli-session",
+        chat_id="48264503",
+        thread_id=None,
+        message_id="301",
+        purpose="input_prompt",
+        input_expected=True,
+        ttl_seconds=600,
+    )
+    session_store = _DummySessionStore()
+
+    decision = maybe_apply_gateway_bridge_binding(
+        _telegram_event("answer to the prompt", message_id="302", reply_to_message_id="301"),
+        session_key="agent:main:telegram:dm:48264503",
+        session_store=session_store,
+        store=store,
+    )
+
+    assert decision is not None
+    assert decision.verdict is BridgeVerdict.ACCEPT
+    assert session_store.switches == [("agent:main:telegram:dm:48264503", "cli-session")]
+    reused = store.validate_reply_input(
+        chat_id="48264503",
+        thread_id=None,
+        user_id="48264503",
+        reply_to_message_id="301",
+        inbound_message_id="303",
+    )
+    assert reused.verdict is BridgeVerdict.REJECT
+    assert "consumed" in reused.reason
+
+
+def test_bound_telegram_reply_to_expired_input_prompt_rejects_without_plain_text_fallback(tmp_path):
+    now = _now()
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=lambda: now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+    store.record_outbound_message(
+        bridge_id="bridge-cli-session",
+        chat_id="48264503",
+        thread_id=None,
+        message_id="301",
+        purpose="input_prompt",
+        input_expected=True,
+        ttl_seconds=1,
+    )
+    later = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=lambda: now + timedelta(seconds=2))
+    session_store = _DummySessionStore()
+
+    decision = maybe_apply_gateway_bridge_binding(
+        _telegram_event("late answer", message_id="302", reply_to_message_id="301"),
+        session_key="agent:main:telegram:dm:48264503",
+        session_store=session_store,
+        store=later,
+    )
+
+    assert decision is not None
+    assert decision.verdict is BridgeVerdict.REJECT
+    assert "expired" in decision.reason
+    assert session_store.switches == []
 
 
 def test_register_bridge_reply_input_prompt_records_reply_anchor_for_bound_telegram_dm(tmp_path):

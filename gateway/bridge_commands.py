@@ -293,6 +293,23 @@ def create_bridge_approval_prompt(
     )
 
 
+def _switch_gateway_session_to_bridge(
+    event: MessageEvent,
+    *,
+    session_key: str,
+    session_store,
+    decision: BridgeDecision,
+    evict_cached_agent: Callable[[str], None] | None = None,
+) -> BridgeDecision:
+    session_store.get_or_create_session(event.source)
+    switched = session_store.switch_session(session_key, decision.hermes_session_id or "")
+    if switched is None:
+        return BridgeDecision(BridgeVerdict.REJECT, "could not switch gateway session to bridge target")
+    if evict_cached_agent is not None:
+        evict_cached_agent(session_key)
+    return decision
+
+
 def maybe_apply_gateway_bridge_binding(
     event: MessageEvent,
     *,
@@ -301,14 +318,16 @@ def maybe_apply_gateway_bridge_binding(
     store: BridgeStateStore | None = None,
     evict_cached_agent: Callable[[str], None] | None = None,
 ) -> BridgeDecision | None:
-    """Route bound Telegram DM plain text into the linked CLI session.
+    """Route bound Telegram DM input into the linked CLI session.
 
     Returns:
       - None when the event is outside bridge scope (non-Telegram, non-DM,
         unbound identity, or a slash command that should keep normal gateway
         semantics).
       - ACCEPT when the session key was bound to the CLI session id.
-      - REJECT when a known binding exists but pause/kill-switch blocks input.
+      - REJECT when a known binding exists but pause/kill-switch blocks input,
+        or when a reply targets a registered one-shot prompt but fails the
+        reply-input policy.
 
     This never injects raw text into a PTY. It only repoints the normal gateway
     session key to the CLI-originated Hermes session so the standard agent path,
@@ -321,6 +340,27 @@ def maybe_apply_gateway_bridge_binding(
     if identity is None:
         return None
     chat_id, user_id, thread_id = identity
+
+    reply_to_message_id = getattr(event, "reply_to_message_id", None)
+    if reply_to_message_id:
+        reply_decision = store.validate_reply_input(
+            chat_id=chat_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            reply_to_message_id=str(reply_to_message_id),
+            inbound_message_id=str(getattr(event, "message_id", None) or ""),
+        )
+        if reply_decision.verdict is BridgeVerdict.ACCEPT:
+            return _switch_gateway_session_to_bridge(
+                event,
+                session_key=session_key,
+                session_store=session_store,
+                decision=reply_decision,
+                evict_cached_agent=evict_cached_agent,
+            )
+        if reply_decision.reason != "reply target is not registered":
+            return reply_decision
+
     decision = store.validate_telegram_direct_input(
         chat_id=chat_id,
         user_id=user_id,
@@ -331,13 +371,13 @@ def maybe_apply_gateway_bridge_binding(
             return None
         return decision
 
-    session_store.get_or_create_session(event.source)
-    switched = session_store.switch_session(session_key, decision.hermes_session_id or "")
-    if switched is None:
-        return BridgeDecision(BridgeVerdict.REJECT, "could not switch gateway session to bridge target")
-    if evict_cached_agent is not None:
-        evict_cached_agent(session_key)
-    return decision
+    return _switch_gateway_session_to_bridge(
+        event,
+        session_key=session_key,
+        session_store=session_store,
+        decision=decision,
+        evict_cached_agent=evict_cached_agent,
+    )
 
 
 
