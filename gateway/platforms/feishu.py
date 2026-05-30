@@ -2613,6 +2613,16 @@ class FeishuAdapter(BasePlatformAdapter):
         ):
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
+        # Proactively update the card via API as a fallback, since
+        # P2CardActionTriggerResponse may not sync to all clients over WebSocket.
+        message_id = state.get("message_id", "")
+        if message_id and chat_id:
+            resolved_card = self._build_resolved_approval_card(choice=choice, user_name=user_name)
+            self._submit_on_loop(
+                loop,
+                self._update_card_message(chat_id=chat_id, message_id=message_id, card=resolved_card),
+            )
+
         if P2CardActionTriggerResponse is None:
             return None
         response = P2CardActionTriggerResponse()
@@ -2647,6 +2657,18 @@ class FeishuAdapter(BasePlatformAdapter):
         user_name = self._get_cached_sender_name(open_id) or open_id
         if not self._submit_on_loop(loop, self._resolve_update_prompt(prompt_id, answer, user_name)):
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        # Proactively update the card via API as a fallback, since
+        # P2CardActionTriggerResponse may not sync to all clients over WebSocket.
+        prompt_state = self._update_prompt_state.get(prompt_id, {})
+        prompt_message_id = prompt_state.get("message_id", "")
+        prompt_chat_id = prompt_state.get("chat_id", "")
+        if prompt_message_id and prompt_chat_id:
+            resolved_card = self._build_resolved_update_prompt_card(answer=answer, user_name=user_name)
+            self._submit_on_loop(
+                loop,
+                self._update_card_message(chat_id=prompt_chat_id, message_id=prompt_message_id, card=resolved_card),
+            )
 
         if P2CardActionTriggerResponse is None:
             return None
@@ -4710,6 +4732,29 @@ class FeishuAdapter(BasePlatformAdapter):
                 .build()
             )
         return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    async def _update_card_message(
+        self, chat_id: str, message_id: str, card: Dict[str, Any]
+    ) -> None:
+        """Update an interactive card message via the Feishu API.
+
+        This is used as a fallback when P2CardActionTriggerResponse does not
+        reliably sync card updates to all clients over WebSocket connections.
+        """
+        if not self._client or not message_id:
+            return
+        try:
+            card_json = json.dumps(card, ensure_ascii=False)
+            body = self._build_update_message_body(msg_type="interactive", content=card_json)
+            request = self._build_update_message_request(message_id=message_id, request_body=body)
+            response = await asyncio.to_thread(self._client.im.v1.message.update, request)
+            result = self._finalize_send_result(response, "card update failed")
+            if result.success:
+                logger.debug("[Feishu] Card %s updated successfully", message_id)
+            else:
+                logger.warning("[Feishu] Failed to update card %s: %s", message_id, result.error)
+        except Exception as exc:
+            logger.warning("[Feishu] Exception updating card %s: %s", message_id, exc)
 
     @staticmethod
     def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str) -> Any:

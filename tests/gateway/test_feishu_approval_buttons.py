@@ -800,3 +800,158 @@ class TestResolveUpdatePrompt:
         await adapter._resolve_update_prompt(99, "n", "Nobody")
 
         assert not (tmp_path / ".hermes" / ".update_response").exists()
+
+
+# ===========================================================================
+# _update_card_message — proactive card update via API
+# ===========================================================================
+
+
+class TestUpdateCardMessage:
+    """Test that _update_card_message updates the card via Feishu API."""
+
+    @pytest.mark.asyncio
+    async def test_updates_card_via_api(self):
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_001"),
+        )
+        adapter._client.im.v1.message.update = MagicMock(return_value=mock_response)
+
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "✅ Approved", "tag": "plain_text"},
+                "template": "green",
+            },
+            "elements": [
+                {"tag": "markdown", "content": "✅ **Approved** by Bob"},
+            ],
+        }
+
+        await adapter._update_card_message(
+            chat_id="oc_12345", message_id="msg_001", card=card
+        )
+
+        adapter._client.im.v1.message.update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_client(self):
+        adapter = _make_adapter()
+        adapter._client = None
+
+        card = {"header": {"title": {"content": "test"}}}
+        # Should not raise
+        await adapter._update_card_message(
+            chat_id="oc_12345", message_id="msg_001", card=card
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_message_id(self):
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+
+        card = {"header": {"title": {"content": "test"}}}
+        # Should not raise and should not call API
+        await adapter._update_card_message(
+            chat_id="oc_12345", message_id="", card=card
+        )
+        adapter._client.im.v1.message.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_logs_warning_on_api_failure(self):
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+
+        mock_response = SimpleNamespace(
+            success=lambda: False,
+            error="permission denied",
+        )
+        adapter._client.im.v1.message.update = MagicMock(return_value=mock_response)
+
+        card = {"header": {"title": {"content": "test"}}}
+        # Should not raise, just log
+        await adapter._update_card_message(
+            chat_id="oc_12345", message_id="msg_001", card=card
+        )
+
+
+# ===========================================================================
+# Card update scheduled on approval resolve
+# ===========================================================================
+
+
+class TestApprovalTriggersCardUpdate:
+    """Test that approval resolution schedules a proactive card update."""
+
+    def test_schedules_card_update_on_approval(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._approval_state[10] = {
+            "session_key": "sess-10",
+            "message_id": "msg-10",
+            "chat_id": "oc_12345",
+        }
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+
+        data = _make_card_action_data(
+            {"hermes_action": "approve_always", "approval_id": 10},
+            open_id="ou_bob",
+        )
+
+        submitted_coros = []
+
+        def capture_submit(coro, _loop):
+            submitted_coros.append(coro)
+            coro.close()
+            return SimpleNamespace(add_done_callback=lambda *_a, **_k: None)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=capture_submit):
+            response = adapter._on_card_action_trigger(data)
+
+        # Should return a card response
+        assert response is not None
+        assert response.card is not None
+
+        # Should have submitted at least 2 coroutines:
+        # 1. _resolve_approval
+        # 2. _update_card_message (the new proactive update)
+        assert len(submitted_coros) >= 2
+
+    def test_schedules_card_update_on_update_prompt(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._update_prompt_state[10] = {
+            "session_key": "sess-up-10",
+            "message_id": "msg_up_10",
+            "chat_id": "oc_12345",
+        }
+
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 10},
+        )
+
+        submitted_coros = []
+
+        def capture_submit(coro, _loop):
+            submitted_coros.append(coro)
+            coro.close()
+            return SimpleNamespace(add_done_callback=lambda *_a, **_k: None)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=capture_submit):
+            response = adapter._on_card_action_trigger(data)
+
+        # Should return a card response
+        assert response is not None
+        assert response.card is not None
+
+        # Should have submitted at least 2 coroutines:
+        # 1. _resolve_update_prompt
+        # 2. _update_card_message (the new proactive update)
+        assert len(submitted_coros) >= 2
