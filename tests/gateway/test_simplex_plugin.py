@@ -8,7 +8,7 @@ sibling platform-plugin tests on the same xdist worker.
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -344,3 +344,70 @@ def test_register_calls_register_platform():
     assert callable(kwargs["setup_fn"])
     # SimpleX uses opaque IDs only — no PII to redact.
     assert kwargs["pii_safe"] is True
+
+
+# ---------------------------------------------------------------------------
+# 11. Scoped platform lock — prevent duplicate inbound processing
+# ---------------------------------------------------------------------------
+
+def _stub_ws_connect():
+    """Return a stub that mimics ``websockets.connect`` as an async context
+    manager so connect()'s connectivity probe succeeds without a daemon."""
+
+    class _Conn:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    return MagicMock(connect=MagicMock(return_value=_Conn()))
+
+
+@pytest.mark.asyncio
+async def test_connect_acquires_lock_disconnect_releases(monkeypatch):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    acquire = MagicMock(return_value=True)
+    release = MagicMock()
+    adapter._acquire_platform_lock = acquire  # type: ignore
+    adapter._release_platform_lock = release  # type: ignore
+
+    # Avoid real background tasks and a live daemon.
+    monkeypatch.setattr(adapter, "_ws_listener", AsyncMock())
+    monkeypatch.setattr(adapter, "_health_monitor", AsyncMock())
+
+    with patch.dict("sys.modules", {"websockets": _stub_ws_connect()}):
+        result = await adapter.connect()
+
+    assert result is True
+    acquire.assert_called_once_with("simplex-ws", "ws://localhost:5225", "SimpleX daemon URL")
+    release.assert_not_called()
+
+    await adapter.disconnect()
+    release.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_connect_returns_false_when_lock_unavailable(monkeypatch):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    # Lock held by another gateway → acquisition fails.
+    adapter._acquire_platform_lock = MagicMock(return_value=False)  # type: ignore
+    release = MagicMock()
+    adapter._release_platform_lock = release  # type: ignore
+
+    # The connectivity probe must never run when the lock is unavailable.
+    probe = _stub_ws_connect()
+    with patch.dict("sys.modules", {"websockets": probe}):
+        result = await adapter.connect()
+
+    assert result is False
+    assert adapter._running is False
+    probe.connect.assert_not_called()
+    # No lock was acquired, so none should be released.
+    release.assert_not_called()
