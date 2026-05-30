@@ -90,3 +90,31 @@ def find_bare_json_object(content: str) -> list[RawCall]:
 
 
 FORMATS.append(ContentFormat("bare_json_object", find_bare_json_object))
+
+
+_KIMI_SECTION_RE = re.compile(r"<\|tool_calls?_section_begin\|>(.*?)<\|tool_calls?_section_end\|>", re.DOTALL)
+_KIMI_CALL_RE = re.compile(
+    r"<\|tool_call_begin\|>\s*(?P<id>.*?)\s*<\|tool_call_argument_begin\|>(?P<args>.*?)<\|tool_call_end\|>",
+    re.DOTALL,
+)
+
+
+def _kimi_name(raw_id: str) -> str:
+    name = raw_id.strip().removeprefix("functions.")
+    return name.rsplit(":", 1)[0].strip()
+
+
+def find_kimi_k2(content: str) -> list[RawCall]:
+    if "<|tool_call" not in content:
+        return []
+    out: list[RawCall] = []
+    for section in _KIMI_SECTION_RE.finditer(content):
+        for m in _KIMI_CALL_RE.finditer(section.group(1)):
+            obj = _loads_lenient(m.group("args").strip())
+            name = _kimi_name(m.group("id"))
+            if name and isinstance(obj, dict):
+                out.append(RawCall(name=name, arguments=obj, span=section.group(0)))
+    return out
+
+
+FORMATS.append(ContentFormat("kimi_k2", find_kimi_k2))
