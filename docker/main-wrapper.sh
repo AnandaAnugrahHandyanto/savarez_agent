@@ -30,14 +30,20 @@ cd /opt/data
 # shellcheck disable=SC1091
 . /opt/hermes/.venv/bin/activate
 
+if [ "${HERMES_RUN_AS_ROOT:-}" = "1" ]; then
+    _DROP=""
+else
+    _DROP="s6-setuidgid hermes"
+fi
+
 if [ $# -eq 0 ]; then
-    exec s6-setuidgid hermes hermes
+    exec $_DROP hermes
 fi
 
 if command -v "$1" >/dev/null 2>&1; then
     # Bare executable — pass through directly.
-    exec s6-setuidgid hermes "$@"
+    exec $_DROP "$@"
 fi
 
 # Hermes subcommand pass-through.
-exec s6-setuidgid hermes hermes "$@"
+exec $_DROP hermes "$@"

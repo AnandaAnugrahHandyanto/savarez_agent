@@ -43,8 +43,17 @@ HERMES_UID="${HERMES_UID:-${PUID:-}}"
 HERMES_GID="${HERMES_GID:-${PGID:-}}"
 
 if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
-    echo "[stage2] Changing hermes UID to $HERMES_UID"
-    usermod -u "$HERMES_UID" hermes
+    if [ "$HERMES_UID" = "0" ]; then
+        # UID 0 is already taken by root — usermod would fail with
+        # "UID '0' already exists".  Instead, signal main-wrapper.sh to
+        # skip the s6-setuidgid privilege drop so the gateway runs as
+        # root directly.
+        echo "[stage2] HERMES_UID=0 — will run as root (skipping usermod)"
+        printf '1' > /run/s6/container_environment/HERMES_RUN_AS_ROOT
+    else
+        echo "[stage2] Changing hermes UID to $HERMES_UID"
+        usermod -u "$HERMES_UID" hermes
+    fi
 fi
 if [ -n "${HERMES_GID:-}" ] && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
     echo "[stage2] Changing hermes GID to $HERMES_GID"
