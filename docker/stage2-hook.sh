@@ -110,25 +110,48 @@ for sock in /var/run/docker.sock /run/docker.sock; do
 done
 
 # --- Fix ownership of data volume ---
-# When HERMES_UID is remapped or the top-level $HERMES_HOME isn't owned by
-# the runtime hermes UID, restore ownership to hermes — but ONLY for the
-# directories hermes actually writes to. The full $HERMES_HOME may be a
-# host-mounted bind containing unrelated user files; `chown -R` would
-# silently destroy host ownership of those (see issue #19788).
+# Restore ownership to hermes only when current metadata proves it is needed.
+# A non-default HERMES_UID/PUID alone is not sufficient: after the first boot,
+# the bind-mounted volume and install trees may already be owned by the remapped
+# hermes UID, and blindly running `chown -R` again can add minutes of I/O on
+# slow storage.
+#
+# The full $HERMES_HOME may be a host-mounted bind containing unrelated user
+# files; `chown -R` would silently destroy host ownership of those (see issue
+# #19788). Recursive chown below is limited to Hermes-owned subdirs.
 #
 # The canonical list of hermes-owned subdirs is the same one the s6-setuidgid
 # mkdir -p block below seeds. Keep them in sync if the seed list changes.
 actual_hermes_uid=$(id -u hermes)
-needs_chown=false
-if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "10000" ]; then
-    needs_chown=true
-elif [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
-    needs_chown=true
+
+path_owner_uid() {
+    path=$1
+    stat -c %u "$path" 2>/dev/null || true
+}
+
+path_needs_chown() {
+    path=$1
+    [ -e "$path" ] && [ "$(path_owner_uid "$path")" != "$actual_hermes_uid" ]
+}
+
+hermes_owned_subdirs="cron sessions logs hooks memories skills skins plans workspace home profiles"
+
+needs_data_chown=false
+if [ "$(path_owner_uid "$HERMES_HOME")" != "$actual_hermes_uid" ]; then
+    needs_data_chown=true
+else
+    for sub in $hermes_owned_subdirs; do
+        if path_needs_chown "$HERMES_HOME/$sub"; then
+            needs_data_chown=true
+            break
+        fi
+    done
 fi
-if [ "$needs_chown" = true ]; then
+
+if [ "$needs_data_chown" = true ]; then
     echo "[stage2] Fixing ownership of $HERMES_HOME (targeted) to hermes ($actual_hermes_uid)"
     # In rootless Podman the container's "root" is mapped to an
-    # unprivileged host UID — chown will fail. That's fine: the volume
+    # unprivileged host UID — chown will fail. That's fine when the volume
     # is already owned by the mapped user on the host side.
     #
     # Top-level $HERMES_HOME: chown the directory itself (not its contents)
@@ -139,26 +162,37 @@ if [ "$needs_chown" = true ]; then
     # Hermes-owned subdirs: recursive chown is safe here because these are
     # created and managed exclusively by hermes (see the s6-setuidgid mkdir
     # -p block below for the canonical list).
-    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles; do
+    for sub in $hermes_owned_subdirs; do
         if [ -e "$HERMES_HOME/$sub" ]; then
             chown -R hermes:hermes "$HERMES_HOME/$sub" 2>/dev/null || \
                 echo "[stage2] Warning: chown $HERMES_HOME/$sub failed (rootless container?) — continuing"
         fi
     done
-    # Hermes-owned trees under $INSTALL_DIR must be re-chowned when the UID
-    # is remapped — otherwise:
-    #   - .venv: lazy_deps.py cannot install platform packages (discord.py,
-    #     telegram, slack, etc.) with EACCES (#15012, #21100)
-    #   - ui-tui: esbuild rebuilds dist/entry.js on every TUI launch (when
-    #     the source mtime is newer than dist/ or when HERMES_TUI_FORCE_BUILD
-    #     is set) and writes to ui-tui/dist/. Without this chown the new
-    #     hermes UID can't write the build output (#28851).
-    #   - node_modules: root-level dependencies (puppeteer, web tooling)
-    #     that runtime code may walk/update.
-    # The set mirrors the build-time `chown -R hermes:hermes` line in the
-    # Dockerfile — keep them in sync if the Dockerfile chown set changes.
-    # These are under $INSTALL_DIR (not $HERMES_HOME), so the bind-mount
-    # concern doesn't apply — recursive is fine.
+fi
+
+# Hermes-owned trees under $INSTALL_DIR must be re-chowned when the UID is
+# remapped — otherwise:
+#   - .venv: lazy_deps.py cannot install platform packages (discord.py,
+#     telegram, slack, etc.) with EACCES (#15012, #21100)
+#   - ui-tui: esbuild rebuilds dist/entry.js on every TUI launch (when the
+#     source mtime is newer than dist/ or when HERMES_TUI_FORCE_BUILD is set)
+#     and writes to ui-tui/dist/. Without this chown the new hermes UID can't
+#     write the build output (#28851).
+#   - node_modules: root-level dependencies (puppeteer, web tooling) that
+#     runtime code may walk/update.
+# The set mirrors the build-time `chown -R hermes:hermes` line in the
+# Dockerfile — keep them in sync if the Dockerfile chown set changes. These are
+# under $INSTALL_DIR (not $HERMES_HOME), so the bind-mount concern doesn't
+# apply — recursive is fine.
+needs_install_chown=false
+for path in "$INSTALL_DIR/.venv" "$INSTALL_DIR/ui-tui" "$INSTALL_DIR/node_modules"; do
+    if path_needs_chown "$path"; then
+        needs_install_chown=true
+        break
+    fi
+done
+if [ "$needs_install_chown" = true ]; then
+    echo "[stage2] Fixing ownership of install trees to hermes ($actual_hermes_uid)"
     chown -R hermes:hermes \
         "$INSTALL_DIR/.venv" \
         "$INSTALL_DIR/ui-tui" \
