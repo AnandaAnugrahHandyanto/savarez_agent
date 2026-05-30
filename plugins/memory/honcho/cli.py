@@ -1200,23 +1200,42 @@ def cmd_tokens(args) -> None:
 
     context = getattr(args, "context", None)
     dialectic = getattr(args, "dialectic", None)
+    representation = getattr(args, "representation", None)
 
-    if context is None and dialectic is None:
-        ctx_tokens = hermes.get("contextTokens") or cfg.get("contextTokens") or "(Honcho default)"
+    if context is None and dialectic is None and representation is None:
+        ctx_raw = hermes.get("contextTokens", cfg.get("contextTokens"))
+        ctx_tokens = "uncapped (no limit — grows at scale)" if ctx_raw in (None, "") else f"{ctx_raw} tokens"
+        rep_raw = hermes.get("representationMaxConclusions", cfg.get("representationMaxConclusions"))
+        from plugins.memory.honcho.client import HonchoClientConfig
+        _rep_default = HonchoClientConfig.__dataclass_fields__["representation_max_conclusions"].default
+        if rep_raw in (None, ""):
+            rep_display = f"{_rep_default} conclusions (default)" if _rep_default else "uncapped"
+        elif int(rep_raw) <= 0:
+            rep_display = "uncapped (explicitly disabled)"
+        else:
+            rep_display = f"{rep_raw} conclusions"
         d_chars = hermes.get("dialecticMaxChars") or cfg.get("dialecticMaxChars") or 600
         d_level = hermes.get("dialecticReasoningLevel") or cfg.get("dialecticReasoningLevel") or "low"
         print("\nHoncho budgets\n" + "─" * 40)
         print()
-        print(f"  Context     {ctx_tokens} tokens")
-        print("    Raw memory retrieval. Honcho returns stored facts/history about")
-        print("    the user and session, injected directly into the system prompt.")
+        print(f"  Context     {ctx_tokens}")
+        print("    Overall cap on the auto-injected context block (summary +")
+        print("    representation + cards). Blunt client-side truncation; prefer")
+        print("    the per-section representation cap below for large memories.")
+        print()
+        print(f"  Representation   {rep_display}")
+        print("    Cap on how many conclusions the auto-injected representation")
+        print("    (the raw observation log, which grows unbounded at scale) may")
+        print("    contain. Filtered server-side by Honcho. Cards and session")
+        print("    summary are NOT affected by this cap.")
         print()
         print(f"  Dialectic   {d_chars} chars, reasoning: {d_level}")
         print("    AI-to-AI inference. Hermes asks Honcho's AI peer a question")
         print("    (e.g. \"what were we working on?\") and Honcho runs its own model")
         print("    to synthesize an answer. Used for first-turn session continuity.")
         print("    Level controls how much reasoning Honcho spends on the answer.")
-        print("\n  Set with: hermes honcho tokens [--context N] [--dialectic N]\n")
+        print("\n  Set with: hermes honcho tokens [--context N] [--representation N] [--dialectic N]")
+        print("  (--representation is a conclusion count, 1-100; 0 disables the cap)\n")
         return
 
     host = _host_key()
@@ -1229,6 +1248,13 @@ def cmd_tokens(args) -> None:
     if dialectic is not None:
         cfg.setdefault("hosts", {}).setdefault(host, {})["dialecticMaxChars"] = dialectic
         print(f"  {label}dialectic cap  -> {dialectic} chars")
+        changed = True
+    if representation is not None:
+        cfg.setdefault("hosts", {}).setdefault(host, {})["representationMaxConclusions"] = representation
+        if representation <= 0:
+            print(f"  {label}representation -> uncapped (cap disabled)")
+        else:
+            print(f"  {label}representation -> {representation} conclusions")
         changed = True
 
     if changed:
@@ -1656,6 +1682,10 @@ def register_cli(subparser) -> None:
     tokens_parser.add_argument(
         "--context", type=int, metavar="N",
         help="Max tokens Honcho returns from session.context() per turn",
+    )
+    tokens_parser.add_argument(
+        "--representation", type=int, metavar="N",
+        help="Max conclusions in the auto-injected representation (1-100; 0 = uncapped)",
     )
     tokens_parser.add_argument(
         "--dialectic", type=int, metavar="N",
