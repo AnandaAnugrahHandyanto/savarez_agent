@@ -79,6 +79,26 @@ def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
         return default
 
 
+def _parse_bind_hosts(value: Any) -> tuple[str, ...]:
+    """Normalize API server bind host config.
+
+    Historically deployments used a comma-separated host string such as
+    ``127.0.0.1,192.168.124.244`` to keep both local and LAN clients working.
+    aiohttp's ``TCPSite`` accepts one host per site, so split the value here
+    instead of passing the comma-joined string to DNS resolution.
+    """
+    if not value:
+        return (DEFAULT_HOST,)
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = [str(value)]
+    hosts = tuple(str(item).strip() for item in items if str(item).strip())
+    return hosts or (DEFAULT_HOST,)
+
+
 _TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
 _FALSE_REQUEST_BOOL_STRINGS = frozenset({"0", "false", "no", "off"})
 
@@ -689,6 +709,7 @@ class APIServerAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
         self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
+        self._hosts: tuple[str, ...] = _parse_bind_hosts(self._host)
         raw_port = extra.get("port")
         if raw_port is None:
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
@@ -702,7 +723,8 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
-        self._site: Optional["web.TCPSite"] = None
+        self._site: Optional[Any] = None
+        self._sites: List[Any] = []
         self._response_store = ResponseStore()
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
@@ -4084,6 +4106,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
+        assert web is not None
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
@@ -4131,15 +4154,6 @@ class APIServerAdapter(BasePlatformAdapter):
             # upstream session-control handlers.
             self._app["api_server_adapter"] = self
 
-            # Start background sweep to clean up orphaned (unconsumed) run streams
-            sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
-            try:
-                self._background_tasks.add(sweep_task)
-            except TypeError:
-                pass
-            if hasattr(sweep_task, "add_done_callback"):
-                sweep_task.add_done_callback(self._background_tasks.discard)
-
             # Refuse to start without authentication. The API server can
             # dispatch terminal-capable agent work, so every deployment needs
             # an explicit API_SERVER_KEY regardless of bind address.
@@ -4153,7 +4167,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Refuse to start network-accessible with a placeholder key.
             # Ported from openclaw/openclaw#64586.
-            if is_network_accessible(self._host) and self._api_key:
+            if any(is_network_accessible(host) for host in self._hosts) and self._api_key:
                 try:
                     from hermes_cli.auth import has_usable_secret
                     if not has_usable_secret(self._api_key, min_length=8):
@@ -4180,30 +4194,64 @@ class APIServerAdapter(BasePlatformAdapter):
 
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
-            self._site = web.TCPSite(self._runner, self._host, self._port)
-            await self._site.start()
+            self._sites = []
+            for host in self._hosts:
+                site = web.TCPSite(self._runner, host, self._port)
+                await site.start()
+                self._sites.append(site)
+            self._site = self._sites[0] if self._sites else None
+
+            # Start background sweep to clean up orphaned (unconsumed) run streams
+            # only after all bind sites are live.  Failed startups must not leave
+            # background tasks behind.
+            sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
+            try:
+                self._background_tasks.add(sweep_task)
+            except TypeError:
+                pass
+            if hasattr(sweep_task, "add_done_callback"):
+                sweep_task.add_done_callback(self._background_tasks.discard)
 
             self._mark_connected()
             logger.info(
-                "[%s] API server listening on http://%s:%d (model: %s)",
-                self.name, self._host, self._port, self._model_name,
+                "[%s] API server listening on %s (model: %s)",
+                self.name,
+                ", ".join(f"http://{host}:{self._port}" for host in self._hosts),
+                self._model_name,
             )
             return True
 
         except Exception as e:
+            for site in list(self._sites):
+                try:
+                    await site.stop()
+                except Exception:
+                    logger.debug("[%s] Error while cleaning up partially-started API site", self.name, exc_info=True)
+            self._sites = []
+            self._site = None
+            if self._runner:
+                try:
+                    await self._runner.cleanup()
+                except Exception:
+                    logger.debug("[%s] Error while cleaning up API server runner", self.name, exc_info=True)
+                self._runner = None
+            self._app = None
+            await self.cancel_background_tasks()
             logger.error("[%s] Failed to start API server: %s", self.name, e)
             return False
 
     async def disconnect(self) -> None:
         """Stop the aiohttp web server."""
         self._mark_disconnected()
-        if self._site:
-            await self._site.stop()
-            self._site = None
+        for site in list(self._sites):
+            await site.stop()
+        self._sites = []
+        self._site = None
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        await self.cancel_background_tasks()
         logger.info("[%s] API server stopped", self.name)
 
     async def send(
