@@ -82,3 +82,18 @@ def test_kimi_k2_absent_returns_empty():
     from agent.transports.content_tool_calls import find_kimi_k2
 
     assert find_kimi_k2("normal answer") == []
+
+
+def test_minimax_invoke_extracts():
+    from agent.transports.content_tool_calls import find_minimax_invoke
+
+    calls = find_minimax_invoke((FIX / "minimax_invoke.txt").read_text())
+    assert len(calls) == 1
+    assert calls[0].name == "web_search"
+    assert calls[0].arguments == {"query": "hermes"}
+
+
+def test_minimax_invoke_absent_returns_empty():
+    from agent.transports.content_tool_calls import find_minimax_invoke
+
+    assert find_minimax_invoke("plain text mentioning invoke") == []

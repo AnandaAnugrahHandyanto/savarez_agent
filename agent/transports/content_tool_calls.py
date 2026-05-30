@@ -118,3 +118,22 @@ def find_kimi_k2(content: str) -> list[RawCall]:
 
 
 FORMATS.append(ContentFormat("kimi_k2", find_kimi_k2))
+
+
+_INVOKE_RE = re.compile(r'<invoke\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</invoke>', re.DOTALL | re.IGNORECASE)
+_PARAM_RE = re.compile(r'<parameter\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</parameter>', re.DOTALL | re.IGNORECASE)
+
+
+def find_minimax_invoke(content: str) -> list[RawCall]:
+    if "<invoke" not in content.lower():
+        return []
+    out: list[RawCall] = []
+    for m in _INVOKE_RE.finditer(content):
+        name = m.group(1).strip()
+        args = {pn.strip(): pv.strip() for pn, pv in _PARAM_RE.findall(m.group(2))}
+        if name:
+            out.append(RawCall(name=name, arguments=args, span=m.group(0)))
+    return out
+
+
+FORMATS.append(ContentFormat("minimax_invoke", find_minimax_invoke))
