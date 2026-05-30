@@ -321,6 +321,18 @@ def build_memory_write_metadata(
         metadata["task_id"] = task_id
     if tool_call_id:
         metadata["tool_call_id"] = tool_call_id
+    for attr, key in (
+        ("_user_id", "user_id"),
+        ("_user_name", "user_name"),
+        ("_chat_id", "chat_id"),
+        ("_chat_name", "chat_name"),
+        ("_chat_type", "chat_type"),
+        ("_thread_id", "thread_id"),
+        ("_gateway_session_key", "gateway_session_key"),
+    ):
+        value = getattr(agent, attr, None)
+        if value:
+            metadata[key] = value
     return {k: v for k, v in metadata.items() if v not in {None, ""}}
 
 

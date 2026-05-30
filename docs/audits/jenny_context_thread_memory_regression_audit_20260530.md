@@ -345,6 +345,36 @@ batching reads `group_sessions_per_user` and `thread_sessions_per_user` from
 If those values are not bridged into the adapter extra config, text batching can
 group chunks by a different key than the gateway session store uses.
 
+## Memory Walling Follow-up
+
+Regression coverage in `tests/agent/test_memory_walling_scope.py` now pins the
+memory-provider walling contract for Discord-thread-shaped sessions. External
+providers receive non-sensitive scope metadata including `gateway_session_key`,
+`platform`, `chat_type`, `chat_id`, `thread_id`, and `agent_identity` during
+initialization. Built-in memory write mirroring now also includes Discord scope
+metadata so providers that mirror `MEMORY.md` / `USER.md` writes can keep those
+writes in the same project-thread namespace as turn sync and prefetch.
+
+The tests confirm a provider that namespaces by `gateway_session_key` can isolate
+Project A and Project B threads under the same profile. They also document the
+current leakage mode: a provider that ignores thread scope and namespaces only by
+profile/agent identity will expose memories across otherwise separate Discord
+project threads.
+
+Built-in `MEMORY.md` and `USER.md` remain profile-scoped. Temp-dir tests confirm
+two Discord project threads using the same Hermes profile receive the same
+built-in memory snapshot. No project-wall config or built-in memory namespace was
+added in this batch.
+
+Proposed safe sequence:
+
+1. Introduce an explicit `MemoryScope` object shared by provider init, turn sync,
+   prefetch, and built-in memory-write mirroring.
+2. Add provider conformance tests requiring providers to either honor
+   `gateway_session_key` or declare that they are profile/global only.
+3. Design built-in memory walling separately, including operator-visible defaults
+   and migration/non-migration behavior for existing `MEMORY.md` / `USER.md`.
+
 ## Operational Checks To Run From The VPS
 
 Run these only on the VPS/operator side, not from this audit session:
