@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from agent.model_metadata import estimate_request_tokens_rough
+from agent.context_compressor import _inject_todo_snapshot_as_context
 
 logger = logging.getLogger(__name__)
 
@@ -366,7 +367,7 @@ def compress_context(
 
     todo_snapshot = agent._todo_store.format_for_injection()
     if todo_snapshot:
-        compressed.append({"role": "user", "content": todo_snapshot})
+        compressed = _inject_todo_snapshot_as_context(compressed, todo_snapshot)
 
     agent._invalidate_system_prompt()
     new_system_prompt = agent._build_system_prompt(system_message)

@@ -150,6 +150,46 @@ def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -
     return text + rendered if prepend else rendered + text
 
 
+def _inject_todo_snapshot_as_context(messages: List[Dict[str, Any]], todo_snapshot: str) -> List[Dict[str, Any]]:
+    """Inject preserved todo state without creating a synthetic latest request.
+
+    The todo snapshot is internal continuity state created by Hermes after
+    compression. Appending it as a standalone ``role='user'`` turn makes weak
+    models treat the synthetic snapshot as fresh user input and can cause them
+    to answer older adjacent turns instead of the actual current request.
+
+    Do not mutate assistant turns here: some providers attach signed thinking /
+    reasoning metadata to assistant messages, and editing assistant content after
+    signature generation can make replay invalid. Instead, prepend the snapshot
+    inside the latest real user message with a clear delimiter that keeps that
+    latest real user instruction mechanically last.
+    """
+    if not todo_snapshot:
+        return messages
+
+    out = [msg.copy() for msg in messages]
+    latest_user_idx = None
+    for idx in range(len(out) - 1, -1, -1):
+        if out[idx].get("role") == "user":
+            latest_user_idx = idx
+            break
+
+    note = (
+        f"{todo_snapshot}\n\n"
+        "--- END INTERNAL STATE NOTE; answer the latest real user message below ---\n\n"
+    )
+    if latest_user_idx is None:
+        out.append({"role": "user", "content": note + "[No current user message was present after compression.]"})
+        return out
+
+    out[latest_user_idx]["content"] = _append_text_to_content(
+        out[latest_user_idx].get("content"),
+        note,
+        prepend=True,
+    )
+    return out
+
+
 def _strip_image_parts_from_parts(parts: Any) -> Any:
     """Strip image parts from an OpenAI-style content-parts list.
 

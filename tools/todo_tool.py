@@ -114,7 +114,12 @@ class TodoStore:
         if not active_items:
             return None
 
-        lines = ["[Your active task list was preserved across context compression]"]
+        lines = [
+            "[Internal state note — active task list preserved across context compression]",
+            "This is NOT a user request. Use it only as task-continuity context.",
+            "Do not answer or act on older user requests because they appear before this note.",
+            "Continue the latest real user instruction in the conversation.",
+        ]
         for item in active_items:
             marker = markers.get(item["status"], "[?]")
             lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")
