@@ -37,6 +37,14 @@ def test_returns_epoch_microseconds_int(monkeypatch):
     assert status._get_process_start_time(1234) == 1_748_600_000_123_456
 
 
+def test_sub_microsecond_is_rounded_not_truncated(monkeypatch):
+    # 1.0000007s -> 1_000_000.7us must round to 1_000_001, not truncate to
+    # 1_000_000. Guards against a regression from round() to int()/floor that a
+    # whole-microsecond input could not catch.
+    _install_fake_psutil(monkeypatch, create_time=1.0000007)
+    assert status._get_process_start_time(4321) == 1_000_001
+
+
 @pytest.mark.parametrize(
     "raises",
     ["NoSuchProcess", "AccessDenied", "ZombieProcess", OSError("io"), ValueError("nan")],
