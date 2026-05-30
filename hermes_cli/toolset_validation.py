@@ -130,5 +130,5 @@ def validate_explicit_toolsets_or_raise(
     """Daemon-side adapter: raise InvalidToolsetError on all-unknown, else return the subset (or None)."""
     valid, error = validate_explicit_toolsets(toolsets, source=source, warn=warn)
     if error:
-        raise InvalidToolsetError(error, unknown=normalize_toolsets(toolsets))
+        raise InvalidToolsetError(error)
     return valid

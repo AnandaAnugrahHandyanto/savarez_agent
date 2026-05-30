@@ -50,6 +50,41 @@ def test_or_raise_never_exits_the_process(monkeypatch):
         validate_explicit_toolsets_or_raise("ui")
 
 
+def test_all_plus_extras_warns_they_are_ignored():
+    warnings = []
+    valid, err = validate_explicit_toolsets("all,web", source="t", warn=warnings.append)
+    assert (valid, err) == (None, None)
+    assert any("web" in w for w in warnings)
+
+
+def test_enabled_mcp_server_resolves_disabled_one_warns(monkeypatch):
+    import hermes_cli.config
+
+    monkeypatch.setattr(
+        hermes_cli.config,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"live_mcp": {"enabled": True}, "off_mcp": {"enabled": False}}},
+    )
+    warnings = []
+    valid, err = validate_explicit_toolsets("web,live_mcp,off_mcp", source="t", warn=warnings.append)
+    assert err is None
+    assert valid == ["web", "live_mcp"]
+    assert any("off_mcp" in w and "enabled: true" in w for w in warnings)
+
+
+def test_unreadable_config_degrades_to_all_unknown(monkeypatch):
+    # A crash reading MCP config must not propagate — names just stay unknown.
+    import hermes_cli.config
+
+    def boom():
+        raise RuntimeError("config exploded")
+
+    monkeypatch.setattr(hermes_cli.config, "read_raw_config", boom)
+    valid, err = validate_explicit_toolsets("not_a_real_mcp", source="t")
+    assert valid is None
+    assert "not_a_real_mcp" in err
+
+
 def test_normalize_splits_and_strips():
     assert normalize_toolsets(" web , search ") == ["web", "search"]
     assert normalize_toolsets(["web", "search"]) == ["web", "search"]
