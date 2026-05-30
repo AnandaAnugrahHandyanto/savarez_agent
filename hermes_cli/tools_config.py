@@ -3077,6 +3077,9 @@ def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str],
 def _platforms_missing_toolset(config: dict, toolset_name: str, exclude_platform: str) -> List[str]:
     """Return explicitly configured platforms that do not include a toolset.
 
+    Keep this helper toolset-agnostic so future CLI-vs-gateway visibility
+    gaps can reuse the same check; ``x_search`` is only the first caller.
+
     Non-interactive ``hermes tools enable`` defaults to the CLI platform.  Users
     often run it after seeing a tool in the CLI list, then expect Matrix or
     another gateway to see the same tool.  Only warn for platforms that already
