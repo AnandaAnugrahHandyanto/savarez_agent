@@ -25,3 +25,18 @@ def test_deterministic_id_stable_and_prefixed():
 def test_registry_registered_after_import():
     names = {f.name for f in FORMATS}
     assert {"tool_call_json", "bare_json_object", "kimi_k2", "minimax_invoke", "gemma_function"} <= names
+
+
+def test_tool_call_json_extracts():
+    from agent.transports.content_tool_calls import find_tool_call_json
+
+    calls = find_tool_call_json((FIX / "tool_call_json.txt").read_text())
+    assert len(calls) == 1
+    assert calls[0].name == "web_search"
+    assert calls[0].arguments == {"query": "hermes nousresearch"}
+
+
+def test_tool_call_json_ignores_prose():
+    from agent.transports.content_tool_calls import find_tool_call_json
+
+    assert find_tool_call_json("talking about <tool_call> tags") == []

@@ -53,3 +53,18 @@ def _loads_lenient(raw: str) -> Any | None:
         return json.loads(raw)
     except (json.JSONDecodeError, ValueError):
         return None
+
+
+_TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL | re.IGNORECASE)
+
+
+def find_tool_call_json(content: str) -> list[RawCall]:
+    out: list[RawCall] = []
+    for m in _TOOL_CALL_BLOCK_RE.finditer(content):
+        obj = _loads_lenient(m.group(1))
+        if isinstance(obj, dict) and isinstance(obj.get("name"), str):
+            out.append(RawCall(name=obj["name"], arguments=obj.get("arguments", {}), span=m.group(0)))
+    return out
+
+
+FORMATS.append(ContentFormat("tool_call_json", find_tool_call_json))
