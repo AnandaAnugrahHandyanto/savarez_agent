@@ -1857,6 +1857,82 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _build_minimax_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+    """Build an Anthropic-compatible client for a MiniMax OAuth-authenticated session.
+
+    MiniMax's ``/anthropic`` endpoint speaks the Anthropic Messages API, so we
+    wrap a plain ``OpenAI`` client in ``AnthropicAuxiliaryClient`` to translate
+    ``chat.completions.create()`` calls into ``messages`` requests.
+
+    The caller must pass an explicit model. Returns ``(None, None)``
+    when the user has not authenticated with MiniMax OAuth.
+    """
+    if not model:
+        logger.warning(
+            "Auxiliary client: minimax-oauth requested without a model; "
+            "pass model explicitly (auxiliary.<task>.model in config.yaml)."
+        )
+        return None, None
+    resolved = _resolve_minimax_oauth_for_aux()
+    if resolved is None:
+        return None, None
+    api_key, base_url = resolved
+    logger.debug("Auxiliary client: MiniMax OAuth (%s via Anthropic API)", model)
+    from agent.anthropic_adapter import build_anthropic_client
+
+    real_client = build_anthropic_client(api_key, base_url)
+    return AnthropicAuxiliaryClient(real_client, model, api_key, base_url, is_oauth=True), model
+
+
+def _resolve_minimax_oauth_for_aux() -> Optional[Tuple[str, str]]:
+    """Resolve a fresh MiniMax OAuth (api_key, base_url) for auxiliary clients.
+
+    Prefer the credential pool, matching the main runtime/provider status
+    path.  Falls back to ``hermes_cli.auth``'s singleton runtime resolver for
+    older auth-store-only logins. Returns ``None`` if the user is not
+    authenticated with MiniMax OAuth.
+    """
+    try:
+        pool = load_pool("minimax-oauth")
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                api_key = str(
+                    getattr(entry, "runtime_api_key", None)
+                    or getattr(entry, "access_token", "")
+                    or ""
+                ).strip()
+                base_url = str(
+                    getattr(entry, "runtime_base_url", None)
+                    or getattr(entry, "base_url", None)
+                    or ""
+                ).strip().rstrip("/")
+                # MiniMax uses /anthropic endpoint
+                if base_url and not base_url.endswith("/anthropic"):
+                    base_url = base_url.rstrip("/") + "/anthropic"
+                if api_key and base_url:
+                    return api_key, base_url
+    except Exception as exc:
+        logger.debug("Auxiliary MiniMax OAuth pool credential resolution failed: %s", exc)
+
+    try:
+        from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+
+        creds = resolve_minimax_oauth_runtime_credentials()
+    except Exception as exc:
+        logger.debug("Auxiliary MiniMax OAuth runtime credential resolution failed: %s", exc)
+        return None
+
+    api_key = str(creds.get("api_key") or "").strip()
+    base_url = str(creds.get("base_url") or "").strip().rstrip("/")
+    if not api_key or not base_url:
+        return None
+    # Ensure /anthropic suffix
+    if not base_url.endswith("/anthropic"):
+        base_url = base_url.rstrip("/") + "/anthropic"
+    return api_key, base_url
+
+
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     """Build a CodexAuxiliaryClient for an explicitly-requested model.
 
@@ -3731,7 +3807,7 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
+    elif pconfig.auth_type in {"oauth_device_code", "oauth_external", "oauth_minimax"}:
         # OAuth providers — route through their specific try functions
         if provider == "nous":
             return resolve_provider_client("nous", model, async_mode)
@@ -3739,6 +3815,15 @@ def resolve_provider_client(
             return resolve_provider_client("openai-codex", model, async_mode)
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
+        if provider == "minimax-oauth":
+            _model = model or _get_aux_model_for_provider("minimax-oauth") or "MiniMax-M2.7-highspeed"
+            client, default = _build_minimax_oauth_aux_client(_model)
+            if client is None:
+                logger.warning("resolve_provider_client: minimax-oauth requested but no MiniMax OAuth token found (run: hermes model)")
+                return None, None
+            final_model = _normalize_resolved_model(_model or default, provider)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)
