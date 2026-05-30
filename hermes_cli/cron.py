@@ -132,6 +132,25 @@ def cron_tick():
     tick(verbose=True)
 
 
+def _read_cron_ticker_health():
+    """Return ``(state, age_seconds | None, last_error | None)`` from
+    gateway_state.json, or ``(None, None, None)`` when unavailable."""
+    try:
+        from datetime import datetime, timezone
+        from gateway.status import read_runtime_status
+
+        block = (read_runtime_status() or {}).get("cron_ticker")
+        if not block:
+            return (None, None, None)
+        age = None
+        if last := block.get("last_tick_at"):
+            ts = datetime.fromisoformat(last.replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - ts).total_seconds()
+        return (block.get("state"), age, block.get("last_error"))
+    except Exception:
+        return (None, None, None)
+
+
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
@@ -141,7 +160,19 @@ def cron_status():
 
     pids = find_gateway_pids()
     if pids:
-        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
+        state, age, err = _read_cron_ticker_health()
+        if state == "failed_import":
+            print(color(f"✗ Cron ticker failed to start: {err}", Colors.RED))
+            print(color("  Fix cron/scheduler.py, then run: hermes gateway restart", Colors.DIM))
+        elif state is None or age is None:
+            print(color("⚠ Gateway running but cron ticker status unknown", Colors.YELLOW))
+            print(color("  If jobs aren't firing, run: hermes gateway restart", Colors.DIM))
+        elif state in {"stalled", "stopped"} or age >= 1800:  # 1800 == HEARTBEAT_STALE_SECONDS
+            print(color("⚠ Gateway running but cron ticker is NOT alive — jobs are NOT firing", Colors.RED))
+            print(color(f"  Last tick {age:.0f}s ago. Run: hermes gateway restart", Colors.DIM))
+        else:
+            print(color("✓ Cron ticker healthy — jobs will fire automatically", Colors.GREEN))
+            print(color(f"  Last tick {age:.0f}s ago", Colors.DIM))
         print(f"  PID: {', '.join(map(str, pids))}")
     else:
         print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
