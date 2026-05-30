@@ -3659,6 +3659,65 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_custom_provider_max_tokens(
+    model: str,
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Look up a per-model ``max_tokens`` output cap from ``custom_providers``.
+
+    Sibling of :func:`get_custom_provider_context_length`: matches any entry whose
+    ``base_url`` equals ``base_url`` (trailing-slash insensitive) and returns
+    ``custom_providers[i].models.<model>.max_tokens`` when present and a positive
+    int (``bool`` rejected — it is an ``int`` subclass but never a valid cap).
+
+    Single source of truth for custom-provider output caps, used by ``init_agent``
+    (startup) and ``switch_model`` / fallback re-resolution so a per-provider cap
+    is honored on every model the session uses, instead of truncating at the 4096
+    floor or leaking the global value onto fallbacks.  See #28046 / #28782.
+    """
+    if not model or not base_url:
+        return None
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            if config is None:
+                return None
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_url = (base_url or "").rstrip("/")
+    if not target_url:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/")
+        if not entry_url or entry_url != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict):
+            continue
+        raw_mt = model_cfg.get("max_tokens")
+        if raw_mt is None or isinstance(raw_mt, bool):
+            continue
+        try:
+            mt = int(raw_mt)
+        except (TypeError, ValueError):
+            continue
+        if mt > 0:
+            return mt
+    return None
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
