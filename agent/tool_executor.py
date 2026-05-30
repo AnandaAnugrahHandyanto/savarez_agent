@@ -185,15 +185,19 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # checkpoint state (dedup slot, real snapshots).
         block_result = None
         blocked_by_guardrail = False
-        try:
-            from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-            block_message, modified_args = _dispatch_pre_tool_call_hooks(
-                function_name, function_args, task_id=effective_task_id or "",
-            )
-            if modified_args is not None:
-                function_args = modified_args
-        except Exception:
-            block_message = None
+        if _ts_scope_block is not None:
+            # Out-of-scope tool_call: reject before hooks/guardrails/dispatch.
+            block_result = _ts_scope_block
+        else:
+            try:
+                from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+                block_message, modified_args = _dispatch_pre_tool_call_hooks(
+                    function_name, function_args, task_id=effective_task_id or "",
+                )
+                if modified_args is not None:
+                    function_args = modified_args
+            except Exception:
+                block_message = None
 
             if block_message is not None:
                 block_result = json.dumps({"error": block_message}, ensure_ascii=False)
