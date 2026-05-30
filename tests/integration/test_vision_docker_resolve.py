@@ -1,22 +1,42 @@
-"""Gated Docker integration tests for the vision image-source resolver.
+"""Docker integration tests for the vision image-source resolver.
 
 Reproduces #32709: vision_analyze must read images that live only inside the
 Docker terminal backend — including a tmpfs ``/workspace`` file with no host
 path, and a root-owned mode-600 file the host user cannot read. Both are
 served by the in-container ``base64`` exec-read fallback.
 
-Run locally with Docker:  HERMES_DOCKER_TESTS=1 pytest tests/integration/test_vision_docker_resolve.py
-In CI without the flag:    SKIPPED.
+Gating follows the repo convention: the ``integration`` marker excludes these
+from the default suite (``addopts = -m 'not integration'``); they run under
+``pytest -m integration`` when a Docker daemon is available, and skip cleanly
+when it is not. Container spin-up exceeds the 30s suite default, so the timeout
+is bumped to 180s (mirrors tests/docker/conftest.py).
+
+Run:  pytest -m integration tests/integration/test_vision_docker_resolve.py
 """
 import base64
-import os
+import shutil
+import subprocess
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("HERMES_DOCKER_TESTS"),
-    reason="set HERMES_DOCKER_TESTS=1 to run Docker integration tests",
-)
+
+def _docker_available() -> bool:
+    """True iff a docker CLI is on PATH and the daemon answers."""
+    if shutil.which("docker") is None:
+        return False
+    try:
+        return subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=5
+        ).returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.timeout(180),
+    pytest.mark.skipif(not _docker_available(), reason="Docker daemon not available"),
+]
 
 # A real 1x1 PNG.
 _TINY_PNG = base64.b64decode(
@@ -25,11 +45,13 @@ _TINY_PNG = base64.b64decode(
 
 
 @pytest.fixture
-def docker_backend():
+def docker_backend(request):
     from tools import terminal_tool
     from tools.environments import docker as docker_env
 
-    task_id = "vision-docker-resolve-test"
+    # Unique per test: DockerEnvironment derives the container from task_id, so
+    # a shared id would make one test's teardown remove the other's container.
+    task_id = f"vision-docker-resolve-{request.node.name}"
     env = docker_env.DockerEnvironment(
         image="python:3.11-slim",
         cwd="/workspace",
