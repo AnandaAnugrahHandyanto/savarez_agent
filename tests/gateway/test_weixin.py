@@ -882,3 +882,122 @@ class TestWeixinContentDedup:
         assert adapter.handle_message.await_count == 0
         # is_duplicate should only be called for message_id, never for content
         assert all("content:" not in str(call) for call in adapter._dedup.is_duplicate.call_args_list)
+
+
+class TestWeixinSessionExpiredLogDedup:
+    """Regression test for #35215: session expired error log spam.
+
+    When the iLink session expires, the error should be logged once.
+    Subsequent retries during the expired state should use DEBUG level.
+    When the session recovers, an INFO message should be logged.
+    """
+
+    @pytest.mark.asyncio
+    async def test_session_expired_logged_only_once(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._poll_session = object()
+        adapter._hermes_home = "/tmp/test-hermes"
+        adapter._account_id = "test-account"
+
+        # Return session expired 3 times, then stop the loop
+        call_count = 0
+        expired_response = {"ret": -14, "errcode": 0, "errmsg": "session expired"}
+
+        async def fake_get_updates(session, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 4:
+                adapter._running = False
+                return {"ret": 0, "errcode": 0, "msgs": []}
+            return expired_response
+
+        with (
+            patch("gateway.platforms.weixin._get_updates", side_effect=fake_get_updates),
+            patch("gateway.platforms.weixin._load_sync_buf", return_value=""),
+            patch("gateway.platforms.weixin._save_sync_buf"),
+            patch.object(weixin.logger, "error") as error_mock,
+            patch.object(weixin.logger, "debug") as debug_mock,
+            patch.object(weixin.logger, "info") as info_mock,
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await adapter._poll_loop()
+
+        # Error logged exactly once
+        assert error_mock.call_count == 1
+        assert "Session expired" in str(error_mock.call_args)
+
+        # Debug logged for subsequent retries (2 more expired responses)
+        assert debug_mock.call_count == 2
+        assert all("Session still expired" in str(c) for c in debug_mock.call_args_list)
+
+        # No recovery log — loop ended with successful response which DOES trigger recovery
+        # (the 4th call returns ret=0 after 3 expired calls)
+        recovery_calls = [c for c in info_mock.call_args_list if "recovered" in str(c)]
+        assert len(recovery_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_session_recovery_logged_after_expiry(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._poll_session = object()
+        adapter._hermes_home = "/tmp/test-hermes"
+        adapter._account_id = "test-account"
+
+        call_count = 0
+
+        async def fake_get_updates(session, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return {"ret": -14, "errcode": 0, "errmsg": "session expired"}
+            # Session recovers
+            adapter._running = False
+            return {"ret": 0, "errcode": 0, "msgs": []}
+
+        with (
+            patch("gateway.platforms.weixin._get_updates", side_effect=fake_get_updates),
+            patch("gateway.platforms.weixin._load_sync_buf", return_value=""),
+            patch("gateway.platforms.weixin._save_sync_buf"),
+            patch.object(weixin.logger, "error") as error_mock,
+            patch.object(weixin.logger, "info") as info_mock,
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await adapter._poll_loop()
+
+        # Error logged exactly once
+        assert error_mock.call_count == 1
+
+        # Recovery logged
+        recovery_calls = [c for c in info_mock.call_args_list if "recovered" in str(c)]
+        assert len(recovery_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_session_expiry_no_extra_logging(self):
+        """When session never expires, no extra error/debug logging."""
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._poll_session = object()
+        adapter._hermes_home = "/tmp/test-hermes"
+        adapter._account_id = "test-account"
+
+        call_count = 0
+
+        async def fake_get_updates(session, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 3:
+                adapter._running = False
+            return {"ret": 0, "errcode": 0, "msgs": []}
+
+        with (
+            patch("gateway.platforms.weixin._get_updates", side_effect=fake_get_updates),
+            patch("gateway.platforms.weixin._load_sync_buf", return_value=""),
+            patch("gateway.platforms.weixin._save_sync_buf"),
+            patch.object(weixin.logger, "error") as error_mock,
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await adapter._poll_loop()
+
+        # No session expired errors
+        assert error_mock.call_count == 0
