@@ -30,96 +30,12 @@ from typing import Optional
 from hermes_cli.fallback_config import get_fallback_chain
 
 
-def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
-    if not toolsets:
-        return None
-
-    raw_items = [toolsets] if isinstance(toolsets, str) else toolsets
-    if not isinstance(raw_items, (list, tuple)):
-        raw_items = [raw_items]
-
-    normalized: list[str] = []
-    for item in raw_items:
-        if isinstance(item, str):
-            normalized.extend(part.strip() for part in item.split(","))
-        else:
-            normalized.append(str(item).strip())
-
-    return [item for item in normalized if item] or None
+from hermes_cli.toolset_validation import normalize_toolsets as _normalize_toolsets
+from hermes_cli.toolset_validation import validate_explicit_toolsets as _validate_shared
 
 
 def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
-    normalized = _normalize_toolsets(toolsets)
-    if normalized is None:
-        return None, None
-
-    try:
-        from toolsets import validate_toolset
-    except Exception as exc:
-        return None, f"hermes -z: failed to validate --toolsets: {exc}\n"
-
-    built_in = [name for name in normalized if validate_toolset(name)]
-    unresolved = [name for name in normalized if name not in built_in]
-
-    if unresolved:
-        try:
-            from hermes_cli.plugins import discover_plugins
-
-            discover_plugins()
-            plugin_valid = [name for name in unresolved if validate_toolset(name)]
-        except Exception:
-            plugin_valid = []
-
-        if plugin_valid:
-            built_in.extend(plugin_valid)
-            unresolved = [name for name in unresolved if name not in plugin_valid]
-
-    if any(name in {"all", "*"} for name in built_in):
-        ignored = [name for name in normalized if name not in {"all", "*"}]
-        if ignored:
-            sys.stderr.write(
-                "hermes -z: --toolsets all enables every toolset; "
-                f"ignoring additional entries: {', '.join(ignored)}\n"
-            )
-        return None, None
-
-    mcp_names: set[str] = set()
-    mcp_disabled: set[str] = set()
-    if unresolved:
-        try:
-            from hermes_cli.config import read_raw_config
-            from hermes_cli.tools_config import _parse_enabled_flag
-
-            cfg = read_raw_config()
-            mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
-            for name, server_cfg in mcp_servers.items():
-                if not isinstance(server_cfg, dict):
-                    continue
-                if _parse_enabled_flag(server_cfg.get("enabled", True), default=True):
-                    mcp_names.add(str(name))
-                else:
-                    mcp_disabled.add(str(name))
-        except Exception:
-            mcp_names = set()
-            mcp_disabled = set()
-
-    mcp_valid = [name for name in unresolved if name in mcp_names]
-    disabled = [name for name in unresolved if name in mcp_disabled]
-    unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
-    valid = built_in + mcp_valid
-
-    if unknown:
-        sys.stderr.write(f"hermes -z: ignoring unknown --toolsets entries: {', '.join(unknown)}\n")
-    if disabled:
-        sys.stderr.write(
-            "hermes -z: ignoring disabled MCP servers (set enabled: true in config.yaml to use): "
-            f"{', '.join(disabled)}\n"
-        )
-
-    if not valid:
-        return None, "hermes -z: --toolsets did not contain any valid toolsets.\n"
-
-    return valid, None
+    return _validate_shared(toolsets, source="hermes -z")
 
 
 def run_oneshot(
@@ -162,7 +78,7 @@ def run_oneshot(
 
     explicit_toolsets, toolsets_error = _validate_explicit_toolsets(toolsets)
     if toolsets_error:
-        sys.stderr.write(toolsets_error)
+        sys.stderr.write(toolsets_error + "\n")
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 

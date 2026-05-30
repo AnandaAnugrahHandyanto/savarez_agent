@@ -635,7 +635,7 @@ def test_oneshot_rejects_invalid_only_toolsets(monkeypatch, capsys):
     assert run_oneshot("hello", toolsets="nope") == 2
     err = capsys.readouterr().err
     assert "nope" in err
-    assert "did not contain any valid toolsets" in err
+    assert "no valid toolsets in request" in err
 
 
 def test_oneshot_fails_closed_on_empty_final_response(monkeypatch, capsys):
@@ -720,7 +720,7 @@ def test_oneshot_all_toolsets_warns_about_ignored_extra_entries(monkeypatch, cap
 
     assert valid is None
     assert error is None
-    assert "ignoring additional entries: nope" in capsys.readouterr().err
+    assert "ignoring: nope" in capsys.readouterr().err
 
 
 def test_oneshot_accepts_plugin_toolset_after_discovery(monkeypatch):
@@ -764,7 +764,7 @@ def test_oneshot_rejects_disabled_mcp_toolset(monkeypatch, capsys):
     valid, error = _validate_explicit_toolsets("mcp-off")
 
     assert valid is None
-    assert error == "hermes -z: --toolsets did not contain any valid toolsets.\n"
+    assert error and "no valid toolsets in request" in error
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -787,7 +787,7 @@ def test_oneshot_distinguishes_disabled_mcp_from_unknown(monkeypatch, capsys):
     assert valid == ["web"]
     assert error is None
     err = capsys.readouterr().err
-    assert "ignoring unknown --toolsets entries: nope" in err
+    assert "ignoring unknown toolsets: nope" in err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
 
