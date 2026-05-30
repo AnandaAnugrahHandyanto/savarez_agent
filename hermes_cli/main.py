@@ -1835,6 +1835,22 @@ def cmd_chat(args):
 
     _pin_kanban_board_env()
 
+    # Fail closed on explicitly-requested toolsets that all resolve to nothing:
+    # catches the `hermes -tui` -> argparse `-t ui` misparse (#32660) before the
+    # agent launches silently tool-less. Covers both the CLI-chat and TUI-launch
+    # branches below. Interactive surface -> exit(2); the shared validator never
+    # calls sys.exit itself (it would escape daemon `except Exception` guards).
+    from hermes_cli.toolset_validation import normalize_toolsets, validate_explicit_toolsets
+
+    requested = normalize_toolsets(getattr(args, "toolsets", None))
+    _, toolset_error = validate_explicit_toolsets(requested, source="hermes")
+    if toolset_error:
+        if requested == ["ui"] and not use_tui:
+            sys.stderr.write("hermes: unknown toolset 'ui'. Did you mean --tui (launch the terminal UI)?\n")
+        else:
+            sys.stderr.write(toolset_error + "\n")
+        sys.exit(2)
+
     if use_tui:
         _launch_tui(
             getattr(args, "resume", None),
