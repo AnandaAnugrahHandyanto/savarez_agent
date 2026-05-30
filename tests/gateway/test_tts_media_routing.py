@@ -51,10 +51,12 @@ def _event(thread_id=None):
 
 
 @pytest.mark.asyncio
-async def test_base_adapter_routes_telegram_flac_media_tag_to_document_sender():
+async def test_base_adapter_routes_telegram_flac_media_tag_to_document_sender(tmp_path):
     adapter = _MediaRoutingAdapter()
     event = _event()
-    adapter._message_handler = AsyncMock(return_value="MEDIA:/tmp/speech.flac")
+    speech = tmp_path / "speech.flac"
+    speech.write_bytes(b"fLaC")
+    adapter._message_handler = AsyncMock(return_value=f"MEDIA:{speech}")
     adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
     adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
 
@@ -62,17 +64,19 @@ async def test_base_adapter_routes_telegram_flac_media_tag_to_document_sender():
 
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
-        file_path="/tmp/speech.flac",
+        file_path=str(speech.resolve()),
         metadata=None,
     )
     adapter.send_voice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_base_adapter_routes_non_voice_telegram_ogg_media_tag_to_document_sender():
+async def test_base_adapter_routes_non_voice_telegram_ogg_media_tag_to_document_sender(tmp_path):
     adapter = _MediaRoutingAdapter()
     event = _event()
-    adapter._message_handler = AsyncMock(return_value="MEDIA:/tmp/speech.ogg")
+    speech = tmp_path / "speech.ogg"
+    speech.write_bytes(b"OggS")
+    adapter._message_handler = AsyncMock(return_value=f"MEDIA:{speech}")
     adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
     adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
 
@@ -80,18 +84,20 @@ async def test_base_adapter_routes_non_voice_telegram_ogg_media_tag_to_document_
 
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
-        file_path="/tmp/speech.ogg",
+        file_path=str(speech.resolve()),
         metadata=None,
     )
     adapter.send_voice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_sender():
+async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_sender(tmp_path):
     adapter = _MediaRoutingAdapter()
     event = _event()
+    speech = tmp_path / "speech.ogg"
+    speech.write_bytes(b"OggS")
     adapter._message_handler = AsyncMock(
-        return_value="[[audio_as_voice]]\nMEDIA:/tmp/speech.ogg"
+        return_value=f"[[audio_as_voice]]\nMEDIA:{speech}"
     )
     adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
     adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
@@ -100,7 +106,7 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
 
     adapter.send_voice.assert_awaited_once_with(
         chat_id="chat-1",
-        audio_path="/tmp/speech.ogg",
+        audio_path=str(speech.resolve()),
         metadata=None,
     )
     adapter.send_document.assert_not_awaited()
