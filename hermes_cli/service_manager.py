@@ -615,10 +615,10 @@ class S6ServiceManager:
         # guard.
         lines.append("export HERMES_S6_SUPERVISED_CHILD=1")
         if profile == "default":
-            lines.append("exec s6-setuidgid hermes hermes gateway run")
+            lines.append("exec s6-setuidgid hermes env HOME=/opt/data hermes gateway run")
         else:
             lines.append(
-                f"exec s6-setuidgid hermes hermes -p {shlex.quote(profile)} gateway run"
+                f"exec s6-setuidgid hermes env HOME=/opt/data hermes -p {shlex.quote(profile)} gateway run"
             )
         return "\n".join(lines) + "\n"
 
