@@ -619,12 +619,16 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 ## `hermes doctor`
 
 ```bash
-hermes doctor [--fix]
+hermes doctor [--fix] [--matrix] [--json]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--fix` | Attempt automatic repairs where possible. |
+| `--fix` | Attempt automatic repairs where possible in the classic doctor flow. |
+| `--matrix` | Show a bounded channel/tool/skill readiness matrix. Matrix mode is dry-run only: it reports status and approval-gated next actions without installing packages, writing credentials, sending public messages, or starting paid API flows. |
+| `--json` | Emit the readiness matrix as machine-readable JSON (implies `--matrix`). Secret values are never printed; only required environment variable names are shown. |
+
+Matrix rows include safe-mode boundaries, workspace hygiene guidance for agent-installed external tools, and credential/cookie prompts. Actions that would involve installs, provisioning, credentials, browser cookies, public sends, or paid services are marked `needs_approval`, and `--fix` does not execute them in matrix mode. Keep external tools in project-local workspaces or documented virtual environments unless you explicitly approve global installation; store keys/cookies in `~/.hermes/.env` or approved auth files rather than chat/logs.
 
 ## `hermes dump`
 

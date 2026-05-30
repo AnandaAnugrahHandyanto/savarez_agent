@@ -4,10 +4,13 @@ Doctor command for hermes CLI.
 Diagnoses issues with Hermes Agent setup.
 """
 
+import json
 import os
 import sys
 import subprocess
 import shutil
+import importlib.util
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -149,6 +152,47 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
     return updated_available, updated_unavailable
 
 
+def _readiness_workspace_hygiene() -> str:
+    return (
+        "Keep agent-installed external tools under a project-local workspace or "
+        "documented venv; avoid global installs unless the user explicitly approves."
+    )
+
+
+@dataclass(frozen=True)
+class ReadinessAction:
+    """Bounded remediation/action hint for readiness matrix rows."""
+
+    mode: str
+    command: str
+    dry_run: bool = True
+    safety_note: str = "Advisory only: doctor --matrix never installs, writes credentials, or starts paid services."
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ReadinessRow:
+    """Machine-readable readiness row for a Hermes channel or toolset."""
+
+    kind: str
+    name: str
+    status: str
+    required_env: list[str] = field(default_factory=list)
+    tools: list[str] = field(default_factory=list)
+    install_action: ReadinessAction | None = None
+    safe_mode_boundary: str = "diagnostic only; no installs, credential writes, public sends, or paid API calls"
+    workspace_hygiene: str = field(default_factory=_readiness_workspace_hygiene)
+    credential_prompt: str = "Do not paste raw credentials/cookies into chat or logs; store secrets in ~/.hermes/.env or an approved secret manager."
+    note: str = ""
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["install_action"] = self.install_action.to_dict() if self.install_action else None
+        return data
+
+
 def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool:
     """Return True when a direct API-key probe failure is non-blocking.
 
@@ -177,6 +221,281 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
         except Exception:
             return False
     return False
+
+
+def _readiness_credential_prompt(env_vars: list[str]) -> str:
+    if env_vars:
+        return (
+            f"Set {', '.join(env_vars)} in ~/.hermes/.env; never paste raw keys "
+            "into chat or logs."
+        )
+    return "Do not paste raw credentials/cookies into chat or logs; store secrets in ~/.hermes/.env or an approved secret manager."
+
+
+def _readiness_action_for(name: str, required_env: list[str], status: str) -> ReadinessAction:
+    if required_env:
+        return ReadinessAction(
+            mode="needs_approval",
+            command="hermes setup",
+            dry_run=True,
+            safety_note=(
+                "Credential setup is intentionally manual and approval-gated; "
+                "doctor --matrix only names required env vars and never prints or writes secret values."
+            ),
+        )
+    if status == "ready":
+        return ReadinessAction(
+            mode="none",
+            command="",
+            dry_run=True,
+            safety_note="No action needed.",
+        )
+    return ReadinessAction(
+        mode="needs_approval",
+        command=f"hermes tools enable {name}",
+        dry_run=True,
+        safety_note=(
+            "Review workspace hygiene and install/provision dependencies in a project-local "
+            "environment before enabling agent-installed external tools."
+        ),
+    )
+
+
+def _discover_gateway_platforms() -> list[tuple[str, bool]]:
+    """Return configured channel readiness without exposing tokens/cookies."""
+    channels: list[tuple[str, bool]] = [("cli", True)]
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        gateway_cfg = cfg.get("gateway") if isinstance(cfg, dict) else {}
+        platforms = gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else {}
+        if isinstance(platforms, dict):
+            for name, value in sorted(platforms.items()):
+                enabled = bool(value.get("enabled", False)) if isinstance(value, dict) else bool(value)
+                channels.append((str(name), enabled))
+    except Exception:
+        pass
+    return channels
+
+
+def _load_toolset_readiness_inputs() -> tuple[list[str], list[dict], dict]:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from model_tools import TOOLSET_REQUIREMENTS, check_tool_availability
+
+    available, unavailable = check_tool_availability()
+    available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
+    return available, unavailable, TOOLSET_REQUIREMENTS
+
+
+def _load_skill_readiness_inputs() -> list[dict]:
+    """Return skill readiness rows from existing skill metadata only.
+
+    This intentionally avoids calling ``skill_view`` because that path may
+    prompt/capture missing secrets. Doctor matrix mode is read-only: parse
+    frontmatter, compare required env names against the profile .env snapshot,
+    and report names only.
+    """
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT))
+        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+        from tools import skills_tool
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    seen: set[str] = set()
+    scan_dirs: list[Path] = []
+    if skills_tool.SKILLS_DIR.exists():
+        scan_dirs.append(skills_tool.SKILLS_DIR)
+    try:
+        scan_dirs.extend(get_external_skills_dirs())
+    except Exception:
+        pass
+    disabled = set()
+    try:
+        disabled = skills_tool._get_disabled_skill_names()
+    except Exception:
+        pass
+    env_snapshot = skills_tool.load_env()
+
+    for scan_dir in scan_dirs:
+        try:
+            skill_files = iter_skill_index_files(scan_dir, "SKILL.md")
+        except Exception:
+            continue
+        for skill_md in skill_files:
+            if any(part in skills_tool._EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+                continue
+            try:
+                content = skill_md.read_text(encoding="utf-8")[:4000]
+                frontmatter, _body = skills_tool._parse_frontmatter(content)
+                if not skills_tool.skill_matches_platform(frontmatter):
+                    continue
+                name = str(frontmatter.get("name") or skill_md.parent.name)[: skills_tool.MAX_NAME_LENGTH]
+                if name in seen or name in disabled:
+                    continue
+                seen.add(name)
+                legacy_env_vars, _commands = skills_tool._collect_prerequisite_values(frontmatter)
+                required_env = skills_tool._get_required_environment_variables(frontmatter, legacy_env_vars)
+                missing_env = [
+                    entry["name"]
+                    for entry in required_env
+                    if not entry.get("optional")
+                    and not skills_tool._is_env_var_persisted(entry["name"], env_snapshot)
+                ]
+                rows.append(
+                    {
+                        "name": name,
+                        "readiness_status": "setup_needed" if missing_env else "available",
+                        "missing_required_environment_variables": missing_env,
+                        "setup_help": next((entry.get("help") for entry in required_env if entry.get("help")), None),
+                    }
+                )
+            except Exception:
+                continue
+    return rows
+
+
+def _build_readiness_matrix(
+    *,
+    available_toolsets: list[str] | None = None,
+    unavailable_toolsets: list[dict] | None = None,
+    toolset_requirements: dict | None = None,
+    gateway_platforms: list[tuple[str, bool]] | None = None,
+    skill_readiness: list[dict] | None = None,
+) -> list[ReadinessRow]:
+    """Build a bounded channel/toolset readiness matrix.
+
+    The matrix is advisory and dry-run by design: it reports status, approval-gated
+    actions, workspace hygiene, and credential prompts without executing
+    installs, network probes, public sends, or credential writes.
+    """
+    if available_toolsets is None or unavailable_toolsets is None or toolset_requirements is None:
+        available_toolsets, unavailable_toolsets, toolset_requirements = _load_toolset_readiness_inputs()
+    else:
+        available_toolsets, unavailable_toolsets = _apply_doctor_tool_availability_overrides(
+            available_toolsets,
+            unavailable_toolsets,
+        )
+    if skill_readiness is None:
+        skill_readiness = _load_skill_readiness_inputs()
+
+    if gateway_platforms is None:
+        gateway_platforms = _discover_gateway_platforms()
+
+    rows: list[ReadinessRow] = []
+    for channel, enabled in gateway_platforms:
+        status = "ready" if enabled else "needs_config"
+        rows.append(
+            ReadinessRow(
+                kind="channel",
+                name=channel,
+                status=status,
+                install_action=ReadinessAction(
+                    mode="needs_approval" if not enabled else "none",
+                    command="hermes gateway setup" if not enabled else "",
+                    dry_run=True,
+                    safety_note=(
+                        "Channel setup is manual; doctor --matrix never sends public "
+                        "messages, writes platform tokens, or starts paid API flows."
+                    ),
+                ),
+                credential_prompt="Store platform tokens/cookies only in ~/.hermes/.env or approved auth files; never paste raw values into chat or logs.",
+                note="configured channel" if enabled else "channel not configured/enabled",
+            )
+        )
+
+    unavailable_by_name = {str(item.get("name")): item for item in unavailable_toolsets or []}
+    all_names = sorted(set(available_toolsets or []) | set(unavailable_by_name) | set(toolset_requirements or {}))
+    for name in all_names:
+        info = (toolset_requirements or {}).get(name, {}) or {}
+        item = unavailable_by_name.get(name, {})
+        missing_env = list(item.get("missing_vars") or [])
+        required_env = missing_env or ([] if name in (available_toolsets or []) else list(item.get("env_vars") or info.get("env_vars") or []))
+        tools = list(item.get("tools") or info.get("tools") or [])
+        if missing_env or (name not in (available_toolsets or []) and required_env):
+            status = "needs_config"
+        elif name in (available_toolsets or []):
+            status = "ready"
+        else:
+            status = "unavailable"
+        rows.append(
+            ReadinessRow(
+                kind="toolset",
+                name=name,
+                status=status,
+                required_env=required_env,
+                tools=tools,
+                install_action=_readiness_action_for(name, required_env, status),
+                credential_prompt=_readiness_credential_prompt(required_env),
+                note=(
+                    (str(info.get("name") or name) + " ") if info.get("name") else ""
+                ) + _doctor_tool_availability_detail(name),
+            )
+        )
+
+    for skill in skill_readiness or []:
+        name = str(skill.get("name") or "").strip()
+        if not name:
+            continue
+        required_env = list(skill.get("missing_required_environment_variables") or [])
+        status = str(skill.get("readiness_status") or ("setup_needed" if required_env else "available"))
+        if status == "available":
+            row_status = "ready"
+        elif status in {"setup_needed", "unsupported"}:
+            row_status = status
+        else:
+            row_status = "unavailable"
+        setup_help = str(skill.get("setup_help") or "").strip()
+        rows.append(
+            ReadinessRow(
+                kind="skill",
+                name=name,
+                status=row_status,
+                required_env=required_env,
+                install_action=_readiness_action_for(name, required_env, row_status),
+                credential_prompt=_readiness_credential_prompt(required_env),
+                note=f"skill metadata readiness" + (f"; setup help: {setup_help}" if setup_help else ""),
+            )
+        )
+    return rows
+
+
+def _print_readiness_matrix(rows: list[ReadinessRow]) -> None:
+    print()
+    print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
+    print(color("│              Hermes Readiness Matrix                    │", Colors.CYAN))
+    print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+    print()
+    print("Kind      Name                 Status        Required env / Action")
+    print("─" * 78)
+    for row in rows:
+        env = ", ".join(row.required_env) if row.required_env else "-"
+        action = row.install_action.command if row.install_action and row.install_action.command else "-"
+        print(f"{row.kind:<9} {row.name:<20} {row.status:<13} {env} / {action}")
+    print()
+    print("Safe-mode boundary: matrix mode is dry-run only; no installs, credential writes, public sends, or paid API calls.")
+    print("Workspace hygiene: keep agent-installed external tools under project-local workspaces or documented venvs.")
+    print("Credential prompt: store keys/cookies in ~/.hermes/.env or approved auth files; never paste raw secrets into chat/logs.")
+
+
+def _emit_readiness_matrix(rows: list[ReadinessRow], *, as_json: bool, fix_requested: bool) -> None:
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "mode": "readiness_matrix",
+                    "fix_requested": bool(fix_requested),
+                    "actions_are_dry_run": True,
+                    "rows": [row.to_dict() for row in rows],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    _print_readiness_matrix(rows)
 
 
 def check_ok(text: str, detail: str = ""):
@@ -449,10 +768,20 @@ def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
     ack_target = getattr(args, 'ack', None)
+    matrix_requested = getattr(args, "matrix", False) or getattr(args, "json", False)
+    json_requested = getattr(args, "json", False)
 
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `hermes`.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
+
+    if matrix_requested:
+        _emit_readiness_matrix(
+            _build_readiness_matrix(),
+            as_json=json_requested,
+            fix_requested=should_fix,
+        )
+        return
 
     # Handle `hermes doctor --ack <id>` as a fast path. Persist the ack and
     # return without running the rest of the diagnostics — the user has

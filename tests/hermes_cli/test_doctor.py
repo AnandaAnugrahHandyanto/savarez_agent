@@ -1,5 +1,6 @@
 """Tests for hermes_cli.doctor."""
 
+import json
 import os
 import sys
 import types
@@ -49,6 +50,153 @@ class TestProviderEnvDetection:
     def test_returns_false_when_no_provider_settings(self):
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
+
+
+class TestDoctorReadinessMatrix:
+    def test_readiness_matrix_rows_are_bounded_and_redact_credentials(self, monkeypatch):
+        monkeypatch.setenv("BROWSERBASE_API_KEY", "sk-liv...leak")
+
+        rows = doctor._build_readiness_matrix(
+            available_toolsets=["web"],
+            unavailable_toolsets=[
+                {
+                    "name": "browser",
+                    "missing_vars": ["BROWSERBASE_API_KEY"],
+                    "tools": ["browser_navigate", "browser_snapshot"],
+                }
+            ],
+            toolset_requirements={
+                "web": {"name": "Web", "tools": ["web_search"], "env_vars": []},
+                "browser": {
+                    "name": "Browser",
+                    "tools": ["browser_navigate", "browser_snapshot"],
+                    "env_vars": ["BROWSERBASE_API_KEY"],
+                },
+            },
+            gateway_platforms=[("cli", True), ("telegram", False)],
+            skill_readiness=[],
+        )
+
+        payload = [row.to_dict() for row in rows]
+        assert {row["kind"] for row in payload} == {"channel", "toolset"}
+        browser = next(row for row in payload if row["name"] == "browser")
+        assert browser["status"] == "needs_config"
+        assert browser["required_env"] == ["BROWSERBASE_API_KEY"]
+        assert browser["credential_prompt"] == "Set BROWSERBASE_API_KEY in ~/.hermes/.env; never paste raw keys into chat or logs."
+        assert browser["install_action"]["mode"] == "needs_approval"
+        assert browser["install_action"]["dry_run"] is True
+        assert "agent-installed external tools" in browser["workspace_hygiene"]
+        assert "sk-liv...leak" not in json.dumps(payload)
+
+    def test_readiness_matrix_includes_runtime_gated_kanban_row(self, monkeypatch):
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        rows = doctor._build_readiness_matrix(
+            available_toolsets=[],
+            unavailable_toolsets=[{"name": "kanban", "env_vars": [], "tools": ["kanban_show"]}],
+            toolset_requirements={"kanban": {"name": "Kanban", "tools": ["kanban_show"]}},
+            gateway_platforms=[],
+            skill_readiness=[],
+        )
+
+        kanban = next(row.to_dict() for row in rows if row.name == "kanban")
+        assert kanban["status"] == "ready"
+        assert "runtime-gated" in kanban["note"]
+
+    def test_readiness_matrix_includes_skill_setup_needed_row(self):
+        rows = doctor._build_readiness_matrix(
+            available_toolsets=[],
+            unavailable_toolsets=[],
+            toolset_requirements={},
+            gateway_platforms=[],
+            skill_readiness=[
+                {
+                    "name": "demo-skill",
+                    "readiness_status": "setup_needed",
+                    "missing_required_environment_variables": ["DEMO_API_KEY"],
+                    "setup_help": "https://example.invalid/key",
+                }
+            ],
+        )
+
+        skill = next(row.to_dict() for row in rows if row.kind == "skill")
+        assert skill["name"] == "demo-skill"
+        assert skill["status"] == "setup_needed"
+        assert skill["required_env"] == ["DEMO_API_KEY"]
+        assert skill["install_action"]["mode"] == "needs_approval"
+        assert "https://example.invalid/key" in skill["note"]
+
+    def test_run_doctor_matrix_fix_never_executes_needs_approval_actions(self, monkeypatch, capsys):
+        row = doctor.ReadinessRow(
+            kind="skill",
+            name="demo-skill",
+            status="setup_needed",
+            required_env=["DEMO_API_KEY"],
+            install_action=doctor.ReadinessAction(
+                mode="needs_approval",
+                command="hermes setup",
+                dry_run=True,
+                safety_note="manual approval required",
+            ),
+        )
+        monkeypatch.setattr(doctor, "_build_readiness_matrix", lambda: [row])
+        monkeypatch.setattr(
+            doctor.subprocess,
+            "run",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("subprocess.run must not be called")),
+        )
+
+        doctor.run_doctor(Namespace(fix=True, matrix=True, json=True))
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["fix_requested"] is True
+        assert data["rows"][0]["install_action"]["mode"] == "needs_approval"
+
+    def test_run_doctor_matrix_json_is_fast_path(self, monkeypatch, capsys):
+        row = doctor.ReadinessRow(
+            kind="toolset",
+            name="browser",
+            status="needs_config",
+            required_env=["BROWSERBASE_API_KEY"],
+            install_action=doctor.ReadinessAction(
+                mode="needs_approval",
+                command="hermes tools enable browser",
+                dry_run=True,
+                safety_note="diagnostic only",
+            ),
+            workspace_hygiene="Keep agent-installed external tools under a project-local workspace or documented venv.",
+            credential_prompt="Set BROWSERBASE_API_KEY in ~/.hermes/.env; never paste raw keys into chat or logs.",
+        )
+        monkeypatch.setattr(doctor, "_build_readiness_matrix", lambda: [row])
+
+        doctor.run_doctor(Namespace(fix=True, matrix=True, json=True))
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["mode"] == "readiness_matrix"
+        assert data["fix_requested"] is True
+        assert data["actions_are_dry_run"] is True
+        assert data["rows"][0]["name"] == "browser"
+        assert "Hermes Doctor" not in out
+
+    def test_doctor_cli_accepts_matrix_json_flags(self, monkeypatch):
+        import hermes_cli.main as cli_main
+
+        captured = {}
+
+        def fake_run_doctor(args):
+            captured["matrix"] = args.matrix
+            captured["json"] = args.json
+
+        monkeypatch.setattr(sys, "argv", ["hermes", "doctor", "--matrix", "--json"])
+        monkeypatch.setattr(cli_main, "_try_termux_fast_tui_launch", lambda: False)
+        monkeypatch.setattr(cli_main, "_try_termux_fast_cli_launch", lambda: False)
+        monkeypatch.setattr(cli_main, "_prepare_agent_startup", lambda args: None)
+        monkeypatch.setattr(doctor, "run_doctor", fake_run_doctor)
+
+        cli_main.main()
+
+        assert captured == {"matrix": True, "json": True}
 
 
 class TestDoctorEnvFileEncoding:

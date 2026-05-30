@@ -13414,6 +13414,16 @@ def main():
         "--fix", action="store_true", help="Attempt to fix issues automatically"
     )
     doctor_parser.add_argument(
+        "--matrix",
+        action="store_true",
+        help="Show bounded channel/tool readiness matrix (dry-run; no installs or credential writes)",
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit readiness matrix as machine-readable JSON (implies --matrix)",
+    )
+    doctor_parser.add_argument(
         "--ack",
         metavar="ADVISORY_ID",
         default=None,
