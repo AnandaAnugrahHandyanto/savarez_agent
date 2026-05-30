@@ -36,6 +36,8 @@ TOP may revise image direction, content angle, copy direction, voiceover, or vid
 
 Only skip or change the posting/comment structure when TOP explicitly instructs that exception for the current run.
 
+If TOP explicitly asks to split the video/Reel into multiple published Reels for a run, treat that as a run-specific creative/video direction override, not a permanent workflow change. Every published Reel still needs the full under-Reel comment package: one comment with the three approved affiliate links, five image-only comments with no visible message text, and API readback verification for each Reel.
+
 ## Public copy and safety rules
 
 Public captions and comments must not mention:
@@ -73,6 +75,7 @@ The final run report should include:
 - video/Reel published and URL verified
 - video/Reel link comment posted and link count verified
 - video/Reel image-only comments: five attachments and zero message text
+- if multiple Reels were explicitly requested, each Reel independently has the same link-comment and image-only-comment verification
 - no public Sub ID, commission, AI/internal names, or unverified claims
 
 ## Mirrors
