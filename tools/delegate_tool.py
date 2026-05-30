@@ -2309,13 +2309,51 @@ def delegate_task(
     )
 
 
+def _credential_pool_matches_provider(pool: Any, provider: str) -> bool:
+    """Return whether a pool is safe to use for the requested provider.
+
+    Delegation normally shares the parent's pool when the child is on the same
+    provider so quota/exhaustion state stays synchronized.  During main-agent
+    fallback, however, the parent can temporarily report provider=openai-codex
+    while still carrying the original Anthropic credential pool.  Blindly
+    sharing that pool lets child startup rotate a Codex child onto
+    api.anthropic.com, producing the observed HTTP 404.
+
+    Be permissive for old tests/mocks that do not expose pool metadata; only
+    reject when the pool itself or its entries explicitly identify a different
+    provider.
+    """
+    if pool is None or not provider:
+        return False
+
+    pool_provider = getattr(pool, "provider", None)
+    if isinstance(pool_provider, str) and pool_provider and pool_provider != provider:
+        return False
+
+    try:
+        entries_fn = getattr(pool, "entries", None)
+        entries = entries_fn() if callable(entries_fn) else None
+    except Exception:
+        entries = None
+
+    if isinstance(entries, list) and entries:
+        explicit = [getattr(entry, "provider", None) for entry in entries]
+        explicit = [p for p in explicit if isinstance(p, str) and p]
+        if explicit and any(p != provider for p in explicit):
+            return False
+
+    return True
+
+
 def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
     """Resolve a credential pool for the child agent.
 
     Rules:
     1. Same provider as the parent -> share the parent's pool so cooldown state
-       and rotation stay synchronized.
-    2. Different provider -> try to load that provider's own pool.
+       and rotation stay synchronized, but only if the pool actually belongs to
+       that provider (fallback can leave parent state mixed).
+    2. Different provider or mismatched parent pool -> try to load that
+       provider's own pool.
     3. No pool available -> return None and let the child keep the inherited
        fixed credential behavior.
     """
@@ -2324,14 +2362,22 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
 
     parent_provider = getattr(parent_agent, "provider", None) or ""
     parent_pool = getattr(parent_agent, "_credential_pool", None)
-    if parent_pool is not None and effective_provider == parent_provider:
+    if (
+        parent_pool is not None
+        and effective_provider == parent_provider
+        and _credential_pool_matches_provider(parent_pool, effective_provider)
+    ):
         return parent_pool
 
     try:
         from agent.credential_pool import load_pool
 
         pool = load_pool(effective_provider)
-        if pool is not None and pool.has_credentials():
+        if (
+            pool is not None
+            and pool.has_credentials()
+            and _credential_pool_matches_provider(pool, effective_provider)
+        ):
             return pool
     except Exception as exc:
         logger.debug(

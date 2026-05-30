@@ -32,6 +32,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _credential_pool_matches_provider,
 )
 
 
@@ -1414,6 +1415,36 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
         result = _resolve_child_credential_pool("openrouter", parent)
         self.assertIs(result, mock_pool)
+
+    def test_same_provider_mismatched_parent_pool_loads_own_pool(self):
+        parent = _make_mock_parent()
+        parent.provider = "openai-codex"
+        parent_pool = MagicMock()
+        parent_pool.provider = "anthropic"
+        parent._credential_pool = parent_pool
+        codex_pool = MagicMock()
+        codex_pool.provider = "openai-codex"
+        codex_pool.entries.return_value = []
+        codex_pool.has_credentials.return_value = True
+
+        with patch("agent.credential_pool.load_pool", return_value=codex_pool) as mock_load:
+            result = _resolve_child_credential_pool("openai-codex", parent)
+
+        mock_load.assert_called_once_with("openai-codex")
+        self.assertIs(result, codex_pool)
+
+    def test_pool_provider_metadata_rejects_mismatch(self):
+        pool = MagicMock()
+        pool.provider = "anthropic"
+        self.assertFalse(_credential_pool_matches_provider(pool, "openai-codex"))
+
+    def test_pool_entry_metadata_rejects_mismatch(self):
+        pool = MagicMock()
+        pool.provider = MagicMock()  # older mocks may not expose a string provider
+        entry = MagicMock()
+        entry.provider = "anthropic"
+        pool.entries.return_value = [entry]
+        self.assertFalse(_credential_pool_matches_provider(pool, "openai-codex"))
 
     def test_no_provider_inherits_parent_pool(self):
         parent = _make_mock_parent()

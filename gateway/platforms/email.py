@@ -400,6 +400,9 @@ class EmailAdapter(BasePlatformAdapter):
                     subject = _decode_header_value(msg.get("Subject", "(no subject)"))
                     message_id = msg.get("Message-ID", "")
                     in_reply_to = msg.get("In-Reply-To", "")
+                    # Original recipient + forward chain for lane demux below.
+                    to_address = _extract_email_address(msg.get("To", ""))
+                    forwarded_for = msg.get("X-Forwarded-For", "")
                     # Skip automated/noreply senders before any processing
                     msg_headers = dict(msg.items())
                     if _is_automated_sender(sender_addr, msg_headers):
@@ -415,6 +418,8 @@ class EmailAdapter(BasePlatformAdapter):
                         "subject": subject,
                         "message_id": message_id,
                         "in_reply_to": in_reply_to,
+                        "to_address": to_address,
+                        "forwarded_for": forwarded_for,
                         "body": body,
                         "attachments": attachments,
                         "date": msg.get("Date", ""),
@@ -457,10 +462,32 @@ class EmailAdapter(BasePlatformAdapter):
         body = msg_data["body"].strip()
         attachments = msg_data["attachments"]
 
-        # Build message text: include subject as context
+        # Demux: when this gateway acts as an aggregator (e.g. CF Email Routing
+        # forwarding minerva_<role>@mail.vhs.dev into the shared minerva
+        # mailbox), tag the dispatched text with the agent lane parsed from the
+        # original recipient.  Override the pattern via EMAIL_LANE_PATTERN; it
+        # must define a single capture group for the lane name.
+        lane = None
+        lane_pattern = os.getenv(
+            "EMAIL_LANE_PATTERN", r"minerva_([a-z0-9]+)@mail\.vhs\.dev"
+        )
+        for src in (msg_data.get("to_address", ""), msg_data.get("forwarded_for", "")):
+            m = re.search(lane_pattern, src or "", re.IGNORECASE)
+            if m:
+                lane = m.group(1).lower()
+                break
+
+        # Build message text: include lane (when demuxed) and subject as context
         text = body
         if subject and not subject.startswith("Re:"):
             text = f"[Subject: {subject}]\n\n{body}"
+        if lane:
+            text = f"[Lane: {lane}]\n{text}"
+            logger.info(
+                "[Email] Lane=%s (To=%s)",
+                lane,
+                msg_data.get("to_address", ""),
+            )
 
         # Determine message type and media
         media_urls = []
