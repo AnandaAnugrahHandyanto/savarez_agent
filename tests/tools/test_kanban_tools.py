@@ -117,12 +117,13 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     )
 
 
-def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
-    """Orchestrator profiles with toolsets: [kanban] see all kanban tools."""
+@pytest.mark.parametrize("toolset_name", ["kanban", "all", "*"])
+def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path, toolset_name):
+    """Orchestrator profiles with kanban-capable toolsets see all kanban tools."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     home = tmp_path / ".hermes"
     home.mkdir()
-    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    (home / "config.yaml").write_text(f"toolsets:\n  - '{toolset_name}'\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered

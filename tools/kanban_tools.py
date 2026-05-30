@@ -54,7 +54,7 @@ def _profile_has_kanban_toolset() -> bool:
         from hermes_cli.config import load_config
         cfg = load_config()
         toolsets = cfg.get("toolsets", [])
-        return "kanban" in toolsets
+        return any(name in {"kanban", "all", "*"} for name in toolsets)
     except Exception:
         return False
 
