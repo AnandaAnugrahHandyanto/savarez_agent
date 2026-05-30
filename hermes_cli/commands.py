@@ -64,6 +64,8 @@ class CommandDef:
 
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
+    CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
+               gateway_only=True),
     CommandDef("new", t("cmd.new"), "Session",
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", t("cmd.topic"), "Session",
@@ -84,9 +86,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<platform>", cli_only=True),
     CommandDef("branch", t("cmd.branch"), "Session",
                aliases=("fork",), args_hint="[name]"),
-    CommandDef("compress", t("cmd.compress"), "Session",
-               args_hint="[focus topic]"),
-    CommandDef("rollback", t("cmd.rollback"), "Session",
+    CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns)", "Session",
+               args_hint="[here [N] | focus topic]"),
+    CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("snapshot", t("cmd.snapshot"), "Session",
                cli_only=True, aliases=("snap",), args_hint="[create|restore <id>|prune]"),
@@ -121,9 +123,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", t("cmd.config"), "Configuration",
                cli_only=True),
-    CommandDef("model", t("cmd.model"), "Configuration",
-               aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
-    CommandDef("codex-runtime", t("cmd.codex-runtime"),
+    CommandDef("model", "Switch model for this session", "Configuration",
+               aliases=("provider",), args_hint="[model] [--provider name] [--global] [--refresh]"),
+    CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
     CommandDef("gquota", t("cmd.gquota"), "Info",
