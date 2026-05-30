@@ -1036,3 +1036,127 @@ class TestReadProcessCmdlinePsFallback:
         )
         result = status._read_process_cmdline(12345)
         assert "hermes_cli/main.py" in result
+
+class TestGatewayWrapperSubcommandRejection:
+    """Wrapper CLI commands (gateway restart/stop/status/kill) must not
+    be mistaken for the long-lived daemon. A hung wrapper would otherwise
+    hold gateway.pid + gateway.lock and block every subsequent
+    ``gateway run`` with "Another gateway instance is already running"
+    until the wrapper is killed by hand.
+    """
+
+    def test_record_with_restart_subcommand_is_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["/usr/local/bin/hermes", "gateway", "restart"],
+            "start_time": 123,
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.get_running_pid() is None
+        assert not pid_path.exists()
+
+    def test_record_with_stop_subcommand_is_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["/usr/local/bin/hermes", "gateway", "stop"],
+            "start_time": 123,
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.get_running_pid() is None
+
+    def test_live_cmdline_with_restart_subcommand_is_rejected(self, monkeypatch):
+        """Live-process path: even if /proc/<pid>/cmdline reads back the
+        wrapper command, the helper must decline to claim it as the
+        daemon. Mirrors the production failure where ``ps -p`` showed
+        ``hermes gateway restart`` for the hung parent.
+        """
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "/usr/local/bin/hermes gateway restart",
+        )
+        assert status._looks_like_gateway_process(os.getpid()) is False
+
+    def test_live_cmdline_with_run_subcommand_is_accepted(self, monkeypatch):
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "/path/to/venv/bin/python /path/hermes_cli/main.py gateway run",
+        )
+        assert status._looks_like_gateway_process(os.getpid()) is True
+
+    def test_record_with_run_subcommand_is_accepted(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["/path/hermes_cli/main.py", "gateway", "run"],
+            "start_time": 123,
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.acquire_gateway_runtime_lock() is True
+        try:
+            assert status.get_running_pid() == os.getpid()
+        finally:
+            status.release_gateway_runtime_lock()
+
+class TestGetProcessStartTimeFallback:
+    """Tests for _get_process_start_time falling back to psutil on non-Linux."""
+
+    def test_psutil_fallback_when_proc_unavailable(self, monkeypatch):
+        """macOS / Windows have no /proc — must fall back to psutil so the
+        same-PID equality check in get_running_pid stays meaningful."""
+        monkeypatch.setattr(
+            status.Path, "read_text",
+            lambda self, **kwargs: (_ for _ in ()).throw(FileNotFoundError),
+        )
+
+        fake_psutil = SimpleNamespace(
+            Process=lambda pid: SimpleNamespace(create_time=lambda: 1779982521.123),
+        )
+        monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+
+        result = status._get_process_start_time(os.getpid())
+        assert result == 1779982521
+        assert isinstance(result, int)
+
+    def test_returns_none_when_both_proc_and_psutil_fail(self, monkeypatch):
+        monkeypatch.setattr(
+            status.Path, "read_text",
+            lambda self, **kwargs: (_ for _ in ()).throw(FileNotFoundError),
+        )
+
+        def fake_proc_init(pid):
+            raise RuntimeError("no such process")
+
+        fake_psutil = SimpleNamespace(Process=fake_proc_init)
+        monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+
+        assert status._get_process_start_time(99999) is None
+
+    def test_proc_is_used_when_available(self, monkeypatch):
+        """Linux behavior unchanged: /proc/<pid>/stat is the first source."""
+        monkeypatch.setattr(
+            status.Path, "read_text",
+            # Synthetic /proc/<pid>/stat — field 22 = 4242 clock ticks.
+            lambda self, **kwargs: "1 (proc) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4242 rest",
+        )
+        assert status._get_process_start_time(1234) == 4242
+

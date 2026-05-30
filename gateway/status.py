@@ -109,12 +109,25 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
+    """Return the kernel start time for a process when available.
+
+    On Linux, reads /proc/<pid>/stat field 22 (clock ticks since boot).
+    On macOS and other platforms without /proc, falls back to psutil,
+    which returns a Unix timestamp. The exact unit does not matter for
+    the same-PID equality check the caller performs — only that the
+    value is stable for a given (host, PID) pair, which both sources
+    provide.
+    """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
-        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text(encoding="utf-8").split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        pass
+
+    try:
+        import psutil  # type: ignore
+        return int(psutil.Process(pid).create_time())
+    except Exception:
         return None
 
 
@@ -164,6 +177,19 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
+# CLI wrappers that match the broad "hermes gateway" prefix but are
+# short-lived helper commands, not the long-lived daemon. A hung
+# wrapper (e.g. a `hermes gateway restart` parent that never exits)
+# would otherwise satisfy the gateway-identity check and squat on
+# gateway.pid/gateway.lock, blocking every subsequent `gateway run`.
+_GATEWAY_WRAPPER_SUBCOMMANDS = (
+    "gateway restart",
+    "gateway stop",
+    "gateway status",
+    "gateway kill",
+)
+
+
 def _looks_like_gateway_process(pid: int) -> bool:
     """Return True when the live PID still looks like the Hermes gateway."""
     cmdline = _read_process_cmdline(pid)
@@ -177,7 +203,9 @@ def _looks_like_gateway_process(pid: int) -> bool:
         "hermes-gateway",
         "gateway/run.py",
     )
-    return any(pattern in cmdline for pattern in patterns)
+    if not any(pattern in cmdline for pattern in patterns):
+        return False
+    return not any(sub in cmdline for sub in _GATEWAY_WRAPPER_SUBCOMMANDS)
 
 
 def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
@@ -197,7 +225,9 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
         "hermes gateway",
         "gateway/run.py",
     )
-    return any(pattern in cmdline for pattern in patterns)
+    if not any(pattern in cmdline for pattern in patterns):
+        return False
+    return not any(sub in cmdline for sub in _GATEWAY_WRAPPER_SUBCOMMANDS)
 
 
 def _build_pid_record() -> dict:

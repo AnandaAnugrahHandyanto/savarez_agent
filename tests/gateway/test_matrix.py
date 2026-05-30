@@ -2665,3 +2665,107 @@ class TestCreateMatrixSession:
                     assert session.connector is fake_connector
                 finally:
                     await session.close()
+
+class TestMatrixDeadInviteHandling:
+    """Tests for _join_room_by_id auto-leaving dead/abandoned rooms.
+
+    Regression: when a room had no current members, ``join_room`` raised
+    ``MUnknown: Can't join remote room because no servers that are in
+    the room have been provided``. The pending invite stayed in the
+    bot's view of the world, so every gateway restart re-attempted the
+    join and re-emitted the warning indefinitely. There was no path
+    that ever cleared the invite.
+    """
+
+    def _make_adapter(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            from gateway.platforms.matrix import MatrixAdapter
+            return MatrixAdapter(PlatformConfig(
+                enabled=True, token="tok",
+                extra={"homeserver": "https://matrix.example.org"},
+            ))
+
+    @pytest.mark.asyncio
+    async def test_no_servers_error_triggers_leave(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch)
+        adapter._refresh_dm_cache = AsyncMock()
+
+        join_err = Exception(
+            "Can't join remote room because no servers that are in the "
+            "room have been provided."
+        )
+        adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(side_effect=join_err),
+            leave_room=AsyncMock(),
+        )
+
+        result = await adapter._join_room_by_id("!dead:example.org")
+
+        assert result is False
+        adapter._client.leave_room.assert_awaited_once()
+        # leave_room receives a RoomID-wrapped value; verify the underlying str.
+        leave_arg = adapter._client.leave_room.await_args.args[0]
+        assert str(leave_arg) == "!dead:example.org"
+
+    @pytest.mark.asyncio
+    async def test_room_not_found_error_triggers_leave(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch)
+        adapter._refresh_dm_cache = AsyncMock()
+
+        join_err = Exception("M_NOT_FOUND: Room not found")
+        adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(side_effect=join_err),
+            leave_room=AsyncMock(),
+        )
+
+        await adapter._join_room_by_id("!gone:example.org")
+        adapter._client.leave_room.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_transient_error_does_not_trigger_leave(self, monkeypatch):
+        """A network blip or 5xx must NOT decline the invite — the bot
+        should retry on the next sync cycle."""
+        adapter = self._make_adapter(monkeypatch)
+        adapter._refresh_dm_cache = AsyncMock()
+
+        join_err = Exception("Connection reset by peer")
+        adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(side_effect=join_err),
+            leave_room=AsyncMock(),
+        )
+
+        result = await adapter._join_room_by_id("!transient:example.org")
+        assert result is False
+        adapter._client.leave_room.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_successful_join_does_not_attempt_leave(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch)
+        adapter._refresh_dm_cache = AsyncMock()
+
+        adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(return_value=None),
+            leave_room=AsyncMock(),
+        )
+
+        result = await adapter._join_room_by_id("!alive:example.org")
+        assert result is True
+        assert "!alive:example.org" in adapter._joined_rooms
+        adapter._client.leave_room.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_leave_room_failure_is_swallowed(self, monkeypatch):
+        """If leave_room itself fails (e.g. server returns 500), the
+        helper must still return False cleanly rather than re-raise."""
+        adapter = self._make_adapter(monkeypatch)
+        adapter._refresh_dm_cache = AsyncMock()
+
+        adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(side_effect=Exception("no servers in the room")),
+            leave_room=AsyncMock(side_effect=Exception("500 internal")),
+        )
+
+        result = await adapter._join_room_by_id("!brokenleave:example.org")
+        assert result is False
+
