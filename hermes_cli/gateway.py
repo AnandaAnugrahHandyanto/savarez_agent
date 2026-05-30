@@ -3030,14 +3030,10 @@ def launchd_restart():
             print("✓ Service restart requested")
             return
         if pid is not None:
-            try:
-                terminate_pid(pid, force=False)
-            except (ProcessLookupError, PermissionError, OSError):
-                pid = None
-            if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
-                if not exited:
-                    print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
+            if _graceful_restart_via_sigusr1(pid, drain_timeout):
+                print("✓ Service restart requested")
+                return
+            print(f"⚠ Graceful gateway restart did not complete within {drain_timeout:.0f}s — forcing launchd restart")
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
