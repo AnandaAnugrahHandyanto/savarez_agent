@@ -7724,6 +7724,7 @@ class GatewayRunner:
             try:
                 from agent.skill_commands import (
                     get_skill_commands,
+                    build_plan_path,
                     build_skill_invocation_message,
                     resolve_skill_command_key,
                 )
@@ -7744,8 +7745,18 @@ class GatewayRunner:
                                 f"Enable it with: `hermes skills config`"
                             )
                     user_instruction = event.get_command_args().strip()
+                    runtime_note = ""
+                    if cmd_key == "/plan":
+                        plan_path = build_plan_path(user_instruction)
+                        runtime_note = (
+                            "Save the markdown plan with write_file to this exact relative path "
+                            f"inside the active workspace/backend cwd: {plan_path}"
+                        )
                     msg = build_skill_invocation_message(
-                        cmd_key, user_instruction, task_id=_quick_key
+                        cmd_key,
+                        user_instruction,
+                        task_id=_quick_key,
+                        runtime_note=runtime_note,
                     )
                     if msg:
                         event.text = msg
@@ -9029,11 +9040,18 @@ class GatewayRunner:
                             {"role": "assistant", "content": response, "timestamp": ts}
                         )
                 else:
-                    # The agent already persisted these messages to SQLite via
-                    # _flush_messages_to_session_db(), so skip the DB write here
-                    # to prevent the duplicate-write bug (#860).  We still write
-                    # to JSONL for backward compatibility and as a backup.
-                    agent_persisted = self._session_db is not None
+                    # The agent usually persists these messages to SQLite via
+                    # _flush_messages_to_session_db(), so skip the DB write when
+                    # that actually happened to prevent duplicate rows (#860).
+                    # Some partial Codex timeout paths return agent messages
+                    # without completing the flush; verify the durable transcript
+                    # before relying on skip_db, otherwise the next turn reloads
+                    # an empty session and appears to forget the thread.
+                    agent_persisted = self._agent_result_already_persisted_to_db(
+                        self._session_db,
+                        session_id=session_entry.session_id,
+                        expected_replayable_messages=agent_messages,
+                    )
                     # Attach the inbound platform message_id to the first user
                     # entry written this turn so platform-level quote-resolution
                     # (e.g. Yuanbao QuoteContextMiddleware's transcript fallback)
@@ -15036,22 +15054,19 @@ class GatewayRunner:
         """
         import hashlib, json as _j
 
-        # Fingerprint the FULL credential string instead of using a short
-        # prefix. OAuth/JWT-style tokens frequently share a common prefix
-        # (e.g. "eyJhbGci"), which can cause false cache hits across auth
-        # switches if only the first few characters are considered.
-        _api_key = str(runtime.get("api_key", "") or "")
-        _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
+        _credential_fingerprint = GatewayRunner._runtime_credential_fingerprint(runtime)
 
         _cache_keys_sorted = sorted((cache_keys or {}).items())
 
         blob = _j.dumps(
             [
                 model,
-                _api_key_fingerprint,
+                _credential_fingerprint,
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
                 runtime.get("api_mode", ""),
+                runtime.get("command", ""),
+                list(runtime.get("args") or []),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
@@ -15062,6 +15077,84 @@ class GatewayRunner:
             default=str,
         )
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+    @staticmethod
+    def _secret_fingerprint(value: Any) -> str:
+        """Return a stable non-secret fingerprint for credential comparisons."""
+        import hashlib
+
+        if value is None:
+            return ""
+        text = str(value)
+        return hashlib.sha256(text.encode()).hexdigest() if text else ""
+
+    @staticmethod
+    def _credential_pool_fingerprint(pool: Any) -> Any:
+        """Summarize credential-pool identity without exposing raw secrets.
+
+        Cached AIAgent instances hold the credential pool they were built with.
+        If auth.json changes, or a pool entry refreshes/rotates, the next
+        gateway turn must rebuild the agent instead of reusing stale in-memory
+        credentials.  This summary includes stable public metadata plus hashes
+        of runtime credential strings, never the strings themselves.
+        """
+        if not pool:
+            return None
+        try:
+            entries = pool.entries() if callable(getattr(pool, "entries", None)) else []
+        except Exception:
+            entries = []
+        try:
+            current = pool.current() if callable(getattr(pool, "current", None)) else None
+            current_id = getattr(current, "id", "") if current is not None else getattr(pool, "_current_id", "")
+        except Exception:
+            current_id = getattr(pool, "_current_id", "")
+
+        summarized_entries = []
+        for entry in entries:
+            runtime_key = getattr(entry, "runtime_api_key", None)
+            if runtime_key is None:
+                runtime_key = getattr(entry, "access_token", "")
+            summarized_entries.append(
+                {
+                    "id": getattr(entry, "id", ""),
+                    "provider": getattr(entry, "provider", ""),
+                    "source": getattr(entry, "source", ""),
+                    "auth_type": getattr(entry, "auth_type", ""),
+                    "priority": getattr(entry, "priority", None),
+                    "status": getattr(entry, "last_status", None),
+                    "base_url": getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None),
+                    "credential": GatewayRunner._secret_fingerprint(runtime_key),
+                    "refresh": GatewayRunner._secret_fingerprint(getattr(entry, "refresh_token", "")),
+                }
+            )
+
+        return {
+            "provider": getattr(pool, "provider", ""),
+            "strategy": getattr(pool, "_strategy", ""),
+            "current_id": current_id,
+            "entries": summarized_entries,
+        }
+
+    @staticmethod
+    def _runtime_credential_fingerprint(runtime: dict) -> str:
+        """Fingerprint all runtime credential sources used to build an agent."""
+        import hashlib
+        import json as _j
+
+        payload = {
+            # Fingerprint the FULL credential string instead of using a short
+            # prefix. OAuth/JWT-style tokens frequently share a common prefix
+            # (e.g. "eyJhbGci"), which can cause false cache hits across auth
+            # switches if only the first few characters are considered.
+            "api_key": GatewayRunner._secret_fingerprint((runtime or {}).get("api_key", "")),
+            "credential_pool": GatewayRunner._credential_pool_fingerprint(
+                (runtime or {}).get("credential_pool")
+            ),
+        }
+        return hashlib.sha256(
+            _j.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()
 
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict
@@ -15261,6 +15354,113 @@ class GatewayRunner:
         if _lock:
             with _lock:
                 self._agent_cache.pop(session_key, None)
+
+    def _take_cached_agent_for_turn(
+        self,
+        *,
+        session_key: str,
+        signature: str,
+        session_id: str,
+        interrupt_depth: int,
+    ) -> Optional[Any]:
+        """Return a reusable cached agent for this turn, or evict stale state."""
+        _lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if not (_lock and _cache is not None and session_key):
+            return None
+
+        stale_agent = None
+        with _lock:
+            cached = _cache.get(session_key)
+            if not cached or cached[1] != signature:
+                return None
+
+            agent = cached[0]
+            cached_session_id = getattr(agent, "session_id", None)
+            if cached_session_id and cached_session_id != session_id:
+                stale_agent = agent
+                _cache.pop(session_key, None)
+            else:
+                if hasattr(_cache, "move_to_end"):
+                    try:
+                        _cache.move_to_end(session_key)
+                    except KeyError:
+                        pass
+                self._init_cached_agent_for_turn(agent, interrupt_depth)
+                logger.debug("Reusing cached agent for session %s", session_key)
+                return agent
+
+        if stale_agent is not None:
+            logger.info(
+                "Evicting cached agent for %s because session_id changed: %s -> %s",
+                session_key,
+                getattr(stale_agent, "session_id", None),
+                session_id,
+            )
+            self._cleanup_agent_resources(stale_agent)
+        return None
+
+    @staticmethod
+    def _sync_cached_agent_db_cursor(agent: Any, durable_history_len: int) -> None:
+        """Keep a reused agent's DB flush cursor aligned with durable history."""
+        try:
+            current = int(getattr(agent, "_last_flushed_db_idx", 0) or 0)
+            durable = max(0, int(durable_history_len or 0))
+        except (TypeError, ValueError):
+            return
+        if current > durable:
+            agent._last_flushed_db_idx = durable
+
+    @staticmethod
+    def _agent_result_already_persisted_to_db(
+        session_db: Any,
+        *,
+        session_id: str,
+        expected_replayable_messages: Any,
+    ) -> bool:
+        """Return True only when SQLite already contains the agent result.
+
+        The gateway writes ``session_meta`` rows itself, while ``AIAgent``
+        normally flushes user/assistant/tool messages directly. Some partial
+        Codex timeout paths return messages without completing that flush, so
+        checking only for a live SessionDB is not enough.
+        """
+        if not session_db or not session_id:
+            return False
+        try:
+            durable_history = session_db.get_messages_as_conversation(session_id)
+            durable_agent_history, _ = _build_gateway_agent_history(durable_history)
+        except Exception:
+            return False
+        if isinstance(expected_replayable_messages, int):
+            return len(durable_agent_history) >= max(0, expected_replayable_messages)
+        if not isinstance(expected_replayable_messages, list):
+            return False
+
+        expected_agent_history, _ = _build_gateway_agent_history(expected_replayable_messages)
+        if not expected_agent_history:
+            return True
+        if len(durable_agent_history) < len(expected_agent_history):
+            return False
+
+        durable_tail = durable_agent_history[-len(expected_agent_history):]
+        return [
+            GatewayRunner._message_persistence_key(msg) for msg in durable_tail
+        ] == [
+            GatewayRunner._message_persistence_key(msg) for msg in expected_agent_history
+        ]
+
+    @staticmethod
+    def _message_persistence_key(message: Any) -> tuple:
+        """Return stable fields that prove a replayable message was persisted."""
+        if not isinstance(message, dict):
+            return ("", "", "", "")
+        return (
+            message.get("role"),
+            message.get("content"),
+            message.get("tool_call_id"),
+            message.get("name"),
+        )
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
@@ -16596,22 +16796,13 @@ class GatewayRunner:
                 cache_keys=self._extract_cache_busting_config(user_config),
             )
             agent = None
-            _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
-            if _cache_lock and _cache is not None:
-                with _cache_lock:
-                    cached = _cache.get(session_key)
-                    if cached and cached[1] == _sig:
-                        agent = cached[0]
-                        # Refresh LRU order so the cap enforcement evicts
-                        # truly-oldest entries, not the one we just used.
-                        if hasattr(_cache, "move_to_end"):
-                            try:
-                                _cache.move_to_end(session_key)
-                            except KeyError:
-                                pass
-                        self._init_cached_agent_for_turn(agent, _interrupt_depth)
-                        logger.debug("Reusing cached agent for session %s", session_key)
+            agent = self._take_cached_agent_for_turn(
+                session_key=session_key,
+                signature=_sig,
+                session_id=session_id,
+                interrupt_depth=_interrupt_depth,
+            )
 
             if agent is None:
                 # Config changed or first message — create fresh agent
@@ -16646,6 +16837,7 @@ class GatewayRunner:
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                _cache_lock = getattr(self, "_agent_cache_lock", None)
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)
@@ -16812,6 +17004,10 @@ class GatewayRunner:
             agent_history, observed_group_context = _build_gateway_agent_history(
                 history,
                 channel_prompt=channel_prompt,
+            )
+            self._sync_cached_agent_db_cursor(
+                agent,
+                durable_history_len=len(agent_history),
             )
             
             # Collect MEDIA paths already in history so we can exclude them

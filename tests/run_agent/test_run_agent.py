@@ -21,7 +21,7 @@ from agent.codex_responses_adapter import _chat_messages_to_responses_input, _no
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, CONVERSATION_CONTINUITY_GUIDANCE
 
 
 # ---------------------------------------------------------------------------
@@ -1044,6 +1044,10 @@ class TestBuildSystemPrompt:
     def test_always_has_identity(self, agent):
         prompt = agent._build_system_prompt()
         assert DEFAULT_AGENT_IDENTITY in prompt
+
+    def test_includes_conversation_continuity_guidance(self, agent):
+        prompt = agent._build_system_prompt()
+        assert CONVERSATION_CONTINUITY_GUIDANCE in prompt
 
     def test_can_use_soul_identity_even_when_context_files_are_skipped(self):
         with (

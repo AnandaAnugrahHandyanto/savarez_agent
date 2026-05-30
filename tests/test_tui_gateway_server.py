@@ -647,6 +647,69 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
 
 
+def test_session_resume_redirects_empty_compression_parent(monkeypatch):
+    captured = {}
+
+    class FakeDB:
+        def get_session(self, target):
+            if target in {"parent", "child"}:
+                return {"id": target, "title": target}
+            return None
+
+        def get_session_by_title(self, target):
+            return None
+
+        def resolve_resume_session_id(self, target):
+            captured["resolved_from"] = target
+            return "child"
+
+        def reopen_session(self, target):
+            captured["reopened"] = target
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            captured.setdefault("history_calls", []).append((target, include_ancestors))
+            if target == "child":
+                return [{"role": "user", "content": "restored prompt"}]
+            return []
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda *args, **kwargs: types.SimpleNamespace(model="test"),
+    )
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda agent: {"model": "test", "tools": {}, "skills": {}},
+    )
+
+    def fake_init_session(sid, key, agent, history, cols=80):
+        captured["session_key"] = key
+        captured["history"] = history
+
+    monkeypatch.setattr(server, "_init_session", fake_init_session)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.resume",
+            "params": {"session_id": "parent"},
+        }
+    )
+
+    assert resp["result"]["resumed"] == "child"
+    assert resp["result"]["messages"] == [{"role": "user", "text": "restored prompt"}]
+    assert captured["resolved_from"] == "parent"
+    assert captured["reopened"] == "child"
+    assert captured["session_key"] == "child"
+    assert captured["history"] == [{"role": "user", "content": "restored prompt"}]
+    assert captured["history_calls"] == [("child", False), ("child", True)]
+
+
 def test_status_callback_emits_kind_and_text():
     with patch("tui_gateway.server._emit") as emit:
         cb = server._agent_cbs("sid")["status_callback"]

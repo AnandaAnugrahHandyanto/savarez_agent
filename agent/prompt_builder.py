@@ -141,6 +141,16 @@ DEFAULT_AGENT_IDENTITY = (
     "Be targeted and efficient in your exploration and investigations."
 )
 
+CONVERSATION_CONTINUITY_GUIDANCE = (
+    "Maintain conversation continuity across normal turns. Treat the latest "
+    "user message as the active request, but use the recent conversation to "
+    "preserve what is already done, what remains, and the user's intended "
+    "direction. Do not switch goals. Do not restart from scratch. Do not ignore "
+    "established constraints unless the latest user message explicitly redirects "
+    "you. When continuing ongoing work, take the next concrete step from the "
+    "current state."
+)
+
 HERMES_AGENT_HELP_GUIDANCE = (
     "If the user asks about configuring, setting up, or using Hermes Agent "
     "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "

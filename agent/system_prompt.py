@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
+    CONVERSATION_CONTINUITY_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
@@ -96,6 +97,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if not _soul_loaded:
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
+
+    stable_parts.append(CONVERSATION_CONTINUITY_GUIDANCE)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)

@@ -70,6 +70,80 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt2, ["hermes-telegram"], "")
         assert sig1 != sig2
 
+    def test_command_runtime_change_busts_signature(self):
+        """Command-backed auth changes must not reuse stale cached agents."""
+        from gateway.run import GatewayRunner
+
+        rt1 = {
+            "api_key": "",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "command": "codex-auth-token",
+            "args": ["--profile", "main"],
+        }
+        rt2 = {
+            **rt1,
+            "args": ["--profile", "backup"],
+        }
+
+        sig1 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt1, ["hermes-telegram"], "")
+        sig2 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt2, ["hermes-telegram"], "")
+        assert sig1 != sig2
+
+    def test_credential_pool_token_change_busts_signature(self):
+        """Pool token refreshes must rebuild the cached agent with fresh creds."""
+        from gateway.run import GatewayRunner
+
+        class Entry:
+            def __init__(self, token):
+                self.id = "acct-1"
+                self.provider = "openai-codex"
+                self.source = "device_code"
+                self.auth_type = "oauth"
+                self.priority = 0
+                self.last_status = None
+                self.runtime_base_url = "https://chatgpt.com/backend-api/codex"
+                self.runtime_api_key = token
+                self.refresh_token = "refresh-a"
+
+        class Pool:
+            provider = "openai-codex"
+            _strategy = "fill_first"
+            _current_id = "acct-1"
+
+            def __init__(self, token):
+                self._entry = Entry(token)
+
+            def entries(self):
+                return [self._entry]
+
+            def current(self):
+                return self._entry
+
+        rt1 = {
+            "api_key": "",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "credential_pool": Pool("access-token-a"),
+        }
+        rt2 = {**rt1, "credential_pool": Pool("access-token-b")}
+
+        sig1 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt1, ["hermes-telegram"], "")
+        sig2 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt2, ["hermes-telegram"], "")
+        assert sig1 != sig2
+
+    def test_runtime_credential_fingerprint_does_not_include_raw_secret(self):
+        """Credential summaries used for cache checks must be non-secret."""
+        from gateway.run import GatewayRunner
+
+        raw_secret = "access-token-super-secret"
+        fingerprint = GatewayRunner._runtime_credential_fingerprint({"api_key": raw_secret})
+
+        assert raw_secret not in fingerprint
+        assert len(fingerprint) == 64
+
     def test_provider_change_different_signature(self):
         from gateway.run import GatewayRunner
 
@@ -467,6 +541,95 @@ class TestAgentCacheLifecycle:
         cb3 = lambda *a: None
         agent.tool_progress_callback = cb3
         assert agent.tool_progress_callback is cb3
+
+    def test_cached_agent_with_stale_session_id_is_not_reused(self):
+        """A reset/resume must not reuse an agent pinned to an old DB session."""
+        from gateway.run import GatewayRunner
+
+        runner = _make_runner()
+        runner._cleanup_agent_resources = MagicMock()
+        session_key = "agent:main:discord:thread:123:123"
+        stale_agent = MagicMock()
+        stale_agent.session_id = "old-session"
+
+        with runner._agent_cache_lock:
+            runner._agent_cache[session_key] = (stale_agent, "sig")
+
+        result = runner._take_cached_agent_for_turn(
+            session_key=session_key,
+            signature="sig",
+            session_id="new-session",
+            interrupt_depth=0,
+        )
+
+        assert result is None
+        assert session_key not in runner._agent_cache
+        runner._cleanup_agent_resources.assert_called_once_with(stale_agent)
+
+    def test_cached_agent_flush_cursor_rewinds_to_durable_history(self):
+        """If DB history is shorter than the cached cursor, persist this turn."""
+        from gateway.run import GatewayRunner
+
+        agent = MagicMock()
+        agent._last_flushed_db_idx = 50
+
+        GatewayRunner._sync_cached_agent_db_cursor(agent, durable_history_len=0)
+
+        assert agent._last_flushed_db_idx == 0
+
+    def test_agent_result_db_persistence_requires_matching_durable_history(self):
+        """Gateway must not skip DB writes when the agent did not flush messages."""
+        from gateway.run import GatewayRunner
+
+        db = MagicMock()
+        db.get_messages_as_conversation.return_value = [
+            {"role": "session_meta", "content": None},
+        ]
+
+        assert not GatewayRunner._agent_result_already_persisted_to_db(
+            db,
+            session_id="session-1",
+            expected_replayable_messages=2,
+        )
+
+    def test_agent_result_db_persistence_requires_matching_message_tail(self):
+        """Old durable messages with the same count must not mask a missing turn."""
+        from gateway.run import GatewayRunner
+
+        db = MagicMock()
+        db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ]
+
+        assert not GatewayRunner._agent_result_already_persisted_to_db(
+            db,
+            session_id="session-1",
+            expected_replayable_messages=[
+                {"role": "user", "content": "new question"},
+                {"role": "assistant", "content": "new answer"},
+            ],
+        )
+
+    def test_agent_result_db_persistence_accepts_matching_durable_history(self):
+        """When the DB already has the result messages, gateway can skip duplicates."""
+        from gateway.run import GatewayRunner
+
+        db = MagicMock()
+        db.get_messages_as_conversation.return_value = [
+            {"role": "session_meta", "content": None},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+        assert GatewayRunner._agent_result_already_persisted_to_db(
+            db,
+            session_id="session-1",
+            expected_replayable_messages=[
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+            ],
+        )
 
 
 class TestAgentCacheBoundedGrowth:

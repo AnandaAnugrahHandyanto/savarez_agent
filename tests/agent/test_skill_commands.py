@@ -1,6 +1,7 @@
 """Tests for agent/skill_commands.py — skill slash command scanning and platform filtering."""
 
 import os
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ import pytest
 
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
+    build_plan_path,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
     resolve_skill_command_key,
@@ -150,6 +152,22 @@ class TestScanSkillCommands:
         assert "/impeccable" in result
         assert message is not None
         assert "Apply impeccable design craft." in message
+
+    def test_build_plan_path_is_workspace_relative(self):
+        result = build_plan_path(
+            "Add storage analysis for plan files",
+            now=datetime(2026, 5, 28, 9, 30, 45),
+        )
+
+        assert result == Path(
+            ".hermes/plans/2026-05-28_093045-add-storage-analysis-for-plan-files.md"
+        )
+        assert not result.is_absolute()
+
+    def test_build_plan_path_uses_conversation_plan_fallback(self):
+        result = build_plan_path("", now=datetime(2026, 5, 28, 9, 30, 45))
+
+        assert result == Path(".hermes/plans/2026-05-28_093045-conversation-plan.md")
 
     def test_get_skill_commands_rescans_when_platform_scope_changes(self, tmp_path):
         """Platform-specific disabled-skill caches must not leak across platforms.

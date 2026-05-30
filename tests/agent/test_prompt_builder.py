@@ -21,6 +21,7 @@ from agent.prompt_builder import (
     build_environment_hints,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
+    CONVERSATION_CONTINUITY_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -48,6 +49,12 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_conversation_continuity_guidance_anchors_normal_turns(self):
+        assert "Maintain conversation continuity" in CONVERSATION_CONTINUITY_GUIDANCE
+        assert "latest user message" in CONVERSATION_CONTINUITY_GUIDANCE
+        assert "Do not switch goals" in CONVERSATION_CONTINUITY_GUIDANCE
+        assert "Do not restart from scratch" in CONVERSATION_CONTINUITY_GUIDANCE
 
 
 # =========================================================================
@@ -1192,6 +1199,5 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 

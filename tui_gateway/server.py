@@ -2398,6 +2398,15 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    try:
+        resolved = db.resolve_resume_session_id(target)
+    except Exception:
+        resolved = target
+    if resolved and resolved != target:
+        resolved_found = db.get_session(resolved)
+        if resolved_found:
+            target = resolved
+            found = resolved_found
     sid = uuid.uuid4().hex[:8]
     _enable_gateway_prompts()
     try:
