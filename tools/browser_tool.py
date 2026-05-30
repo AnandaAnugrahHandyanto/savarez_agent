@@ -2810,12 +2810,36 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     return json.dumps(response, ensure_ascii=False)
 
 
+def _wrap_dom_guard(expression: str) -> str:
+    """Wrap *expression* in an IIFE that guards against non-serialisable DOM returns.
+
+    CDP's ``Runtime.evaluate`` with ``returnByValue=True`` crashes
+    ("Object reference chain is too long") when the JS result is a live DOM
+    ``Node``, ``NodeList``, or ``Window`` object.  The wrapper detects these
+    types and returns a descriptive string instead, so the agent receives a
+    clear error message rather than a protocol-level crash.
+    """
+    return (
+        "(() => {"
+        "  const __r = (function() { " + expression + " })();"
+        "  if (__r instanceof Node || __r instanceof NodeList"
+        "      || (typeof Window !== 'undefined' && __r instanceof Window)) {"
+        '    return "TOOL_ERROR: Cannot return raw DOM elements. '
+        "Extract a primitive value (e.g. .innerText, .href, .src, .value)"
+        ' or use JSON.stringify() first.";'
+        "  }"
+        "  return __r;"
+        "})()"
+    )
+
+
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    expression = _wrap_dom_guard(expression)
 
     # --- Fast path: route through the supervisor's persistent CDP WS ---------
     # When a CDPSupervisor is alive for this task_id, ``Runtime.evaluate`` runs

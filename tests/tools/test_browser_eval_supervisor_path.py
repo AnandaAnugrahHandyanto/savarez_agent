@@ -60,7 +60,9 @@ class TestBrowserEvalSupervisorPath:
         assert out["success"] is True
         assert out["result"] == 42
         assert out["method"] == "cdp_supervisor"
-        sup.evaluate_runtime.assert_called_once_with("1 + 41")
+        sup.evaluate_runtime.assert_called_once()
+        called_expr = sup.evaluate_runtime.call_args[0][0]
+        assert "1 + 41" in called_expr
 
     def test_json_string_result_is_parsed(self, monkeypatch):
         """Match agent-browser semantics: JSON-string results get parsed."""
@@ -361,3 +363,63 @@ class TestEvaluateRuntimeResponseShaping:
         finally:
             loop.call_soon_threadsafe(loop.stop)
             thread.join(timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# DOM guard wrapper: _wrap_dom_guard
+# ---------------------------------------------------------------------------
+
+
+class TestWrapDomGuard:
+    """Verify _wrap_dom_guard prevents CDP crash on DOM element returns."""
+
+    def test_primitive_expression_wrapped_correctly(self):
+        """Simple expressions should still work after wrapping."""
+        from tools.browser_tool import _wrap_dom_guard
+
+        wrapped = _wrap_dom_guard("1 + 41")
+        assert "1 + 41" in wrapped
+        assert wrapped.startswith("(() =>")
+        assert wrapped.endswith(")()")
+
+    def test_document_body_detected_as_node(self):
+        """document.body returns a Node — wrapper should guard against it."""
+        from tools.browser_tool import _wrap_dom_guard
+
+        wrapped = _wrap_dom_guard("document.body")
+        assert "document.body" in wrapped
+        assert "instanceof Node" in wrapped
+        assert "TOOL_ERROR" in wrapped
+
+    def test_query_selector_detected_as_node(self):
+        """querySelector returns a Node — wrapper should guard."""
+        from tools.browser_tool import _wrap_dom_guard
+
+        wrapped = _wrap_dom_guard("document.querySelector('div')")
+        assert "document.querySelector('div')" in wrapped
+        assert "instanceof Node" in wrapped
+
+    def test_window_return_detected(self):
+        """Returning window should be caught."""
+        from tools.browser_tool import _wrap_dom_guard
+
+        wrapped = _wrap_dom_guard("window")
+        assert "instanceof Window" in wrapped
+
+    def test_dom_guard_applied_in_browser_eval(self, monkeypatch):
+        """_browser_eval should apply the DOM guard to expressions."""
+        import tools.browser_tool as bt
+
+        sup = MagicMock()
+        sup.evaluate_runtime.return_value = {
+            "ok": True,
+            "result": "TOOL_ERROR: Cannot return raw DOM elements.",
+            "result_type": "string",
+        }
+        _patch_supervisor(monkeypatch, sup)
+
+        bt._browser_eval("document.body", task_id="test")
+        # The supervisor should have been called with the WRAPPED expression
+        called_expr = sup.evaluate_runtime.call_args[0][0]
+        assert "document.body" in called_expr
+        assert "instanceof Node" in called_expr
