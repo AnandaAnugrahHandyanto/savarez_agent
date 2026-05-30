@@ -6552,6 +6552,7 @@ def _run_with_idle_timeout(
     *,
     idle_timeout_seconds: int = 180,
     indent: str = "    ",
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a subprocess that streams output, with an idle-output timeout.
 
@@ -6586,6 +6587,7 @@ def _run_with_idle_timeout(
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=env,
         )
     except OSError as exc:
         # E.g. npm not on PATH between the which() check and now.
@@ -6650,6 +6652,7 @@ def _run_npm_install_deterministic(
     *,
     extra_args: tuple[str, ...] = (),
     capture_output: bool = True,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a deterministic npm install that does not mutate ``package-lock.json``.
 
@@ -6671,6 +6674,7 @@ def _run_npm_install_deterministic(
             encoding="utf-8",
             errors="replace",
             check=False,
+            env=env,
         )
         if ci_result.returncode == 0:
             return ci_result
@@ -6685,6 +6689,7 @@ def _run_npm_install_deterministic(
         encoding="utf-8",
         errors="replace",
         check=False,
+        env=env,
     )
 
 
@@ -6724,6 +6729,10 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         return not fatal
     _say("→ Building web UI...")
 
+    # Ensure dev dependencies are installed even if the parent process
+    # runs with NODE_ENV=production (common on Termux/Android).
+    _web_env = {**os.environ, "NODE_ENV": "development"}
+
     def _relay(result: "subprocess.CompletedProcess") -> None:
         """Print captured npm output so users can see *why* a step failed.
 
@@ -6739,7 +6748,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             if text:
                 _say(text)
 
-    r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
+    r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",), env=_web_env)
     if r1.returncode != 0:
         _say(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
@@ -6754,13 +6763,13 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # users react by rebooting, which leaves the editable install in a
     # half-state. Streaming + idle-kill makes failures observable AND
     # recoverable (the stale-dist fallback below handles the kill path).
-    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir)
+    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=_web_env)
     if r2.returncode != 0:
         # Retry once after a short delay — covers boot-time races on Windows
         # (antivirus scanning Node.js binaries, npm cache not ready, transient
         # I/O when launched via Scheduled Task at logon). See issue #23817.
         _time.sleep(3)
-        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir)
+        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=_web_env)
 
     if r2.returncode != 0:
         # _run_with_idle_timeout merges stderr into stdout; older callers
@@ -7232,6 +7241,17 @@ def _update_via_zip(args):
 
     pip_cmd = [sys.executable, "-m", "pip"]
     uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
+    if uv_bin:
+        try:
+            subprocess.run(
+                [uv_bin, "--version"],
+                capture_output=True,
+                timeout=10,
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            print(f"  → uv found at {uv_bin} but cannot execute — falling back to pip")
+            uv_bin = None
     if uv_bin:
         uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
         if _is_termux_env(uv_env):
@@ -8314,6 +8334,16 @@ def _install_psutil_android_compat(
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     """Best-effort uv bootstrap on Termux for faster update installs."""
     uv_bin = shutil.which("uv")
+    if uv_bin:
+        try:
+            subprocess.run(
+                [uv_bin, "--version"],
+                capture_output=True,
+                timeout=10,
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            uv_bin = None
     if uv_bin or not _is_termux_env():
         return uv_bin
     try:
@@ -9294,6 +9324,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("→ Updating Python dependencies...")
         pip_cmd = [sys.executable, "-m", "pip"]
         uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
+        if uv_bin:
+            try:
+                subprocess.run(
+                    [uv_bin, "--version"],
+                    capture_output=True,
+                    timeout=10,
+                    check=True,
+                )
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                print(f"  → uv found at {uv_bin} but cannot execute — falling back to pip")
+                uv_bin = None
         install_group = "all"
 
         if uv_bin:
