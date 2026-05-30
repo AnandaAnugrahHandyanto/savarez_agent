@@ -340,3 +340,39 @@ def test_gated_zero_providers_login_page_renders_help_text():
     finally:
         web_server.app.state.auth_required = prev_required
         web_server.app.state.bound_host = prev_host
+
+
+# ---------------------------------------------------------------------------
+# _require_token under gated mode (regression for #35492)
+# ---------------------------------------------------------------------------
+
+
+def test_gated_plugins_hub_does_not_401_after_login(gated_app):
+    """After a successful OAuth login, ``/api/dashboard/plugins/hub`` must
+    NOT return 401.  The ``_require_token`` guard must defer to the
+    OAuth gate when ``auth_required`` is active.
+
+    Regression test for #35492: the plugins page returned 401 in gated
+    mode because ``_require_token`` unconditionally checked for the legacy
+    session token without consulting ``app.state.auth_required``.
+    """
+    # Walk the full OAuth round trip to get a valid session cookie.
+    r1 = gated_app.get("/auth/login?provider=stub", follow_redirects=False)
+    assert r1.status_code == 302
+    redirect = r1.headers["location"]
+    state = redirect.split("state=")[1]
+
+    r2 = gated_app.get(
+        f"/auth/callback?code=stub_code&state={state}",
+        follow_redirects=False,
+    )
+    assert r2.status_code == 302
+    assert any("hermes_session_at" in c for c in r2.headers.get_list("set-cookie"))
+
+    # Now hit the plugins endpoint — should NOT be 401.
+    r3 = gated_app.get("/api/dashboard/plugins/hub", follow_redirects=False)
+    assert r3.status_code != 401, (
+        "/api/dashboard/plugins/hub returned 401 after successful OAuth "
+        "login — _require_token should skip the legacy token check when "
+        "auth_required is True"
+    )
