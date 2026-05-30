@@ -1021,7 +1021,7 @@ def _parse_json_env_var(name: str, default: str, expected_type: type) -> object:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
         raise ValueError(
-            f"Invalid value for {name}: {raw!r} (expected valid JSON). "
+            f"Invalid value for {name}: expected valid JSON. "
             f"Check ~/.hermes/.env or environment variables."
         )
     if not isinstance(parsed, expected_type):
@@ -1080,13 +1080,9 @@ def _get_env_config() -> Dict[str, Any]:
         # source; TERMINAL_CWD is only the sandbox command cwd and must never
         # implicitly become an upload source (gateway defaults it to $HOME).
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
+        if env_type == "daytona" and os.path.isabs(cwd) and os.path.isdir(cwd):
+            is_host_path = not cwd.startswith(("/workspace", "/root", "/home/daytona"))
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
-        if env_type == "daytona" and raw_terminal_cwd and raw_terminal_cwd not in {"~", ".", "auto", "cwd"}:
-            candidate = os.path.abspath(os.path.expanduser(raw_terminal_cwd))
-            if os.path.isdir(candidate):
-                host_cwd = candidate
-        elif env_type == "daytona":
-            host_cwd = os.getcwd()
         if (is_host_path or is_relative) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host/relative path won't work in sandbox). Using %r instead.",
@@ -1133,10 +1129,10 @@ def _get_env_config() -> Dict[str, Any]:
         "daytona_auto_archive_interval": _parse_env_var("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL", "0"),
         "daytona_auto_delete_interval": _parse_env_var("TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL", "0"),
         "daytona_ephemeral": os.getenv("TERMINAL_DAYTONA_EPHEMERAL", "false").lower() in {"true", "1", "yes"},
-        "daytona_env_vars": _parse_json_env_var("TERMINAL_DAYTONA_ENV_VARS", "{}", dict),
+        "daytona_env_vars": daytona_env_vars,
         "daytona_network_block_all": os.getenv("TERMINAL_DAYTONA_NETWORK_BLOCK_ALL", "false").lower() in {"true", "1", "yes"},
         "daytona_network_allow_list": os.getenv("TERMINAL_DAYTONA_NETWORK_ALLOW_LIST", ""),
-        "daytona_volume_mounts": _parse_json_env_var("TERMINAL_DAYTONA_VOLUME_MOUNTS", "[]", list),
+        "daytona_volume_mounts": daytona_volume_mounts,
         "daytona_gpu": _parse_env_var("TERMINAL_DAYTONA_GPU", "0"),
         "daytona_sync_cwd": os.getenv("TERMINAL_DAYTONA_SYNC_CWD", "false").lower() in {"true", "1", "yes"},
         "daytona_sync_cwd_source": daytona_sync_cwd_source,

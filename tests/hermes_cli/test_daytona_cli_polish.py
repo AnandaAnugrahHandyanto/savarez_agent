@@ -510,7 +510,7 @@ class TestDaytonaDoctorConfigBackedPolish:
             {"daytona_language": "brainfuck"},
         )
 
-        assert "Unusual Daytona language" in output
+        assert "Unsupported Daytona language" in output
         assert "brainfuck" in output
 
     def test_config_backed_json_lifecycle_sync_and_disk_guidance_show(self, monkeypatch, tmp_path):

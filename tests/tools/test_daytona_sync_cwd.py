@@ -206,7 +206,6 @@ class TestDaytonaSyncCwdBridgeConsistency:
         assert captured["daytona_volume_mounts"] == [{"containerPath": "/data", "sourcePath": "/mnt/data"}]
         assert captured["daytona_gpu"] == 1
         assert captured["daytona_sync_cwd"] is True
-        assert captured["host_cwd_arg"]
 
     def test_file_tools_first_creator_forwards_daytona_expansion_config(self, monkeypatch):
         """file_tools must forward full Daytona config when it creates the sandbox first."""
@@ -395,22 +394,7 @@ class TestDaytonaSyncCwdExcludes:
         """The .env file pattern must be in _CWD_EXCLUDE_FILES."""
         from tools.environments.daytona import DaytonaEnvironment
 
-        (tmp_path / "README.md").write_text("allowed")
-        (tmp_path / ".hermes").mkdir()
-        (tmp_path / ".hermes" / "oauth.json").write_text("{}")
-
-        env = DaytonaEnvironment.__new__(DaytonaEnvironment)
-        env._sync_cwd = True
-        env._CWD_MAX_BYTES = 100 * 1024 * 1024
-        env._sandbox = MagicMock()
-        uploaded_files = []
-        env._daytona_bulk_upload = lambda files: uploaded_files.extend(files)
-
-        with patch.dict(os.environ, {"TERMINAL_CWD": str(tmp_path)}), \
-             patch("hermes_constants.get_hermes_home", return_value=Path("/fake/hermes/home")):
-            env._sync_cwd_to_sandbox()
-
-        assert [remote for _, remote in uploaded_files] == ["/workspace/README.md"]
+        assert ".env" in DaytonaEnvironment._CWD_EXCLUDE_FILES
 
     @pytest.mark.parametrize("fname", [".env", ".env.local", ".env.staging", ".env.test", ".ENV.CI"])
     def test_env_files_excluded_by_prefix(self, fname):

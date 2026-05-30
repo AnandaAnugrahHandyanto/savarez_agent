@@ -469,6 +469,11 @@ class DaytonaEnvironment(BaseEnvironment):
     # Individual file patterns (basename matches) that are never synced.
     # Covers secrets, credentials, and large binary artifacts.
     _CWD_EXCLUDE_FILES: tuple[str, ...] = (
+        ".env",
+        ".env.local",
+        ".env.production",
+        ".env.development",
+        ".envrc",
         ".npmrc",
         ".pypirc",
         ".netrc",
@@ -493,13 +498,30 @@ class DaytonaEnvironment(BaseEnvironment):
     # the user must manage their own file transfer.
     _CWD_MAX_BYTES: int = 100 * 1024 * 1024  # 100 MiB
 
+    @classmethod
+    def _is_cwd_excluded_file(cls, fname: str) -> bool:
+        """Return True when a CWD-sync basename must never be uploaded."""
+        lower_fname = fname.lower()
+        if lower_fname.startswith(".env"):
+            return True
+        if lower_fname in {p.lower() for p in cls._CWD_EXCLUDE_FILES}:
+            return True
+        if (
+            lower_fname.startswith("secret")
+            or ".secret." in lower_fname
+            or lower_fname.endswith((".secret", ".secrets", ".secrets.yaml", ".secrets.yml"))
+        ):
+            return True
+        return lower_fname.endswith(tuple(ext.lower() for ext in cls._CWD_EXCLUDE_EXTENSIONS))
+
     def _is_excluded_cwd_path(self, path: str, root: str, *, is_dir: bool) -> bool:
         """Return True if a CWD-sync path is excluded by basename or relative path."""
         rel = os.path.relpath(path, root).replace(os.sep, "/").lower()
         name = os.path.basename(path).lower()
-        patterns = self._CWD_EXCLUDE_DIRS if is_dir else self._CWD_EXCLUDE_FILES
-        lowered_patterns = {p.lower() for p in patterns}
-        return rel in lowered_patterns or name in lowered_patterns
+        if is_dir:
+            lowered_patterns = {p.lower() for p in self._CWD_EXCLUDE_DIRS}
+            return rel in lowered_patterns or name in lowered_patterns
+        return rel in {p.lower() for p in self._CWD_EXCLUDE_FILES} or self._is_cwd_excluded_file(name)
 
     def _clear_cwd_workspace(self) -> None:
         """Clear the managed CWD-sync workspace without touching .hermes sync state."""
@@ -559,7 +581,7 @@ class DaytonaEnvironment(BaseEnvironment):
             # through links that may point outside the requested host CWD.
             dirnames[:] = [
                 d for d in dirnames
-                if d not in self._CWD_EXCLUDE_DIRS
+                if not self._is_excluded_cwd_path(os.path.join(dirpath, d), host_cwd, is_dir=True)
                 and d != ".hermes"  # .hermes is synced separately
                 and not os.path.islink(os.path.join(dirpath, d))
             ]

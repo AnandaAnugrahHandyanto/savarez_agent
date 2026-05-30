@@ -807,6 +807,8 @@ def _bridge_terminal_config_to_env(terminal_cfg) -> None:
         "docker_env": "TERMINAL_DOCKER_ENV",
         "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+        "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+        "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
     }
@@ -854,6 +856,10 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     agent_cfg = cfg.get("agent", {})
     if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
         os.environ["HERMES_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
+
+    terminal_cfg = cfg.get("terminal", {})
+    if isinstance(terminal_cfg, dict):
+        _bridge_terminal_config_to_env(terminal_cfg)
 
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
