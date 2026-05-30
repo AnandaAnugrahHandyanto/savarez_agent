@@ -85,10 +85,13 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
-# Generated fresh on every server start — dies when the process exits.
-# Injected into the SPA HTML so only the legitimate web UI can use it.
+# The desktop shell mints the token and injects it via
+# HERMES_DASHBOARD_SESSION_TOKEN so its main process can authenticate the
+# /api calls it makes on the user's behalf; otherwise we generate one fresh
+# on every server start. Either way it dies when the process exits and is
+# injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = secrets.token_urlsafe(32)
+_SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
