@@ -4,8 +4,8 @@
 > **Parent doc:** `.plans/phase-2-flywheel-ua-integration.md`
 > **Project state:** `.plans/project-state-ua-flywheel.md`
 > **Scope:** Evaluate the effectiveness of D1 (extract_imports.py), D2 (code-scan SKILL.md), and D3 (validation-gate SKILL.md) *in isolation* — D4 remains deferred and out of scope.
-> **Branch:** `docs/ua-flywheel-phase1-phase2-plan`
-> **Status:** Awaiting JC approval to execute.
+> **Branch:** `jc-main-merged-ua-flywheel`
+> **Status:** ✅ **EXECUTED — 11/11 PASS** (2026-05-30). Evidence: `/tmp/phase2-d1-d3-eval-corrected-latest.log`.
 
 ---
 
@@ -535,25 +535,27 @@ After evaluation execution, produce:
 
 ---
 
-## 9. Execution Checklist
+## 9. Execution Checklist — COMPLETED ALL
 
-Run in order. Stop and report at first FAIL.
+All test cases executed and passed:
 
-- [ ] Verify branch is clean: `git status --short` (expect empty)
-- [ ] Verify testbed paths exist
-- [ ] Run TC-1 (D1 unit tests)
-- [ ] Run TC-2 (fixture precision/recall)
-- [ ] Run TC-3 (E2E schema on small + medium repos)
-- [ ] Run TC-4 (D2 skill budget + contract)
-- [ ] Run TC-5 (D3 skill budget + contract)
-- [ ] Run TC-6 (D3 verdict accuracy)
-- [ ] Run TC-7 (performance timing)
-- [ ] Run TC-8 (combined skill budget)
-- [ ] Run TC-9 (scope guardrail)
-- [ ] Run TC-10 (D4 absent check)
-- [ ] Run TC-11 (full test suite — no regressions)
-- [ ] Compile results into evaluation summary
-- [ ] Present to JC for review
+- [x] Verify branch is clean: `git status --short` (expect empty)
+- [x] Verify testbed paths exist
+- [x] Run TC-1 (D1 unit tests) — 31 passed
+- [x] Run TC-2 (fixture precision/recall) — all 5 languages 1.00 precision/recall
+- [x] Run TC-3 (E2E schema on small + medium repos) — both PASS
+- [x] Run TC-4 (D2 skill budget + contract) — 39 lines, all refs PASS
+- [x] Run TC-5 (D3 skill budget + contract) — 48 lines, all refs PASS
+- [x] Run TC-6 (D3 verdict accuracy) — all verdicts correct
+- [x] Run TC-7 (performance timing) — small 0.235s, medium 0.471s, large 11.401s
+- [x] Run TC-8 (combined skill budget) — 87 ≤ 100
+- [x] Run TC-9 (scope guardrail) — zero excluded features
+- [x] Run TC-10 (D4 absent check) — D4 correctly absent, bead still deferred
+- [x] Run TC-11 (full test suite — no regressions) — 111 passed
+- [x] Compile results into evaluation summary
+- [x] Present to JC for review
+
+**Result: 11/11 PASS.** No additional execution needed on this evaluation plan. Future phases require separate evaluation plans as part of their approval packages.
 
 ---
 
@@ -613,6 +615,7 @@ echo "=== Results: $PASS passed, $FAIL failed ==="
 
 ---
 
-> **This plan is approval-oriented.** No execution without JC approval.
-> **D4 is not included.** Any future D4 evaluation requires a separate plan.
-> **No code changes, no implementations.** Documentation and test execution only.
+> **This evaluation has been executed: 11/11 PASS.** Evidence at `/tmp/phase2-d1-d3-eval-corrected-latest.log`.
+> **D4 was not included** (deferred). Any future D4 evaluation requires a separate plan.
+> **No code changes or implementations** were made during this evaluation. Documentation and test execution only.
+> **Phase 3 not started.** Next action: Phase 3 approval package. Future Phase 3 execution requires JC approval.

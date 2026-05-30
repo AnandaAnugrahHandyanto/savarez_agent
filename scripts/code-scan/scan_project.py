@@ -24,6 +24,13 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from language_registry import get_language, get_category, detect_frameworks
+from fingerprints import (
+    build_fingerprint_map,
+    compare_fingerprints,
+    get_fingerprint_path,
+    load_fingerprint_file,
+    save_fingerprint_file,
+)
 
 # Directories always excluded regardless of .hermesignore
 ALWAYS_EXCLUDE: Set[str] = {'.git', '.svn', '.hg'}
@@ -45,6 +52,7 @@ def _load_hermesignore(project_root: str) -> List[str]:
         '.DS_Store', 'Thumbs.db',
         '.env', '.env.local',
         'vendor/',
+        '.hermes/',           # Generated Hermes state must not be scanned
     ]
 
     if os.path.isfile(ignore_path):
@@ -188,6 +196,120 @@ def _build_summary(files: List[dict], frameworks: List[str],
     }
 
 
+def _run_incremental_scan(
+    target_dir: str,
+    args: argparse.Namespace,
+    patterns: List[str],
+) -> int:
+    """Perform an incremental scan using fingerprints.
+
+    Returns 0 on success, non-zero on error.
+    """
+    fp_path = get_fingerprint_path(target_dir)
+    old_fps = load_fingerprint_file(fp_path)
+
+    # Walk the project fresh
+    files = _walk_project(target_dir, patterns)
+    if args.verbose:
+        print(f"Found {len(files)} files", file=sys.stderr)
+
+    # Detect frameworks fresh
+    frameworks = detect_frameworks(target_dir)
+    if args.verbose:
+        print(f"Detected frameworks: {frameworks or 'none'}", file=sys.stderr)
+
+    # Build fresh fingerprint map from current files
+    fresh_fps = build_fingerprint_map(
+        {"files": files}, target_dir
+    )
+
+    if old_fps is None:
+        # No prior fingerprints: behave like full scan with warning
+        warnings: List[str] = []
+        warnings.append(
+            f"incremental_scan: no prior fingerprints found — "
+            f"performed full scan ({len(files)} files scanned)"
+        )
+        summary = _build_summary(files, frameworks, target_dir)
+        summary["warnings"] = warnings
+
+        # Build classification: all files are STRUCTURAL (scanned) for no_prior
+        all_paths = sorted([f["relative_path"] for f in files])
+        summary["incremental_scan"] = {
+            "mode": "no_prior_fingerprints",
+            "counts": {
+                "UNCHANGED": 0,
+                "COSMETIC": 0,
+                "STRUCTURAL": len(files),
+            },
+            "paths": {
+                "UNCHANGED": [],
+                "COSMETIC": [],
+                "STRUCTURAL": all_paths,
+            },
+        }
+    else:
+        # Classify files via comparison
+        classifications = compare_fingerprints(
+            {"files": old_fps.get("files", {})},
+            {"files": fresh_fps},
+        )
+
+        # Count and collect paths by classification
+        counts = {"UNCHANGED": 0, "COSMETIC": 0, "STRUCTURAL": 0}
+        paths = {"UNCHANGED": [], "COSMETIC": [], "STRUCTURAL": []}
+        for rel_path, cls in classifications.items():
+            counts[cls] = counts.get(cls, 0) + 1
+            paths[cls].append(rel_path)
+
+        # Sort path lists for determinism
+        for cls in paths:
+            paths[cls].sort()
+
+        total = sum(counts.values())
+        warning_msg = (
+            f"incremental_scan: {counts['UNCHANGED']} files UNCHANGED, "
+            f"{counts['COSMETIC']} files COSMETIC, "
+            f"{counts['STRUCTURAL']} files STRUCTURAL"
+            f" ({total} total)"
+        )
+        warnings = [warning_msg]
+
+        # Build summary using fresh file records (all files from current walk)
+        summary = _build_summary(files, frameworks, target_dir)
+        summary["warnings"] = warnings
+
+        # Expose structured incremental metadata for downstream consumption
+        summary["incremental_scan"] = {
+            "mode": "incremental",
+            "counts": counts,
+            "paths": paths,
+        }
+
+    # Save updated fingerprints (without change_level)
+    save_fingerprint_file(fp_path, target_dir, fresh_fps)
+    if args.verbose:
+        print(f"Updated fingerprints: {fp_path}", file=sys.stderr)
+
+    # Output
+    json_str = json.dumps(summary, indent=2)
+
+    if args.output:
+        try:
+            with open(args.output, 'w', encoding='utf-8') as f:
+                f.write(json_str)
+                f.write('\n')
+            if args.verbose:
+                print(f"Written to {args.output}", file=sys.stderr)
+        except OSError as e:
+            print(f"Error: could not write output file: {e}", file=sys.stderr)
+            return 1
+    else:
+        print(json_str)
+
+    return 0
+
+
 def main() -> int:
     """CLI entry point. Returns exit code."""
     parser = argparse.ArgumentParser(
@@ -205,6 +327,16 @@ def main() -> int:
         '--verbose',
         action='store_true',
         help='Print progress information to stderr',
+    )
+    parser.add_argument(
+        '--incremental',
+        action='store_true',
+        help='Use fingerprints for incremental scan',
+    )
+    parser.add_argument(
+        '--full',
+        action='store_true',
+        help='Force a full scan, ignoring existing fingerprints',
     )
     args = parser.parse_args()
 
@@ -224,7 +356,13 @@ def main() -> int:
     if args.verbose:
         print(f"Loaded {len(patterns)} ignore patterns", file=sys.stderr)
 
-    # Walk the project
+    # --full forces normal behavior; --incremental without prior fps also
+    # falls through to full scan path; --incremental with no --full and with
+    # existing fingerprints goes to incremental path.
+    if args.incremental and not args.full:
+        return _run_incremental_scan(target_dir, args, patterns)
+
+    # Normal / full-scan path
     files = _walk_project(target_dir, patterns)
     if args.verbose:
         print(f"Found {len(files)} files", file=sys.stderr)

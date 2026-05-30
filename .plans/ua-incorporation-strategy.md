@@ -1,6 +1,6 @@
 # Understand-Anything Incorporation Strategy
 
-> **Status:** Phase 1 complete / verified / committed (`24356edcd`). Phase 2 D1-D3 complete / reviewed / committed / pushed (`5a39c7fc7`). D4 is deferred by default and requires explicit JC approval.
+> **Status:** Phase 1 complete / verified / committed (`24356edcd`). Phase 2 D1-D3 complete / reviewed / evaluated 11/11 PASS / merged to `jc-fork/main` at HEAD `24e9fe65a`. D4 is deferred by default and requires explicit JC approval. Phase 3 not started; next action is Phase 3 approval package.
 > **Related:** See `understand-anything-to-flywheel-review.md` for the full risk analysis and artifact inventory.
 > **Last updated:** 2026-05-30
 

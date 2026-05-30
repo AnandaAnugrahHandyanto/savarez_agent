@@ -2,7 +2,7 @@
 
 > **Parent doc:** `.plans/ua-incorporation-strategy.md`
 > **Prerequisite:** Phase 1 (Foundation) ✓ complete — committed `24356edcd`, 80 tests pass, scan scripts verified on test-bed repos.
-> **Status:** Phase 2 CLOSED — D1-D3 complete, verified, reviewed, committed (`5a39c7fc7`), and pushed. D4 formally deferred. Evaluation plan for D1-D3 effectiveness defined in `.plans/phase-2-d1-d3-evaluation-plan.md`.
+> **Status:** Phase 2 CLOSED — D1-D3 complete, verified, reviewed, evaluated 11/11 PASS, merged to `jc-fork/main` at HEAD `24e9fe65a`. D4 formally deferred. Phase 3 not started; next action is Phase 3 approval package.
 > **Execution beads:** Defined in `.beads/phase2-d1-extract-imports.md`, `.beads/phase2-d2-code-scan-skill.md`, `.beads/phase2-d3-validation-gate-skill.md`, `.beads/phase2-d4-review-integration-deferred.md`.
 >
 > **These bead files are the authoritative execution units.** This plan describes intent and scope; the beads contain exact functions, schemas, test contracts, verification commands, and allowed/forbidden file lists. When executing, dispatch coder subagents using the bead files as the sole implementation spec.
@@ -216,30 +216,40 @@ Required top-level keys: `schema_version` (string, always `"1.0.0"`), `source_sc
 **Decision:** Phase 2 is closed with D1-D3 only. D4 is formally deferred per JC's decision. No further implementation work on Phase 2 deliverables.
 
 **Closed deliverables:**
-- D1: `scripts/code-scan/extract_imports.py` + tests/fixtures — ✅ Complete (committed `5a39c7fc7`)
-- D2: `skills/code-analysis/code-scan/SKILL.md` — ✅ Complete (39 lines, committed `5a39c7fc7`)
-- D3: `skills/code-analysis/validation-gate/SKILL.md` — ✅ Complete (48 lines, committed `5a39c7fc7`)
+- D1: `scripts/code-scan/extract_imports.py` + tests/fixtures — ✅ Complete (merged to `jc-fork/main`, HEAD `24e9fe65a`)
+- D2: `skills/code-analysis/code-scan/SKILL.md` — ✅ Complete (39 lines, merged to `jc-fork/main`, HEAD `24e9fe65a`)
+- D3: `skills/code-analysis/validation-gate/SKILL.md` — ✅ Complete (48 lines, merged to `jc-fork/main`, HEAD `24e9fe65a`)
+
+**Evaluation:** Phase 2 D1-D3 effectiveness evaluation — **11/11 PASS**.
+- Evidence: `/tmp/phase2-d1-d3-eval-corrected-latest.log`
+- Performance: small 0.235s, medium 0.471s, large 11.401s (all within budget)
+- Full test suite: 111 passed
+- Post-push CI: Tests ✅, Lint ✅, Nix ✅
 
 **Deferred:**
 - D4: `requesting-code-review` integration — 🚫 Deferred. Requires separate JC approval + separate execution plan if revived.
 
 **Review:** Independent reviewer PASS on spec compliance, scope preservation, context budget, quality/security, and forbidden-file integrity (`.hermes/handoffs/2026-05-30-0648-phase2-d1-d3-review-pass.md`).
 
-**Next steps:** Execute the D1-D3 effectiveness evaluation plan (`.plans/phase-2-d1-d3-evaluation-plan.md`) to measure real-world effectiveness before considering D4 or Phase 3.
+**Merged to:** `jc-fork/main` — HEAD `24e9fe65a` (`test(run-agent): isolate proxy tests from lazy dependency installs`).
+**Historical commits:** `7d7785dc4` (merge), `86ba2b1d3` (CI fixture discovery fix), `24e9fe65a` (proxy test isolation).
+**origin/main:** `5f84c9144`.
+
+**Next steps:** Phase 3 not started. Next action: Phase 3 approval package. Future Phase 3 execution requires JC approval.
 
 ---
 
-## Execution-Ready Evaluation Plan
+## Evaluation Plan — Completed 11/11 PASS
 
 The lightweight verification table below is superseded by the full evaluation plan at `.plans/phase-2-d1-d3-evaluation-plan.md`, which includes:
-- 11 test cases (TC-1 through TC-11) covering unit tests, fixture precision/recall, E2E schema compliance, skill budget, verdict accuracy, performance timing, scope guardrails, and D4 absence confirmation
-- Per-language precision/recall metrics for D1 across all 5 target languages
+- 11 test cases (TC-1 through TC-11) — all 11 PASS
+- Per-language precision/recall metrics for D1 across all 5 target languages (all 1.00)
 - E2E pipeline testing on small (cass_memory_system), medium (mission-control), and large (hermes-agent) repos
-- Timing budgets: <5s (small), <30s (medium), <120s (large)
-- Explicit pass/fail criteria, expected artifacts, and a single-command runner
-- Risk analysis and mitigation strategies
+- Timing: small 0.235s, medium 0.471s, large 11.401s (all within budget)
+- Full test suite: 111 passed
+- Evidence log: `/tmp/phase2-d1-d3-eval-corrected-latest.log`
 
-**Approval required:** No evaluation execution without JC approval. The evaluation is documentation and test execution only — no code changes, no implementations, no D4 work.
+**The evaluation has been executed and passed.** No further evaluation work needed.
 
 ---
 
@@ -280,15 +290,17 @@ The lightweight verification table below is superseded by the full evaluation pl
 ## Phase 2 Deliverables Checklist
 
 - [x] Prerequisite: Phase 1 verified and committed (`24356edcd`, 80 tests pass)
-- [x] D1: `scripts/code-scan/extract_imports.py` + unit tests → `.beads/phase2-d1-extract-imports.md` — complete; committed/pushed in `5a39c7fc7`
-- [x] D2: `skills/code-analysis/code-scan/SKILL.md` (≤80 lines) → `.beads/phase2-d2-code-scan-skill.md` — complete; 39 lines; committed/pushed in `5a39c7fc7`
-- [x] D3: `skills/code-analysis/validation-gate/SKILL.md` (≤80 lines) → `.beads/phase2-d3-validation-gate-skill.md` — complete; 48 lines; committed/pushed in `5a39c7fc7`
+- [x] D1: `scripts/code-scan/extract_imports.py` + unit tests → `.beads/phase2-d1-extract-imports.md` — complete; evaluated PASS; merged to `jc-fork/main` at `24e9fe65a`
+- [x] D2: `skills/code-analysis/code-scan/SKILL.md` (≤80 lines) → `.beads/phase2-d2-code-scan-skill.md` — complete; 39 lines; evaluated PASS; merged to `jc-fork/main` at `24e9fe65a`
+- [x] D3: `skills/code-analysis/validation-gate/SKILL.md` (≤80 lines) → `.beads/phase2-d3-validation-gate-skill.md` — complete; 48 lines; evaluated PASS; merged to `jc-fork/main` at `24e9fe65a`
 - [x] **Phase 2 CLOSED with D1-D3 only.** JC decided: D4 deferred. No further Phase 2 implementation work.
 - [ ] D4: `requesting-code-review` integration — 🚫 **DEFERRED per JC decision.** Not part of Phase 2. Requires separate approval + separate plan if revived → `.beads/phase2-d4-review-integration-deferred.md`
 - [x] Verification: tests pass, context budget met, scope guardrails pass (111/111 tests)
 - [x] Reviewer: spec compliance + quality/security + scope preservation PASS (`.hermes/handoffs/2026-05-30-0648-phase2-d1-d3-review-pass.md`)
 - [x] Approval: JC approved D1-D3 autonomous execution; D4 deferred
-- [ ] Evaluation: D1-D3 effectiveness evaluation plan defined at `.plans/phase-2-d1-d3-evaluation-plan.md` — awaiting JC approval to execute
+- [x] Evaluation: D1-D3 effectiveness evaluation — **11/11 PASS** (evidence: `/tmp/phase2-d1-d3-eval-corrected-latest.log`)
+- [x] Merge: merged to `jc-fork/main` at HEAD `24e9fe65a`. Post-push CI: Tests ✅, Lint ✅, Nix ✅.
+- [ ] **Phase 3:** Not started. Next action: Phase 3 approval package. Future Phase 3 execution requires JC approval.
 
 ### JC Approval Wording (copy-paste template)
 
