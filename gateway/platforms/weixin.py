@@ -1269,6 +1269,7 @@ class WeixinAdapter(BasePlatformAdapter):
         sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
         timeout_ms = LONG_POLL_TIMEOUT_MS
         consecutive_failures = 0
+        session_expired_logged = False
 
         while self._running:
             try:
@@ -1288,7 +1289,11 @@ class WeixinAdapter(BasePlatformAdapter):
                 if ret not in {0, None} or errcode not in {0, None}:
                     if (ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE
                             or _is_stale_session_ret(ret, errcode, response.get("errmsg"))):
-                        logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
+                        if not session_expired_logged:
+                            logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
+                            session_expired_logged = True
+                        else:
+                            logger.debug("[%s] Session still expired; retrying after pause", self.name)
                         await asyncio.sleep(600)
                         consecutive_failures = 0
                         continue
@@ -1308,6 +1313,9 @@ class WeixinAdapter(BasePlatformAdapter):
                     continue
 
                 consecutive_failures = 0
+                if session_expired_logged:
+                    logger.info("[%s] Session recovered after expiry", self.name)
+                    session_expired_logged = False
                 new_sync_buf = str(response.get("get_updates_buf") or "")
                 if new_sync_buf:
                     sync_buf = new_sync_buf
