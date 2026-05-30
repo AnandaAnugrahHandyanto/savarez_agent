@@ -1153,8 +1153,8 @@ class APIServerAdapter(BasePlatformAdapter):
             lines.append(f"{key_text}: {cls._internal_notify_clean_value(value, max_len=160)}")
         return lines
 
-    @staticmethod
-    def _internal_notify_format_timestamp(value: Any) -> str:
+    @classmethod
+    def _internal_notify_format_timestamp(cls, value: Any) -> str:
         if isinstance(value, str) and value.strip():
             raw = value.strip()
             try:
@@ -1162,11 +1162,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 local_dt = parsed.astimezone()
                 return local_dt.strftime("%d/%m/%Y %H:%M:%S %z")
             except Exception:
-                return raw[:80]
+                return cls._internal_notify_clean_value(raw, max_len=80)
         return datetime.now(timezone.utc).astimezone().strftime("%d/%m/%Y %H:%M:%S %z")
 
     def _internal_notify_render_message(self, payload: Dict[str, Any]) -> str:
         severity = str(payload.get("severity") or "info").strip().lower()
+        if severity not in self._INTERNAL_NOTIFY_SEVERITIES:
+            severity = "info"
         source = self._internal_notify_clean_value(payload.get("source") or "unknown", max_len=80)
         title = self._internal_notify_clean_value(payload.get("title") or "Alerta Hermes", max_len=120)
         message = self._internal_notify_clean_value(payload.get("message") or "", max_len=1200)
