@@ -1127,6 +1127,16 @@ def _resolve_explicit_runtime(
             else ""
         )
         expires_at = state.get("agent_key_expires_at") or state.get("expires_at")
+        
+        # Check if agent_key is expired/expiring — same logic as credential pool path
+        # If the key is unusable (expired or expiring soon), clear it to force refresh.
+        # This prevents delegation from using expired keys that cause HTTP 401 errors.
+        if api_key and not explicit_api_key:
+            min_ttl = max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
+            if not _agent_key_is_usable(state, min_ttl):
+                logger.debug("Nous agent_key expired/missing in explicit runtime, forcing refresh")
+                api_key = ""
+        
         if not api_key:
             creds = resolve_nous_runtime_credentials(
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
