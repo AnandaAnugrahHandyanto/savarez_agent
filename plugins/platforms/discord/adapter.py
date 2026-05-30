@@ -3434,12 +3434,14 @@ class DiscordAdapter(BasePlatformAdapter):
         is_dm = isinstance(interaction.channel, discord.DMChannel)
         is_thread = isinstance(interaction.channel, discord.Thread)
         thread_id = None
+        parent_chat_id = None
 
         if is_dm:
             chat_type = "dm"
         elif is_thread:
             chat_type = "thread"
             thread_id = str(interaction.channel_id)
+            parent_chat_id = self._get_parent_channel_id(interaction.channel)
         else:
             chat_type = "group"
 
@@ -3461,6 +3463,9 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=self._get_interaction_guild_id(interaction),
+            parent_chat_id=parent_chat_id,
+            message_id=self._get_interaction_id(interaction),
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -3534,6 +3539,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # Inherit forum topic when the thread was created inside a forum channel.
         _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
+        _parent_channel = self._thread_parent_channel(_chan)
+        _parent_id = str(
+            getattr(_parent_channel, "id", None)
+            or getattr(interaction, "channel_id", "")
+            or ""
+        )
 
         source = self.build_source(
             chat_id=thread_id,
@@ -3543,10 +3554,11 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=self._get_interaction_guild_id(interaction),
+            parent_chat_id=_parent_id or None,
+            message_id=self._get_interaction_id(interaction),
         )
 
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(
@@ -3575,6 +3587,25 @@ class DiscordAdapter(BasePlatformAdapter):
         """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
         from gateway.platforms.base import resolve_channel_prompt
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
+
+    @staticmethod
+    def _get_interaction_id(interaction: discord.Interaction) -> Optional[str]:
+        """Return Discord's interaction ID as the source event identifier."""
+        value = getattr(interaction, "id", None)
+        if value is None:
+            return None
+        return str(value)
+
+    @staticmethod
+    def _get_interaction_guild_id(interaction: discord.Interaction) -> Optional[str]:
+        """Return guild_id from a Discord interaction when Discord provides it."""
+        value = getattr(interaction, "guild_id", None)
+        if value is None:
+            guild = getattr(interaction, "guild", None)
+            value = getattr(guild, "id", None)
+        if value is None:
+            return None
+        return str(value)
 
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""

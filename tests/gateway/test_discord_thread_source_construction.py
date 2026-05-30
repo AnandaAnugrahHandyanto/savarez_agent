@@ -199,7 +199,7 @@ async def test_message_inside_existing_discord_thread_builds_full_thread_source(
     assert source.message_id == "444444444444444444"
 
 
-def test_slash_command_inside_discord_thread_builds_thread_scope_but_lacks_context_ids(adapter):
+def test_slash_command_inside_discord_thread_builds_full_thread_source(adapter):
     guild = SimpleNamespace(id=999999999999999999, name="Jenny Guild")
     parent = FakeTextChannel(
         channel_id="111111111111111111",
@@ -225,13 +225,13 @@ def test_slash_command_inside_discord_thread_builds_thread_scope_but_lacks_conte
 
     source = event.source
     _assert_stable_thread_source(source)
-    assert source.parent_chat_id is None
-    assert source.guild_id is None
-    assert source.message_id is None
+    assert source.parent_chat_id == "111111111111111111"
+    assert source.guild_id == "999999999999999999"
+    assert source.message_id == "444444444444444444"
 
 
 @pytest.mark.asyncio
-async def test_thread_starter_dispatch_builds_thread_scope_but_lacks_context_ids(adapter):
+async def test_thread_starter_dispatch_builds_full_thread_source(adapter):
     guild = SimpleNamespace(id=999999999999999999, name="Jenny Guild")
     parent = FakeTextChannel(
         channel_id="111111111111111111",
@@ -257,9 +257,9 @@ async def test_thread_starter_dispatch_builds_thread_scope_but_lacks_context_ids
     event = adapter.handle_message.await_args.args[0]
     source = event.source
     _assert_stable_thread_source(source)
-    assert source.parent_chat_id is None
-    assert source.guild_id is None
-    assert source.message_id is None
+    assert source.parent_chat_id == "111111111111111111"
+    assert source.guild_id == "999999999999999999"
+    assert source.message_id == "444444444444444444"
 
 
 @pytest.mark.asyncio
