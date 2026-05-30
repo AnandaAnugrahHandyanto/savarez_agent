@@ -4373,6 +4373,7 @@ def run_conversation(
                             "budget_used": api_call_count,
                             "budget_max": agent.max_iterations,
                         },
+                        is_budget_exhaustion=True,
                     )
                     logger.info(
                         "recorded budget-exhausted failure for task %s (%d/%d)",

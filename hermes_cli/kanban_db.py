@@ -5032,6 +5032,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    is_budget_exhaustion: bool = False,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
     and maybe trip the circuit breaker.
@@ -5055,11 +5056,13 @@ def _record_task_failure(
       Caller has ALREADY flipped the task to ``ready`` and closed the
       run with the appropriate outcome. This just increments the
       counter; if the breaker trips, the task is re-transitioned
-      ``ready → blocked`` and a ``gave_up`` event is emitted.
+      ``ready → blocked`` and a ``gave_up`` event is emitted (or a
+      ``budget_exhausted`` event when ``is_budget_exhaustion=True``).
 
-    ``event_payload_extra`` merges into the ``gave_up`` event payload
-    when the breaker trips, so callers can include outcome-specific
-    context (e.g. pid on crash, elapsed on timeout).
+    ``event_payload_extra`` merges into the ``gave_up`` /
+    ``budget_exhausted`` event payload when the breaker trips, so
+    callers can include outcome-specific context (e.g. pid on crash,
+    elapsed on timeout).
 
     Resolution order for the effective threshold:
       1. per-task ``max_retries`` if set (nothing else overrides)
@@ -5113,12 +5116,18 @@ def _record_task_failure(
                     "WHERE id = ? AND status IN ('ready', 'running')",
                     (failures, error[:500], task_id),
                 )
+            # Use "budget_exhausted" event instead of "gave_up" when the
+            # failure was caused by iteration-budget exhaustion.  This
+            # ensures that ``_has_sticky_block`` cannot match an old
+            # manual "blocked" event to keep the task permanently stuck
+            # (#35072).
+            circuit_event = "budget_exhausted" if is_budget_exhaustion else "gave_up"
             run_id = None
             if end_run:
                 # Only the spawn path has an open run to close.
                 run_id = _end_run(
                     conn, task_id,
-                    outcome="gave_up", status="gave_up",
+                    outcome=circuit_event, status=circuit_event,
                     error=error[:500],
                     metadata={
                         "failures": failures,
@@ -5137,7 +5146,7 @@ def _record_task_failure(
             if event_payload_extra:
                 payload.update(event_payload_extra)
             _append_event(
-                conn, task_id, "gave_up", payload, run_id=run_id,
+                conn, task_id, circuit_event, payload, run_id=run_id,
             )
             blocked = True
         else:
