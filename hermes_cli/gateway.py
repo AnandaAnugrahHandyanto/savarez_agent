@@ -3193,17 +3193,113 @@ def _guard_official_docker_root_gateway() -> None:
     sys.exit(1)
 
 
-def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
+def _supervised_gateway_main_pid() -> int | None:
+    """Return the live MainPID of the supervisor-managed gateway for THIS
+    profile, or ``None`` when none is running.
+
+    Scoped to the current ``HERMES_HOME`` via the per-profile service name
+    (systemd) / label (launchd), so a sibling profile's service never trips a
+    false positive. Windows Scheduled-Task installs are not consulted: detached
+    ``pythonw.exe`` launches don't share the orphan-dispatcher footgun this
+    lookup guards against, and there is no cheap cross-profile MainPID query.
+    """
+    # systemd (Linux): query this profile's unit in both user and system scopes.
+    if supports_systemd_services():
+        svc = f"{get_service_name()}.service"
+        for scope_args in (["systemctl", "--user"], ["systemctl"]):
+            try:
+                show = subprocess.run(
+                    scope_args + ["show", svc, "--property=MainPID", "--value"],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                continue
+            try:
+                pid = int(show.stdout.strip())
+            except ValueError:
+                continue
+            if pid > 0:
+                return pid
+
+    # launchd (macOS): the label is already profile-scoped. `launchctl list
+    # <label>` prints a property-list dict whose `"PID" = N;` line is only
+    # present while the job is actually running.
+    if is_macos():
+        label = get_launchd_label()
+        try:
+            result = subprocess.run(
+                ["launchctl", "list", label],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if '"PID"' not in line:
+                    continue
+                digits = "".join(ch for ch in line if ch.isdigit())
+                if digits:
+                    pid = int(digits)
+                    if pid > 0:
+                        return pid
+    return None
+
+
+def _guard_against_supervised_gateway(force: bool = False) -> None:
+    """Refuse a foreground gateway run when this profile is already supervised.
+
+    Running ``hermes gateway run [--replace]`` — or falling back to a manual
+    ``gateway restart`` — from an interactive shell on a systemd/launchd host
+    spawns a second long-lived process that escapes the service cgroup, is
+    re-parented to PID 1, and becomes a silent concurrent writer on the shared
+    ``kanban.db``. That is the documented root cause of multi-writer SQLite WAL
+    corruption (issue #35240): two dispatchers each believe they own the file
+    and race on WAL frames. Refuse with a hint unless ``--force`` is given.
+    """
+    # The supervisor itself runs us as its ExecStart — never refuse there.
+    # systemd sets INVOCATION_ID for the managed unit; launchd starts us as the
+    # MainPID, which the self-pid check below covers.
+    if os.environ.get("INVOCATION_ID"):
+        return
+    pid = _supervised_gateway_main_pid()
+    if pid is None or pid == os.getpid():
+        return
+    if force:
+        print_warning(
+            f"A supervised gateway for this profile is already running (PID {pid}); "
+            "continuing anyway because --force was given."
+        )
+        return
+    if is_macos():
+        restart_hint = f"hermes gateway restart   # launchd-managed ({get_launchd_label()})"
+    else:
+        restart_hint = f"systemctl restart {get_service_name()}.service"
+    print_error(
+        f"A supervised gateway for this profile is already running (PID {pid})."
+    )
+    print(
+        "  Starting another one from a shell orphans a second dispatcher that "
+        "writes to the shared kanban.db concurrently and can corrupt it."
+    )
+    print(f"  Use the service manager instead:  {restart_hint}")
+    print("  Pass --force only if you really intend to run a second instance.")
+    sys.exit(1)
+
+
+def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):
     """Run the gateway in foreground.
-    
+
     Args:
         verbose: Stderr log verbosity count added on top of default WARNING (0=WARNING, 1=INFO, 2+=DEBUG).
         quiet: Suppress all stderr log output.
         replace: If True, kill any existing gateway instance before starting.
                  This prevents systemd restart loops when the old process
                  hasn't fully exited yet.
+        force: If True, skip the supervised-gateway guard and start even when a
+               systemd/launchd-managed gateway for this profile is alive.
     """
     _guard_official_docker_root_gateway()
+    _guard_against_supervised_gateway(force=force)
     sys.path.insert(0, str(PROJECT_ROOT))
 
     # Detached Windows gateway runs must ignore console-control broadcasts
@@ -5246,7 +5342,8 @@ def _gateway_command_inner(args):
         verbose = getattr(args, 'verbose', 0)
         quiet = getattr(args, 'quiet', False)
         replace = getattr(args, 'replace', False)
-        run_gateway(verbose, quiet=quiet, replace=replace)
+        force = getattr(args, 'force', False)
+        run_gateway(verbose, quiet=quiet, replace=replace, force=force)
         return
 
     if subcmd == "setup":
@@ -5558,7 +5655,7 @@ def _gateway_command_inner(args):
                 # stopped and can die before the replacement is stable.
                 gateway_windows.start()
             else:
-                run_gateway(verbose=0)
+                run_gateway(verbose=0, force=getattr(args, 'force', False))
             return
         
         if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
@@ -5623,8 +5720,8 @@ def _gateway_command_inner(args):
 
             # Start fresh
             print("Starting gateway...")
-            run_gateway(verbose=0)
-    
+            run_gateway(verbose=0, force=getattr(args, 'force', False))
+
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)
         full = getattr(args, 'full', False)

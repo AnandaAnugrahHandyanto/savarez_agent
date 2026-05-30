@@ -27,6 +27,11 @@ def _install_fake_gateway_run(monkeypatch, start_gateway):
     monkeypatch.setattr(
         gateway, "refresh_systemd_unit_if_needed", lambda system=False: False
     )
+    # ``run_gateway()`` also consults the supervised-gateway guard, which queries
+    # the *real* systemd/launchd for a live MainPID. On a developer box that runs
+    # its own Hermes gateway that query returns a PID and the guard would abort
+    # the run. Same sandboxing rationale as above — neutralize it.
+    monkeypatch.setattr(gateway, "_supervised_gateway_main_pid", lambda: None)
 
 
 def test_run_gateway_exits_cleanly_on_keyboard_interrupt(monkeypatch, capsys):
