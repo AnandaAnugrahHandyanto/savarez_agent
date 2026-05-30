@@ -13578,11 +13578,14 @@ class HermesCLI:
                 event.app.invalidate()
                 return
 
-        @kb.add('c-z')
+        @kb.add('c-z', save_before=lambda e: False)
         def handle_ctrl_z(event):
-            """Handle Ctrl+Z - suspend process to background (Unix only)."""
+            """Handle Ctrl+Z - undo text edits (Windows) or suspend (Unix)."""
             if sys.platform == 'win32':
-                _cprint(f"\n{_DIM}Suspend (Ctrl+Z) is not supported on Windows.{_RST}")
+                # On Windows, Ctrl+Z = undo text edits in the input buffer
+                # (mirrors standard Windows text editor behavior).
+                buf = event.app.current_buffer
+                buf.undo()
                 event.app.invalidate()
                 return
             import signal as _sig
@@ -13594,6 +13597,13 @@ class HermesCLI:
                 os.write(1, msg.encode())
                 os.kill(0, _sig.SIGTSTP)
             run_in_terminal(_suspend)
+
+        @kb.add('c-y', eager=True, save_before=lambda e: False)
+        def handle_ctrl_y(event):
+            """Handle Ctrl+Y - redo text edits in the input buffer."""
+            buf = event.app.current_buffer
+            buf.redo()
+            event.app.invalidate()
 
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search).
