@@ -950,6 +950,14 @@ def restore_primary_runtime(agent) -> bool:
             api_mode=rt.get("compressor_api_mode", ""),
         )
 
+        # Restore the primary's output cap so a fallback's re-resolved
+        # max_tokens doesn't stick to the restored primary (the #28782 leak
+        # inverted). rt.get() tolerates pre-PR snapshots; explicit constructor
+        # values are never overwritten.
+        if not getattr(agent, "_max_tokens_explicit", False):
+            agent.max_tokens = rt.get("max_tokens")
+            agent._config_max_tokens = rt.get("config_max_tokens")
+
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
@@ -1586,6 +1594,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
+        "max_tokens": agent.max_tokens,
+        "config_max_tokens": getattr(agent, "_config_max_tokens", None),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,

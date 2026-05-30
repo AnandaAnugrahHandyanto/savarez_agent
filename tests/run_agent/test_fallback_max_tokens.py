@@ -68,3 +68,27 @@ def test_explicit_max_tokens_survives_fallback():
     agent = _make_agent(max_tokens=5000, config_max_tokens=None, explicit=True, custom_providers=_cp(8000))
     assert _activate(agent) is True
     assert agent.max_tokens == 5000
+
+
+def test_restore_primary_reapplies_primary_max_tokens():
+    # A fallback re-resolves the cap to 8000; restoring the primary at the next
+    # turn must bring back the primary's 131072 (the #28782 leak inverted).
+    agent = _make_agent(max_tokens=131_072, config_max_tokens=131_072, custom_providers=_cp(8000))
+    agent._primary_runtime["max_tokens"] = 131_072
+    agent._primary_runtime["config_max_tokens"] = 131_072
+    assert _activate(agent) is True
+    assert agent.max_tokens == 8000  # fallback's cap is active
+    with patch("run_agent.OpenAI", return_value=MagicMock()):
+        assert agent._restore_primary_runtime() is True
+    assert agent.max_tokens == 131_072
+    assert agent._config_max_tokens == 131_072
+
+
+def test_restore_primary_preserves_explicit_max_tokens():
+    agent = _make_agent(max_tokens=5000, config_max_tokens=None, explicit=True, custom_providers=_cp(8000))
+    agent._primary_runtime["max_tokens"] = 5000
+    agent._primary_runtime["config_max_tokens"] = None
+    assert _activate(agent) is True
+    with patch("run_agent.OpenAI", return_value=MagicMock()):
+        assert agent._restore_primary_runtime() is True
+    assert agent.max_tokens == 5000  # explicit untouched throughout
