@@ -12,6 +12,7 @@ from agent.transports.content_tool_calls import (
     find_gemma_function,
     find_kimi_k2,
     find_minimax_invoke,
+    find_pythonic_function,
     find_tool_call_json,
 )
 
@@ -43,6 +44,7 @@ def test_registry_registered_after_import():
         "kimi_k2",
         "minimax_invoke",
         "gemma_function",
+        "pythonic_function",
     } <= names
 
 
@@ -106,8 +108,11 @@ def test_kimi_k2_multiple_calls_in_one_section():
         '<|tool_call_begin|>functions.terminal:1<|tool_call_argument_begin|>{"cmd": "ls"}<|tool_call_end|>'
         "<|tool_calls_section_end|>"
     )
-    names = [c.name for c in find_kimi_k2(content)]
-    assert names == ["web_search", "terminal"]
+    calls = find_kimi_k2(content)
+    # Both parallel calls survive (per-call spans, not one section span) AND keep
+    # their own distinct args — the dedup-distinctness the source comment claims.
+    assert [c.name for c in calls] == ["web_search", "terminal"]
+    assert [c.arguments for c in calls] == [{"query": "a"}, {"cmd": "ls"}]
 
 
 def test_minimax_invoke_extracts():
@@ -140,6 +145,71 @@ def test_gemma_function_inline_sentence_rejected():
         )
         == []
     )
+
+
+def test_pythonic_function_extracts():
+    # issue #8965: attribute-less <function=NAME> form (Ollama-cloud proxy)
+    calls = find_pythonic_function((FIX / "pythonic_function.txt").read_text())
+    assert len(calls) == 1
+    assert calls[0].name == "web_search"
+    assert calls[0].arguments == {"query": "hermes"}
+
+
+def test_pythonic_function_not_matched_by_gemma():
+    # The two <function> forms are disjoint — gemma needs a quoted name=.
+    content = (FIX / "pythonic_function.txt").read_text()
+    assert find_gemma_function(content) == []
+
+
+def test_pythonic_function_inline_sentence_rejected():
+    assert (
+        find_pythonic_function(
+            'I will call: <function=web_search>{"q": "x"}</function> now'
+        )
+        == []
+    )
+
+
+def test_tool_call_json_inline_prose_rejected():
+    # Promotion executes — narrated framing referencing a REAL tool must not fire.
+    calls, residual = extract_content_tool_calls(
+        'To search you emit <tool_call>{"name":"web_search","arguments":{}}'
+        "</tool_call> inline.",
+        VALID,
+    )
+    assert calls == []
+    assert "<tool_call>" in residual  # not consumed → content preserved
+
+
+def test_tool_call_json_tag_wrapped_still_promotes():
+    # A reasoning-close tag immediately before the call is a real emission shape.
+    calls, _ = extract_content_tool_calls(
+        '</think><tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call>',
+        VALID,
+    )
+    assert [c.name for c in calls] == ["web_search"]
+
+
+def test_minimax_invoke_inline_prose_rejected():
+    calls, residual = extract_content_tool_calls(
+        'You could call <invoke name="web_search">'
+        '<parameter name="q">x</parameter></invoke> here.',
+        VALID,
+    )
+    assert calls == []
+    assert "<invoke" in residual
+
+
+def test_bare_json_whole_message_with_valid_name_is_intended_promotion():
+    # Whole-message bare JSON naming a REAL tool IS the #5867 case — it SHOULD
+    # promote (and blank to empty residual). The HERMES_PROMOTE_BARE_JSON_TOOLCALL
+    # kill-switch (test_bare_json_flag_opt_out) is the defense for injection-
+    # exposed deployments; default-on promotion here is intended, not a regression.
+    calls, residual = extract_content_tool_calls(
+        '{"name":"web_search","arguments":{"q":"x"}}', VALID
+    )
+    assert [c.name for c in calls] == ["web_search"]
+    assert residual == ""
 
 
 def test_promotes_valid_name_only():
@@ -184,8 +254,21 @@ def test_kill_switch(monkeypatch):
 
 def test_bare_json_flag_opt_out(monkeypatch):
     monkeypatch.setenv("HERMES_PROMOTE_BARE_JSON_TOOLCALL", "false")
-    calls, _ = extract_content_tool_calls('{"name":"web_search","arguments":{}}', VALID)
+    calls, residual = extract_content_tool_calls(
+        '{"name":"web_search","arguments":{}}', VALID
+    )
     assert calls == []
+    assert residual == '{"name":"web_search","arguments":{}}'  # not consumed
+
+
+def test_bare_json_flag_is_narrow(monkeypatch):
+    # Disabling bare-JSON must NOT disable the other formats — a too-broad
+    # kill-switch that silenced everything would otherwise pass test_bare_json_flag_opt_out.
+    monkeypatch.setenv("HERMES_PROMOTE_BARE_JSON_TOOLCALL", "false")
+    calls, _ = extract_content_tool_calls(
+        '<tool_call>{"name":"web_search","arguments":{}}</tool_call>', VALID
+    )
+    assert [c.name for c in calls] == ["web_search"]
 
 
 def test_overlapping_spans_deduped():
@@ -195,6 +278,31 @@ def test_overlapping_spans_deduped():
     calls, residual = extract_content_tool_calls(content, VALID)
     assert len(calls) == 1
     assert residual.strip() == ""
+
+
+def test_parser_exception_does_not_crash_extraction(monkeypatch):
+    # The orchestrator swallows a per-format parser exception (one bad format
+    # must not take down the others or the agent loop). Inject a throwing format.
+    import agent.transports.content_tool_calls as m
+
+    def _boom(_content):
+        raise ValueError("parser blew up")
+
+    monkeypatch.setattr(m, "FORMATS", m.FORMATS + [m.ContentFormat("boom", _boom)])
+    calls, _ = m.extract_content_tool_calls(
+        '<tool_call>{"name":"web_search","arguments":{}}</tool_call>', VALID
+    )
+    assert [c.name for c in calls] == ["web_search"]  # survived the throwing format
+
+
+def test_non_dict_arguments_serialized_as_string():
+    # find_bare_json_object accepts `arguments` as a raw string; the orchestrator
+    # must serialize via str() (not json.dumps) and not crash or double-encode.
+    calls, _ = extract_content_tool_calls(
+        '{"name":"web_search","arguments":"raw command text"}', VALID
+    )
+    assert len(calls) == 1
+    assert calls[0].arguments == "raw command text"
 
 
 def test_every_format_has_a_nonempty_fixture():

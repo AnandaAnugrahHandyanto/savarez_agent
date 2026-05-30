@@ -57,8 +57,15 @@ def _loads_lenient(raw: str) -> Any | None:
         return None
 
 
+# Line/content-start or tag-wrapped only (e.g. ``</think>\n<tool_call>`` or a
+# ``<minimax:tool_call>`` wrapper), never mid-prose. Promotion EXECUTES the call,
+# so narrated framing like "you'd emit <tool_call>{…}</tool_call>" must not fire.
+# ``(?<=>)`` admits a preceding tag (reasoning-close / wrapper) without admitting
+# prose, which always ends in a space or word char.
 _TOOL_CALL_BLOCK_RE = re.compile(
-    r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL | re.IGNORECASE
+    r"(?:(?<=^)|(?<=[\n\r])|(?<=>))[ \t]*"
+    r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
+    re.DOTALL | re.IGNORECASE,
 )
 
 
@@ -134,7 +141,11 @@ def find_kimi_k2(content: str) -> list[RawCall]:
 FORMATS.append(ContentFormat("kimi_k2", find_kimi_k2))
 
 
+# Same line-start / tag-wrapped gate as <tool_call>: the real capture is
+# ``<minimax:tool_call>\n<invoke …>`` (newline- or wrapper-led), so mid-prose
+# "call <invoke name=…>" stays inert.
 _INVOKE_RE = re.compile(
+    r'(?:(?<=^)|(?<=[\n\r])|(?<=>))[ \t]*'
     r'<invoke\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</invoke>',
     re.DOTALL | re.IGNORECASE,
 )
@@ -184,6 +195,35 @@ def find_gemma_function(content: str) -> list[RawCall]:
 
 
 FORMATS.append(ContentFormat("gemma_function", find_gemma_function))
+
+
+# Pythonic / llama.cpp tool template: ``<function=NAME>{json args}</function>``
+# (attribute-less ``=NAME``, distinct from Gemma's quoted ``<function name="NAME">``).
+# Emitted by some Ollama-cloud proxies — issue #8965, whose "raw XML" is this form
+# rather than <tool_call>. Same line/content-start gate as Gemma: promotion
+# executes, so a narrated ``call <function=x>…`` mid-prose must not fire.
+_PYTHONIC_FUNC_RE = re.compile(
+    r"(?:(?<=^)|(?<=[\n\r]))[ \t]*"
+    r"<function\s*=\s*(?P<name>[^\s>]+)\s*>"
+    r"(?P<body>(?:(?!</function>).)*)</function>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def find_pythonic_function(content: str) -> list[RawCall]:
+    if "<function" not in content.lower():
+        return []
+    out: list[RawCall] = []
+    for m in _PYTHONIC_FUNC_RE.finditer(content):
+        obj = _loads_lenient(m.group("body").strip())
+        if isinstance(obj, dict):
+            out.append(
+                RawCall(name=m.group("name").strip(), arguments=obj, span=m.group(0))
+            )
+    return out
+
+
+FORMATS.append(ContentFormat("pythonic_function", find_pythonic_function))
 
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -250,7 +290,13 @@ def extract_content_tool_calls(
     consumed: list[str] = []
     for i, rc in enumerate(raws):
         consumed.append(rc.span)  # remove markup whether or not it promotes
-        if rc.name not in valid_tool_names:  # EXACT match, no fuzzy repair
+        # EXACT match only — deliberately NOT agent._repair_tool_call. Superseded
+        # PR #26353 fuzzy-repaired promoted names (``search`` -> ``web_search``);
+        # we drop that on purpose. Native tool_calls come from a structured field
+        # so a near-miss is a safe typo to repair, but a name lifted from free-text
+        # CONTENT is lower-trust — fuzzy-repairing it risks executing the WRONG
+        # tool from prose. Fail closed; native calls keep repair at the loop seam.
+        if rc.name not in valid_tool_names:
             continue
         args_str = (
             json.dumps(rc.arguments, ensure_ascii=False)
