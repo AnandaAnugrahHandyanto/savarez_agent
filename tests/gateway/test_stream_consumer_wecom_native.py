@@ -15,7 +15,7 @@ class _WeComNativeAdapter:
     MAX_MESSAGE_LENGTH = 4096
     SUPPORTS_NATIVE_STREAMING_REPLIES = True
 
-    def __init__(self, *, native_results=None):
+    def __init__(self, *, native_results=None, thinking_result=None):
         self.send = AsyncMock(
             return_value=SimpleNamespace(success=True, message_id="msg_final")
         )
@@ -26,10 +26,15 @@ class _WeComNativeAdapter:
         self.send_draft = AsyncMock(return_value=SimpleNamespace(success=True))
         self.draft_supported = False
         self._native_results = list(native_results or [])
+        self._thinking_result = thinking_result
         self.native_calls = []
 
     async def send_stream_chunk(self, **kwargs):
         self.native_calls.append(kwargs)
+        if kwargs.get("content") == "THINKING_MESSAGE":
+            if self._thinking_result is not None:
+                return self._thinking_result
+            return SimpleNamespace(success=True)
         if self._native_results:
             return self._native_results.pop(0)
         return SimpleNamespace(success=True)
@@ -286,7 +291,8 @@ async def test_native_failure_before_visible_content_sends_full_final_once():
     consumer.finish()
     await task
 
-    assert len(adapter.native_calls) == 1
+    assert len(adapter.native_calls) == 2
+    assert [call["content"] for call in adapter.native_calls] == ["THINKING_MESSAGE", "Hello world"]
     adapter.send.assert_awaited_once()
     send_await_args = adapter.send.await_args
     assert send_await_args is not None
@@ -355,7 +361,61 @@ async def test_ambiguous_native_delivered_prefix_mismatch_suppresses_blind_full_
     consumer.finish()
     await task
 
-    assert [call["content"] for call in adapter.native_calls] == ["Hello ", "Hello world"]
+    assert [call["content"] for call in adapter.native_calls] == [
+        "THINKING_MESSAGE",
+        "Hello ",
+        "Hello world",
+    ]
     adapter.send.assert_not_awaited()
     assert consumer.final_response_sent is False
     assert consumer.final_content_delivered is False
+
+
+@pytest.mark.asyncio
+async def test_native_reply_stream_sends_empty_start_frame_before_text_delta():
+    adapter = _WeComNativeAdapter(
+        native_results=[SimpleNamespace(success=True), SimpleNamespace(success=True)]
+    )
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "chat_123",
+        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=100, cursor=""),
+        metadata=_reply_metadata(),
+    )
+
+    task = asyncio.create_task(consumer.run())
+    await asyncio.sleep(0.05)
+    assert adapter.native_calls, "expected an empty native start frame before visible text"
+    assert adapter.native_calls[0]["content"] == "THINKING_MESSAGE"
+    assert adapter.native_calls[0]["finalize"] is False
+
+    consumer.on_delta("Hello")
+    consumer.finish()
+    await task
+
+    assert [call["finalize"] for call in adapter.native_calls] == [False, True]
+    assert adapter.native_calls[1]["content"] == "Hello"
+    assert adapter.native_calls[0]["stream_key"] == adapter.native_calls[1]["stream_key"]
+
+
+@pytest.mark.asyncio
+async def test_native_thinking_frame_failure_does_not_leak_sentinel_as_visible_text():
+    adapter = _WeComNativeAdapter(
+        thinking_result=SimpleNamespace(success=False, error="reply context expired")
+    )
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "chat_123",
+        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""),
+        metadata=_reply_metadata(),
+    )
+
+    task = asyncio.create_task(consumer.run())
+    await asyncio.sleep(0.05)
+    consumer.on_delta("Hello")
+    consumer.finish()
+    await task
+
+    sent_contents = [call.kwargs.get("content") for call in adapter.send.await_args_list]
+    assert "THINKING_MESSAGE" not in sent_contents
+    assert sent_contents == ["Hello"]

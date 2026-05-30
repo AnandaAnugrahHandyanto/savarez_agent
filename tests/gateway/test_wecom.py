@@ -492,6 +492,59 @@ class TestWeComReplyMode:
         assert "stream-1" not in adapter._stream_states
 
     @pytest.mark.asyncio
+    async def test_send_stream_chunk_thinking_placeholder_maps_to_empty_native_start(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock(
+            return_value={
+                "cmd": APP_CMD_RESPONSE,
+                "headers": {"req_id": "metadata-req"},
+                "body": {"stream": {"stream_id": "stream-id-1"}},
+                "errcode": 0,
+            }
+        )
+
+        result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content="THINKING_MESSAGE",
+            finalize=False,
+            stream_key="stream-1",
+            metadata={"wecom_reply_req_id": "metadata-req"},
+        )
+
+        assert result.success is True
+        await_args = adapter._send_reply_request.await_args
+        assert await_args is not None
+        args = await_args.args
+        assert args[0] == "metadata-req"
+        assert args[1]["stream"]["event"] == "start"
+        assert args[1]["stream"]["content"] == ""
+        assert args[1]["stream"]["stream_id"] == "metadata-req"
+        assert adapter._stream_states["stream-1"]["reply_req_id"] == "metadata-req"
+        assert adapter._stream_states["stream-1"]["stream_id"] == "stream-id-1"
+
+    @pytest.mark.asyncio
+    async def test_send_stream_chunk_thinking_placeholder_without_context_does_not_leak(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock()
+        adapter._send_request = AsyncMock()
+
+        result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content="THINKING_MESSAGE",
+            finalize=False,
+            stream_key="stream-1",
+        )
+
+        assert result.success is True
+        adapter._send_reply_request.assert_not_awaited()
+        adapter._send_request.assert_not_awaited()
+        assert "stream-1" not in adapter._stream_states
+
+    @pytest.mark.asyncio
     async def test_native_final_overflow_sends_prefix_then_overflow_chunks(self, monkeypatch):
         from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
 

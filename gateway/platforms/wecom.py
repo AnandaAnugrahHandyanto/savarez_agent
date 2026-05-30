@@ -1488,6 +1488,7 @@ class WeComAdapter(BasePlatformAdapter):
 
         normalized_stream_key = str(stream_key or "").strip()
         content_text = "" if content is None else str(content)
+        thinking_placeholder = content_text == "THINKING_MESSAGE"
         existing_state = self._stream_state(normalized_stream_key)
         reply_req_id = (
             existing_state.get("reply_req_id")
@@ -1496,6 +1497,8 @@ class WeComAdapter(BasePlatformAdapter):
         )
         if not reply_req_id:
             self._clear_stream_state(normalized_stream_key)
+            if thinking_placeholder:
+                return SendResult(success=True)
             return SendResult(success=False, error="WeCom native stream reply context is required")
 
         stream_id = existing_state.get("stream_id") if existing_state else None
@@ -1506,7 +1509,7 @@ class WeComAdapter(BasePlatformAdapter):
         else:
             event = "start"
 
-        native_content = content_text
+        native_content = "" if thinking_placeholder else content_text
         overflow_content = ""
         if finalize and len(content_text) > self.MAX_MESSAGE_LENGTH:
             native_content = content_text[: self.MAX_MESSAGE_LENGTH]

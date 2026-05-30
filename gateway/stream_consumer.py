@@ -91,6 +91,11 @@ class GatewayStreamConsumer:
         await task         # wait for final edit
     """
 
+    # WeCom's native stream UX shows a client-side "typing / thinking"
+    # indicator when the first stream frame has empty content.  The adapter
+    # maps this sentinel to empty native content; other platforms must not see it.
+    _WECOM_THINKING_PLACEHOLDER = "THINKING_MESSAGE"
+
     # After this many consecutive flood-control failures, permanently disable
     # progressive edits for the remainder of the stream.
     _MAX_FLOOD_STRIKES = 3
@@ -428,6 +433,11 @@ class GatewayStreamConsumer:
             logger.debug(
                 "Stream consumer using native-draft transport (chat=%s draft_id=%s)",
                 self.chat_id, self._draft_id,
+            )
+        if self._use_native_reply_streaming:
+            await self._send_native_reply_chunk(
+                self._WECOM_THINKING_PLACEHOLDER,
+                finalize=False,
             )
 
         try:
@@ -973,6 +983,11 @@ class GatewayStreamConsumer:
             finalize=finalize,
             metadata=self.metadata,
         )
+        if text == self._WECOM_THINKING_PLACEHOLDER:
+            if getattr(result, "success", False):
+                return True
+            self._use_native_reply_streaming = False
+            return False
         delivered, visible = self._apply_native_delivery_result(text, result)
         if delivered:
             self._already_sent = True
