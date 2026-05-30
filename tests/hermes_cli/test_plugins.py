@@ -20,6 +20,7 @@ from hermes_cli.plugins import (
     get_plugin_manager,
     get_plugin_command_handler,
     get_plugin_commands,
+    get_pre_tool_call_directives,
     get_pre_tool_call_block_message,
     resolve_plugin_command_result,
     discover_plugins,
@@ -535,6 +536,41 @@ class TestPreToolCallBlocking:
             ],
         )
         assert get_pre_tool_call_block_message("terminal", {}) == "first blocker"
+
+    def test_rewrite_only_directive(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "rewrite", "args": {"command": "uv pip install pytest"}},
+            ],
+        )
+        block_message, rewritten = get_pre_tool_call_directives("terminal", {"command": "pip install pytest"})
+        assert block_message is None
+        assert rewritten == {"command": "uv pip install pytest"}
+
+    def test_rewrite_then_block_block_wins(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "rewrite", "args": {"command": "uv pip install pytest"}},
+                {"action": "block", "message": "no installs allowed"},
+            ],
+        )
+        block_message, rewritten = get_pre_tool_call_directives("terminal", {"command": "pip install pytest"})
+        assert block_message == "no installs allowed"
+        assert rewritten == {"command": "uv pip install pytest"}
+
+    def test_malformed_rewrite_payload_ignored(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "rewrite", "args": "not a dict"},
+                {"action": "rewrite", "args": None},
+            ],
+        )
+        block_message, rewritten = get_pre_tool_call_directives("terminal", {"command": "pip install pytest"})
+        assert block_message is None
+        assert rewritten is None
 
 
 # ── TestPluginContext ──────────────────────────────────────────────────────

@@ -9435,6 +9435,9 @@ class AIAgent:
 
             block_result = None
             blocked_by_guardrail = False
+            guardrails_checked = False
+            _block_msg = None
+            _rewritten = None
             try:
                 from hermes_cli.plugins import get_pre_tool_call_directives
                 _block_msg, _rewritten = get_pre_tool_call_directives(
@@ -9446,13 +9449,14 @@ class AIAgent:
                     function_args = _rewritten
                     # Re-check guardrails with rewritten args
                     guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
+                    guardrails_checked = True
                     if not guardrail_decision.allows_execution:
                         block_result = self._guardrail_block_result(guardrail_decision)
                         blocked_by_guardrail = True
             except Exception:
                 pass
 
-            if block_result is None and _block_msg is None:
+            if block_result is None and _block_msg is None and not guardrails_checked:
                 guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
                 if not guardrail_decision.allows_execution:
                     block_result = self._guardrail_block_result(guardrail_decision)

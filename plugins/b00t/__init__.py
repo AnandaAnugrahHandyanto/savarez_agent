@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import shlex
 import sys
 import subprocess
 from typing import Any
@@ -58,7 +56,7 @@ def _run_b00t_guard(cmd: str) -> dict[str, Any]:
         logger.debug("b00t-cli not found — guard interposition disabled")
         return {"action": "pass"}
     except subprocess.TimeoutExpired:
-        logger.warning("🥾 b00t guard timed out for cmd: %.60s", cmd)
+        logger.warning("%s b00t guard timed out for cmd: %.60s", _B00T_EMOJI, cmd)
         return {"action": "pass"}
 
     stdout = result.stdout or ""
@@ -152,4 +150,4 @@ def _b00t_pre_tool_hook(
 def register(ctx) -> None:
     """Register the b00t guard interposition hook."""
     ctx.register_hook("pre_tool_call", _b00t_pre_tool_hook)
-    logger.info("🥾 b00t guard interposition plugin registered")
+    logger.info("%s b00t guard interposition plugin registered", _B00T_EMOJI)

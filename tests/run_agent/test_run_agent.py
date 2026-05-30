@@ -2007,6 +2007,32 @@ class TestConcurrentToolExecution:
         assert {entry[0] for entry in completes} == {"c1", "c2"}
         assert {entry[3] for entry in completes} == {'{"id":1}', '{"id":2}'}
 
+    def test_concurrent_rewrite_runs_guardrail_once(self, agent, monkeypatch):
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_directives",
+            lambda *args, **kwargs: (None, {"query": "rewritten"}),
+        )
+
+        before_call_args = []
+        agent._tool_guardrails = SimpleNamespace(
+            before_call=lambda name, args: (
+                before_call_args.append((name, args.copy())),
+                SimpleNamespace(allows_execution=True),
+            )[1],
+            after_call=lambda *args, **kwargs: SimpleNamespace(action="allow", should_halt=False),
+        )
+
+        with patch("run_agent.handle_function_call", return_value='{"ok": true}') as mock_handle:
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert before_call_args == [("web_search", {"query": "rewritten"})]
+        mock_handle.assert_called_once()
+        assert mock_handle.call_args.kwargs["skip_pre_tool_call_hook"] is True
+
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
