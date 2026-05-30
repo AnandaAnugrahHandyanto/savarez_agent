@@ -1212,8 +1212,11 @@ function isBootstrapComplete() {
   // We DELIBERATELY do NOT verify that the checkout is currently at the
   // pinned commit -- users update via the in-app update path or `hermes
   // update`, which moves HEAD legitimately. The marker just attests "we
-  // ran the bootstrap successfully at least once."
-  return isHermesSourceRoot(ACTIVE_HERMES_ROOT)
+  // ran the bootstrap successfully at least once." We DO additionally require
+  // a runnable venv: an interrupted or split-home install can leave the marker
+  // + checkout without a venv, and trusting that spawns a dead backend
+  // ("gateway offline") instead of re-running bootstrap to repair it.
+  return isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(getVenvPython(VENV_ROOT))
 }
 
 function writeBootstrapMarker(payload) {

@@ -23,8 +23,8 @@ param(
     # exact ref.  Precedence: Commit > Tag > Branch.
     [string]$Commit = "",
     [string]$Tag = "",
-    [string]$HermesHome = "$env:LOCALAPPDATA\hermes",
-    [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent",
+    [string]$HermesHome = $(if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }),
+    [string]$InstallDir = $(if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }),
 
     # --- Stage protocol (additive; default invocation behaves as before) ----
     # See the "Stage protocol" section near the bottom of the file for the
