@@ -429,6 +429,53 @@ Those zero-row sessions have active `sessions.json` mappings but no persisted
 transcript rows in `state.db`, so they look like empty mapped sessions rather
 than exact orphan/missing-mapping recoveries.
 
+## Inventory DB-Stat Follow-up
+
+`tools/list_discord_thread_context_inventory.py` now classifies mapped Discord
+thread sessions by DB-stat status:
+
+- `matched_with_messages`: mapped session exists in `state.db` and has one or
+  more transcript rows.
+- `matched_zero_messages`: mapped session exists in `state.db` and has zero
+  transcript rows.
+- `mapped_session_absent_from_db`: `sessions.json` maps the thread to a
+  session_id that is not present in the current `state.db` `sessions` table.
+- `session_table_missing`, `message_table_missing`, `state_db_missing`,
+  `state_db_unavailable`, and `unknown`: schema/path/degraded-read cases.
+
+Live metadata-only inventory against `/home/jenny/.hermes` found:
+
+- Total mapped Discord thread sessions: 146
+- `matched_with_messages`: 37
+- `matched_zero_messages`: 3
+- `mapped_session_absent_from_db`: 106
+- Missing names: 0
+- Unsupported/missing schema statuses: 0
+
+This supports the stale-mapping/path-history hypothesis for the 106 no-DB-stat
+rows: they are active `sessions.json` mappings to session IDs absent from the
+current `state.db`, not a transcript query mismatch or missing DB schema.
+
+Top metadata-only examples of `mapped_session_absent_from_db` include:
+
+- `1498644476091170916` / `Development` /
+  `20260505_112443_b6be40`
+- `1499443166615572560` / `Space Opera` /
+  `20260505_023222_26531c`
+- `1500921554010243243` / `u back?` /
+  `20260505_020626_fdc6cf27`
+- `1501217405337337866` / `The Crucible` /
+  `20260508_133027_a21b72`
+- `1501221353557327943` / `Family Hub` /
+  `20260508_223550_e862b7`
+
+The two Family Hub thread mappings remain `matched_zero_messages`:
+
+- `1507598956752928820` / `Family Hub -- Part 17` /
+  `20260529_084125_04a6fe05`
+- `1507081077196460185` / `Family Hub Public App -- Part 4` /
+  `20260529_084135_9f74ecab`
+
 ## Operational Checks To Run From The VPS
 
 Run these only on the VPS/operator side, not from this audit session:

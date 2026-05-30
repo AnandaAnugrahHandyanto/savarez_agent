@@ -41,10 +41,18 @@ def list_discord_thread_context_inventory(
         server_name, channel_name, thread_name = _split_discord_display_name(display_name)
         stats = db_stats.get(mapped_session_id or "", {})
         transcript_count = stats.get("transcript_message_count")
+        db_stat_status = _classify_db_stat_status(
+            db_report=db_report,
+            db_stats=db_stats,
+            mapped_session_id=mapped_session_id,
+            transcript_count=transcript_count,
+        )
         row = {
             "thread_id": thread_id,
             "expected_session_key": session_key,
             "mapped_session_id": mapped_session_id,
+            "db_stat_status": db_stat_status,
+            "db_gap_reason": None if db_stat_status.startswith("matched_") else db_stat_status,
             "server_name": server_name,
             "guild_id": _text_or_none(origin.get("guild_id")),
             "channel_name": channel_name,
@@ -63,6 +71,10 @@ def list_discord_thread_context_inventory(
     nonzero = sum(1 for row in rows if (row.get("transcript_message_count") or 0) > 0)
     zero = sum(1 for row in rows if row.get("transcript_message_count") == 0)
     missing_names = sum(1 for row in rows if not row.get("thread_name"))
+    db_stat_status_counts: dict[str, int] = {}
+    for row in rows:
+        status = str(row.get("db_stat_status") or "unknown")
+        db_stat_status_counts[status] = db_stat_status_counts.get(status, 0) + 1
     limited_rows = rows[: max(0, int(limit))]
     return {
         "sessions_json": sessions_report,
@@ -71,6 +83,7 @@ def list_discord_thread_context_inventory(
         "nonzero_transcript_sessions": nonzero,
         "zero_transcript_sessions": zero,
         "mapped_sessions_with_missing_names": missing_names,
+        "db_stat_status_counts": db_stat_status_counts,
         "limit": max(0, int(limit)),
         "threads": limited_rows,
         "errors": session_errors + db_errors,
@@ -107,6 +120,8 @@ def _read_db_stats(path: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any]
         "path": str(path),
         "exists": path.exists(),
         "available": False,
+        "has_sessions_table": False,
+        "has_messages_table": False,
     }
     if not path.exists():
         return report, {}, []
@@ -115,7 +130,11 @@ def _read_db_stats(path: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any]
     except sqlite3.Error as exc:
         return report, {}, [f"state_db_unreadable: {exc}"]
     try:
-        if not _table_exists(conn, "sessions"):
+        has_sessions = _table_exists(conn, "sessions")
+        has_messages = _table_exists(conn, "messages")
+        report["has_sessions_table"] = has_sessions
+        report["has_messages_table"] = has_messages
+        if not has_sessions:
             return report, {}, ["state_db_missing_sessions_table"]
         report["available"] = True
         rows = conn.execute(
@@ -128,22 +147,22 @@ def _read_db_stats(path: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any]
             LEFT JOIN messages m ON m.session_id = s.id
             GROUP BY s.id
             """
-        ).fetchall() if _table_exists(conn, "messages") else conn.execute(
+        ).fetchall() if has_messages else conn.execute(
             "SELECT id, COALESCE(message_count, 0) AS message_count FROM sessions"
         ).fetchall()
         stats: dict[str, dict[str, Any]] = {}
         for row in rows:
             transcript_count = (
                 int(row["transcript_message_count"] or 0)
-                if "transcript_message_count" in row.keys()
-                else int(row["message_count"] or 0)
+                if has_messages
+                else None
             )
             stats[str(row["id"])] = {
                 "message_count": int(row["message_count"] or 0),
                 "transcript_message_count": transcript_count,
                 "last_transcript_timestamp": (
                     row["last_transcript_timestamp"]
-                    if "last_transcript_timestamp" in row.keys()
+                    if has_messages
                     else None
                 ),
             }
@@ -172,6 +191,32 @@ def _thread_id_from_key(session_key: str) -> str | None:
     if len(parts) >= 6 and parts[2] == "discord" and parts[3] == "thread":
         return parts[5]
     return None
+
+
+def _classify_db_stat_status(
+    *,
+    db_report: dict[str, Any],
+    db_stats: dict[str, dict[str, Any]],
+    mapped_session_id: str | None,
+    transcript_count: Any,
+) -> str:
+    if not db_report.get("exists"):
+        return "state_db_missing"
+    if not db_report.get("has_sessions_table"):
+        return "session_table_missing"
+    if not db_report.get("available"):
+        return "state_db_unavailable"
+    if not mapped_session_id:
+        return "missing_mapped_session_id"
+    if mapped_session_id not in db_stats:
+        return "mapped_session_absent_from_db"
+    if not db_report.get("has_messages_table"):
+        return "message_table_missing"
+    if transcript_count is None:
+        return "unknown"
+    if int(transcript_count) > 0:
+        return "matched_with_messages"
+    return "matched_zero_messages"
 
 
 def _entry_session_id(entry: dict[str, Any]) -> str | None:
