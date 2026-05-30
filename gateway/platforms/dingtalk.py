@@ -27,12 +27,16 @@ Configuration in config.yaml:
 """
 
 import asyncio
+import atexit
 import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 import traceback
 import uuid
+import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set
 
@@ -94,6 +98,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    get_document_cache_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,6 +164,10 @@ class DingTalkAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+
+    # DingTalk OAPI media/upload blacklist — browser-renderable extensions
+    # blocked as anti-XSS (errcode 40005). Auto-zip in send_document().
+    BLOCKED_UPLOAD_EXTENSIONS: frozenset[str] = frozenset((".html", ".htm", ".shtml", ".css"))
 
     @property
     def SUPPORTS_MESSAGE_EDITING(self) -> bool:  # noqa: N802
@@ -973,7 +982,6 @@ class DingTalkAdapter(BasePlatformAdapter):
             return None
 
         try:
-            # Use ASCII-safe filename for upload (Chinese names cause 40035)
             upload_name = file_name or os.path.basename(file_path)
             files = {"media": (upload_name, open(file_path, "rb"), "application/octet-stream")}
             resp = await self._http_client.post(
@@ -993,10 +1001,24 @@ class DingTalkAdapter(BasePlatformAdapter):
             logger.warning("[%s] Media upload error: %s", self.name, e)
             return None
 
+    def _get_staff_id(self, chat_id: str) -> str:
+        """Extract sender_staff_id from message context for DM detection."""
+        message = self._message_contexts.get(chat_id)
+        return getattr(message, "sender_staff_id", "") if message else ""
+
     async def _send_via_openapi(
-        self, chat_id: str, msg_key: str, msg_param: str
+        self, chat_id: str, msg_key: str, msg_param: str, dm: bool = False
     ) -> SendResult:
-        """Send a message via DingTalk OpenAPI groupMessages/send."""
+        """Send a message via DingTalk OpenAPI.
+
+        Args:
+            chat_id: For group messages (dm=False), the openConversationId.
+                     For DM (dm=True), the staff_id of the recipient.
+            msg_key: DingTalk message key (e.g. "sampleImageMsg", "sampleFile").
+            msg_param: JSON-encoded message parameters.
+            dm: If True, sends via oToMessages/batchSend to a single user.
+                If False (default), sends via groupMessages/send to a group chat.
+        """
         token = await self._get_oapi_access_token()
         if not token:
             return SendResult(success=False, error="No OAPI access token")
@@ -1005,63 +1027,37 @@ class DingTalkAdapter(BasePlatformAdapter):
             "x-acs-dingtalk-access-token": token,
             "Content-Type": "application/json",
         }
-        body = {
-            "robotCode": self._robot_code,
-            "openConversationId": chat_id,
-            "msgKey": msg_key,
-            "msgParam": msg_param,
-        }
+
+        if dm:
+            url = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
+            body = {
+                "robotCode": self._robot_code,
+                "userIds": [chat_id],
+                "msgKey": msg_key,
+                "msgParam": msg_param,
+            }
+        else:
+            url = "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+            body = {
+                "robotCode": self._robot_code,
+                "openConversationId": chat_id,
+                "msgKey": msg_key,
+                "msgParam": msg_param,
+            }
 
         try:
             resp = await self._http_client.post(
-                "https://api.dingtalk.com/v1.0/robot/groupMessages/send",
-                headers=headers,
-                json=body,
-                timeout=15.0,
-            )
-            if resp.status_code < 300:
-                return SendResult(success=True, message_id=resp.json().get("processQueryKey", ""))
-            logger.warning("[%s] OpenAPI send failed HTTP %d: %s", self.name, resp.status_code, resp.text[:200])
-            return SendResult(success=False, error=f"HTTP {resp.status_code}")
-        except Exception as e:
-            logger.warning("[%s] OpenAPI send error: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
-
-    async def _send_via_openapi_dm(
-        self, staff_id: str, msg_key: str, msg_param: str
-    ) -> SendResult:
-        """Send a message via DingTalk OpenAPI oToMessages/batchSend (DM)."""
-        token = await self._get_oapi_access_token()
-        if not token:
-            return SendResult(success=False, error="No OAPI access token")
-
-        headers = {
-            "x-acs-dingtalk-access-token": token,
-            "Content-Type": "application/json",
-        }
-        body = {
-            "robotCode": self._robot_code,
-            "userIds": [staff_id],
-            "msgKey": msg_key,
-            "msgParam": msg_param,
-        }
-
-        try:
-            resp = await self._http_client.post(
-                "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend",
-                headers=headers,
-                json=body,
-                timeout=15.0,
+                url, headers=headers, json=body, timeout=15.0
             )
             if resp.status_code < 300:
                 return SendResult(success=True, message_id=resp.json().get("processQueryKey", ""))
             logger.warning(
-                "[%s] OpenAPI DM send failed HTTP %d: %s",
-                self.name, resp.status_code, resp.text[:200],
+                "[%s] OpenAPI %s send failed HTTP %d: %s",
+                self.name, "DM" if dm else "group", resp.status_code, resp.text[:200],
             )
             return SendResult(success=False, error=f"HTTP {resp.status_code}")
         except Exception as e:
-            logger.warning("[%s] OpenAPI DM send error: %s", self.name, e)
+            logger.warning("[%s] OpenAPI %s send error: %s", self.name, "DM" if dm else "group", e)
             return SendResult(success=False, error=str(e))
 
     async def send_image(
@@ -1112,11 +1108,9 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         msg_param = json.dumps({"photoURL": media_id})
 
-        # Determine DM vs group and send
-        message = self._message_contexts.get(chat_id)
-        staff_id = getattr(message, "sender_staff_id", "") if message else ""
+        staff_id = self._get_staff_id(chat_id)
         if staff_id:
-            result = await self._send_via_openapi_dm(staff_id, "sampleImageMsg", msg_param)
+            result = await self._send_via_openapi(staff_id, "sampleImageMsg", msg_param, dm=True)
         else:
             result = await self._send_via_openapi(chat_id, "sampleImageMsg", msg_param)
 
@@ -1165,6 +1159,18 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Determine display name
         display_name = file_name or os.path.basename(file_path)
 
+        # Auto-zip blocked extensions for DingTalk anti-XSS blacklist
+        if os.path.splitext(display_name)[1].lower() in self.BLOCKED_UPLOAD_EXTENSIONS:
+            tmp_dir = tempfile.mkdtemp(prefix="dingtalk_zip_")
+            atexit.register(lambda d=tmp_dir: shutil.rmtree(d, ignore_errors=True))
+            zip_name = display_name + ".zip"
+            zip_path = os.path.join(tmp_dir, zip_name)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(file_path, display_name)
+            logger.info("[%s] Auto-zipped %s for upload bypass", self.name, display_name)
+            file_path = zip_path
+            display_name = zip_name
+
         media_id = await self._upload_media(file_path, "file")
         if not media_id:
             logger.warning("[%s] File upload failed, falling back to markdown", self.name)
@@ -1176,11 +1182,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             "fileType": "file",
         })
 
-        # Determine DM vs group and send
-        message = self._message_contexts.get(chat_id)
-        staff_id = getattr(message, "sender_staff_id", "") if message else ""
+        staff_id = self._get_staff_id(chat_id)
         if staff_id:
-            result = await self._send_via_openapi_dm(staff_id, "sampleFile", msg_param)
+            result = await self._send_via_openapi(staff_id, "sampleFile", msg_param, dm=True)
         else:
             result = await self._send_via_openapi(chat_id, "sampleFile", msg_param)
 
@@ -1641,14 +1645,11 @@ class DingTalkAdapter(BasePlatformAdapter):
                 filename = f"dingtalk_file_{code[:8]}"
             
             # Step 4: Cache the file
-            from gateway.platforms.base import cache_document_from_bytes, get_document_cache_dir
-            
             # Create dingtalk-specific subdirectory with date
             cache_dir = get_document_cache_dir() / "dingtalk" / datetime.now().strftime("%Y-%m-%d")
             cache_dir.mkdir(parents=True, exist_ok=True)
             
             # Generate unique filename with UUID prefix
-            import uuid
             uuid_prefix = uuid.uuid4().hex[:8]
             cached_filename = f"{uuid_prefix}_{filename}"
             local_path = cache_dir / cached_filename
