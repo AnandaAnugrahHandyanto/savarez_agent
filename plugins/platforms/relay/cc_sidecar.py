@@ -2,7 +2,7 @@
 """cc-connect sidecar — 桥接 relay 适配器和 cc-connect。
 
 端口 8767，只绑定 127.0.0.1。
-- HTTP POST /message：接收张无忌的消息，转发给周芷若
+- HTTP POST /message：接收Manager的消息，转发给Worker
 - 监控 outbox.jsonl：新消息 POST 到 http://127.0.0.1:8766/message
 - GET /health：健康检查
 """
@@ -131,7 +131,7 @@ class CCSidecar:
         server.shutdown()
 
     async def handle_incoming(self, request):
-        """aiohttp handler：接收张无忌的消息，转发给周芷若。"""
+        """aiohttp handler：接收Manager的消息，转发给Worker。"""
         from aiohttp import web
         data = await request.json()
         result = await self._process_incoming(data)
@@ -158,14 +158,14 @@ class CCSidecar:
         with open(self.inbox_file, "a") as f:
             f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
-        # 通过 cc-connect send 注入周芷若 session
+        # 通过 cc-connect send 注入Worker session
         try:
             result = subprocess.run(
                 ["cc-connect", "send", "-p", CONFIG["project"], "-m", content],
                 capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
-                print(f"[sidecar] Forwarded to 周芷若: {content[:80]}")
+                print(f"[sidecar] Forwarded to Worker: {content[:80]}")
                 return {"status": "ok"}
             else:
                 print(f"[sidecar] cc-connect send failed: {result.stderr}")

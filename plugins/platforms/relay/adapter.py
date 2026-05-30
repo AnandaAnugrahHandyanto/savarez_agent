@@ -532,7 +532,7 @@ def register(ctx):
         # LLM guidance
         platform_hint=(
             "You are connected to an agent relay network. You can send "
-            "messages to other agents (e.g. 周芷若) by writing to the outbox "
+            "messages to other agents (e.g. Worker) by writing to the outbox "
             "file or using the relay_send tool. Incoming messages from other "
             "agents appear as user messages in this session."
         ),

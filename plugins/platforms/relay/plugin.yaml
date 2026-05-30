@@ -6,7 +6,7 @@ description: >
   Agent-to-agent relay platform for Hermes.
   Enables real-time communication between Hermes and external agents
   (cc-connect, other Hermes instances, custom agents) via HTTP.
-author: 地产K线
+author: TKwave
 requires_env:
   - name: RELAY_PORT
     description: "HTTP port for receiving messages (default: 8766)"

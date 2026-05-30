@@ -14,7 +14,7 @@ def relay_send(target: str, content: str, task_id: str = None) -> str:
     """Send a message to another agent via the relay platform.
 
     Args:
-        target: Target agent name (e.g. "zhizhiruo" for 周芷若)
+        target: Target agent name (e.g. "worker" for Worker)
         content: Message content to send
 
     Returns:
@@ -78,13 +78,13 @@ registry.register(
     toolset="relay",
     schema={
         "name": "relay_send",
-        "description": "Send a message to another agent (e.g. 周芷若/zhizhiruo) via the relay platform. Use this for real-time inter-agent communication.",
+        "description": "Send a message to another agent (e.g. Worker/worker) via the relay platform. Use this for real-time inter-agent communication.",
         "parameters": {
             "type": "object",
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "Target agent name, e.g. 'zhizhiruo' for 周芷若",
+                    "description": "Target agent name, e.g. 'zhizhiruo' for Worker",
                 },
                 "content": {
                     "type": "string",
