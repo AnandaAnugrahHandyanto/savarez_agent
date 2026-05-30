@@ -81,7 +81,7 @@ const SGR_MOUSE_FRAGMENT_RE = /(?<!\d)(?:\[<|<)?(?:[0-9]|[1-9][0-9]|1\d{2}|2[0-4
 // has no digit and no `;`, `see 1;2;3M for details` contains disqualifying
 // letters, and `1234;56;78M9;10;11M` has only two terminators.
 // eslint-disable-next-line no-control-regex
-const MOUSE_BURST_NOISE_RE = /^(?=[^]*\d)(?=[^]*;)(?=(?:[^]*[Mm]){3})[\d;<\[\]IMm \x1b]+$/
+const MOUSE_BURST_NOISE_RE = /^(?=[\s\S]*\d)(?=[\s\S]*;)(?=(?:[^Mm]*[Mm]){3})[\d;<\[\]IMm \x1b]+$/
 
 // Residual-shard variant for the gaps BETWEEN / AFTER recovered fragments
 // inside parseTextWithSgrMouseFragments. A real recovery run leaves degraded
