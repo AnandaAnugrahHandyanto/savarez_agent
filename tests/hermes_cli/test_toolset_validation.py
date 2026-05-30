@@ -19,6 +19,11 @@ def test_all_alias_means_caller_loads_defaults():
     assert validate_explicit_toolsets("all") == (None, None)
 
 
+def test_single_valid_toolset_is_accepted():
+    # A real toolset must produce no error, so the CLI guard never trips on it.
+    assert validate_explicit_toolsets("web", source="hermes") == (["web"], None)
+
+
 def test_partial_keeps_valid_subset_and_warns():
     warnings = []
     valid, err = validate_explicit_toolsets("web,definitely_not_a_toolset", source="test", warn=warnings.append)
