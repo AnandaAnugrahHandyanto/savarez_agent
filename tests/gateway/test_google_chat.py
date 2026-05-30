@@ -129,7 +129,7 @@ import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 
-from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
+from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome, SendResult  # noqa: E402
 from plugins.platforms.google_chat.adapter import (  # noqa: E402
     GoogleChatAdapter,
     _is_google_owned_host,
@@ -2950,3 +2950,171 @@ class TestGoogleChatStandaloneSend:
         assert "error" in result
         # The error names the expected resource shape so plugin authors can self-correct
         assert "spaces/" in result["error"] or "users/" in result["error"]
+
+
+# ===========================================================================
+# send_exec_approval + CARD_CLICKED callbacks
+# ===========================================================================
+
+
+def _make_card_clicked_envelope(
+    *,
+    approval_id: int = 1,
+    choice: str = "once",
+    sender_email: str = "u@example.com",
+    space_name: str = "spaces/S",
+    message_name: str = "spaces/S/messages/APPROVAL",
+):
+    """Workspace Add-ons style CARD_CLICKED envelope."""
+    return {
+        "chat": {
+            "cardClickedPayload": {
+                "space": {"name": space_name, "spaceType": "DIRECT_MESSAGE"},
+                "message": {"name": message_name},
+                "user": {
+                    "name": "users/12345",
+                    "email": sender_email,
+                    "displayName": "User Name",
+                },
+            }
+        },
+        "common": {
+            "invokedFunction": "hermes_approval",
+            "parameters": {
+                "approval_id": str(approval_id),
+                "choice": choice,
+            },
+        },
+    }
+
+
+class TestGoogleChatExecApproval:
+    """Card v2 approval buttons — send + CARD_CLICKED routing."""
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_posts_cards_v2(self, adapter):
+        adapter._create_message = AsyncMock(
+            return_value=SendResult(
+                success=True, message_id="spaces/S/messages/APPROVAL"
+            )
+        )
+
+        result = await adapter.send_exec_approval(
+            chat_id="spaces/S",
+            command="rm -rf /important",
+            session_key="agent:main:google_chat:dm:spaces/S",
+            description="dangerous deletion",
+        )
+
+        assert result.success is True
+        adapter._create_message.assert_called_once()
+        chat_id, body = adapter._create_message.call_args[0]
+        assert chat_id == "spaces/S"
+        cards = body["cardsV2"]
+        assert cards[0]["cardId"].startswith("hermes-approval-")
+        buttons = cards[0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+        assert len(buttons) == 4
+        assert buttons[0]["onClick"]["action"]["function"] == "hermes_approval"
+        assert 1 in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_stores_session_key(self, adapter):
+        adapter._create_message = AsyncMock(
+            return_value=SendResult(success=True, message_id="spaces/S/messages/M")
+        )
+
+        await adapter.send_exec_approval(
+            chat_id="spaces/S",
+            command="curl evil",
+            session_key="sess-abc",
+        )
+
+        assert adapter._approval_state[1]["session_key"] == "sess-abc"
+        assert adapter._approval_state[1]["chat_id"] == "spaces/S"
+
+    def test_card_clicked_submits_to_loop(self, adapter):
+        adapter._approval_state[1] = {
+            "session_key": "sess-abc",
+            "message_id": "spaces/S/messages/APPROVAL",
+            "chat_id": "spaces/S",
+        }
+        env = _make_card_clicked_envelope(approval_id=1, choice="once")
+        msg = _make_pubsub_message(
+            env,
+            attributes={"ce-type": "google.workspace.chat.card.v1.clicked"},
+        )
+        with patch.object(adapter, "_submit_on_loop") as submit:
+            adapter._on_pubsub_message(msg)
+            submit.assert_called_once()
+        msg.ack.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_card_clicked_resolves_approval(self, adapter, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CHAT_ALLOWED_USERS", "u@example.com")
+        adapter._approval_state[1] = {
+            "session_key": "sess-abc",
+            "message_id": "spaces/S/messages/APPROVAL",
+            "chat_id": "spaces/S",
+        }
+        adapter._patch_message = AsyncMock(
+            return_value=SendResult(success=True, message_id="spaces/S/messages/APPROVAL")
+        )
+
+        env = _make_card_clicked_envelope(approval_id=1, choice="session")
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._handle_card_clicked(
+                env, "google.workspace.chat.card.v1.clicked"
+            )
+
+        mock_resolve.assert_called_once_with("sess-abc", "session")
+        assert 1 not in adapter._approval_state
+        adapter._patch_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_card_clicked_rejects_unauthorized_user(self, adapter, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CHAT_ALLOWED_USERS", "allowed@example.com")
+        adapter._approval_state[1] = {
+            "session_key": "sess-abc",
+            "message_id": "spaces/S/messages/APPROVAL",
+            "chat_id": "spaces/S",
+        }
+        adapter._patch_message = AsyncMock()
+
+        env = _make_card_clicked_envelope(
+            approval_id=1,
+            choice="once",
+            sender_email="intruder@example.com",
+        )
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._handle_card_clicked(
+                env, "google.workspace.chat.card.v1.clicked"
+            )
+
+        mock_resolve.assert_not_called()
+        assert 1 in adapter._approval_state
+        adapter._patch_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_card_clicked_unknown_approval_is_noop(self, adapter, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CHAT_ALLOWED_USERS", "u@example.com")
+        env = _make_card_clicked_envelope(approval_id=999, choice="deny")
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._handle_card_clicked(
+                env, "google.workspace.chat.card.v1.clicked"
+            )
+        mock_resolve.assert_not_called()
+
+    def test_parse_approval_click_native_format(self, adapter):
+        envelope = {
+            "type": "CARD_CLICKED",
+            "space": {"name": "spaces/S"},
+            "message": {"name": "spaces/S/messages/M"},
+            "user": {"email": "u@example.com"},
+            "common": {
+                "invokedFunction": "hermes_approval",
+                "parameters": {"approval_id": "7", "choice": "always"},
+            },
+        }
+        ctx = adapter._extract_card_clicked_context(envelope)
+        assert ctx is not None
+        assert ctx[3] == (7, "always")
