@@ -2,7 +2,7 @@
 
 > **Parent doc:** `.plans/ua-incorporation-strategy.md`
 > **Prerequisite:** Phase 1 (Foundation) ✓ complete — committed `24356edcd`, 80 tests pass, scan scripts verified on test-bed repos.
-> **Status:** D1-D3 complete, verified, reviewed, committed, and pushed (`5a39c7fc7`); D4 remains deferred pending explicit JC approval.
+> **Status:** Phase 2 CLOSED — D1-D3 complete, verified, reviewed, committed (`5a39c7fc7`), and pushed. D4 formally deferred. Evaluation plan for D1-D3 effectiveness defined in `.plans/phase-2-d1-d3-evaluation-plan.md`.
 > **Execution beads:** Defined in `.beads/phase2-d1-extract-imports.md`, `.beads/phase2-d2-code-scan-skill.md`, `.beads/phase2-d3-validation-gate-skill.md`, `.beads/phase2-d4-review-integration-deferred.md`.
 >
 > **These bead files are the authoritative execution units.** This plan describes intent and scope; the beads contain exact functions, schemas, test contracts, verification commands, and allowed/forbidden file lists. When executing, dispatch coder subagents using the bead files as the sole implementation spec.
@@ -211,18 +211,58 @@ Required top-level keys: `schema_version` (string, always `"1.0.0"`), `source_sc
 
 ---
 
-## Verification Plan
+## Phase 2 Close-Out
+
+**Decision:** Phase 2 is closed with D1-D3 only. D4 is formally deferred per JC's decision. No further implementation work on Phase 2 deliverables.
+
+**Closed deliverables:**
+- D1: `scripts/code-scan/extract_imports.py` + tests/fixtures — ✅ Complete (committed `5a39c7fc7`)
+- D2: `skills/code-analysis/code-scan/SKILL.md` — ✅ Complete (39 lines, committed `5a39c7fc7`)
+- D3: `skills/code-analysis/validation-gate/SKILL.md` — ✅ Complete (48 lines, committed `5a39c7fc7`)
+
+**Deferred:**
+- D4: `requesting-code-review` integration — 🚫 Deferred. Requires separate JC approval + separate execution plan if revived.
+
+**Review:** Independent reviewer PASS on spec compliance, scope preservation, context budget, quality/security, and forbidden-file integrity (`.hermes/handoffs/2026-05-30-0648-phase2-d1-d3-review-pass.md`).
+
+**Next steps:** Execute the D1-D3 effectiveness evaluation plan (`.plans/phase-2-d1-d3-evaluation-plan.md`) to measure real-world effectiveness before considering D4 or Phase 3.
+
+---
+
+## Execution-Ready Evaluation Plan
+
+The lightweight verification table below is superseded by the full evaluation plan at `.plans/phase-2-d1-d3-evaluation-plan.md`, which includes:
+- 11 test cases (TC-1 through TC-11) covering unit tests, fixture precision/recall, E2E schema compliance, skill budget, verdict accuracy, performance timing, scope guardrails, and D4 absence confirmation
+- Per-language precision/recall metrics for D1 across all 5 target languages
+- E2E pipeline testing on small (cass_memory_system), medium (mission-control), and large (hermes-agent) repos
+- Timing budgets: <5s (small), <30s (medium), <120s (large)
+- Explicit pass/fail criteria, expected artifacts, and a single-command runner
+- Risk analysis and mitigation strategies
+
+**Approval required:** No evaluation execution without JC approval. The evaluation is documentation and test execution only — no code changes, no implementations, no D4 work.
+
+---
+
+## Verification Plan (Summary)
 
 | Test | Command / Method | Pass Criteria |
 |---|---|---|
-| Unit: extract_imports.py | `pytest tests/tools/test_extract_imports.py` | All tests pass |
-| Fixture coverage | Python, JS/TS, Rust, Go, shell fixture files | Expected imports match golden JSON |
-| Integration: full scan pipeline | Agent loads code-scan skill, scans `cass_memory_system` and `mission-control` | Produces correct JSON, no hallucination |
-| Large-repo smoke | Run scan/import pipeline against this Hermes repo | Completes without scanning ignored giant/vendor dirs; produces valid JSON |
-| Integration: validation gate | Feed known-good and known-bad graph JSON to validation skill | Correct APPROVED/WARNING/REJECTED verdicts |
-| Context budget check | Measure loaded SKILL.md total lines | ≤100 lines for both skills |
-| Scope guardrail | Search diff for dashboard/React/tree-sitter/SQLite/auto-injection additions | No excluded feature enters Phase 2 |
-| Existing tests | Targeted tests touched by Phase 2 plus any affected skill tests | No regression |
+| Unit: extract_imports.py | `pytest tests/code_scan/test_extract_imports.py -v` | All tests pass |
+| Fixture precision/recall | Per-language precision/recall script (TC-2) | ≥90% precision, ≥85% recall for all 5 languages |
+| E2E schema compliance | Scan + import on small + medium repos (TC-3) | Valid JSON, all required keys, files_with_imports > 0 |
+| D2 skill budget | `wc -l skills/code-analysis/code-scan/SKILL.md` | ≤80 lines (actual: 39) |
+| D3 skill budget | `wc -l skills/code-analysis/validation-gate/SKILL.md` | ≤80 lines (actual: 48) |
+| D3 verdict accuracy | Known-good/bad graph JSON to graph_schema.py (TC-6) | APPROVED on valid, REJECTED on invalid |
+| Performance timing | time scan+import on all 3 tiers (TC-7) | Small <5s, medium <30s, large <120s |
+| Combined skill budget | Combined line count (TC-8) | ≤100 lines (actual: 87) |
+| Scope guardrail | Pattern search against excluded-feature list (TC-9) | Zero matches |
+| D4 absence | Commit diff inspection + bead status (TC-10) | D4 not touched, bead still deferred |
+| Full suite regression | `pytest tests/code_scan/ -q` (TC-11) | 111/111 pass |
+| Large-repo smoke | Run scan/import pipeline against this Hermes repo | Completes without scanning ignored dirs; produces valid JSON |
+| Context budget check | Sum of both SKILL.md line counts | ≤100 lines for both skills (actual: 87) |
+| Existing tests | `pytest tests/code_scan/ -v` | No regression |
+
+**Full evaluation plan:** `.plans/phase-2-d1-d3-evaluation-plan.md`
 
 ---
 
@@ -243,10 +283,12 @@ Required top-level keys: `schema_version` (string, always `"1.0.0"`), `source_sc
 - [x] D1: `scripts/code-scan/extract_imports.py` + unit tests → `.beads/phase2-d1-extract-imports.md` — complete; committed/pushed in `5a39c7fc7`
 - [x] D2: `skills/code-analysis/code-scan/SKILL.md` (≤80 lines) → `.beads/phase2-d2-code-scan-skill.md` — complete; 39 lines; committed/pushed in `5a39c7fc7`
 - [x] D3: `skills/code-analysis/validation-gate/SKILL.md` (≤80 lines) → `.beads/phase2-d3-validation-gate-skill.md` — complete; 48 lines; committed/pushed in `5a39c7fc7`
-- [ ] D4: `requesting-code-review` integration — **DEFERRED** unless JC explicitly approves → `.beads/phase2-d4-review-integration-deferred.md`
-- [x] Verification: tests pass, context budget met, scope guardrails pass
+- [x] **Phase 2 CLOSED with D1-D3 only.** JC decided: D4 deferred. No further Phase 2 implementation work.
+- [ ] D4: `requesting-code-review` integration — 🚫 **DEFERRED per JC decision.** Not part of Phase 2. Requires separate approval + separate plan if revived → `.beads/phase2-d4-review-integration-deferred.md`
+- [x] Verification: tests pass, context budget met, scope guardrails pass (111/111 tests)
 - [x] Reviewer: spec compliance + quality/security + scope preservation PASS (`.hermes/handoffs/2026-05-30-0648-phase2-d1-d3-review-pass.md`)
 - [x] Approval: JC approved D1-D3 autonomous execution; D4 deferred
+- [ ] Evaluation: D1-D3 effectiveness evaluation plan defined at `.plans/phase-2-d1-d3-evaluation-plan.md` — awaiting JC approval to execute
 
 ### JC Approval Wording (copy-paste template)
 
