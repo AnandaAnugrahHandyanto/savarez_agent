@@ -1,4 +1,4 @@
-"""Tests for P7: Daytona CWD sync pilot (daytona_sync_cwd).
+"""Tests for Daytona CWD sync (daytona_sync_cwd).
 
 Scope per task t_f1c48e58:
 - daytona_sync_cwd defaults to False (off)
@@ -7,7 +7,6 @@ Scope per task t_f1c48e58:
 - Excluded paths are NOT synced
 """
 
-import ast
 import os
 import sys
 import tempfile
@@ -373,6 +372,30 @@ class TestDaytonaSyncCwdExcludes:
         from tools.environments.daytona import DaytonaEnvironment
 
         (tmp_path / "README.md").write_text("allowed")
+        (tmp_path / ".hermes" / "config.yaml").parent.mkdir(parents=True)
+        (tmp_path / ".hermes" / "config.yaml").write_text("secret-ish profile state")
+
+        env = DaytonaEnvironment.__new__(DaytonaEnvironment)
+        env._host_cwd = str(tmp_path)
+        env._CWD_MAX_BYTES = 100 * 1024 * 1024
+        env._sandbox = MagicMock()
+        uploaded_files = []
+
+        def fake_bulk_upload(files):
+            uploaded_files.extend(files)
+
+        env._daytona_bulk_upload = fake_bulk_upload
+
+        with patch("hermes_constants.get_hermes_home", return_value=Path("/fake/hermes/home")):
+            assert env._sync_cwd_to_sandbox() is True
+
+        assert [remote for _, remote in uploaded_files] == ["/workspace/README.md"]
+
+    def test_env_file_excluded(self):
+        """The .env file pattern must be in _CWD_EXCLUDE_FILES."""
+        from tools.environments.daytona import DaytonaEnvironment
+
+        (tmp_path / "README.md").write_text("allowed")
         (tmp_path / ".hermes").mkdir()
         (tmp_path / ".hermes" / "oauth.json").write_text("{}")
 
@@ -435,65 +458,110 @@ class TestDaytonaSyncCwdBehavior:
     """Verify that _sync_cwd_to_sandbox is only called when sync_cwd=True."""
 
     def test_sync_cwd_false_does_not_call_sync(self, monkeypatch):
-        """When sync_cwd=False (default), _sync_cwd_to_sandbox must not be called."""
+        """When sync_cwd=False (default), __init__ must not call the CWD sync method."""
+        import sys
         import types
-
-        fake_daytona = types.ModuleType("daytona")
-
-        class DaytonaError(Exception):
-            pass
-
-        class Params:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-
-        class Resources:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-
-        sandbox = MagicMock()
-        sandbox.id = "sb-123"
-        sandbox.state = "started"
-        sandbox.process.exec.return_value = MagicMock(result="/root", exit_code=0)
-
-        client = MagicMock()
-        client.get.side_effect = DaytonaError("missing")
-        client.list.return_value = iter([])
-        client.create.return_value = sandbox
-
-        setattr(fake_daytona, "Daytona", MagicMock(return_value=client))
-        setattr(fake_daytona, "CreateSandboxFromImageParams", Params)
-        setattr(fake_daytona, "CreateSandboxFromSnapshotParams", Params)
-        setattr(fake_daytona, "DaytonaError", DaytonaError)
-        setattr(fake_daytona, "Resources", Resources)
-        setattr(fake_daytona, "SandboxState", types.SimpleNamespace(STOPPED="stopped", ARCHIVED="archived"))
-
-        monkeypatch.setitem(sys.modules, "daytona", fake_daytona)
-        monkeypatch.setattr("tools.environments.daytona._derive_profile_id", lambda: "test1234")
-        monkeypatch.setattr("tools.environments.daytona.FileSyncManager", MagicMock())
-
+        from types import SimpleNamespace
+        from tools.environments import daytona as daytona_mod
         from tools.environments.daytona import DaytonaEnvironment
 
-        with patch("tools.environments.daytona.DaytonaEnvironment._sync_cwd_to_sandbox") as mock_sync:
-            DaytonaEnvironment(image="test-image:latest", sync_cwd=False)
+        class FakeDaytonaError(Exception):
+            pass
 
-        mock_sync.assert_not_called()
+        class FakeDaytona:
+            def get(self, name):
+                raise FakeDaytonaError("not found")
+
+            def list(self, *args, **kwargs):
+                return iter(())
+
+            def create(self, params):
+                sandbox = MagicMock()
+                sandbox.id = "fake-sandbox"
+                sandbox.process.exec.return_value = SimpleNamespace(result="/home/daytona\n", exit_code=0)
+                return sandbox
+
+        fake_daytona_module = types.SimpleNamespace(
+            Daytona=FakeDaytona,
+            CreateSandboxFromImageParams=lambda **kwargs: kwargs,
+            CreateSandboxFromSnapshotParams=lambda **kwargs: kwargs,
+            DaytonaError=FakeDaytonaError,
+            Resources=lambda **kwargs: kwargs,
+            SandboxState=types.SimpleNamespace(STOPPED="stopped", ARCHIVED="archived"),
+            CodeLanguage=("python", "typescript", "javascript"),
+        )
+        monkeypatch.setitem(sys.modules, "daytona", fake_daytona_module)
+        monkeypatch.setattr(daytona_mod, "_derive_profile_id", lambda: "profile123")
+        monkeypatch.setattr(daytona_mod, "FileSyncManager", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(DaytonaEnvironment, "init_session", lambda self: None)
+        sync_mock = MagicMock(return_value=True)
+        monkeypatch.setattr(DaytonaEnvironment, "_sync_cwd_to_sandbox", sync_mock)
+
+        DaytonaEnvironment("python:3.11", sync_cwd=False)
+
+        sync_mock.assert_not_called()
+
+    def test_sync_cwd_true_calls_sync(self, monkeypatch):
+        """When sync_cwd=True, __init__ runs the behavioral CWD sync hook."""
+        import sys
+        import types
+        from types import SimpleNamespace
+        from tools.environments import daytona as daytona_mod
+        from tools.environments.daytona import DaytonaEnvironment
+
+        class FakeDaytonaError(Exception):
+            pass
+
+        class FakeDaytona:
+            def get(self, name):
+                raise FakeDaytonaError("not found")
+
+            def list(self, *args, **kwargs):
+                return iter(())
+
+            def create(self, params):
+                sandbox = MagicMock()
+                sandbox.id = "fake-sandbox"
+                sandbox.process.exec.return_value = SimpleNamespace(result="/home/daytona\n", exit_code=0)
+                return sandbox
+
+        fake_daytona_module = types.SimpleNamespace(
+            Daytona=FakeDaytona,
+            CreateSandboxFromImageParams=lambda **kwargs: kwargs,
+            CreateSandboxFromSnapshotParams=lambda **kwargs: kwargs,
+            DaytonaError=FakeDaytonaError,
+            Resources=lambda **kwargs: kwargs,
+            SandboxState=types.SimpleNamespace(STOPPED="stopped", ARCHIVED="archived"),
+            CodeLanguage=("python", "typescript", "javascript"),
+        )
+        monkeypatch.setitem(sys.modules, "daytona", fake_daytona_module)
+        monkeypatch.setattr(daytona_mod, "_derive_profile_id", lambda: "profile123")
+        monkeypatch.setattr(daytona_mod, "FileSyncManager", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(DaytonaEnvironment, "init_session", lambda self: None)
+        sync_mock = MagicMock(return_value=True)
+        monkeypatch.setattr(DaytonaEnvironment, "_sync_cwd_to_sandbox", sync_mock)
+
+        env = DaytonaEnvironment("python:3.11", sync_cwd=True)
+
+        sync_mock.assert_called_once_with()
+        assert env.cwd == "/workspace"
 
     def test_hermes_home_not_synced_as_cwd(self, tmp_path):
         """If host_cwd resolves to .hermes home, sync must be skipped."""
         from tools.environments.daytona import DaytonaEnvironment
 
-        (tmp_path / "config.yaml").write_text("terminal: {}")
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("terminal: {}")
 
         env = DaytonaEnvironment.__new__(DaytonaEnvironment)
-        env._sync_cwd = True
-        env._host_cwd = str(tmp_path)
+        env._host_cwd = str(hermes_home)
         env._CWD_MAX_BYTES = 100 * 1024 * 1024
         env._sandbox = MagicMock()
         env._daytona_bulk_upload = MagicMock()
 
-        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
-            env._sync_cwd_to_sandbox()
+        with patch("hermes_constants.get_hermes_home", return_value=hermes_home):
+            assert env._sync_cwd_to_sandbox() is False
 
         env._sandbox.process.exec.assert_not_called()
         env._daytona_bulk_upload.assert_not_called()

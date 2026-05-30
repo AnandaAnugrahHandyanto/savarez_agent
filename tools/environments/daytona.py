@@ -29,6 +29,30 @@ from tools.environments.file_sync import (
 
 logger = logging.getLogger(__name__)
 
+_FALLBACK_SUPPORTED_LANGUAGES: tuple[str, ...] = ("python", "typescript", "javascript")
+
+
+def get_supported_daytona_languages() -> tuple[str, ...]:
+    """Return language values supported by the installed Daytona SDK.
+
+    The SDK exposes these as enum values on newer releases.  Keep a narrow
+    fallback matching the currently supported SDK surface so CLI docs and
+    validation do not advertise languages the SDK cannot create.
+    """
+    try:
+        from daytona import CodeLanguage
+
+        values = tuple(
+            str(getattr(member, "value", member)).strip().lower()
+            for member in CodeLanguage
+            if str(getattr(member, "value", member)).strip()
+        )
+        if values:
+            return tuple(dict.fromkeys(values))
+    except Exception:
+        pass
+    return _FALLBACK_SUPPORTED_LANGUAGES
+
 
 def _derive_profile_id() -> str:
     """Derive a stable, non-secret profile identifier from get_hermes_home().
@@ -65,7 +89,7 @@ class DaytonaEnvironment(BaseEnvironment):
         disk: int = 10240,
         persistent_filesystem: bool = True,
         task_id: str = "default",
-        # --- P1 expansion parameters ---
+        # --- Daytona expansion parameters ---
         create_mode: str = "image",
         snapshot: str = "",
         language: str = "",
@@ -81,6 +105,7 @@ class DaytonaEnvironment(BaseEnvironment):
         network_allow_list: str = "",
         volume_mounts: list | None = None,
         gpu: int = 0,
+        # --- CWD sync ---
         host_cwd: str | None = None,
         # --- P7 CWD sync pilot ---
         sync_cwd: bool = False,
@@ -120,6 +145,15 @@ class DaytonaEnvironment(BaseEnvironment):
                 "daytona_snapshot value; provide a snapshot name or ID "
                 "via TERMINAL_DAYTONA_SNAPSHOT or the 'snapshot' parameter"
             )
+        if language:
+            supported_languages = get_supported_daytona_languages()
+            normalized_language = language.strip().lower()
+            if normalized_language not in supported_languages:
+                raise ValueError(
+                    f"Invalid daytona_language={language!r}; installed Daytona SDK "
+                    f"supports: {', '.join(supported_languages)}"
+                )
+            language = normalized_language
 
         self._persistent = persistent_filesystem
         self._task_id = task_id
@@ -343,7 +377,7 @@ class DaytonaEnvironment(BaseEnvironment):
         )
         self._sync_manager.sync(force=True)
 
-        # --- P7 CWD sync pilot ---
+        # --- CWD sync ---
         # When enabled (daytona_sync_cwd=True), sync the host CWD into the
         # sandbox under /workspace after the .hermes config sync completes.
         # This is explicitly opt-in because uploading host project directories
@@ -405,7 +439,7 @@ class DaytonaEnvironment(BaseEnvironment):
         self._sandbox.process.exec(quoted_rm_command(remote_paths))
 
     # ------------------------------------------------------------------
-    # P7: CWD sync pilot
+    # CWD sync
     # ------------------------------------------------------------------
 
     # Directories and file patterns that are never synced to the sandbox.

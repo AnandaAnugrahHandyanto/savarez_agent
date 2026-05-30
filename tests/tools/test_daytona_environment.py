@@ -65,6 +65,9 @@ def make_env(daytona_sdk, monkeypatch):
     monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
     monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda **kw: None)
     monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kw: [])
+    # Mock _derive_profile_id to return a stable test value
+    monkeypatch.setattr("tools.environments.daytona._derive_profile_id",
+                        lambda: "abcd1234")
 
     def _factory(
         sandbox=None,
@@ -178,12 +181,13 @@ class TestPersistence:
             task_id="mytask",
         )
         legacy.start.assert_called_once()
-        env._mock_client.list.assert_called_once()
-        labels = env._mock_client.list.call_args.kwargs["labels"]
-        assert labels["hermes_task_id"] == "mytask"
-        assert labels["hermes_backend"] == "daytona"
-        assert "hermes_profile_id" in labels
-        assert env._mock_client.list.call_args.kwargs["limit"] == 1
+        # Labels now include hermes_profile_id and hermes_backend
+        env._mock_client.list.assert_called_once_with(
+            labels={
+                "hermes_task_id": "mytask",
+                "hermes_profile_id": "abcd1234",
+                "hermes_backend": "daytona",
+            }, limit=1)
         env._mock_client.create.assert_not_called()
 
     def test_persistent_creates_new_when_none_found(self, make_env, daytona_sdk):

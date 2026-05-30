@@ -776,7 +776,7 @@ def _bridge_terminal_config_to_env(terminal_cfg) -> None:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-        # Daytona expansion keys (P1)
+        # Daytona expansion keys
         "daytona_create_mode": "TERMINAL_DAYTONA_CREATE_MODE",
         "daytona_snapshot": "TERMINAL_DAYTONA_SNAPSHOT",
         "daytona_language": "TERMINAL_DAYTONA_LANGUAGE",

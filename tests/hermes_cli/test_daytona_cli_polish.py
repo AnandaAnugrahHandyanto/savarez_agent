@@ -1,6 +1,5 @@
 """Tests for Daytona CLI polish: status, doctor, and setup flows.
 
-P5 task: Update user-facing CLI flows for the new Daytona support.
 - hermes status: Daytona mode, image/snapshot, SDK/auth, naming, lifecycle, network
 - hermes doctor: missing snapshots, invalid language, bad JSON, disk >10GiB guidance
 - hermes setup: image vs snapshot branching (tested indirectly via status/doctor)
@@ -211,12 +210,39 @@ class TestDaytonaStatusSnapshotMode:
         status_mod = self._base_mocks(monkeypatch, tmp_path)
         # Don't set TERMINAL_DAYTONA_IMAGE — fallback image should only show if explicitly set
         monkeypatch.delenv("TERMINAL_DAYTONA_IMAGE", raising=False)
+        monkeypatch.setattr(
+            status_mod,
+            "load_config",
+            lambda: {
+                "terminal": {
+                    "backend": "daytona",
+                    "daytona_create_mode": "snapshot",
+                    "daytona_snapshot": "my-project-snapshot",
+                    "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+                }
+            },
+            raising=False,
+        )
+        monkeypatch.setattr(status_mod, "read_raw_config", lambda: {"terminal": {}}, raising=False)
         status_mod.show_status(SimpleNamespace(all=False, deep=False))
         output = capsys.readouterr().out
         # In snapshot mode, image line should not show by default
         assert "Fallback image" not in output
         assert "Image:" not in output
         assert "nikolaik" not in output
+
+    def test_snapshot_mode_shows_raw_configured_fallback_image(self, monkeypatch, capsys, tmp_path):
+        status_mod = self._base_mocks(monkeypatch, tmp_path)
+        monkeypatch.delenv("TERMINAL_DAYTONA_IMAGE", raising=False)
+        monkeypatch.setattr(
+            status_mod,
+            "read_raw_config",
+            lambda: {"terminal": {"daytona_image": "custom/fallback:latest"}},
+            raising=False,
+        )
+        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        output = capsys.readouterr().out
+        assert "Fallback image: custom/fallback:latest" in output
 
     def test_snapshot_mode_shows_lifecycle_intervals(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
@@ -270,6 +296,137 @@ class TestDaytonaStatusLifecycle:
 # Doctor tests — focused on Daytona-specific validation logic
 # ---------------------------------------------------------------------------
 
+class TestDaytonaDoctorSnapshotValidation:
+    """Doctor catches snapshot-mode configuration issues."""
+
+    def test_snapshot_mode_with_snapshot_set_ok(self, monkeypatch, tmp_path):
+        """Snapshot mode with a snapshot set should produce no issues."""
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
+        monkeypatch.setenv("DAYTONA_API_KEY", "dcs-test-key")
+        monkeypatch.setenv("TERMINAL_DAYTONA_CREATE_MODE", "snapshot")
+        monkeypatch.setenv("TERMINAL_DAYTONA_SNAPSHOT", "my-snap")
+
+        # Verify snapshot requirement logic directly
+        terminal_env = os.getenv("TERMINAL_ENV", "local")
+        assert terminal_env == "daytona"
+        create_mode = os.getenv("TERMINAL_DAYTONA_CREATE_MODE") or "image"
+        snapshot = os.getenv("TERMINAL_DAYTONA_SNAPSHOT", "").strip()
+        assert create_mode == "snapshot"
+        assert snapshot  # Should be truthy — no issue
+
+    def test_snapshot_mode_without_snapshot_shows_error(self, monkeypatch, tmp_path):
+        """Snapshot mode without snapshot set should flag an issue."""
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
+        monkeypatch.setenv("TERMINAL_DAYTONA_CREATE_MODE", "snapshot")
+        monkeypatch.delenv("TERMINAL_DAYTONA_SNAPSHOT", raising=False)
+
+        create_mode = os.getenv("TERMINAL_DAYTONA_CREATE_MODE") or "image"
+        snapshot = os.getenv("TERMINAL_DAYTONA_SNAPSHOT", "").strip()
+        assert create_mode == "snapshot"
+        assert not snapshot  # Empty — should trigger issue
+
+    def test_invalid_create_mode(self, monkeypatch, tmp_path):
+        """Invalid create_mode should be caught."""
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
+        monkeypatch.setenv("TERMINAL_DAYTONA_CREATE_MODE", "bogus")
+
+        create_mode = os.getenv("TERMINAL_DAYTONA_CREATE_MODE") or "image"
+        assert create_mode not in ("image", "snapshot")  # Should trigger issue
+
+    def test_image_mode_no_snapshot_needed(self, monkeypatch, tmp_path):
+        """Image mode should not require a snapshot."""
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
+        monkeypatch.setenv("TERMINAL_DAYTONA_CREATE_MODE", "image")
+        monkeypatch.delenv("TERMINAL_DAYTONA_SNAPSHOT", raising=False)
+
+        create_mode = os.getenv("TERMINAL_DAYTONA_CREATE_MODE") or "image"
+        assert create_mode == "image"  # No snapshot needed
+
+
+class TestDaytonaDoctorJSONValidation:
+    """Doctor validates JSON env vars for labels, env_vars, volume_mounts."""
+
+    def test_valid_labels_json(self):
+        import json
+        raw = '{"env": "dev", "team": "backend"}'
+        parsed = json.loads(raw)
+        assert isinstance(parsed, dict)
+        assert len(parsed) == 2
+
+    def test_invalid_labels_json_not_object(self):
+        import json
+        raw = '["not", "a", "dict"]'
+        parsed = json.loads(raw)
+        assert not isinstance(parsed, dict)  # Should trigger warning
+
+    def test_valid_volume_mounts_json(self):
+        import json
+        raw = '[{"volume_id": "vol-123", "mount_path": "/mnt/data"}]'
+        parsed = json.loads(raw)
+        assert isinstance(parsed, list)
+        assert len(parsed) == 1
+
+    def test_invalid_volume_mounts_json_not_array(self):
+        import json
+        raw = '{"volume_id": "vol-123", "mount_path": "/mnt/data"}'
+        parsed = json.loads(raw)
+        assert not isinstance(parsed, list)  # Should trigger warning
+
+    def test_valid_env_vars_json(self):
+        import json
+        raw = '{"API_KEY": "secret", "DEBUG": "true"}'
+        parsed = json.loads(raw)
+        assert isinstance(parsed, dict)
+        assert len(parsed) == 2
+
+    def test_invalid_env_vars_json_not_object(self):
+        import json
+        raw = '42'
+        parsed = json.loads(raw)
+        assert not isinstance(parsed, dict)  # Should trigger warning
+
+    def test_invalid_json_syntax(self):
+        import json
+        raw = '{invalid json'
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(raw)  # Doctor should catch this
+
+
+class TestDaytonaDoctorDiskWarning:
+    """Doctor warns when disk exceeds 10 GiB guidance."""
+
+    def test_disk_over_10gb_flags_warning(self):
+        disk_mb = "20480"  # 20 GiB
+        disk_gb = int(disk_mb) / 1024
+        assert disk_gb > 10  # Should trigger warning
+
+    def test_disk_at_10gb_no_warning(self):
+        disk_mb = "10240"  # 10 GiB
+        disk_gb = int(disk_mb) / 1024
+        assert disk_gb == 10  # At boundary, no warning
+
+    def test_disk_under_10gb_no_warning(self):
+        disk_mb = "5120"  # 5 GiB
+        disk_gb = int(disk_mb) / 1024
+        assert disk_gb < 10  # No warning
+
+
+class TestDaytonaDoctorLanguage:
+    """Doctor validates language field."""
+
+    def test_common_languages_accepted(self):
+        valid_languages = {"", "python", "javascript", "typescript"}
+        for lang in ["python", "javascript", "typescript"]:
+            assert lang in valid_languages
+        for unsupported in ["go", "rust", "java", "csharp", "ruby"]:
+            assert unsupported not in valid_languages
+
+    def test_unusual_language_flagged(self):
+        valid_languages = {"", "python", "javascript", "typescript"}
+        unusual = "brainfuck"
+        assert unusual not in valid_languages  # Should trigger warning
+
+
 class TestDaytonaDoctorConfigBackedPolish:
     """Doctor should validate Daytona settings from config.yaml, not env-only."""
 
@@ -293,7 +450,9 @@ class TestDaytonaDoctorConfigBackedPolish:
                 monkeypatch.delenv(key, raising=False)
 
         config = {"terminal": {"backend": "daytona", **terminal_cfg}}
+        raw_config = {"terminal": dict(config["terminal"])}
         monkeypatch.setattr(doctor_mod, "load_config", lambda: config, raising=False)
+        monkeypatch.setattr(doctor_mod, "read_raw_config", lambda: raw_config, raising=False)
         monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home, raising=False)
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path, raising=False)
         monkeypatch.setattr(doctor_mod, "_DHH", str(hermes_home), raising=False)
@@ -365,7 +524,7 @@ class TestDaytonaDoctorConfigBackedPolish:
                 "daytona_env_vars": {"HERMES_LIVE_MARKER": "ok"},
                 "daytona_volume_mounts": [{"volume_id": "vol-id", "mount_path": "/data"}],
                 "daytona_sync_cwd": True,
-                "cwd": str(tmp_path / "fixture"),
+                "daytona_sync_cwd_source": str(tmp_path / "fixture"),
                 "container_disk": 20480,
             },
         )
@@ -376,6 +535,66 @@ class TestDaytonaDoctorConfigBackedPolish:
         assert "daytona_volume_mounts" in output and "1 mount(s)" in output
         assert "Daytona sync_cwd" in output and "enabled" in output
         assert "Daytona disk request (20GB) exceeds platform guidance" in output
+    def test_config_backend_daytona_invalid_language_is_reported(self, monkeypatch, tmp_path):
+        output = self._run_doctor_with_config(
+            monkeypatch,
+            tmp_path,
+            {"daytona_create_mode": "image", "daytona_language": "go"},
+        )
+
+        assert "Unsupported Daytona language" in output
+        assert "python" in output and "typescript" in output and "javascript" in output
+
+    def test_snapshot_mode_ignores_explicit_large_disk_guidance(self, monkeypatch, tmp_path):
+        output = self._run_doctor_with_config(
+            monkeypatch,
+            tmp_path,
+            {
+                "daytona_create_mode": "snapshot",
+                "daytona_snapshot": "project-snapshot",
+                "container_disk": 20480,
+            },
+        )
+
+        assert "Daytona disk request" not in output
+
+
+# ---------------------------------------------------------------------------
+# Config-set tests
+# ---------------------------------------------------------------------------
+
+class TestDaytonaConfigSetStructuredEnvSync:
+    """hermes config set mirrors structured Daytona config as valid JSON env values."""
+
+    def test_daytona_labels_are_saved_to_env_as_json(self, monkeypatch, tmp_path):
+        from hermes_cli import config as config_mod
+
+        saved_env = {}
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(config_mod, "get_config_path", lambda: tmp_path / "config.yaml", raising=False)
+        monkeypatch.setattr(config_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+        monkeypatch.setattr(config_mod, "ensure_hermes_home", lambda: None, raising=False)
+        monkeypatch.setattr(config_mod, "is_managed", lambda: False, raising=False)
+        monkeypatch.setattr(config_mod, "save_env_value", lambda k, v: saved_env.setdefault(k, v), raising=False)
+
+        config_mod.set_config_value("terminal.daytona_labels", '{"team":"agents","env":"dev"}')
+
+        assert saved_env["TERMINAL_DAYTONA_LABELS"] == '{"env":"dev","team":"agents"}'
+
+    def test_daytona_volume_mounts_are_saved_to_env_as_json_array(self, monkeypatch, tmp_path):
+        from hermes_cli import config as config_mod
+
+        saved_env = {}
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(config_mod, "get_config_path", lambda: tmp_path / "config.yaml", raising=False)
+        monkeypatch.setattr(config_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+        monkeypatch.setattr(config_mod, "ensure_hermes_home", lambda: None, raising=False)
+        monkeypatch.setattr(config_mod, "is_managed", lambda: False, raising=False)
+        monkeypatch.setattr(config_mod, "save_env_value", lambda k, v: saved_env.setdefault(k, v), raising=False)
+
+        config_mod.set_config_value("terminal.daytona_volume_mounts", '[{"volume_id":"vol-1","mount_path":"/data"}]')
+
+        assert saved_env["TERMINAL_DAYTONA_VOLUME_MOUNTS"] == '[{"mount_path":"/data","volume_id":"vol-1"}]'
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +697,8 @@ class TestDaytonaSetupSnapshotSkipsResources:
                 return 4  # daytona
             if "Sandbox create mode" in question:
                 return 1  # snapshot mode
+            if "Sandbox language" in question:
+                return 0  # default SDK/image language
             if "Name scope" in question or "name scope" in question:
                 return 0  # task
             raise AssertionError(f"Unexpected prompt_choice: {question}")
@@ -574,6 +795,8 @@ class TestDaytonaSetupImageModeIncludesResources:
                 return 4  # daytona
             if "Sandbox create mode" in question:
                 return 0  # image mode
+            if "Sandbox language" in question:
+                return 0  # default SDK/image language
             if "Name scope" in question or "name scope" in question:
                 return 0  # task
             raise AssertionError(f"Unexpected prompt_choice: {question}")

@@ -13,6 +13,7 @@ This module provides:
 """
 
 import copy
+import json
 import logging
 import os
 import platform
@@ -764,7 +765,7 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Daytona expansion defaults (P1)
+        # Daytona expansion defaults
         "daytona_create_mode": "image",
         "daytona_snapshot": "",
         "daytona_language": "",
@@ -780,7 +781,7 @@ DEFAULT_CONFIG = {
         "daytona_network_allow_list": "",
         "daytona_volume_mounts": [],
         "daytona_gpu": 0,
-        # Daytona CWD sync (P7): explicit opt-in. When True, the host project
+        # Daytona CWD sync: explicit opt-in. When True, the host project
         # directory is synced to the Daytona sandbox at /workspace. Default off
         # because uploading host directories to cloud sandboxes has security and
         # cost implications — the user must consciously enable this.
@@ -5531,6 +5532,18 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
+def _config_env_sync_value(key: str, value: Any) -> str:
+    """Serialize config values for env mirrors read by runtime backends."""
+    structured_keys = {
+        "terminal.daytona_labels",
+        "terminal.daytona_env_vars",
+        "terminal.daytona_volume_mounts",
+    }
+    if key in structured_keys:
+        return json.dumps(value, separators=(",", ":"), sort_keys=True)
+    return str(value)
+
+
 def set_config_value(key: str, value: str):
     """Set a configuration value."""
     if is_managed():
@@ -5571,8 +5584,25 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
+    structured_json_keys = {
+        "terminal.daytona_labels": dict,
+        "terminal.daytona_env_vars": dict,
+        "terminal.daytona_volume_mounts": list,
+    }
+
     # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
+    if key in structured_json_keys:
+        expected_type = structured_json_keys[key]
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            print(f"✗ {key} must be valid JSON: {exc}")
+            return
+        if not isinstance(value, expected_type):
+            expected_label = "object" if expected_type is dict else "array"
+            print(f"✗ {key} must be a JSON {expected_label}")
+            return
+    elif value.lower() in {'true', 'yes', 'on'}:
         value = True
     elif value.lower() in {'false', 'no', 'off'}:
         value = False
@@ -5597,6 +5627,7 @@ def set_config_value(key: str, value: str):
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        # Daytona expansion keys
         "terminal.daytona_create_mode": "TERMINAL_DAYTONA_CREATE_MODE",
         "terminal.daytona_snapshot": "TERMINAL_DAYTONA_SNAPSHOT",
         "terminal.daytona_language": "TERMINAL_DAYTONA_LANGUAGE",
@@ -5632,7 +5663,7 @@ def set_config_value(key: str, value: str):
         "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
     }
     if key in _config_to_env_sync:
-        save_env_value(_config_to_env_sync[key], str(value))
+        save_env_value(_config_to_env_sync[key], _config_env_sync_value(key, value))
 
     print(f"✓ Set {key} = {value} in {config_path}")
 

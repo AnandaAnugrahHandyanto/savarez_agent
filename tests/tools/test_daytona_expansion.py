@@ -1,4 +1,4 @@
-"""P0 regression tests for Daytona expansion features.
+"""Regression tests for Daytona expansion features.
 
 These tests cover new Daytona backend capabilities BEFORE implementation:
 - Snapshot-based sandbox creation (daytona_create_mode / daytona_snapshot)
@@ -14,10 +14,10 @@ All tests use SDK mocks — no live Daytona credentials required.
 
 RED/GREEN status:
   These tests are written against the EXPANSION specification.  They are
-  expected to FAIL (RED) until the P1 implementation adds the corresponding
+  expected to FAIL (RED) until the implementation adds the corresponding
   constructor parameters, config/env bridge entries, and terminal_tool wiring.
   The purpose is to document the expected API shape and serve as a gate:
-  the P1 branch should make these tests GREEN without modifying them.
+  the implementation branch should make these tests GREEN without modifying them.
 """
 
 import enum
@@ -87,7 +87,7 @@ def make_env(daytona_sdk, monkeypatch):
     monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
     monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda **kw: None)
     monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kw: [])
-    # P2: Mock _derive_profile_id to return a stable test value
+    # Mock _derive_profile_id to return a stable test value
     monkeypatch.setattr("tools.environments.daytona._derive_profile_id",
                         lambda: "abcd1234")
 
@@ -132,7 +132,7 @@ def make_env(daytona_sdk, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Snapshot mode tests (P1: daytona_create_mode / daytona_snapshot)
+# Snapshot mode tests (daytona_create_mode / daytona_snapshot)
 # ---------------------------------------------------------------------------
 
 class TestSnapshotMode:
@@ -143,7 +143,7 @@ class TestSnapshotMode:
         """Passing create_mode='snapshot' should invoke daytona.create()
         with a CreateSandboxFromSnapshotParams instance."""
         env = make_env(create_mode="snapshot", snapshot="my-snap-001")
-        # After P1: inspect CreateSandboxFromSnapshotParams.call_args.kwargs
+        # Inspect CreateSandboxFromSnapshotParams.call_args.kwargs
         # to verify the snapshot param was passed.
         call_kw = daytona_sdk.CreateSandboxFromSnapshotParams.call_args.kwargs
         assert call_kw.get("snapshot") == "my-snap-001", (
@@ -153,7 +153,7 @@ class TestSnapshotMode:
     def test_create_mode_snapshot_omits_image(self, make_env, daytona_sdk):
         """Snapshot mode should NOT set the image field on create params."""
         env = make_env(create_mode="snapshot", snapshot="my-snap-001")
-        # After P1: inspect CreateSandboxFromSnapshotParams.call_args.kwargs;
+        # Inspect CreateSandboxFromSnapshotParams.call_args.kwargs;
         # image should be absent or None in snapshot params.
         call_kw = daytona_sdk.CreateSandboxFromSnapshotParams.call_args.kwargs
         assert call_kw.get("image") in (None, ""), (
@@ -163,14 +163,14 @@ class TestSnapshotMode:
     def test_create_mode_image_is_default(self, make_env, daytona_sdk):
         """Default create_mode should be 'image' (backward compatible)."""
         env = make_env(image="python:3.11")
-        # After P1: verify CreateSandboxFromImageParams was called (not
+        # Verify CreateSandboxFromImageParams was called (not
         # CreateSandboxFromSnapshotParams) by checking its call_args.
         call_kw = daytona_sdk.CreateSandboxFromImageParams.call_args.kwargs
         assert call_kw.get("image") == "python:3.11", (
             "Default create mode should produce image params"
         )
 
-    # --- P3: validation and error handling ---
+    # --- validation and error handling ---
 
     def test_create_mode_snapshot_without_snapshot_raises(self, make_env, daytona_sdk):
         """create_mode='snapshot' with empty snapshot must raise ValueError."""
@@ -271,7 +271,7 @@ class TestValidationBeforeSideEffects:
 
 
 # ---------------------------------------------------------------------------
-# P3: Snapshot-mode shared fields
+# Snapshot-mode shared fields
 # ---------------------------------------------------------------------------
 
 class TestSnapshotModeSharedFields:
@@ -429,7 +429,7 @@ class TestImageModeBackwardCompat:
     def test_image_mode_default_no_extra_params(self, make_env, daytona_sdk, monkeypatch):
         """When no expansion keys are set, CreateSandboxFromImageParams
         should have the same shape as before (image, name, labels, resources,
-        auto_stop_interval=0) plus P2 mandatory labels."""
+        auto_stop_interval=0) plus mandatory labels."""
         monkeypatch.setattr("tools.environments.daytona._derive_profile_id",
                             lambda: "abcd1234")
         env = make_env(image="test-image:latest", task_id="compat-task")
@@ -443,7 +443,7 @@ class TestImageModeBackwardCompat:
         assert call_kw.get("auto_stop_interval") == 0
         labels = call_kw.get("labels", {})
         assert labels.get("hermes_task_id") == "compat-task"
-        # P2 mandatory labels:
+        # Mandatory labels:
         assert labels.get("hermes_profile_id") == "abcd1234"
         assert labels.get("hermes_backend") == "daytona"
 
@@ -463,8 +463,8 @@ class TestImageModeBackwardCompat:
 
 class TestProfileScopedNamesLabels:
     """daytona_name_prefix, daytona_name_scope, daytona_labels.
-
-    As of P2, all sandboxes carry three mandatory labels:
+    
+    All sandboxes carry three mandatory labels:
     - hermes_task_id:    the task ID
     - hermes_profile_id: short SHA-256 hash of the profile home dir
     - hermes_backend:    always 'daytona' (identifies the sandbox backend)
@@ -970,7 +970,7 @@ class TestJsonTypeValidation:
 
 
 # ---------------------------------------------------------------------------
-# Profile ID derivation (P2)
+# Profile ID derivation
 # ---------------------------------------------------------------------------
 
 class TestDeriveProfileId:

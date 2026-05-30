@@ -528,7 +528,7 @@ class TestContainerResourceBridgesComplete:
 
 
 # ---------------------------------------------------------------------------
-# Additional P0 expansion keys (Daytona expansion plan)
+# Daytona expansion keys
 # ---------------------------------------------------------------------------
 # These keys are specified in the expansion plan but NOT yet covered by the
 # classes above.  Each must be bridged in all four locations.
@@ -548,7 +548,7 @@ _EXPANSION_KEYS = {
     "daytona_network_allow_list":    "TERMINAL_DAYTONA_NETWORK_ALLOW_LIST",
     "daytona_volume_mounts":         "TERMINAL_DAYTONA_VOLUME_MOUNTS",
     "daytona_gpu":                   "TERMINAL_DAYTONA_GPU",
-    # P7: CWD sync pilot
+    # CWD sync pilot
     "daytona_sync_cwd":             "TERMINAL_DAYTONA_SYNC_CWD",
 }
 

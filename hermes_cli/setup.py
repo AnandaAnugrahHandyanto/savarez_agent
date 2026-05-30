@@ -1585,8 +1585,21 @@ def setup_terminal_backend(config: dict):
 
         # --- Language ---
         print()
-        current_lang = cfg_get(config, "terminal", "daytona_language", default="")
-        lang = prompt("  Sandbox language (empty for default)", current_lang)
+        from tools.environments.daytona import get_supported_daytona_languages
+        supported_languages = get_supported_daytona_languages()
+        current_lang = str(cfg_get(config, "terminal", "daytona_language", default="") or "").lower()
+        language_choices = ["Default (SDK/image default)"] + [
+            f"{lang} — Daytona SDK supported" for lang in supported_languages
+        ]
+        language_default = 0
+        if current_lang in supported_languages:
+            language_default = supported_languages.index(current_lang) + 1
+        elif current_lang:
+            print_warning(
+                f"  Existing Daytona language {current_lang!r} is not supported by the installed SDK; clearing it."
+            )
+        lang_idx = prompt_choice("  Sandbox language:", language_choices, language_default)
+        lang = "" if lang_idx == 0 else supported_languages[lang_idx - 1]
         config["terminal"]["daytona_language"] = lang
         save_env_value("TERMINAL_DAYTONA_LANGUAGE", lang)
 

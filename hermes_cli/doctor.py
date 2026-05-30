@@ -11,7 +11,7 @@ import shutil
 import importlib.util
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path, load_config
+from hermes_cli.config import get_project_root, get_hermes_home, get_env_path, load_config, read_raw_config
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 
@@ -442,6 +442,13 @@ def run_doctor(args):
     terminal_cfg = doctor_config.get("terminal", {}) if isinstance(doctor_config, dict) else {}
     if not isinstance(terminal_cfg, dict):
         terminal_cfg = {}
+    try:
+        raw_doctor_config = read_raw_config()
+    except Exception:
+        raw_doctor_config = {}
+    raw_terminal_cfg = raw_doctor_config.get("terminal", {}) if isinstance(raw_doctor_config, dict) else {}
+    if not isinstance(raw_terminal_cfg, dict):
+        raw_terminal_cfg = {}
 
     def _terminal_cfg_value(key, default=""):
         value = terminal_cfg.get(key, default)
@@ -1297,11 +1304,18 @@ def run_doctor(args):
 
         # --- Language validation ---
         language = str(_env_or_terminal_cfg("TERMINAL_DAYTONA_LANGUAGE", "daytona_language", "") or "").strip()
-        valid_languages = {"", "python", "javascript", "typescript", "go", "rust", "java", "csharp", "ruby"}
+        from tools.environments.daytona import get_supported_daytona_languages
+        supported_languages = get_supported_daytona_languages()
+        valid_languages = {"", *supported_languages}
         if language and language.lower() not in valid_languages:
-            check_warn(f"Unusual Daytona language: {language!r}", "(may not be supported by sandbox image)")
+            _fail_and_issue(
+                f"Unsupported Daytona language: {language!r}",
+                f"(installed SDK supports: {', '.join(supported_languages)})",
+                f"Set TERMINAL_DAYTONA_LANGUAGE to one of: {', '.join(supported_languages)}",
+                issues,
+            )
         elif language:
-            check_ok("Daytona language", f"({language})")
+            check_ok("Daytona language", f"({language.lower()})")
 
         # --- JSON fields validation ---
         for json_var, json_label in [
@@ -1355,7 +1369,8 @@ def run_doctor(args):
         # --- Disk size guidance ---
         disk_raw = _env_or_terminal_cfg("TERMINAL_CONTAINER_DISK", "container_disk", "")
         disk_mb = str(disk_raw or "").strip()
-        if disk_mb:
+        disk_explicit = os.getenv("TERMINAL_CONTAINER_DISK") not in (None, "") or "container_disk" in raw_terminal_cfg
+        if create_mode == "image" and disk_explicit and disk_mb:
             try:
                 disk_gb = int(disk_mb) / 1024
                 if disk_gb > 10:
@@ -1366,7 +1381,7 @@ def run_doctor(args):
             except ValueError:
                 pass
 
-        # --- CWD sync (P7 pilot) ---
+        # --- CWD sync ---
         sync_raw = _env_or_terminal_cfg("TERMINAL_DAYTONA_SYNC_CWD", "daytona_sync_cwd", "")
         sync_cwd = str(sync_raw or "").strip().lower()
         if sync_cwd in ("true", "1", "yes"):
@@ -1374,11 +1389,11 @@ def run_doctor(args):
                 "Daytona sync_cwd",
                 "(enabled — host project dir will sync to /workspace)",
             )
-            # Warn if no TERMINAL_CWD set — sync needs a source directory
-            if not (os.getenv("TERMINAL_CWD") or _terminal_cfg_value("cwd", "")):
+            # Warn if no explicit sync source is set — sync needs a source directory.
+            if not (os.getenv("TERMINAL_DAYTONA_SYNC_CWD_SOURCE") or _terminal_cfg_value("daytona_sync_cwd_source", "")):
                 check_warn(
-                    "Daytona sync_cwd: TERMINAL_CWD not set",
-                    "(will fall back to os.getcwd() at runtime)",
+                    "Daytona sync_cwd: no explicit sync source set",
+                    "(set daytona_sync_cwd_source / TERMINAL_DAYTONA_SYNC_CWD_SOURCE)",
                 )
 
     # Node.js + agent-browser (for browser automation tools)

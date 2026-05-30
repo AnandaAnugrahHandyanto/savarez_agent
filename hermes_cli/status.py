@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config, read_raw_config
 from hermes_cli.models import provider_label
 from hermes_cli.nous_account import (
     format_nous_portal_entitlement_message,
@@ -61,6 +61,21 @@ def _format_iso_timestamp(value) -> str:
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
+def _raw_terminal_config() -> dict:
+    """Return terminal keys explicitly present in config.yaml, excluding defaults."""
+    try:
+        raw = read_raw_config()
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict):
+        return {}
+    terminal = raw.get("terminal", {})
+    return terminal if isinstance(terminal, dict) else {}
+
+
+# -----------------------------------------------------------------------------
+# Model helpers
+# -----------------------------------------------------------------------------
 def _configured_model_label(config: dict) -> str:
     """Return the configured default model from config.yaml."""
     model_cfg = config.get("model")
@@ -398,6 +413,7 @@ def show_status(args):
     print(color("◆ Terminal Backend", Colors.CYAN, Colors.BOLD))
 
     terminal_cfg = config.get("terminal", {}) if isinstance(config.get("terminal"), dict) else {}
+    raw_terminal_cfg = _raw_terminal_config()
     terminal_env = os.getenv("TERMINAL_ENV", "")
     if not terminal_env:
         terminal_env = terminal_cfg.get("backend", "local")
@@ -418,8 +434,10 @@ def show_status(args):
             snapshot = os.getenv("TERMINAL_DAYTONA_SNAPSHOT") or terminal_cfg.get("daytona_snapshot", "")
             print(f"  Mode:         snapshot")
             print(f"  Snapshot:     {snapshot or '(not set)'}")
-            # Image is fallback in snapshot mode; show only if explicitly set
-            daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE") or terminal_cfg.get("daytona_image", "")
+            # Image is fallback in snapshot mode; show only if explicitly configured.
+            daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE")
+            if daytona_image is None and "daytona_image" in raw_terminal_cfg:
+                daytona_image = raw_terminal_cfg.get("daytona_image", "")
             if daytona_image:
                 print(f"  Fallback image: {daytona_image}")
         else:
@@ -473,7 +491,7 @@ def show_status(args):
         api_key_set = bool(os.getenv("DAYTONA_API_KEY"))
         print(f"  API key:      {check_mark(api_key_set)} {('configured' if api_key_set else 'not set')}")
 
-        # --- CWD sync (P7 pilot) ---
+        # --- CWD sync ---
         sync_cwd = os.getenv("TERMINAL_DAYTONA_SYNC_CWD") or terminal_cfg.get("daytona_sync_cwd", False)
         sync_cwd_bool = str(sync_cwd).lower() in ("true", "1", "yes") if isinstance(sync_cwd, str) else bool(sync_cwd)
         if sync_cwd_bool:
