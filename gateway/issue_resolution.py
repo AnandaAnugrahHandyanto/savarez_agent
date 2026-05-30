@@ -12,6 +12,7 @@ import sqlite3
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -68,6 +69,15 @@ class IssueResolutionRequest:
 
     repo: str
     issue_number: int
+    workdir: Path
+    branch: str | None = None
+
+
+@dataclass(frozen=True)
+class IssueSelectionRequest:
+    """Normalized request to select the next open issue in a repository."""
+
+    repo: str
     workdir: Path
     branch: str | None = None
 
@@ -179,6 +189,24 @@ async def submit_issue_resolution(
     )
     await ensure_issue_queue_worker(notify=notify)
     return SubmitResult(run_id=run.id, status=run.status, reused=existing is not None)
+
+
+async def submit_next_issue_resolution(
+    request: IssueSelectionRequest,
+    *,
+    notify: Callable[[str], Awaitable[None]],
+) -> SubmitResult:
+    """Resolve the oldest open issue in the repo and queue it for coding."""
+    issue = await _load_next_open_issue(request.repo)
+    return await submit_issue_resolution(
+        IssueResolutionRequest(
+            repo=request.repo,
+            issue_number=issue.number,
+            workdir=request.workdir,
+            branch=request.branch,
+        ),
+        notify=notify,
+    )
 
 
 async def resume_issue_resolution_queue(
@@ -726,6 +754,42 @@ def parse_issue_command_args(raw_args: str) -> IssueResolutionRequest:
     )
 
 
+def parse_issue_next_command_args(raw_args: str) -> IssueSelectionRequest:
+    """Parse `/issue-next` arguments from Telegram or another gateway client."""
+    tokens = shlex.split(raw_args or "")
+    repo = ""
+    workdir: Path | None = None
+    branch: str | None = None
+
+    idx = 0
+    while idx < len(tokens):
+        token = tokens[idx]
+        if token in {"--repo", "-r"} and idx + 1 < len(tokens):
+            repo = tokens[idx + 1]
+            idx += 2
+            continue
+        if token in {"--workdir", "-C"} and idx + 1 < len(tokens):
+            workdir = Path(tokens[idx + 1]).expanduser()
+            idx += 2
+            continue
+        if token in {"--branch", "-b"} and idx + 1 < len(tokens):
+            branch = tokens[idx + 1]
+            idx += 2
+            continue
+        if not repo:
+            repo = token
+            idx += 1
+            continue
+        raise ValueError(f"Unexpected argument: {token}")
+
+    if not repo:
+        repo = os.getenv("HERMES_ISSUE_REPO", "").strip()
+    if not _valid_repo(repo):
+        raise ValueError("Repository must look like owner/name.")
+
+    return IssueSelectionRequest(repo=repo, workdir=workdir or _default_workdir(repo), branch=branch)
+
+
 def github_issue_webhook_command(payload: dict[str, Any]) -> str | None:
     """Build a `/issue` command from a GitHub `issues` webhook payload."""
     issue = payload.get("issue") if isinstance(payload, dict) else None
@@ -991,6 +1055,40 @@ async def _create_or_find_pr(
         head_ref_name=str(row["headRefName"]),
         head_ref_oid=str(row["headRefOid"]),
     )
+
+async def _load_next_open_issue(repo: str) -> IssueMetadata:
+    result = await _run([
+        "gh",
+        "issue",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--limit",
+        "1000",
+        "--json",
+        "number,title,body,url,labels,createdAt",
+    ])
+    rows = json.loads(result.stdout or "[]")
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError(f"No open issues found in {repo}.")
+
+    def _created_at(row: dict[str, Any]) -> datetime:
+        value = str(row.get("createdAt") or "").replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return datetime.max.replace(tzinfo=timezone.utc)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    candidates = [row for row in rows if isinstance(row, dict) and row.get("number") is not None]
+    if not candidates:
+        raise RuntimeError(f"No open issues found in {repo}.")
+    chosen = min(candidates, key=_created_at)
+    return await _load_issue(repo, int(chosen["number"]))
 
 
 async def _post_pr_feedback(repo: str, pr: PullRequestMetadata, body: str) -> None:

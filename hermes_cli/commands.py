@@ -111,6 +111,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("status", "Show session info", "Session"),
     CommandDef("issue", "Resolve a GitHub issue with the automated coder lane", "Session",
                gateway_only=True, args_hint="<owner/repo|issue-url> <number> [--workdir path]"),
+    CommandDef("issue-next", "Resolve the next open GitHub issue with the automated coder lane", "Session",
+               gateway_only=True, args_hint="<owner/repo> [--workdir path]"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",

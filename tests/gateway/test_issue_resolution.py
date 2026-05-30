@@ -1,23 +1,28 @@
 """Tests for the barebones GitHub issue resolution lane."""
 
+import json
 from pathlib import Path
 
 import pytest
 
 from gateway.issue_resolution import (
     AiderRole,
+    CompletedProcess,
     EpicTask,
     IssueMetadata,
     IssueResolutionRequest,
+    IssueSelectionRequest,
     IssueRunStatus,
     IssueRunType,
     IssueStateStore,
     _execute_master_issue,
+    _load_next_open_issue,
     build_aider_invocation,
     github_issue_webhook_command,
     is_master_issue,
     parse_decomposition_response,
     parse_issue_command_args,
+    parse_issue_next_command_args,
 )
 from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
 
@@ -96,6 +101,17 @@ def test_master_issue_heading_detection():
     )
 
     assert is_master_issue(issue) is True
+
+
+def test_parse_issue_next_command_parses_repo_and_workdir(tmp_path):
+    """The next-open-issue command should accept a repo plus workdir."""
+    request = parse_issue_next_command_args(f"m0nklabs/cryptotrader --workdir {tmp_path}")
+
+    assert request == IssueSelectionRequest(
+        repo="m0nklabs/cryptotrader",
+        workdir=tmp_path,
+        branch=None,
+    )
 
 
 
@@ -235,6 +251,34 @@ async def test_master_expansion_creates_persisted_subissue_runs(tmp_path, monkey
     assert [child.status for child in children] == [IssueRunStatus.QUEUED, IssueRunStatus.QUEUED]
     assert [child.run_type for child in children] == [IssueRunType.SUB_ISSUE, IssueRunType.SUB_ISSUE]
     assert any("expanded into 2" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_load_next_open_issue_selects_oldest_issue(monkeypatch):
+    """Hermes should pick the oldest open issue, not a random one."""
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        assert command[:4] == ["gh", "issue", "list", "--repo"]
+        payload = [
+            {"number": 12, "createdAt": "2026-05-29T12:00:00Z"},
+            {"number": 7, "createdAt": "2026-05-28T12:00:00Z"},
+        ]
+        return CompletedProcess(command=command, returncode=0, stdout=json.dumps(payload), stderr="")
+
+    async def fake_load_issue(repo, issue_number):
+        return IssueMetadata(
+            number=issue_number,
+            title=f"Issue {issue_number}",
+            body="body",
+            url=f"https://github.com/{repo}/issues/{issue_number}",
+        )
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+    monkeypatch.setattr("gateway.issue_resolution._load_issue", fake_load_issue)
+
+    issue = await _load_next_open_issue("m0nklabs/cryptotrader")
+
+    assert issue.number == 7
 
 
 def test_local_aider_invocation_targets_guardian(tmp_path):

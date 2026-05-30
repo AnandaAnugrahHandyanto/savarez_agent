@@ -7721,6 +7721,8 @@ class GatewayRunner:
 
         if canonical == "issue":
             return await self._handle_issue_command(event)
+        if canonical == "issue-next":
+            return await self._handle_issue_next_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -9981,6 +9983,30 @@ class GatewayRunner:
             return f"Hermes: Issue #{request.issue_number} could not be queued: {exc}"
         return (
             f"Hermes: Issue #{request.issue_number} queued as run #{result.run_id}. "
+            "Local coder execution is single-flight."
+        )
+
+    async def _handle_issue_next_command(self, event: MessageEvent) -> str:
+        """Handle /issue-next by selecting the oldest open issue in a repo."""
+        from gateway.issue_resolution import (
+            parse_issue_next_command_args,
+            submit_next_issue_resolution,
+        )
+
+        try:
+            request = parse_issue_next_command_args(event.get_command_args())
+        except ValueError as exc:
+            return f"Usage: /issue-next <owner/repo> [--workdir path]\nError: {exc}"
+
+        async def _notify(message: str) -> None:
+            await self._deliver_platform_notice(event.source, message)
+
+        try:
+            result = await submit_next_issue_resolution(request, notify=_notify)
+        except Exception as exc:
+            return f"Hermes: Next open issue in {request.repo} could not be queued: {exc}"
+        return (
+            f"Hermes: Next open issue in {request.repo} queued as run #{result.run_id}. "
             "Local coder execution is single-flight."
         )
 
