@@ -68,3 +68,25 @@ def find_tool_call_json(content: str) -> list[RawCall]:
 
 
 FORMATS.append(ContentFormat("tool_call_json", find_tool_call_json))
+
+
+_MAX_BARE_JSON_ARGS = 16_000
+
+
+def find_bare_json_object(content: str) -> list[RawCall]:
+    s = content.strip()
+    if not (s.startswith("{") and s.endswith("}")):  # whole-content-only
+        return []
+    obj = _loads_lenient(s)
+    if not isinstance(obj, dict) or obj.keys() - {"name", "arguments"}:
+        return []
+    name, args = obj.get("name"), obj.get("arguments", {})
+    if not name or not isinstance(name, str) or not isinstance(args, (dict, str)):
+        return []
+    serialized = json.dumps(args) if isinstance(args, dict) else args
+    if len(serialized) > _MAX_BARE_JSON_ARGS:
+        return []
+    return [RawCall(name=name, arguments=args, span=content)]
+
+
+FORMATS.append(ContentFormat("bare_json_object", find_bare_json_object))

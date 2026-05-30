@@ -40,3 +40,30 @@ def test_tool_call_json_ignores_prose():
     from agent.transports.content_tool_calls import find_tool_call_json
 
     assert find_tool_call_json("talking about <tool_call> tags") == []
+
+
+def test_bare_json_whole_content_promotes():
+    from agent.transports.content_tool_calls import find_bare_json_object
+
+    calls = find_bare_json_object((FIX / "bare_json_object.txt").read_text())
+    assert len(calls) == 1
+    assert calls[0].name == "web_search"
+    assert calls[0].arguments == {"query": "北京今天的天气"}
+
+
+def test_bare_json_embedded_rejected():
+    from agent.transports.content_tool_calls import find_bare_json_object
+
+    assert find_bare_json_object('here: {"name":"web_search","arguments":{}} ok') == []
+
+
+def test_bare_json_extra_keys_rejected():
+    from agent.transports.content_tool_calls import find_bare_json_object
+
+    assert find_bare_json_object('{"name":"web_search","arguments":{},"description":"x"}') == []
+
+
+def test_bare_json_oversized_rejected():
+    from agent.transports.content_tool_calls import find_bare_json_object
+
+    assert find_bare_json_object('{"name":"web_search","arguments":{"q":"' + "x" * 50000 + '"}}') == []
