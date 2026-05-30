@@ -1,7 +1,7 @@
 ---
 id: phase2-d3-validation-gate-skill
 title: Phase 2 D3 — validation-gate SKILL.md: two-phase reviewer skill
-status: executed-local-pending-review
+status: complete-and-committed
 executor: delegate-coder
 parallel_safe: false
 base_branch: docs/ua-flywheel-phase1-phase2-plan

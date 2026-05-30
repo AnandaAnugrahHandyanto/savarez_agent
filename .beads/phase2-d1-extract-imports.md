@@ -1,7 +1,7 @@
 ---
 id: phase2-d1-extract-imports
 title: Phase 2 D1 — extract_imports.py: import/dependency map extractor
-status: executed-local-pending-review
+status: complete-and-committed
 executor: delegate-coder
 parallel_safe: false
 base_branch: docs/ua-flywheel-phase1-phase2-plan
