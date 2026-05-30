@@ -331,6 +331,20 @@ Coverage gaps:
 - `test_compression_preserves_project_decisions_in_thread_session`
 - `test_compression_session_split_persists_before_next_gateway_turn`
 
+## Adapter Source Test Follow-up
+
+Fake Discord adapter tests now cover normal thread messages, slash commands in
+threads, `/thread` starter dispatch, and auto-thread routing. Those paths build
+the stable thread key
+`agent:main:discord:thread:<thread_id>:<thread_id>` when `chat_id` and
+`thread_id` both point at the Discord thread.
+
+The batching tests also document a remaining config-source drift: Discord text
+batching reads `group_sessions_per_user` and `thread_sessions_per_user` from
+`PlatformConfig.extra`, while `SessionStore` reads them from `GatewayConfig`.
+If those values are not bridged into the adapter extra config, text batching can
+group chunks by a different key than the gateway session store uses.
+
 ## Operational Checks To Run From The VPS
 
 Run these only on the VPS/operator side, not from this audit session:

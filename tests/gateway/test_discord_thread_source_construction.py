@@ -326,3 +326,22 @@ def test_discord_batch_key_matches_session_key_only_when_thread_setting_matches(
 
     adapter.config.extra["thread_sessions_per_user"] = gateway_config.thread_sessions_per_user
     assert adapter._text_batch_key(event) == store_key
+
+
+def test_discord_batch_key_matches_session_key_only_when_group_setting_matches(adapter):
+    source = adapter.build_source(
+        chat_id="111111111111111111",
+        chat_type="group",
+        user_id="333333333333333333",
+    )
+    event = SimpleNamespace(source=source)
+    gateway_config = GatewayConfig(group_sessions_per_user=False)
+    store_key = build_session_key(
+        source,
+        group_sessions_per_user=gateway_config.group_sessions_per_user,
+    )
+
+    assert adapter._text_batch_key(event) != store_key
+
+    adapter.config.extra["group_sessions_per_user"] = gateway_config.group_sessions_per_user
+    assert adapter._text_batch_key(event) == store_key
