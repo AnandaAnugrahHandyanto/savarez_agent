@@ -95,7 +95,7 @@ python -m pytest tests/code_scan/test_extract_imports.py -v
 | Fixture file | Expected imports |
 |---|---|
 | `python_sample.py` | `["os", "sys", "json", "pathlib"]` |
-| `ts_sample.ts` | `["react", "react-dom", "./App", "./utils"]` |
+| `ts_sample.ts` | `["react", "react-dom", "./App", "./utils", "lodash"]` |
 | `rust_sample.rs` | `["std", "serde", "tokio"]` |
 | `go_sample.go` | `["fmt", "net/http", "github.com/gin-gonic/gin"]` |
 | `shell_sample.sh` | `["env.sh", "~/.bashrc"]` |
@@ -114,7 +114,7 @@ fixtures = {
     'python': ('tests/code_scan/fixtures/imports/python_sample.py',
                extract_python_imports, ['os', 'sys', 'json', 'pathlib']),
     'ts': ('tests/code_scan/fixtures/imports/ts_sample.ts',
-           extract_js_ts_imports, ['react', 'react-dom', './App', './utils']),
+           extract_js_ts_imports, ['react', 'react-dom', './App', './utils', 'lodash']),
     'rust': ('tests/code_scan/fixtures/imports/rust_sample.rs',
              extract_rust_imports, ['std', 'serde', 'tokio']),
     'go': ('tests/code_scan/fixtures/imports/go_sample.go',
@@ -288,11 +288,14 @@ else:
 
 # Test 2: Valid nodes + edges → APPROVED
 r = validate_graph({
-    'nodes': [{'node_id': 'a', 'filePath': 'src/main.py', 'node_type': 'module'}],
-    'edges': [{'source': 'a', 'target': 'a', 'edge_type': 'imports'}]
+    'nodes': [
+        {'node_id': 'a', 'filePath': 'src/main.py', 'node_type': 'module'},
+        {'node_id': 'b', 'filePath': 'src/utils.py', 'node_type': 'module'}
+    ],
+    'edges': [{'source': 'a', 'target': 'b', 'edge_type': 'imports'}]
 })
 if len(r.get('issues', [])) == 0:
-    print('TC-6.2: Valid graph → APPROVED PASS')
+    print('TC-6.2: Valid graph (a→b) → APPROVED PASS')
 else:
     print('TC-6.2: FAIL — valid graph has issues: %s' % r.get('issues'))
     passed = False
@@ -597,8 +600,11 @@ run_test "tc8" bash -c 'TOTAL=$(($(wc -l < skills/code-analysis/code-scan/SKILL.
 # TC-11
 run_test "tc11" python -m pytest tests/code_scan/ -q
 
-# TC-9 + TC-10 (guardrails)
-run_test "tc9_10" bash ~/.hermes/hermes-agent/.plans/_eval-guardrails.sh
+# TC-9: Scope guardrail
+run_test "tc9" bash -c 'cd /home/jarrad/.hermes/hermes-agent && bash .plans/_eval-guardrails.sh 2>&1 | grep -q "TC-9 PASS"'
+
+# TC-10: D4 absent
+run_test "tc10" bash -c 'cd /home/jarrad/.hermes/hermes-agent && bash .plans/_eval-guardrails.sh 2>&1 | grep -q "TC-10 PASS: D4 correctly absent"'
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
