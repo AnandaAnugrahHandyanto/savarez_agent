@@ -8,6 +8,7 @@ the same Discord thread back to its prior transcript after restart.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import logging
 import sqlite3
 
 import pytest
@@ -164,6 +165,53 @@ def test_lost_sessions_json_mapping_starts_new_discord_thread_session(
     ]
 
 
+def test_lost_sessions_json_mapping_logs_discord_thread_diagnostic(
+    store_factory,
+    tmp_path,
+    caplog,
+):
+    source = _discord_thread_source()
+    first_store = store_factory()
+
+    first_entry = first_store.get_or_create_session(source)
+    _append_fake_transcript(first_store, first_entry.session_id)
+
+    (tmp_path / "sessions" / "sessions.json").unlink()
+
+    caplog.set_level(logging.WARNING, logger="gateway.session")
+    restarted_store = store_factory()
+    restarted_entry = restarted_store.get_or_create_session(source)
+
+    warning = next(
+        record for record in caplog.records
+        if record.message.startswith("Discord thread session mapping missing")
+    )
+    assert warning.platform == "discord"
+    assert warning.chat_type == "thread"
+    assert warning.chat_id == THREAD_ID
+    assert warning.thread_id == THREAD_ID
+    assert warning.session_key == EXPECTED_THREAD_KEY
+    assert warning.new_session_id == restarted_entry.session_id
+    assert warning.candidate_count == 1
+    assert "remember the Jenny project thread context" not in warning.message
+
+
+def test_new_discord_thread_without_prior_transcript_logs_no_mapping_warning(
+    store_factory,
+    caplog,
+):
+    source = _discord_thread_source()
+    caplog.set_level(logging.WARNING, logger="gateway.session")
+
+    store = store_factory()
+    store.get_or_create_session(source)
+
+    assert not [
+        record for record in caplog.records
+        if record.message.startswith("Discord thread session mapping missing")
+    ]
+
+
 def test_pruned_discord_thread_mapping_starts_new_session_but_keeps_old_db_transcript(
     store_factory,
 ):
@@ -192,3 +240,30 @@ def test_pruned_discord_thread_mapping_starts_new_session_but_keeps_old_db_trans
         "remember the Jenny project thread context",
         "I will keep using this thread context.",
     ]
+
+
+def test_pruned_discord_thread_mapping_logs_diagnostic(store_factory, caplog):
+    source = _discord_thread_source()
+    store = store_factory()
+
+    first_entry = store.get_or_create_session(source)
+    _append_fake_transcript(store, first_entry.session_id)
+    with store._lock:
+        store._entries[first_entry.session_key].updated_at = (
+            datetime.now() - timedelta(days=2)
+        )
+        store._save()
+
+    assert store.prune_old_entries(max_age_days=1) == 1
+
+    caplog.set_level(logging.WARNING, logger="gateway.session")
+    next_entry = store.get_or_create_session(source)
+
+    warning = next(
+        record for record in caplog.records
+        if record.message.startswith("Discord thread session mapping missing")
+    )
+    assert warning.session_key == EXPECTED_THREAD_KEY
+    assert warning.new_session_id == next_entry.session_id
+    assert warning.candidate_count == 1
+    assert "remember the Jenny project thread context" not in warning.message

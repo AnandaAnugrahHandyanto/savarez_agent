@@ -888,6 +888,7 @@ class SessionStore:
         # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
         db_create_kwargs = None
+        warn_discord_thread_mapping_loss = False
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -930,6 +931,10 @@ class SessionStore:
                 was_auto_reset = False
                 auto_reset_reason = None
                 reset_had_activity = False
+                warn_discord_thread_mapping_loss = self._should_check_discord_thread_mapping_loss(
+                    source,
+                    force_new=force_new,
+                )
 
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -967,10 +972,111 @@ class SessionStore:
         if self._db and db_create_kwargs:
             try:
                 self._db.create_session(**db_create_kwargs)
+                if warn_discord_thread_mapping_loss:
+                    self._warn_if_discord_thread_mapping_loss(
+                        source=source,
+                        session_key=session_key,
+                        new_session_id=session_id,
+                    )
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 
         return entry
+
+    @staticmethod
+    def _should_check_discord_thread_mapping_loss(
+        source: SessionSource,
+        *,
+        force_new: bool,
+    ) -> bool:
+        return (
+            not force_new
+            and source.platform == Platform.DISCORD
+            and source.chat_type == "thread"
+            and bool(source.thread_id)
+        )
+
+    def _warn_if_discord_thread_mapping_loss(
+        self,
+        *,
+        source: SessionSource,
+        session_key: str,
+        new_session_id: str,
+    ) -> None:
+        candidate_count = self._discord_thread_mapping_loss_candidate_count(
+            source=source,
+            session_key=session_key,
+            new_session_id=new_session_id,
+        )
+        if candidate_count <= 0:
+            return
+        logger.warning(
+            "Discord thread session mapping missing; created new session with "
+            "prior candidate transcript metadata",
+            extra={
+                "platform": source.platform.value,
+                "chat_type": source.chat_type,
+                "chat_id": source.chat_id,
+                "thread_id": source.thread_id,
+                "session_key": session_key,
+                "new_session_id": new_session_id,
+                "candidate_count": candidate_count,
+            },
+        )
+
+    def _discord_thread_mapping_loss_candidate_count(
+        self,
+        *,
+        source: SessionSource,
+        session_key: str,
+        new_session_id: str,
+    ) -> int:
+        if not self._db:
+            return 0
+        conn = getattr(self._db, "_conn", None)
+        db_lock = getattr(self._db, "_lock", None)
+        if conn is None or db_lock is None:
+            return 0
+        try:
+            with db_lock:
+                has_sessions = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'"
+                ).fetchone()
+                has_routing = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_routing_metadata'"
+                ).fetchone()
+                if not has_sessions or not has_routing:
+                    return 0
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS candidate_count
+                    FROM sessions s
+                    JOIN session_routing_metadata rm ON rm.session_id = s.id
+                    WHERE s.id != ?
+                      AND COALESCE(s.message_count, 0) > 0
+                      AND rm.platform = 'discord'
+                      AND rm.chat_type = 'thread'
+                      AND (
+                        rm.session_key = ?
+                        OR (rm.thread_id = ? AND rm.chat_id = ?)
+                      )
+                    """,
+                    (
+                        new_session_id,
+                        session_key,
+                        source.thread_id,
+                        source.chat_id,
+                    ),
+                ).fetchone()
+        except Exception as exc:
+            logger.debug("Discord thread mapping-loss diagnostic failed: %s", exc)
+            return 0
+        if row is None:
+            return 0
+        try:
+            return int(row["candidate_count"])
+        except (KeyError, TypeError, ValueError):
+            return int(row[0] or 0)
 
     def update_session(
         self,
