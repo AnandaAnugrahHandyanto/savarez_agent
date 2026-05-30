@@ -521,3 +521,142 @@ def build_preloaded_skills_prompt(
         loaded_names.append(skill_name)
 
     return "\n\n".join(prompt_parts), loaded_names, missing
+
+
+def diagnose_missing_skill(identifier: str) -> Dict[str, Any]:
+    """Explain why ``identifier`` did not resolve to a loadable skill.
+
+    Returns a dict with:
+      - ``identifier``: the raw input
+      - ``searched_dirs``: list of directories scanned (local + external_dirs)
+      - ``matches_on_disk``: list of SKILL.md absolute paths whose parent
+        directory name OR frontmatter ``name:`` matches the requested
+        identifier
+      - ``rejection_reason``: human-readable text — usually "not found" or
+        a collision summary
+      - ``hint``: actionable next step
+
+    Used by callers that hit ``Unknown skill(s): X`` to produce a useful
+    error rather than the previous bare message that hid the root cause
+    behind every kanban worker crash (#28126).
+    """
+    info: Dict[str, Any] = {
+        "identifier": identifier,
+        "searched_dirs": [],
+        "matches_on_disk": [],
+        "rejection_reason": "not found",
+        "hint": "",
+    }
+    try:
+        from agent.skill_utils import (
+            get_external_skills_dirs,
+            get_skills_dir,
+            is_excluded_skill_path,
+            iter_skill_index_files,
+        )
+    except Exception:
+        return info
+
+    dirs = []
+    try:
+        local = get_skills_dir()
+        if local.exists():
+            dirs.append(local)
+    except Exception:
+        pass
+    try:
+        dirs.extend(get_external_skills_dirs())
+    except Exception:
+        pass
+    info["searched_dirs"] = [str(d) for d in dirs]
+
+    bare = identifier.rsplit("/", 1)[-1].strip()
+    matches = []
+    for d in dirs:
+        try:
+            for skill_md in iter_skill_index_files(d, "SKILL.md"):
+                if is_excluded_skill_path(skill_md):
+                    continue
+                parent = skill_md.parent
+                # Frontmatter name match
+                try:
+                    fm_content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+                except OSError:
+                    fm_content = ""
+                fm_name = parent.name
+                in_fm = False
+                for line in fm_content.split("\n"):
+                    s = line.strip()
+                    if s == "---":
+                        if in_fm:
+                            break
+                        in_fm = True
+                        continue
+                    if in_fm and s.startswith("name:"):
+                        val = s.split(":", 1)[1].strip().strip("\"'")
+                        if val:
+                            fm_name = val
+                        break
+                if parent.name == bare or fm_name == bare or fm_name == identifier:
+                    matches.append(str(skill_md))
+        except OSError:
+            continue
+
+    info["matches_on_disk"] = matches
+    if not matches:
+        info["rejection_reason"] = (
+            f"No SKILL.md found whose directory or frontmatter name matches "
+            f"'{identifier}' under any of: {', '.join(info['searched_dirs']) or '(no dirs configured)'}."
+        )
+        info["hint"] = (
+            "Run `hermes skills list` to see resolvable skills, "
+            "or check `skills.external_dirs` in config.yaml."
+        )
+    elif len(matches) == 1:
+        info["rejection_reason"] = (
+            f"Skill found at {matches[0]} but the loader returned no payload "
+            f"(read error, malformed frontmatter, or platform-gated)."
+        )
+        info["hint"] = (
+            "Try `hermes --skills <full/categorized/path>` to bypass bare-name "
+            "resolution, or check the agent log for the underlying skill_view error."
+        )
+    else:
+        info["rejection_reason"] = (
+            f"Skill name collision — {len(matches)} candidates: {'; '.join(matches)}. "
+            f"The loader refuses ambiguous bare-name loads."
+        )
+        info["hint"] = (
+            "Pass the full relative path (e.g. 'category/skill-name') to "
+            "disambiguate, or remove one of the colliding copies. If one of "
+            "these is a shadow of an external_dirs entry, re-run "
+            "`hermes update` — sync_skills now skips writing shadows (#28126)."
+        )
+    return info
+
+
+def format_missing_skills_error(missing: list[str]) -> str:
+    """Produce a multi-line error for ``Unknown skill(s)`` listing each
+    identifier with the on-disk paths the loader saw and why each was rejected.
+
+    Workers spawned by the kanban dispatcher previously crashed with a bare
+    ``Error: Unknown skill(s): X`` that hid the underlying skill_view
+    collision / shadow / platform-gated reason behind a generic exit 1.
+    """
+    lines = [f"Unknown skill(s): {', '.join(missing)}"]
+    for ident in missing:
+        try:
+            d = diagnose_missing_skill(ident)
+        except Exception as e:
+            lines.append(f"  - {ident}: diagnostic failed: {e}")
+            continue
+        lines.append(f"  - {ident}:")
+        lines.append(f"      searched: {', '.join(d['searched_dirs']) or '(none)'}")
+        if d["matches_on_disk"]:
+            lines.append(f"      on-disk candidates:")
+            for m in d["matches_on_disk"]:
+                lines.append(f"        • {m}")
+        lines.append(f"      reason: {d['rejection_reason']}")
+        if d["hint"]:
+            lines.append(f"      hint:   {d['hint']}")
+    return "\n".join(lines)

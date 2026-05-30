@@ -15214,8 +15214,12 @@ def main(
             task_id=cli.session_id,
         )
         if missing_skills:
-            missing_display = ", ".join(missing_skills)
-            raise ValueError(f"Unknown skill(s): {missing_display}")
+            try:
+                from agent.skill_commands import format_missing_skills_error
+                detail = format_missing_skills_error(missing_skills)
+            except Exception:
+                detail = f"Unknown skill(s): {', '.join(missing_skills)}"
+            raise ValueError(detail)
         if skills_prompt:
             cli.system_prompt = "\n\n".join(
                 part for part in (cli.system_prompt, skills_prompt) if part

@@ -600,6 +600,7 @@ class TestSyncSkills:
             "copied": [], "updated": [], "skipped": 0,
             "user_modified": [], "cleaned": [], "total_bundled": 0,
             "optional_provenance_backfilled": [],
+            "shadowed_by_external": [],
         }
 
     def test_failed_copy_does_not_poison_manifest(self, tmp_path):
