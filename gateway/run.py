@@ -6172,6 +6172,21 @@ class GatewayRunner:
         """Wait for shutdown signal."""
         await self._shutdown_event.wait()
 
+    def _apply_session_key_policy_to_platform_config(self, config: Any) -> None:
+        """Copy resolved session-key policy into adapter-local config."""
+        if not hasattr(config, "extra") or not isinstance(config.extra, dict):
+            return
+        config.extra["group_sessions_per_user"] = getattr(
+            self.config,
+            "group_sessions_per_user",
+            True,
+        )
+        config.extra["thread_sessions_per_user"] = getattr(
+            self.config,
+            "thread_sessions_per_user",
+            False,
+        )
+
     def _create_adapter(
         self, 
         platform: Platform, 
@@ -6182,15 +6197,7 @@ class GatewayRunner:
         Checks the platform_registry first (plugin adapters), then falls
         through to the built-in if/elif chain for core platforms.
         """
-        if hasattr(config, "extra") and isinstance(config.extra, dict):
-            config.extra.setdefault(
-                "group_sessions_per_user",
-                self.config.group_sessions_per_user,
-            )
-            config.extra.setdefault(
-                "thread_sessions_per_user",
-                getattr(self.config, "thread_sessions_per_user", False),
-            )
+        self._apply_session_key_policy_to_platform_config(config)
 
         # ── Plugin-registered platforms (checked first) ───────────────────
         try:

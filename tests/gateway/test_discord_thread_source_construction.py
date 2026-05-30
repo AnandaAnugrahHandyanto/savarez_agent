@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.run import GatewayRunner
 from gateway.session import build_session_key
 
 
@@ -153,6 +154,79 @@ def _assert_stable_thread_source(source):
     assert source.chat_id == "222222222222222222"
     assert source.thread_id == "222222222222222222"
     assert build_session_key(source) == EXPECTED_THREAD_KEY
+
+
+def _adapter_with_gateway_session_policy(
+    *,
+    group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+    stale_extra: dict | None = None,
+) -> tuple[DiscordAdapter, GatewayConfig]:
+    gateway_config = GatewayConfig(
+        group_sessions_per_user=group_sessions_per_user,
+        thread_sessions_per_user=thread_sessions_per_user,
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.config = gateway_config
+    platform_config = PlatformConfig(
+        enabled=True,
+        extra=dict(stale_extra or {}),
+    )
+
+    runner._apply_session_key_policy_to_platform_config(platform_config)
+
+    instance = DiscordAdapter(platform_config)
+    instance._client = SimpleNamespace(user=SimpleNamespace(id=999999999999999999))
+    instance._text_batch_delay_seconds = 0
+    instance.handle_message = AsyncMock()
+    return instance, gateway_config
+
+
+@pytest.mark.parametrize("thread_sessions_per_user", [False, True])
+def test_discord_thread_batch_key_uses_gateway_thread_session_policy(
+    thread_sessions_per_user,
+):
+    adapter, gateway_config = _adapter_with_gateway_session_policy(
+        thread_sessions_per_user=thread_sessions_per_user,
+        stale_extra={"thread_sessions_per_user": not thread_sessions_per_user},
+    )
+    source = adapter.build_source(
+        chat_id="222222222222222222",
+        chat_type="thread",
+        user_id="333333333333333333",
+        thread_id="222222222222222222",
+    )
+    event = SimpleNamespace(source=source)
+    store_key = build_session_key(
+        source,
+        group_sessions_per_user=gateway_config.group_sessions_per_user,
+        thread_sessions_per_user=gateway_config.thread_sessions_per_user,
+    )
+
+    assert adapter._text_batch_key(event) == store_key
+
+
+@pytest.mark.parametrize("group_sessions_per_user", [False, True])
+def test_discord_group_batch_key_uses_gateway_group_session_policy(
+    group_sessions_per_user,
+):
+    adapter, gateway_config = _adapter_with_gateway_session_policy(
+        group_sessions_per_user=group_sessions_per_user,
+        stale_extra={"group_sessions_per_user": not group_sessions_per_user},
+    )
+    source = adapter.build_source(
+        chat_id="111111111111111111",
+        chat_type="group",
+        user_id="333333333333333333",
+    )
+    event = SimpleNamespace(source=source)
+    store_key = build_session_key(
+        source,
+        group_sessions_per_user=gateway_config.group_sessions_per_user,
+        thread_sessions_per_user=gateway_config.thread_sessions_per_user,
+    )
+
+    assert adapter._text_batch_key(event) == store_key
 
 
 @pytest.mark.asyncio
