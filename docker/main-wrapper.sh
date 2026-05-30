@@ -26,9 +26,16 @@ set -e
 # don't try to write to /root.
 export HOME=/opt/data
 
+# Save the original working directory so we can restore it before exec'ing
+# the main process. This honors Docker's -w flag (bug #35472).
+original_cwd=$(pwd)
 cd /opt/data
 # shellcheck disable=SC1091
 . /opt/hermes/.venv/bin/activate
+
+# Restore the original working directory so that hermes respects Docker's
+# -w flag.
+cd "$original_cwd"
 
 if [ $# -eq 0 ]; then
     exec s6-setuidgid hermes hermes

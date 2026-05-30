@@ -5,6 +5,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_RUN = REPO_ROOT / "docker" / "s6-rc.d" / "dashboard" / "run"
+MAIN_WRAPPER = REPO_ROOT / "docker" / "main-wrapper.sh"
 
 
 def test_dashboard_run_resets_home_before_dropping_privileges() -> None:
@@ -18,9 +19,9 @@ def test_dashboard_run_resets_home_before_dropping_privileges() -> None:
 def test_dashboard_run_does_not_derive_insecure_from_bind_host() -> None:
     """The s6 dashboard run script MUST NOT auto-add ``--insecure`` based on
     ``HERMES_DASHBOARD_HOST``. Doing so disables the OAuth auth gate on
-    every non-loopback bind even when an auth provider is registered —
-    the exact regression that exposed every wildcard-subdomain agent
-    dashboard publicly until early 2026.
+    every non-loopback bind even when an auth provider is registered — the
+    exact regression that exposed every wildcard-subdomain agent dashboard
+    publicly until early 2026.
 
     The opt-in is now explicit: ``HERMES_DASHBOARD_INSECURE=1`` (truthy).
     The auth gate is the authority on whether non-loopback binds are safe.
@@ -46,3 +47,15 @@ def test_dashboard_run_does_not_derive_insecure_from_bind_host() -> None:
         assert truthy in text, (
             f"HERMES_DASHBOARD_INSECURE should accept truthy value {truthy!r}"
         )
+
+
+def test_main_wrapper_preserves_docker_workdir() -> None:
+    """When Docker starts the container with ``-w <workdir>``, hermes should
+    still start in that directory rather than overriding it to /opt/data.
+    """
+    text = MAIN_WRAPPER.read_text(encoding="utf-8")
+
+    assert "#!/command/with-contenv sh" in text
+    assert "export HOME=/opt/data" in text
+    assert "original_cwd=$(pwd)" in text
+    assert 'cd "$original_cwd"' in text
