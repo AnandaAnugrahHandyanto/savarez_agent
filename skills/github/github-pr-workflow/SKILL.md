@@ -55,9 +55,9 @@ echo "Owner: $OWNER, Repo: $REPO"
 
 ---
 
-## 0. Prior Art Search (MANDATORY before any PR)
+## 0. Check for Existing Solutions (MANDATORY before any PR)
 
-**Before fixing a bug or proposing a feature, search the upstream repo for existing solutions.** Skipping this step wastes reviewer time, clutters the PR queue, and annoys maintainers. Many bugs already have open PRs with working fixes — your job is to find and amplify them, not to create noise.
+**Before fixing a bug or proposing a feature, search the upstream repo to see if someone already solved it.** Skipping this step wastes reviewer time, clutters the PR queue, and annoys maintainers. Many bugs already have open PRs with working fixes — your job is to find and amplify them, not to create noise.
 
 ### Step 0a: Search existing issues
 
