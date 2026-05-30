@@ -89,7 +89,7 @@ def test_bare_json_oversized_rejected():
 
 
 def test_kimi_k2_extracts():
-    calls = find_kimi_k2((FIX / "kimi_k2_tokens.txt").read_text())
+    calls = find_kimi_k2((FIX / "kimi_k2.txt").read_text())
     assert len(calls) == 1
     assert calls[0].name == "web_search"
     assert calls[0].arguments == {"query": "hermes nousresearch"}
@@ -195,3 +195,22 @@ def test_overlapping_spans_deduped():
     calls, residual = extract_content_tool_calls(content, VALID)
     assert len(calls) == 1
     assert residual.strip() == ""
+
+
+def test_every_format_has_a_nonempty_fixture():
+    for fmt in FORMATS:
+        fixture = FIX / f"{fmt.name}.txt"
+        assert fixture.stat().st_size > 0, f"missing fixture for format {fmt.name}"
+
+
+def test_negatives_never_promote():
+    for line in (FIX / "_negatives.txt").read_text().splitlines():
+        if line.strip():
+            calls, _ = extract_content_tool_calls(line, VALID)
+            assert calls == [], f"false positive on: {line!r}"
+
+
+def test_plain_prose_is_a_noop():
+    calls, residual = extract_content_tool_calls("just a normal answer.", VALID)
+    assert calls == []
+    assert residual == "just a normal answer."
