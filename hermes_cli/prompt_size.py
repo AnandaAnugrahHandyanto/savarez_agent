@@ -91,6 +91,33 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     tools = getattr(agent, "tools", None) or []
     tools_json = json.dumps(tools, ensure_ascii=False)
 
+    # Honcho memory budget posture. The actual per-turn injected block
+    # (representation + cards + summary + dialectic) is fetched from the Honcho
+    # server at request time, so it can't be measured offline here. What we can
+    # surface without a network call is the configured budget — specifically
+    # whether the unbounded peer representation is capped. Uncapped is the
+    # common cause of multi-hundred-KB injection at scale (see hermes honcho
+    # tokens --representation N).
+    honcho_info: Dict[str, Any] = {"active": False}
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        memory_cfg = cfg.get("memory") if isinstance(cfg.get("memory"), dict) else {}
+        if str(memory_cfg.get("provider", "")).lower() == "honcho":
+            from plugins.memory.honcho.client import HonchoClientConfig
+
+            hcfg = HonchoClientConfig.from_global_config()
+            honcho_info = {
+                "active": True,
+                "representation_max_conclusions": hcfg.representation_max_conclusions,  # None = uncapped
+                "context_tokens": hcfg.context_tokens,                # None = uncapped
+                "dialectic_max_chars": hcfg.dialectic_max_chars,
+                "recall_mode": getattr(hcfg, "recall_mode", None),
+            }
+    except Exception:
+        pass
+
     sections: List[Tuple[str, int, int]] = [
         ("stable (identity/guidance/skills)", len(stable), _bytes(stable)),
         ("context (AGENTS.md/cwd files)", len(context), _bytes(context)),
@@ -105,6 +132,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
         "memory": {"chars": len(memory_block), "bytes": _bytes(memory_block)},
         "user_profile": {"chars": len(user_block), "bytes": _bytes(user_block)},
         "tools": {"count": len(tools), "json_bytes": _bytes(tools_json)},
+        "honcho": honcho_info,
         "sections": sections,
     }
 
@@ -135,6 +163,20 @@ def render_breakdown(data: Dict[str, Any]) -> str:
     lines.append("")
     tools = data["tools"]
     lines.append(f"  Tool schemas         : {tools['json_bytes']:>8,} B  ({_fmt_kb(tools['json_bytes'])}, {tools['count']} tools)")
+
+    honcho = data.get("honcho") or {}
+    if honcho.get("active"):
+        lines.append("")
+        lines.append("  Honcho memory budget (injected per turn, fetched live — not measured here):")
+        rep = honcho.get("representation_max_conclusions")
+        if rep:
+            lines.append(f"    representation cap : {rep} conclusions (server-filtered)")
+        else:
+            lines.append("    representation cap : UNCAPPED — can bloat at scale; set with")
+            lines.append("                         hermes honcho tokens --representation 25")
+        ctx = honcho.get("context_tokens")
+        lines.append(f"    overall context cap: {(str(ctx) + ' tokens') if ctx else 'uncapped'}")
+        lines.append(f"    dialectic cap      : {honcho.get('dialectic_max_chars', '?')} chars")
     return "\n".join(lines)
 
 
