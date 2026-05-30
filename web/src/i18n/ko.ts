@@ -75,6 +75,7 @@ export const ko: Translations = {
       keys: "키",
       logs: "로그",
       models: "모델",
+      runs: "Runs",
       profiles: "프로필: 멀티 에이전트",
       plugins: "플러그인",
       sessions: "세션",
@@ -425,6 +426,31 @@ export const ko: Translations = {
   theme: {
     title: "테마",
     switchTheme: "테마 전환",
+  },
+
+
+  runs: {
+    title: "Runs",
+    project: "Project",
+    classification: "Classification",
+    allClassifications: "All classifications",
+    taskId: "Task ID",
+    runId: "Run ID",
+    agent: "Agent",
+    runType: "Type",
+    exitCode: "Exit",
+    startedAt: "Started",
+    duration: "Duration",
+    command: "Command",
+    stdoutTail: "Stdout Tail",
+    stderrTail: "Stderr Tail",
+    noRuns: "No runs found",
+    totalRuns: "Total Runs",
+    ok: "OK",
+    timeout: "Timeout",
+    processError: "Process Error",
+    avgDuration: "Avg Duration",
+    details: "Details",
   },
 
   achievements: {

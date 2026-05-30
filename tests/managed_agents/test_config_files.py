@@ -64,7 +64,7 @@ def test_managed_agents_model_refs_are_declared_in_models_config():
     expected = {
         "claude": "claude_opus",
         "deepseek-tui": "opencode_go_deepseek_pro",
-        "intelligence": "opencode_go_qwen37_max",
+        "intelligence": "opencode_go_kimi26",
         "pirlo": "opencode_go_kimi26",
         "designer": "opencode_go_kimi26",
         "ambrosini": "opencode_go_glm51",
@@ -126,11 +126,20 @@ def test_managed_agents_skill_whitelists_are_declared():
     registry = load_agent_registry(CONFIG_DIR / "agents.yaml")
 
     assert "hermes-subagent-delegation" in registry.get("hermes-internal").skills
+    assert "codebase-scout" in registry.get("hermes-internal").skills
+    assert "context-skill-audit" in registry.get("hermes-internal").skills
+    assert "hermes-orchestration-closeout" in registry.get("hermes-internal").skills
     assert "github-pr-workflow" in registry.get("claude").skills
+    assert "codebase-scout" in registry.get("claude").skills
+    assert "systematic-debugging" in registry.get("claude").skills
     assert "design-md" in registry.get("claude").skills
     assert "comfyui" in registry.get("claude").skills
     assert "debugging-hermes-tui-commands" in registry.get("deepseek-tui").skills
+    assert "codebase-scout" in registry.get("deepseek-tui").skills
+    assert "systematic-debugging" in registry.get("deepseek-tui").skills
     assert "codex-superpowers" in registry.get("codex").skills
+    assert "context-skill-audit" in registry.get("codex").skills
+    assert "hermes-orchestration-closeout" in registry.get("codex").skills
     assert "playwright-mcp" not in registry.get("codex").skills
     assert registry.get("intelligence").skills == ("competitive-intelligence",)
     assert "claude-design" in registry.get("pirlo").skills

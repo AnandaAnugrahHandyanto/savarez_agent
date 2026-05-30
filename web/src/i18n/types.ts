@@ -91,6 +91,7 @@ export interface Translations {
       keys: string;
       logs: string;
       models: string;
+      runs: string;
       profiles: string;
       plugins: string;
       sessions: string;
@@ -448,6 +449,31 @@ export interface Translations {
   theme: {
     title: string;
     switchTheme: string;
+  };
+
+  // ── Runs page ──
+  runs: {
+    title: string;
+    project: string;
+    classification: string;
+    allClassifications: string;
+    taskId: string;
+    runId: string;
+    agent: string;
+    runType: string;
+    exitCode: string;
+    startedAt: string;
+    duration: string;
+    command: string;
+    stdoutTail: string;
+    stderrTail: string;
+    noRuns: string;
+    totalRuns: string;
+    ok: string;
+    timeout: string;
+    processError: string;
+    avgDuration: string;
+    details: string;
   };
 
   // ── Achievements plugin (plugins/hermes-achievements) ──

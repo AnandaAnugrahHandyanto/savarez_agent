@@ -74,6 +74,7 @@ export const zh: Translations = {
       keys: "密钥",
       logs: "日志",
       models: "模型",
+      runs: "运行记录",
       profiles: "多Agent配置",
       plugins: "插件管理",
       sessions: "会话",
@@ -420,6 +421,30 @@ export const zh: Translations = {
   theme: {
     title: "主题",
     switchTheme: "切换主题",
+  },
+
+  runs: {
+    title: "运行记录",
+    project: "项目",
+    classification: "分类",
+    allClassifications: "全部分类",
+    taskId: "任务 ID",
+    runId: "运行 ID",
+    agent: "Agent",
+    runType: "类型",
+    exitCode: "退出码",
+    startedAt: "开始时间",
+    duration: "耗时",
+    command: "命令",
+    stdoutTail: "标准输出",
+    stderrTail: "错误输出",
+    noRuns: "暂无运行记录",
+    totalRuns: "总运行数",
+    ok: "正常",
+    timeout: "超时",
+    processError: "进程错误",
+    avgDuration: "平均耗时",
+    details: "详情",
   },
 
   achievements: {

@@ -75,6 +75,7 @@ export const ga: Translations = {
       keys: "Eochracha",
       logs: "Logaí",
       models: "Samhlacha",
+      runs: "Runs",
       profiles: "próifílí : il-agents",
       plugins: "Plugins",
       sessions: "Seisiúin",
@@ -425,6 +426,31 @@ export const ga: Translations = {
   theme: {
     title: "Téama",
     switchTheme: "Athraigh téama",
+  },
+
+
+  runs: {
+    title: "Runs",
+    project: "Project",
+    classification: "Classification",
+    allClassifications: "All classifications",
+    taskId: "Task ID",
+    runId: "Run ID",
+    agent: "Agent",
+    runType: "Type",
+    exitCode: "Exit",
+    startedAt: "Started",
+    duration: "Duration",
+    command: "Command",
+    stdoutTail: "Stdout Tail",
+    stderrTail: "Stderr Tail",
+    noRuns: "No runs found",
+    totalRuns: "Total Runs",
+    ok: "OK",
+    timeout: "Timeout",
+    processError: "Process Error",
+    avgDuration: "Avg Duration",
+    details: "Details",
   },
 
   achievements: {

@@ -227,6 +227,7 @@ class ExternalCliChild:
         cwd: Optional[str] = None,
         runtime_name: str = "external-cli",
         output_last_message: bool = False,
+        timeout_seconds: Optional[float] = None,
     ) -> None:
         self.command = command or ["claude"]
         self.prompt_args = prompt_args or []
@@ -253,6 +254,7 @@ class ExternalCliChild:
         self._goal = goal
         self._runtime_name = runtime_name
         self.output_last_message = output_last_message
+        self.timeout_seconds = timeout_seconds
 
     def _subprocess_env(self) -> dict[str, str]:
         env = dict(os.environ)
@@ -326,7 +328,28 @@ class ExternalCliChild:
                 env=self._subprocess_env(),
                 text=True,
             )
-            stdout, stderr = self._process.communicate()
+            try:
+                stdout, stderr = self._process.communicate(timeout=self.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                self.interrupt(f"{self._runtime_name} timed out")
+                try:
+                    stdout, stderr = self._process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    stdout, stderr = self._process.communicate()
+                return {
+                    "completed": False,
+                    "final_response": (stdout or "").strip(),
+                    "messages": [],
+                    "api_calls": 0,
+                    "exit_reason": "timeout",
+                    "error": (
+                        f"{self._runtime_name} timed out after "
+                        f"{self.timeout_seconds:g}s"
+                    ),
+                    "duration_seconds": round(time.monotonic() - started, 2),
+                    "interrupted": True,
+                }
         except FileNotFoundError:
             return {
                 "completed": False,
@@ -340,6 +363,21 @@ class ExternalCliChild:
 
         code = self._process.returncode if self._process is not None else 1
         response = (stdout or "").strip()
+        parsed_error = ""
+        if self._runtime_name == "claude-code-cli" and response:
+            try:
+                payload = json.loads(response)
+                if isinstance(payload, dict):
+                    if isinstance(payload.get("result"), str):
+                        response = payload["result"].strip()
+                    if payload.get("is_error"):
+                        parsed_error = str(
+                            payload.get("api_error_status")
+                            or payload.get("error")
+                            or "claude returned is_error=true"
+                        )
+            except json.JSONDecodeError:
+                pass
         if output_path:
             try:
                 with open(output_path, "r", encoding="utf-8") as handle:
@@ -352,7 +390,7 @@ class ExternalCliChild:
                 except OSError:
                     pass
         error = (stderr or "").strip()
-        completed = code == 0 and bool(response)
+        completed = code == 0 and bool(response) and not parsed_error
         self._last_activity_desc = (
             f"{self._runtime_name} completed"
             if completed
@@ -364,7 +402,7 @@ class ExternalCliChild:
             "messages": [],
             "api_calls": 0,
             "exit_reason": "completed" if completed else "error",
-            "error": "" if completed else (error or f"claude exited with code {code}"),
+            "error": "" if completed else (parsed_error or error or f"claude exited with code {code}"),
             "duration_seconds": round(time.monotonic() - started, 2),
             "interrupted": self._interrupted,
         }
@@ -1049,6 +1087,7 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
         ),
         getattr(parent_agent, "terminal_cwd", None),
         getattr(parent_agent, "cwd", None),
+        os.getcwd(),
     ]
     for candidate in candidates:
         if not candidate:
@@ -3885,6 +3924,29 @@ def _parse_external_command(value: Any, default: list[str]) -> list[str]:
     return list(default)
 
 
+def _has_cli_option(parts: list[str], option: str) -> bool:
+    prefix = f"{option}="
+    return any(part == option or part.startswith(prefix) for part in parts)
+
+
+def _append_cli_option(parts: list[str], option: str, *values: str) -> None:
+    if _has_cli_option(parts, option):
+        return
+    parts.append(option)
+    parts.extend(value for value in values if value)
+
+
+def _build_claude_code_prompt_args(workspace_hint: Optional[str]) -> list[str]:
+    args = ["-p"]
+    _append_cli_option(args, "--permission-mode", "acceptEdits")
+    _append_cli_option(args, "--allowedTools", "Read,Edit,Write,Bash")
+    if workspace_hint:
+        _append_cli_option(args, "--add-dir", workspace_hint)
+    _append_cli_option(args, "--output-format", "json")
+    _append_cli_option(args, "--max-turns", "10")
+    return args
+
+
 def _build_external_cli_child(
     *,
     runtime: str,
@@ -3921,12 +3983,13 @@ def _build_external_cli_child(
             or os.getenv("HERMES_CLAUDE_CODE_COMMAND"),
             ["claude"],
         )
-        prompt_args = ["-p"]
+        prompt_args = _build_claude_code_prompt_args(workspace_hint)
         runtime_name = "claude-code-cli"
         toolset_name = "claude-code-cli"
         warning = (
             "runtime=claude_code_cli delegates execution to external Claude Code; "
-            "backend is controlled by Claude Code / CC Switch."
+            "backend is controlled by Claude Code / CC Switch. Hermes runs it "
+            "non-interactively with bounded turns and edit permissions."
         )
     child = ExternalCliChild(
         goal=prompt,
@@ -3935,6 +3998,7 @@ def _build_external_cli_child(
         cwd=workspace_hint,
         runtime_name=runtime_name,
         output_last_message=(runtime == "codex_cli"),
+        timeout_seconds=_get_child_timeout(),
     )
     child._delegate_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
     child._delegate_role = "leaf"

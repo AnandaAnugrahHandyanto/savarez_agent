@@ -9,6 +9,11 @@ metadata:
   hermes:
     tags: [debugging, troubleshooting, problem-solving, root-cause, investigation]
     related_skills: [test-driven-development, writing-plans, subagent-driven-development]
+agents:
+- deepseek-tui
+- claude
+- codex
+- hermes-internal
 ---
 
 # Systematic Debugging
@@ -54,6 +59,19 @@ Use for ANY technical issue:
 ## The Four Phases
 
 You MUST complete each phase before proceeding to the next.
+
+## Imported Debugging Aids
+
+This skill includes selected debugging aids adapted from `withkynam/vibecode-pro-max-kit`:
+
+- `scripts/find-polluter.sh` - isolate order-dependent test pollution by running a known-good test with candidate polluters.
+- `references/log-and-ci-analysis.md` - CI/log triage patterns.
+- `references/performance-diagnostics.md` - performance investigation checklist.
+- `references/root-cause-tracing.md` - upstream/downstream tracing patterns.
+- `references/defense-in-depth.md` and `references/verification.md` - verification depth and multi-layer checks.
+- `references/reporting-standards.md` - concise debug report format.
+
+Load the relevant reference only when the bug matches that subtype.
 
 ---
 

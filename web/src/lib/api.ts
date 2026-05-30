@@ -435,6 +435,21 @@ export const api = {
       },
     ),
 
+  // Run ledger
+  getRuns: (params: { project?: string; classification?: string; agent_id?: string; limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.project) qs.set("project", params.project);
+    if (params.classification) qs.set("classification", params.classification);
+    if (params.agent_id) qs.set("agent_id", params.agent_id);
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.offset) qs.set("offset", String(params.offset));
+    return fetchJSON<RunsResponse>(`/api/runs?${qs.toString()}`);
+  },
+  getRunsSummary: (project?: string) => {
+    const qs = project ? `?project=${encodeURIComponent(project)}` : "";
+    return fetchJSON<RunsSummaryResponse>(`/api/runs/summary${qs}`);
+  },
+
   // Dashboard themes
   getThemes: () =>
     fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
@@ -445,6 +460,38 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
 };
+
+// ── Run ledger types ──────────────────────────────────────────────────
+
+export interface RunEntry {
+  run_id?: string | null;
+  task_id?: string | null;
+  agent_id?: string | null;
+  run_type?: string | null;
+  classification?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  command?: string | null;
+  stdout_tail?: string | null;
+  stderr_tail?: string | null;
+  duration_seconds?: number | null;
+  [key: string]: unknown;
+}
+
+export interface RunsResponse {
+  runs: RunEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface RunsSummaryResponse {
+  total: number;
+  classification_counts: Record<string, number>;
+  avg_duration_seconds: number;
+  recent_runs: RunEntry[];
+}
 
 export interface ActionResponse {
   name: string;

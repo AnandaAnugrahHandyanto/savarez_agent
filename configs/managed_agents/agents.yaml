@@ -30,6 +30,9 @@ agents:
   - hermes-multi-agent-research
   - hermes-gateway-debug
   - codebase-inspection
+  - codebase-scout
+  - context-skill-audit
+  - hermes-orchestration-closeout
   - github-repo-risk-assessment
   - humanizer-zh
   tools:
@@ -74,6 +77,8 @@ agents:
   - github-repo-management
   - github-issues
   - codebase-inspection
+  - codebase-scout
+  - systematic-debugging
   - python-debugpy
   - node-inspect-debugger
   - nextjs-standalone-deployment
@@ -130,6 +135,8 @@ agents:
     - empty_final_content
   skills:
   - codebase-inspection
+  - codebase-scout
+  - systematic-debugging
   - spike
   - python-debugpy
   - node-inspect-debugger
@@ -175,6 +182,9 @@ agents:
   - github-code-review
   - github-repo-risk-assessment
   - codebase-inspection
+  - codebase-scout
+  - context-skill-audit
+  - hermes-orchestration-closeout
   tools:
   - file
   - terminal
@@ -204,14 +214,14 @@ agents:
   - 竞品研究
   - intelligence
   role_summary: 调研、竞品、资料收集、信息核验。
-  model_ref: opencode_go_qwen37_max
+  model_ref: opencode_go_kimi26
   model_strategy:
     mode: fallback
-    primary: opencode_go_qwen37_max
+    primary: opencode_go_kimi26
     chain:
+    - opencode_go_kimi26
     - opencode_go_qwen37_max
     - opencode_go_qwen36
-    - opencode_go_kimi26
     - deepseek_flash
     fallback_on:
     - quota_exceeded
@@ -294,7 +304,8 @@ agents:
   - 网页设计师
   - 海报设计师
   - designer
-  role_summary: 海报、视觉型 HTML、网页/UI 前端视觉、品牌视觉、图片生成方向；默认调用 html-anything、taste-skill 和 image_generate，不负责复杂工程实现。
+  role_summary: 海报、视觉型 HTML、网页/UI 前端视觉、品牌视觉、图片生成方向；默认调用 html-anything、taste-skill
+    和 image_generate，不负责复杂工程实现。
   model_ref: opencode_go_kimi26
   model_strategy:
     mode: fallback
@@ -424,6 +435,8 @@ agents:
   skills:
   - codex-superpowers
   - github-code-review
+  - context-skill-audit
+  - hermes-orchestration-closeout
   tools:
   - file
   - mcp-codegraph

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -456,6 +457,19 @@ def test_claude_agent_uses_external_claude_code_cli_runtime(tmp_path, monkeypatc
     assert isinstance(child, ExternalCliChild)
     assert child._subagent_agent_id == "claude"
     assert child.command == ["claude"]
+    assert child.prompt_args == [
+        "-p",
+        "--permission-mode",
+        "acceptEdits",
+        "--allowedTools",
+        "Read,Edit,Write,Bash",
+        "--add-dir",
+        str(tmp_path),
+        "--output-format",
+        "json",
+        "--max-turns",
+        "10",
+    ]
     assert "complex refactor" == child._goal
 
 
@@ -534,6 +548,57 @@ def test_claude_external_cli_runtime_strips_hermes_anthropic_credentials(
     assert "ANTHROPIC_AUTH_TOKEN" not in env
     assert "ANTHROPIC_TOKEN" not in env
     assert env["ANTHROPIC_BASE_URL"] == "https://ai.flashapi.top"
+
+
+def test_claude_external_cli_runtime_extracts_json_result(tmp_path):
+    child = ExternalCliChild(
+        goal="hello",
+        command=["fake-cli"],
+        prompt_args=["-p", "--output-format", "json"],
+        cwd=str(tmp_path),
+        runtime_name="claude-code-cli",
+    )
+
+    process = MagicMock()
+    process.communicate.return_value = (
+        json.dumps({"type": "result", "is_error": False, "result": "DONE"}),
+        "",
+    )
+    process.returncode = 0
+
+    with patch("tools.delegate_tool.subprocess.Popen", return_value=process):
+        result = child.run_conversation("ignored")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "DONE"
+
+
+def test_external_cli_runtime_kills_process_on_timeout(tmp_path):
+    child = ExternalCliChild(
+        goal="hello",
+        command=["fake-cli"],
+        prompt_args=["-p"],
+        cwd=str(tmp_path),
+        runtime_name="claude-code-cli",
+        timeout_seconds=30,
+    )
+
+    process = MagicMock()
+    process.communicate.side_effect = [
+        subprocess.TimeoutExpired(["fake-cli"], 30),
+        subprocess.TimeoutExpired(["fake-cli"], 5),
+        ("", ""),
+    ]
+    process.returncode = None
+    process.poll.return_value = None
+
+    with patch("tools.delegate_tool.subprocess.Popen", return_value=process):
+        result = child.run_conversation("ignored")
+
+    process.terminate.assert_called_once()
+    process.kill.assert_called_once()
+    assert result["completed"] is False
+    assert result["exit_reason"] == "timeout"
 
 
 def test_codex_agent_uses_external_codex_cli_runtime(tmp_path, monkeypatch):

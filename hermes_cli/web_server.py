@@ -1796,6 +1796,108 @@ async def update_managed_agent_model_strategy(agent_id: str, body: AgentModelStr
 
 
 
+# ---------------------------------------------------------------------------
+# Run ledger endpoints — read-only, backed by ~/.claude/teams/<project>/runs/ledger.jsonl
+# ---------------------------------------------------------------------------
+
+
+def _run_ledger_path(project: Optional[str]) -> Path:
+    name = (project or "staam").strip() or "staam"
+    if "/" in name or "\\" in name or name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid project")
+    return Path.home() / ".claude" / "teams" / name / "runs" / "ledger.jsonl"
+
+
+def _load_run_ledger(project: Optional[str]) -> List[Dict[str, Any]]:
+    ledger_path = _run_ledger_path(project)
+    if not ledger_path.exists():
+        return []
+    rows: List[Dict[str, Any]] = []
+    try:
+        with open(ledger_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        _log.exception("Failed reading run ledger %s", ledger_path)
+        raise HTTPException(status_code=500, detail="Failed to read run ledger")
+    return rows
+
+
+def _merged_run_ledger(project: Optional[str]) -> List[Dict[str, Any]]:
+    latest: Dict[str, Dict[str, Any]] = {}
+    starts: Dict[str, Dict[str, Any]] = {}
+    for row in _load_run_ledger(project):
+        run_id = row.get("run_id")
+        if not run_id:
+            continue
+        if row.get("event") == "run_started":
+            starts[str(run_id)] = row
+            latest.setdefault(str(run_id), row)
+        elif row.get("event") == "run_finished":
+            latest[str(run_id)] = {**starts.get(str(run_id), {}), **row}
+        else:
+            latest[str(run_id)] = row
+    return list(latest.values())
+
+
+@app.get("/api/runs")
+async def get_runs(
+    project: Optional[str] = None,
+    classification: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """Read runs from the project run ledger JSONL file."""
+    runs = _merged_run_ledger(project)
+    if classification:
+        runs = [r for r in runs if r.get("classification") == classification]
+    if agent_id:
+        runs = [r for r in runs if r.get("agent_id") == agent_id]
+
+    runs.sort(
+        key=lambda r: r.get("started_at") or r.get("finished_at") or "",
+        reverse=True,
+    )
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+    total = len(runs)
+    paginated = runs[offset : offset + limit]
+    return {"runs": paginated, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/runs/summary")
+async def get_runs_summary(project: Optional[str] = None):
+    """Return summary breakdown of the run ledger."""
+    runs = _merged_run_ledger(project)
+    classification_counts: Dict[str, int] = {}
+    durations: List[float] = []
+    for row in runs:
+        classification = str(row.get("classification") or row.get("event") or "unknown")
+        classification_counts[classification] = classification_counts.get(classification, 0) + 1
+        duration = row.get("duration_seconds")
+        if isinstance(duration, (int, float)):
+            durations.append(float(duration))
+
+    runs.sort(
+        key=lambda r: r.get("started_at") or r.get("finished_at") or "",
+        reverse=True,
+    )
+
+    return {
+        "total": len(runs),
+        "classification_counts": classification_counts,
+        "avg_duration_seconds": round(sum(durations) / len(durations), 3) if durations else 0,
+        "recent_runs": runs[:10],
+    }
+
+
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Reverse _normalize_config_for_web before saving.
 

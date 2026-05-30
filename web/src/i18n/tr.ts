@@ -75,6 +75,7 @@ export const tr: Translations = {
       keys: "Anahtarlar",
       logs: "Günlükler",
       models: "Modeller",
+      runs: "Runs",
       profiles: "profiller : çoklu agent",
       plugins: "Eklentiler",
       sessions: "Oturumlar",
@@ -425,6 +426,31 @@ export const tr: Translations = {
   theme: {
     title: "Tema",
     switchTheme: "Temayı değiştir",
+  },
+
+
+  runs: {
+    title: "Runs",
+    project: "Project",
+    classification: "Classification",
+    allClassifications: "All classifications",
+    taskId: "Task ID",
+    runId: "Run ID",
+    agent: "Agent",
+    runType: "Type",
+    exitCode: "Exit",
+    startedAt: "Started",
+    duration: "Duration",
+    command: "Command",
+    stdoutTail: "Stdout Tail",
+    stderrTail: "Stderr Tail",
+    noRuns: "No runs found",
+    totalRuns: "Total Runs",
+    ok: "OK",
+    timeout: "Timeout",
+    processError: "Process Error",
+    avgDuration: "Avg Duration",
+    details: "Details",
   },
 
   achievements: {

@@ -75,6 +75,7 @@ export const hu: Translations = {
       keys: "Kulcsok",
       logs: "Naplók",
       models: "Modellek",
+      runs: "Runs",
       profiles: "profilok: több ügynök",
       plugins: "Bővítmények",
       sessions: "Munkamenetek",
@@ -425,6 +426,31 @@ export const hu: Translations = {
   theme: {
     title: "Téma",
     switchTheme: "Téma váltása",
+  },
+
+
+  runs: {
+    title: "Runs",
+    project: "Project",
+    classification: "Classification",
+    allClassifications: "All classifications",
+    taskId: "Task ID",
+    runId: "Run ID",
+    agent: "Agent",
+    runType: "Type",
+    exitCode: "Exit",
+    startedAt: "Started",
+    duration: "Duration",
+    command: "Command",
+    stdoutTail: "Stdout Tail",
+    stderrTail: "Stderr Tail",
+    noRuns: "No runs found",
+    totalRuns: "Total Runs",
+    ok: "OK",
+    timeout: "Timeout",
+    processError: "Process Error",
+    avgDuration: "Avg Duration",
+    details: "Details",
   },
 
   achievements: {

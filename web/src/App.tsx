@@ -32,6 +32,7 @@ import {
   Menu,
   MessageSquare,
   Package,
+  Play,
   Puzzle,
   RotateCw,
   Settings,
@@ -65,6 +66,7 @@ import AnalyticsPage from "@/pages/AnalyticsPage";
 import ModelsPage from "@/pages/ModelsPage";
 import AgentsPage from "@/pages/AgentsPage";
 import DelegationsPage from "@/pages/DelegationsPage";
+import RunsPage from "@/pages/RunsPage";
 import CronPage from "@/pages/CronPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
@@ -115,6 +117,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/models": ModelsPage,
   "/agents": AgentsPage,
   "/delegations": DelegationsPage,
+  "/runs": RunsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
   "/skills": SkillsPage,
@@ -158,6 +161,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     icon: Bot,
   },
   { path: "/delegations", label: "Delegations", icon: Activity },
+  { path: "/runs", labelKey: "runs", label: "Runs", icon: Play },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },

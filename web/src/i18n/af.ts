@@ -75,6 +75,7 @@ export const af: Translations = {
       keys: "Sleutels",
       logs: "Logs",
       models: "Modelle",
+      runs: "Runs",
       profiles: "profiele : multi-agente",
       plugins: "Inproppe",
       sessions: "Sessies",
@@ -425,6 +426,31 @@ export const af: Translations = {
   theme: {
     title: "Tema",
     switchTheme: "Wissel tema",
+  },
+
+
+  runs: {
+    title: "Runs",
+    project: "Project",
+    classification: "Classification",
+    allClassifications: "All classifications",
+    taskId: "Task ID",
+    runId: "Run ID",
+    agent: "Agent",
+    runType: "Type",
+    exitCode: "Exit",
+    startedAt: "Started",
+    duration: "Duration",
+    command: "Command",
+    stdoutTail: "Stdout Tail",
+    stderrTail: "Stderr Tail",
+    noRuns: "No runs found",
+    totalRuns: "Total Runs",
+    ok: "OK",
+    timeout: "Timeout",
+    processError: "Process Error",
+    avgDuration: "Avg Duration",
+    details: "Details",
   },
 
   achievements: {
