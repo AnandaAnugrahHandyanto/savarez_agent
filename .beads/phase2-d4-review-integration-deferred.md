@@ -96,11 +96,11 @@ This deliverable modifies the **existing** `requesting-code-review` skill. No ne
 - Path: `skills/software-development/requesting-code-review/SKILL.md`
 - Current state: Must be read during implementation to understand structure, line count, and integration points.
 
-### Existing dirty files — DO NOT TOUCH
+### Preserved unrelated WIP — DO NOT TOUCH
 
 ```
-tools/skills_sync.py                 # dirty
-tests/tools/test_skills_sync.py      # dirty
+tools/skills_sync.py                 # stashed unrelated WIP
+tests/tools/test_skills_sync.py      # stashed unrelated WIP
 ```
 
 ### Scope guardrails (if approved)

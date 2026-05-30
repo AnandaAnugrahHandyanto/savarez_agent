@@ -66,11 +66,11 @@ Use these local repos unless JC substitutes others before approval:
 
 | Tier | Repo | Purpose |
 |---|---|---|
-| Small | `/home/jarrad/.hermes/hermes-agent/cass_memory_system` | Python package-scale scan/import extraction |
-| Medium | `/home/jarrad/.hermes/hermes-agent/mission-control` | TypeScript/Node project with frontend-style imports |
+| Small | `/home/jarrad/work/testbeds/ua-flywheel/cass_memory_system` | Python package-scale scan/import extraction |
+| Medium | `/home/jarrad/work/testbeds/ua-flywheel/mission-control` | TypeScript/Node project with frontend-style imports |
 | Large/current | `/home/jarrad/.hermes/hermes-agent` | Real Hermes repo smoke/performance guardrail |
 
-If any test-bed path is moved outside this worktree before execution, update this table before starting Phase 2.
+The small/medium test-bed repos were moved out of the Hermes worktree during cleanup to keep the branch status clean while preserving reusable smoke-test targets.
 
 ---
 

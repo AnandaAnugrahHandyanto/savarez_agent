@@ -1,7 +1,7 @@
 # Project State: Understand-Anything → Flywheel Integration
 
 > **Created:** 2026-05-30
-> **Last updated:** 2026-05-30 11:47 UTC (Phase 2 D1-D3 complete; reviewer PASS; committed/pushed `5a39c7fc7`)
+> **Last updated:** 2026-05-30 12:17 UTC (Phase 2 docs cleaned; D1-D3 complete; reviewer PASS; committed/pushed `5a39c7fc7`)
 > **Strategy doc:** `.plans/ua-incorporation-strategy.md`
 > **Phase 2 plan:** `.plans/phase-2-flywheel-ua-integration.md`
 > **Review doc:** `understand-anything-to-flywheel-review.md`
@@ -50,7 +50,7 @@
 - Phase 1 is complete and verified ✅
 - Phase 2 D1-D3 complete, Hermes-verified, reviewer PASS, committed/pushed `5a39c7fc7`
 - D4 deferred by default — requires explicit JC approval to proceed
-- Existing dirty files (`tools/skills_sync.py`, `tests/tools/test_skills_sync.py`) are unrelated — must not be modified
+- Preserved unrelated WIP (`tools/skills_sync.py`, `tests/tools/test_skills_sync.py`) is stashed as `WIP skills_sync usage-stat preservation`; these files must remain untouched during Phase 2 follow-up work
 - No new runtime dependencies allowed without JC approval
 
 ## Reference Repos
@@ -58,12 +58,13 @@
 | Repo | Location | Purpose |
 |---|---|---|
 | hermes-agent | `/home/jarrad/.hermes/hermes-agent/` | Main source tree (reference) |
-| mission-control | `/home/jarrad/.hermes/hermes-agent/mission-control/` | Test-bed repo (medium, TypeScript) |
-| cass_memory_system | `/home/jarrad/.hermes/hermes-agent/cass_memory_system/` | Test-bed repo (small, Python) |
+| mission-control | `/home/jarrad/work/testbeds/ua-flywheel/mission-control/` | Test-bed repo (medium, TypeScript) |
+| cass_memory_system | `/home/jarrad/work/testbeds/ua-flywheel/cass_memory_system/` | Test-bed repo (small, Python) |
 
 ## Notes
 
 - Documentation cleanup completed 2026-05-30: path references corrected, cross-references added
+- Worktree cleanup completed 2026-05-30: unrelated WIP stashed and nested test-bed repos moved to `/home/jarrad/work/testbeds/ua-flywheel/`
 - Phase 1 deliverables all target `scripts/code-scan/` (correct path)
 - Phase 2 execution plan uses bead files under `.beads/` as authoritative execution units
 - D4 is deferred by default in the Phase 2 approval package
