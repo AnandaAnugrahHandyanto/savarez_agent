@@ -630,6 +630,15 @@
         ) cfg.mcpServers;
       })
 
+      # Surface workingDirectory through the canonical settings.terminal.cwd
+      # so the unit no longer needs the deprecated MESSAGING_CWD env var.
+      # containerWorkDir translates host → in-container path for container mode.
+      {
+        services.hermes-agent.settings.terminal.cwd = lib.mkDefault (
+          if cfg.container.enable then containerWorkDir else cfg.workingDirectory
+        );
+      }
+
       # ── User / group ──────────────────────────────────────────────────
       (lib.mkIf cfg.createUser {
         users.groups.${cfg.group} = { };
@@ -874,7 +883,6 @@
             HOME = cfg.stateDir;
             HERMES_HOME = "${cfg.stateDir}/.hermes";
             HERMES_MANAGED = "true";
-            MESSAGING_CWD = cfg.workingDirectory;
           };
 
           serviceConfig = {
@@ -971,7 +979,6 @@
                 --env HERMES_HOME=${containerDataDir}/.hermes \
                 --env HERMES_MANAGED=true \
                 --env HOME=${containerHomeDir} \
-                --env MESSAGING_CWD=${containerWorkDir} \
                 ${lib.concatStringsSep " " cfg.container.extraOptions} \
                 ${cfg.container.image} \
                 ${containerDataDir}/current-package/bin/hermes gateway run --replace ${lib.concatStringsSep " " cfg.extraArgs}
