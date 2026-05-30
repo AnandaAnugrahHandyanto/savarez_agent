@@ -2570,7 +2570,13 @@ class TestPtyWebSocket:
             self.ws_module.app.state, "bound_port", 9119, raising=False
         )
 
-        with self.client.websocket_connect(self._url(channel="abc-123")) as conn:
+        with self.client.websocket_connect(
+            self._url(channel="abc-123"),
+            headers={
+                "Host": "localhost:9119",
+                "Origin": "http://localhost:9119",
+            },
+        ) as conn:
             try:
                 conn.receive_bytes()
             except Exception:
