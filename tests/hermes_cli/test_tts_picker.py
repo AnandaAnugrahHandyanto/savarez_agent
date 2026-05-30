@@ -12,7 +12,9 @@ import pytest
 
 from agent import tts_registry
 from agent.tts_provider import TTSProvider
+from hermes_cli import setup as setup_mod
 from hermes_cli import tools_config
+from tools.tts_tool import BUILTIN_TTS_PROVIDERS
 
 
 class _FakeTTSProvider(TTSProvider):
@@ -185,3 +187,26 @@ class TestVisibleProvidersInjectsTTSPlugins:
         assert all(not row.get("tts_plugin_name") for row in visible)
         # Hardcoded rows still present (sample one of the always-visible ones)
         assert "Microsoft Edge TTS" in names
+
+    def test_setup_tts_menu_covers_builtin_runtime_providers(self, monkeypatch):
+        """The classic setup TTS menu must expose every runtime built-in provider."""
+        captured: dict[str, list[str]] = {}
+
+        def capture_choices(question, choices, default=0, description=None):
+            if question == "Select TTS provider:":
+                captured["choices"] = choices
+            return default
+
+        monkeypatch.setattr(setup_mod, "prompt_choice", capture_choices)
+        monkeypatch.setattr(setup_mod, "managed_nous_tools_enabled", lambda: False)
+        monkeypatch.setattr(
+            setup_mod,
+            "get_nous_subscription_features",
+            lambda _config: type("Features", (), {"nous_auth_present": False})(),
+        )
+
+        setup_mod._setup_tts_provider({"tts": {"provider": "edge"}})
+
+        menu_text = "\n".join(captured["choices"]).lower()
+        for provider in sorted(BUILTIN_TTS_PROVIDERS):
+            assert provider in menu_text

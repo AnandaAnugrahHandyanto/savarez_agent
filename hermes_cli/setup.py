@@ -992,6 +992,28 @@ def _install_kittentts_deps() -> bool:
         return False
 
 
+def _install_piper_deps() -> bool:
+    """Install Piper TTS dependencies with user approval. Returns True on success."""
+    import subprocess
+    import sys
+
+    print()
+    print_info("Installing piper-tts Python package (~14MB wheel, voices downloaded on first use)...")
+    print()
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", "piper-tts", "--quiet"],
+            check=True,
+            timeout=300,
+        )
+        print_success("piper-tts installed successfully")
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print_error(f"Failed to install piper-tts: {e}")
+        print_info("Try manually: python -m pip install -U piper-tts")
+        return False
+
+
 def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are already stored locally.
 
@@ -1060,6 +1082,7 @@ def _setup_tts_provider(config: dict):
         "gemini": "Google Gemini TTS",
         "neutts": "NeuTTS",
         "kittentts": "KittenTTS",
+        "piper": "Piper",
     }
     current_label = provider_labels.get(current_provider, current_provider)
 
@@ -1084,9 +1107,10 @@ def _setup_tts_provider(config: dict):
             "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
             "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
+            "Piper (local on-device, free, 44 languages, voices ~20-90MB)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1253,7 +1277,6 @@ def _setup_tts_provider(config: dict):
     elif selected == "kittentts":
         # Check if already installed
         try:
-            import importlib.util
             already_installed = importlib.util.find_spec("kittentts") is not None
         except Exception:
             already_installed = False
@@ -1271,6 +1294,28 @@ def _setup_tts_provider(config: dict):
                     selected = "edge"
             else:
                 print_info("Skipping install. Set tts.provider to 'kittentts' after installing manually.")
+                selected = "edge"
+
+    elif selected == "piper":
+        # Check if already installed
+        try:
+            already_installed = importlib.util.find_spec("piper") is not None
+        except Exception:
+            already_installed = False
+
+        if already_installed:
+            print_success("Piper is already installed")
+        else:
+            print()
+            print_info("Piper is a local neural TTS engine with 44 languages.")
+            print_info("Default voice: en_US-lessac-medium, downloaded on first TTS call.")
+            print()
+            if prompt_yes_no("Install Piper now?", True):
+                if not _install_piper_deps():
+                    print_warning("Piper installation incomplete. Falling back to Edge TTS.")
+                    selected = "edge"
+            else:
+                print_info("Skipping install. Set tts.provider to 'piper' after installing manually.")
                 selected = "edge"
 
     # Save the selection
