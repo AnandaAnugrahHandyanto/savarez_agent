@@ -123,3 +123,31 @@ def test_dashboard_plugin_manifests_and_assets_are_packaged():
     assert "*/dashboard/manifest.json" in plugin_data
     assert "*/dashboard/dist/*" in plugin_data
     assert "*/dashboard/dist/**/*" in plugin_data
+
+
+def test_version_consistency():
+    """pyproject.toml and hermes_cli/__init__.py must declare the same version.
+
+    After a release, a careless ``git reset --hard`` or merge conflict can
+    revert ``__init__.py`` while ``pyproject.toml`` stays current (issue
+    #35070).  This test catches silent version drift.
+    """
+    import re
+    repo_root = Path(__file__).resolve().parents[1]
+    pyproject_path = repo_root / "pyproject.toml"
+    init_path = repo_root / "hermes_cli" / "__init__.py"
+
+    with pyproject_path.open("rb") as f:
+        pyproject_version = tomllib.load(f).get("project", {}).get("version", "")
+
+    init_text = init_path.read_text(encoding="utf-8")
+    init_match = re.search(r'__version__\s*=\s*"([^"]+)"', init_text)
+    init_version = init_match.group(1) if init_match else ""
+
+    assert pyproject_version, "pyproject.toml must declare a [project].version"
+    assert init_version, "hermes_cli/__init__.py must declare __version__"
+    assert pyproject_version == init_version, (
+        f"Version mismatch: pyproject.toml={pyproject_version!r} "
+        f"but hermes_cli/__init__.py={init_version!r}. "
+        f"Both files must declare the same version."
+    )

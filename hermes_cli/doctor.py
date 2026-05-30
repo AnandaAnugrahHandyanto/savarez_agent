@@ -509,7 +509,37 @@ def run_doctor(args):
         check_ok("Virtual environment active")
     else:
         check_warn("Not in virtual environment", "(recommended)")
-    
+
+    # Check version consistency between pyproject.toml and __init__.py
+    try:
+        import re
+        import tomllib as _tomllib
+        pyproject_path = PROJECT_ROOT / "pyproject.toml"
+        init_path = PROJECT_ROOT / "hermes_cli" / "__init__.py"
+        if pyproject_path.exists() and init_path.exists():
+            with open(pyproject_path, "rb") as f:
+                pyproject_version = _tomllib.load(f).get("project", {}).get("version", "")
+            init_content = init_path.read_text(encoding="utf-8")
+            init_match = re.search(r'__version__\s*=\s*"([^"]+)"', init_content)
+            init_version = init_match.group(1) if init_match else ""
+            if pyproject_version and init_version:
+                if pyproject_version == init_version:
+                    check_ok(f"Version consistent (v{init_version})")
+                else:
+                    _fail_and_issue(
+                        "Version mismatch",
+                        f"pyproject.toml={pyproject_version}, __init__.py={init_version}",
+                        (
+                            f"pyproject.toml (v{pyproject_version}) and hermes_cli/__init__.py "
+                            f"(v{init_version}) have different versions. "
+                            f"Run 'hermes doctor --fix' to auto-resolve, or manually update "
+                            f"hermes_cli/__init__.py to match pyproject.toml."
+                        ),
+                        issues,
+                    )
+    except Exception:
+        pass
+
     _section("Required Packages")
     required_packages = [
         ("openai", "OpenAI SDK"),
