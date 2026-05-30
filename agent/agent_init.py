@@ -151,7 +151,9 @@ def _resolve_max_tokens(agent, agent_cfg, custom_providers=None):
     """
     if custom_providers is None:
         custom_providers = getattr(agent, "_custom_providers", None) or []
-    model_cfg = agent_cfg.get("model", {}) if isinstance(agent_cfg, dict) else {}
+    model_cfg = agent_cfg.get("model") if isinstance(agent_cfg, dict) else None
+    if not isinstance(model_cfg, dict):  # config "model:" may be a bare model-id string
+        model_cfg = {}
 
     def _warn_invalid(what, value, example):
         _ra().logger.warning(

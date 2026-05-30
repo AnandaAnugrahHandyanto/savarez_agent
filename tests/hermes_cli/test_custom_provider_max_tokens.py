@@ -109,3 +109,9 @@ class TestStartupPrecedence:
             agent_init._resolve_max_tokens(a, {"model": {"max_tokens": "lots"}})
             assert mock_ra.return_value.logger.warning.called
         assert a.max_tokens is None
+
+    def test_bare_string_model_config_is_tolerated(self):
+        # config "model:" may be a plain model-id string, not a mapping.
+        a = _bare_agent(_cfg(131_072))
+        agent_init._resolve_max_tokens(a, {"model": "some-model-id"})
+        assert a.max_tokens == 131_072  # per-model still resolved; no crash on str.get

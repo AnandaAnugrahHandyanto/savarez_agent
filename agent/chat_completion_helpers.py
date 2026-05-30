@@ -1133,6 +1133,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # model's actual context window is resolved instead of inheriting
         # the stale value from the previous model.  See #22387.
         agent._config_context_length = None
+        # Re-resolve max_tokens for the fallback model below; the global must
+        # not leak onto the fallback provider (#28782). Explicit values persist.
+        if not getattr(agent, "_max_tokens_explicit", False):
+            agent._config_max_tokens = None
         agent.model = fb_model
         agent.provider = fb_provider
         agent.base_url = fb_base_url
@@ -1140,6 +1144,18 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
+
+        if not getattr(agent, "_max_tokens_explicit", False):
+            try:
+                from hermes_cli.config import get_custom_provider_max_tokens
+                _fb_mt = get_custom_provider_max_tokens(
+                    agent.model, agent.base_url,
+                    custom_providers=getattr(agent, "_custom_providers", None),
+                )
+            except Exception:
+                _fb_mt = None
+            agent._config_max_tokens = int(_fb_mt) if _fb_mt else None
+            agent.max_tokens = agent._config_max_tokens
 
         # Clear the credential pool when the fallback provider doesn't match
         # the pool's provider.  The pool was seeded for the primary provider;
