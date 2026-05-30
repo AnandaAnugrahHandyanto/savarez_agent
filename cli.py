@@ -12357,9 +12357,19 @@ class HermesCLI:
                     self._pending_input.put(
                         f"[USER LATEST INPUT - Priority Response Required]\n{combined}"
                     )
-            except Exception:
+            except Exception as e:
+                logger.error("Interrupt re-queue logic failed. Falling back to pending_message only.", exc_info=True)
                 if pending_message and isinstance(pending_message, str) and hasattr(self, '_pending_input'):
-                    self._pending_input.put(pending_message)
+                    MAX_CHARS = 1500
+                    if len(pending_message) > MAX_CHARS:
+                        # Head-Tail strategy: preserve context (head) and final intent (tail)
+                        # to avoid truncated context that confuses the LLM
+                        head = pending_message[:700]
+                        tail = pending_message[-700:]
+                        truncated = f"{head}\n\n[...Fallback Truncated due to error...]\n\n{tail}"
+                    else:
+                        truncated = pending_message
+                    self._pending_input.put(truncated)
 
             # If a /steer was left over (agent finished before another tool
             # batch could absorb it), deliver it as the next user turn.
