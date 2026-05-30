@@ -211,6 +211,37 @@ memory:
   user_char_limit: 1375     # ~500 tokens
 ```
 
+## Tiered Vector Index (experimental)
+
+Hermes can optionally build a local SQLite index for the built-in `MEMORY.md` and `USER.md` files. The index stores deterministic local hashed embeddings plus hot/warm/cold tier metadata, so Hermes can order frequently used or recent memories ahead of colder archive facts without requiring API keys or a network embedding service.
+
+It is disabled by default. Enable and backfill the active profile:
+
+```bash
+hermes config set memory.tiered.enabled true
+hermes memory rebuild
+hermes memory index
+```
+
+Review the non-destructive "dreaming" organizer report:
+
+```bash
+hermes memory dream          # report proposed tier changes, duplicates, stale candidates
+hermes memory dream --apply  # apply tier metadata only; does not rewrite memory files
+```
+
+Cross-profile indexing is denied unless explicitly enabled and bounded in config:
+
+```yaml
+memory:
+  tiered:
+    enabled: true
+    cross_profile_enabled: true
+    authorized_profiles: [researcher, coder]
+```
+
+Sensitive/token-like entries are skipped from the index. Search usage updates index metadata (`use_count`, `last_used_at`, relevance) but never writes back into your memory source files. The feature preserves the frozen system-prompt snapshot invariant: mid-session writes still only affect disk and the next session.
+
 ## External Memory Providers
 
 For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 8 external memory provider plugins — including Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, and Supermemory.

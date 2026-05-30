@@ -164,6 +164,12 @@ class MemoryStore:
         sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
         sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
 
+        # Optional tiered memory index: build a local SQLite/vector index and
+        # order prompt snapshots hot → warm → cold. Disabled by default so the
+        # legacy prompt shape and prefix-cache behavior remain unchanged.
+        sanitized_memory = self._tier_ordered_entries_for_snapshot("memory", sanitized_memory)
+        sanitized_user = self._tier_ordered_entries_for_snapshot("user", sanitized_user)
+
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", sanitized_memory),
@@ -440,6 +446,41 @@ class MemoryStore:
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry removed.")
+
+    def _tier_ordered_entries_for_snapshot(self, target: str, entries: List[str]) -> List[str]:
+        """Return entries ordered by optional hot/warm/cold index metadata.
+
+        The index is disabled by default. When enabled, rebuild from the active
+        profile's memory files at session start, then sort the already-sanitized
+        snapshot entries by tier. This keeps injection bounded to the same
+        profile-scoped MEMORY.md/USER.md content while allowing hot memories to
+        appear first.
+        """
+        try:
+            from hermes_cli.config import load_config
+            from tools.memory_index import MemoryIndexConfig, index_path, rebuild_index, connect, _active_profile_name, _entry_hash
+
+            cfg = MemoryIndexConfig.from_config(load_config())
+            if not cfg.enabled:
+                return entries
+            home = get_hermes_home()
+            profile = _active_profile_name(home)
+            rebuild_index(hermes_home=home, profiles=(profile,), cfg=cfg)
+            tier_rank = {"hot": 0, "warm": 1, "cold": 2}
+            order: Dict[str, tuple[int, float]] = {}
+            with connect(index_path(home, cfg)) as conn:
+                for row in conn.execute(
+                    "SELECT id, tier, updated_at FROM memory_index_entries WHERE profile = ? AND target = ?",
+                    (profile, target),
+                ):
+                    order[row["id"]] = (tier_rank.get(row["tier"], 1), -float(row["updated_at"] or 0))
+            return sorted(
+                entries,
+                key=lambda entry: order.get(_entry_hash(profile, target, entry), (1, 0)),
+            )
+        except Exception as exc:
+            logger.debug("tiered memory snapshot ordering skipped: %s", exc)
+            return entries
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """

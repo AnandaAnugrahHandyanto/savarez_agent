@@ -1327,6 +1327,23 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Optional local tiered/vector index for built-in memory. Disabled by
+        # default; when enabled it stores profile-scoped MEMORY.md/USER.md
+        # entries in a SQLite index with hashed local embeddings and hot/warm/
+        # cold metadata. Cross-profile search is denied unless explicitly
+        # enabled and bounded by authorized_profiles.
+        "tiered": {
+            "enabled": False,
+            "embedding_backend": "local-hash",
+            "embedding_dim": 128,
+            "hot_limit": 8,
+            "warm_limit": 12,
+            "cold_min_score": 0.72,
+            "cross_profile_enabled": False,
+            "authorized_profiles": [],
+            "db_path": "",
+            "dream_apply": False,
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

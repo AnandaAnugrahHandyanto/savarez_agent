@@ -12784,6 +12784,24 @@ Examples:
         "setup", help="Interactive provider selection and configuration"
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
+    memory_sub.add_parser("index", help="Show built-in tiered/vector memory index status")
+    _rebuild_parser = memory_sub.add_parser(
+        "rebuild",
+        help="Rebuild the local tiered/vector memory index from MEMORY.md/USER.md",
+    )
+    _rebuild_parser.add_argument(
+        "--profiles",
+        help="Comma-separated profile names to index; cross-profile indexing requires memory.tiered.cross_profile_enabled",
+    )
+    _dream_parser = memory_sub.add_parser(
+        "dream",
+        help="Review memory usage/duplicates/staleness and propose hot/warm/cold tier changes",
+    )
+    _dream_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply proposed tier metadata changes; never rewrites MEMORY.md/USER.md",
+    )
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
     _reset_parser = memory_sub.add_parser(
         "reset",

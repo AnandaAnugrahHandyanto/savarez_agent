@@ -445,6 +445,60 @@ def cmd_status(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Local tiered/vector index commands
+# ---------------------------------------------------------------------------
+
+def _tiered_cfg():
+    from hermes_cli.config import load_config
+    from tools.memory_index import MemoryIndexConfig
+    return MemoryIndexConfig.from_config(load_config())
+
+
+def cmd_index_status(args) -> None:
+    from tools.memory_index import index_status
+
+    status = index_status(cfg=_tiered_cfg())
+    print("\nMemory index status\n" + "─" * 40)
+    print(f"  Enabled: {status.get('enabled')}")
+    print(f"  DB:      {status.get('db_path')}")
+    print(f"  Exists:  {status.get('exists')}")
+    counts = status.get("counts") or {}
+    if counts:
+        print("\n  Counts:")
+        for key, value in sorted(counts.items()):
+            print(f"    {key}: {value}")
+    meta = status.get("meta") or {}
+    if meta:
+        print("\n  Meta:")
+        for key, value in sorted(meta.items()):
+            print(f"    {key}: {value}")
+    print()
+
+
+def cmd_index_rebuild(args) -> None:
+    from tools.memory_index import rebuild_index
+
+    profiles = getattr(args, "profiles", None) or None
+    if isinstance(profiles, str):
+        profiles = [p.strip() for p in profiles.split(",") if p.strip()]
+    result = rebuild_index(profiles=profiles, cfg=_tiered_cfg())
+    print("\nMemory index rebuild complete\n" + "─" * 40)
+    print(f"  Profiles:          {', '.join(result['profiles'])}")
+    print(f"  Scanned entries:   {result['scanned']}")
+    print(f"  Indexed entries:   {result['indexed']}")
+    print(f"  Sensitive skipped: {result['skipped_sensitive']}")
+    print(f"  DB:                {result['db_path']}\n")
+
+
+def cmd_index_dream(args) -> None:
+    import json
+    from tools.memory_index import dream_index
+
+    result = dream_index(apply=bool(getattr(args, "apply", False)), cfg=_tiered_cfg())
+    print(json.dumps(result, indent=2))
+
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 
@@ -455,5 +509,11 @@ def memory_command(args) -> None:
         cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
+    elif sub == "index":
+        cmd_index_status(args)
+    elif sub == "rebuild":
+        cmd_index_rebuild(args)
+    elif sub == "dream":
+        cmd_index_dream(args)
     else:
         cmd_status(args)
