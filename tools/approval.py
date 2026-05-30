@@ -586,6 +586,55 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def request_gateway_approval(
+    session_key: str,
+    *,
+    description: str,
+    metadata: dict,
+    timeout_surface: str = "gateway",
+) -> dict:
+    """Request a structured, non-shell approval through the gateway queue.
+
+    This is for semantic business operations (for example, Workit/M365 writes)
+    that need the same live user approval path as dangerous shell commands
+    without fabricating a command string just to trigger regex-based guards.
+    """
+    with _lock:
+        notify_cb = _gateway_notify_cbs.get(session_key)
+    if not notify_cb:
+        return {
+            "approved": False,
+            "message": "BLOCKED: gateway approval callback unavailable",
+            "reason": "gateway_notify_unavailable",
+        }
+
+    approval_data = {
+        "command": "",
+        "description": description,
+        "pattern_key": "semantic",
+        "pattern_keys": ["semantic"],
+        "approval_type": "semantic",
+        "metadata": dict(metadata or {}),
+    }
+    outcome = _await_gateway_decision(
+        session_key,
+        notify_cb,
+        approval_data,
+        surface=timeout_surface,
+    )
+    choice = outcome.get("choice")
+    if not outcome.get("resolved"):
+        return {
+            "approved": False,
+            "message": "BLOCKED: gateway approval timed out or failed",
+            "reason": "timeout_or_notify_failed",
+            "notify_failed": bool(outcome.get("notify_failed")),
+        }
+    if choice == "deny" or not choice:
+        return {"approved": False, "message": "BLOCKED: User denied approval", "reason": "denied"}
+    return {"approved": True, "choice": choice, "metadata": dict(metadata or {})}
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:

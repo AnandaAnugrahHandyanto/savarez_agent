@@ -169,6 +169,91 @@ class TestTelegramExecApproval:
         assert "message_thread_id" not in call_log[1] or call_log[1]["message_thread_id"] is None
 
     @pytest.mark.asyncio
+    async def test_workit_semantic_approval_renders_decision_metadata_without_raw_secrets(self):
+        adapter = _make_adapter()
+        sent = {}
+
+        async def mock_send_message(**kwargs):
+            sent.update(kwargs)
+            return SimpleNamespace(message_id=42)
+
+        adapter._bot.send_message = AsyncMock(side_effect=mock_send_message)
+
+        result = await adapter.send_exec_approval(
+            chat_id="12345",
+            command="",
+            session_key="s",
+            description="khaw workit semantic approval",
+            metadata={
+                "approval_request": {
+                    "system": "khaw-workit",
+                    "provider": "m365",
+                    "approval_id": "approval-abcdef123456",
+                    "account": "bernardo@hapvida.example",
+                    "operation": "m365.outlook.send",
+                    "targets": ["a@example.com", "b@example.com"],
+                    "title": "Reunião Hapvida",
+                    "side_effects": "Envia email externo",
+                    "required_scopes": ["Mail.Send"],
+                    "ttl_seconds": 1800,
+                    "body": "SEGREDO corpo bruto do email",
+                    "access_token": "tok-secret-123",
+                    "attachments": [{"name": "plano.pdf", "content": "PDF-RAW"}],
+                }
+            },
+        )
+
+        assert result.success is True
+        text = sent["text"]
+        assert "Aprovação necessária — Workit/M365" in text
+        assert "Operação: m365.outlook.send" in text
+        assert "Conta: bernardo@hapvida.example" in text
+        assert "Destinatários/recursos: a@example.com, b@example.com" in text
+        assert "Assunto/título: Reunião Hapvida" in text
+        assert "Efeito: Envia email externo" in text
+        assert "Escopos: Mail.Send" in text
+        assert "Validade: 30 min" in text
+        assert "ID: approval" in text
+        assert "SEGREDO" not in text
+        assert "tok-secret" not in text
+        assert "PDF-RAW" not in text
+
+    @pytest.mark.asyncio
+    async def test_workit_semantic_approval_summarizes_large_recipient_lists(self):
+        adapter = _make_adapter()
+        sent = {}
+
+        async def mock_send_message(**kwargs):
+            sent.update(kwargs)
+            return SimpleNamespace(message_id=42)
+
+        adapter._bot.send_message = AsyncMock(side_effect=mock_send_message)
+        targets = [f"user{i}@example.com" for i in range(20)]
+
+        result = await adapter.send_exec_approval(
+            chat_id="12345",
+            command="",
+            session_key="s",
+            description="khaw workit semantic approval",
+            metadata={
+                "approval_request": {
+                    "system": "khaw-workit",
+                    "provider": "m365",
+                    "operation": "m365.outlook.send",
+                    "targets": targets,
+                    "ttl_seconds": 1800,
+                    "payload_hash": "payloadhash1234567890",
+                }
+            },
+        )
+
+        assert result.success is True
+        text = sent["text"]
+        assert "20 itens" in text
+        assert "hash=" in text
+        assert "user19@example.com" not in text
+
+    @pytest.mark.asyncio
     async def test_not_connected(self):
         adapter = _make_adapter()
         adapter._bot = None

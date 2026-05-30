@@ -9,6 +9,7 @@ Uses python-telegram-bot library for:
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -2577,6 +2578,52 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    def _format_workit_m365_approval_text(self, request: Dict[str, Any]) -> str:
+        def _value(key: str, default: str = "—") -> str:
+            value = request.get(key)
+            if value is None or value == "":
+                return default
+            if isinstance(value, (list, tuple)):
+                return ", ".join(str(v) for v in value) or default
+            return str(value)
+
+        targets = request.get("targets") or request.get("resources") or []
+        if isinstance(targets, (list, tuple)):
+            if len(targets) > 5:
+                payload_hash = str(request.get("payload_hash") or "")
+                digest = payload_hash[:12] or hashlib.sha256(
+                    json.dumps(list(targets), ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()[:12]
+                targets_text = f"{len(targets)} itens (hash={digest})"
+            else:
+                targets_text = ", ".join(str(t) for t in targets) or "—"
+        else:
+            targets_text = str(targets) if targets else "—"
+
+        ttl_seconds = request.get("ttl_seconds", 1800)
+        try:
+            ttl_minutes = max(1, int(ttl_seconds) // 60)
+        except (TypeError, ValueError):
+            ttl_minutes = 30
+        approval_id = str(request.get("approval_id") or request.get("id") or "")
+        short_id = approval_id[:12] if approval_id else "—"
+
+        lines = [
+            "⚠️ <b>Aprovação necessária — Workit/M365</b>",
+            "",
+            f"Operação: {_html.escape(_value('operation', _value('operation_class')))}",
+            f"Conta: {_html.escape(_value('account'))}",
+            f"Destinatários/recursos: {_html.escape(targets_text)}",
+            f"Assunto/título: {_html.escape(_value('title', _value('subject')))}",
+            f"Efeito: {_html.escape(_value('side_effects'))}",
+            f"Escopos: {_html.escape(_value('required_scopes'))}",
+            f"Validade: {ttl_minutes} min",
+            f"ID: {_html.escape(short_id)}",
+            "",
+            "Aprovar ou negar?",
+        ]
+        return "\n".join(lines)
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -2591,12 +2638,20 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
-            text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
-            )
+            approval_request = (metadata or {}).get("approval_request")
+            if (
+                isinstance(approval_request, dict)
+                and approval_request.get("system") == "khaw-workit"
+                and approval_request.get("provider") == "m365"
+            ):
+                text = self._format_workit_m365_approval_text(approval_request)
+            else:
+                cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+                text = (
+                    f"⚠️ <b>Command Approval Required</b>\n\n"
+                    f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
+                    f"Reason: {_html.escape(description)}"
+                )
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)
