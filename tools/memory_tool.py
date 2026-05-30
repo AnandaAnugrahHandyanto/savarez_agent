@@ -405,11 +405,16 @@ class MemoryStore:
         return self._success_response(target, "Entry replaced.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
-        """Remove the entry containing old_text substring."""
+        """Remove the entry containing old_text substring.
+
+        Returns ``removed_content`` in the response dict so that callers
+        (e.g. external memory providers) can archive the deleted entry.
+        """
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
 
+        removed_entry = ""
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
             if bak:
@@ -434,11 +439,15 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
+            removed_entry = matches[0][1]
             entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry removed.")
+        resp = self._success_response(target, "Entry removed.")
+        if removed_entry:
+            resp["removed_content"] = removed_entry
+        return resp
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """

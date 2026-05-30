@@ -38,7 +38,7 @@ import queue
 import threading
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
@@ -1509,6 +1509,31 @@ class HindsightMemoryProvider(MemoryProvider):
         self._ensure_writer()
         self._register_atexit()
         self._retain_queue.put(_do_retain)
+
+    def on_memory_write(
+        self, action: str, target: str, content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Archive deleted memory entries to Hindsight before they are lost.
+
+        When action is 'remove', the deleted entry is permanently lost from
+        MEMORY.md. This hook saves it to Hindsight with archived tags so it
+        can be retrieved later via hindsight_recall.
+        """
+        if action != "remove" or not content:
+            return
+        try:
+            retain_kwargs = self._build_retain_kwargs(
+                content,
+                context="archived-memory",
+                tags=["archived", "memory", f"target:{target}"],
+            )
+            self._run_hindsight_operation(
+                lambda client: client.aretain(**retain_kwargs)
+            )
+            logger.debug("Hindsight on_memory_write: archived removed entry, len=%d", len(content))
+        except Exception:
+            logger.debug("Hindsight on_memory_write: archive failed", exc_info=True)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":

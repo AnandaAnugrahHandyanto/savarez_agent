@@ -1660,12 +1660,21 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             store=agent._memory_store,
         )
         # Bridge: notify external memory provider of built-in memory writes
-        if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
+        if agent._memory_manager and function_args.get("action") in {"add", "replace", "remove"}:
             try:
+                action = function_args.get("action", "")
+                content = function_args.get("content", "")
+                if action == "remove":
+                    # Extract removed content from the result JSON
+                    try:
+                        parsed = json.loads(result)
+                        content = parsed.get("removed_content", "")
+                    except Exception:
+                        pass  # keep content empty — don't block on parse failure
                 agent._memory_manager.on_memory_write(
-                    function_args.get("action", ""),
+                    action,
                     target,
-                    function_args.get("content", ""),
+                    content,
                     metadata=agent._build_memory_write_metadata(
                         task_id=effective_task_id,
                         tool_call_id=tool_call_id,
