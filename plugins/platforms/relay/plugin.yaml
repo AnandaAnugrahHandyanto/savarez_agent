@@ -22,6 +22,6 @@ optional_env:
     prompt: "Bind host"
     password: false
   - name: RELAY_HOME_CHANNEL
-    description: "Default chat_id for cron / notification delivery (e.g. relay:zhizhiruo)"
+    description: "Default chat_id for cron / notification delivery (e.g. relay:worker-a)"
     prompt: "Home channel chat_id"
     password: false

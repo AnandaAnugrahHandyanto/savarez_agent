@@ -84,7 +84,7 @@ registry.register(
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "Target agent name, e.g. 'zhizhiruo' for Worker",
+                    "description": "Target agent name, e.g. 'worker-a' for Worker",
                 },
                 "content": {
                     "type": "string",

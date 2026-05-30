@@ -78,15 +78,15 @@ class RelayAdapter(BasePlatformAdapter):
         Format in config.yaml:
             extra:
               endpoints:
-                zhizhiruo: "http://127.0.0.1:8767"
-                zhongwuyan: "http://127.0.0.1:8768"
+                worker-a: "http://127.0.0.1:8767"
+                worker-b: "http://127.0.0.1:8768"
         """
         endpoints = extra.get("endpoints", {})
         if isinstance(endpoints, dict):
             self._agent_endpoints.update(endpoints)
-        # Default: sidecar_url for zhizhiruo
-        if "zhizhiruo" not in self._agent_endpoints:
-            self._agent_endpoints["zhizhiruo"] = self.sidecar_url
+        # Default: sidecar_url for worker-a
+        if "worker-a" not in self._agent_endpoints:
+            self._agent_endpoints["worker-a"] = self.sidecar_url
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -239,7 +239,7 @@ class RelayAdapter(BasePlatformAdapter):
         """Send a message to an external agent via HTTP POST.
 
         chat_id format: "relay:<target_agent>"
-        e.g. "relay:zhizhiruo" → POST to zhizhiruo's endpoint
+        e.g. "relay:worker-a" → POST to worker-a's endpoint
         """
         # Extract target agent from chat_id
         if chat_id.startswith("relay:"):
@@ -415,7 +415,7 @@ async def _standalone_send(
     ``deliver=relay`` cron jobs fail with "No live adapter for platform".
 
     ``chat_id`` format: ``relay:<target_agent>``
-    e.g. ``relay:zhizhiruo`` → POST to zhizhiruo's endpoint.
+    e.g. ``relay:worker-a`` → POST to worker-a's endpoint.
 
     ``thread_id`` and ``media_files`` are accepted for signature parity
     only — relay has no thread or attachment primitive.
@@ -442,13 +442,13 @@ async def _standalone_send(
         extra.get("sidecar_url")
         or os.getenv("RELAY_SIDECAR_URL", "http://127.0.0.1:8767")
     )
-    # Default: sidecar_url for zhizhiruo
+    # Default: sidecar_url for worker-a
     if isinstance(endpoints, dict):
         endpoint_url = endpoints.get(target_agent)
     else:
         endpoint_url = None
     if not endpoint_url:
-        if target_agent == "zhizhiruo":
+        if target_agent == "worker-a":
             endpoint_url = sidecar_url
         else:
             return {

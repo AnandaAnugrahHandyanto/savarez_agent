@@ -21,7 +21,7 @@ CONFIG = {
     "host": os.getenv("SIDECAR_HOST", "127.0.0.1"),
     "relay_url": os.getenv("RELAY_URL", "http://127.0.0.1:8766/message"),
     "inbox_dir": Path(os.getenv("SIDECAR_DIR", str(Path.home() / "content/工具/agent-relay"))),
-    "project": os.getenv("CC_PROJECT", "zhizhiruo"),
+    "project": os.getenv("CC_PROJECT", "worker-a"),
     "poll_interval": float(os.getenv("POLL_INTERVAL", "0.5")),
 }
 
@@ -224,7 +224,7 @@ class CCSidecar:
                 resp = await session.post(
                     CONFIG["relay_url"],
                     json={
-                        "from": "zhizhiruo",
+                        "from": "worker-a",
                         "to": msg.get("to", "zhangwuji"),
                         "content": msg.get("content", ""),
                         "id": msg.get("id"),
