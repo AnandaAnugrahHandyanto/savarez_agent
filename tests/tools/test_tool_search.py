@@ -280,6 +280,134 @@ class TestAssembly:
 
 
 # ---------------------------------------------------------------------------
+# Catalog cache — avoid rebuilding the same deferred-tool search index.
+# ---------------------------------------------------------------------------
+
+
+class TestCatalogIndexCache:
+    def test_tool_search_reuses_catalog_index_for_same_tool_defs(self, monkeypatch):
+        from tools import tool_search as ts
+
+        ts._clear_catalog_index_cache()
+        tool_defs = [
+            _td("cached_alpha_tool", "Search alpha records", {"query": {"type": "string"}}),
+            _td("cached_beta_tool", "Search beta records", {"query": {"type": "string"}}),
+        ]
+
+        build_calls = 0
+        original_build_catalog = ts.build_catalog
+
+        def fake_classify_tools(defs):
+            return [], defs
+
+        def counting_build_catalog(defs):
+            nonlocal build_calls
+            build_calls += 1
+            return original_build_catalog(defs)
+
+        monkeypatch.setattr(ts, "classify_tools", fake_classify_tools)
+        monkeypatch.setattr(ts, "build_catalog", counting_build_catalog)
+
+        first = json.loads(ts.dispatch_tool_search(
+            {"query": "alpha", "limit": 2},
+            current_tool_defs=tool_defs,
+            config=ts.ToolSearchConfig.from_raw({"enabled": "on"}),
+        ))
+        second = json.loads(ts.dispatch_tool_search(
+            {"query": "alpha", "limit": 2},
+            current_tool_defs=tool_defs,
+            config=ts.ToolSearchConfig.from_raw({"enabled": "on"}),
+        ))
+
+        assert first["matches"] == second["matches"]
+        assert build_calls == 1
+
+    def test_tool_search_catalog_cache_invalidates_when_search_text_changes(self, monkeypatch):
+        from tools import tool_search as ts
+
+        ts._clear_catalog_index_cache()
+        tool_defs = [_td("cached_mutable_tool", "Search alpha records")]
+        changed_defs = [_td("cached_mutable_tool", "Search gamma records")]
+
+        build_calls = 0
+        original_build_catalog = ts.build_catalog
+
+        def fake_classify_tools(defs):
+            return [], defs
+
+        def counting_build_catalog(defs):
+            nonlocal build_calls
+            build_calls += 1
+            return original_build_catalog(defs)
+
+        monkeypatch.setattr(ts, "classify_tools", fake_classify_tools)
+        monkeypatch.setattr(ts, "build_catalog", counting_build_catalog)
+
+        ts.dispatch_tool_search(
+            {"query": "alpha"},
+            current_tool_defs=tool_defs,
+            config=ts.ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        ts.dispatch_tool_search(
+            {"query": "alpha"},
+            current_tool_defs=tool_defs,
+            config=ts.ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        changed = json.loads(ts.dispatch_tool_search(
+            {"query": "gamma"},
+            current_tool_defs=changed_defs,
+            config=ts.ToolSearchConfig.from_raw({"enabled": "on"}),
+        ))
+
+        assert build_calls == 2
+        assert changed["matches"][0]["name"] == "cached_mutable_tool"
+
+    def test_tool_search_catalog_cache_invalidates_when_registry_generation_changes(self, monkeypatch):
+        from tools import tool_search as ts
+
+        ts._clear_catalog_index_cache()
+        tool_defs = [_td("cached_generation_tool", "Search alpha records")]
+
+        build_calls = 0
+        generation = 1
+        original_build_catalog = ts.build_catalog
+
+        def fake_classify_tools(defs):
+            return [], defs
+
+        def fake_registry_generation():
+            return generation
+
+        def counting_build_catalog(defs):
+            nonlocal build_calls
+            build_calls += 1
+            return original_build_catalog(defs)
+
+        monkeypatch.setattr(ts, "classify_tools", fake_classify_tools)
+        monkeypatch.setattr(ts, "_registry_generation", fake_registry_generation)
+        monkeypatch.setattr(ts, "build_catalog", counting_build_catalog)
+
+        ts.dispatch_tool_search(
+            {"query": "alpha"},
+            current_tool_defs=tool_defs,
+            config=ts.ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        ts.dispatch_tool_search(
+            {"query": "alpha"},
+            current_tool_defs=tool_defs,
+            config=ts.ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        generation = 2
+        ts.dispatch_tool_search(
+            {"query": "alpha"},
+            current_tool_defs=tool_defs,
+            config=ts.ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+
+        assert build_calls == 2
+
+
+# ---------------------------------------------------------------------------
 # Bridge dispatch
 # ---------------------------------------------------------------------------
 

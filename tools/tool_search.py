@@ -12,11 +12,10 @@ for the full rationale):
 * The threshold gate runs every assembly: when deferrable tools would consume
   less than ``threshold_pct`` of the model's context window (default 10%),
   tool search is a no-op and the tools array passes through unchanged.
-* The catalog is stateless across turns and tools-array assemblies. It is
-  rebuilt from the current tool-defs list every time. This is the lesson
-  from OpenClaw's cron regression (openclaw/openclaw#84141): a session-keyed
-  catalog that drifts out of sync with the live tool registry produces
-  silent tool dropouts.
+* The catalog is keyed by the live tool-defs search surface plus registry
+  generation, never by session id. This preserves the OpenClaw cron lesson
+  (openclaw/openclaw#84141): stale session-keyed catalogs drift out of sync
+  with the live registry and produce silent tool dropouts.
 * Bridge tools route through ``model_tools.handle_function_call`` exactly
   like a direct call, so guardrails, plugin pre/post hooks, approval flows,
   and tool-result truncation all fire identically.
@@ -31,6 +30,8 @@ import json
 import logging
 import math
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -277,6 +278,22 @@ class CatalogEntry:
     _tokens: List[str] = field(default_factory=list)
 
 
+@dataclass
+class CatalogSearchIndex:
+    """A catalog plus BM25 statistics precomputed once per tool-def surface."""
+
+    catalog: List[CatalogEntry]
+    doc_lengths: List[int]
+    avg_dl: float
+    doc_freq: Dict[str, int]
+    token_freqs: List[Dict[str, int]]
+
+
+_CATALOG_INDEX_CACHE_MAX = 32
+_catalog_index_cache: OrderedDict[tuple, CatalogSearchIndex] = OrderedDict()
+_catalog_index_cache_lock = threading.RLock()
+
+
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 
 
@@ -344,9 +361,103 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
     return catalog
 
 
+def _token_counts(tokens: List[str]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for token in tokens:
+        counts[token] = counts.get(token, 0) + 1
+    return counts
+
+
+def build_catalog_index(catalog: List[CatalogEntry]) -> CatalogSearchIndex:
+    """Precompute BM25 statistics for a catalog.
+
+    ``tool_search`` queries repeatedly search the same scoped tool surface
+    during a turn/session. Precomputing doc lengths, document frequencies,
+    and per-entry term frequencies once avoids rebuilding those structures on
+    every query while keeping the existing search semantics unchanged.
+    """
+    doc_lengths = [len(entry._tokens) for entry in catalog]
+    avg_dl = sum(doc_lengths) / max(len(doc_lengths), 1)
+    doc_freq: Dict[str, int] = {}
+    token_freqs: List[Dict[str, int]] = []
+    for entry in catalog:
+        token_freq = _token_counts(entry._tokens)
+        token_freqs.append(token_freq)
+        for token in token_freq:
+            doc_freq[token] = doc_freq.get(token, 0) + 1
+    return CatalogSearchIndex(
+        catalog=catalog,
+        doc_lengths=doc_lengths,
+        avg_dl=avg_dl,
+        doc_freq=doc_freq,
+        token_freqs=token_freqs,
+    )
+
+
+def _registry_generation() -> int | None:
+    try:
+        from tools.registry import registry
+        return getattr(registry, "_generation", None)
+    except Exception:
+        return None
+
+
+def _tool_defs_search_fingerprint(tool_defs: List[Dict[str, Any]]) -> tuple:
+    """Return a stable key for the searchable surface of ``tool_defs``.
+
+    The catalog search text only uses tool name, description, and top-level
+    parameter names. Include the registry generation because deferrability and
+    source labels come from the live registry, not just the schema dicts.
+    """
+    entries: list[tuple[str, str, tuple[str, ...]]] = []
+    for td in tool_defs:
+        fn = td.get("function") or {}
+        params = ((fn.get("parameters") or {}).get("properties") or {})
+        if isinstance(params, dict):
+            param_names = tuple(sorted(str(name) for name in params.keys()))
+        else:
+            param_names = ()
+        entries.append((
+            str(fn.get("name") or ""),
+            str(fn.get("description") or ""),
+            param_names,
+        ))
+    return (_registry_generation(), tuple(entries))
+
+
+def _clear_catalog_index_cache() -> None:
+    """Clear the process-local catalog index cache (tests/config reloads)."""
+    with _catalog_index_cache_lock:
+        _catalog_index_cache.clear()
+
+
+def _catalog_index_for_tool_defs(tool_defs: List[Dict[str, Any]]) -> CatalogSearchIndex:
+    """Return a cached search index for the current scoped tool definitions."""
+    cache_key = _tool_defs_search_fingerprint(tool_defs)
+    with _catalog_index_cache_lock:
+        cached = _catalog_index_cache.get(cache_key)
+        if cached is not None:
+            _catalog_index_cache.move_to_end(cache_key)
+            return cached
+
+    _, deferrable = classify_tools(tool_defs)
+    index = build_catalog_index(build_catalog(deferrable))
+
+    with _catalog_index_cache_lock:
+        cached = _catalog_index_cache.get(cache_key)
+        if cached is not None:
+            _catalog_index_cache.move_to_end(cache_key)
+            return cached
+        _catalog_index_cache[cache_key] = index
+        while len(_catalog_index_cache) > _CATALOG_INDEX_CACHE_MAX:
+            _catalog_index_cache.popitem(last=False)
+    return index
+
+
 def _bm25_score(query_tokens: List[str], doc_tokens: List[str],
                 doc_lengths: List[int], avg_dl: float,
                 doc_freq: Dict[str, int], n_docs: int,
+                doc_tf: Optional[Dict[str, int]] = None,
                 k1: float = 1.5, b: float = 0.75) -> float:
     """Standard BM25 score for one query against one document.
 
@@ -358,10 +469,8 @@ def _bm25_score(query_tokens: List[str], doc_tokens: List[str],
         return 0.0
     score = 0.0
     dl = len(doc_tokens)
-    # Pre-count tokens in the doc.
-    doc_tf: Dict[str, int] = {}
-    for t in doc_tokens:
-        doc_tf[t] = doc_tf.get(t, 0) + 1
+    if doc_tf is None:
+        doc_tf = _token_counts(doc_tokens)
     for q in query_tokens:
         df = doc_freq.get(q, 0)
         if df == 0:
@@ -376,7 +485,12 @@ def _bm25_score(query_tokens: List[str], doc_tokens: List[str],
 
 
 def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> List[CatalogEntry]:
-    """Return the top-``limit`` catalog entries for ``query`` by BM25.
+    """Return the top-``limit`` catalog entries for ``query`` by BM25."""
+    return search_catalog_index(build_catalog_index(catalog), query, limit=limit)
+
+
+def search_catalog_index(index: CatalogSearchIndex, query: str, limit: int = 5) -> List[CatalogEntry]:
+    """Return the top-``limit`` indexed catalog entries for ``query`` by BM25.
 
     Falls back to a stable name-substring match when BM25 yields no hits
     above zero. That ensures a query like ``"github"`` against a catalog
@@ -384,33 +498,31 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
     can underperform when query and document share only one token that
     appears in every document (zero IDF).
     """
-    if not catalog or limit <= 0:
+    if not index.catalog or limit <= 0:
         return []
     query_tokens = _tokenize(query)
     if not query_tokens:
         return []
 
-    # Precompute doc statistics.
-    doc_lengths = [len(e._tokens) for e in catalog]
-    avg_dl = sum(doc_lengths) / max(len(doc_lengths), 1)
-    doc_freq: Dict[str, int] = {}
-    for e in catalog:
-        seen = set(e._tokens)
-        for t in seen:
-            doc_freq[t] = doc_freq.get(t, 0) + 1
-    n_docs = len(catalog)
-
     scored: List[Tuple[float, CatalogEntry]] = []
-    for entry in catalog:
-        s = _bm25_score(query_tokens, entry._tokens, doc_lengths, avg_dl,
-                        doc_freq, n_docs)
+    n_docs = len(index.catalog)
+    for entry, token_freq in zip(index.catalog, index.token_freqs):
+        s = _bm25_score(
+            query_tokens,
+            entry._tokens,
+            index.doc_lengths,
+            index.avg_dl,
+            index.doc_freq,
+            n_docs,
+            doc_tf=token_freq,
+        )
         if s > 0:
             scored.append((s, entry))
 
     if not scored:
         # Substring fallback against the original tool name.
         ql = query.lower()
-        for entry in catalog:
+        for entry in index.catalog:
             if ql in entry.name.lower():
                 scored.append((0.1, entry))
 
@@ -619,12 +731,11 @@ def dispatch_tool_search(args: Dict[str, Any],
     else:
         limit = max(1, min(config.max_search_limit, _safe_int(raw_limit, config.search_default_limit)))
 
-    _, deferrable = classify_tools(current_tool_defs)
-    catalog = build_catalog(deferrable)
-    hits = search_catalog(catalog, query, limit=limit)
+    index = _catalog_index_for_tool_defs(current_tool_defs)
+    hits = search_catalog_index(index, query, limit=limit)
     return json.dumps({
         "query": query,
-        "total_available": len(catalog),
+        "total_available": len(index.catalog),
         "matches": [_format_search_hit(h) for h in hits],
     }, ensure_ascii=False)
 
@@ -717,6 +828,7 @@ __all__ = [
     "BRIDGE_TOOL_NAMES",
     "ToolSearchConfig",
     "CatalogEntry",
+    "CatalogSearchIndex",
     "AssemblyResult",
     "load_config",
     "is_deferrable_tool_name",
@@ -724,7 +836,9 @@ __all__ = [
     "estimate_tokens_from_schemas",
     "should_activate",
     "build_catalog",
+    "build_catalog_index",
     "search_catalog",
+    "search_catalog_index",
     "bridge_tool_schemas",
     "assemble_tool_defs",
     "is_bridge_tool",
