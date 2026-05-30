@@ -373,6 +373,54 @@ def test_api_auth_me_requires_auth(gated_app):
 
 
 # ---------------------------------------------------------------------------
+# Legacy token endpoints under OAuth gate
+# ---------------------------------------------------------------------------
+
+
+def test_gated_plugin_hub_accepts_cookie_session_without_legacy_token(
+    gated_app, monkeypatch
+):
+    """OAuth-gated dashboard endpoints must trust the verified cookie session.
+
+    Regression guard for #35492: the SPA never receives the loopback
+    ``_SESSION_TOKEN`` in gated mode, so endpoints that still call the legacy
+    ``_require_token`` helper must accept ``request.state.session`` from the
+    auth middleware instead of returning a second, stale 401.
+    """
+    monkeypatch.setattr(
+        web_server,
+        "_merged_plugins_hub",
+        lambda: {"plugins": [], "orphan_dashboard_plugins": []},
+    )
+
+    r1 = gated_app.get("/auth/login?provider=stub", follow_redirects=False)
+    state = r1.headers["location"].split("state=")[1]
+    gated_app.get(
+        f"/auth/callback?code=stub_code&state={state}",
+        follow_redirects=False,
+    )
+
+    r = gated_app.get("/api/dashboard/plugins/hub")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"plugins": [], "orphan_dashboard_plugins": []}
+
+
+def test_gated_plugin_hub_still_requires_cookie_session(gated_app, monkeypatch):
+    called = False
+
+    def _hub():
+        nonlocal called
+        called = True
+        return {"plugins": []}
+
+    monkeypatch.setattr(web_server, "_merged_plugins_hub", _hub)
+
+    r = gated_app.get("/api/dashboard/plugins/hub")
+    assert r.status_code == 401
+    assert called is False
+
+
+# ---------------------------------------------------------------------------
 # Zero-providers fail-closed
 # ---------------------------------------------------------------------------
 

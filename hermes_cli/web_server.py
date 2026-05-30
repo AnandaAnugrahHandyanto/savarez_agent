@@ -147,7 +147,19 @@ def _has_valid_session_token(request: Request) -> bool:
 
 
 def _require_token(request: Request) -> None:
-    """Validate the ephemeral session token.  Raises 401 on mismatch."""
+    """Validate dashboard access for routes still using the legacy token gate.
+
+    Loopback mode uses the ephemeral ``_SESSION_TOKEN`` header.  In OAuth
+    gated mode, ``gated_auth_middleware`` has already verified the cookie and
+    attached ``request.state.session`` before protected routes run.  Require
+    that session attachment before bypassing the legacy token so public
+    allowlisted routes cannot skip auth merely because the gate is enabled.
+    """
+    if (
+        getattr(request.app.state, "auth_required", False)
+        and getattr(request.state, "session", None) is not None
+    ):
+        return
     if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
