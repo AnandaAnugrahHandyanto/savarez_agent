@@ -21,6 +21,7 @@ from agent.auxiliary_client import (
     _read_codex_access_token,
     _get_provider_chain,
     _is_payment_error,
+    _is_zai_model_not_entitled,
     _is_rate_limit_error,
     _normalize_aux_provider,
     _try_payment_fallback,
@@ -1295,6 +1296,71 @@ class TestIsPaymentError:
         """Transient 429 rate limit without quota keywords is NOT a payment error."""
         exc = Exception("Rate limit exceeded. Retry after 10s.")
         exc.status_code = 429
+        assert _is_payment_error(exc) is False
+
+
+class TestIsZaiModelNotEntitled:
+    """_is_zai_model_not_entitled matches Z.AI's *structured* error code 1311
+    (not message substrings) and only for provider ``zai``. Distinct from
+    payment (credit exhaustion) and auth (key rejected): the credentials are
+    valid but the plan excludes this one model.
+    """
+
+    @staticmethod
+    def _exc(code=None, *, body=None, status=429, msg="error"):
+        """Build an OpenAI-SDK-shaped error.
+
+        ``body`` mirrors the SDK's parsed JSON body; ``code`` is a shortcut for
+        the common ``{'error': {'code': code}}`` shape.
+        """
+        exc = Exception(msg)
+        exc.status_code = status
+        if body is not None:
+            exc.body = body
+        elif code is not None:
+            exc.body = {"error": {"code": code}}
+        return exc
+
+    def test_zai_1311_structured_body(self):
+        """Z.AI Coding/Lite plan lacking glm-5v-turbo → 429 with code 1311."""
+        exc = self._exc(body={"error": {"code": "1311",
+                                        "message": "当前订阅套餐暂未开放GLM-5V-Turbo权限"}})
+        assert _is_zai_model_not_entitled(exc, "zai") is True
+
+    def test_matches_via_exc_code_attribute(self):
+        """Uses the SDK's own ``.code`` attribute when present."""
+        exc = Exception("error")
+        exc.status_code = 429
+        exc.code = "1311"
+        assert _is_zai_model_not_entitled(exc, "zai") is True
+
+    def test_only_for_zai_provider(self):
+        """Scoped to zai — a 1311 from another provider must not match (codes
+        are vendor-defined and another vendor could reuse 1311)."""
+        exc = self._exc(code="1311")
+        assert _is_zai_model_not_entitled(exc, "openai") is False
+
+    def test_other_zai_code_not_matched(self):
+        """A different Z.AI code (e.g. 1305 overload) is not plan-entitlement."""
+        exc = self._exc(code="1305")
+        assert _is_zai_model_not_entitled(exc, "zai") is False
+
+    def test_no_structured_code_not_matched(self):
+        """No structured code → no match (we do not substring-scan messages,
+        which would risk misclassifying auth/quota errors)."""
+        exc = Exception("This model is not available on your plan")
+        exc.status_code = 403
+        assert _is_zai_model_not_entitled(exc, "zai") is False
+
+    def test_auth_error_not_matched(self):
+        exc = self._exc(code="401", status=401)
+        assert _is_zai_model_not_entitled(exc, "zai") is False
+
+    def test_1311_is_not_a_payment_error(self):
+        """The 1311 error must NOT be treated as payment — otherwise the
+        provider would be wrongly marked unhealthy for all its other models."""
+        exc = self._exc(body={"error": {"code": "1311",
+                                        "message": "当前订阅套餐暂未开放GLM-5V-Turbo权限"}})
         assert _is_payment_error(exc) is False
 
 

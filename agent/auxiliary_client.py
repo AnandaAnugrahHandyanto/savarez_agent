@@ -2315,6 +2315,32 @@ def _nous_portal_account_has_fresh_paid_access() -> bool:
         return False
 
 
+def _is_zai_model_not_entitled(exc: Exception, provider: Optional[str]) -> bool:
+    """True for Z.AI's "model not in your plan" error (HTTP 429, code 1311).
+
+    GLM Coding/Lite plans reject models outside the plan (e.g. the
+    glm-5v-turbo vision model) with code 1311 ("当前订阅套餐暂未开放 <model> 权限").
+    This is NOT auth (key rejected) or payment (credit exhaustion): the
+    provider is healthy for its other models — glm-5.1 chat works — so callers
+    MUST NOT mark it unhealthy; they re-resolve onto a vision-capable
+    aggregator for this one request.
+
+    Scoped to provider ``zai`` and matched on the structured error code
+    (``exc.code`` / parsed ``exc.body``, as :func:`_summarize_api_error` reads
+    the message) rather than the localized message text — so it can't misfire
+    on an auth/quota error or on another vendor that happens to reuse 1311.
+    """
+    if (provider or "").strip().lower() != "zai":
+        return False
+    code = getattr(exc, "code", None)
+    if code is None:
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            err = body.get("error")
+            code = err.get("code") if isinstance(err, dict) else body.get("code")
+    return str(code) == "1311"
+
+
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Detect rate-limit errors that warrant provider fallback.
 
@@ -3971,6 +3997,7 @@ def resolve_vision_provider_client(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     async_mode: bool = False,
+    exclude_providers: Optional[frozenset] = None,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
 
@@ -3978,7 +4005,13 @@ def resolve_vision_provider_client(
     provider overrides still use the generic provider router for non-standard
     backends, so users can intentionally force experimental providers. Auto mode
     stays conservative and only tries vision backends known to work today.
+
+    ``exclude_providers`` lets a caller re-resolve vision while skipping a
+    provider whose vision model just failed (e.g. a Z.AI Coding plan that is
+    not licensed for ``glm-5v-turbo``), so auto-detect lands on the next
+    vision-capable aggregator instead of the broken main provider.
     """
+    exclude_providers = exclude_providers or frozenset()
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
     )
@@ -4023,7 +4056,7 @@ def resolve_vision_provider_client(
         #   4. Stop
         main_provider = _read_main_provider()
         main_model = _read_main_model()
-        if main_provider and main_provider not in {"auto", ""}:
+        if main_provider and main_provider not in {"auto", ""} and main_provider not in exclude_providers:
             vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
             if main_provider == "nous":
                 sync_client, default_model = _resolve_strict_vision_backend(
@@ -4083,6 +4116,8 @@ def resolve_vision_provider_client(
         for candidate in _VISION_AUTO_PROVIDER_ORDER:
             if candidate == main_provider:
                 continue  # already tried above
+            if candidate in exclude_providers:
+                continue  # caller asked to skip this provider (vision model failed)
             sync_client, default_model = _resolve_strict_vision_backend(candidate)
             if sync_client is not None:
                 return _finalize(candidate, sync_client, default_model)
@@ -5187,6 +5222,7 @@ def call_llm(
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_zai_model_not_entitled(first_err, resolved_provider)
         )
         # Respect explicit provider choice for transient errors (auth, request
         # validation, etc.) but allow fallback when the provider clearly cannot
@@ -5197,9 +5233,21 @@ def call_llm(
         is_auto = resolved_provider in {"auto", "", None}
         # Capacity errors bypass the explicit-provider gate: the provider
         # literally cannot serve this request regardless of user intent.
-        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
+        # A model-unavailable error (e.g. Z.AI Coding plan lacking glm-5v-turbo)
+        # is the same shape — the provider genuinely cannot serve THIS model —
+        # but the provider stays healthy for its other models.
+        is_capacity_error = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or _is_zai_model_not_entitled(first_err, resolved_provider)
+        )
         if should_fallback and (is_auto or is_capacity_error):
-            if _is_payment_error(first_err):
+            # 1311 is also a 429, so check model-unavailable BEFORE rate-limit.
+            if _is_zai_model_not_entitled(first_err, resolved_provider):
+                reason = "model unavailable on plan"
+                # Do NOT mark the provider unhealthy — only this model is
+                # unavailable; the provider still serves its other models.
+            elif _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be
                 # "auto"; the client's base_url tells us which backend got the
@@ -5214,6 +5262,31 @@ def call_llm(
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
+
+            # Vision model-unavailable: re-resolve through the VISION
+            # aggregator chain (not the generic chat chain), skipping the
+            # provider whose vision model just failed, so we land on an
+            # aggregator with a correct vision model (#GLM-coding-vision).
+            if task == "vision" and _is_zai_model_not_entitled(first_err, resolved_provider):
+                _, vfb_client, vfb_model = resolve_vision_provider_client(
+                    provider="auto",
+                    model=resolved_model,
+                    async_mode=False,
+                    exclude_providers=frozenset({(resolved_provider or "").lower()}),
+                )
+                if vfb_client is not None:
+                    vfb_base = str(getattr(vfb_client, "base_url", "") or "")
+                    vfb_kwargs = _build_call_kwargs(
+                        "auto", vfb_model, messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, timeout=effective_timeout,
+                        extra_body=effective_extra_body,
+                        base_url=vfb_base)
+                    if _is_anthropic_compat_endpoint("auto", vfb_base):
+                        vfb_kwargs["messages"] = _convert_openai_images_to_anthropic(vfb_kwargs["messages"])
+                    return _validate_llm_response(
+                        vfb_client.chat.completions.create(**vfb_kwargs), task)
+                # No aggregator available — fall through to re-raise below.
 
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
@@ -5595,14 +5668,26 @@ async def async_call_llm(
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_zai_model_not_entitled(first_err, resolved_provider)
         )
         # Capacity errors (payment/quota/connection) bypass the explicit-provider
         # gate — the provider cannot serve the request regardless of user intent.
         # See #26803: daily token quota must fall back like a 402 credit error.
+        # A model-unavailable error (e.g. Z.AI Coding plan lacking glm-5v-turbo)
+        # is the same shape but the provider stays healthy for other models.
         is_auto = resolved_provider in {"auto", "", None}
-        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
+        is_capacity_error = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or _is_zai_model_not_entitled(first_err, resolved_provider)
+        )
         if should_fallback and (is_auto or is_capacity_error):
-            if _is_payment_error(first_err):
+            # 1311 is also a 429, so check model-unavailable BEFORE rate-limit.
+            if _is_zai_model_not_entitled(first_err, resolved_provider):
+                reason = "model unavailable on plan"
+                # Do NOT mark the provider unhealthy — only this model is
+                # unavailable; the provider still serves its other models.
+            elif _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(
                     _recoverable_pool_provider(resolved_provider, client) or resolved_provider
@@ -5613,6 +5698,31 @@ async def async_call_llm(
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
+
+            # Vision model-unavailable: re-resolve through the VISION
+            # aggregator chain (not the generic chat chain), skipping the
+            # provider whose vision model just failed, so we land on an
+            # aggregator with a correct vision model.
+            if task == "vision" and _is_zai_model_not_entitled(first_err, resolved_provider):
+                _, vfb_client, vfb_model = resolve_vision_provider_client(
+                    provider="auto",
+                    model=resolved_model,
+                    async_mode=True,
+                    exclude_providers=frozenset({(resolved_provider or "").lower()}),
+                )
+                if vfb_client is not None:
+                    vfb_base = str(getattr(vfb_client, "base_url", "") or "")
+                    vfb_kwargs = _build_call_kwargs(
+                        "auto", vfb_model, messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, timeout=effective_timeout,
+                        extra_body=effective_extra_body,
+                        base_url=vfb_base)
+                    if _is_anthropic_compat_endpoint("auto", vfb_base):
+                        vfb_kwargs["messages"] = _convert_openai_images_to_anthropic(vfb_kwargs["messages"])
+                    return _validate_llm_response(
+                        await vfb_client.chat.completions.create(**vfb_kwargs), task)
+                # No aggregator available — fall through to re-raise below.
 
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
