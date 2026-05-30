@@ -600,31 +600,50 @@ def run_conversation(
             system_prompt=active_system_prompt or "",
             tools=agent.tools or None,
         )
+        _compressor = agent.context_compressor
+        _defer_preflight = getattr(
+            _compressor,
+            "should_defer_preflight_to_real_usage",
+            lambda _tokens: False,
+        )
+        _preflight_deferred = _defer_preflight(_preflight_tokens)
 
-        # Keep the CLI/ACP context display in sync with what preflight
-        # actually measured.  The status bar reads
-        # ``compressor.last_prompt_tokens``, which otherwise only updates
-        # from a *successful* API response.  When the conversation has grown
-        # since the last successful call — or when compression then fails
-        # (e.g. the auxiliary summary model times out) and no fresh usage
-        # arrives — the bar stays stuck at the old, smaller value while
-        # preflight reports a much larger number, looking out of sync.
-        # Seed it with the fresh estimate (only ever revising upward; a real
-        # ``update_from_response`` will correct it after the next API call).
-        if _preflight_tokens > (agent.context_compressor.last_prompt_tokens or 0):
-            agent.context_compressor.last_prompt_tokens = _preflight_tokens
+        if not _preflight_deferred:
+            # Keep the CLI/ACP context display in sync with what preflight
+            # actually measured.  The status bar reads
+            # ``compressor.last_prompt_tokens``, which otherwise only updates
+            # from a *successful* API response.  When the conversation has grown
+            # since the last successful call — or when compression then fails
+            # (e.g. the auxiliary summary model times out) and no fresh usage
+            # arrives — the bar stays stuck at the old, smaller value while
+            # preflight reports a much larger number, looking out of sync.
+            # Seed it with the fresh estimate (only ever revising upward; a real
+            # ``update_from_response`` will correct it after the next API call).
+            # Skipped when deferring — a deferred estimate is known to over-count
+            # vs the last real provider prompt, so trusting it for the display
+            # would re-introduce the very desync we're avoiding.
+            if _preflight_tokens > (_compressor.last_prompt_tokens or 0):
+                _compressor.last_prompt_tokens = _preflight_tokens
 
-        if agent.context_compressor.should_compress(_preflight_tokens):
+        if _preflight_deferred:
+            logger.info(
+                "Skipping preflight compression: rough estimate ~%s >= %s, "
+                "but last real provider prompt was %s after compression",
+                f"{_preflight_tokens:,}",
+                f"{_compressor.threshold_tokens:,}",
+                f"{_compressor.last_real_prompt_tokens:,}",
+            )
+        elif _compressor.should_compress(_preflight_tokens):
             logger.info(
                 "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                 f"{_preflight_tokens:,}",
-                f"{agent.context_compressor.threshold_tokens:,}",
+                f"{_compressor.threshold_tokens:,}",
                 agent.model,
-                f"{agent.context_compressor.context_length:,}",
+                f"{_compressor.context_length:,}",
             )
             agent._emit_status(
                 f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                f">= {agent.context_compressor.threshold_tokens:,} threshold. "
+                f">= {_compressor.threshold_tokens:,} threshold. "
                 "This may take a moment."
             )
             # May need multiple passes for very large sessions with small
@@ -659,8 +678,8 @@ def run_conversation(
                     system_prompt=active_system_prompt or "",
                     tools=agent.tools or None,
                 )
-                if _preflight_tokens < agent.context_compressor.threshold_tokens:
-                    break  # Under threshold
+                if not _compressor.should_compress(_preflight_tokens):
+                    break  # Under threshold or anti-thrash guard stopped it
 
     # Plugin hook: pre_llm_call
     # Fired once per turn before the tool-calling loop.  Plugins can
@@ -3875,6 +3894,11 @@ def run_conversation(
                     # inflate completion_tokens with reasoning,
                     # causing premature compression.  (#12026)
                     _real_tokens = _compressor.last_prompt_tokens
+                elif _compressor.last_prompt_tokens == -1:
+                    # Compression just ran and no API-reported prompt count
+                    # has arrived yet. Avoid treating a schema-heavy rough
+                    # post-compression estimate as real context pressure.
+                    _real_tokens = 0
                 else:
                     # Include tool schemas — with 50+ tools enabled
                     # these add 20-30K tokens the messages-only
