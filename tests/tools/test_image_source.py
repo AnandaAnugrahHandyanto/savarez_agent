@@ -8,6 +8,7 @@ from tools.image_source import (
     ResolveContext,
     ResolvedImage,
     SourceTooLarge,
+    SourceUnsafe,
     UnsupportedScheme,
     resolve_image_source,
 )
@@ -47,3 +48,28 @@ async def test_unknown_scheme_rejected():
 async def test_blank_source_rejected():
     with pytest.raises(Exception):
         await resolve_image_source("   ", ResolveContext())
+
+
+@pytest.mark.asyncio
+async def test_http_url_downloads_bytes(monkeypatch):
+    from tools import image_source
+
+    png = base64.b64decode(PNG_B64)
+
+    async def fake_download(url):
+        return png
+
+    monkeypatch.setattr(image_source, "_is_safe_http", lambda u: True)
+    monkeypatch.setattr(image_source, "_download_to_bytes", fake_download)
+    res = await resolve_image_source("https://ex.com/a.png", ResolveContext())
+    assert res.origin == "http"
+    assert res.data == png
+
+
+@pytest.mark.asyncio
+async def test_http_url_ssrf_blocked(monkeypatch):
+    from tools import image_source
+
+    monkeypatch.setattr(image_source, "_is_safe_http", lambda u: False)
+    with pytest.raises(SourceUnsafe):
+        await resolve_image_source("http://169.254.169.254/x.png", ResolveContext())

@@ -63,7 +63,11 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
     if s.startswith("data:"):
         data, mime = _resolve_data_url(s)
         return _finalize(data, mime, "data", s)
-    # http / file / local / container branches added in Tasks 5-7.
+    if s.startswith(("http://", "https://")):
+        if not _is_safe_http(s):
+            raise SourceUnsafe("blocked: unsafe or private URL", src=s)
+        return _finalize(await _download_to_bytes(s), "", "http", s)
+    # file / local / container branches added in Tasks 6-7.
     raise UnsupportedScheme(
         "Unrecognized image source. Use an http(s) URL, a local file path, "
         "a file:// URI, or a data: URL.",
@@ -84,6 +88,28 @@ def _resolve_data_url(s: str) -> tuple[bytes, str]:
     except Exception as exc:
         raise NotAnImage(f"invalid base64 in data: URL: {exc}", src=s[:64])
     return data, declared  # real mime verified in _finalize via magic bytes
+
+
+def _is_safe_http(url: str) -> bool:
+    from tools.url_safety import is_safe_url
+    from tools.website_policy import check_website_access
+
+    return is_safe_url(url) and not check_website_access(url)
+
+
+async def _download_to_bytes(url: str) -> bytes:
+    import tempfile
+    from pathlib import Path
+
+    from tools.vision_tools import _download_image
+
+    with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as tf:
+        tmp = Path(tf.name)
+    try:
+        await _download_image(url, tmp)  # enforces the 50MB stream cap + redirect SSRF guard
+        return tmp.read_bytes()
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _finalize(data: bytes, declared_mime: str, origin: str, src: str) -> ResolvedImage:
