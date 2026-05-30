@@ -218,6 +218,35 @@ class TestTelegramExecApproval:
         assert "alpha\\_beta" in sent["text"]
 
     @pytest.mark.asyncio
+    async def test_bridge_approval_button_prompt_stores_nonce_state(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 77
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_bridge_approval(
+            chat_id="12345",
+            command="rm -rf /important",
+            session_key="agent:main:telegram:dm:12345",
+            nonce="nonce-bridge",
+            description="dangerous bridge deletion",
+        )
+
+        assert result.success is True
+        assert result.message_id == "77"
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert "Bridge Command Approval Required" in kwargs["text"]
+        assert "nonce-bridge" in kwargs["text"]
+        assert kwargs["reply_markup"] is not None
+        assert len(adapter._bridge_approval_state) == 1
+        approval_id, state = next(iter(adapter._bridge_approval_state.items()))
+        assert approval_id >= 1
+        assert state == {
+            "nonce": "nonce-bridge",
+            "session_key": "agent:main:telegram:dm:12345",
+        }
+
+    @pytest.mark.asyncio
     async def test_truncates_long_command(self):
         adapter = _make_adapter()
         mock_msg = MagicMock()
@@ -385,6 +414,51 @@ class TestTelegramApprovalCallback:
         mock_resolve.assert_called_once_with("some-session", "deny")
         edit_kwargs = query.edit_message_text.call_args[1]
         assert "Denied" in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_bridge_approval_callback_records_nonce_bound_approval(self):
+        adapter = _make_adapter()
+        adapter._bridge_approval_state[9] = {
+            "nonce": "nonce-bridge",
+            "session_key": "agent:main:telegram:dm:12345",
+        }
+        adapter.pause_typing_for_chat("12345")
+
+        query = AsyncMock()
+        query.data = "ba:approve:9"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_thread_id = None
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Norbert"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch(
+                "gateway.bridge_commands.record_gateway_bridge_approval_response",
+                return_value="Bridge approval recorded and executor resumed for Hermes session `cli-session`.",
+            ) as mock_record:
+                await adapter._handle_callback_query(update, context)
+
+        mock_record.assert_called_once_with(
+            nonce="nonce-bridge",
+            chat_id="12345",
+            user_id="12345",
+            thread_id=None,
+            store=mock_record.call_args.kwargs["store"],
+            gateway_session_key="agent:main:telegram:dm:12345",
+        )
+        assert 9 not in adapter._bridge_approval_state
+        assert "12345" not in adapter._typing_paused
+        query.edit_message_text.assert_called_once()
+        assert "Bridge approved" in query.edit_message_text.call_args.kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_approval_callback_rejects_user_blocked_by_global_allowlist(self):

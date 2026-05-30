@@ -2164,6 +2164,23 @@ class BasePlatformAdapter(ABC):
             # about it never being awaited, then drop silently.
             coro.close()
 
+    async def send_bridge_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        nonce: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a nonce-bound bridge approval prompt.
+
+        Platforms with native buttons can override this. The default returns
+        unsupported so the gateway falls back to the plain-text
+        `/bridge_approve <nonce>` prompt.
+        """
+        return SendResult(success=False, error="Not supported")
+
     async def send_slash_confirm(
         self,
         chat_id: str,

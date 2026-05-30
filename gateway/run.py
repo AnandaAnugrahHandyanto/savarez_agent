@@ -17418,6 +17418,24 @@ class GatewayRunner:
                                 "bridge_turn_id": str(approval_data.get("turn_id") or ""),
                                 "bridge_tool_call_id": str(approval_data.get("tool_call_id") or ""),
                             })
+                            if getattr(type(_status_adapter), "send_bridge_approval", None) is not None:
+                                _bridge_fut = safe_schedule_threadsafe(
+                                    _status_adapter.send_bridge_approval(
+                                        chat_id=_status_chat_id,
+                                        command=cmd,
+                                        session_key=_approval_session_key,
+                                        nonce=_bridge_prompt.approval.nonce,
+                                        description=desc,
+                                        metadata=_status_thread_metadata,
+                                    ),
+                                    _loop_for_step,
+                                    logger=logger,
+                                    log_message="Bridge approval button send scheduling error",
+                                )
+                                if _bridge_fut is not None:
+                                    _bridge_result = _bridge_fut.result(timeout=15)
+                                    if getattr(_bridge_result, "success", False):
+                                        return
                             _bridge_msg = (
                                 f"{_bridge_prompt.text}\n\n"
                                 f"Command preview:\n```\n{str(cmd)[:200]}\n```\n"

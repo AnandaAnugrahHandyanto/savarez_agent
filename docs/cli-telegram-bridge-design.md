@@ -1,6 +1,6 @@
 # CLI ↔ Telegram Bridge Safety Design
 
-Status: phase-8 bridge reply prompt routing and bridge-routed Telegram update dedupe implemented on top of the safe plain-DM continuation controls. This document describes the target design and the safety invariants enforced by `gateway.bridge.BridgeStateStore`, the higher-level helpers in `gateway.bridge_commands`, and the Gateway approval queue handoff in `tools.approval`.
+Status: phase-9 Telegram bridge approval buttons implemented on top of the safe plain-DM continuation controls. This document describes the target design and the safety invariants enforced by `gateway.bridge.BridgeStateStore`, the higher-level helpers in `gateway.bridge_commands`, and the Gateway approval queue handoff in `tools.approval`.
 
 ## Goal
 
@@ -115,7 +115,7 @@ Recommended order:
 5. Outbound “input prompt” messages use `register_bridge_reply_input_prompt()`, which validates the active Telegram DM binding and records `record_outbound_message(... input_expected=True ...)` for one-shot reply correlation. (Implemented.)
 6. Telegram replies to explicit input prompts call `validate_reply_input()` before routing into the linked Hermes session. The bridge state consumes the reply anchor on success, rejects stale/consumed/paused/kill-switched prompt replies without falling back to generic plain-text bridge input, and leaves ordinary unregistered Telegram replies on the direct-input path. (Implemented.)
 7. Bridge-routed Telegram input calls `accept_update()` before switching the gateway session key, so duplicate Telegram deliveries for the same `update_id` cannot start a second agent turn. (Implemented.)
-8. Approval UI uses `create_bridge_approval_prompt()` and `bridge_tool_args_hash()` to create a `create_approval()` nonce bound to the bridge, session, tool call id, tool name, and canonical tool args hash. Telegram `/bridge_approve <nonce>` records the bound user's approval and, in Gateway runs, resolves the matching pending approval entry only after `consume_approval(..., turn_id=..., tool_call_id=..., tool_args_hash=..., require_user_approval=True)` accepts the exact executor-side metadata. Mismatches fail closed and leave the blocked approval entry waiting. (Implemented.)
+8. Approval UI uses `create_bridge_approval_prompt()` and `bridge_tool_args_hash()` to create a `create_approval()` nonce bound to the bridge, session, tool call id, tool name, and canonical tool args hash. Telegram `/bridge_approve <nonce>` and Telegram bridge approval buttons record the bound user's approval and, in Gateway runs, resolve the matching pending approval entry only after `consume_approval(..., turn_id=..., tool_call_id=..., tool_args_hash=..., require_user_approval=True)` accepts the exact executor-side metadata. Mismatches fail closed and leave the blocked approval entry waiting. (Implemented.)
 9. Future executor integrations should continue to prefer structured TUI gateway/JSON-RPC or Gateway `MessageEvent` paths and avoid raw tmux/PTY keystroke injection.
 
 ## Test coverage added
@@ -144,6 +144,9 @@ Recommended order:
 - `register_bridge_reply_input_prompt()` records only bound Telegram DM output as one-shot input anchors.
 - `create_bridge_approval_prompt()` creates nonce-bound approvals tied to canonical tool argument hashes.
 - `/bridge_approve <nonce>` records only the bound Telegram user's approval and resolves a matching pending Gateway executor approval only after exact session/turn/tool-call/argument verification.
+- `record_gateway_bridge_approval_response()` exposes the same verifier path for Telegram button callbacks without requiring a text command event.
+
+`tests/gateway/test_telegram_approval_buttons.py` verifies that Telegram renders nonce-bound bridge approval buttons, stores nonce/session callback state, and routes approve-button clicks through the bridge verifier before resuming typing.
 
 `tests/tools/test_approval.py::TestBridgeApprovalContext` verifies that Gateway dangerous-command approval requests include the active Hermes tool-call context (`turn_id`, `tool_call_id`, `tool_name`, and `tool_args`) needed to mint and verify bridge approval nonces.
 

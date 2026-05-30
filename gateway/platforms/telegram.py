@@ -472,6 +472,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Bridge approval button state: approval_id → nonce/session_key.
+        self._bridge_approval_state: Dict[int, dict] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
@@ -2649,6 +2651,70 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_bridge_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        nonce: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a nonce-bound bridge approval prompt with Telegram buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            cmd_preview = command[:3600] + "..." if len(command) > 3600 else command
+            text = (
+                f"⚠️ <b>Bridge Command Approval Required</b>\n\n"
+                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
+                f"Reason: {_html.escape(description)}\n"
+                f"Nonce: <code>{_html.escape(str(nonce))}</code>"
+            )
+
+            import itertools
+            if not hasattr(self, "_bridge_approval_counter"):
+                self._bridge_approval_counter = itertools.count(1)
+            approval_id = next(self._bridge_approval_counter)
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Approve Bridge", callback_data=f"ba:approve:{approval_id}"),
+                    InlineKeyboardButton("❌ Deny", callback_data=f"ba:deny:{approval_id}"),
+                ],
+            ])
+
+            thread_id = self._metadata_thread_id(metadata)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.HTML,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                )
+            )
+
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            self._bridge_approval_state[approval_id] = {
+                "nonce": str(nonce),
+                "session_key": session_key,
+            }
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_bridge_approval failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
@@ -3192,6 +3258,81 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
+            return
+
+        # --- Bridge approval callbacks (ba:choice:id) ---
+        if data.startswith("ba:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                choice = parts[1]  # approve, deny
+                try:
+                    approval_id = int(parts[2])
+                except (ValueError, IndexError):
+                    await query.answer(text="Invalid bridge approval data.")
+                    return
+                if choice not in {"approve", "deny"}:
+                    await query.answer(text="Invalid bridge approval choice.")
+                    return
+
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to approve bridge commands.")
+                    return
+
+                state = self._bridge_approval_state.pop(approval_id, None)
+                if not state:
+                    await query.answer(text="This bridge approval has already been resolved.")
+                    return
+
+                session_key = str(state.get("session_key") or "")
+                user_display = getattr(query.from_user, "first_name", "User")
+                if choice == "deny":
+                    try:
+                        from tools.approval import resolve_gateway_approval
+                        count = resolve_gateway_approval(session_key, "deny")
+                    except Exception as exc:
+                        logger.error("Failed to deny bridge approval from Telegram button: %s", exc)
+                        count = 0
+                    label = "❌ Bridge denied"
+                    await query.answer(text=label)
+                    if count and query_chat_id is not None:
+                        self.resume_typing_for_chat(str(query_chat_id))
+                else:
+                    try:
+                        from gateway.bridge_commands import (
+                            default_bridge_store,
+                            record_gateway_bridge_approval_response,
+                        )
+                        result_text = record_gateway_bridge_approval_response(
+                            nonce=str(state.get("nonce") or ""),
+                            chat_id=str(query_chat_id or ""),
+                            user_id=caller_id,
+                            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                            store=default_bridge_store(),
+                            gateway_session_key=session_key,
+                        )
+                    except Exception as exc:
+                        logger.error("Failed to record bridge approval from Telegram button: %s", exc)
+                        result_text = f"Bridge approval failed: {exc}"
+                    label = "✅ Bridge approved" if "approval recorded" in result_text.lower() else "Bridge approval failed"
+                    await query.answer(text=label)
+                    if "executor resumed" in result_text.lower() and query_chat_id is not None:
+                        self.resume_typing_for_chat(str(query_chat_id))
+
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message(f"{label} by {user_display}"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---

@@ -441,6 +441,56 @@ def _resolve_matching_gateway_bridge_approval(
         entry.event.set()
     return True, None
 
+def record_gateway_bridge_approval_response(
+    *,
+    nonce: str,
+    chat_id: str,
+    user_id: str,
+    thread_id: Optional[str],
+    store: BridgeStateStore,
+    gateway_session_key: str | None = None,
+) -> str:
+    """Record a Telegram bridge approval from command or button identity.
+
+    This shared helper intentionally accepts already-authenticated Telegram
+    identity fields instead of a command event so both `/bridge_approve` text
+    commands and future nonce-bound button callbacks can use the same
+    fail-closed executor handoff.
+    """
+    if not nonce:
+        return "Usage: /bridge_approve <nonce>"
+    decision = store.record_approval_response(
+        nonce=nonce,
+        chat_id=chat_id,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+    if decision.verdict is BridgeVerdict.REJECT:
+        return _decision_message(decision, "")
+
+    if gateway_session_key:
+        resolved, reject_reason = _resolve_matching_gateway_bridge_approval(
+            gateway_session_key,
+            nonce=nonce,
+            chat_id=chat_id,
+            user_id=user_id,
+            thread_id=thread_id,
+            store=store,
+        )
+        if reject_reason:
+            return f"Bridge executor approval rejected: {reject_reason}"
+        if resolved:
+            return (
+                f"Bridge approval recorded and executor resumed for Hermes session "
+                f"`{decision.hermes_session_id}`."
+            )
+
+    return _decision_message(
+        decision,
+        f"Bridge approval recorded for Hermes session `{decision.hermes_session_id}`. The matching pending tool request must still verify the exact turn, tool call, and arguments before execution.",
+    )
+
+
 def handle_gateway_bridge_command(
     event: MessageEvent,
     *,
@@ -477,37 +527,13 @@ def handle_gateway_bridge_command(
 
     if command in {"bridge_approve", "bridge-approve"}:
         nonce = args.split()[0] if args else ""
-        if not nonce:
-            return "Usage: /bridge_approve <nonce>"
-        decision = store.record_approval_response(
+        return record_gateway_bridge_approval_response(
             nonce=nonce,
             chat_id=chat_id,
             user_id=user_id,
             thread_id=thread_id,
-        )
-        if decision.verdict is BridgeVerdict.REJECT:
-            return _decision_message(decision, "")
-
-        if gateway_session_key:
-            resolved, reject_reason = _resolve_matching_gateway_bridge_approval(
-                gateway_session_key,
-                nonce=nonce,
-                chat_id=chat_id,
-                user_id=user_id,
-                thread_id=thread_id,
-                store=store,
-            )
-            if reject_reason:
-                return f"Bridge executor approval rejected: {reject_reason}"
-            if resolved:
-                return (
-                    f"Bridge approval recorded and executor resumed for Hermes session "
-                    f"`{decision.hermes_session_id}`."
-                )
-
-        return _decision_message(
-            decision,
-            f"Bridge approval recorded for Hermes session `{decision.hermes_session_id}`. The matching pending tool request must still verify the exact turn, tool call, and arguments before execution.",
+            store=store,
+            gateway_session_key=gateway_session_key,
         )
 
     if command in {"bridge_status", "bridge-status", "bridge"}:
