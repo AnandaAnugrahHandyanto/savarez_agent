@@ -1637,6 +1637,181 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             (new, old),
         )
 
+    # One-shot schema rebuild: detect tables whose column types don't
+    # match the current SCHEMA_SQL definitions (e.g. ``TEXT PRIMARY KEY``
+    # instead of ``INTEGER PRIMARY KEY AUTOINCREMENT``) and rebuild them
+    # in-place, preserving existing data.  ``CREATE TABLE IF NOT EXISTS``
+    # silently skips tables that already exist regardless of schema
+    # correctness, and ``_add_column_if_missing`` only adds columns —
+    # neither mechanism can fix type/constraint mismatches.
+    #
+    # Affected tables (introduced between releases):
+    #   task_events.id        TEXT → INTEGER AUTOINCREMENT
+    #   task_comments.id      TEXT → INTEGER AUTOINCREMENT
+    #   task_runs.id          TEXT → INTEGER AUTOINCREMENT
+    #   kanban_notify_subs.last_event_id  TEXT (no default) → INTEGER NOT NULL DEFAULT 0
+    #
+    # See: https://github.com/NousResearch/hermes-agent/issues/35096
+    _migrate_autoincrement_schema(conn)
+
+
+def _migrate_autoincrement_schema(conn: sqlite3.Connection) -> None:
+    """Rebuild tables whose PK or column types drifted from SCHEMA_SQL.
+
+    Older releases defined ``task_events``, ``task_comments``, and
+    ``task_runs`` with ``TEXT PRIMARY KEY``.  The current schema uses
+    ``INTEGER PRIMARY KEY AUTOINCREMENT``.  ``CREATE TABLE IF NOT EXISTS``
+    cannot fix this because it silently skips existing tables.
+
+    Similarly, ``kanban_notify_subs.last_event_id`` was originally
+    ``TEXT`` with no default; new rows get ``NULL`` which crashes
+    ``int(row["last_event_id"])`` in ``unseen_events_for_sub()``.
+
+    This function detects the mismatch via ``PRAGMA table_info`` and
+    rebuilds each affected table using the standard SQLite migration
+    pattern: CREATE new → INSERT SELECT → DROP old → RENAME new.
+    """
+
+    # -- task_events, task_comments, task_runs: TEXT id → INTEGER AUTOINCREMENT --
+    _AUTOINCREMENT_TABLES = {
+        "task_events": (
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "task_id TEXT NOT NULL, "
+            "run_id INTEGER, "
+            "kind TEXT NOT NULL, "
+            "payload TEXT, "
+            "created_at INTEGER NOT NULL"
+        ),
+        "task_comments": (
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "task_id TEXT NOT NULL, "
+            "author TEXT NOT NULL, "
+            "body TEXT NOT NULL, "
+            "created_at INTEGER NOT NULL"
+        ),
+        "task_runs": (
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "task_id TEXT NOT NULL, "
+            "profile TEXT, "
+            "step_key TEXT, "
+            "status TEXT NOT NULL, "
+            "claim_lock TEXT, "
+            "claim_expires INTEGER, "
+            "worker_pid INTEGER, "
+            "max_runtime_seconds INTEGER, "
+            "last_heartbeat_at INTEGER, "
+            "started_at INTEGER NOT NULL, "
+            "ended_at INTEGER, "
+            "outcome TEXT, "
+            "summary TEXT, "
+            "metadata TEXT, "
+            "error TEXT"
+        ),
+    }
+
+    for table_name, new_columns_ddl in _AUTOINCREMENT_TABLES.items():
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        ).fetchone() is not None
+        if not exists:
+            continue
+
+        col_info = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        id_col = next((c for c in col_info if c["name"] == "id"), None)
+        if id_col is None:
+            continue
+
+        # Check if id is already INTEGER AUTOINCREMENT
+        col_type = (id_col["type"] or "").upper()
+        pk = id_col["pk"]
+        if col_type == "INTEGER" and pk == 1:
+            continue  # already correct
+
+        # Rebuild the table
+        _log.info(
+            "kanban migration: rebuilding %s (id type=%r, pk=%d → INTEGER AUTOINCREMENT)",
+            table_name, col_type, pk,
+        )
+        old_cols = [c["name"] for c in col_info]
+        old_cols_str = ", ".join(old_cols)
+
+        # Collect existing column names from the new schema to build the
+        # INSERT INTO ... SELECT mapping.  For columns that exist in the
+        # old table but not in the new schema (shouldn't happen for these
+        # specific tables), they are silently dropped.
+        new_col_names = [
+            line.strip().split()[0]
+            for line in new_columns_ddl.split(",")
+            if line.strip()
+        ]
+        # Use only columns present in both old and new schemas, excluding
+        # ``id`` which will be auto-assigned by AUTOINCREMENT.  Old TEXT
+        # IDs (e.g. "event-1") are not valid INTEGER values.
+        select_cols = [c for c in old_cols if c in set(new_col_names) and c != "id"]
+        select_str = ", ".join(select_cols)
+        insert_str = ", ".join(select_cols)
+
+        tmp_name = f"{table_name}_migration_tmp"
+        conn.execute(f"DROP TABLE IF EXISTS {tmp_name}")
+        conn.execute(f"CREATE TABLE {tmp_name} ({new_columns_ddl})")
+        conn.execute(
+            f"INSERT INTO {tmp_name} ({insert_str}) SELECT {select_str} FROM {table_name}"
+        )
+        conn.execute(f"DROP TABLE {table_name}")
+        conn.execute(f"ALTER TABLE {tmp_name} RENAME TO {table_name}")
+
+    # -- kanban_notify_subs.last_event_id: TEXT → INTEGER NOT NULL DEFAULT 0 --
+    notify_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
+    ).fetchone() is not None
+    if not notify_exists:
+        return
+
+    notify_cols = {
+        row["name"]: row
+        for row in conn.execute("PRAGMA table_info(kanban_notify_subs)")
+    }
+    lei = notify_cols.get("last_event_id")
+    if lei is None:
+        return
+
+    lei_type = (lei["type"] or "").upper()
+    if lei_type == "INTEGER":
+        return  # already correct
+
+    _log.info(
+        "kanban migration: rebuilding kanban_notify_subs.last_event_id (type=%r → INTEGER)",
+        lei_type,
+    )
+    # Full column list matches SCHEMA_SQL exactly
+    notify_new_ddl = (
+        "task_id TEXT NOT NULL, "
+        "platform TEXT NOT NULL, "
+        "chat_id TEXT NOT NULL, "
+        "thread_id TEXT NOT NULL DEFAULT '', "
+        "user_id TEXT, "
+        "notifier_profile TEXT, "
+        "created_at INTEGER NOT NULL, "
+        "last_event_id INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (task_id, platform, chat_id, thread_id)"
+    )
+    tmp_name = "kanban_notify_subs_migration_tmp"
+    conn.execute(f"DROP TABLE IF EXISTS {tmp_name}")
+    conn.execute(f"CREATE TABLE {tmp_name} ({notify_new_ddl})")
+    old_cols_str = "task_id, platform, chat_id, thread_id, user_id, created_at"
+    # Include notifier_profile if it exists (added by earlier migration)
+    if "notifier_profile" in notify_cols:
+        old_cols_str += ", notifier_profile"
+    # For last_event_id: cast old TEXT values to INTEGER, defaulting NULL/empty to 0
+    conn.execute(
+        f"INSERT INTO {tmp_name} ({old_cols_str}, last_event_id) "
+        f"SELECT {old_cols_str}, COALESCE(CAST(last_event_id AS INTEGER), 0) "
+        f"FROM kanban_notify_subs"
+    )
+    conn.execute("DROP TABLE kanban_notify_subs")
+    conn.execute(f"ALTER TABLE {tmp_name} RENAME TO kanban_notify_subs")
+
 
 def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
     """Read the SQLite header page_count and compare against actual file size.
