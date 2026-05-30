@@ -2454,7 +2454,7 @@ class BasePlatformAdapter(ABC):
         or file attachments (Discord). Default falls back to sending the
         file path as text.
         """
-        text = f"🔊 Audio: {audio_path}"
+        text = "🔊 [voice message]"
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -2495,7 +2495,7 @@ class BasePlatformAdapter(ABC):
         Override in subclasses to send videos as inline playable media.
         Default falls back to sending the file path as text.
         """
-        text = f"🎬 Video: {video_path}"
+        text = "🎬 [video]"
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -2516,7 +2516,7 @@ class BasePlatformAdapter(ABC):
         Override in subclasses to send files as downloadable attachments.
         Default falls back to sending the file path as text.
         """
-        text = f"📎 File: {file_path}"
+        text = f"📎 [file: {file_name}]" if file_name else "📎 [file]"
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -2537,7 +2537,7 @@ class BasePlatformAdapter(ABC):
         Override in subclasses for native photo attachments.
         Default falls back to sending the file path as text.
         """
-        text = f"🖼️ Image: {image_path}"
+        text = "🖼️ [image]"
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
