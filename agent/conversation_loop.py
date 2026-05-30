@@ -1586,11 +1586,20 @@ def run_conversation(
                         assistant_message,
                         messages,
                     ):
-                        agent._vprint(
-                            f"{agent.log_prefix}⚠️  Treating suspicious Ollama/GLM stop response as truncated",
-                            force=True,
-                        )
-                        finish_reason = "length"
+                        # A GLM "stop" with no structured tool_calls may really be
+                        # a tool call embedded in content. Promote it here, BEFORE
+                        # declaring truncation, so the call executes instead of
+                        # diverting into length-continuation. No-op (→ still
+                        # treated as truncated) when nothing promotable is found.
+                        _promote_content_tool_calls(assistant_message, agent.valid_tool_names)
+                        if assistant_message.tool_calls:
+                            finish_reason = assistant_message.finish_reason
+                        else:
+                            agent._vprint(
+                                f"{agent.log_prefix}⚠️  Treating suspicious Ollama/GLM stop response as truncated",
+                                force=True,
+                            )
+                            finish_reason = "length"
 
                 if finish_reason == "length":
                     if getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID:

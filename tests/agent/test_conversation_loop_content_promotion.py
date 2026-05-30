@@ -3,7 +3,9 @@ from agent.transports.types import NormalizedResponse
 
 
 def _msg(content, tool_calls=None, finish="stop"):
-    return NormalizedResponse(content=content, tool_calls=tool_calls, finish_reason=finish)
+    return NormalizedResponse(
+        content=content, tool_calls=tool_calls, finish_reason=finish
+    )
 
 
 def test_promotes_when_no_structured_calls():
