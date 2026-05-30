@@ -20,11 +20,13 @@
 
 ### Windows (native, PowerShell)
 
-Run this in PowerShell:
+### Step 1: Open Powershell
+Press `Win + R`, type `Powershell`, and press **Enter**.
 
+### Step 2: Run the Installation Command
 ```powershell
 iex (irm https://raw.githubusercontent.com/Nous-Research/hermes-agent/main/scripts/install.ps1)
-```
+`````
 
 The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install).  Hermes uses this bundled Git Bash to run shell commands.
 
