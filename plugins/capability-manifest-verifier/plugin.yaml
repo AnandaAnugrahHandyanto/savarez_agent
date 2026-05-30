@@ -1,0 +1,6 @@
+name: capability-manifest-verifier
+version: "0.1.0"
+description: "Fail-closed pre_tool_call verifier for evaOS broker-issued capability manifests."
+author: "Electric Sheep"
+provides_hooks:
+  - pre_tool_call
