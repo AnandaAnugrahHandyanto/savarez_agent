@@ -13,7 +13,6 @@ extracted functions reach back through the ``run_agent`` module via
 from __future__ import annotations
 
 import concurrent.futures
-import contextvars
 import json
 import logging
 import os
@@ -38,12 +37,9 @@ from agent.tool_dispatch_helpers import (
     make_tool_result_message,
 )
 from tools.terminal_tool import (
-    _get_approval_callback,
-    _get_sudo_password_callback,
-    set_approval_callback as _set_approval_callback,
-    set_sudo_password_callback as _set_sudo_password_callback,
     get_active_env,
 )
+from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
@@ -184,28 +180,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
-        # Checkpoint for file-mutating tools
-        if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
-            try:
-                file_path = function_args.get("path", "")
-                if file_path:
-                    work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
-                    agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
-            except Exception:
-                pass
-
-        # Checkpoint before destructive terminal commands
-        if function_name == "terminal" and agent._checkpoint_mgr.enabled:
-            try:
-                cmd = function_args.get("command", "")
-                if _is_destructive_command(cmd):
-                    cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
-                    agent._checkpoint_mgr.ensure_checkpoint(
-                        cwd, f"before terminal: {cmd[:60]}"
-                    )
-            except Exception:
-                pass
-
+        # ── Block evaluation (BEFORE checkpoint preflight) ───────────
+        # We must know whether the tool will execute before touching
+        # checkpoint state (dedup slot, real snapshots).
         block_result = None
         blocked_by_guardrail = False
         if _ts_scope_block is not None:
@@ -227,6 +204,30 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 if not guardrail_decision.allows_execution:
                     block_result = agent._guardrail_block_result(guardrail_decision)
                     blocked_by_guardrail = True
+
+        # ── Checkpoint preflight (only for tools that will execute) ──
+        if block_result is None:
+            # Checkpoint for file-mutating tools
+            if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
+                try:
+                    file_path = function_args.get("path", "")
+                    if file_path:
+                        work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
+                        agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+                except Exception:
+                    pass
+
+            # Checkpoint before destructive terminal commands
+            if function_name == "terminal" and agent._checkpoint_mgr.enabled:
+                try:
+                    cmd = function_args.get("command", "")
+                    if _is_destructive_command(cmd):
+                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        agent._checkpoint_mgr.ensure_checkpoint(
+                            cwd, f"before terminal: {cmd[:60]}"
+                        )
+                except Exception:
+                    pass
 
         parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
 
@@ -274,14 +275,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     agent._current_tool = tool_names_str
     agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
 
-    # Capture CLI callbacks from the agent thread so worker threads can
-    # register them locally.  Without this, _get_approval_callback() in
-    # terminal_tool returns None in ThreadPoolExecutor workers, causing
-    # the dangerous-command prompt to fall back to input() — which
-    # deadlocks against prompt_toolkit's raw terminal mode (#13617).
-    _parent_approval_cb = _get_approval_callback()
-    _parent_sudo_cb = _get_sudo_password_callback()
-
     def _run_tool(index, tool_call, function_name, function_args):
         """Worker function executed in a thread."""
         # Register this worker tid so the agent can fan out an interrupt
@@ -308,18 +301,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             set_activity_callback(agent._touch_activity)
         except Exception:
             pass
-        # Propagate approval/sudo callbacks to this worker thread.
-        # Mirrors cli.py run_agent() pattern (GHSA-qg5c-hvr5-hjgr).
-        if _parent_approval_cb is not None:
-            try:
-                _set_approval_callback(_parent_approval_cb)
-            except Exception:
-                pass
-        if _parent_sudo_cb is not None:
-            try:
-                _set_sudo_password_callback(_parent_sudo_cb)
-            except Exception:
-                pass
+        # Approval/sudo callbacks (thread-local) and the agent turn's
+        # ContextVars are propagated by propagate_context_to_thread() at the
+        # submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
         try:
             result = agent._invoke_tool(
@@ -349,13 +333,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             _ra()._set_interrupt(False, _worker_tid)
         except Exception:
             pass
-        # Clear thread-local callbacks so a recycled worker thread
-        # doesn't hold stale references to a disposed CLI instance.
-        try:
-            _set_approval_callback(None)
-            _set_sudo_password_callback(None)
-        except Exception:
-            pass
 
     # Start spinner for CLI mode (skip when TUI handles tool progress)
     spinner = None
@@ -375,9 +352,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 for i, tc, name, args in runnable_calls:
-                    # Propagate ContextVars (e.g. _approval_session_key); mirrors asyncio.to_thread.
-                    ctx = contextvars.copy_context()
-                    f = executor.submit(ctx.run, _run_tool, i, tc, name, args)
+                    # Propagate the agent turn's ContextVars (e.g.
+                    # _approval_session_key) AND thread-local approval/sudo
+                    # callbacks into the worker thread; clears callbacks on exit.
+                    f = executor.submit(
+                        propagate_context_to_thread(_run_tool), i, tc, name, args
+                    )
                     futures.append(f)
 
                 # Wait for all to complete with periodic heartbeats so the
@@ -778,10 +758,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):
-                spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
+                spinner_label = f"🔀 delegating {len(tasks_arg)} tasks · (/agents to monitor)"
             else:
                 goal_preview = (function_args.get("goal") or "")[:30]
-                spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
+                spinner_label = (
+                    f"🔀 {goal_preview} · (/agents to monitor)"
+                    if goal_preview
+                    else "🔀 delegating · (/agents to monitor)"
+                )
             spinner = None
             if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
