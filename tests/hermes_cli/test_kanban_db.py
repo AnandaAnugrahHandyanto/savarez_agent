@@ -204,6 +204,22 @@ def test_create_task_no_parents_is_ready(kanban_home):
     assert t.workspace_kind == "scratch"
 
 
+def test_create_task_persists_model_override(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="use stronger model",
+            assignee="alice",
+            model_override=" deepseek:deepseek-v4-pro ",
+        )
+        t = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert t is not None
+    assert t.model_override == "deepseek:deepseek-v4-pro"
+    assert events[0].payload["model_override"] == "deepseek:deepseek-v4-pro"
+
+
 def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
     with kb.connect() as conn:
         p = kb.create_task(conn, title="parent")
