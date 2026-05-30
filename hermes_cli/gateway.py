@@ -3000,6 +3000,12 @@ def launchd_restart():
             print("✓ Service restart requested")
             return
         if pid is not None:
+            # Write a takeover marker so the old gateway process recognises
+            # this as a planned restart (not a crash) and sends the
+            # "Gateway restarting" notification to active sessions rather
+            # than the less-helpful "Gateway shutting down" message.
+            from gateway.status import write_takeover_marker
+            write_takeover_marker(pid)
             try:
                 terminate_pid(pid, force=False)
             except (ProcessLookupError, PermissionError, OSError):
