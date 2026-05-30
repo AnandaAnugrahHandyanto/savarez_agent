@@ -1464,6 +1464,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not files:
                     files = None
 
+            def _reset_files_payload() -> None:
+                if not files:
+                    return
+                for file_obj in files:
+                    reset = getattr(file_obj, "reset", None)
+                    if callable(reset):
+                        reset()
+
             if reply_to and self._reply_to_mode != "off":
                 try:
                     ref_msg = await channel.fetch_message(int(reply_to))
@@ -1480,6 +1488,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
+                    _reset_files_payload()
                     send_kwargs: Dict[str, Any] = {"content": chunk, "reference": chunk_reference}
                     if files:
                         send_kwargs["files"] = files
@@ -1502,6 +1511,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
+                        _reset_files_payload()
                         retry_kwargs: Dict[str, Any] = {"content": chunk, "reference": None}
                         if files:
                             retry_kwargs["files"] = files

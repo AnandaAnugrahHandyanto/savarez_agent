@@ -193,6 +193,98 @@ async def test_send_bundles_media_with_text(tmp_path):
     assert send_calls[0]["content"] == "hello"
 
 
+class _FakeDiscordFile:
+    def __init__(self, path):
+        self.path = path
+        self.reset_calls = 0
+
+    def reset(self):
+        self.reset_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_send_resets_media_files_for_each_chunk(tmp_path, monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    media_path = tmp_path / "attach.txt"
+    media_path.write_text("hello attachment", encoding="utf-8")
+
+    fake_file = _FakeDiscordFile(str(media_path))
+    import plugins.platforms.discord.adapter as discord_adapter_module
+
+    monkeypatch.setattr(discord_adapter_module.discord, "File", lambda *args, **kwargs: fake_file)
+    monkeypatch.setattr(DiscordAdapter, "truncate_message", lambda self, formatted, max_len: ["chunk-1", "chunk-2"])
+
+    sent_msg_1 = SimpleNamespace(id=5678)
+    sent_msg_2 = SimpleNamespace(id=5679)
+    send_calls = []
+
+    async def fake_send(*, content, reference=None, files=None):
+        send_calls.append({"content": content, "reference": reference, "files": files})
+        return sent_msg_1 if len(send_calls) == 1 else sent_msg_2
+
+    channel = SimpleNamespace(
+        fetch_message=AsyncMock(),
+        send=AsyncMock(side_effect=fake_send),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "hello", media_files=[(str(media_path), False)])
+
+    assert result.success is True
+    assert result.raw_response == {"message_ids": ["5678", "5679"]}
+    assert channel.send.await_count == 2
+    assert fake_file.reset_calls == 2
+    assert all(call["files"][0] is fake_file for call in send_calls)
+
+
+@pytest.mark.asyncio
+async def test_send_resets_media_files_before_retry_without_reference(tmp_path, monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    media_path = tmp_path / "attach.txt"
+    media_path.write_text("hello attachment", encoding="utf-8")
+
+    fake_file = _FakeDiscordFile(str(media_path))
+    import plugins.platforms.discord.adapter as discord_adapter_module
+
+    monkeypatch.setattr(discord_adapter_module.discord, "File", lambda *args, **kwargs: fake_file)
+
+    reference_obj = object()
+    ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=reference_obj))
+    sent_msg = SimpleNamespace(id=1234)
+    send_calls = []
+
+    async def fake_send(*, content, reference=None, files=None):
+        send_calls.append({"content": content, "reference": reference, "files": files})
+        if len(send_calls) == 1:
+            raise RuntimeError(
+                "400 Bad Request (error code: 50035): Invalid Form Body\n"
+                "In message_reference: Cannot reply to a system message"
+            )
+        return sent_msg
+
+    channel = SimpleNamespace(
+        fetch_message=AsyncMock(return_value=ref_msg),
+        send=AsyncMock(side_effect=fake_send),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "hello", reply_to="99", media_files=[(str(media_path), False)])
+
+    assert result.success is True
+    assert result.message_id == "1234"
+    assert channel.send.await_count == 2
+    assert fake_file.reset_calls == 2
+    assert send_calls[0]["reference"] is reference_obj
+    assert send_calls[1]["reference"] is None
+
+
 # ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------
