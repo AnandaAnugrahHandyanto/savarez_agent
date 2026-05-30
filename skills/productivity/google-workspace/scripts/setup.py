@@ -26,6 +26,7 @@ from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -54,6 +55,19 @@ SCOPES = [
 ]
 
 REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
+
+
+def _gws_native_cred_path() -> Path | None:
+    """Return the gws CLI's native credential file path if it exists, else None."""
+    binary = os.getenv("HERMES_GWS_BIN") or shutil.which("gws")
+    if not binary:
+        return None
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", ""))
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    cred = Path(base) / "gws" / "credentials.enc"
+    return cred if cred.exists() else None
 
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
@@ -136,6 +150,28 @@ def check_auth_live():
     # final status line reflects the live-call outcome (OK or FAILED).
     if not check_auth(quiet=True):
         return False
+
+    if not TOKEN_PATH.exists():
+        # Authenticated via gws native credentials — verify with a gws API call.
+        binary = os.getenv("HERMES_GWS_BIN") or shutil.which("gws")
+        if not binary:
+            return False
+        try:
+            result = subprocess.run(
+                [binary, "calendar", "calendarList", "list",
+                 "--params", json.dumps({"maxResults": 1})],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0:
+                print("LIVE_CHECK_OK: gws CLI native auth verified.")
+                return True
+            err = result.stderr.strip() or result.stdout.strip()
+            print(f"LIVE_CHECK_FAILED: gws auth error: {err}")
+            return False
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            print(f"LIVE_CHECK_FAILED: {e}")
+            return False
+
     try:
         from googleapiclient.discovery import build
         from google.oauth2.credentials import Credentials
@@ -159,6 +195,11 @@ def check_auth_live():
 def check_auth(quiet: bool = False):
     """Check if stored credentials are valid. Prints status, exits 0 or 1."""
     if not TOKEN_PATH.exists():
+        gws_cred = _gws_native_cred_path()
+        if gws_cred:
+            if not quiet:
+                print(f"AUTHENTICATED: Using gws CLI native credentials ({gws_cred})")
+            return True
         print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
         return False
 
