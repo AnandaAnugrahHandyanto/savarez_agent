@@ -1,7 +1,17 @@
 from pathlib import Path
+import importlib.util
 import tomllib
 
-from setuptools import find_packages
+import pytest
+
+# setuptools is a *build-system* requirement ([build-system].requires in
+# pyproject.toml), not a runtime or test dependency. Lean test
+# environments that install only runtime + dev deps (some CI slices, slim
+# containers) may not have it importable. Detect availability without a
+# module-level ``from setuptools import ...`` — that import raised
+# ModuleNotFoundError at collection time and failed the ENTIRE test slice,
+# taking the other three packaging tests down with it.
+_HAVE_SETUPTOOLS = importlib.util.find_spec("setuptools") is not None
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +22,10 @@ def _packages_find_include():
     return data["tool"]["setuptools"]["packages"]["find"]["include"]
 
 
+@pytest.mark.skipif(
+    not _HAVE_SETUPTOOLS,
+    reason="setuptools (a build-only dependency) is not installed in this environment",
+)
 def test_every_on_disk_subpackage_is_covered_by_packages_find():
     """Regression test for #34701 (and the bug class behind #34034 / #28149).
 
@@ -29,6 +43,8 @@ def test_every_on_disk_subpackage_is_covered_by_packages_find():
     any listed package without the matching wildcard fails here instead of in a
     user's container.
     """
+    from setuptools import find_packages
+
     include = _packages_find_include()
 
     # What the real include list actually selects.
