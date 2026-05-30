@@ -97,3 +97,18 @@ def test_minimax_invoke_absent_returns_empty():
     from agent.transports.content_tool_calls import find_minimax_invoke
 
     assert find_minimax_invoke("plain text mentioning invoke") == []
+
+
+def test_gemma_function_extracts():
+    from agent.transports.content_tool_calls import find_gemma_function
+
+    calls = find_gemma_function((FIX / "gemma_function.txt").read_text())
+    assert len(calls) == 1
+    assert calls[0].name == "web_search"
+    assert calls[0].arguments == {"query": "hermes"}
+
+
+def test_gemma_function_prose_rejected():
+    from agent.transports.content_tool_calls import find_gemma_function
+
+    assert find_gemma_function("Use <function> in JavaScript to declare.") == []

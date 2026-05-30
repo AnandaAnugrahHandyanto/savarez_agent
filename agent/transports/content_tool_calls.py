@@ -137,3 +137,25 @@ def find_minimax_invoke(content: str) -> list[RawCall]:
 
 
 FORMATS.append(ContentFormat("minimax_invoke", find_minimax_invoke))
+
+
+# Boundary+attribute gated so prose ("Use <function> in JS") is not matched.
+# Ported gate from agent/agent_runtime_helpers.py strip_think_blocks (openclaw#67318).
+_GEMMA_FUNC_RE = re.compile(
+    r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
+    r'<function\b[^>]*\bname\s*=\s*"(?P<name>[^"]+)"[^>]*>'
+    r'(?P<body>(?:(?!</function>).)*)</function>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def find_gemma_function(content: str) -> list[RawCall]:
+    out: list[RawCall] = []
+    for m in _GEMMA_FUNC_RE.finditer(content):
+        obj = _loads_lenient(m.group("body").strip())
+        if isinstance(obj, dict):
+            out.append(RawCall(name=m.group("name").strip(), arguments=obj, span=m.group(0)))
+    return out
+
+
+FORMATS.append(ContentFormat("gemma_function", find_gemma_function))
