@@ -74,6 +74,21 @@ def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
     return default
 
 
+def _normalize_group_model_defaults(raw: Any) -> Dict[str, str]:
+    """Coerce group_model_defaults to ``Dict[str, str]`` from config.
+
+    Strips falsy keys/values and ensures string-typed entries so downstream
+    code (gateway/run.py) can simply call ``.get(chat_id)`` without type
+    gymnastics.
+
+    / 将 config.yaml 中的 group_model_defaults 转为干净的 ``{str: str}`` 字典，
+    / 过滤空值并确保字符串类型，下游直接 ``.get(chat_id)`` 即可。
+    """
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if k and v}
+
+
 def _ensure_platform_extra_dict(platforms_data: dict, name: str) -> tuple[dict, dict]:
     """Get-or-create ``platforms_data[name]`` and its nested ``extra`` dict.
 
@@ -495,6 +510,28 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # Per-group default model overrides: {chat_id: model_name}
+    #
+    # When a message arrives from a group chat, the gateway checks this map
+    # before falling through to the global ``model.default``.  The per-session
+    # ``/model`` command still takes precedence over this (see run.py).
+    #
+    # This gives operators a three-tier model resolution:
+    #   global default  <  group default  <  per-session /model override
+    #
+    # Example config.yaml entry:
+    #   group_model_defaults:
+    #     oc_869c1d931f317119d8f51f20797b599c: deepseek-v4-flash  # 课程设计部
+    #     oc_53d22ce34646cebabf06e48ff986ee4c: mistral-large       # 自媒体部
+    #
+    # / 按群（chat_id）设置默认模型。消息来自某个群聊时，网关先查这个映射，
+    # / 再落回全局 model.default。手动 /model 覆盖优先级更高。
+    # / 由此实现三层模型解析：全局默认 < 群默认 < 会话覆盖。
+    #
+    # Bilingual note: field names and log messages stay in English for
+    # upstream compatibility; operator-facing comments are kept bilingual.
+    group_model_defaults: Dict[str, str] = field(default_factory=dict)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -656,6 +693,9 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            group_model_defaults=_normalize_group_model_defaults(
+                data.get("group_model_defaults")
+            ),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -762,6 +802,14 @@ def load_gateway_config() -> GatewayConfig:
                     yaml_cfg.get("unauthorized_dm_behavior"),
                     "pair",
                 )
+
+            # Pass-through: group_model_defaults is a flat {chat_id: model}
+            # map defined at the top level of config.yaml.  It is consumed
+            # at runtime by _resolve_session_agent_runtime in run.py.
+            # / 透传 group_model_defaults，不做任何转换。
+            # / 运行时由 run.py 的 _resolve_session_agent_runtime 消费。
+            if "group_model_defaults" in yaml_cfg:
+                gw_data["group_model_defaults"] = yaml_cfg["group_model_defaults"]
 
             # Merge platforms section from config.yaml into gw_data so that
             # nested keys like platforms.webhook.extra.routes are loaded.

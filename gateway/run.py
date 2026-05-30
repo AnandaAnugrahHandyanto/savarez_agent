@@ -2429,6 +2429,35 @@ class GatewayRunner:
                 resolved_session_key = None
 
         model = _resolve_gateway_model(user_config)
+
+        # ── Per-group default model ──────────────────────────────────────
+        #
+        # If the incoming message is from a group chat, check
+        # group_model_defaults for a chat_id → model mapping BEFORE
+        # consulting per-session overrides.  This gives operators a
+        # three-tier resolution chain:
+        #
+        #   1. Global default   (config.yaml → model.default)
+        #   2. Group default    (config.yaml → group_model_defaults[chat_id])
+        #   3. Session override (/model command in a specific topic/thread)
+        #
+        # Step 3 (session override) is evaluated immediately below, so this
+        # value is a lower-priority base that gets replaced if an override
+        # exists.
+        #
+        # / 群默认模型检查。消息来自群聊时，在查会话覆盖之前先查群默认。
+        # / 优先级：全局默认 < 群默认 < 会话覆盖。
+        # / 下面紧跟着会话覆盖逻辑，所以这里的值会被覆盖掉（如果有覆盖的话）。
+        if source is not None and source.chat_id:
+            group_defaults = getattr(self.config, "group_model_defaults", None) or {}
+            group_model = group_defaults.get(str(source.chat_id))
+            if group_model:
+                logger.info(
+                    "Group model default: chat_id=%s model=%s (config was %s)",
+                    source.chat_id, group_model, model,
+                )
+                model = group_model
+
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
             override_model = override.get("model", model)
