@@ -57,17 +57,32 @@ SCOPES = [
 REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
 
 
-def _gws_native_cred_path() -> Path | None:
-    """Return the gws CLI's native credential file path if it exists, else None."""
+def _gws_auth_status() -> dict | None:
+    """Query ``gws auth status`` for native credential info.
+
+    Returns the parsed JSON dict on success, or None if gws is not
+    installed or the command fails.
+    """
     binary = os.getenv("HERMES_GWS_BIN") or shutil.which("gws")
     if not binary:
         return None
-    if sys.platform == "win32":
-        base = Path(os.environ.get("APPDATA", ""))
-    else:
-        base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
-    cred = Path(base) / "gws" / "credentials.enc"
-    return cred if cred.exists() else None
+    try:
+        result = subprocess.run(
+            [binary, "auth", "status"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        # gws may print non-JSON preamble lines (e.g. "Using keyring backend: ...")
+        # before the JSON object — find the first '{'.
+        stdout = result.stdout
+        brace = stdout.find("{")
+        if brace == -1:
+            return None
+        data = json.loads(stdout[brace:])
+        return data if data.get("encrypted_credentials_exists") or data.get("plain_credentials_exists") else None
+    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+        return None
 
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
@@ -152,25 +167,14 @@ def check_auth_live():
         return False
 
     if not TOKEN_PATH.exists():
-        # Authenticated via gws native credentials — verify with a gws API call.
-        binary = os.getenv("HERMES_GWS_BIN") or shutil.which("gws")
-        if not binary:
-            return False
-        try:
-            result = subprocess.run(
-                [binary, "calendar", "calendarList", "list",
-                 "--params", json.dumps({"maxResults": 1})],
-                capture_output=True, text=True, timeout=15,
-            )
-            if result.returncode == 0:
-                print("LIVE_CHECK_OK: gws CLI native auth verified.")
-                return True
-            err = result.stderr.strip() or result.stdout.strip()
-            print(f"LIVE_CHECK_FAILED: gws auth error: {err}")
-            return False
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            print(f"LIVE_CHECK_FAILED: {e}")
-            return False
+        # Authenticated via gws native credentials — gws auth status already
+        # confirmed token_valid in check_auth(), so we trust that result.
+        status = _gws_auth_status()
+        if status and status.get("token_valid"):
+            print("LIVE_CHECK_OK: gws auth status reports token_valid=true.")
+            return True
+        print("LIVE_CHECK_FAILED: gws auth status reports token is not valid.")
+        return False
 
     try:
         from googleapiclient.discovery import build
@@ -195,10 +199,22 @@ def check_auth_live():
 def check_auth(quiet: bool = False):
     """Check if stored credentials are valid. Prints status, exits 0 or 1."""
     if not TOKEN_PATH.exists():
-        gws_cred = _gws_native_cred_path()
-        if gws_cred:
+        status = _gws_auth_status()
+        if status:
+            if not status.get("token_valid"):
+                print("GWS_TOKEN_INVALID: gws credentials found but token is not valid. "
+                      "Re-run: gws auth login")
+                return False
+            gws_scopes = set(status.get("scopes") or [])
+            missing = sorted(s for s in SCOPES if s not in gws_scopes)
+            if missing and not quiet:
+                print(f"AUTHENTICATED (partial): gws native credentials valid "
+                      f"but missing {len(missing)} Hermes scopes:")
+                for s in missing:
+                    print(f"  - {s}")
             if not quiet:
-                print(f"AUTHENTICATED: Using gws CLI native credentials ({gws_cred})")
+                user = status.get("user", "unknown")
+                print(f"AUTHENTICATED: Using gws CLI native credentials ({user})")
             return True
         print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
         return False
