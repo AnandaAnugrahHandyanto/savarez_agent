@@ -17,7 +17,7 @@
 
 ## Quick Install
 
-### Windows (native, PowerShell)
+### Windows
 
 ### Step 1: Open Powershell
 Press `Win + R`, type `Powershell`, and press **Enter**.
