@@ -128,7 +128,8 @@ def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
 
 def _detect_image_mime_type(image_path: Path) -> Optional[str]:
     """Return a MIME type when the file looks like a supported image."""
-    mime = _detect_image_mime_type_from_bytes(image_path.read_bytes()[:64])
+    with image_path.open("rb") as f:
+        mime = _detect_image_mime_type_from_bytes(f.read(64))
     if mime is None and image_path.suffix.lower() == ".svg":
         head = image_path.read_text(encoding="utf-8", errors="ignore")[:4096].lower()
         if "<svg" in head:
