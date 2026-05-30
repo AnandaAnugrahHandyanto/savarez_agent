@@ -589,6 +589,55 @@ def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeyp
     )
 
 
+def test_list_authenticated_providers_merges_live_models_for_custom_providers(monkeypatch):
+    """custom_providers live discovery should add models, not replace explicit ones.
+
+    Regression: section 4 previously assigned ``grp["models"] = live_models``.
+    That dropped models explicitly configured by the user whenever the live
+    /models endpoint returned a different catalog.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["", "configured-model", "live-only-model"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    custom_providers = [
+        {
+            "name": "Private Relay — configured",
+            "base_url": "https://relay.example.internal/v1",
+            "api_key": "sk-relay-test",
+            "model": "configured-model",
+            "models": {
+                "configured-model": {"context_length": 200000},
+                "manual-only-model": {"context_length": 128000},
+            },
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="custom:private-relay",
+        user_providers={},
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    row = next((p for p in providers if p["slug"] == "custom:private-relay"), None)
+    assert row is not None
+    assert calls == [("sk-relay-test", "https://relay.example.internal/v1")]
+    assert row["models"] == [
+        "configured-model",
+        "manual-only-model",
+        "live-only-model",
+    ]
+    assert row["total_models"] == 3
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================

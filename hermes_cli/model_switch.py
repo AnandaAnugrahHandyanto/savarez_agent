@@ -1515,10 +1515,11 @@ def list_authenticated_providers(
                     if fb:
                         models_list = list(fb)
 
-            # Prefer the endpoint's live /models list when credentials are
-            # available, unless the provider explicitly opts out via
-            # discover_models: false (e.g. dedicated endpoints that expose
-            # the entire aggregator catalog via /models).
+            # Merge the endpoint's live /models response with the
+            # user-configured list when credentials are available, unless
+            # the provider explicitly opts out via discover_models: false
+            # (e.g. dedicated endpoints that expose the entire aggregator
+            # catalog via /models).
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
@@ -1531,7 +1532,12 @@ def list_authenticated_providers(
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
                     if live_models:
-                        models_list = live_models
+                        # Merge live /models response with user-configured
+                        # list — don't discard models the user explicitly
+                        # specified under ``providers:``.
+                        for m in live_models:
+                            if m and m not in models_list:
+                                models_list.append(m)
                 except Exception:
                     pass
 
@@ -1700,9 +1706,10 @@ def list_authenticated_providers(
             # the Telegram/Discord picker should do the same for parity.
             # Live-discovery policy:
             # - With an api_key, the user has explicitly opted into the
-            #   endpoint and live /models is the source of truth — replace
-            #   the (possibly partial) ``models:`` subset configured for
-            #   context-length overrides with the full live catalog.
+            #   endpoint.  Live /models is used as an additional source
+            #   of models — merged into (not replacing) the user-configured
+            #   ``models:`` list so that explicitly-specified entries are
+            #   never silently dropped.
             #   This is the Bifrost / aggregator-gateway case.
             # - Without an api_key but with an explicit ``models:`` list
             #   (or top-level ``model:``), the user is narrowing a public
@@ -1719,8 +1726,13 @@ def list_authenticated_providers(
 
                     live_models = fetch_api_models(api_key, api_url)
                     if live_models:
-                        grp["models"] = live_models
-                        grp["total_models"] = len(live_models)
+                        # Merge live /models response with user-configured
+                        # list — don't discard models the user explicitly
+                        # specified under ``custom_providers:``.
+                        for m in live_models:
+                            if m and m not in grp["models"]:
+                                grp["models"].append(m)
+                        grp["total_models"] = len(grp["models"])
                 except Exception:
                     pass
             results.append({
