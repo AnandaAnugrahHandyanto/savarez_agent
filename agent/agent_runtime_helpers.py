@@ -1933,8 +1933,8 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # thinking-mode echo, upgrade "" → " " on replay so stale history
     # doesn't 400 the user on the next turn.
     existing = source_msg.get("reasoning_content")
-    if isinstance(existing, str):
-        if existing == "" and agent._needs_thinking_reasoning_pad():
+    if isinstance(existing, str) and agent._needs_thinking_reasoning_pad():
+        if existing == "":
             api_msg["reasoning_content"] = " "
         else:
             api_msg["reasoning_content"] = existing
@@ -1967,8 +1967,14 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # for providers that use the internal 'reasoning' key.
     # This must happen before the unconditional empty-string fallback so
     # genuine reasoning content is not overwritten (#15812 regression in
-    # PR #15478).
-    if isinstance(normalized_reasoning, str) and normalized_reasoning:
+    # PR #15478). Only promote when the active provider needs the
+    # thinking-mode echo to avoid leaking cross-provider reasoning_content
+    # to strict providers.
+    if (
+        needs_thinking_pad
+        and isinstance(normalized_reasoning, str)
+        and normalized_reasoning
+    ):
         api_msg["reasoning_content"] = normalized_reasoning
         return
 

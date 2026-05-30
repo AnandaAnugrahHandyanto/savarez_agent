@@ -5643,6 +5643,11 @@ class TestReasoningReplayForStrictProviders:
 
     def test_explicit_reasoning_content_beats_normalized_reasoning_on_replay(self, agent):
         self._setup_agent(agent)
+        agent.base_url = "https://api.deepseek.com"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "deepseek"
+        agent.model = "deepseek-v4-flash"
+
         prior_assistant = {
             "role": "assistant",
             "content": "",

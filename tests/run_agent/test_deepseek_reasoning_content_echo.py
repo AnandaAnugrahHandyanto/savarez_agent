@@ -160,11 +160,8 @@ class TestCopyReasoningContentForApi:
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert api_msg["reasoning_content"] == " "
 
-    def test_non_thinking_provider_preserves_empty_reasoning_content_verbatim(self) -> None:
-        """The stale-placeholder upgrade ONLY fires when the active provider
-        enforces thinking-mode echo. On non-thinking providers, an empty
-        reasoning_content must still round-trip verbatim.
-        """
+    def test_non_thinking_provider_strips_empty_reasoning_content(self) -> None:
+        """Empty-string reasoning_content is stripped for non-thinking providers."""
         agent = _make_agent(
             provider="openrouter",
             model="anthropic/claude-sonnet-4.6",
@@ -177,7 +174,45 @@ class TestCopyReasoningContentForApi:
         }
         api_msg: dict = {}
         agent._copy_reasoning_content_for_api(source, api_msg)
-        assert api_msg["reasoning_content"] == ""
+        assert "reasoning_content" not in api_msg
+
+    def test_non_thinking_provider_strips_cross_provider_reasoning_content(self) -> None:
+        """Poisoned history with prior-provider reasoning_content is stripped (#35543).
+
+        DeepSeek/Kimi thinking sessions can persist ``reasoning_content`` in
+        history. When the same conversation later runs under a strict provider
+        (Cerebras, Mistral, Fireworks) that does not support the think-pad,
+        the leaked field must not be forwarded.
+        """
+        agent = _make_agent(
+            provider="cerebras",
+            model="cerebras/llama-4-maverick-17b-128e-instruct",
+            base_url="https://api.cerebras.ai/v1",
+        )
+        source = {
+            "role": "assistant",
+            "content": "ok",
+            "reasoning_content": "prior provider chain of thought",
+        }
+        api_msg: dict = {}
+        agent._copy_reasoning_content_for_api(source, api_msg)
+        assert "reasoning_content" not in api_msg
+
+    def test_non_thinking_provider_does_not_promote_reasoning(self) -> None:
+        """Prior-provider 'reasoning' is not elevated to reasoning_content (#35543)."""
+        agent = _make_agent(
+            provider="mistral",
+            model="mistral/mistral-large-2411",
+            base_url="https://api.mistral.ai/v1",
+        )
+        source = {
+            "role": "assistant",
+            "content": "done",
+            "reasoning": "prior provider chain of thought",
+        }
+        api_msg: dict = {}
+        agent._copy_reasoning_content_for_api(source, api_msg)
+        assert "reasoning_content" not in api_msg
 
     def test_deepseek_reasoning_field_promoted(self) -> None:
         """When only 'reasoning' is set, it gets promoted to reasoning_content."""
