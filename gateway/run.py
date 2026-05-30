@@ -13823,11 +13823,18 @@ class GatewayRunner:
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
         thread_id = getattr(source, "thread_id", None)
-        if thread_id is None:
+        business_connection_id = getattr(source, "telegram_business_connection_id", None)
+        if thread_id is None and not business_connection_id:
             return None
-        metadata: Dict[str, Any] = {"thread_id": thread_id}
+        metadata: Dict[str, Any] = {}
+        if thread_id is not None:
+            metadata["thread_id"] = thread_id
+        if business_connection_id:
+            metadata["telegram_business_connection_id"] = str(business_connection_id)
+            metadata["business_connection_id"] = str(business_connection_id)
         if (
-            getattr(source, "platform", None) == Platform.TELEGRAM
+            thread_id is not None
+            and getattr(source, "platform", None) == Platform.TELEGRAM
             and getattr(source, "chat_type", None) == "dm"
         ):
             metadata["telegram_dm_topic_reply_fallback"] = True
