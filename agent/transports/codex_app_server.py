@@ -28,6 +28,14 @@ from typing import Any, Callable, Optional
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
 MIN_CODEX_VERSION = (0, 125, 0)
+_DEFAULT_HERMES_CODEX_BIN = "/home/jenny/.hermes/node/bin/codex"
+
+
+def _resolve_codex_bin(codex_bin: str) -> str:
+    """Prefer Hermes' absolute Codex binary for the default app-server path."""
+    if codex_bin == "codex" and os.path.exists(_DEFAULT_HERMES_CODEX_BIN):
+        return _DEFAULT_HERMES_CODEX_BIN
+    return codex_bin
 
 
 @dataclass
@@ -73,7 +81,7 @@ class CodexAppServerClient:
         extra_args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
     ) -> None:
-        self._codex_bin = codex_bin
+        self._codex_bin = _resolve_codex_bin(codex_bin)
         spawn_env = os.environ.copy()
         if env:
             spawn_env.update(env)
@@ -110,7 +118,7 @@ class CodexAppServerClient:
                 ]
             )
 
-        cmd = [codex_bin, "app-server"] + app_server_args
+        cmd = [self._codex_bin, "app-server"] + app_server_args
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 

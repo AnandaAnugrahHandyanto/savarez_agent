@@ -113,6 +113,17 @@ class TestCodexAppServerModule:
         assert codex_app_server.MIN_CODEX_VERSION >= (0, 1, 0)
         assert callable(codex_app_server.parse_codex_version)
         assert callable(codex_app_server.check_codex_binary)
+        assert callable(codex_app_server._resolve_codex_bin)
+
+    def test_resolve_codex_bin_prefers_hermes_absolute_default(self, monkeypatch) -> None:
+        from agent.transports import codex_app_server
+
+        monkeypatch.setattr(codex_app_server.os.path, "exists", lambda path: True)
+
+        assert codex_app_server._resolve_codex_bin("codex") == (
+            "/home/jenny/.hermes/node/bin/codex"
+        )
+        assert codex_app_server._resolve_codex_bin("/custom/codex") == "/custom/codex"
 
     def test_parse_codex_version_valid(self) -> None:
         from agent.transports.codex_app_server import parse_codex_version
@@ -288,7 +299,8 @@ class TestSpawnEnvIsolation:
         client._closed = True
 
         cmd = captured["cmd"]
-        assert cmd[:2] == ["codex", "app-server"]
+        assert cmd[0].endswith("/codex")
+        assert cmd[1] == "app-server"
         assert 'sandbox_mode="workspace-write"' in cmd
         assert (
             'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]'

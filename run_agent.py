@@ -2197,6 +2197,16 @@ class AIAgent:
         except Exception:
             pass
 
+        # Close Codex app-server subprocess sessions on cache eviction. The
+        # Codex session is an LLM transport, not durable user tool state.
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                codex_session.close()
+                self._codex_session = None
+        except Exception:
+            pass
+
     def close(self) -> None:
         """Release all resources held by this agent instance.
 
@@ -2250,6 +2260,16 @@ class AIAgent:
             if client is not None:
                 self._close_openai_client(client, reason="agent_close", shared=True)
                 self.client = None
+        except Exception:
+            pass
+
+        # 6. Close Codex app-server subprocess session, if this agent used
+        # the opt-in Codex app-server runtime.
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                codex_session.close()
+                self._codex_session = None
         except Exception:
             pass
 

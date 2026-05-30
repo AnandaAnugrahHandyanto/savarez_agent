@@ -3931,6 +3931,20 @@ class GatewayRunner:
         except Exception:
             pass
 
+        # Report-only guard for Codex app-server accumulation. This never
+        # kills processes at startup; operators can run the diagnostics module
+        # with --kill-stale-codex when they explicitly choose cleanup.
+        try:
+            from gateway.codex_app_server_diagnostics import (
+                log_startup_codex_process_warning,
+            )
+            log_startup_codex_process_warning(gateway_pid=os.getpid())
+        except Exception:
+            logger.debug(
+                "Codex app-server startup diagnostics failed",
+                exc_info=True,
+            )
+
         # Log any active supply-chain security advisories. Operators see this
         # in gateway.log and `hermes status` surfaces it; we do NOT block
         # startup or surface it inline to user messages, since the gateway
