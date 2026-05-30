@@ -430,7 +430,7 @@ TIPS = [
     'hermes -z "<prompt>" is the purest one-shot: final answer on stdout, nothing else — ideal for piping in scripts.',
     'hermes chat --pass-session-id injects the session ID into the system prompt so the agent can self-reference it.',
     'hermes chat --image path/to/pic.png attaches a local image to a single -q query without a separate upload step.',
-    'hermes chat --ignore-user-config skips ~/.hermes/config.yaml — reproducible bug reports and CI runs.',
+    'hermes chat --ignore-user-config skips user config entirely — reproducible bug reports and CI runs.',
     "hermes chat --source tool tags programmatic chats so they don't clutter hermes sessions list.",
     'hermes dump --show-keys includes redacted API key fingerprints for deeper support debugging.',
     'hermes sessions rename <ID> "new title" renames any past session; hermes sessions delete <ID> removes one.',
