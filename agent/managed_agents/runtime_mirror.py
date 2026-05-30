@@ -24,7 +24,7 @@ ASK_BLOCKED_TOOLS = ("delegate_task", "send_message", "memory", "clarify")
 
 def build_runtime_registry(source_path: str | Path) -> dict[str, Any]:
     """Return the legacy ``agent-registry.json`` payload for ``source_path``."""
-    path = Path(source_path)
+    path = Path(source_path).resolve()
     registry = load_agent_registry(path)
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     routing = raw.get("routing") if isinstance(raw, Mapping) else {}
