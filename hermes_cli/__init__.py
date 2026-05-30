@@ -13,9 +13,34 @@ Provides subcommands for:
 
 import os
 import sys
+import tomllib
+from pathlib import Path
 
-__version__ = "0.15.1"
-__release_date__ = "2026.5.29"
+# Sentinel: version embedded in this file as build-time stamp + runtime fallback.
+# At import time the authoritative version is always read from pyproject.toml so
+# a git conflict resolution that reverts this file cannot silently downgrade the
+# reported version (issue #35070).
+_VERSION_FALLBACK = "0.15.1"
+_RELEASE_DATE_FALLBACK = "2026.5.29"
+
+
+def _read_version_from_pyproject():
+    """Return ``(version, release_date)`` from ``pyproject.toml``.
+
+    If the file is missing or unparseable the module-level fallback
+    constants are returned so the agent can still start.
+    """
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    try:
+        with open(pyproject, "rb") as fh:
+            data = tomllib.load(fh)
+        version = data["project"]["version"]
+    except (FileNotFoundError, KeyError, tomllib.TOMLDecodeError):
+        version = _VERSION_FALLBACK
+    return version, _RELEASE_DATE_FALLBACK
+
+
+__version__, __release_date__ = _read_version_from_pyproject()
 
 
 def _ensure_utf8():
