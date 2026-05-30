@@ -28,6 +28,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -641,11 +642,21 @@ def run_conversation(
                 agent.model,
                 f"{_compressor.context_length:,}",
             )
-            agent._emit_status(
-                f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                f">= {_compressor.threshold_tokens:,} threshold. "
-                "This may take a moment."
+            _preflight_status = automatic_compaction_status_message(
+                _compressor,
+                phase="preflight",
+                default_message=(
+                    f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
+                    f">= {_compressor.threshold_tokens:,} threshold. "
+                    "This may take a moment."
+                ),
+                approx_tokens=_preflight_tokens,
+                threshold_tokens=_compressor.threshold_tokens,
+                context_length=_compressor.context_length,
+                model=agent.model,
             )
+            if _preflight_status:
+                agent._emit_status(_preflight_status)
             # May need multiple passes for very large sessions with small
             # context windows (each pass summarises the middle N turns).
             for _pass in range(3):
