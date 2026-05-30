@@ -326,7 +326,9 @@ class TestStdioPgroupReaping:
         grandchild_script = tmp_path / "grandchild.py"
         grandchild_script.write_text(
             "import os, sys, time\n"
-            f"open({str(grandchild_pid_file)!r}, 'w').write(str(os.getpid()))\n"
+            f"with open({str(grandchild_pid_file)!r}, 'w') as f:\n"
+            "    f.write(str(os.getpid()))\n"
+            "    f.flush()\n"
             "while True:\n"
             "    time.sleep(0.5)\n"
         )
