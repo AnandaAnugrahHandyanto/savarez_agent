@@ -3,11 +3,14 @@ SQLite-backed fact store with entity resolution and trust scoring.
 Single-user Hermes memory store plugin.
 """
 
+import logging
 import re
 import sqlite3
 import struct
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 try:
     from . import holographic as hrr
@@ -626,8 +629,9 @@ class MemoryStore:
                     (blob, fact_id),
                 )
                 self._conn.commit()
-            except Exception:
-                pass  # embedding is best-effort; never break fact storage
+            except Exception as e:
+                # embedding is best-effort; never break fact storage
+                logger.debug("Embedding computation failed for fact %d: %s", fact_id, e)
 
     def _rebuild_bank(self, category: str) -> None:
         """Full rebuild of a category's memory bank from all its fact vectors."""

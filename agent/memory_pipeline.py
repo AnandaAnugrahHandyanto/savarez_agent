@@ -46,7 +46,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -469,18 +469,30 @@ class ConsolidationEngine:
                     # Fix 2: Prefer facts with LOWER engram strength
                     # (they need consolidation most -- like sleep
                     # prioritizes fragile memories for replay)
+                    # Batch-fetch all strengths in one query
+                    refs_to_strength: dict[str, float] = {}
+                    refs = [sha256(f.get('content', '').encode()
+                                   ).hexdigest()[:16]
+                            for f in facts_sorted]
+                    unique_refs = list(set(refs))
+                    if unique_refs:
+                        placeholders = ",".join(
+                            "?" for _ in unique_refs)
+                        rows = state._conn.execute(
+                            f"SELECT memory_ref, strength "
+                            f"FROM engram_strengths "
+                            f"WHERE memory_ref IN ({placeholders})",
+                            unique_refs,
+                        ).fetchall()
+                        refs_to_strength = {
+                            r["memory_ref"]: r["strength"]
+                            for r in rows
+                        }
                     def _engram_strength_key(fact_d: dict) -> float:
-                        try:
-                            ref = sha256(
-                                fact_d.get('content', '').encode()
-                            ).hexdigest()[:16]
-                            row = state._conn.execute(
-                                'SELECT strength FROM engram_strengths '
-                                'WHERE memory_ref = ?', (ref,)
-                            ).fetchone()
-                            return row['strength'] if row else 1.0
-                        except Exception:
-                            return 1.0
+                        ref = sha256(
+                            fact_d.get('content', '').encode()
+                        ).hexdigest()[:16]
+                        return refs_to_strength.get(ref, 1.0)
                     facts_sorted.sort(key=_engram_strength_key)
 
                     # Get existing schema contents for dedup
@@ -494,28 +506,10 @@ class ConsolidationEngine:
                         domain = fact.get("domain", "general")
                         if not content or len(content) < 10:
                             continue
-                        # Simple dedup: skip if similar content already exists
                         if content[:50] in existing_contents:
                             updated += 1
                             continue
-                        # Temporal proximity boost: facts with a recent
-                        # event_time get a slightly higher initial confidence
-                        # because they describe a temporally grounded event.
-                        base_conf = 0.5
-                        event_ts = fact.get("event_time") or fact.get("ingestion_time")
-                        if event_ts:
-                            try:
-                                from datetime import datetime, timezone
-                                evt = datetime.fromisoformat(str(event_ts))
-                                if evt.tzinfo is None:
-                                    evt = evt.replace(tzinfo=timezone.utc)
-                                age_hours = (datetime.now(timezone.utc) - evt).total_seconds() / 3600.0
-                                if age_hours < 1.0:
-                                    base_conf = 0.65   # very recent
-                                elif age_hours < 24.0:
-                                    base_conf = 0.55   # same day
-                            except Exception:
-                                pass
+                        base_conf = self._temporal_confidence_boost(fact)
                         state._conn.execute(
                             "INSERT INTO schemas (content, domain, confidence) "
                             "VALUES (?, ?, ?)",
@@ -534,6 +528,30 @@ class ConsolidationEngine:
         except Exception as e:
             logger.debug("Consolidation failed: %s", e)
         return {"schemas_created": created, "schemas_updated": updated}
+
+    @staticmethod
+    def _temporal_confidence_boost(fact: dict) -> float:
+        """Compute initial confidence with temporal proximity boost.
+
+        Facts with a recent event_time get higher confidence because
+        they describe a temporally grounded event.
+        """
+        base_conf = 0.5
+        event_ts = fact.get("event_time") or fact.get("ingestion_time")
+        if event_ts:
+            try:
+                from datetime import datetime, timezone
+                evt = datetime.fromisoformat(str(event_ts))
+                if evt.tzinfo is None:
+                    evt = evt.replace(tzinfo=timezone.utc)
+                age_hours = (datetime.now(timezone.utc) - evt).total_seconds() / 3600.0
+                if age_hours < 1.0:
+                    base_conf = 0.65
+                elif age_hours < 24.0:
+                    base_conf = 0.55
+            except Exception:
+                pass
+        return base_conf
 
     def extract_insights(self, messages: list) -> str:
         """Extract key facts from messages about to be discarded by compression."""
@@ -1503,6 +1521,8 @@ CREATE INDEX IF NOT EXISTS idx_activation_source ON activation_edges(source_enti
 CREATE INDEX IF NOT EXISTS idx_activation_target ON activation_edges(target_entity);
 CREATE INDEX IF NOT EXISTS idx_cross_links_entity ON cross_domain_links(entity);
 CREATE INDEX IF NOT EXISTS idx_salience_feedback_ref ON salience_feedback(memory_ref, was_retrieved);
+CREATE INDEX IF NOT EXISTS idx_schemas_updated_at ON schemas(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_consolidation_runs_ts ON consolidation_runs(timestamp DESC);
 """
 
 
@@ -1540,8 +1560,8 @@ class PipelineState:
     def close(self) -> None:
         try:
             self._conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("PipelineState close failed: %s", e)
 
 
 # ===========================================================================
@@ -1579,6 +1599,18 @@ class MemoryPipeline:
         db_path = self._config.get("db_path") or None
         self._state = PipelineState(db_path=db_path)
 
+        self._init_core_layers()
+        self._init_plugin_layers()
+
+        logger.debug("MemoryPipeline initialized (session=%s, layers=%d)",
+                      session_id, sum(1 for x in [self._salience, self._engrams,
+                      self._consolidation, self._reconsolidation,
+                      self._feedback, self._activation,
+                      self._episodic, self._dreaming,
+                      self._scheduler] if x))
+
+    def _init_core_layers(self) -> None:
+        """Initialize layers 1-6 from config (salience through activation)."""
         # Layer 1: SalienceScorer
         sal_cfg = self._config.get("salience", {})
         if sal_cfg.get("enabled", True):
@@ -1614,7 +1646,6 @@ class MemoryPipeline:
         # Layer 5: FeedbackCoordinator
         if self._config.get("feedback", {}).get("enabled", True):
             self._feedback = FeedbackCoordinator()
-            # Fix 4 wiring: give FeedbackCoordinator access to reconsolidation
             if self._reconsolidation:
                 self._feedback._reconsolidation = self._reconsolidation
 
@@ -1628,64 +1659,45 @@ class MemoryPipeline:
                 pagerank_enabled=act_cfg.get("pagerank_enabled", False),
             )
 
+    def _init_plugin_layers(self) -> None:
+        """Initialize layers 7-9 from config (episodic, dreaming, hippocampal, sleep)."""
         # Layer 7: EpisodicTimeline (what-where-when binding)
         epi_cfg = self._config.get("episodic", {})
         if epi_cfg.get("enabled", False):
-            try:
-                import importlib.util
-                _spec = importlib.util.spec_from_file_location(
-                    "holographic_episodic",
-                    str(Path(__file__).resolve().parent.parent
-                        / "plugins" / "memory" / "holographic" / "episodic.py"))
-                _mod = importlib.util.module_from_spec(_spec)
-                _spec.loader.exec_module(_mod)
-                self._episodic = _mod.EpisodicTimeline(self._state._conn, self._state._lock)
+            _mod = self._load_holographic_plugin(
+                "holographic_episodic", "episodic.py")
+            if _mod:
+                self._episodic = _mod.EpisodicTimeline(
+                    self._state._conn, self._state._lock)
                 self._episodic.init_tables()
-            except Exception as e:
-                logger.debug("EpisodicTimeline init failed: %s", e)
 
         # Layer 8: DreamEngine (structured selective replay)
         dream_cfg = self._config.get("dreaming", {})
         if dream_cfg.get("enabled", False):
-            try:
-                import importlib.util, sys as _sys
-                _spec = importlib.util.spec_from_file_location(
-                    "holographic_dreaming",
-                    str(Path(__file__).resolve().parent.parent
-                        / "plugins" / "memory" / "holographic" / "dreaming.py"))
-                _mod = importlib.util.module_from_spec(_spec)
-                _sys.modules[_spec.name] = _mod
-                _spec.loader.exec_module(_mod)
+            _mod = self._load_holographic_plugin(
+                "holographic_dreaming", "dreaming.py")
+            if _mod:
                 self._dreaming = _mod.DreamEngine(
                     self._state._conn, self._state._lock,
                     cooldown_hours=dream_cfg.get("cooldown_hours", 1.0),
                     mode1_top_k=dream_cfg.get("mode1_top_k", 10),
                     mode2_top_k=dream_cfg.get("mode2_top_k", 5),
                     mode3_idle_hours=dream_cfg.get("mode3_idle_hours", 24.0),
-                    mode3_min_schema_conf=dream_cfg.get("mode3_min_schema_conf", 0.7),
+                    mode3_min_schema_conf=dream_cfg.get(
+                        "mode3_min_schema_conf", 0.7),
                 )
                 self._dreaming.init_tables()
-            except Exception as e:
-                logger.debug("DreamEngine init failed: %s", e)
 
         # Layer 9a: HippocampalIndex (sparse index for pattern completion)
         hippo_cfg = self._config.get("hippocampal_index", {})
         self._hippocampal = None
         if hippo_cfg.get("enabled", False):
-            try:
-                import importlib.util
-                _spec = importlib.util.spec_from_file_location(
-                    "hippocampal_index",
-                    str(Path(__file__).resolve().parent.parent
-                        / "plugins" / "memory" / "holographic"
-                        / "hippocampal_index.py"))
-                _mod = importlib.util.module_from_spec(_spec)
-                _spec.loader.exec_module(_mod)
+            _mod = self._load_holographic_plugin(
+                "hippocampal_index", "hippocampal_index.py")
+            if _mod:
                 self._hippocampal = _mod.HippocampalIndex(
                     self._state._conn, self._state._lock)
                 self._hippocampal.init_tables()
-            except Exception as e:
-                logger.debug("HippocampalIndex init failed: %s", e)
 
         # Layer 9: SleepScheduler (automatic sleep-driven consolidation)
         sleep_cfg = self._config.get("sleep", {})
@@ -1696,16 +1708,8 @@ class MemoryPipeline:
                 salience_threshold=sleep_cfg.get(
                     "salience_threshold", 10.0),
             )
-            # Bind pipeline state so sleep_cycle can access the DB
             self._scheduler._state = self._state
             self._scheduler._session_id = self._session_id
-
-        logger.debug("MemoryPipeline initialized (session=%s, layers=%d)",
-                      session_id, sum(1 for x in [self._salience, self._engrams,
-                      self._consolidation, self._reconsolidation,
-                      self._feedback, self._activation,
-                      self._episodic, self._dreaming,
-                      self._scheduler] if x))
 
     def shutdown(self) -> None:
         """Flush and close pipeline state."""
@@ -1713,6 +1717,138 @@ class MemoryPipeline:
             self._state.close()
             self._state = None
         logger.debug("MemoryPipeline shut down")
+
+    # -- Shared helpers --
+
+    def _load_holographic_plugin(self, module_name: str, file_name: str) -> 'Any | None':
+        """Dynamically load a module from the holographic plugin directory.
+
+        Args:
+            module_name: Name to register the module as.
+            file_name: Python file name (e.g. "episodic.py").
+
+        Returns:
+            The loaded module, or None on failure.
+        """
+        try:
+            import importlib.util
+            plugin_dir = (Path(__file__).resolve().parent.parent
+                          / "plugins" / "memory" / "holographic")
+            _spec = importlib.util.spec_from_file_location(
+                module_name, str(plugin_dir / file_name))
+            _mod = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            return _mod
+        except Exception as e:
+            logger.debug("Plugin %s load failed: %s", file_name, e)
+            return None
+
+    def _score_and_record_salience(
+        self, content: str, provider_tag: str = "salience_init",
+    ) -> 'SalienceResult | None':
+        """Score content for salience and record engram strength.
+
+        Computes the salience score, then initializes or upgrades the
+        engram_strengths row for the content's memory_ref so that
+        high-salience content starts strong and low-salience content
+        starts modestly.
+
+        Args:
+            content: Text to score.
+            provider_tag: Value for the ``provider`` column in
+                engram_strengths (used for provenance tracking).
+
+        Returns:
+            The SalienceResult, or None if scoring is unavailable.
+        """
+        if not self._salience or not self._state:
+            return None
+        try:
+            result = self._salience.score(content)
+            if self._engrams:
+                sal = result.overall
+                if sal > 0.5:
+                    init_str = 1.0
+                elif sal > 0.2:
+                    init_str = 0.7
+                else:
+                    init_str = 0.4
+                ref = sha256(content.encode()).hexdigest()[:16]
+                with self._state._lock:
+                    self._state._conn.execute(
+                        "INSERT INTO engram_strengths "
+                        "(memory_ref, provider, strength) "
+                        "VALUES (?, ?, ?) "
+                        "ON CONFLICT(memory_ref) DO UPDATE SET "
+                        "strength = MAX(strength, excluded.strength), "
+                        "last_accessed = CURRENT_TIMESTAMP",
+                        (ref, provider_tag, init_str),
+                    )
+                    self._state._conn.commit()
+            return result
+        except Exception as e:
+            logger.debug("_score_and_record_salience failed: %s", e)
+            return None
+
+    def _record_salience_log(self, result: 'SalienceResult', source: str = "builtin") -> None:
+        """Persist a salience score to the encoding log table."""
+        if not self._state:
+            return
+        try:
+            with self._state._lock:
+                self._state._conn.execute(
+                    "INSERT INTO salience_encoding_log "
+                    "(source, emotion_score, novelty_score, "
+                    "importance_score, overall_score) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (source, result.emotion, result.novelty,
+                     result.importance, result.overall),
+                )
+                self._state._conn.commit()
+        except Exception as e:
+            logger.debug("Salience log insert failed: %s", e)
+
+    def _update_salience_weights(self, error_score: float) -> None:
+        """Adjust salience signal weights after a conflict or feedback event.
+
+        High error nudges weights down; low error nudges them up.
+        """
+        if not self._state:
+            return
+        try:
+            adj = -0.02 if error_score > 0.5 else 0.01
+            for sig in ("emotion", "novelty", "importance"):
+                with self._state._lock:
+                    self._state._conn.execute(
+                        "INSERT INTO salience_weights "
+                        "(signal_type, weight, "
+                        "sample_count, success_count) "
+                        "VALUES (?, 0.5, 1, ?) "
+                        "ON CONFLICT(signal_type) "
+                        "DO UPDATE SET "
+                        "weight = MAX(0.1, "
+                        "  MIN(1.0, weight + ?)), "
+                        "sample_count = sample_count + 1, "
+                        "success_count = success_count + ?, "
+                        "updated_at = CURRENT_TIMESTAMP",
+                        (sig,
+                         1 if adj > 0 else 0,
+                         adj,
+                         1 if adj > 0 else 0),
+                    )
+                    self._state._conn.commit()
+        except Exception as e:
+            logger.debug("Salience weight update failed: %s", e)
+
+    def _extract_entities_from_text(self, text: str) -> list[str]:
+        """Extract capitalized and Chinese entities from text."""
+        entities = re.findall(r'\b[A-Z][a-z]{2,}\b', text)
+        zh_entities = [
+            e for e in re.findall(r'[一-鿿]{2,6}', text)
+            if e not in _ZH_STOPWORDS
+        ]
+        entities.extend(zh_entities)
+        return entities
 
     # -- Pre-interceptors --
 
@@ -1751,7 +1887,10 @@ class MemoryPipeline:
         if not self._salience:
             return None
         try:
-            result = self._salience.score(user)
+            # Score salience and initialize engram strength (consolidated)
+            result = self._score_and_record_salience(user, "salience_init")
+            if result is None:
+                return None
             meta: dict = {
                 "salience_overall": result.overall,
                 "salience_emotion": result.emotion,
@@ -1774,10 +1913,7 @@ class MemoryPipeline:
                 except Exception as e:
                     logger.debug("SleepScheduler failed: %s", e)
 
-            # GAP 5: merged from sync_turn -- emotion-modulated engram
-            # decay and salience-to-engram initial strength.  These were
-            # previously dead code in sync_turn() which MemoryManager
-            # never called.
+            # Emotion-modulated engram decay
             if self._engrams and self._state:
                 try:
                     decay_affected = self._engrams.apply_decay(
@@ -1786,39 +1922,10 @@ class MemoryPipeline:
                         emotional_valence=result.emotion,
                     )
                     meta["decay_affected"] = decay_affected
-                    logger.debug(
-                        "pre_sync emgram decay: emotion=%.3f, affected=%d",
-                        result.emotion, decay_affected)
                 except Exception as e:
                     logger.debug("Emotion-modulated engram decay failed: %s", e)
 
-                # Salience-to-Engram: initial strength from salience score
-                try:
-                    sal = result.overall
-                    if sal > 0.5:
-                        init_str = 1.0
-                    elif sal > 0.2:
-                        init_str = 0.7
-                    else:
-                        init_str = 0.4
-                    ref = sha256(user.encode()).hexdigest()[:16]
-                    with self._state._lock:
-                        self._state._conn.execute(
-                            "INSERT INTO engram_strengths "
-                            "(memory_ref, provider, strength) "
-                            "VALUES (?, 'salience_init', ?) "
-                            "ON CONFLICT(memory_ref) DO UPDATE SET "
-                            "strength = MAX(strength, excluded.strength), "
-                            "last_accessed = CURRENT_TIMESTAMP",
-                            (ref, init_str),
-                        )
-                        self._state._conn.commit()
-                    meta["initial_engram_strength"] = init_str
-                except Exception as e:
-                    logger.debug("Salience-to-engram init failed: %s", e)
-
-            # Fix 6: Activation to Retrieval: expand query with
-            # co-activated terms before provider retrieval
+            # Activation expansion
             if self._activation and self._state:
                 try:
                     expansions = self._activation.expand_query(
@@ -1826,165 +1933,62 @@ class MemoryPipeline:
                     if expansions:
                         meta["activation_expansions"] = expansions
                 except Exception as e:
-                    logger.debug(
-                        "Activation query expansion failed: %s", e)
+                    logger.debug("Activation query expansion failed: %s", e)
 
-            if self._state:
-                with self._state._lock:
-                    self._state._conn.execute(
-                        "INSERT INTO salience_encoding_log "
-                        "(source, emotion_score, novelty_score, "
-                        "importance_score, overall_score) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        ("builtin", result.emotion, result.novelty,
-                         result.importance, result.overall),
-                    )
-                    self._state._conn.commit()
+            self._record_salience_log(result)
 
             # --- Semantic conflict detection ---
-            if (self._reconsolidation
-                    and self._reconsolidation._semantic_enabled
-                    and self._state):
-                try:
-                    with self._state._lock:
-                        rows = self._state._conn.execute(
-                            "SELECT content FROM schemas "
-                            "ORDER BY confidence DESC LIMIT 20"
-                        ).fetchall()
-                    existing_contents = [r["content"] for r in rows if r["content"]]
-
-                    if existing_contents:
-                        conflict_result = (
-                            self._reconsolidation.detect_semantic_conflict(
-                                user, existing_contents,
-                                embed_fn=embed_fn, llm_client=llm_client))
-                        error_score, action = conflict_result
-                        meta["semantic_conflict_score"] = error_score
-                        meta["semantic_conflict_action"] = action
-
-                        # Log the reconsolidation event if conflict detected
-                        if action != "no_conflict" and error_score > 0.2:
-                            with self._state._lock:
-                                self._state._conn.execute(
-                                    "INSERT INTO reconsolidation_log "
-                                    "(memory_ref, old_content, new_content, prediction_error) "
-                                    "VALUES (?, ?, ?, ?)",
-                                    ("pre_sync",
-                                     existing_contents[0][:500] if existing_contents else "",
-                                     user[:500],
-                                     error_score),
-                                )
-                                self._state._conn.commit()
-                            logger.debug(
-                                "Semantic conflict detected: action=%s, score=%.2f",
-                                action, error_score)
-
-                        # Fix 5: Reconsolidation to Salience: update signal
-                        # weights after conflict resolution
-                        try:
-                            for sig in ("emotion", "novelty",
-                                        "importance"):
-                                adj = (-0.02 if error_score > 0.5
-                                       else 0.01)
-                                with self._state._lock:
-                                    self._state._conn.execute(
-                                        "INSERT INTO salience_weights "
-                                        "(signal_type, weight, "
-                                        "sample_count, success_count) "
-                                        "VALUES (?, 0.5, 1, ?) "
-                                        "ON CONFLICT(signal_type) "
-                                        "DO UPDATE SET "
-                                        "weight = MAX(0.1, "
-                                        "  MIN(1.0, weight + ?)), "
-                                        "sample_count = "
-                                        "  sample_count + 1, "
-                                        "success_count = "
-                                        "  success_count + ?, "
-                                        "updated_at = "
-                                        "  CURRENT_TIMESTAMP",
-                                        (sig,
-                                         1 if adj > 0 else 0,
-                                         adj,
-                                         1 if adj > 0 else 0),
-                                    )
-                                    self._state._conn.commit()
-                        except Exception as e:
-                            logger.debug(
-                                "Salience weight update "
-                                "failed: %s", e)
-
-                except Exception as e:
-                    logger.debug("Semantic conflict detection failed: %s", e)
+            self._detect_and_log_conflict(user, meta, embed_fn, llm_client)
 
             return meta
         except Exception as e:
             logger.debug("SalienceScorer.score failed: %s", e)
             return None
 
-    def sync_turn(self, user_content: str,
-                  assistant_content: str = "") -> dict | None:
-        """DEPRECATED: all unique logic has been merged into pre_sync().
-
-        MemoryManager.sync_all() calls pre_sync() but never calls
-        sync_turn() on the pipeline.  The emotion-modulated engram
-        decay and salience-to-engram initialization that this method
-        contained are now executed inside pre_sync() (GAP 5 fix).
-
-        This method is retained only for backward compatibility with
-        any external code that may call it directly.  It will be
-        removed in a future release.
-        """
-        if not self._salience or not self._engrams or not self._state:
-            return None
+    def _detect_and_log_conflict(
+        self, user: str, meta: dict,
+        embed_fn: 'Any | None', llm_client: 'Any | None',
+    ) -> None:
+        """Run semantic conflict detection and log any detected conflict."""
+        if not (self._reconsolidation
+                and self._reconsolidation._semantic_enabled
+                and self._state):
+            return
         try:
-            result = self._salience.score(user_content)
-            meta: dict = {
-                "emotion_valence": result.emotion,
-                "salience_overall": result.overall,
-            }
+            with self._state._lock:
+                rows = self._state._conn.execute(
+                    "SELECT content FROM schemas "
+                    "ORDER BY confidence DESC LIMIT 20"
+                ).fetchall()
+            existing_contents = [r["content"] for r in rows if r["content"]]
+            if not existing_contents:
+                return
 
-            # Apply emotion-modulated decay
-            decay_affected = self._engrams.apply_decay(
-                self._state,
-                hours_elapsed=1.0,
-                emotional_valence=result.emotion,
-            )
-            meta["decay_affected"] = decay_affected
+            error_score, action = self._reconsolidation.detect_semantic_conflict(
+                user, existing_contents,
+                embed_fn=embed_fn, llm_client=llm_client)
+            meta["semantic_conflict_score"] = error_score
+            meta["semantic_conflict_action"] = action
 
-            # --- Fix 1: Salience-to-Engram: initial strength from salience ---
-            if self._engrams and self._state:
-                try:
-                    sal = result.overall
-                    if sal > 0.5:
-                        init_str = 1.0
-                    elif sal > 0.2:
-                        init_str = 0.7
-                    else:
-                        init_str = 0.4
-                    ref = sha256(user_content.encode()).hexdigest()[:16]
-                    with self._state._lock:
-                        self._state._conn.execute(
-                            "INSERT INTO engram_strengths "
-                            "(memory_ref, provider, strength) "
-                            "VALUES (?, 'salience_init', ?) "
-                            "ON CONFLICT(memory_ref) DO UPDATE SET "
-                            "strength = MAX(strength, excluded.strength), "
-                            "last_accessed = CURRENT_TIMESTAMP",
-                            (ref, init_str),
-                        )
-                        self._state._conn.commit()
-                    meta["initial_engram_strength"] = init_str
-                except Exception as e:
-                    logger.debug("Salience-to-engram init failed: %s", e)
+            if action != "no_conflict" and error_score > 0.2:
+                with self._state._lock:
+                    self._state._conn.execute(
+                        "INSERT INTO reconsolidation_log "
+                        "(memory_ref, old_content, new_content, prediction_error) "
+                        "VALUES (?, ?, ?, ?)",
+                        ("pre_sync",
+                         existing_contents[0][:500],
+                         user[:500],
+                         error_score),
+                    )
+                    self._state._conn.commit()
+                logger.debug(
+                    "Semantic conflict detected: action=%s, score=%.2f",
+                    action, error_score)
 
-            logger.debug(
-                "sync_turn: emotion=%.3f, overall=%.3f, decay_affected=%d",
-                result.emotion, result.overall, decay_affected,
-            )
-            return meta
+            self._update_salience_weights(error_score)
         except Exception as e:
-            logger.debug("MemoryPipeline.sync_turn failed: %s", e)
-            return None
+            logger.debug("Semantic conflict detection failed: %s", e)
 
     def pre_memory_write(
         self, action: str, target: str, content: str, metadata: dict
@@ -2063,19 +2067,14 @@ class MemoryPipeline:
             # Layer 6: record co-activation from search results
             if self._activation and name == "fact_store":
                 query = args.get("query", "")
-                entities = re.findall(r'[A-Z][a-z]{2,}', query)
+                entities = self._extract_entities_from_text(query)
                 if len(entities) >= 2:
                     self._activation.record_co_activation(self._state, entities)
 
             # GAP 1: record co-activation from result content entities
             if self._activation and name == "fact_store":
                 try:
-                    result_entities = re.findall(
-                        r"[A-Z][a-z]{2,}", result)
-                    zh_result_entities = [
-                        e for e in re.findall(r"[一-鿿]{2,6}", result)
-                        if e not in _ZH_STOPWORDS]
-                    result_entities.extend(zh_result_entities)
+                    result_entities = self._extract_entities_from_text(result)
                     if len(result_entities) >= 2:
                         self._activation.record_co_activation(
                             self._state, result_entities, delta=0.05)
@@ -2083,158 +2082,85 @@ class MemoryPipeline:
                     logger.debug(
                         "post_tool_call result co-activation "
                         "failed: %s", e)
-            # GAP 3: 'add' action -- score salience, init engram strength,
-            # record co-activation, append to current episode
+            # GAP 3: 'add' action
             if name == "fact_store" and args.get("action") == "add":
-                content = args.get("content", "")
-                if content:
-                    # 1. Score salience
-                    sal_result = None
-                    if self._salience:
-                        try:
-                            sal_result = self._salience.score(content)
-                        except Exception as e:
-                            logger.debug(
-                                "post_tool_call add salience failed: %s", e)
+                self._handle_fact_add(args, result)
 
-                    # 2. Initialize engram strength proportional to salience
-                    if self._engrams and sal_result:
-                        try:
-                            sal = sal_result.overall
-                            if sal > 0.5:
-                                init_str = 1.0
-                            elif sal > 0.2:
-                                init_str = 0.7
-                            else:
-                                init_str = 0.4
-                            ref = sha256(
-                                content.encode()).hexdigest()[:16]
-                            with self._state._lock:
-                                self._state._conn.execute(
-                                    "INSERT INTO engram_strengths "
-                                    "(memory_ref, provider, strength) "
-                                    "VALUES (?, 'add_action', ?) "
-                                    "ON CONFLICT(memory_ref) "
-                                    "DO UPDATE SET "
-                                    "strength = MAX("
-                                    "  strength, excluded.strength), "
-                                    "last_accessed = "
-                                    "  CURRENT_TIMESTAMP",
-                                    (ref, init_str),
-                                )
-                                self._state._conn.commit()
-                        except Exception as e:
-                            logger.debug(
-                                "post_tool_call add engram init "
-                                "failed: %s", e)
-
-                    # 3. Record co-activation of entities from content
-                    if self._activation:
-                        try:
-                            ents = re.findall(
-                                r'[A-Z][a-z]{2,}', content)
-                            if len(ents) >= 2:
-                                self._activation.record_co_activation(
-                                    self._state, ents)
-                        except Exception as e:
-                            logger.debug(
-                                "post_tool_call add co-activation "
-                                "failed: %s", e)
-
-                    # 4. If episodic is active, append the fact to
-                    #    the current episode
-                    if self._episodic:
-                        try:
-                            fact_id = None
-                            try:
-                                parsed = json.loads(result)
-                                fact_id = parsed.get("fact_id")
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                            if fact_id is not None:
-                                self._episodic.append_fact(fact_id)
-                        except Exception as e:
-                            logger.debug(
-                                "post_tool_call add episodic append "
-                                "failed: %s", e)
-
-                    # 5. Hippocampal index: index the new fact
-                    if self._hippocampal:
-                        try:
-                            fact_id = None
-                            try:
-                                parsed = json.loads(result)
-                                fact_id = parsed.get("fact_id")
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                            if fact_id is not None:
-                                ents = re.findall(
-                                    r"[A-Z][a-z]{2,}", content)
-                                zh_ents = [e for e in re.findall(
-                                    r"[一-鿿]{2,6}", content)
-                                    if e not in _ZH_STOPWORDS]
-                                ents.extend(zh_ents)
-                                self._hippocampal.index_memory(
-                                    str(fact_id), content, entities=ents)
-                        except Exception as e:
-                            logger.debug(
-                                "post_tool_call add hippocampal "
-                                "index failed: %s", e)
-            # GAP 5: fact_feedback -- route user feedback to salience
-            # and adaptive weight systems
+            # GAP 5: fact_feedback
             if name == "fact_feedback":
-                try:
-                    action_val = args.get("action", "")
-                    was_helpful = 1 if action_val == "helpful" else 0
-                    fact_id = args.get("fact_id", 0)
-                    memory_ref = str(fact_id)
-
-                    # 1. Insert feedback record into salience_feedback
-                    with self._state._lock:
-                        self._state._conn.execute(
-                            "INSERT INTO salience_feedback "
-                            "(memory_ref, signal_type, "
-                            " signal_value, was_helpful, "
-                            " was_retrieved) "
-                            "VALUES (?, 'fact_feedback', 1.0, "
-                            "  ?, 1)",
-                            (memory_ref, was_helpful),
-                        )
-                        self._state._conn.commit()
-
-                    # 2. Update salience weights: increase for
-                    #    helpful, decrease for unhelpful
-                    adj = 0.02 if was_helpful else -0.02
-                    for sig in ("emotion", "novelty",
-                                "importance"):
-                        with self._state._lock:
-                            self._state._conn.execute(
-                                "INSERT INTO salience_weights "
-                                "(signal_type, weight, "
-                                " sample_count, success_count) "
-                                "VALUES (?, 0.5, 1, ?) "
-                                "ON CONFLICT(signal_type) "
-                                "DO UPDATE SET "
-                                "weight = MAX(0.1, "
-                                "  MIN(1.0, weight + ?)), "
-                                "sample_count = "
-                                "  sample_count + 1, "
-                                "success_count = "
-                                "  success_count + ?, "
-                                "updated_at = "
-                                "  CURRENT_TIMESTAMP",
-                                (sig,
-                                 1 if adj > 0 else 0,
-                                 adj,
-                                 1 if adj > 0 else 0),
-                            )
-                            self._state._conn.commit()
-                except Exception as e:
-                    logger.debug(
-                        "post_tool_call fact_feedback "
-                        "failed: %s", e)
+                self._handle_fact_feedback(args)
         except Exception as e:
             logger.debug("Pipeline post_tool_call failed: %s", e)
+
+    def _handle_fact_add(self, args: dict, result: str) -> None:
+        """Process fact_store add action: salience, engram, co-activation, episodic."""
+        content = args.get('content', '')
+        if not content:
+            return
+        # 1. Score salience and init engram (consolidated)
+        self._score_and_record_salience(content, 'add_action')
+
+        # 2. Record co-activation of entities from content
+        if self._activation:
+            try:
+                ents = self._extract_entities_from_text(content)
+                if len(ents) >= 2:
+                    self._activation.record_co_activation(
+                        self._state, ents)
+            except Exception as e:
+                logger.debug('post_tool_call add co-activation failed: %s', e)
+
+        # 3. Parse fact_id from result
+        fact_id = self._parse_fact_id(result)
+        if fact_id is None:
+            return
+
+        # 4. Append to current episode
+        if self._episodic:
+            try:
+                self._episodic.append_fact(fact_id)
+            except Exception as e:
+                logger.debug('post_tool_call add episodic append failed: %s', e)
+
+        # 5. Hippocampal index
+        if self._hippocampal:
+            try:
+                ents = self._extract_entities_from_text(content)
+                self._hippocampal.index_memory(
+                    str(fact_id), content, entities=ents)
+            except Exception as e:
+                logger.debug('post_tool_call add hippocampal index failed: %s', e)
+
+    def _handle_fact_feedback(self, args: dict) -> None:
+        """Process fact_feedback: record feedback and update salience weights."""
+        action_val = args.get('action', '')
+        was_helpful = 1 if action_val == 'helpful' else 0
+        fact_id = args.get('fact_id', 0)
+        memory_ref = str(fact_id)
+
+        with self._state._lock:
+            self._state._conn.execute(
+                "INSERT INTO salience_feedback "
+                "(memory_ref, signal_type, "
+                " signal_value, was_helpful, "
+                " was_retrieved) "
+                "VALUES (?, 'fact_feedback', 1.0, ?, 1)",
+                (memory_ref, was_helpful),
+            )
+            self._state._conn.commit()
+
+        adj = 0.02 if was_helpful else -0.02
+        self._update_salience_weights(-adj)
+
+    @staticmethod
+    def _parse_fact_id(result: str) -> 'int | None':
+        """Extract fact_id from a JSON tool result string."""
+        try:
+            parsed = json.loads(result)
+            return parsed.get('fact_id')
+        except (json.JSONDecodeError, TypeError):
+            return None
+
     def post_session_end(self, messages: list) -> None:
         """Consolidation, engram decay, bridge discovery, dreaming."""
         if not self._state:
@@ -2296,49 +2222,41 @@ class MemoryPipeline:
             if self._dreaming:
                 try:
                     if self._dreaming.should_dream():
-                        # Fix 8: Dreaming to Schemas and Predictions:
-                        # wrap dream_cycle with post-processing that
-                        # updates schema confidences and adds dream
-                        # hypotheses to pending predictions
-                        def _dream_with_postprocessing():
-                            try:
-                                dr = self._dreaming.dream_cycle(
-                                    self._session_id)
-                                # Boost schema confidences after replay
-                                if self._state:
-                                    with self._state._lock:
-                                        self._state._conn.execute(
-                                            "UPDATE schemas SET "
-                                            "confidence = MIN(1.0, "
-                                            "  confidence + 0.02) "
-                                            "WHERE confidence > 0.5"
-                                        )
-                                        self._state._conn.commit()
-                                # Add dream hypotheses as predictions
-                                if self._feedback and dr:
-                                    hypo = getattr(
-                                        dr, "hypotheses", [])
-                                    if hypo:
-                                        with self._feedback._lock:
-                                            self._feedback \
-                                                ._pending_predictions \
-                                                .extend(
-                                                    [f"Dream: {h}"
-                                                     for h
-                                                     in hypo[:3]])
-                            except Exception as e:
-                                logger.debug(
-                                    "Dream post-processing "
-                                    "failed: %s", e)
                         import threading as _t
                         _t.Thread(
-                            target=_dream_with_postprocessing,
+                            target=self._run_dream_postprocessing,
                             daemon=True,
                         ).start()
                 except Exception as e:
                     logger.debug("Dream cycle failed: %s", e)
         except Exception as e:
             logger.debug("Pipeline post_session_end failed: %s", e)
+
+    def _run_dream_postprocessing(self) -> None:
+        """Run dream cycle with post-processing (schema boost + predictions).
+
+        Extracted from post_session_end for readability.  Runs in a
+        daemon thread: boosts schema confidences after replay and adds
+        dream hypotheses as pending predictions.
+        """
+        try:
+            dr = self._dreaming.dream_cycle(self._session_id)
+            if self._state:
+                with self._state._lock:
+                    self._state._conn.execute(
+                        "UPDATE schemas SET "
+                        "confidence = MIN(1.0, confidence + 0.02) "
+                        "WHERE confidence > 0.5"
+                    )
+                    self._state._conn.commit()
+            if self._feedback and dr:
+                hypo = getattr(dr, "hypotheses", [])
+                if hypo:
+                    with self._feedback._lock:
+                        self._feedback._pending_predictions.extend(
+                            [f"Dream: {h}" for h in hypo[:3]])
+        except Exception as e:
+            logger.debug("Dream post-processing failed: %s", e)
 
     def post_session_switch(self, new_id: str, **kwargs) -> None:
         """Propagate session switch to pipeline internals.
