@@ -12,6 +12,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_azure_anthropic_endpoint,
     _is_oauth_token,
+    _patch_anthropic_sse_decoder,
     _refresh_oauth_token,
     _to_plain_data,
     _write_claude_code_credentials,
@@ -27,6 +28,28 @@ from agent.anthropic_adapter import (
     run_oauth_setup_token,
 )
 from agent.transports import get_transport
+
+
+def _reset_anthropic_sse_decoder_patch():
+    from anthropic._streaming import SSEDecoder
+
+    original_iter_bytes = getattr(SSEDecoder, "_hermes_original_iter_bytes", None)
+    original_aiter_bytes = getattr(SSEDecoder, "_hermes_original_aiter_bytes", None)
+    if original_iter_bytes is not None:
+        SSEDecoder.iter_bytes = original_iter_bytes
+    if original_aiter_bytes is not None:
+        SSEDecoder.aiter_bytes = original_aiter_bytes
+    for attr in (
+        "_hermes_empty_data_flush_patch_applied",
+        "_hermes_original_iter_bytes",
+        "_hermes_original_aiter_bytes",
+    ):
+        if hasattr(SSEDecoder, attr):
+            delattr(SSEDecoder, attr)
+
+
+def _sse_events_to_tuples(events):
+    return [(event.event, event.data) for event in events]
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +82,26 @@ class TestIsOAuthToken:
 
 
 class TestBuildAnthropicClient:
+    def test_patches_sse_decoder_for_static_key_client(self):
+        with patch("agent.anthropic_adapter._patch_anthropic_sse_decoder") as mock_patch:
+            with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+                build_anthropic_client("sk-ant...hing")
+                mock_patch.assert_called_once_with(mock_sdk)
+
+    def test_patches_sse_decoder_for_callable_token_client(self):
+        with patch("agent.anthropic_adapter._patch_anthropic_sse_decoder") as mock_patch:
+            with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+                token_provider = lambda: "fresh-entra-token"
+                build_anthropic_client(
+                    token_provider,
+                    base_url="https://example.services.ai.azure.com/models/anthropic",
+                )
+                # build_anthropic_client patches before dispatching to the
+                # callable-token helper; the helper patches again after its own
+                # SDK check.  The patch itself is idempotent.
+                assert mock_patch.call_count == 2
+                mock_patch.assert_any_call(mock_sdk)
+
     def test_setup_token_uses_auth_token(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client("sk-ant-oat01-" + "x" * 60)
@@ -191,6 +234,71 @@ class TestBuildAnthropicClient:
             # Azure keeps the 1M-context beta (it's not MiniMax).
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" in betas
+
+
+class TestPatchAnthropicSSEDecoder:
+    def setup_method(self):
+        _reset_anthropic_sse_decoder_patch()
+
+    def teardown_method(self):
+        _reset_anthropic_sse_decoder_patch()
+
+    def test_iter_bytes_drops_named_empty_data_events_and_keeps_valid_data(self):
+        from anthropic._streaming import SSEDecoder
+
+        _patch_anthropic_sse_decoder()
+
+        chunks = [
+            b"event: content_block_delta\n\n",
+            b'event: content_block_delta\ndata: {"type":"text_delta","text":"hi"}\n\n',
+        ]
+        events = list(SSEDecoder().iter_bytes(iter(chunks)))
+
+        assert _sse_events_to_tuples(events) == [
+            ("content_block_delta", '{"type":"text_delta","text":"hi"}')
+        ]
+
+    def test_iter_bytes_preserves_comments_and_data_only_events(self):
+        from anthropic._streaming import SSEDecoder
+
+        _patch_anthropic_sse_decoder()
+
+        chunks = [
+            b": ping\n\n",
+            b'data: {"type":"message_start"}\n\n',
+        ]
+        events = list(SSEDecoder().iter_bytes(iter(chunks)))
+
+        assert _sse_events_to_tuples(events) == [
+            (None, '{"type":"message_start"}')
+        ]
+
+    def test_patch_is_idempotent(self):
+        from anthropic._streaming import SSEDecoder
+
+        _patch_anthropic_sse_decoder()
+        first_iter_bytes = SSEDecoder.iter_bytes
+        first_aiter_bytes = SSEDecoder.aiter_bytes
+
+        _patch_anthropic_sse_decoder()
+
+        assert SSEDecoder.iter_bytes is first_iter_bytes
+        assert SSEDecoder.aiter_bytes is first_aiter_bytes
+
+    @pytest.mark.asyncio
+    async def test_aiter_bytes_drops_named_empty_data_events_and_keeps_valid_data(self):
+        from anthropic._streaming import SSEDecoder
+
+        async def chunks():
+            yield b"event: content_block_delta\n\n"
+            yield b'event: content_block_delta\ndata: {"type":"text_delta","text":"hi"}\n\n'
+
+        _patch_anthropic_sse_decoder()
+        events = [event async for event in SSEDecoder().aiter_bytes(chunks())]
+
+        assert _sse_events_to_tuples(events) == [
+            ("content_block_delta", '{"type":"text_delta","text":"hi"}')
+        ]
 
 
 class TestReadClaudeCodeCredentials:
@@ -488,6 +596,13 @@ class TestResolveWithRefresh:
 
 
 class TestRunOauthSetupToken:
+    @pytest.fixture(autouse=True)
+    def no_keychain(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
+
     def test_raises_when_claude_not_installed(self, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda _: None)
         with pytest.raises(FileNotFoundError, match="claude.*CLI.*not installed"):

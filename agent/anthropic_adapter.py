@@ -55,6 +55,75 @@ def _get_anthropic_sdk():
 
 logger = logging.getLogger(__name__)
 
+_ANTHROPIC_SSE_DECODER_PATCHED_ATTR = "_hermes_empty_data_flush_patch_applied"
+_ORIGINAL_ANTHROPIC_SSE_ITER_BYTES_ATTR = "_hermes_original_iter_bytes"
+_ORIGINAL_ANTHROPIC_SSE_AITER_BYTES_ATTR = "_hermes_original_aiter_bytes"
+
+
+def _is_empty_data_sse_flush(sse) -> bool:
+    """Return True for SDK SSE events that have an event name but no data.
+
+    Some reverse-proxied Anthropic-wire endpoints intermittently emit an
+    empty-data event flush (for example ``event: content_block_delta`` followed
+    by a blank line before the data line arrives).  Anthropic's SDK decodes that
+    as a complete event with ``data == \"\"`` and then attempts to JSON-decode
+    it downstream, raising ``JSONDecodeError: Expecting value``.  Dropping only
+    named empty-data events preserves normal data-bearing events and anonymous
+    keepalives/comments.
+    """
+    return bool(getattr(sse, "event", None)) and getattr(sse, "data", None) == ""
+
+
+def _patch_anthropic_sse_decoder(_anthropic_sdk=None) -> None:
+    """Drop spurious named SSE events with empty data from Anthropic SDK streams.
+
+    The patch is intentionally narrow, idempotent, and best-effort.  If the SDK
+    internals move in a future release, Hermes logs a warning and continues
+    unpatched rather than preventing client construction.
+    """
+    try:
+        if _anthropic_sdk is None:
+            _anthropic_sdk = _get_anthropic_sdk()
+        if _anthropic_sdk is None:
+            return
+
+        try:
+            from anthropic._streaming import SSEDecoder
+        except Exception:
+            streaming = getattr(_anthropic_sdk, "_streaming", None)
+            SSEDecoder = getattr(streaming, "SSEDecoder", None)
+        if SSEDecoder is None:
+            raise AttributeError("anthropic._streaming.SSEDecoder not found")
+
+        if getattr(SSEDecoder, _ANTHROPIC_SSE_DECODER_PATCHED_ATTR, False):
+            return
+
+        original_iter_bytes = getattr(SSEDecoder, "iter_bytes", None)
+        original_aiter_bytes = getattr(SSEDecoder, "aiter_bytes", None)
+        if original_iter_bytes is None or original_aiter_bytes is None:
+            raise AttributeError("SSEDecoder.iter_bytes/aiter_bytes not found")
+
+        def iter_bytes(self, iterator):
+            for sse in original_iter_bytes(self, iterator):
+                if _is_empty_data_sse_flush(sse):
+                    continue
+                yield sse
+
+        async def aiter_bytes(self, iterator):
+            async for sse in original_aiter_bytes(self, iterator):
+                if _is_empty_data_sse_flush(sse):
+                    continue
+                yield sse
+
+        setattr(SSEDecoder, _ORIGINAL_ANTHROPIC_SSE_ITER_BYTES_ATTR, original_iter_bytes)
+        setattr(SSEDecoder, _ORIGINAL_ANTHROPIC_SSE_AITER_BYTES_ATTR, original_aiter_bytes)
+        setattr(SSEDecoder, "iter_bytes", iter_bytes)
+        setattr(SSEDecoder, "aiter_bytes", aiter_bytes)
+        setattr(SSEDecoder, _ANTHROPIC_SSE_DECODER_PATCHED_ATTR, True)
+    except Exception as exc:
+        logger.warning("Failed to patch Anthropic SDK SSE decoder: %s", exc)
+
+
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # Hermes effort → Anthropic adaptive-thinking effort (output_config.effort).
 # Anthropic exposes 5 levels on 4.7+: low, medium, high, xhigh, max.
@@ -597,6 +666,7 @@ def _build_anthropic_client_with_bearer_hook(
             "The 'anthropic' package is required for Azure Foundry Anthropic-style "
             "endpoints with Entra ID auth. Install with: pip install 'anthropic>=0.39.0'"
         )
+    _patch_anthropic_sse_decoder(_anthropic_sdk)
 
     normalize_proxy_env_vars()
 
@@ -681,6 +751,7 @@ def build_anthropic_client(
             "The 'anthropic' package is required for the Anthropic provider. "
             "Install it with: pip install 'anthropic>=0.39.0'"
         )
+    _patch_anthropic_sse_decoder(_anthropic_sdk)
 
     # Callable api_key → Entra ID bearer provider path. Delegated to a
     # helper so the existing static-key code below stays unchanged.
