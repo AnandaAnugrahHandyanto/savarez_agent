@@ -217,6 +217,7 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "restart_requested": False,
         "active_agents": 0,
         "platforms": {},
+        "cron_ticker": None,
         "updated_at": _utc_now_iso(),
     })
     return payload
@@ -543,6 +544,37 @@ def write_runtime_status(
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
 
+    _write_json_file(path, payload)
+
+
+def write_cron_ticker_status(
+    *,
+    state: Any = _UNSET,
+    interval_seconds: Any = _UNSET,
+    tick_count: Any = _UNSET,
+    last_tick_at: Any = _UNSET,
+    last_error: Any = _UNSET,
+) -> None:
+    """Persist cron ticker health into gateway_state.json (best-effort).
+
+    Read-modify-write without a cross-thread lock — the same benign
+    lost-update window every ``write_runtime_status`` caller already
+    accepts. The in-process monotonic heartbeat, not this file, is the
+    authoritative liveness signal, so callers must never rely on this raising.
+    """
+    path = _get_runtime_status_path()
+    payload = _read_json_file(path) or _build_runtime_status_record()
+    block = payload.get("cron_ticker") or {}
+    updates = {
+        "state": state,
+        "interval_seconds": interval_seconds,
+        "tick_count": tick_count,
+        "last_tick_at": last_tick_at,
+        "last_error": last_error,
+    }
+    block.update({k: v for k, v in updates.items() if v is not _UNSET})
+    block["updated_at"] = _utc_now_iso()
+    payload["cron_ticker"] = block
     _write_json_file(path, payload)
 
 

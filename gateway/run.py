@@ -18643,6 +18643,25 @@ def _run_planned_stop_watcher(
         stop_event.wait(poll_interval)
 
 
+_cron_last_tick_monotonic: float = 0.0
+_cron_heartbeat_lock = threading.Lock()
+
+
+def _stamp_cron_heartbeat() -> None:
+    """Update the in-process liveness signal (authoritative for the supervisor)."""
+    global _cron_last_tick_monotonic
+    with _cron_heartbeat_lock:
+        _cron_last_tick_monotonic = time.monotonic()
+
+
+def _cron_heartbeat_age() -> Optional[float]:
+    """Seconds since the last tick, or None if the ticker has never stamped."""
+    with _cron_heartbeat_lock:
+        if not _cron_last_tick_monotonic:
+            return None
+        return time.monotonic() - _cron_last_tick_monotonic
+
+
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
     """
     Background thread that ticks the cron scheduler at a regular interval.
