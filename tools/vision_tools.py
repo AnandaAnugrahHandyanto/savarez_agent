@@ -692,8 +692,9 @@ async def vision_analyze_tool(
         Exception: If download fails, analysis fails, or API key is not set
         
     Note:
-        - For URLs, temporary images are stored under $HERMES_HOME/cache/vision/ and cleaned up
-        - For local file paths, the file is used directly and NOT deleted
+        - The source (local path, file://, http(s), data:, or a Docker-container
+          path) is resolved to bytes by ``tools.image_source``; any download
+          temp file is created and cleaned up there.
         - Supports common image formats (JPEG, PNG, GIF, WebP, etc.)
     """
     if not isinstance(user_prompt, str):
