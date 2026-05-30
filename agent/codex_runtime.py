@@ -265,6 +265,38 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
+        except TypeError as exc:
+            err_text = str(exc)
+            if "NoneType" not in err_text or "object is not iterable" not in err_text:
+                raise
+            if collected_output_items:
+                logger.warning(
+                    "Codex stream parser saw response.output=None; salvaging %d collected output items",
+                    len(collected_output_items),
+                )
+                return SimpleNamespace(
+                    status="completed",
+                    output=list(collected_output_items),
+                )
+            if agent._codex_streamed_text_parts and not has_tool_calls:
+                assembled = "".join(agent._codex_streamed_text_parts)
+                logger.warning(
+                    "Codex stream parser saw response.output=None; synthesizing output from %d text deltas (%d chars)",
+                    len(agent._codex_streamed_text_parts), len(assembled),
+                )
+                return SimpleNamespace(
+                    status="completed",
+                    output=[SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=assembled)],
+                    )],
+                )
+            logger.warning(
+                "Codex stream parser saw response.output=None but no streamed output was collected; falling back to create(stream=True)"
+            )
+            return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
