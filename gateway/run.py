@@ -2780,7 +2780,7 @@ class GatewayRunner:
     # watcher when a retryable failure recurs past a threshold, and by the
     # /platform pause|resume slash command for manual control.
     # ------------------------------------------------------------------
-    def _pause_failed_platform(self, platform, *, reason: str = "") -> None:
+    def _pause_failed_platform(self, platform, *, reason: str = "", manual: bool = False) -> None:
         """Mark a queued platform as paused — keep it in ``_failed_platforms``
         but stop the reconnect watcher from hammering it.
 
@@ -2788,6 +2788,10 @@ class GatewayRunner:
         retryable failures, and by ``/platform pause <name>`` for manual
         intervention.  Paused platforms are surfaced in ``/platform list``
         and resumed with ``/platform resume <name>``.
+
+        Auto-paused platforms (``manual=False``) are eligible for periodic
+        auto-recovery attempts by the reconnect watcher.  Manually paused
+        platforms require an explicit ``/platform resume``.
         """
         info = getattr(self, "_failed_platforms", {}).get(platform)
         if info is None:
@@ -2795,7 +2799,9 @@ class GatewayRunner:
         if info.get("paused"):
             return
         info["paused"] = True
+        info["pause_mode"] = "manual" if manual else "auto"
         info["pause_reason"] = reason or "auto-paused after repeated failures"
+        info["paused_at"] = time.monotonic()
         # Push next_retry far enough out that even if "paused" is missed
         # by a stale code path, the watcher won't fire on it.
         info["next_retry"] = float("inf")
@@ -2828,6 +2834,8 @@ class GatewayRunner:
             return False
         info["paused"] = False
         info.pop("pause_reason", None)
+        info.pop("pause_mode", None)
+        info.pop("paused_at", None)
         info["attempts"] = 0
         info["next_retry"] = time.monotonic()  # retry on next watcher tick
         try:
@@ -5874,6 +5882,7 @@ class GatewayRunner:
         """
         _BACKOFF_CAP = 300  # 5 minutes max between retries
         _PAUSE_AFTER_FAILURES = 10  # circuit-breaker threshold
+        _AUTO_RESUME_INTERVAL = 300  # 5 minutes between auto-recovery attempts
 
         await asyncio.sleep(10)  # initial delay — let startup finish
         while self._running:
@@ -5890,10 +5899,29 @@ class GatewayRunner:
                 if not self._running:
                     return
                 info = self._failed_platforms[platform]
-                # Skip paused platforms entirely — they need explicit
-                # /platform resume to come back.
+                # Manually paused platforms need explicit /platform resume.
+                # Auto-paused platforms (circuit breaker) get periodic
+                # recovery attempts so transient failures like DNS outages
+                # self-heal without manual intervention.
                 if info.get("paused"):
-                    continue
+                    if info.get("pause_mode") == "manual":
+                        continue
+                    # Auto-paused: check if it's time for a recovery attempt
+                    paused_at = info.get("paused_at", 0)
+                    if now - paused_at < _AUTO_RESUME_INTERVAL:
+                        continue
+                    logger.info(
+                        "Auto-recovery: attempting to reconnect %s "
+                        "(paused for %ds)...",
+                        platform.value, int(now - paused_at),
+                    )
+                    # Reset for a single retry attempt; if it fails,
+                    # _pause_failed_platform will set paused_at again.
+                    info["paused"] = False
+                    info.pop("pause_mode", None)
+                    info.pop("pause_reason", None)
+                    info["attempts"] = 0
+                    info["next_retry"] = now  # try immediately
                 if now < info["next_retry"]:
                     continue  # not time yet
 
@@ -10175,7 +10203,7 @@ class GatewayRunner:
                     )
                 if failed[platform].get("paused"):
                     return f"{platform.value} is already paused."
-                self._pause_failed_platform(platform, reason="paused via /platform pause")
+                self._pause_failed_platform(platform, reason="paused via /platform pause", manual=True)
                 return (
                     f"✓ {platform.value} paused. "
                     f"Resume with `/platform resume {platform.value}` or "

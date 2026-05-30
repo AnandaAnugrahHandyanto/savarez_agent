@@ -350,6 +350,7 @@ class TestPlatformReconnectWatcher:
             "attempts": 10,
             "next_retry": time.monotonic() - 1,  # would normally retry now
             "paused": True,
+            "pause_mode": "manual",
             "pause_reason": "paused via /platform pause",
         }
 
@@ -713,4 +714,213 @@ class TestPlatformSlashCommand:
         runner = _make_runner()
         out = await runner._handle_platform_command(self._make_event("/platform"))
         assert "Gateway platforms" in out
+
+    def test_pause_records_mode_auto(self):
+        """Auto-pause (circuit breaker) sets pause_mode='auto'."""
+        runner = _make_runner()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="t"),
+            "attempts": 10,
+            "next_retry": time.monotonic() + 30,
+        }
+        runner._pause_failed_platform(Platform.TELEGRAM, reason="circuit breaker")
+        info = runner._failed_platforms[Platform.TELEGRAM]
+        assert info["paused"] is True
+        assert info["pause_mode"] == "auto"
+        assert "paused_at" in info
+
+    def test_pause_records_mode_manual(self):
+        """Manual pause (/platform pause) sets pause_mode='manual'."""
+        runner = _make_runner()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="t"),
+            "attempts": 3,
+            "next_retry": time.monotonic() + 30,
+        }
+        runner._pause_failed_platform(Platform.TELEGRAM, reason="user action", manual=True)
+        info = runner._failed_platforms[Platform.TELEGRAM]
+        assert info["paused"] is True
+        assert info["pause_mode"] == "manual"
+        assert "paused_at" in info
+
+
+class TestAutoRecovery:
+    """Tests for auto-recovery of auto-paused platforms."""
+
+    @pytest.mark.asyncio
+    async def test_auto_paused_platform_recovers_after_interval(self):
+        """An auto-paused platform should be retried after _AUTO_RESUME_INTERVAL."""
+        runner = _make_runner()
+        platform_config = PlatformConfig(enabled=True, token="test")
+        now = time.monotonic()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 10,
+            "next_retry": float("inf"),
+            "paused": True,
+            "pause_mode": "auto",
+            "pause_reason": "circuit breaker",
+            "paused_at": now - 301,  # paused 301 seconds ago (> 300s interval)
+        }
+
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter") as mock_create:
+            mock_adapter = AsyncMock()
+            mock_adapter.has_fatal_error = False
+            mock_adapter.fatal_error_retryable = True
+            mock_create.return_value = mock_adapter
+
+            with patch.object(runner, "_connect_adapter_with_timeout", return_value=True):
+                async def run_one_iteration():
+                    runner._running = True
+                    call_count = 0
+
+                    async def fake_sleep(n):
+                        nonlocal call_count
+                        call_count += 1
+                        if call_count > 1:
+                            runner._running = False
+                        await real_sleep(0)
+
+                    with patch("asyncio.sleep", side_effect=fake_sleep):
+                        with patch.object(runner, "_sync_voice_mode_state_to_adapter"):
+                            with patch("gateway.channel_directory.build_channel_directory", new_callable=AsyncMock):
+                                await runner._platform_reconnect_watcher()
+
+                await run_one_iteration()
+
+        # Platform should be removed from failed queue (successfully reconnected)
+        assert Platform.TELEGRAM not in runner._failed_platforms
+        mock_create.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_manually_paused_platform_stays_paused(self):
+        """A manually paused platform should NOT be auto-recovered."""
+        runner = _make_runner()
+        platform_config = PlatformConfig(enabled=True, token="test")
+        now = time.monotonic()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 10,
+            "next_retry": float("inf"),
+            "paused": True,
+            "pause_mode": "manual",
+            "pause_reason": "paused via /platform pause",
+            "paused_at": now - 600,  # paused 10 minutes ago
+        }
+
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter") as mock_create:
+            async def run_one_iteration():
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+            await run_one_iteration()
+
+        # Platform should stay paused
+        assert Platform.TELEGRAM in runner._failed_platforms
+        assert runner._failed_platforms[Platform.TELEGRAM]["paused"] is True
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_auto_paused_not_recovered_before_interval(self):
+        """Auto-paused platform should NOT be recovered before _AUTO_RESUME_INTERVAL."""
+        runner = _make_runner()
+        platform_config = PlatformConfig(enabled=True, token="test")
+        now = time.monotonic()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 10,
+            "next_retry": float("inf"),
+            "paused": True,
+            "pause_mode": "auto",
+            "pause_reason": "circuit breaker",
+            "paused_at": now - 100,  # only 100 seconds ago (< 300s interval)
+        }
+
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter") as mock_create:
+            async def run_one_iteration():
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+            await run_one_iteration()
+
+        # Platform should stay paused (not enough time elapsed)
+        assert Platform.TELEGRAM in runner._failed_platforms
+        assert runner._failed_platforms[Platform.TELEGRAM]["paused"] is True
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_auto_recovery_failure_repauses(self):
+        """If auto-recovery attempt fails, platform stays in retry queue."""
+        runner = _make_runner()
+        platform_config = PlatformConfig(enabled=True, token="test")
+        now = time.monotonic()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 10,
+            "next_retry": float("inf"),
+            "paused": True,
+            "pause_mode": "auto",
+            "pause_reason": "circuit breaker",
+            "paused_at": now - 301,
+        }
+
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter") as mock_create:
+            mock_adapter = AsyncMock()
+            mock_adapter.has_fatal_error = True
+            mock_adapter.fatal_error_retryable = True
+            mock_adapter.fatal_error_message = "connection failed"
+            mock_create.return_value = mock_adapter
+
+            with patch.object(runner, "_connect_adapter_with_timeout", return_value=False):
+                async def run_one_iteration():
+                    runner._running = True
+                    call_count = 0
+
+                    async def fake_sleep(n):
+                        nonlocal call_count
+                        call_count += 1
+                        if call_count > 1:
+                            runner._running = False
+                        await real_sleep(0)
+
+                    with patch("asyncio.sleep", side_effect=fake_sleep):
+                        await runner._platform_reconnect_watcher()
+
+                await run_one_iteration()
+
+        # Platform should stay in retry queue (auto-recovery failed, then 1 attempt
+        # doesn't trigger circuit breaker at _PAUSE_AFTER_FAILURES=10)
+        assert Platform.TELEGRAM in runner._failed_platforms
+        # The attempt counter was reset to 0 and then incremented to 1
+        info = runner._failed_platforms[Platform.TELEGRAM]
+        assert info["attempts"] == 1
+        # Not paused yet (1 < 10), but will be retried with backoff
 
