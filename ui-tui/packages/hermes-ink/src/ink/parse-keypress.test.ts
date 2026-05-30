@@ -146,12 +146,23 @@ describe('fragmented SGR mouse recovery', () => {
       'M6M35;220;56M6M35;218;56M169;48M;157;47M;44M20;43M79;40M78;40M0M7M35;49;41M48;41M;47;40M9;15;32M[I;31M5;211;26M35;211;25M7M;220;1MM0M09;25M24M23M3;22MM18M99;26M32MM38M63;44M47MM1;51M M4M54M'
     const [events] = parseMultipleKeypresses(INITIAL_STATE, blob)
 
-    expect(events.filter(e => e.kind === 'key' && !(e as { isPasted?: boolean }).isPasted)).toEqual([])
+    expect(events.filter(e => e.kind === 'key' && !e.isPasted)).toEqual([])
   })
 
   it('keeps plain prose that only contains scattered M and m letters', () => {
     const [[key]] = parseMultipleKeypresses(INITIAL_STATE, 'Mmm MMM mmm yummy')
 
     expect(key).toMatchObject({ kind: 'key', sequence: 'Mmm MMM mmm yummy' })
+  })
+
+  it('swallows noise wholesale even when it contains intact recoverable fragments', () => {
+    // A noise blob can carry a few intact `<b;c;r M` fragments amid the chewed
+    // shards. The whole-text noise check must run BEFORE fragment recovery —
+    // otherwise parseTextWithSgrMouseFragments returns non-null and emits a
+    // pile of recovered mouse events instead of dropping the blob wholesale.
+    const blob = '<35;159;11M;44M20;43M0M7M<35;124;26M;47;40M9;15;32M5M2M'
+    const [events] = parseMultipleKeypresses(INITIAL_STATE, blob)
+
+    expect(events).toEqual([])
   })
 })

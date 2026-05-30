@@ -296,18 +296,21 @@ export function parseMultipleKeypresses(
     } else if (token.type === 'text') {
       if (inPaste) {
         pasteBuffer += token.value
+      } else if (MOUSE_BURST_NOISE_RE.test(token.value)) {
+        // Fully degraded mouse-burst noise — a heavy render (e.g. a sudo /
+        // secret prompt repaint) blocked the event loop past App's 50ms flush
+        // watchdog, so a long burst of SGR mouse reports arrived as text with
+        // prefixes AND coordinate digits chewed off. Checked BEFORE fragment
+        // recovery: a noise blob can still contain a few intact `<b;c;r M`
+        // fragments, and parseTextWithSgrMouseFragments would then return
+        // non-null and emit a pile of recovered mouse events instead of
+        // dropping the blob wholesale. Swallow it here so it never leaks into
+        // the composer (and we skip the extra fragment-recovery work mid-stall).
       } else {
         const mouseFragments = parseTextWithSgrMouseFragments(token.value)
 
         if (mouseFragments) {
           keys.push(...mouseFragments)
-        } else if (MOUSE_BURST_NOISE_RE.test(token.value)) {
-          // Fully degraded mouse-burst noise — a heavy render (e.g. a sudo /
-          // secret prompt repaint) blocked the event loop past App's 50ms
-          // flush watchdog, so a long burst of SGR mouse reports arrived as
-          // text with prefixes AND coordinate digits chewed off. The shards are
-          // too mangled for the fragment recovery above; swallow the whole blob
-          // so it never leaks into the composer and locks the user out.
         } else if (/^\[M[\x60-\x7f][\x20-\uffff]{2}$/.test(token.value)) {
           // Orphaned X10 wheel tail (fullscreen only — mouse tracking is off
           // otherwise). A heavy render blocked the event loop past App's 50ms
