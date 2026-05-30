@@ -36,12 +36,151 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import math
+import re
 import sqlite3
 import threading
+from collections import deque
+from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Layer 1: SalienceScorer (embedded — no external dependencies)
+# ---------------------------------------------------------------------------
+
+_EMOTION_PATTERNS: list[tuple[re.Pattern, float]] = [
+    (re.compile(r"[!！]{2,}"), 0.6),
+    (re.compile(r"\b(urgent|critical|emergency|broken|crash|bug|fail)\b", re.I), 0.5),
+    (re.compile(r"\b(down|outage|corrupt|overload|timeout|deadlock)\b", re.I), 0.45),
+    (re.compile(r"\b(love|hate|amazing|terrible|awesome|awful)\b", re.I), 0.3),
+    (re.compile(r"\b(worried|excited|frustrated|angry|happy|sad)\b", re.I), 0.35),
+    (re.compile(r"\b(important|crucial|vital|essential|key)\b", re.I), 0.4),
+]
+
+_IMPORTANCE_PATTERNS: list[tuple[re.Pattern, float]] = [
+    (re.compile(r"\b(decided|decision|agreed|confirmed|final)\b", re.I), 0.7),
+    (re.compile(r"\b(requirement|spec|specification|constraint)\b", re.I), 0.6),
+    (re.compile(r"\b(deploy|release|production|launch)\b", re.I), 0.6),
+    (re.compile(r"\b(architecture|design|refactor|migrat)\b", re.I), 0.5),
+    (re.compile(r"\b(remember|note|important|don't forget)\b", re.I), 0.8),
+    (re.compile(r"\b(prefer|always|never|usually)\b", re.I), 0.5),
+    (re.compile(r"\b(bug|issue|error|problem)\b", re.I), 0.4),
+]
+
+_TRIVIAL_PATTERNS: list[tuple[re.Pattern, float]] = [
+    (re.compile(r"^(hi|hello|hey|thanks|ok|yes|no|sure)\s*[.!?]?\s*$", re.I), 0.9),
+    (re.compile(r"^(good morning|good night|bye|see you)", re.I), 0.8),
+    (re.compile(r"^(what time|what date|weather)", re.I), 0.5),
+]
+
+
+@dataclass
+class SalienceResult:
+    """Multi-dimensional salience score for a message."""
+    overall: float = 0.0
+    emotion: float = 0.0
+    novelty: float = 0.5
+    importance: float = 0.0
+    repetition_penalty: float = 1.0
+    is_trivial: bool = False
+
+
+@dataclass
+class _RepetitionDetector:
+    """Detects topic repetition using content hashing (F3 power-law penalty)."""
+    window_size: int = 50
+    _recent: deque = field(default_factory=lambda: deque(maxlen=50))
+    _topic_counts: dict[str, int] = field(default_factory=dict)
+
+    def _fuzzy_bucket(self, text: str) -> str:
+        words = [w for w in re.sub(r"[^\w\s]", "", text.lower()).split() if len(w) > 2]
+        return " ".join(words[:5])
+
+    def observe(self, text: str) -> float:
+        bucket = self._fuzzy_bucket(text)
+        if not bucket:
+            return 1.0
+        self._topic_counts[bucket] = self._topic_counts.get(bucket, 0) + 1
+        self._recent.append(bucket)
+        if len(self._recent) == self._recent.maxlen or len(self._topic_counts) > self._recent.maxlen * 2:
+            window_counts: dict[str, int] = {}
+            for b in self._recent:
+                window_counts[b] = window_counts.get(b, 0) + 1
+            for topic in list(self._topic_counts):
+                if topic not in window_counts:
+                    del self._topic_counts[topic]
+                else:
+                    self._topic_counts[topic] = window_counts[topic]
+        n = self._topic_counts.get(bucket, 1)
+        return max(0.1, 1.0 / math.sqrt(n))
+
+    def reset(self) -> None:
+        self._recent.clear()
+        self._topic_counts.clear()
+
+
+class SalienceScorer:
+    """Multi-dimensional salience scorer — the sensory gate.
+
+    Pure rule-based — no LLM calls, O(message_length) time.
+    Scores: emotion, novelty, importance, repetition penalty.
+    """
+
+    def __init__(self, novelty_window: int = 50) -> None:
+        self._rep = _RepetitionDetector(window_size=novelty_window)
+
+    def score(self, message: str) -> SalienceResult:
+        if not message or not message.strip():
+            return SalienceResult(overall=0.0, is_trivial=True)
+        text = message.strip()
+
+        # Trivial detection
+        trivial_penalty = 1.0
+        for pattern, weight in _TRIVIAL_PATTERNS:
+            if pattern.search(text):
+                trivial_penalty = min(trivial_penalty, 1.0 - weight)
+        is_trivial = trivial_penalty < 0.3
+
+        # Emotion signal
+        emotion = 0.0
+        for pattern, weight in _EMOTION_PATTERNS:
+            if pattern.search(text):
+                emotion = max(emotion, weight)
+        if len(text) < 20:
+            emotion *= 0.5
+
+        # Importance signal
+        importance = 0.0
+        for pattern, weight in _IMPORTANCE_PATTERNS:
+            if pattern.search(text):
+                importance = max(importance, weight)
+        if len(text) > 200:
+            importance = min(1.0, importance + 0.1)
+
+        # Novelty + repetition penalty
+        freshness = self._rep.observe(text)
+        novelty = freshness
+        rep_factor = freshness
+
+        # Combine
+        raw = (0.25 * emotion + 0.30 * novelty + 0.30 * importance
+               + 0.15 * min(1.0, len(text) / 200))
+        adjusted = raw * rep_factor * (1.0 - (1.0 - trivial_penalty) * 0.8)
+        overall = max(0.0, min(1.0, adjusted))
+
+        return SalienceResult(
+            overall=overall, emotion=emotion, novelty=novelty,
+            importance=importance, repetition_penalty=rep_factor,
+            is_trivial=is_trivial,
+        )
+
+    def reset(self) -> None:
+        self._rep = _RepetitionDetector(window_size=self._rep.window_size)
 
 
 # ---------------------------------------------------------------------------
@@ -248,16 +387,16 @@ class MemoryPipeline:
         self._config: dict = config or {}
         self._state: PipelineState | None = None
         self._enabled: bool = self._config.get("enabled", True)
-        # Layer references -- populated in Phase 2+
-        self._salience = None
-        self._silent_engram = None
-        self._consolidation = None
-        self._reconsolidation = None
-        self._feedback = None
-        self._activation = None
+        # Layer references -- populated as phases are implemented
+        self._salience = None          # Phase 2: SalienceScorer
+        self._silent_engram = None     # Phase 3: SilentEngramEngine
+        self._consolidation = None     # Phase 4: ConsolidationEngine
+        self._reconsolidation = None   # Phase 4: ReconsolidationEngine
+        self._feedback = None          # Phase 5: FeedbackCoordinator
+        self._activation = None        # Phase 6: ActivationGraph
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        """Initialize pipeline state database.
+        """Initialize pipeline state database and organic modules.
 
         Called from MemoryManager.initialize_all() BEFORE providers init.
         """
@@ -265,6 +404,17 @@ class MemoryPipeline:
             return
         db_path = self._config.get("db_path") or None
         self._state = PipelineState(db_path=db_path)
+
+        # Phase 2: Initialize SalienceScorer
+        salience_cfg = self._config.get("salience", {})
+        if salience_cfg.get("enabled", True):
+            try:
+                window = salience_cfg.get("novelty_window", 50)
+                self._salience = SalienceScorer(novelty_window=window)
+                logger.debug("SalienceScorer initialized (window=%d)", window)
+            except Exception as e:
+                logger.debug("SalienceScorer init failed: %s", e)
+
         logger.debug("MemoryPipeline initialized (session=%s)", session_id)
 
     def shutdown(self) -> None:
@@ -282,30 +432,84 @@ class MemoryPipeline:
     def pre_turn_start(self, turn: int, message: str) -> None:
         """Called before providers' on_turn_start.
 
-        Phase 1: no-op.
-        Phase 2: reset novelty window, decay activation edges.
+        Phase 2: reset salience novelty window every 100 turns to prevent
+        stale topic counts from dominating.
         """
-        pass
+        if self._salience and turn > 0 and turn % 100 == 0:
+            try:
+                self._salience.reset()
+                logger.debug("SalienceScorer reset at turn %d", turn)
+            except Exception as e:
+                logger.debug("SalienceScorer reset failed: %s", e)
 
     def pre_sync(self, user: str, asst: str) -> dict | None:
         """Called before providers' sync_turn.
 
         Returns salience metadata for providers that support it.
-        Phase 1: returns None (no metadata).
-        Phase 2: score user content, return salience signals.
+        Phase 2: score user content for salience, return signals.
         """
-        return None
+        if not self._salience:
+            return None
+        try:
+            result = self._salience.score(user)
+            # Log encoding for learning
+            if self._state:
+                with self._state._lock:
+                    self._state._conn.execute(
+                        "INSERT INTO salience_encoding_log "
+                        "(source, emotion_score, novelty_score, importance_score, overall_score) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        ("builtin", result.emotion, result.novelty,
+                         result.importance, result.overall),
+                    )
+                    self._state._conn.commit()
+            return {
+                "salience_overall": result.overall,
+                "salience_emotion": result.emotion,
+                "salience_novelty": result.novelty,
+                "salience_importance": result.importance,
+                "salience_is_trivial": result.is_trivial,
+            }
+        except Exception as e:
+            logger.debug("SalienceScorer.score failed: %s", e)
+            return None
 
     def pre_memory_write(
         self, action: str, target: str, content: str, metadata: dict
     ) -> dict | None:
         """Called before providers' on_memory_write.
 
-        Returns modified metadata or None to pass-through.
-        Phase 1: returns None.
-        Phase 2: salience gate -- score content, potentially block/score writes.
+        Phase 2: salience gate -- score content and attach salience metadata.
+        Does NOT block writes (that would require changing MemoryManager's
+        return type). Instead, enriches metadata so providers can decide.
         """
-        return None
+        if not self._salience or action not in ("add", "replace"):
+            return None
+        try:
+            result = self._salience.score(content)
+            # Persist salience signal for learning
+            if self._state:
+                with self._state._lock:
+                    self._state._conn.execute(
+                        "INSERT INTO salience_encoding_log "
+                        "(source, fact_ref, emotion_score, novelty_score, "
+                        "importance_score, overall_score) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (target, content[:100], result.emotion, result.novelty,
+                         result.importance, result.overall),
+                    )
+                    self._state._conn.commit()
+            # Return enriched metadata for providers
+            return {
+                **metadata,
+                "pipeline_salience": result.overall,
+                "pipeline_emotion": result.emotion,
+                "pipeline_novelty": result.novelty,
+                "pipeline_importance": result.importance,
+            }
+        except Exception as e:
+            logger.debug("SalienceScorer pre_memory_write failed: %s", e)
+            return None
 
     def pre_compress(self, messages: list) -> str:
         """Called before providers' on_pre_compress.
