@@ -5,6 +5,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -12,6 +13,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -5043,6 +5045,55 @@ def gateway_setup():
 # Main Command Handler
 # =============================================================================
 
+_RESTART_TRACKER_FILENAME = ".gateway-restart-tracker"
+_RESTART_LOOP_WINDOW = 60  # seconds
+_RESTART_LOOP_THRESHOLD = 3  # max restarts in window
+
+
+def _check_gateway_restart_loop() -> bool:
+    """Detect restart loops when KeepAlive is active.
+
+    Tracks restart timestamps in a file that survives process death.
+    If ≥3 restarts/ stops occur in a 60s sliding window, a loop is
+    detected and the caller should refuse the operation.
+
+    This is more precise than blanket-refusing all internal restarts:
+    a single manual restart (e.g. from WeChat) succeeds, while a
+    cron + KeepAlive respawn cycle is caught on the 3rd iteration.
+    """
+    from hermes_constants import get_hermes_home
+
+    tracker_path = os.path.join(get_hermes_home(), _RESTART_TRACKER_FILENAME)
+    now = time.time()
+
+    # Read existing timestamps
+    timestamps: list[float] = []
+    try:
+        if os.path.exists(tracker_path):
+            with open(tracker_path) as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    timestamps = data
+    except (json.JSONDecodeError, OSError):
+        timestamps = []
+
+    # Prune timestamps outside the window
+    window_start = now - _RESTART_LOOP_WINDOW
+    recent = [t for t in timestamps if t >= window_start]
+
+    if len(recent) >= _RESTART_LOOP_THRESHOLD:
+        return True  # loop detected
+
+    # Record this attempt and persist
+    recent.append(now)
+    try:
+        with open(tracker_path, "w") as f:
+            json.dump(recent, f)
+    except OSError:
+        pass
+    return False
+
+
 def _dispatch_via_service_manager_if_s6(
     action: str, profile: str | None = None,
 ) -> bool:
@@ -5422,13 +5473,13 @@ def _gateway_command_inner(args):
             sys.exit(1)
 
     elif subcmd == "stop":
-        # Defense: refuse self-targeting gateway stop from inside the gateway.
-        # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
-        if os.getenv("_HERMES_GATEWAY") == "1":
+        if os.getenv("_HERMES_GATEWAY") == "1" and _check_gateway_restart_loop():
             print_error(
-                "Refusing to stop the gateway from inside the gateway process.\n"
-                "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway stop` from a shell outside the running gateway."
+                "Gateway restart loop detected: too many stop/restart attempts "
+                f"in the last {_RESTART_LOOP_WINDOW}s.\n"
+                "This prevents a KeepAlive respawn cycle.\n"
+                "Stop the service externally to recover: "
+                "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist"
             )
             sys.exit(1)
 
@@ -5507,13 +5558,13 @@ def _gateway_command_inner(args):
                 print(f"✓ Stopped {get_service_name()} service")
     
     elif subcmd == "restart":
-        # Defense: refuse self-targeting gateway restart from inside the gateway.
-        # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
-        if os.getenv("_HERMES_GATEWAY") == "1":
+        if os.getenv("_HERMES_GATEWAY") == "1" and _check_gateway_restart_loop():
             print_error(
-                "Refusing to restart the gateway from inside the gateway process.\n"
-                "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway restart` from a shell outside the running gateway."
+                "Gateway restart loop detected: too many stop/restart attempts "
+                f"in the last {_RESTART_LOOP_WINDOW}s.\n"
+                "This prevents a KeepAlive respawn cycle.\n"
+                "Stop the service externally to recover: "
+                "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist"
             )
             sys.exit(1)
 
