@@ -1970,9 +1970,9 @@ def write_txn(conn: sqlite3.Connection):
     a SQLite auto-rollback (which leaves no active transaction) does not
     shadow the original exception with a spurious rollback error.
     """
-    lock_fd = _KANBAN_WRITE_LOCKS.get(id(conn))
-    if lock_fd is not None:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    lock_handle = _KANBAN_WRITE_LOCKS.get(id(conn))
+    if lock_handle is not None:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
@@ -1991,8 +1991,8 @@ def write_txn(conn: sqlite3.Connection):
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
         _check_file_length_invariant(conn)
     finally:
-        if lock_fd is not None:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        if lock_handle is not None:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 # ---------------------------------------------------------------------------
