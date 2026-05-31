@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import sys
 import signal
 import tempfile
@@ -3452,44 +3453,110 @@ class GatewayRunner:
             pass
         return "not_found", None
 
+    def _build_repo_identity_guard(self, record: Any) -> dict[str, Any]:
+        gateway_cwd = os.getcwd()
+        intended_repo = (getattr(record, "repo_path", None) or "").strip()
+        if not intended_repo:
+            return {
+                "ok": False,
+                "lines": [
+                    "Recovery paused: intended task repo is missing or ambiguous.",
+                    f"Gateway cwd before re-anchor: {gateway_cwd}",
+                    "Intended task repo: unknown",
+                    "Actual repo used for inspection: none",
+                    "Repo mismatch corrected: no",
+                ],
+            }
+
+        from gateway.active_task import resolve_git_branch, resolve_git_head, resolve_git_toplevel
+
+        actual_repo = resolve_git_toplevel(intended_repo)
+        if not actual_repo:
+            return {
+                "ok": False,
+                "lines": [
+                    "Recovery paused: intended task repo is missing or ambiguous.",
+                    f"Gateway cwd before re-anchor: {gateway_cwd}",
+                    f"Intended task repo: {intended_repo}",
+                    "Actual repo used for inspection: none",
+                    "Repo mismatch corrected: no",
+                ],
+            }
+
+        gateway_repo = resolve_git_toplevel(gateway_cwd) or gateway_cwd
+        branch = resolve_git_branch(actual_repo) or getattr(record, "branch", None) or "unknown"
+        head = resolve_git_head(actual_repo) or "unknown"
+        status_text = "unknown"
+        try:
+            status_result = subprocess.run(
+                ["git", "-C", str(actual_repo), "status", "--short", "--branch"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if status_result.returncode == 0:
+                status_text = (status_result.stdout or "").strip() or "clean"
+        except Exception:
+            pass
+
+        lines = [
+            "Repo identity guard",
+            f"pwd: {gateway_cwd}",
+            f"git toplevel before re-anchor: {gateway_repo}",
+            f"Gateway cwd before re-anchor: {gateway_cwd}",
+            f"Intended task repo: {actual_repo}",
+            f"Actual repo used for inspection: {actual_repo}",
+            f"Repo mismatch corrected: {'yes' if gateway_repo != actual_repo else 'no'}",
+            f"Branch: {branch}",
+            f"HEAD: {head}",
+        ]
+
+        expected_files_raw = getattr(record, "expected_files", None)
+        if expected_files_raw:
+            try:
+                expected_files = json.loads(expected_files_raw)
+            except Exception:
+                expected_files = []
+            if isinstance(expected_files, list):
+                for path in expected_files[:20]:
+                    file_path = Path(str(path)).expanduser()
+                    if not file_path.is_absolute():
+                        file_path = Path(actual_repo) / file_path
+                    lines.append(
+                        f"Expected file {Path(str(path)).name}: "
+                        f"{'present' if file_path.exists() else 'missing'}"
+                    )
+
+        lines.extend(["Git status:", status_text])
+        return {
+            "ok": True,
+            "lines": lines,
+            "repo_path": actual_repo,
+            "branch": branch,
+            "head": head,
+            "status_text": status_text,
+        }
+
     def _build_active_execute_recovery_report(
         self,
         record: Any,
         process_state: str,
         process_snapshot: Optional[dict],
     ) -> str:
-        repo_path = getattr(record, "repo_path", None) or "unknown"
-        branch = getattr(record, "branch", None) or "unknown"
-        head = "unknown"
-        status_text = "unknown"
-        if repo_path and repo_path != "unknown":
-            try:
-                head_result = subprocess.run(
-                    ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=3,
-                )
-                if head_result.returncode == 0:
-                    head = (head_result.stdout or "").strip() or "unknown"
-            except Exception:
-                pass
-            try:
-                status_result = subprocess.run(
-                    ["git", "-C", str(repo_path), "status", "--short", "--branch"],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=3,
-                )
-                if status_result.returncode == 0:
-                    status_text = (status_result.stdout or "").strip() or "clean"
-            except Exception:
-                pass
+        guard = self._build_repo_identity_guard(record)
+        if not guard.get("ok"):
+            task = getattr(record, "task_summary", None) or getattr(record, "command", None) or "unknown"
+            return "\n".join([*guard["lines"], f"Task: {task}"])
+
+        repo_path = guard.get("repo_path") or "unknown"
+        branch = guard.get("branch") or "unknown"
+        head = guard.get("head") or "unknown"
 
         lines = [
             "Approved execute recovery",
+            "",
+            *guard["lines"],
             "",
             "The previous execute was still marked active, but its target process is no longer running.",
             f"Task: {getattr(record, 'task_summary', None) or getattr(record, 'command', None) or 'unknown'}",
@@ -3510,22 +3577,6 @@ class GatewayRunner:
             state = "present" if expected_commit == head else "not at HEAD"
             lines.append(f"Expected commit {expected_commit}: {state}")
 
-        expected_files_raw = getattr(record, "expected_files", None)
-        if expected_files_raw:
-            try:
-                expected_files = json.loads(expected_files_raw)
-            except Exception:
-                expected_files = []
-            if isinstance(expected_files, list):
-                for path in expected_files[:20]:
-                    file_path = Path(str(path)).expanduser()
-                    if not file_path.is_absolute() and repo_path and repo_path != "unknown":
-                        file_path = Path(repo_path) / file_path
-                    lines.append(
-                        f"Expected file {Path(str(path)).name}: "
-                        f"{'present' if file_path.exists() else 'missing'}"
-                    )
-
         final_report_path = getattr(record, "final_report_path", None)
         if final_report_path:
             try:
@@ -3535,8 +3586,6 @@ class GatewayRunner:
             if persisted:
                 lines.extend(["", "Recovered final report:", persisted])
 
-        if status_text:
-            lines.extend(["", "Git status:", status_text])
         return "\n".join(lines)
 
     async def _recover_inactive_active_execute(
@@ -3572,6 +3621,31 @@ class GatewayRunner:
             except Exception:
                 pass
             return False
+
+        guard = self._build_repo_identity_guard(record)
+        if not guard.get("ok"):
+            report = "\n".join(
+                [
+                    *guard["lines"],
+                    f"Task: {getattr(record, 'task_summary', None) or getattr(record, 'command', None) or 'unknown'}",
+                    f"Process state: {process_state}",
+                ]
+            )
+            reply_anchor = self._reply_anchor_for_event(event)
+            thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=report,
+                reply_to=(
+                    reply_anchor
+                    if event.source.platform == Platform.TELEGRAM
+                    and event.source.chat_type == "dm"
+                    and event.source.thread_id
+                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+                ),
+                metadata=thread_meta,
+            )
+            return True
 
         report = self._build_active_execute_recovery_report(
             record,
@@ -3654,7 +3728,16 @@ class GatewayRunner:
         if not adapter:
             return False
 
-        message = "Recovered final report from the previous completed execute:\n\n" + report
+        guard_prefix = ""
+        if getattr(record, "repo_path", None):
+            guard = self._build_repo_identity_guard(record)
+            guard_prefix = "\n".join(guard["lines"]) + "\n\n"
+
+        message = (
+            guard_prefix
+            + "Recovered final report from the previous completed execute:\n\n"
+            + report
+        )
         reply_anchor = self._reply_anchor_for_event(event)
         thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
         result = await adapter._send_with_retry(
