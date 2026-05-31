@@ -227,6 +227,29 @@ def test_docker_env_is_bridged_everywhere():
     assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()
 
 
+def test_docker_extra_args_is_bridged_everywhere():
+    """Regression pin for docker_extra_args being silently ignored at runtime.
+
+    ``terminal.docker_extra_args`` is a list of raw flags appended to the
+    ``docker run`` command (e.g. ``--network=fetcher-net``, extra
+    ``--cap-drop``).  terminal_tool._get_env_config() has always READ it from
+    TERMINAL_DOCKER_EXTRA_ARGS, but it was absent from BOTH bridge maps
+    (cli.py env_mappings and gateway/run.py _terminal_env_map), so the env var
+    was never written and the list defaulted to ``[]`` regardless of
+    config.yaml.  This shipped a real isolation gap: a Hermes web-profile
+    fetcher configured with ``--network=fetcher-net`` came up on the default
+    bridge instead.  Same class as docker_run_as_host_user / docker_env.
+
+    save_config sync is intentionally NOT asserted here: docker_extra_args is
+    list-valued and set by editing config.yaml, not ``hermes config set`` —
+    the same treatment as docker_volumes (see
+    test_save_config_set_supports_critical_bridged_keys).
+    """
+    assert "docker_extra_args" in _cli_env_map_keys()
+    assert "docker_extra_args" in _gateway_env_map_keys()
+    assert "TERMINAL_DOCKER_EXTRA_ARGS" in _terminal_tool_env_var_names()
+
+
 def test_docker_persist_across_processes_is_bridged_everywhere():
     """Regression pin for the cross-process container reuse toggle.
 
