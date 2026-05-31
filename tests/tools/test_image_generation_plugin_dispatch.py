@@ -30,6 +30,26 @@ class _FakeCodexProvider(ImageGenProvider):
         }
 
 
+class _EchoKwargsProvider(ImageGenProvider):
+    """Provider that echoes the kwargs it received, so we can assert the
+    image-to-image inputs are forwarded by the dispatcher."""
+
+    @property
+    def name(self) -> str:
+        return "codex"
+
+    def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        return {
+            "success": True,
+            "image": "/tmp/echo.png",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "provider": "codex",
+            "received_image_url": kwargs.get("image_url"),
+            "received_reference_image_urls": kwargs.get("reference_image_urls"),
+        }
+
+
 class TestPluginDispatch:
     def test_dispatch_routes_to_codex_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
@@ -51,6 +71,50 @@ class TestPluginDispatch:
         assert payload["provider"] == "codex"
         assert payload["image"] == "/tmp/codex-test.png"
         assert payload["aspect_ratio"] == "square"
+
+    def test_dispatch_forwards_reference_images(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: codex\n")
+
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: _EchoKwargsProvider() if name == "codex" else None)
+
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "restyle this", "square",
+            image_url="https://example.com/hero.png",
+            reference_image_urls=["https://example.com/ref1.png", "/local/ref2.jpg"],
+        )
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is True
+        assert payload["received_image_url"] == "https://example.com/hero.png"
+        assert payload["received_reference_image_urls"] == [
+            "https://example.com/ref1.png", "/local/ref2.jpg",
+        ]
+
+    def test_dispatch_omits_reference_kwargs_when_absent(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: codex\n")
+
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: _EchoKwargsProvider() if name == "codex" else None)
+
+        # No image inputs → provider should see neither kwarg (None echoed).
+        dispatched = image_generation_tool._dispatch_to_plugin_provider("plain text-to-image", "landscape")
+        payload = json.loads(dispatched)
+
+        assert payload["received_image_url"] is None
+        assert payload["received_reference_image_urls"] is None
 
     def test_dispatch_reports_missing_registered_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool

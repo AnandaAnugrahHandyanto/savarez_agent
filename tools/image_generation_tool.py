@@ -887,10 +887,15 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts. The underlying "
-        "backend (FAL, OpenAI, etc.) and model are user-configured and not "
-        "selectable by the agent. Returns either a URL or an absolute file "
-        "path in the `image` field; display it with markdown "
+        "Generate high-quality images from text prompts. Optionally pass a "
+        "reference image (image_url / reference_image_urls) to do "
+        "image-to-image — character, style, or product reference — on "
+        "backends that support it (e.g. xAI Grok Imagine). The output "
+        "orientation is controlled solely by `aspect_ratio`, never by the "
+        "reference image. The underlying "
+        "backend (FAL, OpenAI, xAI, etc.) and model are user-configured and "
+        "not selectable by the agent. Returns either a URL or an absolute "
+        "file path in the `image` field; display it with markdown "
         "![description](url-or-path) and the gateway will deliver it."
     ),
     "parameters": {
@@ -903,8 +908,40 @@ IMAGE_GENERATE_SCHEMA = {
             "aspect_ratio": {
                 "type": "string",
                 "enum": list(VALID_ASPECT_RATIOS),
-                "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
+                "description": (
+                    "Output orientation, and ALWAYS honored — it is fully "
+                    "independent of any reference image. A reference image "
+                    "(image_url / reference_image_urls) does NOT constrain or "
+                    "force the output shape: request 'portrait' and you get a "
+                    "portrait result even from a landscape reference. Set this "
+                    "from what the user asked for; if the user gave a photo to "
+                    "restyle and did not state an orientation, ask which they "
+                    "want rather than assuming. 'landscape' is 16:9 wide, "
+                    "'portrait' is 16:9 tall, 'square' is 1:1."
+                ),
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "image_url": {
+                "type": "string",
+                "description": (
+                    "Optional reference image for image-to-image generation. "
+                    "Pass a public URL, a data: URI, or a local file path "
+                    "from the conversation; the backend uses it as the "
+                    "primary reference (e.g. keep this character/product and "
+                    "restyle per the prompt). Only honored by backends that "
+                    "support image input (currently xAI Grok Imagine); "
+                    "text-only backends ignore it."
+                ),
+            },
+            "reference_image_urls": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional list of additional reference images (style or "
+                    "character refs), each a URL, data: URI, or local path. "
+                    "Combined with image_url when both are given. Only "
+                    "honored by backends that support multi-image input."
+                ),
             },
         },
         "required": ["prompt"],
@@ -951,7 +988,12 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(
+    prompt: str,
+    aspect_ratio: str,
+    image_url: Optional[str] = None,
+    reference_image_urls: Optional[list] = None,
+):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -962,6 +1004,10 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     ``plugins/image_gen/fal/`` plugin (the plugin re-enters this module's
     pipeline via ``_it`` indirection so behavior is identical to the
     direct call, just routed through the registry).
+
+    ``image_url`` / ``reference_image_urls`` enable image-to-image on
+    providers that support it; providers that don't simply ignore them
+    (every provider's ``generate`` absorbs ``**kwargs``).
     """
     configured = _read_configured_image_provider()
     if not configured:
@@ -1008,6 +1054,10 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
         if configured_model:
             kwargs["model"] = configured_model
+        if image_url:
+            kwargs["image_url"] = image_url
+        if reference_image_urls:
+            kwargs["reference_image_urls"] = reference_image_urls
         result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
@@ -1030,17 +1080,45 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     return json.dumps(result)
 
 
+def _normalize_reference_images(value):
+    """Coerce the schema's reference_image_urls into a clean list of strings.
+
+    Accepts a single string or a list; drops empties. Returns None when
+    nothing usable is present so dispatch can omit the kwarg entirely.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return None
+    out = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return out or None
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    image_url = (args.get("image_url") or "").strip() or None
+    reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(
+        prompt, aspect_ratio, image_url, reference_image_urls,
+    )
     if dispatched is not None:
         return dispatched
+
+    if image_url or reference_image_urls:
+        logger.info(
+            "image_generate: reference image(s) supplied but the active "
+            "in-tree FAL path is text-to-image only — ignoring them. "
+            "Configure an image_gen provider that supports image input "
+            "(e.g. xAI) to use reference images."
+        )
 
     return image_generate_tool(
         prompt=prompt,
