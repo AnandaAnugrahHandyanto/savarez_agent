@@ -3052,13 +3052,13 @@
         onClick: function (e) { e.stopPropagation(); },
       },
         h("div", { className: "hermes-kanban-drawer-head" },
-          h("span", { className: "text-xs text-muted-foreground" }, props.taskId),
           h("button", {
             type: "button",
             onClick: props.onClose,
-            className: "hermes-kanban-drawer-close",
-            title: tx(t, "close", "Close (Esc)"),
-          }, "×"),
+            className: "hermes-kanban-drawer-back",
+            title: tx(t, "backToBoard", "Back to board"),
+          }, "← ", tx(t, "backToBoard", "Back to board")),
+          h("span", { className: "text-xs text-muted-foreground" }, props.taskId),
         ),
         loading ? h("div", { className: "p-4 text-sm text-muted-foreground" },
           tx(t, "loadingDetail", "Loading…")) :

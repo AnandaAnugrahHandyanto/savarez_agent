@@ -352,38 +352,42 @@
 }
 
 .hermes-kanban-drawer-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.6rem 0.8rem;
-  /* Honor the top safe-area inset (notch) so the task id / close button are
-     not clipped on mobile. */
-  padding-top: max(0.6rem, env(safe-area-inset-top));
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  /* Honor the top safe-area inset (iPad/browser chrome) so the back button
+     and task id are never clipped under the dashboard/header rail. */
+  padding-top: max(0.75rem, calc(0.75rem + env(safe-area-inset-top)));
   border-bottom: 1px solid var(--color-border);
+  background: var(--color-card);
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 
-/* On mobile the dashboard shell renders a fixed top bar (min-h-14, hidden at
-   the lg breakpoint). The drawer is a body-level z-60 overlay starting at the
-   viewport top, so its header would sit behind that bar. Push the header down
-   by the bar height (3.5rem) plus the top safe-area inset. */
-@media (max-width: 1023px) {
+/* On tablet/mobile the dashboard shell can render a fixed top bar above the
+   plugin content. Keep the full-screen card header below it. */
+@media (max-width: 1366px) {
   .hermes-kanban-drawer-head {
     padding-top: calc(3.5rem + env(safe-area-inset-top));
   }
 }
 
-.hermes-kanban-drawer-close {
+.hermes-kanban-drawer-back {
   appearance: none;
   background: transparent;
   border: 0;
   color: var(--color-muted-foreground);
-  font-size: 1.25rem;
+  font-size: 0.85rem;
   line-height: 1;
   cursor: pointer;
-  padding: 0 0.25rem;
+  padding: 0.35rem 0.45rem;
+  border-radius: var(--radius-sm, 0.25rem);
 }
-.hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
+.hermes-kanban-drawer-back:hover { color: var(--color-foreground); background: color-mix(in srgb, var(--color-foreground) 6%, transparent); }
 
 /* Attachment download trigger — styled as a link, rendered as a <button>
    so the click handler can fetch with the session token (#35338). */

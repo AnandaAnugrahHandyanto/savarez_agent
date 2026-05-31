@@ -264,6 +264,8 @@ def test_dashboard_card_detail_is_fullscreen_not_sidebar():
     assert "max-height: 100dvh;" in drawer_block
     assert "justify-content: stretch;" in shade_block
     assert "--hermes-kanban-drawer-width" not in drawer_block
+    assert "hermes-kanban-drawer-back" in css
+    assert "max-width: 1366px" in css
 
 
 def test_dashboard_client_side_filtering_includes_tenant_filter():
