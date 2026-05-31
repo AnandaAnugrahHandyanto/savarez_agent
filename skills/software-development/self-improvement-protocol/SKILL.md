@@ -15,6 +15,79 @@ metadata:
 
 # Self-Improvement Protocol (持续自我改进协议)
 
+## SkillOpt 的 6 阶段 ReflACT 流水线
+
+论文 "SkillOpt: Executive Strategy for Self-Evolving Agent Skills" (Yang 2026) 提出了一个更系统化的方法：
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Rollout → Reflect → Aggregate → Select → Update → Evaluate → Accept/Reject │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 阶段 1: Rollout (执行)
+- 用当前 skill 执行一批任务
+- 收集成功/失败的轨迹
+
+### 阶段 2: Reflect (反思)
+- 分析失败轨迹，提取 common failure patterns
+- 生成 patch 建议 (append, insert_after, replace, delete)
+
+### 阶段 3: Aggregate (聚合)
+- 合并多个 batch 的 patch 建议
+- 去重、去冲突
+
+### 阶段 4: Select (选择)
+- 按影响力排序 patch
+- 选择 top-K edits
+
+### 阶段 5: Update (更新)
+- 应用 edits 到 skill 文档
+- 保护 SLOW_UPDATE 区域
+
+### 阶段 6: Evaluate (评估)
+- 用新 skill 执行验证集
+- Hard gate: exact-match accuracy
+- Soft gate: partial credit
+- Accept/Reject 决策
+
+### SkillOpt vs 我的 Self-Improvement Protocol
+
+| 维度 | SkillOpt | 我的协议 |
+|------|----------|---------|
+| **触发** | 每个 epoch | 每个任务/纠错 |
+| **反思** | 批量分析轨迹 | 单次纠错提取 |
+| **更新** | patch + rewrite | memory/skill patch |
+| **验证** | 硬/软 gate | 用户确认 |
+| **元学习** | meta-skill | 暂无 |
+
+### 可借鉴的改进
+
+**1. Meta-Skill 概念**
+
+SkillOpt 有一个 "meta-skill" 层，记录"如何优化 skill"的经验：
+- 哪些类型的 edit 有帮助
+- 哪些类型的 edit 太模糊/冗余/有害
+- 什么抽象层级的规则最有效
+- 什么失败修复模式应该优先
+
+**对我的启示**：可以创建一个 meta-skill，记录"如何改进 Hermes Agent 的 skill"的经验。
+
+**2. 验证 Gate**
+
+SkillOpt 用硬/软指标验证 skill 改进：
+- Hard: exact-match accuracy
+- Soft: partial credit
+- Mixed: weighted average
+
+**对我的启示**：skill patch 后，可以用用户反馈 (是否纠正) 作为验证信号。
+
+**3. Protected Regions**
+
+SkillOpt 用 `<!-- SLOW_UPDATE_START -->` 和 `<!-- SLOW_UPDATE_END -->` 标记保护区域，防止被快速更新覆盖。
+
+**对我的启示**：skill 中的 "硬约束" 区域应该被保护，不被临时 patch 覆盖。
+
 ## 理论基础
 
 基于论文 "Never Stop Learning: A Survey of Continual Learning and Self-Iteration in LLMs" 的核心洞察：
