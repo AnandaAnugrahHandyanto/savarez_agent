@@ -76,6 +76,7 @@ class _Runtime:
         config_path = Path(self.settings.plugins_toml_path)
         try:
             config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            self._ensure_plugin_config_output_dirs(config)
             result = initialize(config)
             if inspect.isawaitable(result):
                 asyncio.run(result)
@@ -86,6 +87,25 @@ class _Runtime:
         except Exception as exc:
             logger.debug("NeMo Relay plugins.toml init failed: %s", exc, exc_info=True)
             return False
+
+    def _ensure_plugin_config_output_dirs(self, config: dict[str, Any]) -> None:
+        for component in config.get("components", []):
+            if not isinstance(component, dict):
+                continue
+            if component.get("kind") != "observability":
+                continue
+            if component.get("enabled") is False:
+                continue
+            component_config = component.get("config")
+            if not isinstance(component_config, dict):
+                continue
+            for exporter_name in ("atof", "atif"):
+                exporter_config = component_config.get(exporter_name)
+                if not isinstance(exporter_config, dict):
+                    continue
+                output_directory = exporter_config.get("output_directory")
+                if isinstance(output_directory, str) and output_directory.strip():
+                    Path(output_directory).mkdir(parents=True, exist_ok=True)
 
     def _configure_atof(self) -> None:
         if not self.settings.atof_enabled:

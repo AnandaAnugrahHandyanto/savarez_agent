@@ -395,8 +395,10 @@ def test_nemo_relay_plugin_can_initialize_plugins_toml(tmp_path, monkeypatch):
     fake = _FakeNemoRelay()
     plugin = _fresh_plugin(monkeypatch, fake)
     plugins_toml = tmp_path / "plugins.toml"
+    atof_dir = tmp_path / "exports" / "events"
+    atif_dir = tmp_path / "exports" / "trajectories"
     plugins_toml.write_text(
-        """
+        f"""
 version = 1
 
 [[components]]
@@ -405,7 +407,11 @@ enabled = true
 
 [components.config.atof]
 enabled = true
-output_directory = "events"
+output_directory = "{atof_dir}"
+
+[components.config.atif]
+enabled = true
+output_directory = "{atif_dir}"
 """,
         encoding="utf-8",
     )
@@ -415,6 +421,8 @@ output_directory = "events"
 
     assert any(event[0] == "plugin.initialize" for event in fake.events)
     assert not any(event[0] == "atof.register" for event in fake.events)
+    assert atof_dir.is_dir()
+    assert atif_dir.is_dir()
 
 
 def test_nemo_relay_plugin_noops_without_dependency(monkeypatch):
