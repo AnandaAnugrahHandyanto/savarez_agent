@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from plugins.web.yandex.provider import YandexWebSearchProvider
+from .provider import YandexWebSearchProvider
 
 
 def register(ctx) -> None:
