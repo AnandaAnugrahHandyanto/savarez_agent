@@ -212,12 +212,12 @@ Server sees: `{did_A: <opaque blob>, did_B: <opaque blob>}`. Zero knowledge.
 
 ## Version History
 
-| Version | Date | Changes |
+| Version | Changes |
 |:--------|:-----|:--------|
-| **v3.0.0** | 2026-06-01 | Local-first architecture, daemon health check, cloud = passive encrypted storage (opt-in via DID) |
-| v2.1.0 | 2026-05-31 | Phase 1 client-side encryption (Ed25519→HKDF→AES-256-GCM, server zero-knowledge) |
-| v2.0.0 | 2026-05-31 | Full-file sync, memory distillation, 13→10 files (profile merge) |
-| v1.3.0 | 2026-05-25 | Write-Cycle Reference, anti-patterns, --fill gaps |
+| **v3.0.0** | Local-first architecture, daemon health check, cloud = passive encrypted storage (opt-in via DID) |
+| v2.1.0 | Phase 1 client-side encryption (Ed25519→HKDF→AES-256-GCM, server zero-knowledge) |
+| v2.0.0 | Full-file sync, memory distillation, 13→10 files (profile merge) |
+| v1.3.0 | Write-Cycle Reference, anti-patterns, --fill gaps |
 
 ---
 
