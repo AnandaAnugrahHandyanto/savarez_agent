@@ -41,6 +41,16 @@ class TestRejectsReasoningContentDetector:
         )
         assert agent._rejects_reasoning_content_echo() is True
 
+    def test_matches_groq_host_with_custom_provider(self) -> None:
+        # Groq rejects reasoning_content with HTTP 400 'unsupported'; it is
+        # configured as a custom provider, so detection is host-based.
+        agent = _make_agent(
+            provider="custom",
+            model="llama-3.3-70b-versatile",
+            base_url="https://api.groq.com/openai/v1",
+        )
+        assert agent._rejects_reasoning_content_echo() is True
+
     def test_excludes_deepseek(self) -> None:
         agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
         assert agent._rejects_reasoning_content_echo() is False
