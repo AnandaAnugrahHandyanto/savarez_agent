@@ -293,6 +293,10 @@ async def test_execute_single_issue_queues_fix_run_on_review_findings(
             return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
         if command[:3] == ["gh", "pr", "diff"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "issue", "comment"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "comment"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["gh", "pr", "review"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if "--message" in command:
@@ -386,6 +390,10 @@ async def test_execute_single_issue_trips_review_findings_circuit_breaker(
             return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
         if command[:3] == ["gh", "pr", "diff"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "issue", "comment"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "comment"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["gh", "pr", "review"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if "--message" in command:
@@ -476,6 +484,10 @@ async def test_execute_single_issue_retries_malformed_review_tag_once(
             return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
         if command[:3] == ["gh", "pr", "diff"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "issue", "comment"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "comment"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["gh", "pr", "review"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if "--message" in command:
@@ -564,6 +576,10 @@ async def test_execute_single_issue_fails_after_repeated_malformed_review_tag(
                 }
             ]
             return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        if command[:3] == ["gh", "issue", "comment"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "comment"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
         if "--message" in command:
             message = command[command.index("--message") + 1]
             if "Review this new PR" in message:

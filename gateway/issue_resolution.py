@@ -405,6 +405,11 @@ async def _execute_single_issue(
     await _guard_managed_repo_before_issue_dispatch(run, issue, branch)
 
     await notify(f"Hermes: Starting local coder for Issue #{issue.number}.")
+    await _post_issue_audit_comment(
+        run.repo,
+        issue.number,
+        f"Hermes audit: run #{run.id} claimed issue for branch `{branch}`.",
+    )
     await _run(["git", "checkout", "-B", branch], cwd=run.workdir)
     local_prompt = _local_coder_prompt(run.repo, issue, branch)
     local_invocation = build_aider_invocation(
@@ -422,6 +427,16 @@ async def _execute_single_issue(
     pr = await _create_or_find_pr(run.repo, issue, branch, default_branch, run=run)
     store.record_pr(run.id, pr)
     await notify(f"Hermes: PR #{pr.number} created, triggering reviewer: {pr.url}")
+    await _post_issue_audit_comment(
+        run.repo,
+        issue.number,
+        f"Hermes audit: run #{run.id} opened or reused PR #{pr.number}: {pr.url}",
+    )
+    await _post_pr_audit_comment(
+        run.repo,
+        pr,
+        f"Hermes audit: cloud review requested for run #{run.id} at head `{pr.head_ref_oid}`.",
+    )
 
     review_output, routing_tag = await _run_cloud_reviewer_with_tag(
         run.repo, run.workdir, pr, notify
@@ -430,6 +445,12 @@ async def _execute_single_issue(
     if is_review_findings_for_coder(routing_tag):
         findings_count = store.record_review_findings(run.id)
         if findings_count > REVIEW_FINDINGS_MAX_FIX_ATTEMPTS:
+            await _post_pr_audit_comment(
+                run.repo,
+                pr,
+                f"Hermes audit: review loop circuit breaker tripped for run #{run.id} "
+                f"after {findings_count} reviewer findings cycles.",
+            )
             raise ReviewLoopCircuitBreaker(
                 f"review_findings repeated {findings_count} times for PR #{pr.number}; "
                 "manual escalation required"
@@ -439,8 +460,19 @@ async def _execute_single_issue(
             f"queued for same-branch coding ({findings_count}/"
             f"{REVIEW_FINDINGS_MAX_FIX_ATTEMPTS})."
         )
+        await _post_pr_audit_comment(
+            run.repo,
+            pr,
+            f"Hermes audit: reviewer findings routed run #{run.id} back to same-branch coding "
+            f"({findings_count}/{REVIEW_FINDINGS_MAX_FIX_ATTEMPTS}).",
+        )
         raise ReviewFindingsRetry("review_findings queued same-branch coding fix")
     store.mark_completed(run.id)
+    await _post_pr_audit_comment(
+        run.repo,
+        pr,
+        f"Hermes audit: review completed for run #{run.id}; routing state `{routing_tag.state}`.",
+    )
     await notify(f"Hermes: Cloud reviewer posted feedback on PR #{pr.number}.")
 
 
@@ -1335,6 +1367,34 @@ async def _load_next_open_issue(repo: str) -> IssueMetadata:
         raise RuntimeError(f"No open issues found in {repo}.")
     chosen = min(candidates, key=_created_at)
     return await _load_issue(repo, int(chosen["number"]))
+
+
+async def _post_issue_audit_comment(repo: str, issue_number: int, body: str) -> None:
+    """Post a compact audit note to the GitHub issue."""
+    await _run([
+        "gh",
+        "issue",
+        "comment",
+        str(issue_number),
+        "--repo",
+        repo,
+        "--body",
+        body,
+    ])
+
+
+async def _post_pr_audit_comment(repo: str, pr: PullRequestMetadata, body: str) -> None:
+    """Post a compact audit note to the GitHub pull request."""
+    await _run([
+        "gh",
+        "pr",
+        "comment",
+        str(pr.number),
+        "--repo",
+        repo,
+        "--body",
+        body,
+    ])
 
 
 async def _post_pr_feedback(repo: str, pr: PullRequestMetadata, body: str) -> None:
