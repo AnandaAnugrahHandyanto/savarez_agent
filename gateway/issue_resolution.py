@@ -81,6 +81,10 @@ class IssueRunType(str, Enum):
     SUB_ISSUE = "sub_issue"
 
 
+class ReviewFindingsRetry(RuntimeError):
+    """Reviewer found actionable findings that should requeue coder work."""
+
+
 @dataclass(frozen=True)
 class IssueResolutionRequest:
     """Normalized request to resolve one GitHub issue."""
@@ -151,6 +155,14 @@ class ManagedRepoStatus:
     ignored_paths: tuple[str, ...]
     ok: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class ReviewRoutingTag:
+    """Structured routing tag emitted by the cloud reviewer."""
+
+    state: str
+    next_action: str | None = None
 
 
 @dataclass(frozen=True)
@@ -399,7 +411,15 @@ async def _execute_single_issue(
         env=reviewer_invocation.env,
     )
 
-    await _post_pr_feedback(run.repo, pr, _review_body(reviewer_output.stdout))
+    review_output = reviewer_output.stdout
+    await _post_pr_feedback(run.repo, pr, _review_body(review_output))
+    routing_tag = parse_review_routing_tag(review_output)
+    if is_review_findings_for_coder(routing_tag):
+        await notify(
+            f"Hermes: Reviewer found fix work on PR #{pr.number}; keeping run #{run.id} "
+            "queued for same-branch coding."
+        )
+        raise ReviewFindingsRetry("review_findings queued same-branch coding fix")
     store.mark_completed(run.id)
     await notify(f"Hermes: Cloud reviewer posted feedback on PR #{pr.number}.")
 
@@ -609,10 +629,10 @@ class IssueStateStore:
             conn.execute(
                 """
                 UPDATE issue_runs
-                SET pr_number = ?, pr_url = ?, updated_at = ?
+                SET pr_number = ?, pr_url = ?, branch = COALESCE(branch, ?), updated_at = ?
                 WHERE id = ?
                 """,
-                (pr.number, pr.url, now, run_id),
+                (pr.number, pr.url, pr.head_ref_name, now, run_id),
             )
             conn.commit()
 
@@ -1018,6 +1038,30 @@ def _review_body(output: str) -> str:
     if len(body) > 6000:
         body = body[:6000] + "\n\n[truncated]"
     return f"Hermes Cloud Reviewer:\n\n{body}"
+
+
+def parse_review_routing_tag(output: str) -> ReviewRoutingTag | None:
+    """Extract the kyber-tag routing state from reviewer output."""
+    state: str | None = None
+    next_action: str | None = None
+    for raw_line in (output or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("kyber-tag.state="):
+            state = line.split("=", 1)[1].strip()
+        elif line.startswith("next_action="):
+            next_action = line.split("=", 1)[1].strip()
+    if not state:
+        return None
+    return ReviewRoutingTag(state=state, next_action=next_action or None)
+
+
+def is_review_findings_for_coder(tag: ReviewRoutingTag | None) -> bool:
+    """Return true when review output should queue same-branch coder fixes."""
+    return bool(
+        tag and tag.state == "review_findings" and tag.next_action == "coding_subagent"
+    )
 
 
 async def _load_issue(repo: str, issue_number: int) -> IssueMetadata:

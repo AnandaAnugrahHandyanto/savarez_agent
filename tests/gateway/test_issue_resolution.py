@@ -14,14 +14,18 @@ from gateway.issue_resolution import (
     IssueSelectionRequest,
     IssueRunStatus,
     IssueRunType,
+    ReviewFindingsRetry,
     IssueStateStore,
     _execute_master_issue,
+    _execute_single_issue,
     _guard_managed_repo_before_issue_dispatch,
     _inspect_managed_repo,
     _issue_branch_name,
     _load_next_open_issue,
     _pr_body,
     build_aider_invocation,
+    is_review_findings_for_coder,
+    parse_review_routing_tag,
     github_issue_webhook_command,
     is_master_issue,
     parse_decomposition_response,
@@ -136,6 +140,118 @@ def test_pr_body_records_issue_run_validation_risk_and_review_contract(tmp_path)
     assert "## Review handoff" in body
     assert "State: `ready_for_review`" in body
     assert "Reviewer lane: `cloud_reviewer`" in body
+
+
+def test_parse_review_routing_tag_detects_findings_for_coder():
+    """Reviewer kyber-tags should route fix findings back to the coder lane."""
+    tag = parse_review_routing_tag(
+        """
+        Summary: fixes needed.
+        kyber-tag.state=review_findings
+        next_action=coding_subagent
+        """
+    )
+
+    assert tag is not None
+    assert tag.state == "review_findings"
+    assert tag.next_action == "coding_subagent"
+    assert is_review_findings_for_coder(tag) is True
+
+
+def test_parse_review_routing_tag_ignores_non_coder_next_action():
+    """Only coding_subagent findings should create same-branch fix work."""
+    tag = parse_review_routing_tag(
+        "kyber-tag.state=review_findings\nnext_action=rerun_reviewer"
+    )
+
+    assert is_review_findings_for_coder(tag) is False
+
+
+@pytest.mark.asyncio
+async def test_execute_single_issue_queues_fix_run_on_review_findings(
+    tmp_path, monkeypatch
+):
+    """review_findings + coding_subagent should create same-branch fix work."""
+    store = IssueStateStore(tmp_path / "issues.db")
+    store.enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", 42, tmp_path),
+        run_type=IssueRunType.ISSUE,
+    )
+    run = store.claim_next_run()
+    assert run is not None
+    issue = IssueMetadata(
+        number=42,
+        title="Add PnL summary",
+        body="body",
+        url="https://github.com/m0nklabs/cryptotrader/issues/42",
+    )
+    messages: list[str] = []
+
+    async def notify(message: str):
+        messages.append(message)
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        if command[:4] == ["gh", "repo", "view", "m0nklabs/cryptotrader"]:
+            return CompletedProcess(
+                command=command,
+                returncode=0,
+                stdout=json.dumps({"defaultBranchRef": {"name": "master"}}),
+                stderr="",
+            )
+        if command == ["git", "branch", "--show-current"]:
+            return CompletedProcess(command, 0, stdout="feature\n", stderr="")
+        if command == ["git", "status", "--porcelain"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["git", "checkout", "-B"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["git", "push", "-u"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "create"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout="https://github.com/m0nklabs/cryptotrader/pull/77\n",
+                stderr="",
+            )
+        if command[:3] == ["gh", "pr", "list"]:
+            payload = [
+                {
+                    "number": 77,
+                    "url": "https://github.com/m0nklabs/cryptotrader/pull/77",
+                    "headRefName": "issue/cryptotrader-42-add-pnl-summary",
+                    "headRefOid": "abc123",
+                }
+            ]
+            return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        if command[:3] == ["gh", "pr", "diff"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "review"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if "--message" in command:
+            message = command[command.index("--message") + 1]
+            if "Review this new PR" in message:
+                return CompletedProcess(
+                    command,
+                    0,
+                    stdout="kyber-tag.state=review_findings\nnext_action=coding_subagent\n",
+                    stderr="",
+                )
+            return CompletedProcess(command, 0, stdout="local coder done", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+    monkeypatch.setenv("AIDER_BIN", "/opt/aider/bin/aider")
+    monkeypatch.setenv("AIDER_GUARDIAN_API_KEY", "local-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "cloud-key")
+    monkeypatch.setenv("KYBERM0NK_ENV", str(tmp_path / "missing.env"))
+
+    with pytest.raises(ReviewFindingsRetry):
+        await _execute_single_issue(store, run, issue, notify)
+
+    original = store.get_run(run.id)
+    assert original.status is IssueRunStatus.RUNNING
+    assert original.branch == "issue/cryptotrader-42-add-pnl-summary"
+    assert any("keeping run #" in message for message in messages)
 
 
 def test_master_issue_label_detection():
