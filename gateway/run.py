@@ -85,6 +85,15 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+
+def _redact_active_task_session_key(session_key: str) -> str:
+    text = str(session_key or "")
+    if not text:
+        return "<missing>"
+    if len(text) <= 12:
+        return text
+    return f"{text[:8]}..."
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -1925,16 +1934,21 @@ class GatewayRunner:
         try:
             from gateway.active_task import resolve_git_branch, resolve_git_head
 
+            branch = resolve_git_branch(cwd)
+            head = resolve_git_head(cwd)
             store.replace_foreground_session(
                 session_key=session_key,
                 repo_path=cwd,
-                branch=resolve_git_branch(cwd),
-                head=resolve_git_head(cwd),
+                branch=branch,
+                head=head,
             )
             logger.info(
-                "foreground active-task record written: session_key=%s cwd=%s",
-                session_key,
-                cwd,
+                "foreground active-task record written: session_key=%s cwd_exists=%s "
+                "has_branch=%s has_head=%s",
+                _redact_active_task_session_key(session_key),
+                Path(cwd).expanduser().exists(),
+                bool(branch),
+                bool(head),
             )
         except Exception:
             logger.debug("Failed to update foreground active-task store", exc_info=True)
@@ -1949,28 +1963,77 @@ class GatewayRunner:
 
         record = None
         store = getattr(self, "active_task_store", None)
+        session_label = _redact_active_task_session_key(session_key)
+        diagnostic_reason = "none"
+        metadata = {
+            "exists": False,
+            "parsed": False,
+            "record_count": 0,
+            "foreground_count": 0,
+        }
         if store is not None and session_key:
-            try:
-                record = store.get(session_key)
-            except Exception:
-                record = None
-            if record is None:
+            inspect_metadata = getattr(store, "inspect_metadata", None)
+            if callable(inspect_metadata):
+                metadata = inspect_metadata()
+            else:
                 store_path = getattr(store, "path", None)
-                if store_path is not None and not Path(store_path).exists():
-                    logger.info(
-                        "active-task store file is absent during recovery: session_key=%s path=%s",
-                        session_key,
-                        store_path,
-                    )
-                else:
-                    logger.info(
-                        "active-task record missing during recovery: session_key=%s",
-                        session_key,
-                    )
+                metadata["exists"] = bool(store_path is not None and Path(store_path).exists())
+                metadata["parsed"] = metadata["exists"]
+            if metadata.get("exists") and metadata.get("parsed"):
+                try:
+                    record = store.get(session_key)
+                except Exception:
+                    record = None
+                    diagnostic_reason = "lookup_error"
+            if not metadata.get("exists"):
+                diagnostic_reason = "store_absent"
+            elif not metadata.get("parsed"):
+                diagnostic_reason = "parse_failed"
+            elif record is None and diagnostic_reason == "none":
+                diagnostic_reason = "session_key_miss"
+            elif record is not None:
+                diagnostic_reason = "record_found"
         elif store is None:
-            logger.info("active-task store missing during recovery")
+            diagnostic_reason = "store_missing"
         elif not session_key:
-            logger.info("active-task recovery skipped: no session_key")
+            diagnostic_reason = "no_session_key"
+
+        if record is None:
+            logger.info(
+                "active-task recovery lookup: store_exists=%s store_parse_ok=%s "
+                "session_key=%s record_found=False record_count=%s foreground_count=%s "
+                "used=False ignored_reason=%s",
+                metadata.get("exists"),
+                metadata.get("parsed"),
+                session_label,
+                metadata.get("record_count"),
+                metadata.get("foreground_count"),
+                diagnostic_reason,
+            )
+            if diagnostic_reason == "store_absent":
+                logger.info(
+                    "active-task store file is absent during recovery: session_key=%s",
+                    session_label,
+                )
+            elif diagnostic_reason == "parse_failed":
+                logger.info(
+                    "active-task recovery lookup failed: store_parse_ok=False session_key=%s",
+                    session_label,
+                )
+        else:
+            logger.info(
+                "active-task recovery lookup: store_exists=%s store_parse_ok=%s "
+                "session_key=%s record_found=True mode=%s status=%s "
+                "has_repo_path=%s has_branch=%s has_head=%s used=True ignored_reason=none",
+                metadata.get("exists"),
+                metadata.get("parsed"),
+                session_label,
+                record.mode,
+                record.status,
+                bool(record.repo_path),
+                bool(record.branch),
+                bool(record.head),
+            )
         return build_active_task_recovery_note(record, resume_reason)
 
 

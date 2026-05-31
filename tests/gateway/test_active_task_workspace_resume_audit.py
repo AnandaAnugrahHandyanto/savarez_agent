@@ -210,6 +210,100 @@ def test_foreground_session_snapshot_replaces_stale_same_session_metadata(tmp_pa
     assert "old user task text" not in json.dumps(raw)
 
 
+def test_legacy_foreground_session_record_is_sanitized_on_read(tmp_path):
+    repo_path = tmp_path / "project"
+    repo_path.mkdir()
+    store_path = tmp_path / "active_tasks.json"
+    session_key = "agent:main:discord:thread:thread-parent:thread-1"
+    store_path.write_text(
+        json.dumps(
+            {
+                session_key: {
+                    "session_key": session_key,
+                    "session_id": "stale-session",
+                    "platform": "discord",
+                    "chat_id": "thread-parent",
+                    "thread_id": "thread-1",
+                    "repo_path": str(repo_path),
+                    "branch": "main",
+                    "head": "abc123",
+                    "mode": "foreground_session",
+                    "command": "SECRET_COMMAND_SHOULD_NOT_LEAK",
+                    "task_summary": "SECRET_TASK_SHOULD_NOT_LEAK",
+                    "status": "active",
+                    "pid": 123,
+                    "process_session_id": "proc-stale",
+                    "latest_log_path": "/tmp/secret.log",
+                    "latest_summary_path": "/tmp/secret.json",
+                    "resume_reason": "shutdown_timeout",
+                    "updated_at": "2026-05-31T07:41:14.889016+00:00",
+                    "extra_legacy_field": "SECRET_EXTRA_SHOULD_NOT_LEAK",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    record = ActiveTaskStore(store_path).get(session_key)
+    note = build_active_task_recovery_note(record, "restart_timeout")
+
+    assert record is not None
+    assert record.mode == "foreground_session"
+    assert record.repo_path == str(repo_path)
+    assert record.branch == "main"
+    assert record.head == "abc123"
+    assert record.command is None
+    assert record.task_summary is None
+    assert record.pid is None
+    assert record.process_session_id is None
+    assert record.session_id is None
+    assert record.platform is None
+    assert record.chat_id is None
+    assert record.thread_id is None
+    assert record.latest_log_path is None
+    assert record.latest_summary_path is None
+    assert record.resume_reason is None
+    raw = record.to_dict()
+    assert set(raw) == {
+        "session_key",
+        "repo_path",
+        "branch",
+        "head",
+        "mode",
+        "status",
+        "updated_at",
+    }
+    assert "SECRET_" not in json.dumps(raw)
+    assert "SECRET_" not in note
+
+
+def test_background_process_record_keeps_process_fields_on_read(tmp_path):
+    repo_path = tmp_path / "project"
+    repo_path.mkdir()
+    store = ActiveTaskStore(tmp_path / "active_tasks.json")
+    record = store.upsert(
+        session_key="agent:main:discord:thread:thread-parent:thread-1",
+        repo_path=str(repo_path),
+        branch="main",
+        head="abc123",
+        mode="background_process",
+        command="python tools/refill.py",
+        task_summary="Signal Room refill batch",
+        status="active",
+        process_session_id="proc_active",
+        pid=12345,
+    )
+
+    reloaded = ActiveTaskStore(store.path).get(record.session_key)
+
+    assert reloaded is not None
+    assert reloaded.mode == "background_process"
+    assert reloaded.command == "python tools/refill.py"
+    assert reloaded.task_summary == "Signal Room refill batch"
+    assert reloaded.process_session_id == "proc_active"
+    assert reloaded.pid == 12345
+
+
 def test_gateway_workspace_resolver_does_not_record_foreground_without_session_key(tmp_path, monkeypatch):
     repo_path = tmp_path / "project"
     repo_path.mkdir()
@@ -236,6 +330,7 @@ def test_resume_recovery_logs_when_active_task_store_file_is_absent(tmp_path, ca
 
     assert "Active workspace/process state: unknown" in note
     assert "active-task store file is absent" in caplog.text
+    assert "session_key=agent:ma..." in caplog.text
 
 
 def test_resume_recovery_logs_when_active_task_store_file_is_malformed(tmp_path, caplog):
@@ -244,7 +339,7 @@ def test_resume_recovery_logs_when_active_task_store_file_is_malformed(tmp_path,
     runner = object.__new__(GatewayRunner)
     runner.active_task_store = ActiveTaskStore(store_path)
 
-    with caplog.at_level(logging.WARNING, logger="gateway.active_task"):
+    with caplog.at_level(logging.INFO):
         note = runner._build_resume_recovery_note(
             "agent:main:discord:thread:thread-parent:thread-1",
             "restart_timeout",
@@ -252,6 +347,65 @@ def test_resume_recovery_logs_when_active_task_store_file_is_malformed(tmp_path,
 
     assert "Active workspace/process state: unknown" in note
     assert "failed to parse active-task store" in caplog.text
+    assert any(
+        "active-task recovery lookup failed: store_parse_ok=False" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_resume_recovery_logs_session_key_miss_with_existing_records(tmp_path, caplog):
+    repo_path = tmp_path / "project"
+    repo_path.mkdir()
+    store = ActiveTaskStore(tmp_path / "active_tasks.json")
+    store.replace_foreground_session(
+        session_key="agent:main:discord:thread:other-parent:other-thread",
+        repo_path=str(repo_path),
+        branch="main",
+        head="abc123",
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.active_task_store = store
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        note = runner._build_resume_recovery_note(
+            "agent:main:discord:thread:thread-parent:thread-1",
+            "restart_timeout",
+        )
+
+    assert "Active workspace/process state: unknown" in note
+    assert "record_found=False" in caplog.text
+    assert "record_count=1" in caplog.text
+    assert "foreground_count=1" in caplog.text
+    assert "thread-parent" not in caplog.text
+    assert "thread-1" not in caplog.text
+
+
+def test_resume_recovery_logs_session_key_hit_with_foreground_record(tmp_path, caplog):
+    repo_path = tmp_path / "project"
+    repo_path.mkdir()
+    session_key = "agent:main:discord:thread:thread-parent:thread-1"
+    store = ActiveTaskStore(tmp_path / "active_tasks.json")
+    store.replace_foreground_session(
+        session_key=session_key,
+        repo_path=str(repo_path),
+        branch="main",
+        head="abc123",
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.active_task_store = store
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        note = runner._build_resume_recovery_note(session_key, "restart_timeout")
+
+    assert f"Previous repo path: {repo_path}" in note
+    assert "record_found=True" in caplog.text
+    assert "mode=foreground_session" in caplog.text
+    assert "has_repo_path=True" in caplog.text
+    assert "has_branch=True" in caplog.text
+    assert "has_head=True" in caplog.text
+    assert "used=True" in caplog.text
+    assert "thread-parent" not in caplog.text
+    assert "thread-1" not in caplog.text
 
 
 def test_resume_pending_note_includes_active_task_facts(tmp_path):

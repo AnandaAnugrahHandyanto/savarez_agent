@@ -18,6 +18,15 @@ from utils import atomic_json_write
 
 DEFAULT_ACTIVE_TASK_TTL_SECONDS = 48 * 60 * 60
 ACTIVE_TASK_STATUSES = {"active", "interrupted", "detached", "unknown"}
+FOREGROUND_SESSION_FIELDS = (
+    "session_key",
+    "repo_path",
+    "branch",
+    "head",
+    "mode",
+    "status",
+    "updated_at",
+)
 logger = logging.getLogger(__name__)
 
 
@@ -68,12 +77,17 @@ class ActiveTaskRecord:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ActiveTaskRecord":
         fields = {name for name in cls.__dataclass_fields__}
+        if data.get("mode") == "foreground_session":
+            fields = fields & set(FOREGROUND_SESSION_FIELDS)
         payload = {key: data.get(key) for key in fields if key in data}
         if not payload.get("updated_at"):
             payload["updated_at"] = _utc_now_iso()
         return cls(**payload)
 
     def to_dict(self) -> dict[str, Any]:
+        if self.mode == "foreground_session":
+            raw = asdict(self)
+            return {key: raw.get(key) for key in FOREGROUND_SESSION_FIELDS}
         return asdict(self)
 
     def is_fresh(self, ttl_seconds: int = DEFAULT_ACTIVE_TASK_TTL_SECONDS) -> bool:
@@ -117,6 +131,36 @@ class ActiveTaskStore:
 
     def _write_unlocked(self, data: dict[str, Any]) -> None:
         atomic_json_write(self.path, data, indent=2)
+
+    def inspect_metadata(self) -> dict[str, Any]:
+        """Return safe store metadata for recovery diagnostics."""
+        exists = self.path.exists()
+        metadata: dict[str, Any] = {
+            "exists": exists,
+            "parsed": False,
+            "record_count": 0,
+            "foreground_count": 0,
+        }
+        if not exists:
+            return metadata
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            logger.warning("failed to parse active-task store %s: %s", self.path, exc)
+            return metadata
+        except OSError as exc:
+            logger.warning("failed to read active-task store %s: %s", self.path, exc)
+            return metadata
+        if not isinstance(data, dict):
+            return metadata
+        metadata["parsed"] = True
+        metadata["record_count"] = len(data)
+        metadata["foreground_count"] = sum(
+            1
+            for record in data.values()
+            if isinstance(record, dict) and record.get("mode") == "foreground_session"
+        )
+        return metadata
 
     def get(self, session_key: str) -> Optional[ActiveTaskRecord]:
         if not session_key:
