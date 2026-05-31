@@ -1589,6 +1589,28 @@ def resolve_channel_prompt(
     return None
 
 
+def resolve_channel_model(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> str | None:
+    """Resolve a per-channel model override from platform config.
+
+    Looks up ``channel_models`` in the adapter's ``config.extra`` dict.
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (forum threads / child channels inheriting a parent's model).
+
+    Returns the model string, or None if no match.  Blank values are absent.
+    """
+    models = config_extra.get("channel_models") or {}
+    if not isinstance(models, dict):
+        return None
+    for key in (channel_id, parent_id):
+        if key and (model := str(models.get(key) or "").strip()):
+            return model
+    return None
+
+
 def resolve_channel_skills(
     config_extra: dict,
     channel_id: str,
