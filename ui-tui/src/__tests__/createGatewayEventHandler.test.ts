@@ -688,7 +688,9 @@ describe('createGatewayEventHandler', () => {
     const ctx = buildCtx(appended)
 
     ctx.session.newSession = newSession
-    ctx.session.resumeById = resumeById
+    // Mimic resumeById's synchronous status write so the test proves the
+    // "recovering session…" label is applied *after* (and survives) it.
+    ctx.session.resumeById = resumeById.mockImplementation(() => patchUiState({ status: 'resuming…' }))
     ctx.session.STARTUP_RESUME_ID = ''
     ctx.session.recoverSidRef = ref<null | string>('sess-crashed')
 
@@ -701,6 +703,7 @@ describe('createGatewayEventHandler', () => {
     // One-shot: the ref is consumed so a later ordinary restart forges/resumes
     // per config instead of re-resuming the recovered session.
     expect(ctx.session.recoverSidRef.current).toBeNull()
+    expect(getUiState().status).toBe('recovering session…')
   })
 
   it('on gateway.ready with auto_resume on and a recent session, resumes it', async () => {
