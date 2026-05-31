@@ -168,9 +168,8 @@ google = [
   "google-auth-httplib2==0.3.1",
 ]
 youtube = [
-  # Required by skills/media/youtube-content and
-  # optional-skills/productivity/memento-flashcards (youtube_quiz.py).
-  # Without this declaration uv sync omits the package and both skills fail
+  # Required by skills/media/youtube-content.
+  # Without this declaration uv sync omits the package and the skill fails
   # at first invocation with ModuleNotFoundError (issue #22243).
   "youtube-transcript-api==1.2.4",
 ]

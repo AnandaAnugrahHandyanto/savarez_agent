@@ -5,7 +5,7 @@ The hint function used to compare the skill's parent-directory name
 against the typed command and the disabled list. That silently missed
 every skill whose directory name differs from its declared frontmatter
 name (~19 skills on a standard install), so users typing a real slug
-like ``/stable-diffusion-image-generation`` got a generic "unknown
+like ``/page-agent-browser-automation`` got a generic "unknown
 command" response instead of the intended "disabled — enable with …"
 or "not installed — install with …" hint.
 
@@ -51,34 +51,34 @@ def _write_skill(skills_dir: Path, rel: str, frontmatter_name: str) -> Path:
 def test_frontmatter_slug_matched_even_when_dir_name_differs(
     tmp_skills: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Directory ``stable-diffusion`` + frontmatter ``Stable Diffusion Image Generation``.
+    """Directory ``page-agent`` + frontmatter ``Page Agent Browser Automation``.
 
-    Command typed: ``stable-diffusion-image-generation`` (the slug the
+    Command typed: ``page-agent-browser-automation`` (the slug the
     agent actually registers). The old dir-name-based check would have
     compared ``stable-diffusion`` to the typed command and missed.
     """
     from gateway import run as gateway_run
 
-    _write_skill(tmp_skills, "mlops/stable-diffusion", "Stable Diffusion Image Generation")
+    _write_skill(tmp_skills, "web-development/page-agent", "Page Agent Browser Automation")
 
     # Config disables by declared name (matches what `hermes skills config` writes).
     monkeypatch.setattr(
         "gateway.run._get_disabled_skill_names",
-        lambda: {"Stable Diffusion Image Generation"},
+        lambda: {"Page Agent Browser Automation"},
         raising=False,
     )
     with patch(
         "tools.skills_tool._get_disabled_skill_names",
-        return_value={"Stable Diffusion Image Generation"},
+        return_value={"Page Agent Browser Automation"},
     ), patch(
         "agent.skill_utils.get_all_skills_dirs",
         return_value=[tmp_skills],
     ):
-        msg = gateway_run._check_unavailable_skill("stable-diffusion-image-generation")
+        msg = gateway_run._check_unavailable_skill("page-agent-browser-automation")
 
     assert msg is not None, (
         "expected a 'disabled' hint for the frontmatter-derived slug; "
-        "the old code compared the dir name 'stable-diffusion' and returned None"
+        "the old code compared the dir name 'page-agent' and returned None"
     )
     assert "disabled" in msg.lower()
     assert "hermes skills config" in msg
@@ -142,18 +142,18 @@ def test_optional_skill_uses_frontmatter_slug(
     """Same drift bug applies to the optional-skills branch.
 
     Before: directory name was matched against the typed command, so an
-    optional skill at ``optional-skills/mlops/stable-diffusion/SKILL.md``
-    with frontmatter ``Stable Diffusion Image Generation`` returned None
+    optional skill at ``optional-skills/web-development/page-agent/SKILL.md``
+    with frontmatter ``Page Agent Browser Automation`` returned None
     when the user typed the real slug.
     """
     from gateway import run as gateway_run
 
     # Build an isolated optional-skills dir
     optional = tmp_path / "optional-skills"
-    skill_dir = optional / "mlops" / "stable-diffusion"
+    skill_dir = optional / "web-development" / "page-agent"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        "---\nname: Stable Diffusion Image Generation\ndescription: test\n---\n",
+        "---\nname: Page Agent Browser Automation\ndescription: test\n---\n",
         encoding="utf-8",
     )
 
@@ -175,11 +175,11 @@ def test_optional_skill_uses_frontmatter_slug(
     ), patch(
         "agent.skill_utils.get_all_skills_dirs", return_value=[empty_skills]
     ):
-        msg = gateway_run._check_unavailable_skill("stable-diffusion-image-generation")
+        msg = gateway_run._check_unavailable_skill("page-agent-browser-automation")
 
     assert msg is not None, (
         "optional-skills branch should recognize the frontmatter-derived slug; "
         "the old dir-name-based check returned None here too"
     )
     assert "not installed" in msg.lower()
-    assert "official/mlops/stable-diffusion" in msg
+    assert "official/web-development/page-agent" in msg
