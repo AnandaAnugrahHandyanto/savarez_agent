@@ -25,6 +25,7 @@
     "dist:win": "npm run build && npm run builder -- --win",
     "dist:win:msi": "npm run build && npm run builder -- --win msi",
     "dist:win:nsis": "npm run build && npm run builder -- --win nsis",
+    "dist:linux": "npm run build && npm run builder -- --linux AppImage deb rpm",
     "test:desktop": "node scripts/test-desktop.mjs",
     "test:desktop:all": "node scripts/test-desktop.mjs all",
     "test:desktop:dmg": "node scripts/test-desktop.mjs dmg",
@@ -203,6 +204,16 @@
         "msi"
       ],
       "signAndEditExecutable": false
+    },
+    "linux": {
+      "category": "Development",
+      "maintainer": "Nous Research <support@nousresearch.com>",
+      "synopsis": "Native desktop shell for Hermes Agent.",
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ]
     },
     "nsis": {
       "oneClick": false,

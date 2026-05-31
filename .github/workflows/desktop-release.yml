@@ -98,6 +98,9 @@ jobs:
           - platform: win
             runner: windows-latest
             build_args: --win nsis msi
+          - platform: linux
+            runner: ubuntu-latest
+            build_args: --linux AppImage deb rpm
     runs-on: ${{ matrix.runner }}
     env:
       DESKTOP_CHANNEL: ${{ needs.prepare.outputs.channel }}
@@ -135,7 +138,7 @@ jobs:
             [[ -z "${APPLE_API_KEY:-}" ]] && missing+=("APPLE_API_KEY")
             [[ -z "${APPLE_API_KEY_ID:-}" ]] && missing+=("APPLE_API_KEY_ID")
             [[ -z "${APPLE_API_ISSUER:-}" ]] && missing+=("APPLE_API_ISSUER")
-          else
+          elif [[ "${{ matrix.platform }}" == "win" ]]; then
             [[ -z "${WIN_CSC_LINK:-}" ]] && missing+=("WIN_CSC_LINK")
             [[ -z "${WIN_CSC_KEY_PASSWORD:-}" ]] && missing+=("WIN_CSC_KEY_PASSWORD")
           fi
@@ -236,7 +239,12 @@ jobs:
 
           const releaseDir = path.resolve('apps/desktop/release')
           const platform = process.env.PLATFORM
-          const extensions = platform === 'mac' ? ['.dmg', '.zip'] : ['.exe', '.msi']
+          const extensionsByPlatform = {
+            mac: ['.dmg', '.zip'],
+            win: ['.exe', '.msi'],
+            linux: ['.AppImage', '.deb', '.rpm'],
+          }
+          const extensions = extensionsByPlatform[platform] ?? []
           const files = fs
             .readdirSync(releaseDir)
             .filter(name => extensions.some(ext => name.endsWith(ext)))
@@ -265,6 +273,9 @@ jobs:
             apps/desktop/release/*.zip
             apps/desktop/release/*.exe
             apps/desktop/release/*.msi
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.deb
+            apps/desktop/release/*.rpm
             apps/desktop/release/SHA256SUMS-${{ matrix.platform }}.txt
           if-no-files-found: error
 
@@ -299,6 +310,9 @@ jobs:
             dist/desktop/**/*.zip
             dist/desktop/**/*.exe
             dist/desktop/**/*.msi
+            dist/desktop/**/*.AppImage
+            dist/desktop/**/*.deb
+            dist/desktop/**/*.rpm
             dist/desktop/**/SHA256SUMS-*.txt
           )
 
