@@ -17059,9 +17059,6 @@ class GatewayRunner:
                             def _stream_delta_cb(text: str) -> None:
                                 if _run_still_current():
                                     _stream_consumer.on_delta(text)
-                            logger.info("[streaming] stream_delta_cb assigned")
-                        else:
-                            logger.info("[streaming] _want_stream_deltas=False, no stream_delta_cb")
                         stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
@@ -17165,7 +17162,6 @@ class GatewayRunner:
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
-            logger.info("[streaming] agent.stream_delta_callback set, cb=%s", _stream_delta_cb is not None)
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config

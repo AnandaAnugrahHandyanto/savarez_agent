@@ -1272,12 +1272,18 @@ class WeComAdapter(BasePlatformAdapter):
         - Set ``finish=True`` on the final frame to end the stream
         - Content limit: 20480 bytes (WeCom enforced)
         """
+        truncated_content = content[: self.MAX_STREAM_CONTENT_LENGTH]
+        if len(content) > self.MAX_STREAM_CONTENT_LENGTH:
+            logger.warning(
+                "[%s] Stream content truncated: %d → %d bytes (stream_id=%s)",
+                self.name, len(content), self.MAX_STREAM_CONTENT_LENGTH, stream_id,
+            )
         body: Dict[str, Any] = {
             "msgtype": "stream",
             "stream": {
                 "id": stream_id,
                 "finish": finish,
-                "content": content[: self.MAX_STREAM_CONTENT_LENGTH],
+                "content": truncated_content,
             },
         }
         response = await self._send_reply_request(reply_req_id, body)
