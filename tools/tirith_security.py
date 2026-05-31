@@ -20,6 +20,7 @@ chain provenance proof.  Installation runs in a background thread so startup
 never blocks.
 """
 
+import errno
 import hashlib
 import json
 import logging
@@ -211,6 +212,55 @@ def _hermes_bin_dir() -> str:
     d = os.path.join(_get_hermes_home(), "bin")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _quarantine_wrong_arch_binary(path: str, exc: OSError) -> bool:
+    """Self-heal a wrong-architecture auto-installed tirith binary.
+
+    A binary copied from another platform (e.g. a Linux ELF carried over
+    during a container→macOS migration) is a regular, executable file, so
+    the resolver happily returns it — but ``subprocess`` then fails with
+    ``ENOEXEC`` ("Exec format error") on every command and fail-open leaves
+    the bad binary in place forever.
+
+    When the failing binary is the one *we* auto-installed under
+    ``$HERMES_HOME/bin`` and the error is an exec-format mismatch, delete it
+    and reset the resolver so the next call re-downloads the correct build
+    for this platform.  Explicit user-configured paths are never touched.
+
+    Returns True if a quarantine happened (caller should re-resolve).
+    """
+    global _resolved_path, _install_failure_reason
+
+    if getattr(exc, "errno", None) != errno.ENOEXEC:
+        return False
+    try:
+        hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
+    except OSError:
+        return False
+    if os.path.realpath(path) != os.path.realpath(hermes_bin):
+        # Not our managed binary (explicit path / on PATH) — don't touch it.
+        return False
+
+    try:
+        os.replace(hermes_bin, hermes_bin + ".wrongarch.bak")
+    except OSError:
+        try:
+            os.unlink(hermes_bin)
+        except OSError:
+            return False
+
+    # Reset resolver state + clear failure markers so the next command
+    # re-downloads the correct-arch build instead of fail-opening forever.
+    _resolved_path = None
+    _install_failure_reason = ""
+    _clear_install_failed()
+    logger.warning(
+        "tirith binary at %s is the wrong architecture (%s); quarantined "
+        "and will re-download the correct build for this platform.",
+        hermes_bin, exc,
+    )
+    return True
 
 
 def _detect_target() -> str | None:
@@ -737,6 +787,28 @@ def check_command_security(command: str) -> dict:
         )
     except OSError as exc:
         # Covers FileNotFoundError, PermissionError, exec format error.
+        # Wrong-architecture binary (ENOEXEC) — typically a Linux ELF carried
+        # over during a container→macOS migration. Quarantine it and retry
+        # once so a freshly downloaded, correct-arch build can run instead of
+        # fail-opening on every command for the next 24h.
+        if _quarantine_wrong_arch_binary(tirith_path, exc):
+            # Re-resolve: the quarantined binary lives at the same path, so a
+            # successful re-download reuses that path — match on "exists and
+            # is executable", not on a changed path string. A still-broken
+            # binary just raises again and falls through to fail-open (no loop).
+            new_path = _resolve_tirith_path(cfg["tirith_path"])
+            if new_path and os.path.isfile(new_path) and os.access(new_path, os.X_OK):
+                try:
+                    result = subprocess.run(
+                        [new_path, "check", "--json", "--non-interactive",
+                         "--shell", "posix", "--", command],
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                    )
+                    return _verdict_from_result(result, fail_open)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass  # fall through to fail-open handling below
         # Dedupe by ``(errno, exc class)`` so a transient failure mode
         # surfaces once but doesn't drown the log on every command —
         # commonly seen on Windows when the configured path "tirith"
@@ -757,6 +829,16 @@ def check_command_security(command: str) -> dict:
             return {"action": "allow", "findings": [], "summary": f"tirith timed out ({timeout}s)"}
         return {"action": "block", "findings": [], "summary": "tirith timed out (fail-closed)"}
 
+    return _verdict_from_result(result, fail_open)
+
+
+def _verdict_from_result(result: subprocess.CompletedProcess, fail_open: bool) -> dict:
+    """Map a completed tirith run to a verdict dict.
+
+    Exit code is the source of truth (0=allow, 1=block, 2=warn); JSON stdout
+    only enriches findings/summary. Shared by the normal path and the
+    wrong-arch self-heal retry.
+    """
     # Map exit code to action
     exit_code = result.returncode
     if exit_code == 0:
