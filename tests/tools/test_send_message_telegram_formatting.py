@@ -11,5 +11,9 @@ def test_supported_telegram_html_tags_are_treated_as_html() -> None:
     assert _message_uses_telegram_html("<b>Important</b> <a href='https://example.com'>link</a>")
 
 
+def test_supported_opening_tag_with_attributes_is_treated_as_html() -> None:
+    assert _message_uses_telegram_html("<a href='https://example.com'>link")
+
+
 def test_unsupported_html_like_tags_are_not_treated_as_html() -> None:
     assert not _message_uses_telegram_html("<script>alert('x')</script>")

@@ -57,7 +57,7 @@ _VOICE_EXTS = {".ogg", ".opus"}
 # formats either route through sendVoice (Opus/OGG) or fall back to
 # document delivery.
 _TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
-_TELEGRAM_HTML_TAG_RE = re.compile(r"</?([A-Za-z][A-Za-z0-9_-]*)(?:\\s[^>]*)?/?>")
+_TELEGRAM_HTML_TAG_RE = re.compile(r"</?([A-Za-z][A-Za-z0-9_-]*)(?:\s[^>]*)?/?>")
 _TELEGRAM_SUPPORTED_HTML_TAGS = frozenset(
     {
         "a",
