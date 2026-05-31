@@ -456,9 +456,16 @@ export default function ConfigPage() {
     }
   };
 
-  const startAllowlistEdit = (pattern: string) => {
-    setAllowlistEditTarget(pattern);
-    setAllowlistEditDraft(pattern);
+  const startAllowlistEdit = (entry: AllowlistEntry) => {
+    if (entry.kind === "danger_category") {
+      showToast(
+        "Danger-category entries come from approval prompts and should not be edited in place. Delete it if you want to remove it, or add a manual exact pattern separately.",
+        "error",
+      );
+      return;
+    }
+    setAllowlistEditTarget(entry.pattern);
+    setAllowlistEditDraft(entry.pattern);
   };
 
   const cancelAllowlistEdit = () => {
@@ -585,13 +592,26 @@ export default function ConfigPage() {
       {entries.map((entry) => {
         const pattern = entry.pattern;
         const isEditing = allowlistEditTarget === pattern;
+        const isDangerCategory = entry.kind === "danger_category";
+        const badgeTone = isDangerCategory ? "warning" : "secondary";
+        const badgeLabel = isDangerCategory ? "Danger category" : "Manual";
         return (
           <div
             key={`${entry.kind}:${pattern}`}
-            className="grid gap-3 border border-border/60 px-3 py-3"
+            className={`grid gap-3 border px-3 py-3 ${
+              isDangerCategory
+                ? "border-amber-500/30 bg-amber-500/5"
+                : "border-border/60"
+            }`}
           >
             {isEditing ? (
               <>
+                <div className="flex items-center justify-between gap-3">
+                  <Badge tone={badgeTone} className="text-[11px] uppercase tracking-wide">
+                    {badgeLabel}
+                  </Badge>
+                  <p className="text-[11px] text-muted-foreground">Manual exact pattern edit</p>
+                </div>
                 <Input
                   value={allowlistEditDraft}
                   onChange={(e) => setAllowlistEditDraft(e.target.value)}
@@ -628,8 +648,24 @@ export default function ConfigPage() {
               </>
             ) : (
               <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-stretch">
-                <div className="flex min-h-9 min-w-0 items-center border border-border/60 bg-muted/10 px-3 font-mono text-xs text-foreground">
-                  <span className="min-w-0 break-all">{pattern}</span>
+                <div className="grid gap-2 border border-border/60 bg-muted/10 px-3 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <Badge tone={badgeTone} className="text-[11px] uppercase tracking-wide">
+                      {badgeLabel}
+                    </Badge>
+                  </div>
+                  <div className="flex min-h-9 min-w-0 items-center font-mono text-xs text-foreground">
+                    <span className="min-w-0 break-all">{pattern}</span>
+                  </div>
+                  {isDangerCategory ? (
+                    <p className="text-[11px] text-amber-300/90">
+                      Stored from an approval prompt as a broad danger key. Delete it to remove the approval, or add a separate manual exact pattern if needed.
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">
+                      Exact-match manual entry saved as-is.
+                    </p>
+                  )}
                 </div>
                 <div className="flex flex-wrap items-stretch justify-end gap-2 lg:shrink-0">
                   <Button
@@ -647,10 +683,20 @@ export default function ConfigPage() {
                     size="sm"
                     className="h-9 min-w-[96px] justify-center"
                     prefix={<Pencil className="h-3.5 w-3.5" />}
-                    onClick={() => startAllowlistEdit(pattern)}
-                    disabled={allowlistBusy}
+                    onClick={() => startAllowlistEdit(entry)}
+                    disabled={allowlistBusy || isDangerCategory}
+                    title={
+                      isDangerCategory
+                        ? "Danger-category approvals should not be edited in place. Delete it or add a manual exact pattern."
+                        : "Edit entry"
+                    }
+                    aria-label={
+                      isDangerCategory
+                        ? `Editing disabled for danger category ${pattern}`
+                        : `Edit entry ${pattern}`
+                    }
                   >
-                    Edit
+                    {isDangerCategory ? "Manual only" : "Edit"}
                   </Button>
                   <Button
                     outlined
