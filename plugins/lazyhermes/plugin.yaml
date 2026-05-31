@@ -1,0 +1,8 @@
+name: lazyhermes
+version: 0.1.0
+description: "Hermes-native LazyCodex/OmO workflow retrofit: ultrawork commands, skills, and prompt steering."
+author: "Hermes Agent"
+kind: standalone
+auto_load: true
+hooks:
+  - pre_llm_call
