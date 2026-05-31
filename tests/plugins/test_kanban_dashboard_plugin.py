@@ -250,6 +250,22 @@ def test_dashboard_select_filters_use_sdk_value_change_handler():
     assert "selectChangeHandler(props.setAssigneeFilter)" in js
 
 
+def test_dashboard_card_detail_is_fullscreen_not_sidebar():
+    """Card clicks should open a full-screen detail view, not a narrow side drawer."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    style = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    css = style.read_text()
+
+    drawer_block = css.split(".hermes-kanban-drawer {")[1].split("}", 1)[0]
+    shade_block = css.split(".hermes-kanban-drawer-shade {")[1].split("}", 1)[0]
+
+    assert "width: 100vw;" in drawer_block
+    assert "max-height: 100dvh;" in drawer_block
+    assert "justify-content: stretch;" in shade_block
+    assert "--hermes-kanban-drawer-width" not in drawer_block
+
+
 def test_dashboard_client_side_filtering_includes_tenant_filter():
     """The rendered board must also filter by tenant.
 

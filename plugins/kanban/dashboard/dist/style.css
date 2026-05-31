@@ -325,31 +325,30 @@
 .hermes-kanban-drawer-shade {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--color-background);
   z-index: 60;
   display: flex;
-  justify-content: flex-end;
+  justify-content: stretch;
 }
 
 .hermes-kanban-drawer {
-  width: min(var(--hermes-kanban-drawer-width, 640px), 92vw);
+  width: 100vw;
   height: 100vh;
-  /* Dynamic viewport unit excludes the mobile browser's collapsing chrome
-     (URL/nav bars) so the drawer's bottom row stays reachable. Falls back to
-     100vh on browsers without dvh support. */
+  /* Dynamic viewport unit excludes mobile/iPad browser chrome so the bottom
+     comment row stays reachable. Falls back to 100vh on older browsers. */
   height: 100dvh;
   max-height: 100dvh;
   background: var(--color-card);
-  border-left: 1px solid var(--color-border);
+  border-left: 0;
   display: flex;
   flex-direction: column;
-  box-shadow: -4px 0 18px rgba(0, 0, 0, 0.35);
-  animation: hermes-kanban-drawer-in 180ms ease-out;
+  box-shadow: none;
+  animation: hermes-kanban-drawer-in 140ms ease-out;
 }
 
 @keyframes hermes-kanban-drawer-in {
-  from { transform: translateX(100%); opacity: 0.3; }
-  to   { transform: translateX(0);    opacity: 1; }
+  from { transform: translateY(1rem); opacity: 0.3; }
+  to   { transform: translateY(0);    opacity: 1; }
 }
 
 .hermes-kanban-drawer-head {
