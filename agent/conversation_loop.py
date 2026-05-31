@@ -799,12 +799,11 @@ def run_conversation(
     # planning-only text response as final. See agent/stall_retry.py.
     _stall_retry_count = 0
     try:
-        _stall_retry_max_per_turn = int(
-            os.environ.get("HERMES_STALL_RETRY_MAX_PER_TURN", "5") or 5
-        )
-    except ValueError:
+        from agent.stall_retry import get_stall_retry_max_per_turn
+
+        _stall_retry_max_per_turn = get_stall_retry_max_per_turn(agent)
+    except Exception:
         _stall_retry_max_per_turn = 5
-    _stall_retry_max_per_turn = max(0, _stall_retry_max_per_turn)
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
