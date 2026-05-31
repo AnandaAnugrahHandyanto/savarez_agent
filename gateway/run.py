@@ -1703,6 +1703,7 @@ class GatewayRunner:
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._platform_resume_delay = self._load_platform_resume_delay()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -2788,6 +2789,11 @@ class GatewayRunner:
         retryable failures, and by ``/platform pause <name>`` for manual
         intervention.  Paused platforms are surfaced in ``/platform list``
         and resumed with ``/platform resume <name>``.
+
+        If ``gateway.platform_resume_delay`` (or env
+        ``HERMES_PLATFORM_RESUME_DELAY``) is set to a positive number of
+        **minutes**, the watcher will auto-resume the platform after that
+        delay instead of staying paused forever.
         """
         info = getattr(self, "_failed_platforms", {}).get(platform)
         if info is None:
@@ -2795,10 +2801,30 @@ class GatewayRunner:
         if info.get("paused"):
             return
         info["paused"] = True
+        delay_min = getattr(self, "_platform_resume_delay", 0)
         info["pause_reason"] = reason or "auto-paused after repeated failures"
-        # Push next_retry far enough out that even if "paused" is missed
-        # by a stale code path, the watcher won't fire on it.
-        info["next_retry"] = float("inf")
+        if delay_min > 0:
+            # Schedule auto-resume after the configured delay
+            info["next_retry"] = time.monotonic() + delay_min * 60
+            info["auto_resume_at"] = info["next_retry"]
+            logger.warning(
+                "%s paused after %d consecutive failures (%s) — "
+                "will auto-resume in %d min. "
+                "Run `/platform resume %s` to retry sooner.",
+                platform.value, info.get("attempts", 0),
+                info["pause_reason"], delay_min, platform.value,
+            )
+        else:
+            # Push next_retry far enough out that even if "paused" is missed
+            # by a stale code path, the watcher won't fire on it.
+            info["next_retry"] = float("inf")
+            logger.warning(
+                "%s paused after %d consecutive failures (%s) — "
+                "fix the underlying issue then run `/platform resume %s` "
+                "to retry, or `hermes gateway restart` to restart the gateway.",
+                platform.value, info.get("attempts", 0),
+                info["pause_reason"], platform.value,
+            )
         try:
             self._update_platform_runtime_status(
                 platform.value,
@@ -2808,13 +2834,6 @@ class GatewayRunner:
             )
         except Exception:
             pass
-        logger.warning(
-            "%s paused after %d consecutive failures (%s) — "
-            "fix the underlying issue then run `/platform resume %s` "
-            "to retry, or `hermes gateway restart` to restart the gateway.",
-            platform.value, info.get("attempts", 0),
-            info["pause_reason"], platform.value,
-        )
 
     def _resume_paused_platform(self, platform) -> bool:
         """Unpause a platform — reset its attempt counter and schedule an
@@ -3074,6 +3093,32 @@ class GatewayRunner:
         except Exception:
             pass
         return {}
+
+    @staticmethod
+    def _load_platform_resume_delay() -> int:
+        """Load gateway.platform_resume_delay from config.yaml.
+
+        Controls how many **minutes** the gateway waits before automatically
+        resuming a paused platform (e.g. after Clash/VPN network recovery).
+
+        0 = never auto-resume (current default, backward compatible).
+        Environment variable ``HERMES_PLATFORM_RESUME_DELAY`` overrides.
+        """
+        raw = os.getenv("HERMES_PLATFORM_RESUME_DELAY", "").strip()
+        if not raw:
+            try:
+                cfg = _load_gateway_runtime_config()
+                raw = str(
+                    cfg_get(cfg, "gateway", "platform_resume_delay", default="0")
+                    or ""
+                ).strip()
+            except Exception:
+                pass
+        try:
+            val = int(raw)
+            return max(val, 0)
+        except (TypeError, ValueError, AttributeError):
+            return 0
 
     @staticmethod
     def _load_fallback_model() -> list | None:
@@ -5890,10 +5935,25 @@ class GatewayRunner:
                 if not self._running:
                     return
                 info = self._failed_platforms[platform]
-                # Skip paused platforms entirely — they need explicit
-                # /platform resume to come back.
+                # Skip paused platforms that haven't reached their
+                # auto-resume time yet (if gateway.platform_resume_delay
+                # is set).  Platforms paused manually via /platform pause
+                # have no auto_resume_at and stay paused until resumed.
                 if info.get("paused"):
-                    continue
+                    auto_at = info.get("auto_resume_at")
+                    if auto_at is None or now < auto_at:
+                        continue
+                    # Auto-resume: timeout expired
+                    logger.info(
+                        "%s auto-resuming after pause timeout",
+                        platform.value,
+                    )
+                    self._resume_paused_platform(platform)
+                    if not self._running:
+                        return
+                    info = self._failed_platforms.get(platform)
+                    if info is None or info.get("paused"):
+                        continue
                 if now < info["next_retry"]:
                     continue  # not time yet
 
