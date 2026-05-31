@@ -487,6 +487,13 @@ from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 
+class MediaKind(Enum):
+    IMAGE = "image"
+    VIDEO = "video"
+    VOICE = "voice"
+    DOCUMENT = "document"
+
+
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
     "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
@@ -2032,6 +2039,13 @@ class BasePlatformAdapter(ABC):
     # such as DingTalk AI Cards) override this to True (class attribute or
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
+
+    # Media kinds this adapter natively DELIVERS via its send_* overrides.
+    # Fail-closed default: an adapter advertises nothing until it declares.
+    # Single source of truth for every media-dispatch site — declaring a kind
+    # you don't truly deliver re-opens the path-as-text leak, so the declared
+    # set is pinned by tests/gateway/test_media_kinds.py.
+    MEDIA_KINDS: frozenset[MediaKind] = frozenset()
 
     async def create_handoff_thread(
         self,
