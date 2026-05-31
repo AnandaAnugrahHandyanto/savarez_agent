@@ -6,33 +6,25 @@ Available for **macOS, Windows, and Linux**.
 
 ## Install
 
-### Download an installer (easiest)
+### Install with Hermes (recommended)
 
-Grab the build for your OS from the [latest release](https://github.com/NousResearch/hermes-agent/releases/latest):
+Add `--include-desktop` to the [one-line installer](../../README.md#quick-install) and it sets up the agent and builds the desktop app in one go:
 
-| OS | File |
-|----|------|
-| macOS | `.dmg` — open it, drag **Hermes** to Applications |
-| Windows | `.exe` — run the installer (`.msi` also available for managed deploys) |
-| Linux | `.AppImage` (portable), or `.deb` / `.rpm` |
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --include-desktop
+```
 
-On first launch Hermes sets itself up automatically — it installs the agent runtime, then walks you through picking a provider and model. Nothing else to configure.
-
-### Already have the Hermes CLI?
-
-If you've installed Hermes via the [one-line installer](../../README.md#quick-install), just run:
+Already have the Hermes CLI? Just run:
 
 ```bash
 hermes desktop
 ```
 
-It builds and launches the GUI against your existing install — same config, keys, sessions, and skills.
+It builds and launches the GUI against your existing install — same config, keys, sessions, and skills. On first launch Hermes walks you through picking a provider and model; nothing else to configure.
 
-To get the desktop alongside a fresh CLI install, add `--include-desktop` to the installer:
+### Prebuilt installers
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --include-desktop
-```
+When a release ships desktop installers they're attached to its [releases page](https://github.com/NousResearch/hermes-agent/releases) — `.dmg` (macOS), `.exe` / `.msi` (Windows), `.AppImage` / `.deb` / `.rpm` (Linux). These are published manually, so the install-with-Hermes path above is the most reliable way to get the latest.
 
 ## What you get
 
