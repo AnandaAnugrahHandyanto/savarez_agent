@@ -302,6 +302,20 @@ def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
     assert "value_from_dotenv" not in args_str
 
 
+def test_init_env_args_falls_back_to_dotenv_for_empty_shell_env(monkeypatch):
+    """Empty forwarded env vars should not mask durable .env values."""
+    env = _make_execute_only_env(["DATABASE_URL"])
+
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
+
+    args = env._build_init_env_args()
+    args_str = " ".join(args)
+
+    assert "DATABASE_URL=value_from_dotenv" in args_str
+    assert "DATABASE_URL= " not in args_str
+
+
 # ── docker_env tests ──────────────────────────────────────────────
 
 
