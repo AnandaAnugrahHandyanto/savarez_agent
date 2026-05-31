@@ -113,7 +113,7 @@ def test_gateway_workspace_resolver_falls_back_to_terminal_cwd(tmp_path, monkeyp
     systemd_cwd = tmp_path / "gateway-checkout"
     terminal_cwd = tmp_path / "terminal-cwd"
     systemd_cwd.mkdir()
-    terminal_cwd.mkdir()
+    _init_git_repo(terminal_cwd)
 
     runner = object.__new__(GatewayRunner)
     runner.active_task_store = ActiveTaskStore(tmp_path / "active_tasks.json")
@@ -125,6 +125,71 @@ def test_gateway_workspace_resolver_falls_back_to_terminal_cwd(tmp_path, monkeyp
     )
 
     assert resolved == str(terminal_cwd)
+
+
+def test_gateway_workspace_resolver_skips_placeholder_terminal_cwd_and_home_fallback(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    store_path = tmp_path / "active_tasks.json"
+    runner = object.__new__(GatewayRunner)
+    runner.active_task_store = ActiveTaskStore(store_path)
+    monkeypatch.setenv("TERMINAL_CWD", ".")
+    monkeypatch.setattr("gateway.run.Path.home", lambda: home)
+
+    resolved = runner._resolve_agent_working_directory(
+        "agent:main:discord:thread:thread-parent:thread-1",
+        fallback_cwd=str(home),
+    )
+
+    assert resolved == str(home)
+    assert not store_path.exists()
+
+
+def test_gateway_workspace_resolver_uses_explicit_agent_cwd_before_placeholder(
+    tmp_path, monkeypatch
+):
+    repo_path = tmp_path / "project"
+    expected_head = _init_git_repo(repo_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    session_key = "agent:main:discord:thread:thread-parent:thread-1"
+    runner = object.__new__(GatewayRunner)
+    runner.active_task_store = ActiveTaskStore(tmp_path / "active_tasks.json")
+    monkeypatch.setenv("TERMINAL_CWD", ".")
+    monkeypatch.setattr("gateway.run.Path.home", lambda: home)
+
+    resolved = runner._resolve_agent_working_directory(
+        session_key,
+        explicit_cwds=[str(repo_path)],
+        fallback_cwd=str(home),
+    )
+
+    reloaded = runner.active_task_store.get(session_key)
+    assert resolved == str(repo_path)
+    assert reloaded is not None
+    assert reloaded.repo_path == str(repo_path)
+    assert reloaded.head == expected_head
+
+
+def test_gateway_workspace_resolver_skips_non_git_terminal_cwd(tmp_path, monkeypatch):
+    systemd_cwd = tmp_path / "gateway-checkout"
+    terminal_cwd = tmp_path / "terminal-cwd"
+    systemd_cwd.mkdir()
+    terminal_cwd.mkdir()
+    store_path = tmp_path / "active_tasks.json"
+    runner = object.__new__(GatewayRunner)
+    runner.active_task_store = ActiveTaskStore(store_path)
+    monkeypatch.setenv("TERMINAL_CWD", str(terminal_cwd))
+
+    resolved = runner._resolve_agent_working_directory(
+        "agent:main:discord:thread:thread-parent:thread-1",
+        fallback_cwd=str(systemd_cwd),
+    )
+
+    assert resolved == str(systemd_cwd)
+    assert not store_path.exists()
 
 
 def test_gateway_workspace_resolver_records_foreground_session_snapshot(tmp_path, monkeypatch):
@@ -268,8 +333,8 @@ def test_foreground_persistence_skips_non_git_fallback_cwd(tmp_path, monkeypatch
 
     assert resolved == str(fallback_cwd)
     assert not store_path.exists()
-    assert "foreground active-task record skipped" in caplog.text
-    assert "cwd_git_valid=False" in caplog.text
+    assert "foreground workspace source skipped" in caplog.text
+    assert "reason=non_git" in caplog.text
 
 
 def test_foreground_persistence_does_not_overwrite_valid_repo_with_non_git_fallback(
@@ -300,6 +365,40 @@ def test_foreground_persistence_does_not_overwrite_valid_repo_with_non_git_fallb
     assert reloaded.head == expected_head
     assert "foreground active-task record skipped" in caplog.text
     assert "cwd_git_valid=False" in caplog.text
+
+
+def test_gateway_workspace_resolver_does_not_overwrite_valid_repo_with_home_fallback(
+    tmp_path, monkeypatch, caplog
+):
+    repo_path = tmp_path / "project"
+    expected_head = _init_git_repo(repo_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    session_key = "agent:main:discord:thread:thread-parent:thread-1"
+    store_path = tmp_path / "active_tasks.json"
+    runner = object.__new__(GatewayRunner)
+    runner.active_task_store = ActiveTaskStore(store_path)
+    runner.active_task_store.replace_foreground_session(
+        session_key=session_key,
+        repo_path=str(repo_path),
+        branch="main",
+        head=expected_head,
+    )
+    monkeypatch.setenv("TERMINAL_CWD", ".")
+    monkeypatch.setattr("gateway.run.Path.home", lambda: home)
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        resolved = runner._resolve_agent_working_directory(
+            session_key,
+            fallback_cwd=str(home),
+        )
+
+    reloaded = runner.active_task_store.get(session_key)
+    assert resolved == str(repo_path)
+    assert reloaded is not None
+    assert reloaded.repo_path == str(repo_path)
+    assert reloaded.head == expected_head
+    assert "foreground active-task recovery record used" in caplog.text
 
 
 def test_foreground_persistence_normalizes_nested_git_cwd(tmp_path, monkeypatch):
@@ -417,6 +516,40 @@ def test_background_process_record_keeps_process_fields_on_read(tmp_path):
     assert reloaded.task_summary == "Signal Room refill batch"
     assert reloaded.process_session_id == "proc_active"
     assert reloaded.pid == 12345
+
+
+def test_gateway_workspace_resolver_does_not_use_non_git_background_record_as_cwd(
+    tmp_path, monkeypatch
+):
+    repo_path = tmp_path / "non-git"
+    fallback_cwd = tmp_path / "gateway"
+    repo_path.mkdir()
+    fallback_cwd.mkdir()
+    session_key = "agent:main:discord:thread:thread-parent:thread-1"
+    store = ActiveTaskStore(tmp_path / "active_tasks.json")
+    store.upsert(
+        session_key=session_key,
+        repo_path=str(repo_path),
+        mode="background_process",
+        status="active",
+        process_session_id="proc_active",
+        pid=12345,
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.active_task_store = store
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    resolved = runner._resolve_agent_working_directory(
+        session_key,
+        fallback_cwd=str(fallback_cwd),
+    )
+
+    reloaded = store.get(session_key)
+    assert reloaded is not None
+    assert reloaded.has_usable_workspace()
+    assert resolved == str(fallback_cwd)
+    assert reloaded.mode == "background_process"
+    assert reloaded.process_session_id == "proc_active"
 
 
 def test_gateway_workspace_resolver_does_not_record_foreground_without_session_key(tmp_path, monkeypatch):

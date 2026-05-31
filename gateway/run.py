@@ -1877,6 +1877,7 @@ class GatewayRunner:
         self,
         session_key: str,
         fallback_cwd: Optional[str] = None,
+        explicit_cwds: Optional[list[str]] = None,
     ) -> str:
         """Resolve the workspace cwd for a gateway agent turn."""
         from pathlib import Path
@@ -1891,10 +1892,14 @@ class GatewayRunner:
                 record is not None
                 and record.is_fresh()
             ):
-                if record.has_usable_workspace():
-                    from gateway.active_task import resolve_git_toplevel
-
-                    repo_path = resolve_git_toplevel(record.repo_path) or record.repo_path
+                repo_path = None
+                if record.status in {"active", "interrupted", "detached", "unknown"}:
+                    repo_path = self._select_foreground_workspace_candidate(
+                        session_key,
+                        source_label="active_task_record",
+                        cwd=record.repo_path,
+                    )
+                if repo_path:
                     logger.info(
                         "foreground active-task recovery record used: session_key=%s "
                         "has_repo_path=%s repo_path_git_valid=True has_branch=%s has_head=%s",
@@ -1913,29 +1918,136 @@ class GatewayRunner:
                     bool(record.head),
                 )
 
-        # Placeholder for future explicit per-session workspace bindings.  No
-        # inspected gateway path currently persists such a binding.
+        candidates: list[tuple[str, Optional[str], bool]] = []
+        for cwd in explicit_cwds or []:
+            candidates.append(("explicit_agent_cwd", cwd, False))
 
         terminal_cwd = os.getenv("TERMINAL_CWD", "").strip()
         if terminal_cwd:
-            try:
-                path = Path(terminal_cwd).expanduser()
-                if path.exists():
-                    resolved = str(path)
-                    self._record_foreground_session_workspace(session_key, resolved)
-                    return resolved
-            except OSError:
-                pass
+            candidates.append(("terminal_cwd", terminal_cwd, False))
 
-        resolved = fallback_cwd or os.getcwd()
-        self._record_foreground_session_workspace(session_key, resolved)
-        return resolved
+        resolved_fallback = fallback_cwd or os.getcwd()
+        candidates.append(("current_process_cwd", resolved_fallback, True))
+
+        for source_label, cwd, reject_home in candidates:
+            selected = self._select_foreground_workspace_candidate(
+                session_key,
+                source_label=source_label,
+                cwd=cwd,
+                reject_home=reject_home,
+            )
+            if selected:
+                self._record_foreground_session_workspace(
+                    session_key,
+                    selected,
+                    source_label=source_label,
+                )
+                return selected
+
+        logger.info(
+            "foreground workspace source unavailable: session_key=%s selected=False",
+            _redact_active_task_session_key(session_key),
+        )
+        return resolved_fallback
+
+
+    def _select_foreground_workspace_candidate(
+        self,
+        session_key: str,
+        *,
+        source_label: str,
+        cwd: Optional[str],
+        reject_home: bool = False,
+    ) -> Optional[str]:
+        from pathlib import Path
+
+        if not cwd:
+            logger.info(
+                "foreground workspace source skipped: session_key=%s source=%s reason=missing",
+                _redact_active_task_session_key(session_key),
+                source_label,
+            )
+            return None
+
+        raw_cwd = str(cwd).strip()
+        if raw_cwd in {".", "auto", "cwd"}:
+            logger.info(
+                "foreground workspace source skipped: session_key=%s source=%s reason=placeholder",
+                _redact_active_task_session_key(session_key),
+                source_label,
+            )
+            return None
+
+        try:
+            path = Path(raw_cwd).expanduser()
+            cwd_exists = path.exists()
+            if not cwd_exists:
+                logger.info(
+                    "foreground workspace source skipped: session_key=%s source=%s "
+                    "reason=missing cwd_exists=False",
+                    _redact_active_task_session_key(session_key),
+                    source_label,
+                )
+                return None
+            if reject_home and path.resolve() == Path.home().expanduser().resolve():
+                logger.info(
+                    "foreground workspace source skipped: session_key=%s source=%s "
+                    "reason=home_fallback cwd_exists=True",
+                    _redact_active_task_session_key(session_key),
+                    source_label,
+                )
+                return None
+
+            from gateway.active_task import (
+                resolve_git_branch,
+                resolve_git_head,
+                resolve_git_toplevel,
+            )
+
+            repo_path = resolve_git_toplevel(path)
+            branch = resolve_git_branch(path)
+            head = resolve_git_head(path)
+            if repo_path is None:
+                logger.info(
+                    "foreground workspace source skipped: session_key=%s source=%s "
+                    "reason=non_git cwd_exists=True has_branch=%s has_head=%s",
+                    _redact_active_task_session_key(session_key),
+                    source_label,
+                    bool(branch),
+                    bool(head),
+                )
+                return None
+            if not head:
+                logger.info(
+                    "foreground workspace source skipped: session_key=%s source=%s "
+                    "reason=no_head cwd_exists=True repo_path_git_valid=True has_branch=%s",
+                    _redact_active_task_session_key(session_key),
+                    source_label,
+                    bool(branch),
+                )
+                return None
+            logger.info(
+                "foreground workspace source selected: session_key=%s source=%s "
+                "repo_path_git_valid=True has_branch=%s has_head=True",
+                _redact_active_task_session_key(session_key),
+                source_label,
+                bool(branch),
+            )
+            return str(Path(repo_path).expanduser())
+        except OSError:
+            logger.info(
+                "foreground workspace source skipped: session_key=%s source=%s reason=os_error",
+                _redact_active_task_session_key(session_key),
+                source_label,
+            )
+            return None
 
 
     def _record_foreground_session_workspace(
         self,
         session_key: str,
         cwd: Optional[str],
+        source_label: str = "unknown",
     ) -> None:
         if not session_key or not cwd:
             logger.info(
@@ -1963,8 +2075,9 @@ class GatewayRunner:
             if repo_path is None or not head:
                 logger.info(
                     "foreground active-task record skipped: session_key=%s "
-                    "cwd_exists=%s cwd_git_valid=False has_branch=%s has_head=%s",
+                    "source=%s cwd_exists=%s cwd_git_valid=False has_branch=%s has_head=%s",
                     _redact_active_task_session_key(session_key),
+                    source_label,
                     Path(cwd).expanduser().exists(),
                     bool(branch),
                     bool(head),
@@ -1977,10 +2090,10 @@ class GatewayRunner:
                 head=head,
             )
             logger.info(
-                "foreground active-task record written: session_key=%s cwd_exists=%s "
-                "cwd_git_valid=True has_branch=%s has_head=%s",
+                "foreground active-task record written: session_key=%s "
+                "source=%s cwd_git_valid=True has_branch=%s has_head=%s",
                 _redact_active_task_session_key(session_key),
-                Path(cwd).expanduser().exists(),
+                source_label,
                 bool(branch),
                 bool(head),
             )
@@ -16909,10 +17022,6 @@ class GatewayRunner:
             )
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            session_cwd = self._resolve_agent_working_directory(
-                session_key,
-                fallback_cwd=os.getcwd(),
-            )
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
@@ -17079,6 +17188,11 @@ class GatewayRunner:
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 
             previous_session_cwd = getattr(agent, "session_cwd", None)
+            session_cwd = self._resolve_agent_working_directory(
+                session_key,
+                fallback_cwd=os.getcwd(),
+                explicit_cwds=([previous_session_cwd] if previous_session_cwd else None),
+            )
             if previous_session_cwd and previous_session_cwd != session_cwd:
                 codex_session = getattr(agent, "_codex_session", None)
                 if codex_session is not None:
