@@ -960,9 +960,26 @@ def skill_view(
                 if found_skill_md.parent.name == name:
                     _record(found_skill_md.parent, found_skill_md)
 
+            def _is_inside_skill_package(path: Path) -> bool:
+                """Return True when path is an asset inside another skill dir."""
+                try:
+                    relative_parent = path.parent.relative_to(search_dir)
+                except ValueError:
+                    return False
+
+                current = search_dir
+                for part in relative_parent.parts:
+                    current = current / part
+                    if (current / "SKILL.md").exists():
+                        return True
+                return False
+
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
+            # Do not treat reference/template/assets markdown inside a skill
+            # package as a separate legacy skill; those files are linked files
+            # owned by that skill, not top-level load targets.
             for found_md in search_dir.rglob(f"{name}.md"):
-                if found_md.name != "SKILL.md":
+                if found_md.name != "SKILL.md" and not _is_inside_skill_package(found_md):
                     _record(None, found_md)
 
         if len(candidates) > 1:

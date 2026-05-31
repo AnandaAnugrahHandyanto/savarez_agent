@@ -1267,3 +1267,35 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL BODY" in result["content"]
+
+    def test_nested_skill_asset_does_not_collide_with_skill_name(self, tmp_path):
+        """Markdown assets inside a skill package are not standalone skills.
+
+        A bundled skill can have references/templates named after another skill
+        (for example ``templates/notion.md``). Those internal assets must not
+        make ``skill_view("notion")`` ambiguous when a real notion skill exists.
+        """
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "notion", category="productivity", body="REAL SKILL")
+        asset_owner = _make_skill(
+            local_dir,
+            "popular-web-designs",
+            category="creative",
+            body="ASSET OWNER",
+        )
+        asset_dir = asset_owner / "templates"
+        asset_dir.mkdir()
+        (asset_dir / "notion.md").write_text("# Notion style reference\n")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("notion")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "REAL SKILL" in result["content"]
+        assert "Ambiguous" not in result.get("error", "")
