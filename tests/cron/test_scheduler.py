@@ -421,13 +421,13 @@ class TestDeliverResultWrapping:
         voice_call = adapter.send_voice.call_args
         assert voice_call[1]["audio_path"] == "/tmp/cron-voice.mp3"
 
-    def test_live_adapter_shutdown_runtime_error_returns_delivery_error(self):
-        """If the gateway loop is finalizing, do not fall back into standalone delivery.
+    def test_live_adapter_shutdown_runtime_error_is_suppressed(self):
+        """If the gateway loop is finalizing, suppress non-actionable delivery noise.
 
         Regression: run_coroutine_threadsafe can raise
         "cannot schedule new futures after interpreter shutdown" during gateway
-        teardown, which previously led to noisy delivery failures and leaked the
-        created coroutine.
+        teardown. This should not fall back into standalone delivery, leak the
+        created coroutine, or persist as the job's last_error.
         """
         from gateway.config import Platform
 
@@ -457,7 +457,7 @@ class TestDeliverResultWrapping:
                 loop=loop,
             )
 
-        assert "skipped during interpreter shutdown" in result
+        assert result is None
         send_mock.assert_not_called()
 
     def test_live_adapter_routes_image_to_send_image_file(self):
@@ -1947,10 +1947,10 @@ class TestDeliverResultTimeoutCancelsFuture:
                 loop=loop,
             )
 
-        assert "skipped during interpreter shutdown" in result
+        assert result is None
         standalone_send.assert_not_awaited()
 
-    def test_standalone_shutdown_error_is_reported_without_generic_failure(self):
+    def test_standalone_shutdown_error_is_suppressed_as_non_actionable_skip(self):
         """Standalone Telegram delivery can surface Python finalization as a SendResult error."""
         from gateway.config import Platform
         from cron.scheduler import _deliver_result
@@ -1975,8 +1975,7 @@ class TestDeliverResultTimeoutCancelsFuture:
              patch("tools.send_message_tool._send_to_platform", new=standalone_send):
             result = _deliver_result(job, "Hello world", adapters={}, loop=None)
 
-        assert "skipped during interpreter shutdown" in result
-        assert "delivery error:" not in result
+        assert result is None
         standalone_send.assert_awaited_once()
 
 class TestSendMediaTimeoutCancelsFuture:

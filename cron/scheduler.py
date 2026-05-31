@@ -400,6 +400,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         return msg
 
     delivery_errors = []
+    shutdown_skips = []
 
     for target in targets:
         platform_name = target["platform"]
@@ -457,7 +458,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         if _is_interpreter_shutdown_message(err):
                             msg = f"delivery to {platform_name}:{chat_id} skipped during interpreter shutdown"
                             logger.warning("Job '%s': %s", job["id"], msg)
-                            delivery_errors.append(msg)
+                            shutdown_skips.append(msg)
                             continue
                         logger.warning(
                             "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
@@ -476,7 +477,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if _is_interpreter_shutdown_runtime_error(e):
                     msg = f"delivery to {platform_name}:{chat_id} skipped during interpreter shutdown"
                     logger.warning("Job '%s': %s", job["id"], msg)
-                    delivery_errors.append(msg)
+                    shutdown_skips.append(msg)
                     continue
                 logger.warning(
                     "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
@@ -515,7 +516,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if _is_interpreter_shutdown_message(err):
                     msg = f"delivery to {platform_name}:{chat_id} skipped during interpreter shutdown"
                     logger.warning("Job '%s': %s", job["id"], msg)
-                    delivery_errors.append(msg)
+                    shutdown_skips.append(msg)
                     continue
                 msg = f"delivery error: {err}"
                 logger.error("Job '%s': %s", job["id"], msg)
@@ -525,6 +526,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     if delivery_errors:
         return "; ".join(delivery_errors)
+    if shutdown_skips:
+        logger.info(
+            "Job '%s': suppressing shutdown delivery skip as non-actionable: %s",
+            job["id"],
+            "; ".join(shutdown_skips),
+        )
     return None
 
 
