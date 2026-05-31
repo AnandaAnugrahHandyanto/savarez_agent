@@ -1660,6 +1660,44 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
+# Default context note appended to the system prompt when the agent's reply
+# will be spoken aloud via TTS this turn.  Users can override the wording via
+# ``voice.spoken_reply_prompt`` in ``config.yaml``.
+DEFAULT_SPOKEN_REPLY_ADDENDUM = (
+    "[Voice reply mode] Your next reply will be read aloud via "
+    "text-to-speech AND shown as a text message. Keep it short "
+    "(1-3 sentences when possible), conversational, and speakable: "
+    "no markdown formatting, no code blocks, no bullet lists, "
+    "no headers, no emoji. Spell out symbols only when they would "
+    "be unclear when read."
+)
+
+
+# Additional rules appended when the active TTS provider is Inworld and the
+# model is ``inworld-tts-2``, which honors rich performance directives
+# (instruction tags, non-verbal tags, CAPS emphasis) that other models would
+# render as literal text.  Users can override via ``voice.inworld_tts2_prompt``
+# in ``config.yaml``.
+DEFAULT_INWORLD_TTS2_RULES = (
+    "[Inworld TTS-2 speech rules] Your reply will be spoken by Inworld TTS-2, "
+    "which honors rich performance directives. Use these sparingly, only when "
+    "they genuinely improve the delivery.\n"
+    "- Instruction tags: open a sentence with a bracketed directive combining "
+    "mood, pitch, pace, and manner. Examples: [say excitedly with a high pitch "
+    "and fast pace], [sound concerned with a measured pace and low tone], "
+    "[quietly with a warm and gentle tone]. Place the tag at the start of the "
+    "sentence it applies to.\n"
+    "- Non-verbal tags: insert [laugh], [sigh], or [breathe] where organic.\n"
+    "- Emphasis: capitalize full words for stress (\"I told you NOT to do "
+    "that\") or syllables for nuance (\"absoLUTEly\"). Use rarely.\n"
+    "- Naturalness: include occasional filler words (uh, um, well, you know) "
+    "and use contractions (don't, can't, I'm). Vary sentence length.\n"
+    "- Spoken form: write numbers and dates as words (\"twenty-three\" not "
+    "\"23\", \"march fifteenth\" not \"3/15\"). Plain spoken sentences only — "
+    "no markdown, no bullets, no emoji."
+)
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -2045,6 +2083,106 @@ class GatewayRunner:
             )
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
+
+    def _turn_will_be_spoken(self, source, event) -> bool:
+        """Return True if the agent's reply on this turn will be sent via TTS.
+
+        Mirrors the per-chat gating used by the response path: voice mode
+        ``"all"`` always speaks; ``"voice_only"`` speaks only when the inbound
+        message was a voice note.  Best-effort — any lookup error returns
+        ``False`` so callers degrade to text-only behavior.
+        """
+        try:
+            mode = self._voice_mode.get(
+                self._voice_key(source.platform, source.chat_id), "off"
+            )
+        except Exception:
+            return False
+        if mode == "all":
+            return True
+        if mode == "voice_only":
+            return getattr(event, "message_type", None) == MessageType.VOICE
+        return False
+
+    def _apply_voice_aware_addendum(self, source, event, context_prompt: str) -> str:
+        """Append a voice-aware system note to ``context_prompt`` when this
+        turn's reply will be spoken aloud.
+
+        Lets the model produce speakable output (short, plain prose, no
+        markdown / code blocks / lists / headers / emoji) instead of generating
+        a long markdown reply that gets read literally by TTS.  The addendum
+        text is configurable via ``voice.spoken_reply_prompt`` in
+        ``config.yaml``; falls back to :data:`DEFAULT_SPOKEN_REPLY_ADDENDUM`.
+
+        Best-effort — any failure leaves ``context_prompt`` unchanged so a
+        bad addendum can never break a turn.
+        """
+        try:
+            if not self._turn_will_be_spoken(source, event):
+                return context_prompt
+            vcfg = (_load_gateway_config().get("voice") or {})
+            override = vcfg.get("spoken_reply_prompt")
+            # Distinguish "not configured" (use default) from "configured to
+            # empty string" (explicitly disable the addendum).
+            if override is None:
+                addendum = DEFAULT_SPOKEN_REPLY_ADDENDUM.strip()
+            else:
+                addendum = str(override).strip()
+            if not addendum:
+                return context_prompt
+            if context_prompt:
+                return (context_prompt + "\n\n" + addendum).strip()
+            return addendum
+        except Exception as exc:
+            logger.debug(
+                "Voice-aware context injection skipped (non-fatal): %s", exc
+            )
+            return context_prompt
+
+    def _apply_inworld_tts2_rules(self, source, event, context_prompt: str) -> str:
+        """Append Inworld TTS-2 performance-directive rules to ``context_prompt``
+        when the turn will be spoken AND the active TTS provider is Inworld
+        with model ``inworld-tts-2``.
+
+        Inworld TTS-2 uses bracketed instruction tags (``[say excitedly...]``),
+        non-verbal tags (``[laugh]``, ``[sigh]``), and CAPS emphasis to drive
+        delivery. Other models render those as literal text, so the rules are
+        gated on the provider+model combination. Configurable via
+        ``voice.inworld_tts2_prompt``; falls back to
+        :data:`DEFAULT_INWORLD_TTS2_RULES`.
+
+        Best-effort — any failure leaves ``context_prompt`` unchanged so a bad
+        config or future TTS-tool refactor can never break a turn.
+        """
+        try:
+            if not self._turn_will_be_spoken(source, event):
+                return context_prompt
+            from tools.tts_tool import _load_tts_config, _get_provider
+            tts_cfg = _load_tts_config()
+            if _get_provider(tts_cfg) != "inworld":
+                return context_prompt
+            inworld_cfg = tts_cfg.get("inworld") or {}
+            model_id = str(inworld_cfg.get("model_id") or "").strip().lower()
+            if model_id != "inworld-tts-2":
+                return context_prompt
+            vcfg = (_load_gateway_config().get("voice") or {})
+            override = vcfg.get("inworld_tts2_prompt")
+            # Distinguish "not configured" (use default) from "configured to
+            # empty string" (explicitly disable the rules).
+            if override is None:
+                rules = DEFAULT_INWORLD_TTS2_RULES.strip()
+            else:
+                rules = str(override).strip()
+            if not rules:
+                return context_prompt
+            if context_prompt:
+                return (context_prompt + "\n\n" + rules).strip()
+            return rules
+        except Exception as exc:
+            logger.debug(
+                "Inworld TTS-2 rule injection skipped (non-fatal): %s", exc
+            )
+            return context_prompt
 
     def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
         """Update an adapter's in-memory auto-TTS suppression set if present."""
@@ -8581,6 +8719,22 @@ class GatewayRunner:
 
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
+
+        # Voice-aware system context: if the agent's reply on this turn will
+        # be spoken via TTS, append a brief instruction so the model produces
+        # speakable output (no markdown / code blocks / lists / headers) for
+        # both the text and the spoken delivery.
+        context_prompt = self._apply_voice_aware_addendum(
+            source, event, context_prompt
+        )
+        # If the active TTS provider is Inworld and the model is
+        # ``inworld-tts-2``, append rules covering its expressive directives
+        # (instruction tags, non-verbal tags, CAPS emphasis, spoken-form
+        # numbers). Gated on the provider+model combo so other backends don't
+        # see them rendered as literal text.
+        context_prompt = self._apply_inworld_tts2_rules(
+            source, event, context_prompt
+        )
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.
