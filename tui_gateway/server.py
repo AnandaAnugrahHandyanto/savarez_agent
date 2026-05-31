@@ -1367,6 +1367,25 @@ def _get_usage(agent) -> dict:
             usage["cost_usd"] = float(cost.amount_usd)
     except Exception:
         pass
+    try:
+        from agent.account_usage import fetch_account_usage
+
+        account_snapshot = fetch_account_usage(
+            getattr(agent, "provider", None),
+            base_url=getattr(agent, "base_url", None),
+            api_key=getattr(agent, "api_key", None),
+        )
+        if account_snapshot:
+            if account_snapshot.compact_label:
+                usage["account_label"] = account_snapshot.compact_label
+            if account_snapshot.compact_short_label:
+                usage["account_label_short"] = account_snapshot.compact_short_label
+            if account_snapshot.compact_tiny_label:
+                usage["account_label_tiny"] = account_snapshot.compact_tiny_label
+            if account_snapshot.compact_level:
+                usage["account_level"] = account_snapshot.compact_level
+    except Exception:
+        pass
     return usage
 
 

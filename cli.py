@@ -3563,6 +3563,29 @@ class HermesCLI:
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
+        # Provider account quota (e.g. Copilot premium-interactions). Cached
+        # inside fetch_account_usage so we don't hammer the provider endpoint
+        # on every status-bar render. Any failure is swallowed silently.
+        try:
+            from agent.account_usage import fetch_account_usage
+
+            account_snapshot = fetch_account_usage(
+                getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None),
+                api_key=getattr(agent, "api_key", None),
+            )
+            if account_snapshot:
+                if account_snapshot.compact_label:
+                    snapshot["account_label"] = account_snapshot.compact_label
+                if account_snapshot.compact_short_label:
+                    snapshot["account_label_short"] = account_snapshot.compact_short_label
+                if account_snapshot.compact_tiny_label:
+                    snapshot["account_label_tiny"] = account_snapshot.compact_tiny_label
+                if account_snapshot.compact_level:
+                    snapshot["account_level"] = account_snapshot.compact_level
+        except Exception:
+            pass
+
         return snapshot
 
     @staticmethod
@@ -3808,6 +3831,13 @@ class HermesCLI:
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
+            account_label = (
+                snapshot.get("account_label_short")
+                if width < 96
+                else snapshot.get("account_label")
+            ) or snapshot.get("account_label_tiny") or snapshot.get("account_label")
+            if account_label:
+                parts.append(account_label)
             if yolo_active:
                 parts.append("⚠ YOLO")
             return self._trim_status_bar_text(" │ ".join(parts), width)
@@ -3909,6 +3939,21 @@ class HermesCLI:
                     if prompt_elapsed:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", prompt_elapsed))
+                    # Provider account quota (e.g. Copilot premium-interactions).
+                    account_label = (
+                        snapshot.get("account_label_short")
+                        if width < 96
+                        else snapshot.get("account_label")
+                    ) or snapshot.get("account_label_tiny") or snapshot.get("account_label")
+                    if account_label:
+                        level = snapshot.get("account_level")
+                        quota_style = (
+                            "class:status-bar-error" if level == "error"
+                            else "class:status-bar-warn" if level == "warn"
+                            else "class:status-bar-dim"
+                        )
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((quota_style, account_label))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))

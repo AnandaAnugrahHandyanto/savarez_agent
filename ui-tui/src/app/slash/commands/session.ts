@@ -502,6 +502,40 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['copilot-quota', 'cquota'],
+    help: 'show GitHub Copilot quota usage',
+    name: 'copilot-quota',
+    run: (_arg, ctx) => {
+      ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
+        if (ctx.stale()) {
+          return
+        }
+
+        if (r) {
+          patchUiState({
+            usage: {
+              account_label: r.account_label,
+              account_label_short: r.account_label_short,
+              account_label_tiny: r.account_label_tiny,
+              account_level: r.account_level,
+              calls: r.calls ?? 0,
+              input: r.input ?? 0,
+              output: r.output ?? 0,
+              total: r.total ?? 0
+            }
+          })
+        }
+
+        if (!r?.account_label) {
+          return ctx.transcript.sys('no Copilot quota data available for this session')
+        }
+
+        ctx.transcript.sys(r.account_label)
+      })
+    }
+  },
+
+  {
     help: 'session usage (live counts — worker sees zeros)',
     name: 'usage',
     run: (_arg, ctx) => {
@@ -512,7 +546,16 @@ export const sessionCommands: SlashCommand[] = [
 
         if (r) {
           patchUiState({
-            usage: { calls: r.calls ?? 0, input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0 }
+            usage: {
+              account_label: r.account_label,
+              account_label_short: r.account_label_short,
+              account_label_tiny: r.account_label_tiny,
+              account_level: r.account_level,
+              calls: r.calls ?? 0,
+              input: r.input ?? 0,
+              output: r.output ?? 0,
+              total: r.total ?? 0
+            }
           })
         }
 

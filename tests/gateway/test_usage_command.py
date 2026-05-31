@@ -1,7 +1,7 @@
 """Tests for gateway /usage command — agent cache lookup and output fields."""
 
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -69,6 +69,22 @@ SK = "agent:main:telegram:private:12345"
 
 class TestUsageCachedAgent:
     """The main fix: /usage should find agents in _agent_cache between turns."""
+
+    @pytest.mark.asyncio
+    async def test_cached_agent_shows_account_limits_when_available(self):
+        agent = _make_mock_agent(provider="copilot")
+        runner = _make_runner(SK, cached_agent=agent)
+        event = MagicMock()
+        snapshot = MagicMock()
+        with patch("gateway.run.fetch_account_usage", new=MagicMock(return_value=snapshot)), \
+             patch("gateway.run.render_account_usage_lines", return_value=["📈 Account limits", "Premium interactions: 97% remaining"]), \
+             patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+            mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
+            result = await runner._handle_usage_command(event)
+
+        assert "Account limits" in result
+        assert "Premium interactions: 97% remaining" in result
 
     @pytest.mark.asyncio
     async def test_cached_agent_shows_detailed_usage(self):
@@ -250,3 +266,17 @@ class TestUsageAccountSection:
         assert calls["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
         assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result
+
+    @pytest.mark.asyncio
+    async def test_copilot_quota_command_returns_only_account_section(self, monkeypatch):
+        runner = _make_runner(SK, cached_agent=_make_mock_agent(provider="copilot"))
+        event = MagicMock()
+        monkeypatch.setattr(
+            runner,
+            "_handle_usage_command",
+            MagicMock(return_value=AsyncMock(return_value="📊 **Session Token Usage**\nModel: test\n\n📈 **Account limits**\nPremium interactions: 97% remaining")()),
+        )
+
+        result = await runner._handle_copilot_quota_command(event)
+
+        assert result == "📈 **Account limits**\nPremium interactions: 97% remaining"
