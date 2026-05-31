@@ -2377,13 +2377,8 @@ def _(rid, params: dict) -> dict:
         fetch_limit = max(limit * 2, 200)
         rows = [
             s
-            for s in db.list_sessions_rich(
-                limit=fetch_limit,
-                include_children=True,
-                order_by_last_active=True,
-            )
+            for s in db.list_sessions_rich(source=None, limit=fetch_limit)
             if (s.get("source") or "").strip().lower() not in deny
-            and int(s.get("message_count") or 0) > 0
         ][:limit]
         return _ok(
             rid,
@@ -2429,16 +2424,10 @@ def _(rid, params: dict) -> dict:
         # users (lots of recent ``tool`` rows) don't get a false
         # "no eligible session" answer.  ``session.list`` uses a
         # similar over-fetch strategy.
-        rows = db.list_sessions_rich(
-            limit=200,
-            include_children=True,
-            order_by_last_active=True,
-        )
+        rows = db.list_sessions_rich(source=None, limit=200)
         for row in rows:
             src = (row.get("source") or "").strip().lower()
             if src in deny:
-                continue
-            if int(row.get("message_count") or 0) <= 0:
                 continue
             return _ok(
                 rid,
@@ -5699,7 +5688,7 @@ def _(rid, params: dict) -> dict:
             include_unconfigured=True,
             picker_hints=True,
             canonical_order=True,
-            max_models=50,
+            max_models=0,
         )
         return _ok(rid, payload)
     except Exception as e:
@@ -5765,7 +5754,7 @@ def _(rid, params: dict) -> dict:
             current_base_url=getattr(agent, "base_url", "") if agent else "",
         )
         payload = build_models_payload(
-            ctx, picker_hints=True, max_models=50,
+            ctx, picker_hints=True, max_models=0,
         )
         provider_data = next(
             (p for p in payload["providers"] if p["slug"] == slug), None
