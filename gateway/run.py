@@ -8393,6 +8393,32 @@ class GatewayRunner:
             break
 
         is_create = action == "create"
+        if action == "notify-subscribe":
+            # Gateway-originated subscriptions must always be bound to the
+            # currently running profile, never caller-supplied text.
+            safe_tokens: list[str] = []
+            i = 0
+            while i < len(tokens):
+                tok = tokens[i]
+                if tok == "--notifier-profile":
+                    i += 1
+                    # Only consume the next token if it's actually a value (not another flag)
+                    if i < len(tokens) and not tokens[i].startswith("-"):
+                        i += 1
+                    continue
+                if tok.startswith("--notifier-profile="):
+                    i += 1
+                    continue
+                safe_tokens.append(tok)
+                i += 1
+            safe_tokens.extend(
+                [
+                    "--notifier-profile",
+                    getattr(self, "_kanban_notifier_profile", None)
+                    or self._active_profile_name(),
+                ]
+            )
+            text = shlex.join(safe_tokens)
 
         try:
             output = await asyncio.to_thread(run_slash, text)
