@@ -6,7 +6,8 @@ adds latency to the user-facing reply.
 
 import logging
 import threading
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional, Tuple
+import json
 
 from agent.auxiliary_client import call_llm
 
@@ -17,12 +18,23 @@ logger = logging.getLogger(__name__)
 # so silent-drops (e.g. OpenRouter 402 exhausting the fallback chain)
 # become visible instead of piling up as NULL session titles.
 FailureCallback = Callable[[str, BaseException], None]
-TitleCallback = Callable[[str], None]
+TitleCallback = Callable[[str, Optional[str]], None]
 
 _TITLE_PROMPT = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+    "You are generating a conversation title AND selecting a matching topic icon.\n\n"
+    "First: generate a short, descriptive title (3-7 words) for a conversation that "
+    "starts with the following exchange. The title should capture the main topic or intent.\n\n"
+    "Second: from the numbered icon list below, pick the SINGLE best icon number that "
+    "represents what the conversation is about. Match on subject matter, not wording.\n\n"
+    "Icons:\n"
+)
+
+from agent.constants import TOPIC_ICON_OPTIONS_TEXT, TOPIC_ICON_BY_INDEX
+_TITLE_PROMPT += TOPIC_ICON_OPTIONS_TEXT + "\n\n"
+_TITLE_PROMPT += (
+    "Return ONLY a valid JSON object with exactly two keys — no markdown, no explanation:\n"
+    '  {"title": "<conversation title>", "icon": <icon number>}\n'
+    "Do not wrap in triple backticks. Do not add commentary."
 )
 
 
@@ -32,12 +44,13 @@ def generate_title(
     timeout: float = 30.0,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
-) -> Optional[str]:
+) -> Tuple[Optional[str], Optional[str]]:
     """Generate a session title from the first exchange.
 
     Uses the main runtime's model when available, falling back to the
     auxiliary LLM client (cheapest/fastest available model).
-    Returns the title string or None on failure.
+    Returns a tuple of (title, icon_id) where icon_id is a Telegram custom emoji ID,
+    or (None, None) on failure.
 
     ``failure_callback`` is invoked with ``(task, exception)`` when the
     auxiliary call raises — the caller typically wires this to
@@ -62,15 +75,43 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
         )
-        title = (response.choices[0].message.content or "").strip()
-        # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
-        title = title.strip('"\'')
+        raw = (response.choices[0].message.content or "").strip()
+        
+        # Strip optional markdown code fences
+        if raw.startswith("```"):
+            raw = raw[3:]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            raw = raw.strip()
+        
+        # Try JSON parse
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.debug("Title generation: JSON parse failed for: %r", raw[:120])
+            return None, None
+        
+        title = (data.get("title") or "").strip().strip("\"'")
+        
+        # Validate and map icon number to emoji ID
+        icon_id = None
+        icon_num = data.get("icon")
+        if isinstance(icon_num, int) and icon_num in TOPIC_ICON_BY_INDEX:
+            icon_id = TOPIC_ICON_BY_INDEX[icon_num]
+        
+        # Clean title
         if title.lower().startswith("title:"):
             title = title[6:].strip()
-        # Enforce reasonable length
         if len(title) > 80:
             title = title[:77] + "..."
-        return title if title else None
+        
+        if title:
+            logger.info("generate_title: title=%r icon_id=%s", title, icon_id)
+            return title, icon_id
+        
+        return None, None
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.
         # Full detail at debug level for operators who need the stack.
@@ -81,7 +122,7 @@ def generate_title(
                 failure_callback("title generation", e)
             except Exception:
                 logger.debug("Title generation failure_callback raised", exc_info=True)
-        return None
+        return None, None
 
 
 def auto_title_session(
@@ -112,7 +153,7 @@ def auto_title_session(
     except Exception:
         return
 
-    title = generate_title(
+    title, icon_id = generate_title(
         user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime
     )
     if not title:
@@ -123,7 +164,14 @@ def auto_title_session(
         logger.debug("Auto-generated session title: %s", title)
         if title_callback is not None:
             try:
-                title_callback(title)
+                import inspect
+                sig = inspect.signature(title_callback)
+                param_count = len([p for p in sig.parameters.values()
+                                   if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)])
+                if param_count >= 2:
+                    title_callback(title, icon_id)
+                else:
+                    title_callback(title)
             except Exception:
                 logger.debug("Auto-title callback failed", exc_info=True)
     except Exception as e:
