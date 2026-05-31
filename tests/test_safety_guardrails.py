@@ -3,9 +3,7 @@
 import json
 import os
 import time
-from unittest.mock import ANY, patch
-
-import pytest
+from unittest.mock import patch
 
 from model_tools import (
     _execute_tool_with_timeout,
