@@ -36,6 +36,17 @@ MASTER_PLAN_HEADING = "# Master Project Plan"
 ISSUE_RUN_MAX_ATTEMPTS = 3
 ISSUE_RUN_RETRY_DELAYS_SECONDS = (60, 300)
 ISSUE_RUN_IDLE_POLL_SECONDS = 5.0
+MANAGED_REPO_POLICIES = {
+    "m0nklabs/cryptotrader": {
+        "name": "CryptoTrader",
+        "protected_branches": ("master", "main"),
+        "allowed_dirty_prefixes": (
+            ".aider.chat.history.md",
+            ".aider.input.history",
+            ".aider.tags.cache.v4/",
+        ),
+    }
+}
 
 
 class AiderRole(str, Enum):
@@ -118,6 +129,21 @@ class AiderInvocation:
     command: list[str]
     env: dict[str, str]
     cwd: Path
+
+
+@dataclass(frozen=True)
+class ManagedRepoStatus:
+    """Read-only managed repository status before implementation dispatch."""
+
+    repo: str
+    name: str
+    workdir: Path
+    branch: str | None
+    protected: bool
+    violating_paths: tuple[str, ...]
+    ignored_paths: tuple[str, ...]
+    ok: bool
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -295,7 +321,9 @@ async def _execute_master_issue(
     notify: Callable[[str], Awaitable[None]],
 ) -> None:
     """Expand a master plan issue into queued sub-issues."""
-    await notify(f"Hermes: Master Epic #{issue.number} detected; decomposing plan locally.")
+    await notify(
+        f"Hermes: Master Epic #{issue.number} detected; decomposing plan locally."
+    )
     tasks = await decompose_master_plan(issue)
     if not tasks:
         raise RuntimeError("Guardian returned no atomic tasks for the master plan.")
@@ -333,14 +361,21 @@ async def _execute_single_issue(
     """Run local coder, push branch, open PR, and trigger cloud reviewer."""
     default_branch = await _load_default_branch(run.repo)
     branch = run.branch or _issue_branch_name(issue)
+    await _guard_managed_repo_before_issue_dispatch(run, issue, branch)
 
     await notify(f"Hermes: Starting local coder for Issue #{issue.number}.")
     await _run(["git", "checkout", "-B", branch], cwd=run.workdir)
     local_prompt = _local_coder_prompt(run.repo, issue, branch)
-    local_invocation = build_aider_invocation(AiderRole.LOCAL_CODER, run.workdir, local_prompt)
-    await _run(local_invocation.command, cwd=local_invocation.cwd, env=local_invocation.env)
+    local_invocation = build_aider_invocation(
+        AiderRole.LOCAL_CODER, run.workdir, local_prompt
+    )
+    await _run(
+        local_invocation.command, cwd=local_invocation.cwd, env=local_invocation.env
+    )
 
-    await notify(f"Hermes: Local coder finished Issue #{issue.number}; pushing `{branch}`.")
+    await notify(
+        f"Hermes: Local coder finished Issue #{issue.number}; pushing `{branch}`."
+    )
     await _run(["git", "push", "-u", "origin", branch], cwd=run.workdir)
 
     pr = await _create_or_find_pr(run.repo, issue, branch, default_branch)
@@ -348,7 +383,9 @@ async def _execute_single_issue(
     await notify(f"Hermes: PR #{pr.number} created, triggering reviewer: {pr.url}")
 
     reviewer_prompt = _cloud_reviewer_prompt(run.repo, pr)
-    reviewer_invocation = build_aider_invocation(AiderRole.CLOUD_REVIEWER, run.workdir, reviewer_prompt)
+    reviewer_invocation = build_aider_invocation(
+        AiderRole.CLOUD_REVIEWER, run.workdir, reviewer_prompt
+    )
     reviewer_output = await _run(
         reviewer_invocation.command,
         cwd=reviewer_invocation.cwd,
@@ -366,7 +403,9 @@ async def _complete_ready_masters(
 ) -> None:
     for run in store.expanded_masters_ready_to_complete():
         store.mark_completed(run.id)
-        await notify(f"Hermes: Master Epic #{run.issue_number} completed; all sub-issues are finished.")
+        await notify(
+            f"Hermes: Master Epic #{run.issue_number} completed; all sub-issues are finished."
+        )
 
 
 class IssueStateStore:
@@ -435,7 +474,9 @@ class IssueStateStore:
 
     def get_run(self, run_id: int) -> IssueRun:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM issue_runs WHERE id = ?", (run_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM issue_runs WHERE id = ?", (run_id,)
+            ).fetchone()
         if row is None:
             raise KeyError(f"Issue run {run_id} does not exist.")
         return self._row_to_run(row)
@@ -458,7 +499,9 @@ class IssueStateStore:
                 (IssueRunStatus.RUNNING.value, now, int(row["id"])),
             )
             conn.commit()
-            row = conn.execute("SELECT * FROM issue_runs WHERE id = ?", (int(row["id"]),)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM issue_runs WHERE id = ?", (int(row["id"]),)
+            ).fetchone()
         return self._row_to_run(row)
 
     def next_queued_delay(self) -> float | None:
@@ -522,7 +565,13 @@ class IssueStateStore:
                     SET status = ?, error = ?, attempt_count = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (IssueRunStatus.FAILED.value, error[:4000], attempt_count, now, run.id),
+                    (
+                        IssueRunStatus.FAILED.value,
+                        error[:4000],
+                        attempt_count,
+                        now,
+                        run.id,
+                    ),
                 )
                 conn.commit()
             return False
@@ -608,7 +657,9 @@ class IssueStateStore:
         for row in rows:
             run = self._row_to_run(row)
             children = self.list_child_runs(run.id)
-            if children and all(child.status is IssueRunStatus.COMPLETED for child in children):
+            if children and all(
+                child.status is IssueRunStatus.COMPLETED for child in children
+            ):
                 ready.append(run)
         return ready
 
@@ -663,12 +714,18 @@ class IssueStateStore:
                 );
                 """
             )
-            self._ensure_column(conn, "issue_runs", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
-            self._ensure_column(conn, "issue_runs", "next_attempt_at", "REAL NOT NULL DEFAULT 0")
+            self._ensure_column(
+                conn, "issue_runs", "attempt_count", "INTEGER NOT NULL DEFAULT 0"
+            )
+            self._ensure_column(
+                conn, "issue_runs", "next_attempt_at", "REAL NOT NULL DEFAULT 0"
+            )
             conn.commit()
 
     @staticmethod
-    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+    def _ensure_column(
+        conn: sqlite3.Connection, table: str, column: str, declaration: str
+    ) -> None:
         columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
@@ -687,8 +744,12 @@ class IssueStateStore:
             branch=str(row["branch"]) if row["branch"] else None,
             status=IssueRunStatus(str(row["status"])),
             run_type=IssueRunType(str(row["run_type"])),
-            parent_run_id=int(row["parent_run_id"]) if row["parent_run_id"] is not None else None,
-            master_issue_number=int(row["master_issue_number"]) if row["master_issue_number"] is not None else None,
+            parent_run_id=int(row["parent_run_id"])
+            if row["parent_run_id"] is not None
+            else None,
+            master_issue_number=int(row["master_issue_number"])
+            if row["master_issue_number"] is not None
+            else None,
             pr_number=int(row["pr_number"]) if row["pr_number"] is not None else None,
             pr_url=str(row["pr_url"]) if row["pr_url"] else None,
             error=str(row["error"]) if row["error"] else None,
@@ -787,7 +848,9 @@ def parse_issue_next_command_args(raw_args: str) -> IssueSelectionRequest:
     if not _valid_repo(repo):
         raise ValueError("Repository must look like owner/name.")
 
-    return IssueSelectionRequest(repo=repo, workdir=workdir or _default_workdir(repo), branch=branch)
+    return IssueSelectionRequest(
+        repo=repo, workdir=workdir or _default_workdir(repo), branch=branch
+    )
 
 
 def github_issue_webhook_command(payload: dict[str, Any]) -> str | None:
@@ -871,7 +934,11 @@ def build_aider_invocation(
         model = (
             env.get("AIDER_LOCAL_MODEL")
             or env.get("AIDER_MODEL")
-            or (f"openai/{env['DEFAULT_MODEL']}" if env.get("DEFAULT_MODEL") else DEFAULT_LOCAL_MODEL)
+            or (
+                f"openai/{env['DEFAULT_MODEL']}"
+                if env.get("DEFAULT_MODEL")
+                else DEFAULT_LOCAL_MODEL
+            )
         )
         command = [
             str(aider_bin),
@@ -885,9 +952,13 @@ def build_aider_invocation(
         return AiderInvocation(command=command, env=env, cwd=cwd)
 
     if role is AiderRole.CLOUD_REVIEWER:
-        openrouter_key = _resolve_secret(env, "OPENROUTER_API_KEY", "OPENROUTER_API_KEY_FILE")
+        openrouter_key = _resolve_secret(
+            env, "OPENROUTER_API_KEY", "OPENROUTER_API_KEY_FILE"
+        )
         if not openrouter_key:
-            raise RuntimeError("OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE is required.")
+            raise RuntimeError(
+                "OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE is required."
+            )
         env["OPENROUTER_API_KEY"] = openrouter_key
         env["OPENAI_API_KEY"] = openrouter_key
         env.pop("OPENAI_API_BASE", None)
@@ -956,7 +1027,9 @@ async def _load_issue(repo: str, issue_number: int) -> IssueMetadata:
     data = json.loads(result.stdout)
     labels = data.get("labels") or []
     label_names = tuple(
-        str(item.get("name") or "") for item in labels if isinstance(item, dict) and item.get("name")
+        str(item.get("name") or "")
+        for item in labels
+        if isinstance(item, dict) and item.get("name")
     )
     return IssueMetadata(
         number=int(data["number"]),
@@ -1000,7 +1073,9 @@ async def _create_sub_issue(
     match = re.search(r"/issues/(\d+)", url)
     if not match:
         raise RuntimeError(f"Could not parse issue number from gh output: {url}")
-    return IssueMetadata(number=int(match.group(1)), title=task.title, body=body, url=url)
+    return IssueMetadata(
+        number=int(match.group(1)), title=task.title, body=body, url=url
+    )
 
 
 async def _create_or_find_pr(
@@ -1056,6 +1131,7 @@ async def _create_or_find_pr(
         head_ref_oid=str(row["headRefOid"]),
     )
 
+
 async def _load_next_open_issue(repo: str) -> IssueMetadata:
     result = await _run([
         "gh",
@@ -1084,7 +1160,9 @@ async def _load_next_open_issue(repo: str) -> IssueMetadata:
             return parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
 
-    candidates = [row for row in rows if isinstance(row, dict) and row.get("number") is not None]
+    candidates = [
+        row for row in rows if isinstance(row, dict) and row.get("number") is not None
+    ]
     if not candidates:
         raise RuntimeError(f"No open issues found in {repo}.")
     chosen = min(candidates, key=_created_at)
@@ -1131,7 +1209,9 @@ async def _post_pr_feedback(repo: str, pr: PullRequestMetadata, body: str) -> No
 
 
 def _guardian_decompose_request(issue: IssueMetadata, env: dict[str, str]) -> str:
-    base_url = _normalize_guardian_base(env.get("GUARDIAN_BASE_URL") or DEFAULT_GUARDIAN_BASE_URL)
+    base_url = _normalize_guardian_base(
+        env.get("GUARDIAN_BASE_URL") or DEFAULT_GUARDIAN_BASE_URL
+    )
     api_key = (
         env.get("KYBERM0NK_GUARDIAN_API_KEY")
         or env.get("AIDER_GUARDIAN_API_KEY")
@@ -1140,8 +1220,14 @@ def _guardian_decompose_request(issue: IssueMetadata, env: dict[str, str]) -> st
         or ""
     ).strip()
     if not api_key:
-        raise RuntimeError("Guardian API key is required for master-plan decomposition.")
-    model = env.get("HERMES_ISSUE_DECOMPOSE_MODEL") or env.get("DEFAULT_MODEL") or DEFAULT_DECOMPOSE_MODEL
+        raise RuntimeError(
+            "Guardian API key is required for master-plan decomposition."
+        )
+    model = (
+        env.get("HERMES_ISSUE_DECOMPOSE_MODEL")
+        or env.get("DEFAULT_MODEL")
+        or DEFAULT_DECOMPOSE_MODEL
+    )
     payload = {
         "model": model,
         "temperature": 0.2,
@@ -1151,7 +1237,7 @@ def _guardian_decompose_request(issue: IssueMetadata, env: dict[str, str]) -> st
                 "role": "system",
                 "content": (
                     "Decompose master project plans into atomic implementation issues. "
-                    "Return only JSON shaped as {\"tasks\":[{\"title\":\"...\",\"body\":\"...\"}]}. "
+                    'Return only JSON shaped as {"tasks":[{"title":"...","body":"..."}]}. '
                     "Each task must be independently implementable and ordered by dependency."
                 ),
             },
@@ -1223,7 +1309,9 @@ class CompletedProcess:
         if self.returncode != 0:
             rendered = shlex.join(self.command)
             detail = self.stderr.strip() or self.stdout.strip()
-            raise RuntimeError(f"Command failed ({self.returncode}): {rendered}\n{detail}")
+            raise RuntimeError(
+                f"Command failed ({self.returncode}): {rendered}\n{detail}"
+            )
 
 
 async def _run(
@@ -1250,6 +1338,110 @@ async def _run(
     if check:
         result.raise_for_status()
     return result
+
+
+async def _guard_managed_repo_before_issue_dispatch(
+    run: IssueRun,
+    issue: IssueMetadata,
+    branch: str,
+) -> ManagedRepoStatus | None:
+    """Fail before local coder dispatch when a managed repo has protected-branch drift."""
+    status = await _inspect_managed_repo(run.repo, run.workdir)
+    if status is None or status.ok:
+        return status
+    violating = ", ".join(status.violating_paths) or "unknown paths"
+    raise RuntimeError(
+        f"Managed repo guard blocked {status.name} issue #{issue.number} before branch {branch!r}: "
+        f"{status.reason}; violating paths: {violating}. "
+        "Recover or clean the protected checkout before starting the autonomous lane."
+    )
+
+
+async def _inspect_managed_repo(repo: str, workdir: Path) -> ManagedRepoStatus | None:
+    """Inspect a configured managed repo without mutating it."""
+    policy = MANAGED_REPO_POLICIES.get(repo.lower())
+    if policy is None:
+        return None
+
+    name = str(policy["name"])
+    protected_branches = tuple(str(value) for value in policy["protected_branches"])
+    allowed_dirty_prefixes = tuple(
+        str(value) for value in policy["allowed_dirty_prefixes"]
+    )
+
+    if not workdir.exists():
+        return ManagedRepoStatus(
+            repo=repo,
+            name=name,
+            workdir=workdir,
+            branch=None,
+            protected=False,
+            violating_paths=("<missing repository path>",),
+            ignored_paths=(),
+            ok=False,
+            reason=f"managed repository path does not exist: {workdir}",
+        )
+
+    branch_result = await _run(["git", "branch", "--show-current"], cwd=workdir)
+    branch = branch_result.stdout.strip() or None
+    protected = branch in protected_branches if branch else False
+    status_result = await _run(["git", "status", "--porcelain"], cwd=workdir)
+    dirty_paths = tuple(
+        _normalize_status_path(line)
+        for line in status_result.stdout.splitlines()
+        if line.strip()
+    )
+    ignored = tuple(
+        path
+        for path in dirty_paths
+        if _is_allowed_dirty_path(path, allowed_dirty_prefixes)
+    )
+    violating = tuple(
+        path
+        for path in dirty_paths
+        if not _is_allowed_dirty_path(path, allowed_dirty_prefixes)
+    )
+
+    if protected and violating:
+        ok = False
+        reason = f"protected branch {branch!r} has implementation drift"
+    else:
+        ok = True
+        if protected and ignored:
+            reason = f"protected branch {branch!r} has only allowed local tool noise"
+        elif protected:
+            reason = f"protected branch {branch!r} is clean"
+        elif violating:
+            reason = f"feature branch {branch!r} has local changes"
+        else:
+            reason = f"branch {branch!r} is clean"
+
+    return ManagedRepoStatus(
+        repo=repo,
+        name=name,
+        workdir=workdir,
+        branch=branch,
+        protected=protected,
+        violating_paths=violating,
+        ignored_paths=ignored,
+        ok=ok,
+        reason=reason,
+    )
+
+
+def _normalize_status_path(line: str) -> str:
+    """Extract the path portion from git status --porcelain output."""
+    raw = line[3:] if len(line) > 3 else line
+    if " -> " in raw:
+        raw = raw.split(" -> ", 1)[1]
+    return raw.strip()
+
+
+def _is_allowed_dirty_path(path: str, prefixes: tuple[str, ...]) -> bool:
+    """Return true when a dirty path is allowed local tool noise."""
+    return any(
+        path == prefix.rstrip("/") or path.startswith(prefix) for prefix in prefixes
+    )
 
 
 def _issue_branch_name(issue: IssueMetadata) -> str:
@@ -1313,7 +1505,9 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def _resolve_file_backed_secret(env: dict[str, str], key_name: str, file_key_name: str) -> None:
+def _resolve_file_backed_secret(
+    env: dict[str, str], key_name: str, file_key_name: str
+) -> None:
     if env.get(key_name):
         return
     value = _read_secret_file(env.get(file_key_name, ""))

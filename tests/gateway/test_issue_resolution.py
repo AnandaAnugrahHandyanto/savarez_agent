@@ -16,6 +16,8 @@ from gateway.issue_resolution import (
     IssueRunType,
     IssueStateStore,
     _execute_master_issue,
+    _guard_managed_repo_before_issue_dispatch,
+    _inspect_managed_repo,
     _load_next_open_issue,
     build_aider_invocation,
     github_issue_webhook_command,
@@ -75,7 +77,10 @@ def test_github_issue_webhook_command_builds_slash_command():
         "issue": {"number": 5},
     }
 
-    assert github_issue_webhook_command(payload) == "/issue --repo m0nklabs/cryptotrader --issue 5"
+    assert (
+        github_issue_webhook_command(payload)
+        == "/issue --repo m0nklabs/cryptotrader --issue 5"
+    )
 
 
 def test_master_issue_label_detection():
@@ -105,14 +110,15 @@ def test_master_issue_heading_detection():
 
 def test_parse_issue_next_command_parses_repo_and_workdir(tmp_path):
     """The next-open-issue command should accept a repo plus workdir."""
-    request = parse_issue_next_command_args(f"m0nklabs/cryptotrader --workdir {tmp_path}")
+    request = parse_issue_next_command_args(
+        f"m0nklabs/cryptotrader --workdir {tmp_path}"
+    )
 
     assert request == IssueSelectionRequest(
         repo="m0nklabs/cryptotrader",
         workdir=tmp_path,
         branch=None,
     )
-
 
 
 def test_parse_decomposition_response_json_object():
@@ -238,8 +244,12 @@ async def test_master_expansion_creates_persisted_subissue_runs(tmp_path, monkey
     async def notify(message: str):
         messages.append(message)
 
-    monkeypatch.setattr("gateway.issue_resolution.decompose_master_plan", fake_decompose)
-    monkeypatch.setattr("gateway.issue_resolution._create_sub_issue", fake_create_sub_issue)
+    monkeypatch.setattr(
+        "gateway.issue_resolution.decompose_master_plan", fake_decompose
+    )
+    monkeypatch.setattr(
+        "gateway.issue_resolution._create_sub_issue", fake_create_sub_issue
+    )
 
     await _execute_master_issue(store, run, issue, notify)
 
@@ -248,9 +258,91 @@ async def test_master_expansion_creates_persisted_subissue_runs(tmp_path, monkey
 
     assert master.status is IssueRunStatus.EXPANDED
     assert [child.issue_number for child in children] == [101, 102]
-    assert [child.status for child in children] == [IssueRunStatus.QUEUED, IssueRunStatus.QUEUED]
-    assert [child.run_type for child in children] == [IssueRunType.SUB_ISSUE, IssueRunType.SUB_ISSUE]
+    assert [child.status for child in children] == [
+        IssueRunStatus.QUEUED,
+        IssueRunStatus.QUEUED,
+    ]
+    assert [child.run_type for child in children] == [
+        IssueRunType.SUB_ISSUE,
+        IssueRunType.SUB_ISSUE,
+    ]
     assert any("expanded into 2" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_managed_repo_guard_blocks_dirty_protected_branch(tmp_path, monkeypatch):
+    """CryptoTrader implementation must not start from dirty master/main."""
+    issue = IssueMetadata(
+        number=12,
+        title="Fix drift",
+        body="body",
+        url="https://github.com/m0nklabs/cryptotrader/issues/12",
+    )
+    run = IssueStateStore(tmp_path / "issues.db").enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", issue.number, tmp_path),
+        run_type=IssueRunType.ISSUE,
+    )
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        if command == ["git", "branch", "--show-current"]:
+            return CompletedProcess(
+                command=command, returncode=0, stdout="master\n", stderr=""
+            )
+        if command == ["git", "status", "--porcelain"]:
+            return CompletedProcess(
+                command=command, returncode=0, stdout=" M core/trading.py\n", stderr=""
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+
+    with pytest.raises(
+        RuntimeError, match="protected branch 'master' has implementation drift"
+    ):
+        await _guard_managed_repo_before_issue_dispatch(
+            run, issue, "issue/12-fix-drift"
+        )
+
+
+@pytest.mark.asyncio
+async def test_managed_repo_guard_allows_only_aider_noise_on_protected_branch(
+    tmp_path, monkeypatch
+):
+    """Aider history/cache files are allowed local noise on protected branches."""
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        if command == ["git", "branch", "--show-current"]:
+            return CompletedProcess(
+                command=command, returncode=0, stdout="master\n", stderr=""
+            )
+        if command == ["git", "status", "--porcelain"]:
+            return CompletedProcess(
+                command=command,
+                returncode=0,
+                stdout="?? .aider.chat.history.md\n?? .aider.tags.cache.v4/tags\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+
+    status = await _inspect_managed_repo("m0nklabs/cryptotrader", tmp_path)
+
+    assert status is not None
+    assert status.ok is True
+    assert status.violating_paths == ()
+    assert status.ignored_paths == (
+        ".aider.chat.history.md",
+        ".aider.tags.cache.v4/tags",
+    )
+
+
+@pytest.mark.asyncio
+async def test_managed_repo_guard_skips_unmanaged_repos(tmp_path):
+    """Only configured managed repos should receive the CryptoTrader guard."""
+    status = await _inspect_managed_repo("m0nklabs/other", tmp_path)
+
+    assert status is None
 
 
 @pytest.mark.asyncio
@@ -263,7 +355,9 @@ async def test_load_next_open_issue_selects_oldest_issue(monkeypatch):
             {"number": 12, "createdAt": "2026-05-29T12:00:00Z"},
             {"number": 7, "createdAt": "2026-05-28T12:00:00Z"},
         ]
-        return CompletedProcess(command=command, returncode=0, stdout=json.dumps(payload), stderr="")
+        return CompletedProcess(
+            command=command, returncode=0, stdout=json.dumps(payload), stderr=""
+        )
 
     async def fake_load_issue(repo, issue_number):
         return IssueMetadata(
@@ -296,7 +390,12 @@ def test_local_aider_invocation_targets_guardian(tmp_path):
     )
 
     assert invocation.cwd == tmp_path
-    assert invocation.command[:4] == ["/opt/aider/bin/aider", "--model", "openai/qwen3-35b-uncensored", "--yes"]
+    assert invocation.command[:4] == [
+        "/opt/aider/bin/aider",
+        "--model",
+        "openai/qwen3-35b-uncensored",
+        "--yes",
+    ]
     assert invocation.env["OPENAI_API_BASE"] == "http://127.0.0.1:11434/v1"
     assert invocation.env["OPENAI_API_KEY"] == "local-key"
 
@@ -315,7 +414,11 @@ def test_cloud_aider_invocation_targets_openrouter(tmp_path):
         },
     )
 
-    assert invocation.command[:3] == ["/opt/aider/bin/aider", "--model", "openrouter/deepseek/deepseek-v4-flash"]
+    assert invocation.command[:3] == [
+        "/opt/aider/bin/aider",
+        "--model",
+        "openrouter/deepseek/deepseek-v4-flash",
+    ]
     assert "--cache-prompts" in invocation.command
     assert "--no-auto-commits" in invocation.command
     assert "OPENAI_API_BASE" not in invocation.env
