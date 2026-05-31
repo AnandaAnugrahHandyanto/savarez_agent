@@ -46,6 +46,38 @@ def test_media_kinds_pinned(ref, expected):
     assert adapter_cls.MEDIA_KINDS == expected
 
 
+# The per-file method ``_dispatch_media_one`` (tools/send_message_tool.py)
+# actually calls for each kind. This is the path with NO batch fallback, so
+# the declared kind MUST override the exact method here — otherwise the base
+# stub runs and leaks the local path as chat text. (send_multiple_images is an
+# optional batch optimization; base.send_multiple_images loops file:// back to
+# send_image_file, so send_image_file is the true terminal IMAGE method.)
+_DISPATCH_METHOD = {
+    I: "send_image_file",
+    V: "send_video",
+    A: "send_voice",
+    D: "send_document",
+}
+
+
+@pytest.mark.parametrize("ref,expected", PINNED_MEDIA_KINDS.items())
+def test_declared_kinds_are_backed_by_real_overrides(ref, expected):
+    """Every declared kind must override the method its dispatch site calls.
+
+    Asserts the descriptor's documented invariant ("MUST be backed by a real
+    send_* override") executably, so a future adapter that declares a kind it
+    doesn't deliver fails loudly in CI instead of leaking a path as chat text.
+    """
+    mod, cls = ref.split(":")
+    adapter_cls = getattr(importlib.import_module(mod), cls)
+    for kind in expected:
+        method = _DISPATCH_METHOD[kind]
+        assert getattr(adapter_cls, method) is not getattr(BasePlatformAdapter, method), (
+            f"{cls} declares {kind.name} but inherits base {method} "
+            f"(the base stub leaks the local path as chat text)"
+        )
+
+
 def test_platform_entry_has_no_media_kinds_field():
     # The descriptor lives on the adapter class only. Mirroring it onto
     # PlatformEntry would couple the ungated out-of-process standalone path
