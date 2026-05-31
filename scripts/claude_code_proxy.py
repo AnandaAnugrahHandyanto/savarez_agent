@@ -208,6 +208,33 @@ async def chat_completions(request: Request):
     if not prompt:
         return JSONResponse({"error": "no user message"}, status_code=400)
 
+    # /clear: clear this conversation's proxy session without calling Claude
+    if prompt.strip() == "/clear":
+        key = _session_key(messages)
+        had = key in _sessions
+        _sessions.pop(key, None)
+        if had:
+            _save_sessions()
+        text = "✅ Claude session cleared." if had else "ℹ️ No active session to clear."
+        cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        now = int(time.time())
+        if do_stream:
+            async def _clr_sse():
+                chunk = {"id": cid, "object": "chat.completion.chunk", "created": now,
+                         "model": "claude-sonnet-4-6",
+                         "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": None}]}
+                yield f"data: {json.dumps(chunk)}\n\n"
+                done = {"id": cid, "object": "chat.completion.chunk", "created": now,
+                        "model": "claude-sonnet-4-6",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                yield f"data: {json.dumps(done)}\n\n"
+                yield "data: [DONE]\n\n"
+            return StreamingResponse(_clr_sse(), media_type="text/event-stream")
+        return JSONResponse({"id": cid, "object": "chat.completion", "created": now,
+                             "model": "claude-sonnet-4-6",
+                             "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+                             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}})
+
     key = _session_key(messages)
     sid = _sessions.get(key)
 
@@ -263,6 +290,15 @@ async def chat_completions(request: Request):
         "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     })
+
+
+@app.delete("/v1/sessions")
+async def clear_all_sessions():
+    """Clear all proxy sessions; next messages start fresh in Claude."""
+    n = len(_sessions)
+    _sessions.clear()
+    _save_sessions()
+    return {"cleared": n}
 
 
 @app.delete("/v1/sessions/{key:path}")
