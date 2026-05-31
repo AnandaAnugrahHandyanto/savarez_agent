@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, normalize_profile
 
 logger = logging.getLogger(__name__)
 
@@ -415,10 +415,10 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["profile"] = job["profile"]
     return result
 
-
 def cronjob(
     action: str,
     job_id: Optional[str] = None,
+    profile_name: str = "main",
     prompt: Optional[str] = None,
     schedule: Optional[str] = None,
     name: Optional[str] = None,
@@ -523,7 +523,7 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled, profile_name=profile_name)]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
@@ -555,6 +555,13 @@ def cronjob(
             )
         # Resolve to canonical ID (supports name-based lookup)
         job_id = job["id"]
+
+        # Cross-profile mutation guard: verify the resolved job belongs
+        # to the caller's profile before allowing any mutations.
+        if profile_name:
+            job_profile = job.get("profile")
+            if job_profile and normalize_profile(job_profile) != normalize_profile(profile_name):
+                return json.dumps({"success": False, "error": f"Job '{job_id}' does not belong to profile '{profile_name}'"})
 
         if normalized == "remove":
             removed = remove_job(job_id)
