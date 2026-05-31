@@ -6270,6 +6270,29 @@ class HermesCLI:
         print(f"  Home:    {display}")
         print()
 
+    def _handle_whoami_command(self):
+        """Show slash-command access for the current CLI user.
+
+        In the CLI there is no admin/user split — the local user owns the
+        session and has full access. Mirrors the gateway's /whoami output
+        format (gateway/run.py :: _handle_whoami_command) but simplified.
+        """
+        from hermes_cli.commands import COMMAND_REGISTRY
+        from collections import Counter
+
+        # Exclude gateway-only commands from the CLI tally.
+        visible = [c for c in COMMAND_REGISTRY if not getattr(c, "gateway_only", False)]
+        by_cat = Counter(getattr(c, "category", "Other") or "Other" for c in visible)
+
+        print()
+        print("  Access:  full (CLI owner)")
+        print(f"  Available slash commands: {len(visible)}")
+        for cat, count in sorted(by_cat.items()):
+            print(f"    - {cat}: {count}")
+        print()
+        print("  Use /help for the full list, /help <cmd> for details.")
+        print()
+
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
         # Get terminal config from environment (which was set from cli-config.yaml)
@@ -8441,6 +8464,8 @@ class HermesCLI:
             self.show_help()
         elif canonical == "profile":
             self._handle_profile_command()
+        elif canonical == "whoami":
+            self._handle_whoami_command()
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":
