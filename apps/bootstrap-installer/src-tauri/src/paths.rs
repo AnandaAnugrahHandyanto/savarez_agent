@@ -2,8 +2,15 @@
 //!
 //! Mirrors `hermes_constants.get_hermes_home()` from the Python CLI:
 //!   Windows: %LOCALAPPDATA%\hermes
-//!   macOS:   ~/Library/Application Support/hermes
-//!   Linux:   ~/.hermes  (XDG override via $HERMES_HOME)
+//!   macOS:   ~/.hermes
+//!   Linux:   ~/.hermes  (override via $HERMES_HOME)
+//!
+//! NOTE (macOS): Python's get_hermes_home(), scripts/install.sh, and the
+//! Electron desktop's resolveHermesHome() ALL use ~/.hermes on macOS — there
+//! is no ~/Library/Application Support branch anywhere else. An earlier
+//! version of this file used Application Support, which drifted from every
+//! other component: the installer wrote the install to one dir and the
+//! desktop looked for it in another, so first launch never found the backend.
 //!
 //! IMPORTANT: this must match exactly. Drift here means install.ps1
 //! writes to one place and the installer reads from another, breaking
@@ -28,15 +35,8 @@ pub fn hermes_home() -> PathBuf {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        // ~/Library/Application Support/hermes
-        if let Some(home) = dirs::home_dir() {
-            return home.join("Library/Application Support/hermes");
-        }
-    }
-
-    // Linux + fallback: ~/.hermes
+    // macOS + Linux + fallback: ~/.hermes (matches Python get_hermes_home(),
+    // install.sh, and the Electron desktop's resolveHermesHome()).
     if let Some(home) = dirs::home_dir() {
         return home.join(".hermes");
     }
