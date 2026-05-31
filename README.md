@@ -281,6 +281,10 @@ Watch list (preserve fork value during merges):
 
 ## Development
 
+Local generated outputs:
+
+- `career_docs_output/` is for local resume, cover-letter, and career-document drafts. It is ignored by git so personal application material and generated exports stay out of commits.
+
 Windows-native regression slice:
 
 ```powershell
