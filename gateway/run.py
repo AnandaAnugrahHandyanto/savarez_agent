@@ -11058,15 +11058,15 @@ class GatewayRunner:
                 try:
                     cached_entry[0].switch_model(
                         new_model=result.new_model,
-                        new_provider=result.new_provider,
-                        new_base_url=result.new_base_url,
-                        new_api_key=result.new_api_key,
+                        new_provider=result.target_provider,
+                        new_base_url=result.base_url,
+                        new_api_key=result.api_key,
                     )
                 except Exception as exc:
                     import logging
                     logging.getLogger(__name__).warning("Picker model switch failed for cached agent: %s", exc)
 
-            return result.confirmation_message or f"Switched to {chosen_model}"
+            return f"Switched to {result.new_model} ({result.target_provider})"
 
         del self._model_menu_state[session_key]
         return None
