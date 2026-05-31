@@ -3556,8 +3556,30 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   return { branch }
 })
 
+// Resolve the canonical Hermes version (the one `release.py` bumps in
+// hermes_cli/__init__.py + pyproject.toml) so the desktop About panel shows the
+// real Hermes version instead of the Electron app's own package.json version,
+// which historically drifted (stuck at 0.0.2). Falls back to app.getVersion()
+// when the source tree can't be read (e.g. a packaged build without the repo).
+function resolveHermesVersion() {
+  try {
+    const root = resolveUpdateRoot()
+    const initPath = path.join(root, 'hermes_cli', '__init__.py')
+    if (fileExists(initPath)) {
+      const raw = fs.readFileSync(initPath, 'utf8')
+      const match = raw.match(/__version__\s*=\s*["']([^"']+)["']/)
+      if (match) {
+        return match[1]
+      }
+    }
+  } catch {
+    // Fall through to the Electron app version below.
+  }
+  return app.getVersion()
+}
+
 ipcMain.handle('hermes:version', async () => ({
-  appVersion: app.getVersion(),
+  appVersion: resolveHermesVersion(),
   electronVersion: process.versions.electron,
   nodeVersion: process.versions.node,
   platform: process.platform,
