@@ -1961,7 +1961,7 @@ def terminal_tool(
 
                 if session_key and effective_cwd:
                     try:
-                        from gateway.active_task import ActiveTaskStore, resolve_git_branch
+                        from gateway.active_task import ActiveTaskStore, resolve_git_branch, resolve_git_head
                         from gateway.session_context import get_session_env as _gse
 
                         ActiveTaskStore().upsert(
@@ -1972,6 +1972,8 @@ def terminal_tool(
                             thread_id=_gse("HERMES_SESSION_THREAD_ID", ""),
                             repo_path=effective_cwd,
                             branch=resolve_git_branch(effective_cwd),
+                            head=resolve_git_head(effective_cwd),
+                            mode="background_process",
                             command=command,
                             status="active",
                             process_session_id=proc_session.id,

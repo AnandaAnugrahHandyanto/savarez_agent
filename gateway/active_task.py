@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -17,6 +18,7 @@ from utils import atomic_json_write
 
 DEFAULT_ACTIVE_TASK_TTL_SECONDS = 48 * 60 * 60
 ACTIVE_TASK_STATUSES = {"active", "interrupted", "detached", "unknown"}
+logger = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
@@ -51,6 +53,8 @@ class ActiveTaskRecord:
     thread_id: Optional[str] = None
     repo_path: Optional[str] = None
     branch: Optional[str] = None
+    head: Optional[str] = None
+    mode: Optional[str] = None
     command: Optional[str] = None
     task_summary: Optional[str] = None
     status: str = "unknown"
@@ -100,7 +104,14 @@ class ActiveTaskStore:
     def _read_unlocked(self) -> dict[str, Any]:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except FileNotFoundError:
+            logger.debug("active-task store file is absent: %s", self.path)
+            return {}
+        except json.JSONDecodeError as exc:
+            logger.warning("failed to parse active-task store %s: %s", self.path, exc)
+            return {}
+        except OSError as exc:
+            logger.warning("failed to read active-task store %s: %s", self.path, exc)
             return {}
         return data if isinstance(data, dict) else {}
 
@@ -143,6 +154,33 @@ class ActiveTaskStore:
             self._write_unlocked(data)
             return record
 
+    def replace_foreground_session(
+        self,
+        *,
+        session_key: str,
+        repo_path: str,
+        branch: Optional[str] = None,
+        head: Optional[str] = None,
+    ) -> ActiveTaskRecord:
+        if not session_key:
+            raise ValueError("session_key is required")
+
+        payload = {
+            "session_key": session_key,
+            "repo_path": _clean_optional_str(repo_path),
+            "branch": _clean_optional_str(branch),
+            "head": _clean_optional_str(head),
+            "mode": "foreground_session",
+            "status": "active",
+            "updated_at": _utc_now_iso(),
+        }
+        record = ActiveTaskRecord.from_dict(payload)
+        with self._lock:
+            data = self._read_unlocked()
+            data[session_key] = payload
+            self._write_unlocked(data)
+        return record
+
 
 def resolve_git_branch(repo_path: str | os.PathLike[str] | None) -> Optional[str]:
     if not repo_path:
@@ -162,6 +200,26 @@ def resolve_git_branch(repo_path: str | os.PathLike[str] | None) -> Optional[str
         return None
     branch = (result.stdout or "").strip()
     return branch or None
+
+
+def resolve_git_head(repo_path: str | os.PathLike[str] | None) -> Optional[str]:
+    if not repo_path:
+        return None
+    path = Path(repo_path).expanduser()
+    if not path.exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return None
+    head = (result.stdout or "").strip()
+    return head or None
 
 
 def build_active_task_recovery_note(
@@ -198,6 +256,7 @@ def build_active_task_recovery_note(
         f" Previous active task: {task}",
         f"Previous repo path: {record.repo_path or 'unknown'}",
         f"Previous branch: {record.branch or 'unknown'}",
+        f"Previous HEAD: {record.head or 'unknown'}",
         f"Previous command: {record.command or 'unknown'}",
         f"Process status: {record.status or 'unknown'}",
     ]

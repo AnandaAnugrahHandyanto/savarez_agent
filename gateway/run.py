@@ -1893,11 +1893,51 @@ class GatewayRunner:
             try:
                 path = Path(terminal_cwd).expanduser()
                 if path.exists():
-                    return str(path)
+                    resolved = str(path)
+                    self._record_foreground_session_workspace(session_key, resolved)
+                    return resolved
             except OSError:
                 pass
 
-        return fallback_cwd or os.getcwd()
+        resolved = fallback_cwd or os.getcwd()
+        self._record_foreground_session_workspace(session_key, resolved)
+        return resolved
+
+
+    def _record_foreground_session_workspace(
+        self,
+        session_key: str,
+        cwd: Optional[str],
+    ) -> None:
+        if not session_key or not cwd:
+            logger.info(
+                "foreground active-task record unavailable: session_key_present=%s cwd_present=%s",
+                bool(session_key),
+                bool(cwd),
+            )
+            return
+
+        store = getattr(self, "active_task_store", None)
+        if store is None:
+            logger.info("foreground active-task record unavailable: active-task store missing")
+            return
+
+        try:
+            from gateway.active_task import resolve_git_branch, resolve_git_head
+
+            store.replace_foreground_session(
+                session_key=session_key,
+                repo_path=cwd,
+                branch=resolve_git_branch(cwd),
+                head=resolve_git_head(cwd),
+            )
+            logger.info(
+                "foreground active-task record written: session_key=%s cwd=%s",
+                session_key,
+                cwd,
+            )
+        except Exception:
+            logger.debug("Failed to update foreground active-task store", exc_info=True)
 
 
     def _build_resume_recovery_note(
@@ -1914,6 +1954,23 @@ class GatewayRunner:
                 record = store.get(session_key)
             except Exception:
                 record = None
+            if record is None:
+                store_path = getattr(store, "path", None)
+                if store_path is not None and not Path(store_path).exists():
+                    logger.info(
+                        "active-task store file is absent during recovery: session_key=%s path=%s",
+                        session_key,
+                        store_path,
+                    )
+                else:
+                    logger.info(
+                        "active-task record missing during recovery: session_key=%s",
+                        session_key,
+                    )
+        elif store is None:
+            logger.info("active-task store missing during recovery")
+        elif not session_key:
+            logger.info("active-task recovery skipped: no session_key")
         return build_active_task_recovery_note(record, resume_reason)
 
 
