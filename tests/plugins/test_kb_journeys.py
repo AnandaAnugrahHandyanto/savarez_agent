@@ -262,6 +262,87 @@ def test_dashboard_command_prefers_live_dashboard_packet(monkeypatch):
     assert adapter.sent[0]["actions"] == []
 
 
+def test_dashboard_situation_descriptor_renders_readonly_action_button(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_dashboard_live": {
+                "result": {
+                    "surface": "dashboard.live",
+                    "summary": {
+                        "active_run_count": 0,
+                        "active_todo_count": 1,
+                        "publication_status": "clean",
+                        "readiness_status": "ready",
+                    },
+                    "sections": [
+                        {
+                            "id": "situations",
+                            "title": "Situations",
+                            "cards": [
+                                {
+                                    "id": "situation:acme-launch",
+                                    "kind": "situation",
+                                    "title": "Acme Launch Decision",
+                                    "detail": "Needs next-step guidance.",
+                                    "action_descriptors": [
+                                        {
+                                            "packet_type": "dashboard_action_descriptor",
+                                            "schema_version": 2,
+                                            "action_id": "open_situation",
+                                            "label": "Open situation",
+                                            "method": "object.context",
+                                            "mutation": "read_only",
+                                            "target_kind": "situation",
+                                            "target_ref": "situations/2026-05-acme-launch-decision",
+                                            "preview_tool": "object.context",
+                                            "params": {
+                                                "object_path": "situations/2026-05-acme-launch-decision/state.md"
+                                            },
+                                            "dashboard_owned_write": False,
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                    "refresh": {"ttl_seconds": 60},
+                }
+            },
+            "mcp_kb_engine_prod_object_context": {
+                "result": {
+                    "title": "Acme Launch Decision",
+                    "summary": "Choose the next launch note after reviewing stakeholder evidence.",
+                    "target_ref": "situations/2026-05-acme-launch-decision",
+                }
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert adapter.sent[0]["actions"]
+    action = adapter.sent[0]["actions"][0]
+    assert action.label == "Open situation"
+
+    card = action.handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
+    if asyncio.iscoroutine(card):
+        card = asyncio.run(card)
+
+    assert "Acme Launch Decision" in card["text"]
+    assert "Choose the next launch note" in card["text"]
+    assert ctx.calls[-1] == (
+        "mcp_kb_engine_prod_object_context",
+        {"object_path": "situations/2026-05-acme-launch-decision/state.md"},
+    )
+
+
 def test_plain_non_kb_commands_are_left_for_system_handlers(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 

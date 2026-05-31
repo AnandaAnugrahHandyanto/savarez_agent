@@ -441,7 +441,92 @@ def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
         lines.append(f"Refresh: every {_short(refresh.get('ttl_seconds'), '60')}s target")
     lines.append("")
     lines.append("Commands: /kb queue · /kb status · /kb runs · /kb today")
-    return {"title": "KB Dashboard", "text": "\n".join(lines), "actions": []}
+    return {"title": "KB Dashboard", "text": "\n".join(lines), "actions": _dashboard_descriptor_actions(ctx, target, sections)}
+
+
+def _dashboard_descriptor_actions(ctx: Any, target: str, sections: list[Any]) -> list[Any]:
+    try:
+        from tools.kb_callback_registry import KbAction
+    except Exception:
+        return []
+
+    actions: list[Any] = []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        if str(section.get("id") or "").strip().lower() not in {"situations", "now"}:
+            continue
+        cards = section.get("cards") if isinstance(section.get("cards"), list) else []
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            descriptors = card.get("action_descriptors") if isinstance(card.get("action_descriptors"), list) else []
+            for descriptor in descriptors:
+                if not isinstance(descriptor, dict):
+                    continue
+                if descriptor.get("dashboard_owned_write") is True:
+                    continue
+                if descriptor.get("packet_type") != "dashboard_action_descriptor" or descriptor.get("schema_version") != 2:
+                    continue
+                if descriptor.get("mutation") != "read_only":
+                    continue
+                if str(descriptor.get("target_kind") or "") not in {"situation", "component"}:
+                    continue
+                if not (descriptor.get("preview_tool") or descriptor.get("method")):
+                    continue
+                descriptor_copy = dict(descriptor)
+                label = _short(descriptor.get("label") or descriptor.get("action_id") or "Open", "Open")
+                action_id = _short(descriptor.get("action_id") or label, label)
+                actions.append(
+                    KbAction(
+                        label=label,
+                        action_id=f"{action_id}.open",
+                        handler=lambda callback_ctx, d=descriptor_copy: _render_readonly_descriptor_action(
+                            ctx,
+                            target,
+                            descriptor=d,
+                            callback_ctx=callback_ctx,
+                        ),
+                        metadata={
+                            "target_kind": descriptor.get("target_kind"),
+                            "target_ref": descriptor.get("target_ref"),
+                            "preview_tool": descriptor.get("preview_tool") or descriptor.get("method"),
+                        },
+                    )
+                )
+                if len(actions) >= 4:
+                    return actions
+    return actions
+
+
+def _render_readonly_descriptor_action(
+    ctx: Any,
+    target: str,
+    *,
+    descriptor: dict[str, Any],
+    callback_ctx: Any,
+) -> dict[str, Any]:
+    del callback_ctx
+    method = _descriptor_tool_name(target, descriptor.get("preview_tool") or descriptor.get("method"))
+    params = descriptor.get("params") if isinstance(descriptor.get("params"), dict) else {}
+    payload = _result_payload(ctx.dispatch_tool(method, params))
+    label = _short(descriptor.get("label") or descriptor.get("action_id") or "KB Context", "KB Context")
+    if isinstance(payload, dict) and payload.get("error"):
+        return {"title": label, "text": f"{label}\n{payload['error']}", "actions": []}
+    if not isinstance(payload, dict):
+        return {"title": label, "text": f"{label}\n{_short(payload, 'No context returned.')}", "actions": []}
+    title = _short(payload.get("title") or payload.get("name") or label, label)
+    summary = _short(payload.get("summary") or payload.get("description") or payload.get("text"), "")
+    target_ref = _short(payload.get("target_ref") or descriptor.get("target_ref"), "")
+    status = _short(payload.get("status") or payload.get("state"), "")
+    lines = [title]
+    if summary:
+        lines.append(summary)
+    if status:
+        lines.append(f"Status: {status}")
+    if target_ref:
+        lines.append(f"Ref: {target_ref}")
+    return {"title": label, "text": "\n".join(lines), "actions": []}
 
 
 def _strip_env_value(value: str) -> str:
