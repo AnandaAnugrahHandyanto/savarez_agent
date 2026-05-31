@@ -7008,13 +7008,20 @@ def repair_notify_subscriptions(conn: sqlite3.Connection) -> int:
     SQLite permits integer values in TEXT-affinity columns. The gateway
     notifier treats platform/chat/thread identifiers as strings, so repair at
     the DB boundary and collapse duplicate rows introduced by type drift.
+
+    Duplicate collapse happens before key-changing updates so legacy rows such
+    as ``platform='Discord'`` and ``platform='discord'`` do not collide with the
+    ``PRIMARY KEY (task_id, platform, chat_id, thread_id)`` during migration.
+    The merged row keeps the highest delivered event cursor so repair never
+    replays events the notifier had already acknowledged.
     """
     try:
         rows = conn.execute("SELECT rowid, * FROM kanban_notify_subs").fetchall()
     except sqlite3.Error:
         return 0
+
     changed = 0
-    seen: set[tuple[str, str, str, str]] = set()
+    groups: dict[tuple[str, str, str, str], list[tuple[sqlite3.Row, dict[str, Any]]]] = {}
     for row in rows:
         norm = _normalize_notify_sub_values(
             task_id=row["task_id"],
@@ -7026,21 +7033,38 @@ def repair_notify_subscriptions(conn: sqlite3.Connection) -> int:
             last_event_id=row["last_event_id"],
         )
         key = (norm["task_id"], norm["platform"], norm["chat_id"], norm["thread_id"])
-        if key in seen:
+        groups.setdefault(key, []).append((row, norm))
+
+    for key, entries in groups.items():
+        keep_row, keep_norm = entries[0]
+        merged = dict(keep_norm)
+        merged["last_event_id"] = max(norm["last_event_id"] for _, norm in entries)
+        for _, norm in entries:
+            if not merged.get("user_id") and norm.get("user_id"):
+                merged["user_id"] = norm["user_id"]
+            if (
+                merged.get("notifier_profile") == "default"
+                and norm.get("notifier_profile")
+                and norm.get("notifier_profile") != "default"
+            ):
+                merged["notifier_profile"] = norm["notifier_profile"]
+
+        # Delete duplicate physical rows first. Otherwise updating the keeper
+        # to its normalized key can violate the notify table primary key.
+        for row, _ in entries[1:]:
             conn.execute("DELETE FROM kanban_notify_subs WHERE rowid = ?", (row["rowid"],))
             changed += 1
-            continue
-        seen.add(key)
+
         original = {
-            "task_id": row["task_id"],
-            "platform": row["platform"],
-            "chat_id": row["chat_id"],
-            "thread_id": row["thread_id"],
-            "user_id": row["user_id"],
-            "notifier_profile": row["notifier_profile"] if "notifier_profile" in row.keys() else None,
-            "last_event_id": row["last_event_id"],
+            "task_id": keep_row["task_id"],
+            "platform": keep_row["platform"],
+            "chat_id": keep_row["chat_id"],
+            "thread_id": keep_row["thread_id"],
+            "user_id": keep_row["user_id"],
+            "notifier_profile": keep_row["notifier_profile"] if "notifier_profile" in keep_row.keys() else None,
+            "last_event_id": keep_row["last_event_id"],
         }
-        if any(original[k] != norm[k] for k in norm):
+        if any(original[k] != merged[k] for k in merged):
             conn.execute(
                 """
                 UPDATE kanban_notify_subs
@@ -7049,9 +7073,9 @@ def repair_notify_subscriptions(conn: sqlite3.Connection) -> int:
                  WHERE rowid = ?
                 """,
                 (
-                    norm["task_id"], norm["platform"], norm["chat_id"],
-                    norm["thread_id"], norm["user_id"], norm["notifier_profile"],
-                    norm["last_event_id"], row["rowid"],
+                    merged["task_id"], merged["platform"], merged["chat_id"],
+                    merged["thread_id"], merged["user_id"], merged["notifier_profile"],
+                    merged["last_event_id"], keep_row["rowid"],
                 ),
             )
             changed += 1
@@ -7067,6 +7091,7 @@ def add_notify_sub(
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
+    last_event_id: int = 0,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
@@ -7078,6 +7103,7 @@ def add_notify_sub(
         thread_id=thread_id,
         user_id=user_id,
         notifier_profile=notifier_profile,
+        last_event_id=last_event_id,
     )
     with write_txn(conn):
         conn.execute(

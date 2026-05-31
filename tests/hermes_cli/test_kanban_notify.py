@@ -1,4 +1,5 @@
 import asyncio
+import time
 import pytest
 
 from pathlib import Path
@@ -24,6 +25,14 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
     kb.init_db()
     return home
+
+
+def test_assignee_notify_target_rejects_blank_chat_id():
+    from gateway.run import GatewayRunner
+
+    assert GatewayRunner._parse_kanban_assignee_notify_target(
+        {"platform": "discord", "chat_id": "   "}
+    ) is None
 
 
 @pytest.mark.asyncio
@@ -434,6 +443,220 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
     finally:
         conn.close()
     assert subs == []
+
+
+@pytest.mark.asyncio
+async def test_notifier_autosubscribes_assignee_channel_from_config(kanban_home):
+    """Configured assignee lanes receive terminal events even without origin subs."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="research thing", assignee="huginn")
+        kb.complete_task(conn, tid, result="found it")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_notifier_profile = "default"
+    runner._kanban_assignee_notify_started_at = 1
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.DISCORD: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    cfg = {
+        "kanban": {
+            "assignee_notification_channels": {
+                "huginn": "discord:chan-huginn",
+            }
+        }
+    }
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
+         patch("hermes_cli.config.load_config", return_value=cfg):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_called_once()
+    assert fake_adapter.send.call_args[0][0] == "chan-huginn"
+    assert "@huginn" in fake_adapter.send.call_args[0][1]
+    assert tid in fake_adapter.send.call_args[0][1]
+
+
+@pytest.mark.asyncio
+async def test_notifier_assignee_channel_completion_not_redelivered(kanban_home):
+    """Auto assignee lane rows must not reappear forever after done cleanup."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="one shot", assignee="huginn")
+        kb.complete_task(conn, tid, result="done once")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_notifier_profile = "default"
+    runner._kanban_assignee_notify_started_at = 1
+
+    sent: list[tuple[str, str]] = []
+
+    async def _send(chat_id, msg, metadata=None):
+        sent.append((chat_id, msg))
+        runner._running = False
+
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock(side_effect=_send)
+    runner.adapters = {Platform.DISCORD: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    cfg = {"kanban": {"assignee_notification_channels": {"huginn": "discord:chan-huginn"}}}
+
+    for _ in range(2):
+        runner._running = True
+        tick_count = 0
+
+        async def _fast_sleep(_):
+            nonlocal tick_count
+            await _orig_sleep(0)
+            tick_count += 1
+            if tick_count >= 4:
+                runner._running = False
+
+        with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
+             patch("hermes_cli.config.load_config", return_value=cfg):
+            await asyncio.wait_for(
+                runner._kanban_notifier_watcher(interval=1),
+                timeout=10.0,
+            )
+
+    assert len(sent) == 1
+    assert sent[0][0] == "chan-huginn"
+    assert tid in sent[0][1]
+
+
+@pytest.mark.asyncio
+async def test_notifier_autosubscribes_reassigned_assignee_channel(kanban_home):
+    """Reassigned tasks emit to the new assignee's configured profile lane."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="build thing", assignee="brokkr")
+        assert kb.assign_task(conn, tid, "tyr") is True
+        kb.block_task(conn, tid, reason="needs review decision")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_notifier_profile = "default"
+    runner._kanban_assignee_notify_started_at = 1
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.DISCORD: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    cfg = {
+        "kanban": {
+            "assignee_notification_channels": {
+                "brokkr": "discord:chan-brokkr",
+                "tyr": "discord:chan-tyr",
+            }
+        }
+    }
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
+         patch("hermes_cli.config.load_config", return_value=cfg):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_called_once()
+    assert fake_adapter.send.call_args[0][0] == "chan-tyr"
+    assert "@tyr" in fake_adapter.send.call_args[0][1]
+    assert "blocked" in fake_adapter.send.call_args[0][1]
+
+
+def test_notifier_late_assignee_route_skips_existing_terminal_events(kanban_home):
+    """Adding a worker channel at runtime must not replay old terminal events."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="already blocked", assignee="huginn")
+        kb.block_task(conn, tid, reason="blocked before channel existed")
+        max_event_id = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM task_events WHERE task_id = ?",
+            (tid,),
+        ).fetchone()[0]
+
+        runner = object.__new__(GatewayRunner)
+        runner._kanban_assignee_notify_terminal_seen = set()
+        routes = {"huginn": {"platform": "discord", "chat_id": "chan-huginn", "thread_id": ""}}
+        route_first_seen = {("huginn", "discord", "chan-huginn", ""): int(time.time()) + 60}
+
+        added = runner._kanban_sync_assignee_notify_subs(
+            conn,
+            kb,
+            routes,
+            active_platforms={"discord"},
+            notifier_profile="default",
+            terminal_kinds=("blocked",),
+            started_at=0,
+            route_first_seen=route_first_seen,
+            board="default",
+        )
+
+        assert added == 1
+        subs = kb.list_notify_subs(conn, tid)
+        assert len(subs) == 1
+        assert subs[0]["last_event_id"] == max_event_id
+        old_cursor, new_cursor, events = kb.claim_unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chan-huginn",
+            thread_id="",
+            kinds=["blocked"],
+        )
+        assert old_cursor == max_event_id
+        assert new_cursor == max_event_id
+        assert events == []
+    finally:
+        conn.close()
 
 
 @pytest.mark.asyncio

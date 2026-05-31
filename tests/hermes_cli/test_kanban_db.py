@@ -2415,6 +2415,40 @@ def test_repair_notify_subscriptions_normalizes_legacy_rows(kanban_home):
         assert sub["notifier_profile"] == "default"
         assert sub["last_event_id"] == 0
 
+
+def test_repair_notify_subscriptions_merges_normalized_duplicates(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="duplicate notify rows")
+        now = int(time.time())
+        with kb.write_txn(conn):
+            conn.execute(
+                """
+                INSERT INTO kanban_notify_subs
+                    (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at, last_event_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (task_id, "Discord", 12345, 0, None, "default", now, 2),
+            )
+            conn.execute(
+                """
+                INSERT INTO kanban_notify_subs
+                    (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at, last_event_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (task_id, "discord", "12345", "0", "assignee:huginn", "default", now + 1, 7),
+            )
+
+        changed = kb.repair_notify_subscriptions(conn)
+        assert changed >= 1
+        subs = kb.list_notify_subs(conn, task_id)
+        assert len(subs) == 1
+        sub = subs[0]
+        assert sub["platform"] == "discord"
+        assert sub["chat_id"] == "12345"
+        assert sub["thread_id"] == "0"
+        assert sub["user_id"] == "assignee:huginn"
+        assert sub["last_event_id"] == 7
+
 # ---------------------------------------------------------------------------
 # NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
 # ---------------------------------------------------------------------------

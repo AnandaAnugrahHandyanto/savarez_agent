@@ -1035,7 +1035,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
-from gateway.delivery import DeliveryRouter
+from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -4893,6 +4893,204 @@ class GatewayRunner:
         except Exception:
             return "default"
 
+    @staticmethod
+    def _parse_kanban_assignee_notify_target(value: Any) -> Optional[dict]:
+        """Parse one kanban assignee notification target.
+
+        Supported forms:
+        - ``"discord:<channel_id>"``
+        - ``"discord:<channel_id>:<thread_id>"``
+        - ``{"platform": "discord", "chat_id": "...", "thread_id": "..."}``
+
+        Targets must be explicit chat/channel destinations. Bare platform
+        names are intentionally ignored because worker lanes should be
+        profile-specific, not whichever home channel the platform has today.
+        """
+        if isinstance(value, dict):
+            platform = str(value.get("platform") or "").strip().lower()
+            chat_id = value.get("chat_id") or value.get("channel_id")
+            thread_id = value.get("thread_id") or ""
+            if not platform or chat_id in (None, ""):
+                return None
+            chat_id = str(chat_id).strip()
+            thread_id = str(thread_id).strip()
+            if not chat_id:
+                return None
+            try:
+                plat = Platform(platform)
+            except ValueError:
+                return None
+            if plat == Platform.LOCAL:
+                return None
+            return {
+                "platform": plat.value,
+                "chat_id": chat_id,
+                "thread_id": thread_id,
+            }
+
+        if not isinstance(value, str):
+            return None
+        target = DeliveryTarget.parse(value)
+        if target.platform == Platform.LOCAL or not target.chat_id:
+            return None
+        chat_id = str(target.chat_id).strip()
+        thread_id = str(target.thread_id or "").strip()
+        if not chat_id:
+            return None
+        return {
+            "platform": target.platform.value,
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+        }
+
+    def _load_kanban_assignee_notification_routes(self) -> dict[str, dict]:
+        """Load kanban.assignee_notification_channels from config.yaml."""
+        try:
+            from hermes_cli.config import load_config as _load_config
+            from hermes_cli.profiles import normalize_profile_name
+            cfg = _load_config() or {}
+        except Exception as exc:
+            logger.debug("kanban notifier: cannot load assignee notification routes: %s", exc)
+            return {}
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        raw = kanban_cfg.get("assignee_notification_channels", {})
+        if not isinstance(raw, dict):
+            if raw not in (None, ""):
+                logger.warning(
+                    "kanban notifier: kanban.assignee_notification_channels must be a mapping; got %s",
+                    type(raw).__name__,
+                )
+            return {}
+        routes: dict[str, dict] = {}
+        for assignee, target in raw.items():
+            if assignee in (None, ""):
+                continue
+            try:
+                key = normalize_profile_name(str(assignee))
+            except Exception:
+                key = str(assignee).strip()
+            if not key:
+                continue
+            parsed = self._parse_kanban_assignee_notify_target(target)
+            if not parsed:
+                logger.warning(
+                    "kanban notifier: invalid assignee notification target for %s: %r",
+                    key, target,
+                )
+                continue
+            routes[key] = parsed
+        return routes
+
+    def _kanban_sync_assignee_notify_subs(
+        self,
+        conn,
+        _kb,
+        routes: dict[str, dict],
+        *,
+        active_platforms: set[str],
+        notifier_profile: str,
+        terminal_kinds: tuple[str, ...],
+        started_at: int,
+        route_first_seen: Optional[dict[tuple[str, str, str, str], int]] = None,
+        board: Optional[str] = None,
+    ) -> int:
+        """Ensure configured assignee lanes have notify rows for future events.
+
+        Origin subscriptions remain authoritative for requester/thread pings.
+        This adds a second subscription for the assigned worker's dedicated
+        channel, scoped to the current notifier profile. Existing terminal
+        events from before the route was first observed by the watcher are
+        skipped so enabling a new channel does not replay historical board
+        noise into that channel.
+        """
+        if not routes:
+            return 0
+        usable = {
+            assignee: route
+            for assignee, route in routes.items()
+            if route.get("platform") in active_platforms
+        }
+        if not usable:
+            return 0
+
+        placeholders = ",".join("?" * len(usable))
+        terminal_placeholders = ",".join("?" * len(terminal_kinds))
+        rows = conn.execute(
+            f"""
+            SELECT
+                t.id AS task_id,
+                t.assignee AS assignee,
+                t.status AS status,
+                COALESCE(MAX(e.id), 0) AS max_event_id,
+                COALESCE(MAX(CASE WHEN e.kind IN ({terminal_placeholders}) THEN e.created_at ELSE 0 END), 0) AS max_terminal_at
+              FROM tasks t
+              LEFT JOIN task_events e ON e.task_id = t.id
+             WHERE t.assignee IN ({placeholders})
+               AND t.status != 'archived'
+             GROUP BY t.id, t.assignee, t.status
+            """,
+            (*terminal_kinds, *usable.keys()),
+        ).fetchall()
+
+        added = 0
+        for row in rows:
+            route = usable.get(row["assignee"])
+            if not route:
+                continue
+            route_thread_id = route.get("thread_id") or ""
+            route_key = (
+                str(row["assignee"]), route["platform"], route["chat_id"], route_thread_id,
+            )
+            first_seen_at = int(
+                (route_first_seen or {}).get(route_key, started_at) or started_at
+            )
+            sub_key = (
+                str(board or ""), str(row["task_id"]), route["platform"],
+                route["chat_id"], route_thread_id,
+            )
+            exists = conn.execute(
+                """
+                SELECT 1 FROM kanban_notify_subs
+                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                 LIMIT 1
+                """,
+                (row["task_id"], route["platform"], route["chat_id"], route_thread_id),
+            ).fetchone()
+            if exists:
+                continue
+
+            max_event_id = int(row["max_event_id"] or 0)
+            max_terminal_at = int(row["max_terminal_at"] or 0)
+            status = str(row["status"] or "")
+            if status == "done":
+                if sub_key in getattr(self, "_kanban_assignee_notify_terminal_seen", set()):
+                    continue
+                if not max_terminal_at or max_terminal_at <= first_seen_at:
+                    continue
+
+            # If the only terminal event(s) are historical for this route,
+            # start after the current event stream. Future blocks/completions
+            # will still land, but enabling the route will not replay old task
+            # outcomes.
+            initial_cursor = 0
+            if max_terminal_at and max_terminal_at <= first_seen_at:
+                initial_cursor = max_event_id
+
+            _kb.add_notify_sub(
+                conn,
+                task_id=row["task_id"],
+                platform=route["platform"],
+                chat_id=route["chat_id"],
+                thread_id=route_thread_id,
+                user_id=f"assignee:{row['assignee']}",
+                notifier_profile=notifier_profile,
+                last_event_id=initial_cursor,
+            )
+            added += 1
+        if added:
+            logger.debug("kanban notifier: added %d assignee notification subscription(s)", added)
+        return added
+
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
 
@@ -4945,8 +5143,23 @@ class GatewayRunner:
         if not notifier_profile:
             notifier_profile = self._active_profile_name()
             self._kanban_notifier_profile = notifier_profile
+        assignee_notify_started_at = int(
+            getattr(self, "_kanban_assignee_notify_started_at", 0) or time.time()
+        )
+        self._kanban_assignee_notify_started_at = assignee_notify_started_at
+        assignee_terminal_seen: set[tuple[str, str, str, str, str]] = getattr(
+            self, "_kanban_assignee_notify_terminal_seen", set()
+        )
+        self._kanban_assignee_notify_terminal_seen = assignee_terminal_seen
+        assignee_route_first_seen: dict[tuple[str, str, str, str], int] = getattr(
+            self, "_kanban_assignee_notify_route_first_seen", {}
+        )
+        self._kanban_assignee_notify_route_first_seen = assignee_route_first_seen
+        assignee_known_routes: set[tuple[str, str, str, str]] = getattr(
+            self, "_kanban_assignee_notify_known_routes", set()
+        )
+        self._kanban_assignee_notify_known_routes = assignee_known_routes
 
-        # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
 
         while self._running:
@@ -4960,6 +5173,30 @@ class GatewayRunner:
                     if not active_platforms:
                         logger.debug("kanban notifier: no connected adapters; skipping tick")
                         return deliveries
+                    assignee_routes = self._load_kanban_assignee_notification_routes()
+                    route_keys = {
+                        (
+                            assignee,
+                            route["platform"],
+                            route["chat_id"],
+                            route.get("thread_id") or "",
+                        )
+                        for assignee, route in assignee_routes.items()
+                    }
+                    # Routes present on the first notifier tick are considered
+                    # part of startup config and use the watcher start time as
+                    # their historical cutoff. Routes that appear later should
+                    # not backfill events that happened earlier in this already
+                    # running gateway process.
+                    first_route_observation = not assignee_known_routes and not assignee_route_first_seen
+                    now_ts = int(time.time())
+                    for key in route_keys:
+                        if key not in assignee_route_first_seen:
+                            assignee_route_first_seen[key] = (
+                                assignee_notify_started_at if first_route_observation else now_ts
+                            )
+                    assignee_known_routes.clear()
+                    assignee_known_routes.update(route_keys)
 
                     # Enumerate every board on disk, but poll each resolved DB
                     # path once. Multiple slugs can point at the same DB when
@@ -5003,6 +5240,18 @@ class GatewayRunner:
                             # a legacy DB. `_add_column_if_missing` now
                             # tolerates that race, but we still skip the
                             # redundant call to avoid the wasted work.
+                            if assignee_routes:
+                                self._kanban_sync_assignee_notify_subs(
+                                    conn,
+                                    _kb,
+                                    assignee_routes,
+                                    active_platforms=active_platforms,
+                                    notifier_profile=notifier_profile,
+                                    terminal_kinds=TERMINAL_KINDS,
+                                    started_at=assignee_notify_started_at,
+                                    route_first_seen=assignee_route_first_seen,
+                                    board=slug,
+                                )
                             subs = _kb.list_notify_subs(conn)
                             if not subs:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
@@ -5218,6 +5467,14 @@ class GatewayRunner:
                         # above for the failure mode this prevents.
                         task_terminal = task and task.status in {"done", "archived"}
                         if task_terminal:
+                            if str(sub.get("user_id") or "").startswith("assignee:"):
+                                assignee_terminal_seen.add((
+                                    str(board_slug or ""),
+                                    str(sub["task_id"]),
+                                    str(sub["platform"]),
+                                    str(sub["chat_id"]),
+                                    str(sub.get("thread_id") or ""),
+                                ))
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,
                             )
