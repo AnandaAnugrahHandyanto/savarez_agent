@@ -507,6 +507,11 @@ class ModelAssignment(BaseModel):
     task: str = ""
 
 
+class ModelRoutingUpdate(BaseModel):
+    model: dict
+    fallback_providers: list
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -1050,6 +1055,145 @@ def get_model_options():
     except Exception:
         _log.exception("GET /api/model/options failed")
         raise HTTPException(status_code=500, detail="Failed to list model options")
+
+
+_MODEL_ROUTE_OPTIONAL_STRING_KEYS = ("base_url", "api_mode")
+_MODEL_ROUTE_OPTIONAL_INT_KEYS = ("context_length", "max_tokens")
+
+
+def _coerce_model_route(raw: Any, *, require_model: bool) -> Dict[str, Any]:
+    if isinstance(raw, str):
+        route: Dict[str, Any] = {"default": raw}
+    elif isinstance(raw, dict):
+        route = dict(raw)
+    else:
+        route = {}
+
+    model = str(route.get("default", route.get("name", route.get("model", ""))) or "").strip()
+    provider = str(route.get("provider", "") or "").strip()
+
+    if require_model and not model:
+        raise HTTPException(status_code=400, detail="model.default is required")
+
+    if model:
+        route["default"] = model
+    route.pop("name", None)
+    route.pop("model", None)
+    route["provider"] = provider
+
+    for key in _MODEL_ROUTE_OPTIONAL_STRING_KEYS:
+        if key in route:
+            route[key] = str(route.get(key) or "").strip()
+
+    for key in _MODEL_ROUTE_OPTIONAL_INT_KEYS:
+        if key not in route or route.get(key) in (None, ""):
+            route.pop(key, None)
+            continue
+        try:
+            value = int(route[key])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{key} must be an integer")
+        if value > 0:
+            route[key] = value
+        else:
+            route.pop(key, None)
+
+    return route
+
+
+def _coerce_fallback_route(raw: Any, index: int) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail=f"fallback_providers[{index}] must be an object")
+
+    route = dict(raw)
+    provider = str(route.get("provider", "") or "").strip()
+    model = str(route.get("model", route.get("default", route.get("name", ""))) or "").strip()
+    if not provider or not model:
+        raise HTTPException(
+            status_code=400,
+            detail=f"fallback_providers[{index}] requires provider and model",
+        )
+
+    route["provider"] = provider
+    route["model"] = model
+    route.pop("default", None)
+    route.pop("name", None)
+
+    for key in _MODEL_ROUTE_OPTIONAL_STRING_KEYS:
+        if key in route:
+            route[key] = str(route.get(key) or "").strip()
+
+    for key in _MODEL_ROUTE_OPTIONAL_INT_KEYS:
+        if key not in route or route.get(key) in (None, ""):
+            route.pop(key, None)
+            continue
+        try:
+            value = int(route[key])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"fallback_providers[{index}].{key} must be an integer")
+        if value > 0:
+            route[key] = value
+        else:
+            route.pop(key, None)
+
+    return route
+
+
+def _coerce_existing_fallback_routes(raw: Any) -> List[Dict[str, Any]]:
+    if isinstance(raw, dict):
+        candidates = [raw]
+    elif isinstance(raw, list):
+        candidates = raw
+    else:
+        return []
+
+    routes: List[Dict[str, Any]] = []
+    for index, entry in enumerate(candidates):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            routes.append(_coerce_fallback_route(entry, index))
+        except HTTPException:
+            continue
+    return routes
+
+
+@app.get("/api/model/routing")
+def get_model_routing():
+    """Return the editable main model route and fallback provider chain."""
+    try:
+        cfg = load_config()
+        return {
+            "model": _coerce_model_route(cfg.get("model", ""), require_model=False),
+            "fallback_providers": _coerce_existing_fallback_routes(cfg.get("fallback_providers", [])),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/model/routing failed")
+        raise HTTPException(status_code=500, detail="Failed to read model routing")
+
+
+@app.put("/api/model/routing")
+async def update_model_routing(body: ModelRoutingUpdate):
+    """Persist main model routing and fallback_providers without touching other config."""
+    try:
+        if not isinstance(body.fallback_providers, list):
+            raise HTTPException(status_code=400, detail="fallback_providers must be a list")
+
+        cfg = load_config()
+        cfg["model"] = _coerce_model_route(body.model, require_model=True)
+        cfg["fallback_providers"] = [
+            _coerce_fallback_route(entry, index)
+            for index, entry in enumerate(body.fallback_providers)
+        ]
+        save_config(cfg)
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/model/routing failed")
+        raise HTTPException(status_code=500, detail="Failed to save model routing")
 
 
 @app.get("/api/model/auxiliary")

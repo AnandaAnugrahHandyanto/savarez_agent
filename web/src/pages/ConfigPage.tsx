@@ -3,8 +3,10 @@ import {
   Code,
   Download,
   FormInput,
+  Plus,
   RotateCcw,
   Search,
+  Trash2,
   Upload,
   X,
   Settings2,
@@ -36,7 +38,12 @@ import {
   FileOutput,
   RefreshCw,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import {
+  api,
+  type FallbackProviderConfig,
+  type ModelRouteConfig,
+  type ModelRoutingResponse,
+} from "@/lib/api";
 import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
@@ -97,6 +104,204 @@ function CategoryIcon({
   return <Icon className={className ?? "h-4 w-4"} />;
 }
 
+const EMPTY_FALLBACK: FallbackProviderConfig = {
+  provider: "",
+  model: "",
+  base_url: "",
+  api_mode: "",
+  context_length: "",
+};
+
+type EditableRoute = ModelRouteConfig & Partial<FallbackProviderConfig>;
+
+function routeNumberValue(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  return String(value);
+}
+
+function updateRouteField(
+  route: EditableRoute,
+  key: keyof EditableRoute,
+  value: string,
+): EditableRoute {
+  if ((key === "context_length" || key === "max_tokens") && value !== "") {
+    const parsed = Number(value);
+    return { ...route, [key]: Number.isNaN(parsed) ? value : parsed };
+  }
+  return { ...route, [key]: value };
+}
+
+function ModelRouteFields({
+  route,
+  onChange,
+  modelKey,
+}: {
+  route: EditableRoute;
+  onChange: (route: EditableRoute) => void;
+  modelKey: "default" | "model";
+}) {
+  return (
+    <div className="grid gap-2 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,1.4fr)_minmax(0,0.8fr)_minmax(0,0.8fr)]">
+      <Input
+        value={String(route.provider ?? "")}
+        onChange={(e) => onChange(updateRouteField(route, "provider", e.target.value))}
+        placeholder="provider"
+        aria-label="provider"
+      />
+      <Input
+        value={String(route[modelKey] ?? "")}
+        onChange={(e) => onChange(updateRouteField(route, modelKey, e.target.value))}
+        placeholder="model"
+        aria-label="model"
+      />
+      <Input
+        value={String(route.base_url ?? "")}
+        onChange={(e) => onChange(updateRouteField(route, "base_url", e.target.value))}
+        placeholder="base_url"
+        aria-label="base_url"
+      />
+      <Input
+        value={String(route.api_mode ?? "")}
+        onChange={(e) => onChange(updateRouteField(route, "api_mode", e.target.value))}
+        placeholder="api_mode"
+        aria-label="api_mode"
+      />
+      <Input
+        type="number"
+        min={0}
+        value={routeNumberValue(route.context_length)}
+        onChange={(e) => onChange(updateRouteField(route, "context_length", e.target.value))}
+        placeholder="context"
+        aria-label="context_length"
+      />
+    </div>
+  );
+}
+
+function ModelRoutingCard({
+  routing,
+  saving,
+  onChange,
+  onSave,
+}: {
+  routing: ModelRoutingResponse | null;
+  saving: boolean;
+  onChange: (routing: ModelRoutingResponse) => void;
+  onSave: () => void;
+}) {
+  if (!routing) return null;
+
+  const updateFallback = (index: number, route: EditableRoute) => {
+    onChange({
+      ...routing,
+      fallback_providers: routing.fallback_providers.map((entry, i) =>
+        i === index ? (route as FallbackProviderConfig) : entry,
+      ),
+    });
+  };
+
+  const removeFallback = (index: number) => {
+    onChange({
+      ...routing,
+      fallback_providers: routing.fallback_providers.filter((_, i) => i !== index),
+    });
+  };
+
+  return (
+    <Card>
+      <CardHeader className="py-3 px-4">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Route className="h-4 w-4" />
+            Model routing
+          </CardTitle>
+          <Button
+            size="sm"
+            className="uppercase"
+            onClick={onSave}
+            disabled={saving}
+            prefix={saving ? <Spinner /> : <Route />}
+          >
+            {saving ? "Saving" : "Save routing"}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-4 px-4 pb-4">
+        <div className="grid gap-2">
+          <div className="text-xs font-medium uppercase text-muted-foreground">
+            Main model
+          </div>
+          <ModelRouteFields
+            route={routing.model as EditableRoute}
+            modelKey="default"
+            onChange={(route) =>
+              onChange({ ...routing, model: route as ModelRouteConfig })
+            }
+          />
+        </div>
+
+        <div className="grid gap-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs font-medium uppercase text-muted-foreground">
+              Fallback providers
+            </div>
+            <Button
+              ghost
+              size="sm"
+              prefix={<Plus />}
+              onClick={() =>
+                onChange({
+                  ...routing,
+                  fallback_providers: [
+                    ...routing.fallback_providers,
+                    { ...EMPTY_FALLBACK },
+                  ],
+                })
+              }
+            >
+              Add fallback
+            </Button>
+          </div>
+          <div className="grid gap-2">
+            {routing.fallback_providers.length === 0 ? (
+              <div className="border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+                No fallback providers configured.
+              </div>
+            ) : (
+              routing.fallback_providers.map((fallback, index) => (
+                <div
+                  key={index}
+                  className="grid gap-2 border border-border bg-muted/20 p-3"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-mono text-muted-foreground">
+                      fallback_providers[{index}]
+                    </span>
+                    <Button
+                      ghost
+                      size="icon"
+                      onClick={() => removeFallback(index)}
+                      title="Remove fallback"
+                      aria-label="Remove fallback"
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
+                  <ModelRouteFields
+                    route={fallback as EditableRoute}
+                    modelKey="model"
+                    onChange={(route) => updateFallback(index, route)}
+                  />
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -120,6 +325,8 @@ export default function ConfigPage() {
   const [configPath, setConfigPath] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string>("");
   const [confirmReset, setConfirmReset] = useState(false);
+  const [modelRouting, setModelRouting] = useState<ModelRoutingResponse | null>(null);
+  const [routingSaving, setRoutingSaving] = useState(false);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
@@ -180,6 +387,10 @@ export default function ConfigPage() {
     api
       .getStatus()
       .then((resp) => setConfigPath(resp.config_path))
+      .catch(() => {});
+    api
+      .getModelRouting()
+      .then(setModelRouting)
       .catch(() => {});
   }, []);
 
@@ -270,15 +481,36 @@ export default function ConfigPage() {
     }
   };
 
+  const handleRoutingSave = async () => {
+    if (!modelRouting) return;
+    setRoutingSaving(true);
+    try {
+      await api.saveModelRouting(modelRouting);
+      const [nextConfig, nextRouting] = await Promise.all([
+        api.getConfig(),
+        api.getModelRouting(),
+      ]);
+      setConfig(nextConfig);
+      setModelRouting(nextRouting);
+      showToast("Model routing saved", "success");
+    } catch (e) {
+      showToast(`Failed to save model routing: ${e}`, "error");
+    } finally {
+      setRoutingSaving(false);
+    }
+  };
+
   const handleYamlSave = async () => {
     setYamlSaving(true);
     try {
       await api.saveConfigRaw(yamlText);
       showToast(t.config.yamlConfigSaved, "success");
-      api
-        .getConfig()
-        .then(setConfig)
-        .catch(() => {});
+      const [nextConfig, nextRouting] = await Promise.all([
+        api.getConfig(),
+        api.getModelRouting(),
+      ]);
+      setConfig(nextConfig);
+      setModelRouting(nextRouting);
     } catch (e) {
       showToast(`${t.config.failedToSaveYaml}: ${e}`, "error");
     } finally {
@@ -581,7 +813,15 @@ export default function ConfigPage() {
             </div>
           </aside>
 
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 grid gap-4">
+            {!isSearching && (
+              <ModelRoutingCard
+                routing={modelRouting}
+                saving={routingSaving}
+                onChange={setModelRouting}
+                onSave={handleRoutingSave}
+              />
+            )}
             {isSearching ? (
               <Card>
                 <CardHeader className="py-3 px-4">
