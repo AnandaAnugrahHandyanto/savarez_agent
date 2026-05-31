@@ -1846,12 +1846,30 @@ class BasePlatformAdapter(ABC):
             return
         self._write_runtime_status_safe("disconnected", platform_state="disconnected", error_code=None, error_message=None)
 
-    def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
+    def _set_fatal_error(self, code: str, message: str, *, retryable: bool,
+                         auto_notify: bool = True) -> None:
         self._running = False
         self._fatal_error_code = code
         self._fatal_error_message = message
         self._fatal_error_retryable = retryable
-        self._write_runtime_status_safe("fatal", platform_state="fatal", error_code=code, error_message=message)
+        self._write_runtime_status_safe(
+            "fatal",
+            platform_state="fatal",
+            error_code=code,
+            error_message=message,
+        )
+        # When the caller is about to break out of a lifecycle loop and
+        # will await the notification themselves, set auto_notify=False
+        # to avoid double-scheduling _notify_fatal_error.
+        if auto_notify and self._fatal_error_handler is not None:
+            try:
+                task = asyncio.get_running_loop().create_task(
+                    self._notify_fatal_error()
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+            except RuntimeError:
+                pass
 
     def _write_runtime_status_safe(self, context: str, **kwargs) -> None:
         """Write runtime status; log first failure per context at warning, rest at debug.
