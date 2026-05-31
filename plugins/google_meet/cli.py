@@ -2,8 +2,11 @@
 
 Wires ``hermes meet <subcommand>``:
   setup       — preflight playwright, chromium, auth file, print fixes
-  auth        — open a browser to sign into Google, save storage state
-  join <url>  — join a Meet URL synchronously (also callable from the agent)
+  auth        — sign into Google; local runs prefer the live Hermes Chrome
+                CDP session first (usually ``http://127.0.0.1:18800``)
+  join <url>  — join a Meet URL synchronously; local runs prefer the live
+                Hermes Chrome CDP session first (usually
+                ``http://127.0.0.1:18800``)
   status      — print current bot state
   transcript  — print the transcript
   stop        — leave the current meeting
@@ -27,6 +30,10 @@ def _auth_state_path() -> Path:
     return Path(get_hermes_home()) / "workspace" / "meetings" / "auth.json"
 
 
+def _auth_profile_dir() -> Path:
+    return Path(get_hermes_home()) / "workspace" / "meetings" / "auth-profile"
+
+
 # ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
@@ -38,11 +45,20 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     """
     subs = subparser.add_subparsers(dest="meet_command")
 
-    subs.add_parser("setup", help="Preflight: playwright, chromium, auth")
+    subs.add_parser(
+        "setup",
+        help=(
+            "Preflight: playwright, chromium, auth; local runs prefer the live "
+            "Hermes Chrome CDP session first"
+        ),
+    )
 
     inst_p = subs.add_parser(
         "install",
-        help="Install prerequisites (pip deps, Chromium, platform audio tools)",
+        help=(
+            "Install prerequisites (pip deps, Chromium, platform audio tools); "
+            "local runs prefer the live Hermes Chrome CDP session first"
+        ),
     )
     inst_p.add_argument(
         "--realtime", action="store_true",
@@ -53,9 +69,21 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         help="Answer yes to all prompts (use with care; will run sudo apt-get or brew without asking).",
     )
 
-    subs.add_parser("auth", help="Sign in to Google and save session state")
+    subs.add_parser(
+        "auth",
+        help=(
+            "Sign in to Google and save session state; local runs prefer the "
+            "live Hermes Chrome CDP session first"
+        ),
+    )
 
-    join_p = subs.add_parser("join", help="Join a Meet URL")
+    join_p = subs.add_parser(
+        "join",
+        help=(
+            "Join a Meet URL; local runs prefer the live Hermes Chrome CDP "
+            "session first"
+        ),
+    )
     join_p.add_argument("url", help="https://meet.google.com/...")
     join_p.add_argument("--guest-name", default="Hermes Agent")
     join_p.add_argument("--duration", default=None, help="e.g. 30m, 2h, 90s")
@@ -334,7 +362,13 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
 
 
 def _cmd_auth() -> int:
-    """Open a headed Chromium, let the user sign in, save storage_state."""
+    """Open Chrome, let the user sign in, save storage_state.
+
+    We first try to attach to the existing browser instance used for browser
+    control (CDP on 127.0.0.1:18800). That path avoids launching a fresh
+    automation browser and is the most Google-friendly option. If that fails,
+    we fall back to a persistent Chrome profile.
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -345,22 +379,54 @@ def _cmd_auth() -> int:
         return 1
 
     path = _auth_state_path()
+    profile_dir = _auth_profile_dir()
     path.parent.mkdir(parents=True, exist_ok=True)
+    profile_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"opening Chromium — sign in to Google, then return here and press Enter.")
+    print("opening Chrome — sign in to Google, then return here and press Enter.")
     print(f"saving storage state to: {path}")
+    print(f"fallback persistent profile dir: {profile_dir}")
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=False)
-            context = browser.new_context()
-            page = context.new_page()
+            context = None
+            browser = None
+            try:
+                browser = pw.chromium.connect_over_cdp("http://127.0.0.1:18800")
+                context = browser.contexts[0] if browser.contexts else None
+                print("attached to existing Chrome via CDP on 127.0.0.1:18800")
+            except Exception as cdp_err:
+                print(f"CDP attach failed, falling back to persistent Chrome: {cdp_err}")
+                browser = None
+                context = None
+
+            if context is None:
+                context = pw.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=False,
+                    channel="chrome",
+                    viewport={"width": 1280, "height": 800},
+                    user_agent=(
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    permissions=["microphone", "camera"],
+                    args=["--disable-blink-features=AutomationControlled"],
+                )
+                print("launched persistent Chrome profile")
+
+            page = context.pages[0] if context.pages else context.new_page()
             page.goto("https://accounts.google.com/", wait_until="domcontentloaded")
             try:
                 input("press Enter after you've signed in ... ")
             except EOFError:
                 pass
             context.storage_state(path=str(path))
-            browser.close()
+            context.close()
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
     except Exception as e:
         print(f"auth failed: {e}")
         return 1

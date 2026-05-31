@@ -62,6 +62,177 @@ def test_is_safe_meet_url_rejects_non_meet_urls():
     assert not _is_safe_meet_url(123)  # type: ignore[arg-type]
 
 
+def test_open_browser_session_prefers_live_cdp(monkeypatch):
+    from plugins.google_meet import meet_bot
+
+    calls = []
+
+    class _FakePage:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class _FakeContext:
+        def __init__(self):
+            self.pages = []
+
+        def grant_permissions(self, *args, **kwargs):
+            calls.append(("grant_permissions", args, kwargs))
+
+        def new_page(self):
+            page = _FakePage()
+            self.pages.append(page)
+            calls.append(("new_page",))
+            return page
+
+    class _FakeBrowser:
+        def __init__(self):
+            self.contexts = [_FakeContext()]
+
+    class _FakeChromium:
+        def connect_over_cdp(self, url):
+            calls.append(("connect_over_cdp", url))
+            return _FakeBrowser()
+
+        def launch(self, **kwargs):
+            calls.append(("launch", kwargs))
+            raise AssertionError("local launch should not be used when CDP is available")
+
+    class _FakePW:
+        chromium = _FakeChromium()
+
+    monkeypatch.setattr(meet_bot, "_resolve_browser_cdp_url", lambda: "http://127.0.0.1:18800")
+
+    browser, context, page, using_cdp = meet_bot._open_browser_session(
+        _FakePW(),
+        headed=False,
+        auth_state="",
+        chrome_env={},
+        chrome_args=["--test-flag"],
+    )
+
+    assert using_cdp is True
+    assert calls[0] == ("connect_over_cdp", "http://127.0.0.1:18800")
+    assert any(name == "new_page" for (name, *_) in calls)
+    assert browser.contexts[0] is context
+    assert page in context.pages
+
+
+def test_turn_on_captions_clicks_then_falls_back_to_keyboard(monkeypatch):
+    from plugins.google_meet import meet_bot
+
+    class _FakeLocator:
+        def __init__(self, page, query):
+            self.page = page
+            self.query = query
+            self.first = self
+
+        def count(self):
+            return self.page._count(self.query)
+
+    class _FakeKeyboard:
+        def __init__(self, page):
+            self.page = page
+            self.presses = []
+
+        def press(self, key):
+            self.presses.append(key)
+            if self.page.enable_via_keyboard:
+                self.page.captions_enabled = True
+                self.page.caption_region_visible = True
+
+    class _FakePage:
+        def __init__(self, *, enable_via_click, enable_via_keyboard):
+            self.enable_via_click = enable_via_click
+            self.enable_via_keyboard = enable_via_keyboard
+            self.captions_enabled = False
+            self.caption_region_visible = False
+            self.evaluate_calls = 0
+            self.keyboard = _FakeKeyboard(self)
+
+        def _count(self, query):
+            if "Turn off captions" in query:
+                return 1 if self.captions_enabled else 0
+            if "YSxPC" in query or "tgaKEf" in query or "aption" in query:
+                return 1 if self.caption_region_visible else 0
+            return 0
+
+        def locator(self, query):
+            return _FakeLocator(self, query)
+
+        def evaluate(self, js):
+            self.evaluate_calls += 1
+            if "selectors" in js:
+                if self.enable_via_click:
+                    self.captions_enabled = True
+                    self.caption_region_visible = True
+                return True
+            if "Turn off captions" in js:
+                if self.captions_enabled:
+                    return True
+                if self.caption_region_visible:
+                    return True
+                return False
+            return True
+
+    clicked = _FakePage(enable_via_click=True, enable_via_keyboard=False)
+    assert meet_bot._turn_on_captions(clicked, timeout_s=0.2) is True
+    assert clicked.evaluate_calls >= 1
+    assert clicked.keyboard.presses == []
+
+    fallback = _FakePage(enable_via_click=False, enable_via_keyboard=True)
+    assert meet_bot._turn_on_captions(fallback, timeout_s=0.2) is True
+    assert fallback.evaluate_calls >= 1
+    assert fallback.keyboard.presses == ["c"]
+
+
+def test_sync_captioning_state_tracks_live_ui(tmp_path):
+    from plugins.google_meet import meet_bot
+    from plugins.google_meet.meet_bot import _BotState
+
+    class _FakePage:
+        def __init__(self):
+            self.captions_on = False
+            self.caption_region_visible = False
+            self.captions_off_visible = True
+
+        def evaluate(self, js):
+            if "Turn off captions" not in js:
+                return None
+            if self.captions_on:
+                return True
+            if self.caption_region_visible:
+                return True
+            if self.captions_off_visible:
+                return False
+            return None
+
+    state = _BotState(out_dir=tmp_path / "unused", meeting_id="x-y-z",
+                      url="https://meet.google.com/x-y-z")
+    page = _FakePage()
+
+    # Unknown state should not disturb the current flag.
+    state.captioning = False
+    page.captions_off_visible = False
+    meet_bot._sync_captioning_state(page, state)
+    assert state.captioning is False
+
+    # Live UI says captions are on.
+    page.captions_on = True
+    meet_bot._sync_captioning_state(page, state)
+    assert state.captioning is True
+
+    # Live UI says captions are off.
+    page.captions_on = False
+    page.caption_region_visible = False
+    page.captions_off_visible = True
+    state.captioning = True
+    meet_bot._sync_captioning_state(page, state)
+    assert state.captioning is False
+
+
 def test_meeting_id_extraction():
     from plugins.google_meet.meet_bot import _meeting_id_from_url
 
@@ -112,6 +283,19 @@ def test_bot_state_ignores_blank_text(tmp_path):
     assert status["transcriptLines"] == 1
     # blank-speaker falls back to "Unknown"
     assert "Unknown: text but no speaker" in (tmp_path / "s" / "transcript.txt").read_text()
+
+
+def test_bot_state_recovers_speaker_from_raw_caption_block(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    state = _BotState(out_dir=tmp_path / "s2", meeting_id="x-y-z",
+                      url="https://meet.google.com/x-y-z")
+    state.record_caption("", "Matthew Jaeh\nThank you my mind. Yeah.")
+
+    transcript = (tmp_path / "s2" / "transcript.txt").read_text()
+    assert "Matthew Jaeh: Thank you my mind. Yeah." in transcript
+    status = json.loads((tmp_path / "s2" / "status.json").read_text())
+    assert status["transcriptLines"] == 1
 
 
 def test_parse_duration():
@@ -713,12 +897,35 @@ def test_realtime_session_cancel_response_sends_cancel_frame():
     assert envelope == {"type": "response.cancel"}
 
 
-def test_realtime_session_counters_initialized():
-    from plugins.google_meet.realtime.openai_client import RealtimeSession
+def test_realtime_session_connect_disables_keepalive_pings(monkeypatch):
+    from plugins.google_meet.realtime import openai_client
 
-    sess = RealtimeSession(api_key="sk-test", audio_sink_path=None)
-    assert sess.audio_bytes_out == 0
-    assert sess.last_audio_out_at is None
+    calls = []
+
+    class _FakeWs:
+        def send(self, msg):
+            calls.append(("send", msg))
+
+        def close(self):
+            calls.append(("close",))
+
+    def _fake_connect(url, **kwargs):
+        calls.append(("connect", url, kwargs))
+        return _FakeWs()
+
+    monkeypatch.setattr(openai_client, "_require_websockets", lambda: _fake_connect)
+
+    sess = openai_client.RealtimeSession(api_key="sk-test", audio_sink_path=None)
+    sess.connect()
+
+    connect_calls = [c for c in calls if c[0] == "connect"]
+    assert connect_calls, calls
+    _, url, kwargs = connect_calls[0]
+    assert url.startswith("wss://api.openai.com/v1/realtime?model=")
+    assert kwargs["ping_interval"] is None
+    assert kwargs["ping_timeout"] is None
+    assert kwargs.get("additional_headers") == [("Authorization", "Bearer sk-test")]
+    assert any(c[0] == "send" for c in calls)
 
 
 # ---------------------------------------------------------------------------

@@ -66,6 +66,12 @@ pip install playwright websockets && python -m playwright install chromium
 #   Then set OPENAI_API_KEY or HERMES_MEET_REALTIME_KEY in ~/.hermes/.env
 ```
 
+When running locally, the Meet bot prefers the live Hermes Chrome CDP
+endpoint first — usually `http://127.0.0.1:18800`. You can override that
+with `browser.cdp_url` in `~/.hermes/config.yaml`, or with the env vars
+`HERMES_BROWSER_CDP_URL` / `HERMES_MEET_CDP_URL`. If the CDP endpoint is
+unavailable, the bot falls back to a fresh Playwright Chromium instance.
+
 For a remote node:
 ```bash
 # on the user's Mac (where Chrome is signed in):
