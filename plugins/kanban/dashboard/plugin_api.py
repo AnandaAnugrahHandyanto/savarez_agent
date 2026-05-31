@@ -2195,11 +2195,36 @@ async def stream_events(ws: WebSocket):
             finally:
                 conn.close()
 
+        transient_operational_errors = 0
         while True:
-            cursor, events = await asyncio.to_thread(_fetch_new, cursor)
-            if events:
-                await ws.send_json({"events": events, "cursor": cursor})
-            await asyncio.sleep(_EVENT_POLL_SECONDS)
+            try:
+                cursor, events = await asyncio.to_thread(_fetch_new, cursor)
+            except sqlite3.OperationalError as exc:
+                # Treat transient SQLite filesystem/locking failures as a
+                # recoverable poll miss rather than tearing down the entire
+                # websocket. This keeps the dashboard usable when the DB is
+                # briefly unavailable (for example, a transient "disk I/O error"
+                # or lock contention while the underlying storage recovers).
+                msg = str(exc).lower()
+                if not any(
+                    marker in msg
+                    for marker in (
+                        "disk i/o error",
+                        "database is locked",
+                        "database is busy",
+                        "locking protocol",
+                    )
+                ):
+                    raise
+                transient_operational_errors += 1
+                delay = min(_EVENT_POLL_SECONDS * transient_operational_errors, 5.0)
+                await asyncio.sleep(delay)
+                continue
+            else:
+                transient_operational_errors = 0
+                if events:
+                    await ws.send_json({"events": events, "cursor": cursor})
+                await asyncio.sleep(_EVENT_POLL_SECONDS)
     except WebSocketDisconnect:
         return
     except asyncio.CancelledError:

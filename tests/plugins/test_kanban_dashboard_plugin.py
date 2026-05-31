@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -883,6 +884,78 @@ def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
     # The bug symptom was a traceback; we don't assert on stderr because
     # capturing asyncio's internal "exception was never retrieved" logging
     # is flaky. The assertion that matters is: no CancelledError escaped.
+
+
+def test_ws_events_recovers_from_transient_sqlite_error(tmp_path, monkeypatch):
+    """A single sqlite3.OperationalError should not kill the websocket.
+
+    The dashboard has historically seen transient "disk I/O error" failures
+    while opening kanban.db. Those should be retried, not turned into a hard
+    websocket teardown that leaves the UI stale until reload.
+    """
+    import asyncio
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    import plugins.kanban.dashboard.plugin_api as pa
+    monkeypatch.setattr(pa, "_check_ws_token", lambda t: True)
+    monkeypatch.setattr(pa, "_EVENT_POLL_SECONDS", 0.01)
+
+    call_count = 0
+
+    class _FakeConn:
+        def execute(self, *_args, **_kwargs):
+            class _Cursor:
+                def fetchall(self):
+                    return []
+
+            return _Cursor()
+
+        def close(self):
+            pass
+
+    def _connect(*, board=None):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise sqlite3.OperationalError("disk I/O error")
+        return _FakeConn()
+
+    monkeypatch.setattr(pa.kanban_db, "connect", _connect)
+
+    class _FakeWS:
+        def __init__(self):
+            self.query_params = {"token": "x", "since": "0"}
+            self.accepted = False
+            self.closed = False
+
+        async def accept(self):
+            self.accepted = True
+
+        async def send_json(self, data):
+            pass
+
+        async def close(self, code=None):
+            self.closed = True
+
+    async def _run():
+        ws = _FakeWS()
+        task = asyncio.create_task(pa.stream_events(ws))
+        await asyncio.sleep(0.1)
+        assert ws.accepted is True
+        assert ws.closed is False
+        assert call_count >= 2
+        task.cancel()
+        result = await task
+        return result, ws
+
+    result, ws = asyncio.run(_run())
+    assert result is None
+    assert ws.closed is False
 
 
 # ---------------------------------------------------------------------------
