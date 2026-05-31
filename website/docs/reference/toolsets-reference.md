@@ -67,7 +67,7 @@ Or in-session:
 | `computer_use` | `computer_use_list_apps`, `computer_use_launch_app`, `computer_use_get_app_state`, `computer_use_click`, `computer_use_perform_secondary_action`, `computer_use_scroll`, `computer_use_drag`, `computer_use_type_text`, `computer_use_set_value`, `computer_use_press_key`, `computer_use_select_text`, `computer_use_daemon` | First-class macOS desktop control — launch, state, act, verify without stealing cursor/focus during normal operation. |
 | `image_gen` | `image_generate` | Text-to-image generation via FAL.ai (with opt-in OpenAI / xAI backends). |
 | `video_gen` | `video_generate` | Text-to-video and image-to-video via plugin-registered backends (xAI Grok-Imagine, FAL.ai Veo 3.1 / Pixverse v6 / Kling O3). Pass `image_url` to animate an image; omit it for text-to-video. |
-| `kanban` | `kanban_block`, `kanban_comment`, `kanban_complete`, `kanban_create`, `kanban_heartbeat`, `kanban_link`, `kanban_list`, `kanban_show`, `kanban_unblock` | Multi-agent coordination tools. Registered for dispatcher-spawned task workers (`HERMES_KANBAN_TASK`) and for profiles that explicitly enable the `kanban` toolset. Workers mark tasks done, block, heartbeat, comment, and create/link follow-up tasks; orchestrator profiles additionally get board-routing tools like list/unblock. |
+| `kanban` | `kanban_block`, `kanban_comment`, `kanban_complete`, `kanban_create`, `kanban_heartbeat`, `kanban_link`, `kanban_list`, `kanban_show`, `kanban_unblock` | Multi-agent coordination tools. Registered for dispatcher-spawned task workers (`HERMES_KANBAN_TASK`) and for profiles that explicitly list the `kanban` toolset by name (the `all`/`*` wildcard does **not** enable it). Workers mark tasks done, block, heartbeat, comment, and create/link follow-up tasks; orchestrator profiles additionally get board-routing tools like list/unblock. |
 | `memory` | `memory` | Persistent cross-session memory management. |
 | `messaging` | `send_message` | Send messages to other platforms (Telegram, Discord, etc.) from within a session. |
 | `moa` | `mixture_of_agents` | Multi-model consensus via Mixture of Agents. |
@@ -155,6 +155,11 @@ custom_toolsets:
 ### Wildcards
 
 - `all` or `*` — expands to every registered toolset (built-in + dynamic + plugin)
+
+A handful of tools have an additional availability check on top of toolset membership and are **not** turned on by `all`/`*` alone:
+
+- **Capability-gated** tools (browser, `computer_use`, `code_execution`, Feishu, Home Assistant, cronjob) appear only when their backend/credential prerequisite is configured.
+- **Workflow-gated** tools — the `kanban` toolset — are deliberately opt-in. `all`/`*` does **not** enable kanban; you must list `kanban` explicitly (or be a dispatcher-spawned worker with `HERMES_KANBAN_TASK` set). Kanban tools mutate shared board state, so they stay off by default even under `all`.
 
 ## Relationship to `hermes tools`
 
