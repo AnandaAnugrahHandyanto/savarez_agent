@@ -221,6 +221,45 @@ class TestSkillViewQualifiedName:
         assert result["success"] is True
         assert result["name"] == "my-local"
 
+    def test_ignores_nested_md_assets_when_resolving_bare_name(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        local_skills = tmp_path / "local-skills"
+        notion_skill = local_skills / "productivity" / "notion"
+        notion_skill.mkdir(parents=True)
+        (notion_skill / "SKILL.md").write_text(
+            "---\nname: notion\ndescription: notion skill\n---\nNotion body.\n"
+        )
+        design_skill = local_skills / "creative" / "popular-web-designs"
+        (design_skill / "templates").mkdir(parents=True)
+        (design_skill / "SKILL.md").write_text(
+            "---\nname: popular-web-designs\ndescription: design skill\n---\nDesign body.\n"
+        )
+        (design_skill / "templates" / "notion.md").write_text("asset, not a skill\n")
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", local_skills)
+
+        result = json.loads(skill_view("notion"))
+
+        assert result["success"] is True
+        assert result["name"] == "notion"
+        assert "Notion body." in result["content"]
+
+    def test_keeps_top_level_legacy_flat_md_skill_candidates(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        local_skills = tmp_path / "local-skills"
+        local_skills.mkdir()
+        (local_skills / "legacy.md").write_text(
+            "---\nname: legacy\ndescription: flat skill\n---\nLegacy body.\n"
+        )
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", local_skills)
+
+        result = json.loads(skill_view("legacy"))
+
+        assert result["success"] is True
+        assert result["name"] == "legacy"
+        assert "Legacy body." in result["content"]
+
     def test_plugin_exists_but_skill_missing(self, tmp_path):
         from tools.skills_tool import skill_view
 

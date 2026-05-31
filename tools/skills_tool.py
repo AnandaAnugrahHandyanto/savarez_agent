@@ -935,6 +935,27 @@ def skill_view(
             seen_md.add(key)
             candidates.append((sd, smd))
 
+        def _is_nested_skill_asset(candidate: Path, search_dir: Path) -> bool:
+            """Return true when a legacy .md hit lives inside another skill.
+
+            Strategy 3 supports legacy flat ``<name>.md`` skills, but a Markdown
+            file below ``some-skill/{references,templates,...}/`` is an asset of
+            ``some-skill`` rather than an independently loadable skill.  Treating
+            those assets as skill candidates makes bare-name lookup ambiguous
+            whenever an asset happens to share another skill's name.
+            """
+            try:
+                candidate.resolve().relative_to(search_dir.resolve())
+            except Exception:
+                return False
+
+            for ancestor in candidate.parents:
+                if ancestor == search_dir:
+                    break
+                if (ancestor / "SKILL.md").exists():
+                    return True
+            return False
+
         for search_dir in all_dirs:
             # Strategy 1: direct path (e.g., "mlops/axolotl" or bare "axolotl"
             # at the top of the dir).
@@ -962,8 +983,9 @@ def skill_view(
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
             for found_md in search_dir.rglob(f"{name}.md"):
-                if found_md.name != "SKILL.md":
-                    _record(None, found_md)
+                if found_md.name == "SKILL.md" or _is_nested_skill_asset(found_md, search_dir):
+                    continue
+                _record(None, found_md)
 
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]
