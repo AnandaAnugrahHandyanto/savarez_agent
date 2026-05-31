@@ -38,7 +38,9 @@ from pathlib import Path
 from typing import Any, Mapping
 
 # Action-preamble signature: the turn announced an action but produced no tool
-# call. These end mid-thought, typically with a colon, or open with intent.
+# call. These English phrases match the observed dflash stall corpus; broader
+# language-agnostic fallbacks below still catch trailing-colon and incomplete
+# final fragments without pretending this regex is multilingual.
 _ACTION_RE = re.compile(
     r"(let me\b|let's\b|i'?ll\b|i will\b|i'?m going to\b|i am going to\b|"
     r"now i\b|first,?\s+i\b|next,?\s+i\b|i need to\b|i should\b|"
@@ -46,7 +48,8 @@ _ACTION_RE = re.compile(
     re.IGNORECASE,
 )
 # Genuine completion signature: the model declared it is done / nothing to do.
-# These must NOT be retried (they are correct no-tool-call turns).
+# These English phrases must NOT be retried (they are correct no-tool-call
+# turns); other languages still rely on the neutral structural checks below.
 _COMPLETION_RE = re.compile(
     r"(\bdone\b|\bcomplete(d)?\b|nothing to (do|save|change|report|fix)|"
     r"no changes?\b|no action\b|already (complete|done|finished)|\bfinished\b|"
@@ -56,6 +59,7 @@ _COMPLETION_RE = re.compile(
 )
 _NATURAL_END_CHARS = '.!?:)"\']}。！？：）】」』》^'
 _MIN_INCOMPLETE_FINAL_CHARS = 80
+_ACTION_TAIL_CHARS = 500
 _STALL_RETRY_NUDGE = (
     "Your previous assistant response ended after describing the next action, "
     "but it did not include the required tool call. Continue the same task now "
@@ -156,6 +160,22 @@ def _has_natural_response_ending(content: str) -> bool:
     if last in _NATURAL_END_CHARS:
         return True
     return ord(last) >= 0x1F300
+
+
+def _ends_with_action_promise(content: str) -> bool:
+    """True when the visible tail promises immediate work but stops there.
+
+    The generic stall heuristic is intentionally length-capped because long
+    prose is often a real answer. Explicit tail promises are different: a long
+    diagnostic can still end with "Let me check that:" and no tool call, which
+    is the exact dflash premature-stop shape this module exists to recover.
+    """
+    tail = (content or "").strip()[-_ACTION_TAIL_CHARS:]
+    if not tail:
+        return False
+    if not _ACTION_RE.search(tail):
+        return False
+    return tail.rstrip().endswith(":")
 
 
 def _safe_preview(value: Any, max_chars: int = 240) -> str:
@@ -291,16 +311,11 @@ def looks_like_stall(content: str, finish_reason: str, has_tool_calls: bool,
         return False
     if _COMPLETION_RE.search(c):
         return False  # model said it's done => respect it
-    has_action_preamble = bool(_ACTION_RE.search(c))
-    long_but_open_action = (
-        len(c) > max_chars
-        and len(c) <= max(max_chars * 2, 800)
-        and has_action_preamble
-        and c.endswith(":")
-    )
-    if len(c) > max_chars and not long_but_open_action:
+    if _ends_with_action_promise(c):
+        return True
+    if len(c) > max_chars:
         return False  # long => almost certainly a real answer
-    if has_action_preamble:
+    if _ACTION_RE.search(c):
         return True   # announced an action, no tool call => stall
     # Short prose that doesn't declare completion and isn't an obvious answer:
     # a trailing colon strongly implies "about to do something".
