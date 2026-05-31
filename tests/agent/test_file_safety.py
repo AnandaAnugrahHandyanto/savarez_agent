@@ -10,6 +10,7 @@ import pytest
 
 from agent.file_safety import (
     _BLOCKED_PROJECT_ENV_BASENAMES,
+    get_node_execution_role,
     get_read_block_error,
 )
 
@@ -146,3 +147,29 @@ class TestCombinedGuards:
             error = get_read_block_error(str(cache))
             assert error is not None
             assert "internal Hermes cache" in error
+
+
+class TestNodeExecutionRole:
+    def test_env_role_takes_precedence(self, monkeypatch):
+        monkeypatch.setenv("HERMES_NODE_ROLE", "executor")
+        monkeypatch.setenv("HERMES_AGENT_EXECUTION_ROLE", "canonical")
+        assert get_node_execution_role() == "executor"
+
+    def test_agent_execution_role_env_is_used_when_node_role_absent(self, monkeypatch):
+        monkeypatch.delenv("HERMES_NODE_ROLE", raising=False)
+        monkeypatch.setenv("HERMES_AGENT_EXECUTION_ROLE", "executor")
+        assert get_node_execution_role() == "executor"
+
+    def test_config_role_is_used_when_env_absent(self, monkeypatch):
+        monkeypatch.delenv("HERMES_NODE_ROLE", raising=False)
+        monkeypatch.delenv("HERMES_AGENT_EXECUTION_ROLE", raising=False)
+
+        import hermes_cli.config as config
+
+        monkeypatch.setattr(
+            config,
+            "cfg_get",
+            lambda key, default=None: "executor" if key == "agent.execution_role" else default,
+        )
+
+        assert get_node_execution_role() == "executor"

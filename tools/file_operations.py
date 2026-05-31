@@ -37,6 +37,8 @@ from tools.binary_extensions import BINARY_EXTENSIONS
 from agent.file_safety import (
     build_write_denied_paths,
     build_write_denied_prefixes,
+    get_node_execution_role,
+    get_safe_write_root as _shared_get_safe_write_root,
     is_write_denied as _shared_is_write_denied,
 )
 
@@ -146,6 +148,10 @@ def _has_bom(text: Optional[str]) -> bool:
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
     return _shared_is_write_denied(path)
+
+
+def _is_executor_read_only() -> bool:
+    return get_node_execution_role() == "executor"
 
 
 # =============================================================================
@@ -1067,6 +1073,8 @@ class ShellFileOperations(FileOperations):
     def delete_file(self, path: str) -> WriteResult:
         """Delete a file via rm."""
         path = self._expand_path(path)
+        if _is_executor_read_only():
+            return WriteResult(error="Delete denied: the current node role is read-only executor, so write operations are disabled here.")
         if _is_write_denied(path):
             return WriteResult(error=f"Delete denied: {path} is a protected path")
         result = self._exec(f"rm -f {self._escape_shell_arg(path)}")
@@ -1078,6 +1086,8 @@ class ShellFileOperations(FileOperations):
         """Move a file via mv."""
         src = self._expand_path(src)
         dst = self._expand_path(dst)
+        if _is_executor_read_only():
+            return WriteResult(error="Move denied: the current node role is read-only executor, so write operations are disabled here.")
         for p in (src, dst):
             if _is_write_denied(p):
                 return WriteResult(error=f"Move denied: {p} is a protected path")
@@ -1116,6 +1126,9 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+
+        if _is_executor_read_only():
+            return WriteResult(error="Write denied: the current node role is read-only executor, so write operations are disabled here.")
 
         # Block writes to sensitive paths
         if _is_write_denied(path):
@@ -1263,6 +1276,9 @@ class ShellFileOperations(FileOperations):
         # Expand ~ and other shell paths
         path = self._expand_path(path)
 
+        if _is_executor_read_only():
+            return PatchResult(error="Patch denied: the current node role is read-only executor, so write operations are disabled here.")
+
         # Block writes to sensitive paths
         if _is_write_denied(path):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
@@ -1388,6 +1404,10 @@ class ShellFileOperations(FileOperations):
         Returns:
             PatchResult with changes made
         """
+        # Block writes in executor mode before parsing the patch content.
+        if _is_executor_read_only():
+            return PatchResult(error="Patch denied: the current node role is read-only executor, so write operations are disabled here.")
+
         # Import patch parser
         from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
         

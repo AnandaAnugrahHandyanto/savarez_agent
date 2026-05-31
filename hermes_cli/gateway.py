@@ -31,6 +31,7 @@ from hermes_cli.config import (
     read_raw_config,
     save_env_value,
 )
+from agent.file_safety import get_node_execution_role
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
 from hermes_cli.setup import (
@@ -2194,6 +2195,12 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     working_dir = _stable_service_working_dir()
     detected_venv = _detect_venv_dir()
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    readiness_script = str(PROJECT_ROOT / "scripts" / "check_two_vps_readiness.py")
+    readiness_execstartpre = ""
+    if get_node_execution_role() == "executor":
+        readiness_execstartpre = (
+            f"ExecStartPre={python_path} {readiness_script} --expect-role executor\n"
+        )
 
     path_entries = _build_service_path_dirs()
     resolved_node = shutil.which("node")
@@ -2241,7 +2248,7 @@ Type=simple
 User={username}
 Group={group_name}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
-WorkingDirectory={working_dir}
+{readiness_execstartpre}WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
 Environment="LOGNAME={username}"
@@ -2279,7 +2286,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
-WorkingDirectory={working_dir}
+{readiness_execstartpre}WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"

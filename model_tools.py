@@ -32,6 +32,67 @@ from typing import Dict, Any, List, Optional, Tuple
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
+_EXECUTOR_NODE_ROLE = "executor"
+_EXECUTOR_READ_ONLY_TOOLSETS = {
+    "browser",
+    "code_execution",
+    "session_search",
+    "terminal",
+    "vision",
+    "web",
+    "x_search",
+}
+_EXECUTOR_DISABLED_TOOLSETS = {
+    "clarify",
+    "computer_use",
+    "cronjob",
+    "delegation",
+    "discord",
+    "discord_admin",
+    "file",
+    "homeassistant",
+    "image_gen",
+    "messaging",
+    "memory",
+    "moa",
+    "skills",
+    "spotify",
+    "todo",
+    "video",
+    "video_gen",
+    "yuanbao",
+}
+
+_EXECUTOR_DISABLED_TOOL_NAMES = set()
+for _toolset_name in _EXECUTOR_DISABLED_TOOLSETS:
+    try:
+        _EXECUTOR_DISABLED_TOOL_NAMES.update(resolve_toolset(_toolset_name))
+    except Exception:
+        # Validation happens at runtime; import-time failure should never make
+        # the module unusable if a future toolset is removed or renamed.
+        pass
+
+
+def _get_node_execution_role() -> str:
+    env_role = str(os.getenv("HERMES_NODE_ROLE") or os.getenv("HERMES_AGENT_EXECUTION_ROLE") or "").strip().lower()
+    if env_role:
+        return env_role
+    try:
+        from hermes_cli.config import cfg_get
+        cfg_role = str(cfg_get("agent.execution_role") or "").strip().lower()
+        if cfg_role:
+            return cfg_role
+    except Exception:
+        pass
+    return ""
+
+
+def _apply_executor_tool_policy(tool_names: set) -> set:
+    role = _get_node_execution_role()
+    if role != _EXECUTOR_NODE_ROLE:
+        return tool_names
+    return set(tool_names) - _EXECUTOR_DISABLED_TOOL_NAMES
+
 logger = logging.getLogger(__name__)
 
 
@@ -396,6 +457,8 @@ def _compute_tool_definitions(
     # all check the tool registry for plugin-provided toolsets.  No bypass
     # needed; plugins respect enabled_toolsets / disabled_toolsets like any
     # other toolset.
+
+    tools_to_include = _apply_executor_tool_policy(tools_to_include)
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
@@ -912,6 +975,12 @@ def handle_function_call(
             )
 
     try:
+        if _get_node_execution_role() == _EXECUTOR_NODE_ROLE and function_name in _EXECUTOR_DISABLED_TOOL_NAMES:
+            return json.dumps(
+                {"error": f"{function_name} is disabled in executor read-only mode"},
+                ensure_ascii=False,
+            )
+
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 

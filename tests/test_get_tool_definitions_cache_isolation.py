@@ -21,6 +21,9 @@ import pytest
 import model_tools
 
 
+EXECUTOR_BLOCKED = {"file", "memory", "skills", "todo", "cronjob", "delegation"}
+
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
     """Each test starts with an empty quiet_mode cache."""
@@ -92,3 +95,16 @@ class TestQuietModeCacheIsolation:
         explains why the bug only hit Gateway."""
         model_tools.get_tool_definitions(quiet_mode=False)
         assert len(model_tools._tool_defs_cache) == 0
+
+    def test_executor_role_strips_write_capable_toolsets(self, monkeypatch):
+        monkeypatch.setenv("HERMES_NODE_ROLE", "executor")
+        model_tools._tool_defs_cache.clear()
+
+        tools = model_tools.get_tool_definitions(quiet_mode=True)
+        names = {t.get("function", {}).get("name") for t in tools}
+
+        assert "terminal" in names
+        assert any(name.startswith("browser_") for name in names)
+        assert names.isdisjoint(EXECUTOR_BLOCKED)
+        assert "write_file" not in names
+        assert "patch" not in names

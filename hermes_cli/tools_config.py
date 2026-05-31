@@ -1135,6 +1135,73 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
     return default
 
 
+_EXECUTOR_NODE_ROLE = "executor"
+_EXECUTOR_READ_ONLY_TOOLSETS = {
+    "browser",
+    "code_execution",
+    "session_search",
+    "terminal",
+    "vision",
+    "web",
+    "x_search",
+}
+_EXECUTOR_DISABLED_TOOLSETS = {
+    "clarify",
+    "computer_use",
+    "cronjob",
+    "delegation",
+    "discord",
+    "discord_admin",
+    "file",
+    "homeassistant",
+    "image_gen",
+    "messaging",
+    "memory",
+    "moa",
+    "skills",
+    "spotify",
+    "todo",
+    "video",
+    "video_gen",
+    "yuanbao",
+}
+
+
+def _get_node_execution_role(config: dict | None = None) -> str:
+    """Return the node execution role for tool-policy decisions.
+
+    Env wins so deploy-time overrides on VPS 2 stay simple. Config is a
+    fallback for persisted local setups and the setup wizard.
+    """
+    env_role = str(os.getenv("HERMES_NODE_ROLE") or os.getenv("HERMES_AGENT_EXECUTION_ROLE") or "").strip().lower()
+    if env_role:
+        return env_role
+    if isinstance(config, dict):
+        agent_cfg = config.get("agent") or {}
+        cfg_role = str(agent_cfg.get("execution_role") or "").strip().lower()
+        if cfg_role:
+            return cfg_role
+    return ""
+
+
+def _apply_node_role_tool_policy(
+    config: dict,
+    platform: str,
+    enabled_toolsets: Set[str],
+) -> Set[str]:
+    """Apply node-role guardrails after normal platform resolution."""
+    role = _get_node_execution_role(config)
+    if role != _EXECUTOR_NODE_ROLE:
+        return enabled_toolsets
+
+    filtered = {
+        ts for ts in enabled_toolsets
+        if ts in _EXECUTOR_READ_ONLY_TOOLSETS or ts not in _EXECUTOR_DISABLED_TOOLSETS
+    }
+    filtered -= _EXECUTOR_DISABLED_TOOLSETS
+    return filtered
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -1381,6 +1448,8 @@ def _get_platform_tools(
     if disabled_toolsets:
         disabled_set = {str(ts) for ts in disabled_toolsets}
         enabled_toolsets -= disabled_set
+
+    enabled_toolsets = _apply_node_role_tool_policy(config, platform, enabled_toolsets)
 
     return enabled_toolsets
 
