@@ -1,36 +1,14 @@
 services:
   hermes-agent-local:
-    build: .
     image: hermes-agent-local
     container_name: hermes-agent-local
     restart: unless-stopped
     ports:
-      - "4861:4861" # Core Web Dashboard & API
-      - "8001:8000" # Corrected Internal API binding mapping
+      - "4861:4861"
+      - "8001:8001"
     volumes:
-      # 1. Codebase protection: mount source repo read-only.
-      - ./:/opt/hermes:ro
-      
-      # 2. Core persistent state data (Tokens, Profiles, Chat Logs)
-      - D:/hermes-github/data:/opt/data
-      
-      # 3. Writable runtime overlay for build artifacts and logs.
-      - D:/hermes-github/data/web/.next:/opt/hermes/web/.next
-      - D:/hermes-github/data/web/dist:/opt/hermes/web/dist
-      - D:/hermes-github/data/logs:/opt/hermes/logs
-      
-      # 4. Preserve the built virtualenv from the image.
-      - hermes-venv:/opt/hermes/.venv
-      
-      # ⬇️ ADD THESE TWO ANONYMOUS OVERLAYS TO BYPASS THE MOUNT LOCK ⬇️
-      - /opt/hermes/node_modules
-      - /opt/hermes/web/node_modules
-      
+      - D:/hermes-github/hermes-agent/data:/opt/data
     environment:
       - OPENROUTER_API_KEY
       - COPILOT_GITHUB_TOKEN
-      - HERMES_DATA_DIR=/opt/data # Forces agent to look in your custom volume
     command: gateway run
-
-volumes:
-  hermes-venv: {}
