@@ -94,6 +94,33 @@ def _should_scope_to_current(scope: str, current_scope: Dict[str, str]) -> bool:
     return bool(source in _GATEWAY_SCOPED_SOURCES and current_scope.get("chat_id"))
 
 
+def _current_user_values(current_scope: Dict[str, str]) -> set[str]:
+    return {
+        value
+        for value in (
+            current_scope.get("user_id") or "",
+            current_scope.get("user_id_alt") or "",
+        )
+        if value
+    }
+
+
+def _row_user_values(session_meta: Dict[str, Any]) -> set[str]:
+    return {
+        value
+        for value in (
+            _clean(session_meta.get("user_id")),
+            _clean(session_meta.get("user_id_alt")),
+        )
+        if value
+    }
+
+
+def _requires_user_isolation(current_scope: Dict[str, str]) -> bool:
+    chat_type = (current_scope.get("chat_type") or "").lower()
+    return bool(chat_type and chat_type not in {"dm", "direct", "private"})
+
+
 def _session_matches_current_scope(session_meta: Dict[str, Any], current_scope: Dict[str, str]) -> bool:
     """Strict current-scope match for new sessions with persisted scope fields."""
     if not session_meta:
@@ -114,7 +141,40 @@ def _session_matches_current_scope(session_meta: Dict[str, Any], current_scope: 
         # A non-thread current chat should not see thread-specific sessions.
         if _clean(session_meta.get("thread_id")):
             return False
+
+    # Modern scoped rows also carry per-user / stable session identity. In
+    # group/channel chats the chat_id is shared, so these fields prevent one
+    # sender from seeing another sender's scoped recall just because they share
+    # a channel. If the row has both user IDs, either may match the current
+    # primary/alternate identity.
+    current_session_key = current_scope.get("session_key") or ""
+    row_session_key = _clean(session_meta.get("session_key"))
+    if current_session_key and row_session_key and row_session_key != current_session_key:
+        return False
+    current_users = _current_user_values(current_scope)
+    row_users = _row_user_values(session_meta)
+    if current_users and row_users and current_users.isdisjoint(row_users):
+        return False
+    if _requires_user_isolation(current_scope):
+        # Shared chats must have at least one positive per-user signal: either
+        # a matching stable session key or an intersecting user identity.
+        if current_session_key and row_session_key == current_session_key:
+            return True
+        if current_users and row_users and not current_users.isdisjoint(row_users):
+            return True
+        return False
     return True
+
+
+def _session_allowed_for_current_scope(
+    session_meta: Dict[str, Any],
+    current_scope: Dict[str, str],
+    *,
+    include_legacy: bool = False,
+) -> bool:
+    if _session_matches_current_scope(session_meta, current_scope):
+        return True
+    return include_legacy and _session_is_legacy_scope_candidate(session_meta, current_scope)
 
 
 def _session_is_legacy_scope_candidate(session_meta: Dict[str, Any], current_scope: Dict[str, str]) -> bool:
@@ -126,8 +186,10 @@ def _session_is_legacy_scope_candidate(session_meta: Dict[str, Any], current_sco
     if _clean(session_meta.get("chat_id")) or _clean(session_meta.get("thread_id")) or _clean(session_meta.get("session_key")):
         return False
     row_user = _clean(session_meta.get("user_id"))
-    cur_user = current_scope.get("user_id") or current_scope.get("user_id_alt")
-    return not row_user or not cur_user or row_user == cur_user
+    cur_users = _current_user_values(current_scope)
+    if _requires_user_isolation(current_scope) and cur_users:
+        return bool(row_user and row_user in cur_users)
+    return not row_user or not cur_users or row_user in cur_users
 
 
 def _filter_sessions_for_scope(
@@ -300,6 +362,9 @@ def _scroll(
     around_message_id: int,
     window: int = 5,
     current_session_id: str = None,
+    *,
+    current_scope: Optional[Dict[str, str]] = None,
+    apply_scope: bool = False,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
 
@@ -343,6 +408,13 @@ def _scroll(
         session_meta = {}
     if not session_meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
+    current_scope = current_scope or {}
+    if apply_scope and not _session_allowed_for_current_scope(
+        session_meta,
+        current_scope,
+        include_legacy=True,
+    ):
+        return tool_error("scroll rejected: session_id is outside the current scope", success=False)
 
     # Fetch the window
     try:
@@ -374,6 +446,19 @@ def _scroll(
             a_root = _resolve_to_parent(db, session_id)
             o_root = _resolve_to_parent(db, owning)
             if a_root and o_root and a_root == o_root:
+                try:
+                    owning_meta = db.get_session(owning) or {}
+                except Exception:
+                    owning_meta = {}
+                if apply_scope and not _session_allowed_for_current_scope(
+                    owning_meta,
+                    current_scope,
+                    include_legacy=True,
+                ):
+                    return tool_error(
+                        "scroll rejected: around_message_id is outside the current scope",
+                        success=False,
+                    )
                 try:
                     rebind_view = db.get_messages_around(owning, around_message_id, window=window)
                     messages = rebind_view.get("window") or []
@@ -719,6 +804,8 @@ def session_search(
             around_message_id=around_message_id,
             window=window,
             current_session_id=current_session_id,
+            current_scope=current_scope,
+            apply_scope=apply_scope,
         )
 
     # Limit clamp [1, 10]

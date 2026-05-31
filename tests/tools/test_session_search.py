@@ -264,6 +264,92 @@ class TestScopedGatewayRecall:
         ))
         assert [r["session_id"] for r in global_result["results"]] == ["b_old"]
 
+    def test_group_chat_recall_is_isolated_by_user_and_session_key(self, db):
+        now = time.time()
+        shared_chat = "group-1"
+        key_a = "agent:main:qqbot:group:group-1:user-a"
+        key_b = "agent:main:qqbot:group:group-1:user-b"
+        self._create_scoped_session(
+            db,
+            "group_a_old",
+            chat_type="group",
+            chat_id=shared_chat,
+            user_id="user-a",
+            session_key=key_a,
+            started_at=now - 200,
+            ended_at=now - 100,
+            text="shared chat scoped secret alpha",
+        )
+        self._create_scoped_session(
+            db,
+            "group_b_old",
+            chat_type="group",
+            chat_id=shared_chat,
+            user_id="user-b",
+            session_key=key_b,
+            started_at=now - 100,
+            ended_at=now - 10,
+            text="shared chat scoped secret beta",
+        )
+        self._create_scoped_session(
+            db,
+            "group_missing_user",
+            chat_type="group",
+            chat_id=shared_chat,
+            user_id=None,
+            session_key=None,
+            started_at=now - 80,
+            ended_at=now - 20,
+            text="shared chat scoped secret missing-user",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET user_id = NULL, user_id_alt = NULL, session_key = NULL WHERE id = ?",
+            ("group_missing_user",),
+        )
+        db._conn.commit()
+        db.create_session("group_legacy_missing_user", source="qqbot")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+            (now - 70, now - 15, "group_legacy_missing_user"),
+        )
+        db.append_message(
+            "group_legacy_missing_user",
+            role="user",
+            content="shared chat scoped secret legacy-missing-user",
+        )
+        db.create_session(
+            "group_a_current",
+            source="qqbot",
+            user_id="user-a",
+            chat_type="group",
+            chat_id=shared_chat,
+            session_key=key_a,
+        )
+
+        common_scope = dict(
+            db=db,
+            current_session_id="group_a_current",
+            current_source="qqbot",
+            current_chat_type="group",
+            current_chat_id=shared_chat,
+            current_user_id="user-a",
+            current_session_key=key_a,
+        )
+        search = json.loads(session_search(query="shared chat scoped secret", **common_scope))
+        assert [r["session_id"] for r in search["results"]] == ["group_a_old"]
+        payload = json.dumps(search, ensure_ascii=False)
+        assert "group_b_old" not in payload
+        assert "group_missing_user" not in payload
+        assert "group_legacy_missing_user" not in payload
+
+        previous = json.loads(session_search(mode="previous", **common_scope))
+        assert previous["results"][0]["session_id"] == "group_a_old"
+        assert "group_b_old" not in json.dumps(previous, ensure_ascii=False)
+
+        handoff = json.loads(session_search(mode="handoff", **common_scope))
+        assert handoff["results"][0]["session_id"] == "group_a_old"
+        assert "group_b_old" not in json.dumps(handoff, ensure_ascii=False)
+
     def test_handoff_legacy_fallback_is_source_bounded_and_marked(self, db):
         now = time.time()
         db.create_session("legacy_qq", source="qqbot", user_id="qq-a")
@@ -501,6 +587,79 @@ class TestScrollShape:
             session_id="s_oldest", around_message_id="not-an-int", db=db
         ))
         assert result["success"] is False
+
+    def test_scroll_rejects_out_of_scope_session_and_lineage_rebind(self, db):
+        shared_chat = "group-1"
+        key_a = "agent:main:qqbot:group:group-1:user-a"
+        key_b = "agent:main:qqbot:group:group-1:user-b"
+        db.create_session(
+            "owner_parent",
+            source="qqbot",
+            user_id="user-a",
+            chat_type="group",
+            chat_id=shared_chat,
+            session_key=key_a,
+        )
+        parent_mid = db.append_message("owner_parent", role="user", content="owner parent")
+        db.create_session(
+            "other_parent",
+            source="qqbot",
+            user_id="user-b",
+            chat_type="group",
+            chat_id=shared_chat,
+            session_key=key_b,
+        )
+        other_mid = db.append_message("other_parent", role="user", content="other parent")
+        db.create_session(
+            "other_child",
+            source="qqbot",
+            user_id="user-b",
+            chat_type="group",
+            chat_id=shared_chat,
+            session_key=key_b,
+            parent_session_id="owner_parent",
+        )
+        child_mid = db.append_message("other_child", role="user", content="other child")
+        db.create_session(
+            "owner_current",
+            source="qqbot",
+            user_id="user-a",
+            chat_type="group",
+            chat_id=shared_chat,
+            session_key=key_a,
+        )
+
+        common_scope = dict(
+            db=db,
+            current_session_id="owner_current",
+            current_source="qqbot",
+            current_chat_type="group",
+            current_chat_id=shared_chat,
+            current_user_id="user-a",
+            current_session_key=key_a,
+        )
+        own = json.loads(session_search(
+            session_id="owner_parent",
+            around_message_id=parent_mid,
+            **common_scope,
+        ))
+        assert own["success"] is True
+
+        direct = json.loads(session_search(
+            session_id="other_parent",
+            around_message_id=other_mid,
+            **common_scope,
+        ))
+        assert direct["success"] is False
+        assert "outside the current scope" in direct.get("error", "")
+
+        rebound = json.loads(session_search(
+            session_id="owner_parent",
+            around_message_id=child_mid,
+            **common_scope,
+        ))
+        assert rebound["success"] is False
+        assert "outside the current scope" in rebound.get("error", "")
 
 
 class TestScrollPattern:
