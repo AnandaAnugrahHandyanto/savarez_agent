@@ -246,6 +246,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "workflow": {
+        "description": "Dynamic workflow orchestration over many delegated subagents",
+        "tools": ["workflow_run"],
+        "includes": []
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

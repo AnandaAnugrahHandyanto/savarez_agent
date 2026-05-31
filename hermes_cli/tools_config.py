@@ -72,6 +72,7 @@ CONFIGURABLE_TOOLSETS = [
     ("session_search",  "🔎 Session Search",            "search past conversations"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
+    ("workflow",        "🧩 Dynamic Workflows",         "workflow_run (phased subagent orchestration)"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
@@ -83,8 +84,9 @@ CONFIGURABLE_TOOLSETS = [
 ]
 
 # Toolsets that are OFF by default for new installs.
-# They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
-# but the setup checklist won't pre-select them for first-time users.
+# Some are already part of platform composite toolsets but should not be
+# pre-selected for first-time users; others (for example workflow) are fully
+# opt-in and only appear when explicitly enabled or granted for one turn.
 #
 # Video gen is off by default — it's a niche, paid, slow feature. Users
 # who want it opt in via `hermes tools` → Video Generation, which walks
@@ -96,7 +98,7 @@ CONFIGURABLE_TOOLSETS = [
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "workflow"}
 
 
 def _xai_credentials_present() -> bool:
