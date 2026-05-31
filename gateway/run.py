@@ -10088,6 +10088,35 @@ class GatewayRunner:
         except Exception as exc:  # pragma: no cover — defensive
             logger.debug("build_recap failed in /status: %s", exc)
 
+        # Append Claude Code proxy status
+        try:
+            import asyncio as _asyncio
+            import urllib.request as _urlreq
+            import json as _json
+
+            _cfg = self.config if isinstance(self.config, dict) else {}
+            _proxy_base = (_cfg.get("model") or {}).get("base_url", "").rstrip("/")
+            if not _proxy_base:
+                _proxy_base = "http://127.0.0.1:8765/v1"
+
+            def _get_status():
+                with _urlreq.urlopen(_proxy_base.rstrip("/v1").rstrip("/") + "/v1/status", timeout=2) as _r:
+                    return _json.loads(_r.read())
+
+            _ps = await _asyncio.to_thread(_get_status)
+            _auth = _ps.get("auth", "OAuth")
+            _sub = _ps.get("subscription", "")
+            _model = _ps.get("model", "")
+            _ver = _ps.get("version", "")
+            _sess = _ps.get("sessions", 0)
+            _auth_str = f"{_auth} ({_sub})" if _sub else _auth
+            lines.extend([
+                "",
+                f"\U0001f511 Claude: {_model} · {_auth_str} · v{_ver} · {_sess} session(s)",
+            ])
+        except Exception:
+            pass  # proxy not running — skip section silently
+
         return "\n".join(lines)
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
