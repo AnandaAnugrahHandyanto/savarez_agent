@@ -540,7 +540,14 @@ async def _send_via_adapter(
             except Exception as e:
                 return {"error": f"Plugin platform send failed: {e}"}
             if result.success:
-                return {"success": True, "message_id": result.message_id}
+                out = {"success": True, "message_id": result.message_id}
+                raw_response = getattr(result, "raw_response", None)
+                if isinstance(raw_response, dict):
+                    for key in ("thread_id", "channel_id", "jump_url", "url", "message_ids", "warnings"):
+                        if key in raw_response:
+                            out[key] = raw_response[key]
+                    out["raw_response"] = {key: out[key] for key in out.keys() if key not in {"success", "message_id"}}
+                return out
             return {"error": f"Adapter send failed: {result.error}"}
 
     entry = None

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 
@@ -10,9 +11,29 @@ from hermes_cli import kanban_db as kb
 class RecordingAdapter:
     def __init__(self):
         self.sent = []
+        self.thread_updates = []
+        self.documents = []
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+    async def update_thread_metadata(self, thread_id, *, name=None, applied_tags=None):
+        self.thread_updates.append({
+            "thread_id": thread_id,
+            "name": name,
+            "applied_tags": list(applied_tags or []),
+        })
+        return True
+
+    async def send_document(self, chat_id, file_path, caption=None, file_name=None, reply_to=None, metadata=None):
+        self.documents.append({
+            "chat_id": chat_id,
+            "file_path": file_path,
+            "metadata": metadata or {},
+        })
+
+    def extract_local_files(self, text):
+        return [], text
 
 
 class DisconnectedAdapters(dict):
@@ -35,10 +56,10 @@ async def _run_one_notifier_tick(monkeypatch, runner):
     await runner._kanban_notifier_watcher(interval=1)
 
 
-def _make_runner(adapter):
+def _make_runner(adapter, platform=Platform.TELEGRAM):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {platform: adapter}
     runner._kanban_sub_fail_counts = {}
     return runner
 
@@ -233,3 +254,146 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
     assert "crashed" in adapter.sent[1]["text"].lower()
+
+
+def test_discord_kanban_notifier_syncs_forum_card_metadata_before_final_unsubscribe(tmp_path, monkeypatch):
+    """Terminal Discord notifications must update forum title/tags before unsubscribe.
+
+    Regression coverage for completed tasks whose notification row is deleted
+    after delivery: after that point repair/audit cannot infer the thread binding,
+    so the gateway has to mutate the Discord card while the subscription still
+    exists.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(home / "kanban.db"))
+    kb.init_db()
+    board_dir = home / "kanban" / "boards" / "default"
+    board_dir.mkdir(parents=True, exist_ok=True)
+    (board_dir / "discord-forum-tags.json").write_text(
+        json.dumps({
+            "status_to_tag": {"done": "done-tag", "blocked": "blocked-tag"},
+            "assignee_to_tag": {"hermes": "hermes-tag", "default": "default-tag"},
+        }),
+        encoding="utf-8",
+    )
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="ship projection sync", assignee="hermes")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="forum-1",
+            thread_id="thread-1",
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter, Platform.DISCORD)))
+
+    assert adapter.thread_updates == [{
+        "thread_id": "thread-1",
+        "name": "✅ [done] ship projection sync",
+        "applied_tags": ["done-tag", "hermes-tag"],
+    }]
+    assert len(adapter.sent) == 1
+
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+
+
+def test_discord_kanban_notifier_prefers_configured_status_emoji(tmp_path, monkeypatch):
+    """Forum thread titles should use board-configured emoji, not ASCII fallbacks."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(home / "kanban.db"))
+    kb.init_db()
+    board_dir = home / "kanban" / "boards" / "default"
+    board_dir.mkdir(parents=True, exist_ok=True)
+    (board_dir / "discord-forum-tags.json").write_text(
+        json.dumps({
+            "tags": {"running": {"emoji": "🟨"}},
+            "status_to_tag": {"running": "running-tag"},
+            "assignee_to_tag": {"hermes": "hermes-tag"},
+        }),
+        encoding="utf-8",
+    )
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="keep the emoji", assignee="hermes")
+        assert kb.claim_task(conn, tid, claimer="test") is not None
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="forum-1",
+            thread_id="thread-1",
+        )
+        # Any notifier tick for a non-terminal event should still reconcile
+        # the live Discord forum card metadata for the running task.
+        kb._append_event(conn, tid, kind="blocked")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter, Platform.DISCORD)))
+
+    assert adapter.thread_updates[0]["name"] == "🟨 [running] keep the emoji"
+
+
+def test_discord_kanban_notifier_artifacts_use_existing_thread_metadata(tmp_path, monkeypatch):
+    """Artifact uploads must target the task thread, not the parent forum.
+
+    A Discord forum subscription stores ``chat_id`` as the parent forum and
+    ``thread_id`` as the actual Kanban card thread. The text notification and
+    all follow-up artifact uploads must receive the same metadata; otherwise
+    Discord creates a sibling forum post named after the uploaded artifact.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    artifact = home / "cache" / "documents" / "implementation-handoff-addendum-2026-05-30.md"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("handoff", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(home / "kanban.db"))
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(home))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="artifact routing", assignee="hephaestus")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="forum-1",
+            thread_id="thread-1",
+        )
+        kb.complete_task(
+            conn,
+            tid,
+            summary="done",
+            metadata={"artifacts": [str(artifact)]},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter, Platform.DISCORD)))
+
+    assert adapter.sent[0]["metadata"] == {"thread_id": "thread-1"}
+    assert adapter.documents == [{
+        "chat_id": "forum-1",
+        "file_path": str(artifact),
+        "metadata": {"thread_id": "thread-1"},
+    }]

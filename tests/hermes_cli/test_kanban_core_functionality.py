@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_cli import kanban as kanban_cli
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban import run_slash
 
@@ -49,6 +50,108 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
     kb.init_db()
     return home
+
+
+def _run_cli(*argv: str) -> int:
+    root = argparse.ArgumentParser()
+    subp = root.add_subparsers(dest="cmd")
+    kanban_cli.build_parser(subp)
+    ns = root.parse_args(["kanban", *argv])
+    return kanban_cli.kanban_command(ns)
+
+
+def _write_discord_projection_config(home: Path) -> None:
+    (home / "config.yaml").write_text(
+        "kanban:\n"
+        "  board_projections:\n"
+        "    default:\n"
+        "      enabled: true\n"
+        "      platform: discord\n"
+        "      forum_channel_id: forum-1\n"
+        "      guild_id: guild-1\n"
+        "      notifier_profile: default\n",
+        encoding="utf-8",
+    )
+    board_dir = home / "kanban" / "boards" / "default"
+    board_dir.mkdir(parents=True, exist_ok=True)
+    (board_dir / "discord-forum-tags.json").write_text(
+        json.dumps(
+            {
+                "status_to_tag": {"blocked": "blocked-tag", "running": "running-tag"},
+                "assignee_to_tag": {"hermes": "hermes-tag"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Create-time Discord forum projection
+# ---------------------------------------------------------------------------
+
+
+def test_create_projects_task_to_discord_forum_and_records_linkage(kanban_home, monkeypatch, capsys):
+    _write_discord_projection_config(kanban_home)
+    calls: list[dict] = []
+
+    async def fake_send_projection(**kwargs):
+        calls.append(kwargs)
+        return {"success": True, "message_id": "msg-1", "thread_id": "thread-1"}
+
+    monkeypatch.setattr(kanban_cli, "_send_discord_projection_message", fake_send_projection)
+
+    rc = _run_cli(
+        "create",
+        "Projected task",
+        "--body",
+        "Acceptance criteria here",
+        "--assignee",
+        "hermes",
+        "--initial-status",
+        "blocked",
+    )
+
+    assert rc == 0
+    created = capsys.readouterr().out.split()[1]
+    assert calls == [
+        {
+            "forum_channel_id": "forum-1",
+            "message": f"Kanban task: `{created}`\nAssignee: `hermes`\nStatus: `blocked`\nPriority: `0`\n\nAcceptance criteria here",
+            "thread_name": "🛑 [blocked] Projected task",
+            "applied_tags": ["blocked-tag", "hermes-tag"],
+        }
+    ]
+    with kb.connect() as conn:
+        rows = kb.list_notify_subs(conn, task_id=created)
+        comments = kb.list_comments(conn, created)
+    assert [(row["platform"], row["chat_id"], row["thread_id"]) for row in rows] == [
+        ("discord", "forum-1", "thread-1")
+    ]
+    assert [comment.body for comment in comments] == [
+        "Discord forum projection: https://discord.com/channels/guild-1/thread-1"
+    ]
+    assert created.startswith("t_")
+
+
+def test_create_warns_but_preserves_task_when_discord_projection_fails(kanban_home, monkeypatch, capsys):
+    _write_discord_projection_config(kanban_home)
+
+    async def fake_send_projection(**kwargs):
+        return {"error": "discord_http_403"}
+
+    monkeypatch.setattr(kanban_cli, "_send_discord_projection_message", fake_send_projection)
+
+    rc = _run_cli("create", "Projection fails", "--assignee", "hermes", "--initial-status", "blocked")
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    created = captured.out.split()[1]
+    assert created.startswith("t_")
+    assert f"Discord forum projection failed for {created}: discord_http_403" in captured.err
+    assert "hermes kanban repair --audit-discord" in captured.err
+    with kb.connect() as conn:
+        assert kb.get_task(conn, created) is not None
+        assert kb.list_notify_subs(conn, task_id=created) == []
 
 
 # ---------------------------------------------------------------------------

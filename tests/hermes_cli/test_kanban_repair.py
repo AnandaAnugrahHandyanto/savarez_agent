@@ -181,12 +181,21 @@ def test_kanban_repair_apply_removes_malformed_projection_rows(kanban_home, caps
 
 
 def _write_discord_projection_config(home: Path) -> None:
+    (home / "config.yaml").write_text(
+        "kanban:\n"
+        "  board_projections:\n"
+        "    default:\n"
+        "      enabled: true\n"
+        "      platform: discord\n"
+        "      forum_channel_id: forum-1\n"
+        "      notifier_profile: default\n",
+        encoding="utf-8",
+    )
     board_dir = home / "kanban" / "boards" / "default"
     board_dir.mkdir(parents=True, exist_ok=True)
     (board_dir / "discord-forum-tags.json").write_text(
         json.dumps(
             {
-                "forum_channel_id": "forum-1",
                 "status_to_tag": {
                     "ready": "ready-tag",
                     "blocked": "blocked-tag",
@@ -294,3 +303,27 @@ def test_kanban_repair_discord_audit_reports_missing_threads_without_mutating(
     with kb.connect() as conn:
         rows = kb.list_notify_subs(conn)
     assert [(row["task_id"], row["thread_id"]) for row in rows] == [(task_id, "thread-gone")]
+
+
+def test_kanban_repair_discord_audit_reports_unprojected_canonical_tasks(kanban_home, capsys):
+    """Discord audit must not ignore tasks missing kanban_notify_subs linkage rows."""
+    _write_discord_projection_config(kanban_home)
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="Needs forum card", assignee="hermes", initial_status="blocked")
+
+    rc = _run_cli("repair", "--audit-discord", "--json")
+
+    assert rc == 0
+    report = json.loads(capsys.readouterr().out)
+    discord = report["discord_projection"]
+    assert discord["scanned"] == 0
+    assert discord["missing_unprojected_tasks"] == [
+        {
+            "task_id": task_id,
+            "chat_id": "forum-1",
+            "expected": {
+                "name": "🛑 [blocked] Needs forum card",
+                "tags": ["blocked-tag", "hermes-tag"],
+            },
+        }
+    ]

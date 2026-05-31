@@ -1370,6 +1370,13 @@ def _cmd_create(args: argparse.Namespace) -> int:
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
+        projection_result = _project_created_task_to_discord(conn, task) if task is not None else None
+    if isinstance(projection_result, dict) and projection_result.get("error"):
+        print(
+            f"⚠  Discord forum projection failed for {task_id}: {projection_result['error']}. "
+            "Task was created; run `hermes kanban repair --audit-discord` after fixing projection config/gateway access.",
+            file=sys.stderr,
+        )
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:
@@ -2504,23 +2511,53 @@ def _discord_projection_config_path() -> Path:
 
 
 def _load_discord_projection_config() -> dict[str, Any]:
+    """Load Discord forum projection config for the current Kanban board.
+
+    Runtime enablement lives in ``kanban.board_projections.<board>`` while the
+    board-local ``discord-forum-tags.json`` file carries the forum tag mapping.
+    Merge both sources so create/audit paths follow the same operator-facing
+    configuration as the gateway projection code.
+    """
+    board = kb.get_current_board()
+    projection_cfg: dict[str, Any] = {}
+    try:
+        from hermes_cli.config import load_config
+
+        kanban_cfg = (load_config().get("kanban") or {})
+        board_projections = kanban_cfg.get("board_projections") or {}
+        raw_projection = board_projections.get(board) if isinstance(board_projections, dict) else None
+        if isinstance(raw_projection, dict):
+            if raw_projection.get("enabled") is False:
+                return {}
+            if str(raw_projection.get("platform") or "discord").lower() != "discord":
+                return {}
+            projection_cfg.update(raw_projection)
+    except Exception:
+        projection_cfg = {}
+
     path = _discord_projection_config_path()
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return {}
+        return projection_cfg
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return {"error": f"invalid_json:{path}"}
-    return data if isinstance(data, dict) else {}
+    if isinstance(data, dict):
+        projection_cfg.update(data)
+    return projection_cfg
 
 
 def _expected_discord_projection(task: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     status = str(task.get("status") or "")
     assignee = str(task.get("assignee") or "").strip()
     title = str(task.get("title") or "").strip()
-    icon = _DISCORD_PROJECTION_STATUS_ICONS.get(status, _STATUS_ICONS.get(status, "?"))
+    raw_tag_defs = config.get("tags")
+    tag_defs = raw_tag_defs if isinstance(raw_tag_defs, dict) else {}
+    raw_status_tag_def = tag_defs.get(status)
+    status_tag_def = raw_status_tag_def if isinstance(raw_status_tag_def, dict) else {}
+    icon = str(status_tag_def.get("emoji") or "").strip() or _DISCORD_PROJECTION_STATUS_ICONS.get(status, _STATUS_ICONS.get(status, "?"))
     raw_status_to_tag = config.get("status_to_tag")
     raw_assignee_to_tag = config.get("assignee_to_tag")
     status_to_tag: dict[str, Any] = raw_status_to_tag if isinstance(raw_status_to_tag, dict) else {}
@@ -2533,6 +2570,99 @@ def _expected_discord_projection(task: dict[str, Any], config: dict[str, Any]) -
     if assignee_tag:
         tags.append(str(assignee_tag))
     return {"name": f"{icon} [{status}] {title}", "tags": tags}
+
+
+def _discord_projection_url(config: dict[str, Any], *, forum_channel_id: str, thread_id: str) -> str:
+    guild_id = str(
+        config.get("guild_id")
+        or config.get("server_id")
+        or config.get("discord_guild_id")
+        or ""
+    ).strip()
+    if guild_id:
+        return f"https://discord.com/channels/{guild_id}/{thread_id}"
+    return f"discord:{forum_channel_id}:{thread_id}"
+
+
+def _format_discord_projection_starter(task: kb.Task) -> str:
+    body = (task.body or "").strip()
+    parts = [
+        f"Kanban task: `{task.id}`",
+        f"Assignee: `{task.assignee or '-'}`",
+        f"Status: `{task.status}`",
+    ]
+    if task.priority is not None:
+        parts.append(f"Priority: `{task.priority}`")
+    if body:
+        parts.extend(["", body])
+    return "\n".join(parts)
+
+
+async def _send_discord_projection_message(
+    *,
+    forum_channel_id: str,
+    message: str,
+    thread_name: str,
+    applied_tags: list[str],
+) -> dict[str, Any]:
+    from gateway.config import Platform, load_gateway_config
+    from tools.send_message_tool import _send_to_platform
+
+    gateway_config = load_gateway_config()
+    pconfig = gateway_config.platforms.get(Platform.DISCORD)
+    if not pconfig or not pconfig.enabled:
+        return {"error": "Discord platform is not configured/enabled"}
+    return await _send_to_platform(
+        Platform.DISCORD,
+        pconfig,
+        forum_channel_id,
+        message,
+        applied_tags=applied_tags,
+        thread_name=thread_name,
+    )
+
+
+def _project_created_task_to_discord(conn, task: kb.Task) -> dict[str, Any] | None:
+    config = _load_discord_projection_config()
+    if config.get("error"):
+        return {"error": str(config["error"])}
+    forum_channel_id = str(config.get("forum_channel_id") or "").strip()
+    if not forum_channel_id:
+        return None
+
+    expected = _expected_discord_projection(_task_to_dict(task), config)
+    try:
+        from model_tools import _run_async
+
+        result = _run_async(_send_discord_projection_message(
+            forum_channel_id=forum_channel_id,
+            message=_format_discord_projection_starter(task),
+            thread_name=str(expected["name"]),
+            applied_tags=list(expected["tags"]),
+        ))
+    except Exception as exc:
+        return {"error": f"projection_send_failed:{type(exc).__name__}: {exc}"}
+
+    if not isinstance(result, dict):
+        return {"error": "projection_send_failed: unexpected send result"}
+    if result.get("error"):
+        return {"error": str(result["error"])}
+    raw_response = result.get("raw_response") if isinstance(result.get("raw_response"), dict) else {}
+    thread_id = str(result.get("thread_id") or raw_response.get("thread_id") or "").strip()
+    if not thread_id:
+        return {"error": "projection_send_failed: Discord send returned no thread_id"}
+
+    kb.add_notify_sub(
+        conn,
+        task_id=task.id,
+        platform="discord",
+        chat_id=forum_channel_id,
+        thread_id=thread_id,
+        notifier_profile=_profile_author(),
+    )
+    url = _discord_projection_url(config, forum_channel_id=forum_channel_id, thread_id=thread_id)
+    kb.add_comment(conn, task.id, _profile_author(), f"Discord forum projection: {url}")
+    return {"thread_id": thread_id, "chat_id": forum_channel_id, "url": url}
 
 
 def _fetch_discord_thread_snapshot(thread_id: str) -> dict[str, Any] | None:
@@ -2576,6 +2706,7 @@ def _audit_discord_projection(conn) -> dict[str, Any]:
             "missing": 0,
             "mismatches": [],
             "missing_threads": [],
+            "missing_unprojected_tasks": [],
             "errors": [config["error"]],
         }
     rows = conn.execute(
@@ -2592,6 +2723,7 @@ def _audit_discord_projection(conn) -> dict[str, Any]:
     ).fetchall()
     mismatches: list[dict[str, Any]] = []
     missing_threads: list[dict[str, Any]] = []
+    missing_unprojected_tasks: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     for row in rows:
         expected = _expected_discord_projection(
@@ -2634,12 +2766,40 @@ def _audit_discord_projection(conn) -> dict[str, Any]:
                 "missing_tags": missing_tags,
                 "unexpected_tags": unexpected_tags,
             })
+    forum_channel_id = str(config.get("forum_channel_id") or "").strip()
+    if forum_channel_id:
+        unprojected_rows = conn.execute(
+            """
+            SELECT t.id, t.title, t.assignee, t.status
+              FROM tasks AS t
+             WHERE t.status != 'archived'
+               AND NOT EXISTS (
+                   SELECT 1 FROM kanban_notify_subs AS s
+                    WHERE s.task_id = t.id
+                      AND s.platform = 'discord'
+                      AND s.chat_id = ?
+                      AND COALESCE(s.thread_id, '') != ''
+               )
+             ORDER BY t.id
+            """,
+            (forum_channel_id,),
+        ).fetchall()
+        for row in unprojected_rows:
+            missing_unprojected_tasks.append({
+                "task_id": str(row["id"]),
+                "chat_id": forum_channel_id,
+                "expected": _expected_discord_projection(
+                    {"title": row["title"], "assignee": row["assignee"], "status": row["status"]},
+                    config,
+                ),
+            })
     return {
         "scanned": len(rows),
         "mismatched": len(mismatches),
         "missing": len(missing_threads),
         "mismatches": mismatches,
         "missing_threads": missing_threads,
+        "missing_unprojected_tasks": missing_unprojected_tasks,
         "errors": errors,
     }
 

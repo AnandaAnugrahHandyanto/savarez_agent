@@ -76,9 +76,12 @@ class ProfileGatewayProcess:
     path: Path
     pid: int
 
-
-def _get_service_pids() -> set:
+def _get_service_pids(all_profiles: bool = False) -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
+
+    By default this is scoped to the current Hermes profile's service.  Pass
+    ``all_profiles=True`` for global maintenance flows that intentionally need
+    to see every profile gateway service.
 
     Used to avoid killing freshly-restarted service processes when sweeping
     for stale manual gateway processes after a service restart.  Relies on the
@@ -89,6 +92,7 @@ def _get_service_pids() -> set:
 
     # --- systemd (Linux): user and system scopes ---
     if supports_systemd_services():
+        expected_service = f"{get_service_name()}.service"
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
                 result = subprocess.run(
@@ -109,6 +113,8 @@ def _get_service_pids() -> set:
                     if not parts or not parts[0].endswith(".service"):
                         continue
                     svc = parts[0]
+                    if not all_profiles and svc != expected_service:
+                        continue
                     try:
                         show = subprocess.run(
                             scope_args + ["show", svc, "--property=MainPID", "--value"],
@@ -577,7 +583,7 @@ def find_gateway_pids(
             _append_unique_pid(pids, get_running_pid(), _exclude)
         except Exception:
             pass
-    for pid in _get_service_pids():
+    for pid in _get_service_pids(all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)
     for pid in _scan_gateway_pids(_exclude, all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)

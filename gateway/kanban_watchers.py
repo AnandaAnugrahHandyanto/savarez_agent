@@ -11,6 +11,7 @@ behavior-neutral move that lifts ~1,000 LOC out of run.py.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sqlite3
@@ -25,6 +26,93 @@ logger = logging.getLogger("gateway.run")
 
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
+
+    def _kanban_discord_projection_metadata(self, task: Any, board: Optional[str]) -> Optional[dict[str, Any]]:
+        """Return expected Discord forum metadata for a Kanban task.
+
+        Discord forum cards are projections of the canonical Kanban task.
+        Terminal notifications are the last chance to mutate the thread before
+        ``done``/``archived`` tasks are unsubscribed, so the gateway keeps the
+        card title/tags in sync immediately before sending the terminal ping.
+        """
+        if not task:
+            return None
+        try:
+            from hermes_cli import kanban_db as _kb
+            board_name = board or _kb.get_current_board()
+            cfg_path = _kb.board_dir(board_name) / "discord-forum-tags.json"
+            config = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except Exception as exc:
+            logger.debug("kanban notifier: discord projection config unavailable: %s", exc)
+            return None
+
+        status = str(getattr(task, "status", "") or "")
+        assignee = str(getattr(task, "assignee", "") or "").strip()
+        title = str(getattr(task, "title", "") or "").strip()
+        icons = {
+            "triage": "◇",
+            "todo": "◻",
+            "ready": "▶",
+            "running": "●",
+            "scheduled": "⏱",
+            "blocked": "🛑",
+            "review": "◆",
+            "done": "✅",
+            "archived": "—",
+        }
+        raw_tag_defs = config.get("tags")
+        tag_defs = raw_tag_defs if isinstance(raw_tag_defs, dict) else {}
+        raw_status_tag_def = tag_defs.get(status)
+        status_tag_def = raw_status_tag_def if isinstance(raw_status_tag_def, dict) else {}
+        icon = str(status_tag_def.get("emoji") or "").strip() or icons.get(status, "?")
+        status_to_tag = config.get("status_to_tag") if isinstance(config.get("status_to_tag"), dict) else {}
+        assignee_to_tag = config.get("assignee_to_tag") if isinstance(config.get("assignee_to_tag"), dict) else {}
+        tags: list[str] = []
+        if status_to_tag.get(status):
+            tags.append(str(status_to_tag[status]))
+        assignee_tag = assignee_to_tag.get(assignee) or assignee_to_tag.get("default")
+        if assignee_tag:
+            tags.append(str(assignee_tag))
+        return {
+            "name": f"{icon} [{status}] {title}",
+            "applied_tags": tags,
+        }
+
+    async def _sync_kanban_discord_projection(
+        self,
+        adapter: Any,
+        sub: dict,
+        task: Any,
+        board: Optional[str],
+    ) -> bool:
+        """Best-effort Discord forum-card metadata sync for Kanban projections."""
+        thread_id = str(sub.get("thread_id") or "")
+        if not thread_id or not task:
+            return True
+        updater = getattr(adapter, "update_thread_metadata", None)
+        if updater is None:
+            logger.debug(
+                "kanban notifier: discord adapter cannot update thread metadata for %s",
+                sub.get("task_id"),
+            )
+            return True
+        metadata = self._kanban_discord_projection_metadata(task, board)
+        if not metadata:
+            return True
+        ok = await updater(
+            thread_id,
+            name=metadata["name"],
+            applied_tags=metadata["applied_tags"],
+        )
+        if ok is False:
+            return False
+        logger.debug(
+            "kanban notifier: synced Discord projection for %s thread %s",
+            sub.get("task_id"), thread_id,
+        )
+        return True
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
@@ -234,6 +322,23 @@ class GatewayKanbanWatchersMixin:
                             board_slug,
                         )
                         continue
+                    if plat.value == "discord" and sub.get("thread_id"):
+                        synced = await self._sync_kanban_discord_projection(
+                            adapter, sub, task, board_slug,
+                        )
+                        if synced is False:
+                            logger.warning(
+                                "kanban notifier: Discord projection sync failed for %s; rewinding claim",
+                                sub["task_id"],
+                            )
+                            await asyncio.to_thread(
+                                self._kanban_rewind,
+                                sub,
+                                d["cursor"],
+                                d.get("old_cursor", 0),
+                                board_slug,
+                            )
+                            continue
                     title = (task.title if task else sub["task_id"])[:120]
                     for ev in d["events"]:
                         kind = ev.kind

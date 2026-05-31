@@ -552,7 +552,7 @@ def test_gateway_install_can_decline_start_now_and_startup(monkeypatch):
 
 
 def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkeypatch):
-    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda all_profiles=False: set())
     monkeypatch.setattr(gateway, "is_windows", lambda: False)
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
@@ -599,6 +599,84 @@ def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch)
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
 
     assert gateway._scan_gateway_pids(set(), all_profiles=True) == [2468]
+
+
+def test_find_gateway_pids_excludes_other_profile_systemd_services_by_default(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "get_service_name", lambda: "hermes-gateway-hephaestus")
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr(gateway, "_scan_gateway_pids", lambda exclude_pids, all_profiles=False: [])
+
+    show_pids = {
+        "hermes-gateway.service": "101\n",
+        "hermes-gateway-athena.service": "102\n",
+        "hermes-gateway-daedalus.service": "103\n",
+    }
+    calls = []
+
+    def _is_systemctl(cmd):
+        return cmd[:2] == ["systemctl", "--user"] or cmd[:1] == ["systemctl"]
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if _is_systemctl(cmd):
+            if "list-units" in cmd:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=(
+                        "hermes-gateway.service loaded active running default\n"
+                        "hermes-gateway-athena.service loaded active running athena\n"
+                        "hermes-gateway-daedalus.service loaded active running daedalus\n"
+                    ),
+                    stderr="",
+                )
+            if "show" in cmd:
+                svc = cmd[cmd.index("show") + 1]
+                return SimpleNamespace(returncode=0, stdout=show_pids[svc], stderr="")
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway.find_gateway_pids() == []
+    assert not any("show" in cmd for cmd in calls)
+
+
+def test_find_gateway_pids_all_profiles_includes_other_profile_systemd_services(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "get_service_name", lambda: "hermes-gateway-hephaestus")
+    monkeypatch.setattr(gateway, "_scan_gateway_pids", lambda exclude_pids, all_profiles=False: [])
+
+    show_pids = {
+        "hermes-gateway.service": "101\n",
+        "hermes-gateway-athena.service": "102\n",
+        "hermes-gateway-daedalus.service": "103\n",
+    }
+
+    def _is_systemctl(cmd):
+        return cmd[:2] == ["systemctl", "--user"] or cmd[:1] == ["systemctl"]
+
+    def fake_run(cmd, **kwargs):
+        if _is_systemctl(cmd):
+            if "list-units" in cmd:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=(
+                        "hermes-gateway.service loaded active running default\n"
+                        "hermes-gateway-athena.service loaded active running athena\n"
+                        "hermes-gateway-daedalus.service loaded active running daedalus\n"
+                    ),
+                    stderr="",
+                )
+            if "show" in cmd:
+                svc = cmd[cmd.index("show") + 1]
+                return SimpleNamespace(returncode=0, stdout=show_pids[svc], stderr="")
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert set(gateway.find_gateway_pids(all_profiles=True)) == {101, 102, 103}
 
 
 # ---------------------------------------------------------------------------
