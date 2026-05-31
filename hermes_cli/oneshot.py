@@ -17,6 +17,7 @@ Model / provider selection mirrors `hermes chat`:
 
 Env var fallbacks (used when the corresponding arg is not passed):
     - HERMES_INFERENCE_MODEL
+    - HERMES_EPHEMERAL_SYSTEM_PROMPT
 """
 
 from __future__ import annotations
@@ -242,6 +243,20 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _resolve_ephemeral_system_prompt(cfg: dict) -> str:
+    """Return the configured personality/system prompt overlay for oneshot."""
+    env_prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
+    if env_prompt:
+        return env_prompt
+
+    agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else {}
+    if not isinstance(agent_cfg, dict):
+        return ""
+
+    prompt = agent_cfg.get("system_prompt", "")
+    return prompt if isinstance(prompt, str) else str(prompt or "")
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -331,6 +346,7 @@ def _run_agent(
     # Read the effective fallback chain from profile config so oneshot workers
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
+    ephemeral_system_prompt = _resolve_ephemeral_system_prompt(cfg)
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),
@@ -344,6 +360,7 @@ def _run_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        ephemeral_system_prompt=ephemeral_system_prompt or None,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction
