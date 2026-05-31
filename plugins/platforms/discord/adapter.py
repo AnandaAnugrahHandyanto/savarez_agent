@@ -786,7 +786,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                        if not self._message_mentions_self(message):
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
@@ -2223,6 +2223,38 @@ class DiscordAdapter(BasePlatformAdapter):
                 os.unlink(wav_path)
             except OSError:
                 pass
+
+    def _message_mentions_self(self, message) -> bool:
+        """Return True when a Discord message mentions this bot.
+
+        discord.py can miss ``message.mentions`` for bot-authored messages in
+        some gateway/message-content configurations, while ``raw_mentions`` and
+        the literal ``<@id>`` token are still present. Bot admission for
+        DISCORD_ALLOW_BOTS=mentions must therefore check all three sources.
+        """
+        client_user = getattr(self._client, "user", None)
+        self_id = str(getattr(client_user, "id", "")) if client_user else ""
+        if not self_id:
+            return False
+
+        mentioned_ids = {
+            str(getattr(member, "id", ""))
+            for member in getattr(message, "mentions", [])
+            if getattr(member, "id", None) is not None
+        }
+        if self_id in mentioned_ids:
+            return True
+
+        raw_mentions = {
+            str(user_id)
+            for user_id in getattr(message, "raw_mentions", [])
+            if user_id is not None
+        }
+        if self_id in raw_mentions:
+            return True
+
+        content = getattr(message, "content", "") or ""
+        return f"<@{self_id}>" in content or f"<@!{self_id}>" in content
 
     def _is_allowed_user(
         self,
