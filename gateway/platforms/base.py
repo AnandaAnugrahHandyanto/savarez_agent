@@ -2579,6 +2579,48 @@ class BasePlatformAdapter(ABC):
                 logger.warning("Skipping unsafe local file path: %s", _log_safe_path(raw))
         return safe_paths
 
+
+    @staticmethod
+    def _mask_protected_spans(content: str) -> str:
+        """Replace content inside fenced code blocks, inline code spans,
+        and blockquotes with spaces to prevent MEDIA: false positives.
+
+        Preserves character count so regex match offsets stay valid.
+        Skips masking backtick-quoted paths in MEDIA: tags (e.g.
+        ``MEDIA:`/path/to/file.png` ``) to avoid breaking path extraction.
+        """
+        chars = list(content)
+        n = len(chars)
+
+        # Build list of (start, end) spans to mask
+        spans: list = []
+
+        # Fenced code blocks: ```...```
+        for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
+            spans.append((m.start(), m.end()))
+
+        # Inline code: `...` but NOT backtick-quoted paths in MEDIA: tags
+        for m in re.finditer(r'`[^`\n]+`', content):
+            start = m.start()
+            # Check if this is a backtick-quoted path after MEDIA:
+            prefix = content[max(0, start - 20):start]
+            if re.search(r'MEDIA:\s*$', prefix):
+                continue  # This is a MEDIA path quote, not inline code
+            spans.append((start, m.end()))
+
+        # Blockquote lines: > at line start
+        for m in re.finditer(r'^>.*$', content, re.MULTILINE):
+            spans.append((m.start(), m.end()))
+
+        # Apply masking
+        for start, end in spans:
+            for i in range(start, end):
+                if chars[i] != '\n':
+                    chars[i] = ' '
+
+        return ''.join(chars)
+
+
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
@@ -2621,7 +2663,10 @@ class BasePlatformAdapter(ABC):
         # set is the shared MEDIA_DELIVERY_EXTS source of truth (built once into
         # MEDIA_TAG_CLEANUP_RE) so it can never drift from extract_local_files.
         media_pattern = MEDIA_TAG_CLEANUP_RE
-        for match in media_pattern.finditer(content):
+        # Mask content inside code blocks, inline code, and blockquotes
+        # to avoid false positives from example paths in prose.
+        masked = BasePlatformAdapter._mask_protected_spans(content)
+        for match in media_pattern.finditer(masked):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
@@ -2636,7 +2681,9 @@ class BasePlatformAdapter(ABC):
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
-            cleaned = media_pattern.sub('', cleaned)
+            # Use masked version for sub to avoid stripping from code blocks
+            cleaned_masked = BasePlatformAdapter._mask_protected_spans(cleaned)
+            cleaned = media_pattern.sub('', cleaned_masked)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
