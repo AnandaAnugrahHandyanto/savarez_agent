@@ -3144,9 +3144,12 @@ class HermesCLI:
             CLI_CONFIG["agent"].get("prefill_messages_file", "")
         )
         
-        # Reasoning config (OpenRouter reasoning effort level)
+        # Reasoning config (OpenRouter/Responses effort level).  The env var
+        # gives subprocess orchestrators (e.g. hermes update conflict resolver)
+        # a one-shot override without mutating the user's global config.
         self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
+            os.getenv("HERMES_REASONING_EFFORT", "")
+            or CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")

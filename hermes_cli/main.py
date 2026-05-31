@@ -7918,6 +7918,17 @@ def _sync_patched_main_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
         print("  ✗ Could not merge upstream/main into patched-main.")
         if merge.stderr.strip():
             print(f"    {merge.stderr.strip().splitlines()[0]}")
+        try:
+            from hermes_cli.update_conflict_resolver import run_patched_main_conflict_resolver
+
+            if run_patched_main_conflict_resolver(
+                git_cmd,
+                cwd,
+                merge_stderr=merge.stderr or "",
+            ):
+                return True
+        except Exception as exc:
+            print(f"    Auto-resolver failed before it could run cleanly: {exc}")
         print("    Resolve conflicts manually, then push origin patched-main.")
         sys.exit(1)
 
