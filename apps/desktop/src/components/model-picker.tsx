@@ -42,6 +42,12 @@ export function ModelPickerDialog({
   contentClassName
 }: ModelPickerDialogProps) {
   const [persistGlobal, setPersistGlobal] = useState(!sessionId)
+  // Own the search term so we can filter manually. cmdk's built-in
+  // shouldFilter reorders items by its fuzzy-match score (≈alphabetical with
+  // an empty query), which destroys the backend's curated order. We disable
+  // it and do a plain substring filter that preserves array order — matching
+  // the `hermes model` CLI picker, which shows the curated list verbatim.
+  const [search, setSearch] = useState('')
 
   const modelOptions = useQuery({
     queryKey: ['model-options', sessionId || 'global'],
@@ -88,8 +94,13 @@ export function ModelPickerDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <Command className="rounded-none bg-card">
-          <CommandInput autoFocus placeholder="Filter providers and models..." />
+        <Command className="rounded-none bg-card" shouldFilter={false}>
+          <CommandInput
+            autoFocus
+            onValueChange={setSearch}
+            placeholder="Filter providers and models..."
+            value={search}
+          />
           <CommandList className="max-h-96">
             {!loading && !error && <CommandEmpty>No models found.</CommandEmpty>}
             <ModelResults
@@ -99,6 +110,7 @@ export function ModelPickerDialog({
               loading={loading}
               onSelectModel={selectModel}
               providers={providers}
+              search={search}
             />
           </CommandList>
         </Command>
@@ -128,7 +140,8 @@ function ModelResults({
   providers,
   currentModel,
   currentProvider,
-  onSelectModel
+  onSelectModel,
+  search
 }: {
   loading: boolean
   error: string | null
@@ -136,6 +149,7 @@ function ModelResults({
   currentModel: string
   currentProvider: string
   onSelectModel: (provider: ModelOptionProvider, model: string) => void
+  search: string
 }) {
   if (loading) {
     return <LoadingResults />
@@ -155,10 +169,18 @@ function ModelResults({
     return <div className="px-4 py-6 text-sm text-muted-foreground">No authenticated providers.</div>
   }
 
+  const q = search.trim().toLowerCase()
+  const matches = (provider: ModelOptionProvider, model: string) =>
+    !q ||
+    model.toLowerCase().includes(q) ||
+    provider.name.toLowerCase().includes(q) ||
+    provider.slug.toLowerCase().includes(q)
+
   return (
     <>
       {providers.map(provider => {
-        const models = provider.models ?? []
+        // Preserve the backend's curated order — filter in place, no re-sort.
+        const models = (provider.models ?? []).filter(m => matches(provider, m))
 
         if (models.length === 0) {
           return null
@@ -195,7 +217,7 @@ function ModelResults({
                       onSelectModel(provider, model)
                     }
                   }}
-                  value={`${provider.name} ${provider.slug} ${model}`}
+                  value={`${provider.slug}:${model}`}
                 >
                   <span className="min-w-0 flex-1 truncate">{model}</span>
                   {locked && <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">Pro</span>}
