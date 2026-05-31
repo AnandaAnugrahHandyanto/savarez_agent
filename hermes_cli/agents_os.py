@@ -1539,6 +1539,14 @@ def _populate_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=dashboard)
 
+    p = sub.add_parser("tui", help="Open interactive Mission Control TUI")
+    p.add_argument("--json", action="store_true", help="Print TUI capability/status payload without starting curses")
+    p.add_argument("--script", help="Run deterministic key script and print final frame (test/automation helper)")
+    p.add_argument("--width", type=int, default=100, help=argparse.SUPPRESS)
+    p.add_argument("--height", type=int, default=30, help=argparse.SUPPRESS)
+    from hermes_cli.agents_os_tui import tui_cmd
+    p.set_defaults(func=tui_cmd)
+
     snapshot = sub.add_parser("snapshot", help="Manage local state snapshots")
     snapshot_sub = snapshot.add_subparsers(dest="snapshot_command")
     p = snapshot_sub.add_parser("create", help="Create snapshot")
