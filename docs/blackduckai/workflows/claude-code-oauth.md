@@ -36,6 +36,10 @@ claude setup-token
 Set Hermes to use Anthropic + Sonnet:
 
 ```bash
+# TOP local helper: sets model.provider/default and clears stale ANTHROPIC_* env entries.
+python C:/Users/black/AI_Project/scripts/setup/set-claude-code-oauth.py
+
+# Manual equivalent:
 hermes config set model.provider anthropic
 hermes config set model.default claude-sonnet-4-6
 ```
