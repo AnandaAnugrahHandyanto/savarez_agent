@@ -745,7 +745,7 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-from hermes_constants import get_hermes_home
+from hermes_constants import is_standard_profile, get_hermes_home
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -1758,6 +1758,7 @@ class GatewayRunner:
         # cannot grow unbounded over a long-running gateway lifetime.
         self._session_sources: "OrderedDict[str, SessionSource]" = OrderedDict()
         self._session_sources_max = 512
+        self._profile_override_cache = {}
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -2210,8 +2211,57 @@ class GatewayRunner:
     def exit_code(self) -> Optional[int]:
         return self._exit_code
 
+    def _profile_name_for_source(self, source: SessionSource) -> str:
+        """Determine the profile name for a message source based on config routes.
+
+        Returns "main" (default) when no routes are configured or no match found.
+        """
+        config = getattr(self, "config", None)
+        routes = getattr(config, "profile_routes", None)
+        if not routes:
+            return "main"
+        from gateway.profile_routing import match_profile_route
+        matched = match_profile_route(
+            routes,
+            platform=source.platform.value,
+            guild_id=getattr(source, "guild_id", None),
+            chat_id=source.chat_id,
+            thread_id=source.thread_id,
+            parent_chat_id=getattr(source, "parent_chat_id", None),
+        )
+        if matched:
+            return matched.profile
+        logger.info("No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
+                    source.platform.value, source.chat_id,
+                    getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None))
+        return "main"
+
+
+    def _enrich_source_with_profile(self, source, event=None) -> tuple:
+        """Resolve profile_name and apply it to source (and optionally event).
+
+        Returns (updated_source, profile_name).
+        """
+        profile_name = self._profile_name_for_source(source)
+        source = dataclasses.replace(source, profile_name=profile_name)
+        if event is not None:
+            try:
+                event.source = source
+            except Exception:
+                logger.warning(
+                    "Could not update event.source with profile_name=%s",
+                    profile_name,
+                )
+        return source, profile_name
+
     def _session_key_for_source(self, source: SessionSource) -> str:
         """Resolve the current session key for a source, honoring gateway config when available."""
+        config = getattr(self, "config", None)
+        # Read profile_name already set by _enrich_source_with_profile (or build_source)
+        profile_name = getattr(source, "profile_name", "main") or "main"
+
+        # All profiles go through SessionStore now -- it already reads profile_name
+        # from the source via getattr(source, "profile_name", "main") in _generate_session_key
         if hasattr(self, "session_store") and self.session_store is not None:
             try:
                 session_key = self.session_store._generate_session_key(source)
@@ -2219,12 +2269,63 @@ class GatewayRunner:
                     return session_key
             except Exception:
                 pass
-        config = getattr(self, "config", None)
+
         return build_session_key(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            profile_name=profile_name,
         )
+
+
+    def _load_profile_overrides(self, profile_name: str) -> dict:
+        """Load model, provider, and disabled_toolsets from a named profile.
+
+        Results are cached for 60 seconds to avoid repeated file I/O.
+        """
+        if is_standard_profile(profile_name):
+            return {}
+
+        cache = self._profile_override_cache
+        now = time.time()
+        cached = cache.get(profile_name)
+        if cached and (now - cached[0]) < 60:
+            return cached[1]
+
+        try:
+            from hermes_cli.profiles import get_profile_dir
+            profile_dir = get_profile_dir(profile_name)
+            if not profile_dir.is_dir():
+                return {}
+        except Exception:
+            return {}
+
+        overrides = {}
+        config_path = profile_dir / "config.yaml"
+        if config_path.exists():
+            try:
+                import yaml
+                with open(config_path, "r", encoding="utf-8") as cf:
+                    cfg = yaml.safe_load(cf) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    if model_cfg.get("default"):
+                        overrides["model"] = model_cfg["default"]
+                    if model_cfg.get("provider"):
+                        overrides["provider"] = model_cfg["provider"]
+                elif isinstance(model_cfg, str) and model_cfg:
+                    overrides["model"] = model_cfg
+                agent_cfg = cfg.get("agent", {})
+                if agent_cfg.get("disabled_toolsets"):
+                    overrides["disabled_toolsets"] = agent_cfg["disabled_toolsets"]
+            except Exception:
+                pass
+
+        cache[profile_name] = (now, overrides)
+        if overrides:
+            logger.info("Profile overrides for %s: model=%s provider=%s",
+                        profile_name, overrides.get("model"), overrides.get("provider"))
+        return overrides
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
@@ -3543,13 +3644,9 @@ class GatewayRunner:
                     )
                     continue
 
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    chat_id,
-                    thread_id,
-                    chat_type=getattr(source, "chat_type", None) if source is not None else None,
-                    adapter=adapter,
-                )
+                # Include thread_id if present so the message lands in the
+                # correct forum topic / thread.
+                metadata = {"thread_id": thread_id} if thread_id else None
 
                 result = await adapter.send(chat_id, msg, metadata=metadata)
                 if result is not None and getattr(result, "success", True) is False:
@@ -3595,12 +3692,7 @@ class GatewayRunner:
                 continue
 
             try:
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    home.chat_id,
-                    home.thread_id,
-                    adapter=adapter,
-                )
+                metadata = {"thread_id": home.thread_id} if home.thread_id else None
                 if metadata:
                     result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
                 else:
@@ -8423,6 +8515,9 @@ class GatewayRunner:
             except Exception:
                 pass
 
+        # Set profile_name on source for correct session key generation
+        source, profile_name = self._enrich_source_with_profile(source, event)
+        
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         self._cache_session_source(session_key, source)
@@ -10133,45 +10228,6 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
-    def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
-        """Find running-agent keys for OTHER participants in the same thread.
-
-        Only applies when the message originates in a thread.  In per-user
-        thread mode (``thread_sessions_per_user=True``) each participant gets
-        an isolated session key of the form
-        ``agent:main:{platform}:{chat_type}:{chat_id}:{thread_id}:{user_id}``,
-        so a run started by another user is invisible to the caller's own
-        ``/stop``.  This returns the keys of any *actually running* agents
-        (not the pending sentinel, not the caller's own key) whose key shares
-        the caller's ``{chat_id}:{thread_id}`` prefix.
-
-        Returns an empty list when the source is not in a thread, or when no
-        sibling runs exist — callers must still gate on authorization.
-        """
-        thread_id = getattr(source, "thread_id", None)
-        chat_id = getattr(source, "chat_id", None)
-        if not thread_id or not chat_id:
-            return []
-        platform = source.platform.value
-        chat_type = getattr(source, "chat_type", None) or ""
-        # Prefix that every per-user key in this thread shares, up to and
-        # including the thread_id segment.  Matching either the exact
-        # shared-thread key or any key with a further (user_id) segment
-        # (prefix + ":") avoids cross-matching an unrelated thread whose id
-        # merely starts with this one.
-        prefix = ":".join(
-            ["agent:main", platform, chat_type, str(chat_id), str(thread_id)]
-        )
-        matches = []
-        for key, agent in list(self._running_agents.items()):
-            if key == own_key:
-                continue
-            if agent is _AGENT_PENDING_SENTINEL or not agent:
-                continue
-            if key == prefix or key.startswith(prefix + ":"):
-                matches.append(key)
-        return matches
-
     async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /stop command - interrupt a running agent.
 
@@ -10184,6 +10240,9 @@ class GatewayRunner:
         The session is preserved so the user can continue the conversation.
         """
         source = event.source
+        # Set profile_name on source for correct session key generation
+        source, profile_name = self._enrich_source_with_profile(source, event)
+        
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
 
@@ -10208,31 +10267,8 @@ class GatewayRunner:
                 invalidation_reason="stop_command_handler",
             )
             return EphemeralReply(t("gateway.stop.stopped"))
-
-        # No run under the caller's own session key.  In a per-user thread
-        # (thread_sessions_per_user=True) each participant is isolated even
-        # inside one shared thread, so a run another user started lives under
-        # a different key.  Authorized users should still be able to /stop it
-        # (#bernard-thread-stop).  Fall back to interrupting any running
-        # agent(s) that share this thread, gated on authorization.
-        sibling_keys = self._sibling_thread_run_keys(source, session_key)
-        if sibling_keys and self._is_user_authorized(source):
-            for sibling_key in sibling_keys:
-                await self._interrupt_and_clear_session(
-                    sibling_key,
-                    source,
-                    interrupt_reason=_INTERRUPT_REASON_STOP,
-                    invalidation_reason="stop_command_thread_sibling",
-                )
-            logger.info(
-                "STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
-                session_key,
-                len(sibling_keys),
-                ", ".join(sibling_keys),
-            )
-            return EphemeralReply(t("gateway.stop.stopped"))
-
-        return t("gateway.stop.no_active")
+        else:
+            return t("gateway.stop.no_active")
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — surface and
@@ -10361,7 +10397,6 @@ class GatewayRunner:
             notify_data = {
                 "platform": event.source.platform.value if event.source.platform else None,
                 "chat_id": event.source.chat_id,
-                "chat_type": event.source.chat_type,
             }
             if event.source.thread_id:
                 notify_data["thread_id"] = event.source.thread_id
@@ -12135,11 +12170,24 @@ class GatewayRunner:
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
+            # Resolve profile name for background task (same routing as main flow)
+            profile_name = self._profile_name_for_source(source)
+            _profile_overrides = self._load_profile_overrides(profile_name) if not is_standard_profile(profile_name) else {}
+            if _profile_overrides.get("disabled_toolsets"):
+                disabled_toolsets = _profile_overrides["disabled_toolsets"]
+
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+
+            # Apply profile overrides for model and provider (before turn_route resolution)
+            if _profile_overrides.get("model"):
+                model = _profile_overrides["model"]
+            if _profile_overrides.get("provider"):
+                runtime_kwargs = dict(runtime_kwargs)
+                runtime_kwargs["provider"] = _profile_overrides["provider"]
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             # Enrich the prompt with image descriptions so the background
@@ -12188,6 +12236,8 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    profile_name=profile_name,
+                    load_soul_identity=True,
                 )
                 try:
                     return agent.run_conversation(
@@ -14207,34 +14257,13 @@ class GatewayRunner:
         reply_to_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
-        return self._thread_metadata_for_target(
-            getattr(source, "platform", None),
-            getattr(source, "chat_id", None),
-            getattr(source, "thread_id", None),
-            chat_type=getattr(source, "chat_type", None),
-            reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
-        )
-
-    def _thread_metadata_for_target(
-        self,
-        platform: Optional[Platform],
-        chat_id: Optional[str],
-        thread_id: Optional[str],
-        *,
-        chat_type: Optional[str] = None,
-        reply_to_message_id: Optional[str] = None,
-        adapter: Optional[Any] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Build thread metadata for synthetic sends that only have routing state."""
+        thread_id = getattr(source, "thread_id", None)
         if thread_id is None:
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
-        if self._is_telegram_dm_topic_target(
-            platform,
-            chat_id,
-            thread_id,
-            chat_type=chat_type,
-            adapter=adapter,
+        if (
+            getattr(source, "platform", None) == Platform.TELEGRAM
+            and getattr(source, "chat_type", None) == "dm"
         ):
             metadata["telegram_dm_topic_reply_fallback"] = True
             # Telegram DM topic lanes need direct_messages_topic_id in metadata
@@ -14243,41 +14272,10 @@ class GatewayRunner:
             tid = str(thread_id)
             if tid and tid not in {"", "1"}:
                 metadata["direct_messages_topic_id"] = tid
-            if reply_to_message_id is not None:
-                metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
+            anchor = reply_to_message_id or getattr(source, "message_id", None)
+            if anchor is not None:
+                metadata["telegram_reply_to_message_id"] = str(anchor)
         return metadata
-
-    @staticmethod
-    def _is_telegram_dm_topic_target(
-        platform: Optional[Platform],
-        chat_id: Optional[str],
-        thread_id: Optional[str],
-        *,
-        chat_type: Optional[str] = None,
-        adapter: Optional[Any] = None,
-    ) -> bool:
-        """Return True when a target is a Telegram private DM topic lane."""
-        if platform != Platform.TELEGRAM or thread_id is None:
-            return False
-        if chat_type == "dm":
-            return True
-        # Inspect operator-declared DM topics via the adapter's lookup. Resolve
-        # the method on the CLASS, not the instance: getattr() on a MagicMock
-        # auto-creates a callable child for any attribute, so an instance-level
-        # lookup would report a DM topic for every test double. Only a
-        # dict-shaped return counts as an operator-declared topic — a bare
-        # MagicMock or other sentinel must not. Mirrors the guard in
-        # _rename_telegram_topic_for_session_title.
-        if adapter is not None and chat_id:
-            get_dm_topic_info = getattr(type(adapter), "_get_dm_topic_info", None)
-            if callable(get_dm_topic_info):
-                try:
-                    topic_info = get_dm_topic_info(adapter, str(chat_id), str(thread_id))
-                except Exception:
-                    logger.debug("Failed to inspect Telegram DM topic metadata", exc_info=True)
-                else:
-                    return isinstance(topic_info, dict)
-        return False
 
     @staticmethod
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:
@@ -14487,7 +14485,6 @@ class GatewayRunner:
         pending = {
             "platform": event.source.platform.value,
             "chat_id": event.source.chat_id,
-            "chat_type": event.source.chat_type,
             "user_id": event.source.user_id,
             "session_key": session_key,
             "timestamp": datetime.now().isoformat(),
@@ -14638,19 +14635,12 @@ class GatewayRunner:
                     pending = json.loads(path.read_text())
                     platform_str = pending.get("platform")
                     chat_id = pending.get("chat_id")
-                    chat_type = pending.get("chat_type")
                     session_key = pending.get("session_key")
                     thread_id = pending.get("thread_id")
+                    metadata = {"thread_id": thread_id} if thread_id else None
                     if platform_str and chat_id:
                         platform = Platform(platform_str)
                         adapter = self.adapters.get(platform)
-                        metadata = self._thread_metadata_for_target(
-                            platform,
-                            chat_id,
-                            thread_id,
-                            chat_type=chat_type,
-                            adapter=adapter,
-                        )
                         # Fallback session key if not stored (old pending files)
                         if not session_key:
                             session_key = f"{platform_str}:{chat_id}"
@@ -14854,7 +14844,6 @@ class GatewayRunner:
             pending = json.loads(claimed_path.read_text())
             platform_str = pending.get("platform")
             chat_id = pending.get("chat_id")
-            chat_type = pending.get("chat_type")
             thread_id = pending.get("thread_id")
 
             if not exit_code_path.exists():
@@ -14877,13 +14866,7 @@ class GatewayRunner:
             adapter = self.adapters.get(platform)
 
             if adapter and chat_id:
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    chat_id,
-                    thread_id,
-                    chat_type=chat_type,
-                    adapter=adapter,
-                )
+                metadata = {"thread_id": thread_id} if thread_id else None
                 # Strip ANSI escape codes for clean display
                 output = re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
                 if output:
@@ -14925,7 +14908,6 @@ class GatewayRunner:
             data = json.loads(notify_path.read_text())
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
-            chat_type = data.get("chat_type")
             thread_id = data.get("thread_id")
 
             if not platform_str or not chat_id:
@@ -14948,13 +14930,7 @@ class GatewayRunner:
                 )
                 return None
 
-            metadata = self._thread_metadata_for_target(
-                platform,
-                chat_id,
-                thread_id,
-                chat_type=chat_type,
-                adapter=adapter,
-            )
+            metadata = {"thread_id": thread_id} if thread_id else None
             result = await adapter.send(
                 str(chat_id),
                 "♻ Gateway restarted successfully. Your session continues.",
@@ -15018,12 +14994,7 @@ class GatewayRunner:
                 continue
 
             try:
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    home.chat_id,
-                    home.thread_id,
-                    adapter=adapter,
-                )
+                metadata = {"thread_id": home.thread_id} if home.thread_id else None
                 if metadata:
                     result = await adapter.send(str(home.chat_id), message, metadata=metadata)
                 else:
@@ -16443,6 +16414,12 @@ class GatewayRunner:
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
+        # Profile routing: resolve profile name and apply overrides
+        profile_name = self._profile_name_for_source(source)
+        _profile_overrides = self._load_profile_overrides(profile_name) if not is_standard_profile(profile_name) else {}
+        if _profile_overrides.get("disabled_toolsets"):
+            disabled_toolsets = _profile_overrides["disabled_toolsets"]
+
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
             display_config = {}
@@ -17132,6 +17109,13 @@ class GatewayRunner:
                     "tools": [],
                 }
 
+            # Apply profile overrides for model and provider
+            if _profile_overrides.get("model"):
+                model = _profile_overrides["model"]
+            if _profile_overrides.get("provider"):
+                runtime_kwargs = dict(runtime_kwargs)
+                runtime_kwargs["provider"] = _profile_overrides["provider"]
+
             pr = self._provider_routing
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source,
@@ -17308,6 +17292,8 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    profile_name=profile_name,
+                    load_soul_identity=True,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
