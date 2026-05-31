@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-
 class TestResolvePath:
     """Verify _resolve_path respects TERMINAL_CWD for worktree isolation."""
 
@@ -25,6 +24,33 @@ class TestResolvePath:
         absolute = (tmp_path / "already-absolute.txt").resolve()
         result = _resolve_path(str(absolute))
         assert result == absolute
+
+    def test_windows_msys_absolute_path_normalizes_to_drive_path(self, monkeypatch):
+        """Git Bash /c/... absolute paths must normalize to Windows drive paths."""
+        monkeypatch.setattr(os, "name", "nt", raising=False)
+        from tools.file_tools import _msys_path_to_windows
+
+        result = _msys_path_to_windows("/c/Users/alice/project/file.txt")
+
+        assert result == r"C:\Users\alice\project\file.txt"
+
+    def test_windows_msys_absolute_path_supports_other_drives(self, monkeypatch):
+        """MSYS drive prefixes are not limited to C:."""
+        monkeypatch.setattr(os, "name", "nt", raising=False)
+        from tools.file_tools import _msys_path_to_windows
+
+        result = _msys_path_to_windows("/d/hermes jiyi/2026-04-29.md")
+
+        assert result == r"D:\hermes jiyi\2026-04-29.md"
+
+    def test_windows_wsl_absolute_path_normalizes_to_drive_path(self, monkeypatch):
+        """WSL /mnt/c/... absolute paths must normalize to Windows drive paths."""
+        monkeypatch.setattr(os, "name", "nt", raising=False)
+        from tools.file_tools import _msys_path_to_windows
+
+        result = _msys_path_to_windows("/mnt/c/Users/alice/project/file.txt")
+
+        assert result == r"C:\Users\alice\project\file.txt"
 
     def test_falls_back_to_cwd_without_terminal_cwd(self, monkeypatch):
         """Without TERMINAL_CWD, falls back to os.getcwd()."""

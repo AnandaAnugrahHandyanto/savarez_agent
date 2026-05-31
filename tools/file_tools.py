@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -85,6 +86,27 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
     return _resolve_path_for_task(filepath, task_id)
 
 
+def _msys_path_to_windows(filepath: str) -> str:
+    """Convert Git Bash/MSYS absolute paths like /c/Users/x on Windows."""
+    if os.name != "nt" or not filepath:
+        return filepath
+    match = re.match(r"^/mnt/([a-zA-Z])(?:/(.*))?$", filepath)
+    if match:
+        drive = match.group(1).upper()
+        tail = (match.group(2) or "").replace("/", "\\")
+        if tail:
+            return f"{drive}:\\{tail}"
+        return f"{drive}:\\"
+    match = re.match(r"^/([a-zA-Z])(?:/(.*))?$", filepath)
+    if not match:
+        return filepath
+    drive = match.group(1).upper()
+    tail = (match.group(2) or "").replace("/", "\\")
+    if tail:
+        return f"{drive}:\\{tail}"
+    return f"{drive}:\\"
+
+
 def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     """Return the task's live terminal cwd for bookkeeping when available."""
     try:
@@ -153,7 +175,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
-    p = Path(filepath).expanduser()
+    p = Path(_msys_path_to_windows(filepath)).expanduser()
     if p.is_absolute():
         return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()

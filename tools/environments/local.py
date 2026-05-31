@@ -30,6 +30,11 @@ def _msys_to_windows_path(cwd: str) -> str:
     """
     if not _IS_WINDOWS or not cwd:
         return cwd
+    m = re.match(r'^/mnt/([a-zA-Z])(/.*)?$', cwd)
+    if m:
+        drive = m.group(1).upper()
+        tail = (m.group(2) or "").replace('/', '\\')
+        return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
     # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
     m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
     if not m:
@@ -37,6 +42,21 @@ def _msys_to_windows_path(cwd: str) -> str:
     drive = m.group(1).upper()
     tail = (m.group(2) or "").replace('/', '\\')
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
+
+
+def _windows_to_bash_path(path: str, path_style: str = "msys") -> str:
+    """Translate a native Windows drive path to the active bash path syntax."""
+    if not _IS_WINDOWS or not path:
+        return path
+    m = re.match(r"^([a-zA-Z]):[\\/](.*)$", path)
+    if not m:
+        return path
+    drive = m.group(1).lower()
+    tail = m.group(2).replace("\\", "/")
+    prefix = f"/mnt/{drive}" if path_style == "wsl" else f"/{drive}"
+    if tail:
+        return f"{prefix}/{tail}"
+    return f"{prefix}/"
 
 
 def _resolve_safe_cwd(cwd: str) -> str:
@@ -288,7 +308,30 @@ def _find_bash() -> str:
     )
 
 
-# Backward compat — process_registry.py imports this name
+def _windows_bash_path_style_from_path(bash_path: str) -> str:
+    """Return the Windows drive-prefix style expected by a bash executable."""
+    if not _IS_WINDOWS or not bash_path:
+        return "msys"
+    normalized = os.path.normcase(os.path.normpath(bash_path))
+    if (
+        normalized.endswith(r"\windows\system32\bash.exe")
+        or normalized.endswith(r"\microsoft\windowsapps\bash.exe")
+    ):
+        return "wsl"
+    return "msys"
+
+
+def _detect_windows_bash_path_style() -> str:
+    """Detect whether Windows bash expects Git Bash or WSL drive prefixes."""
+    if not _IS_WINDOWS:
+        return "msys"
+    try:
+        return _windows_bash_path_style_from_path(_find_bash())
+    except Exception:
+        return "msys"
+
+
+# Backward compat: process_registry.py imports this name.
 _find_shell = _find_bash
 
 
@@ -445,6 +488,8 @@ class LocalEnvironment(BaseEnvironment):
         if cwd:
             cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        self.uses_msys_paths = _IS_WINDOWS
+        self.windows_bash_path_style = _detect_windows_bash_path_style()
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -494,6 +539,16 @@ class LocalEnvironment(BaseEnvironment):
             return candidate.rstrip("/") or "/"
 
         return "/tmp"
+
+    def _quote_cwd_for_cd(self, cwd: str) -> str:
+        if _IS_WINDOWS:
+            cwd = _windows_to_bash_path(cwd, self.windows_bash_path_style)
+        return super()._quote_cwd_for_cd(cwd)
+
+    def _quote_path_for_shell(self, path: str) -> str:
+        if _IS_WINDOWS:
+            path = _windows_to_bash_path(path, self.windows_bash_path_style)
+        return super()._quote_path_for_shell(path)
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

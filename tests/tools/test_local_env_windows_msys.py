@@ -46,6 +46,10 @@ class TestMsysToWindowsPath:
         assert _msys_to_windows_path("/c/Users/NVIDIA") == r"C:\Users\NVIDIA"
         assert _msys_to_windows_path("/d/Projects/foo bar") == r"D:\Projects\foo bar"
 
+    def test_translates_wsl_mount_drive_path(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _msys_to_windows_path("/mnt/c/Users/NVIDIA") == r"C:\Users\NVIDIA"
+
     def test_translates_bare_drive_root(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         # Bare "/c" alone should resolve to the drive root.
@@ -68,6 +72,52 @@ class TestMsysToWindowsPath:
     def test_empty_string(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         assert _msys_to_windows_path("") == ""
+
+
+class TestQuoteCwdForWindowsBash:
+    def test_windows_cwd_is_quoted_as_git_bash_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        with patch.object(
+            LocalEnvironment, "init_session", autospec=True, return_value=None
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+
+        env.windows_bash_path_style = "msys"
+
+        assert env._quote_cwd_for_cd(r"C:\Users\NVIDIA") == "/c/Users/NVIDIA"
+
+    def test_windows_cwd_is_quoted_as_wsl_bash_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        with patch.object(
+            LocalEnvironment, "init_session", autospec=True, return_value=None
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+
+        env.windows_bash_path_style = "wsl"
+
+        assert env._quote_cwd_for_cd(r"C:\Users\NVIDIA") == "/mnt/c/Users/NVIDIA"
+
+    def test_windows_session_files_are_quoted_as_wsl_bash_paths(
+        self, monkeypatch, tmp_path,
+    ):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        with patch.object(
+            LocalEnvironment, "init_session", autospec=True, return_value=None
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+
+        env.windows_bash_path_style = "wsl"
+        env._snapshot_path = r"C:/Users/NVIDIA/.hermes/cache/terminal/snap.sh"
+        env._cwd_file = r"C:/Users/NVIDIA/.hermes/cache/terminal/cwd.txt"
+        env._snapshot_ready = True
+
+        script = env._wrap_command("pwd", r"C:\Users\NVIDIA")
+
+        assert "source /mnt/c/Users/NVIDIA/.hermes/cache/terminal/snap.sh" in script
+        assert "pwd -P > /mnt/c/Users/NVIDIA/.hermes/cache/terminal/cwd.txt" in script
 
 
 # ---------------------------------------------------------------------------
