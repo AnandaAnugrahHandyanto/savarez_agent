@@ -159,19 +159,42 @@ memory add: "Skill <name> 已修补: <改了什么>"
 
 论文 §3.3: replay buffer 防止遗忘。我的 replay buffer = 纠错记录。
 
-**定期重放** (在以下时机检查)：
-1. 开始一个与过去纠错相关的任务时
-2. 用户说"老规矩"时
-3. 加载一个 skill 时，检查该 skill 的历史纠错
+### 具体工作示例
 
-**重放方式**：
+**场景**：用户让我配置 Bob API provider，我之前犯过"直接撤销用户配置"的错误。
+
 ```bash
-# 检查某 skill 的历史纠错
-session_search("纠错 <skill名>", limit=3)
+# 1. 加载 BobAPI skill 时，主动检查历史纠错
+skill_view(name='hermes-bobapi-config')
+# → 触发：检查该 skill 的历史教训
 
-# 检查某类任务的历史教训
-memory-search("<任务类型> 踩坑")
+# 2. 搜索该 skill 的纠错记录
+session_search("hermes-bobapi-config 纠错", limit=3)
+# → 返回：用户说"你又直接改回去了，我切 provider 是有原因的"
+
+# 3. 提取纠错模式
+correction_pattern:
+  trigger: "检测到配置被用户修改后"
+  wrong_behavior: "直接撤销用户的修改"
+  correct_behavior: "先诊断为什么用户改了，再决定"
+  verifier: "操作前先说明推理链路"
+
+# 4. 应用到当前任务
+# → 这次我不会直接改回去，而是先问："我注意到 provider 被改成了 X，
+#    是你有意改的吗？还是需要我帮你检查？"
 ```
+
+**关键区别**：
+- **没有 replay**：每次遇到类似场景都可能重复犯错
+- **有 replay**：加载 skill 时自动回忆纠错，行为自动修正
+
+### Replay 触发时机
+
+| 时机 | 动作 | 示例 |
+|------|------|------|
+| 加载某 skill 时 | memory-search "纠错 <skill名>" | 加载 bobapi-config → 检查历史纠错 |
+| 用户说"老规矩" | memory-search "老规矩 流程" | 召回标准 5 步运维流程 |
+| 开始相关任务 | 主动检查类似场景教训 | 配置新 provider → 检查旧 provider 纠错 |
 
 ## 跨 Skill 知识传播
 
@@ -194,6 +217,34 @@ skills_list()  # 扫描 related_skills
 # 修补目标 skill
 skill_manage(action='patch', name='skill-b', ...)
 ```
+
+### 具体示例：跨 Skill 传播
+
+**场景**：修补 `hermes-bobapi-config` 时发现"不要擅自撤销用户配置"的 pitfall。
+
+```bash
+# 1. 修补源 skill
+skill_manage(action='patch', name='hermes-bobapi-config', 
+  old_string="...",
+  new_string="## Pitfall: 不要擅自撤销用户配置\n...")
+
+# 2. 检查相关 skills
+skills_list()  
+# → 发现 nginx-multi-domain-proxy, xray-proxy-server 也有配置管理
+
+# 3. 传播到相关 skills
+skill_manage(action='patch', name='nginx-multi-domain-proxy',
+  old_string="...",
+  new_string="## Pitfall: 不要擅自撤销用户配置\n...")
+```
+
+> **🚧 Future Work**: 目前跨 skill 传播是手动的。论文中的 TIES-Merging/DARE 
+> 方法可以自动化合并多个 skill 的 pitfall 列表，但需要：
+> 1. 结构化 pitfall 格式（当前是自然语言）
+> 2. 自动检测"相同 pitfall"的语义匹配
+> 3. 合并冲突解决（当两个 skill 对同一 pitfall 有不同表述）
+> 
+> 这是下一阶段的改进方向。
 
 ## 反模式
 
