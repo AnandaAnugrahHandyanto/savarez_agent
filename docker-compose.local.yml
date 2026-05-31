@@ -1,0 +1,14 @@
+services:
+  hermes-agent-local:
+    image: hermes-agent-local
+    container_name: hermes-agent-local
+    restart: unless-stopped
+    ports:
+      - "4861:4861"
+      - "8001:8001"
+    volumes:
+      - D:/hermes-github/hermes-agent/data:/opt/data
+    environment:
+      - OPENROUTER_API_KEY
+      - COPILOT_GITHUB_TOKEN
+    command: gateway run
