@@ -663,6 +663,20 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 await self._handle_slash_command(command)
 
+            # Catch-all fallback for any slash command not in the registry
+            # (e.g. skill-based slashes like /fix-feedbug that are declared in
+            # the Slack manifest but not registered as gateway commands).
+            # Must be registered AFTER the specific pattern handler so Bolt
+            # tries the specific match first.
+            @self._app.command(_re.compile(r"^/.*"))
+            async def handle_any_slash_command(ack, command):
+                slash = (command.get("command") or "").lstrip("/")
+                await ack(
+                    response_type="ephemeral",
+                    text=f"Running `/{slash}`…",
+                )
+                await self._handle_slash_command(command)
+
             # Register Block Kit action handlers for approval buttons
             for _action_id in (
                 "hermes_approve_once",
@@ -2806,10 +2820,51 @@ class SlackAdapter(BasePlatformAdapter):
         # keep group semantics so different users do not collide into one
         # session key.
         is_dm = str(channel_id).startswith("D")
+
+        # Thread-anchor slash workflows in channels.
+        #
+        # Slack slash commands are submitted from the channel surface, so they
+        # don't naturally bind to a visible thread session on their own.  For
+        # non-DM slash commands we post a single short top-level starter
+        # message, capture its ts, and pass it as thread_id so every
+        # subsequent send (progress, final reply, clarify, transcript artifact)
+        # lands in-thread instead of flooding the channel timeline.
+        #
+        # If the slash was already invoked inside a thread (thread_ts present
+        # on the command payload) we reuse that existing thread instead.
+        thread_id: Optional[str] = None
+        if not is_dm and text.startswith("/"):
+            existing_thread = command.get("thread_ts") or command.get("message_ts")
+            if existing_thread:
+                thread_id = str(existing_thread)
+            else:
+                slash_display = f"/{slash_name}" if slash_name not in {"hermes", ""} else "/hermes"
+                starter_text = f"Started `{slash_display}` — continuing in thread."
+                try:
+                    starter = await self._get_client(channel_id).chat_postMessage(
+                        channel=channel_id,
+                        text=starter_text,
+                        mrkdwn=True,
+                    )
+                    starter_ts = starter.get("ts") if starter else None
+                    if starter_ts:
+                        thread_id = str(starter_ts)
+                        self._bot_message_ts.add(thread_id)
+                        logger.info(
+                            "[Slack] Slash /%s anchored to thread %s in %s",
+                            slash_name, thread_id, channel_id,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "[Slack] Failed to create slash starter thread in %s: %s",
+                        channel_id, exc,
+                    )
+
         source = self.build_source(
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
+            thread_id=thread_id,
         )
 
         event = MessageEvent(
@@ -2819,14 +2874,12 @@ class SlackAdapter(BasePlatformAdapter):
             raw_message=command,
         )
 
-        # Stash the Slack response_url so the first reply for this
-        # channel+user can be routed ephemerally (replaces the initial
-        # "Running /cmd…" ack shown by handle_hermes_command).
-        # Only stash for COMMAND events (text starts with "/") — free-form
-        # questions via "/hermes <question>" must produce public replies so
-        # the whole channel can see the agent's answer.
+        # Stash the Slack response_url only for DM slash commands where
+        # ephemeral reply replacement is desirable.  For channel slash
+        # workflows we run inside a thread and keep all output in-thread,
+        # so the response_url ephemeral path is not needed.
         response_url = command.get("response_url", "")
-        if response_url and user_id and channel_id and text.startswith("/"):
+        if response_url and user_id and channel_id and text.startswith("/") and is_dm:
             self._slash_command_contexts[(channel_id, user_id)] = {
                 "response_url": response_url,
                 "ts": time.monotonic(),

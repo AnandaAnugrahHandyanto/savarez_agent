@@ -13665,6 +13665,7 @@ class GatewayRunner:
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    env={**os.environ, "HERMES_HOME": str(_hermes_home)},
                     **windows_detach_popen_kwargs(),
                 )
             else:
@@ -13685,6 +13686,7 @@ class GatewayRunner:
                         [setsid_bin, "bash", "-c", update_cmd],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        env={**os.environ, "HERMES_HOME": str(_hermes_home)},
                         start_new_session=True,
                     )
                 else:
@@ -13693,6 +13695,7 @@ class GatewayRunner:
                         ["bash", "-c", update_cmd],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        env={**os.environ, "HERMES_HOME": str(_hermes_home)},
                         start_new_session=True,
                     )
         except Exception as e:

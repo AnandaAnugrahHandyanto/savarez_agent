@@ -876,6 +876,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         argv = [sys.executable, str(path)]
 
     run_env = os.environ.copy()
+    # Propagate the scheduler's resolved HERMES_HOME into the child env so
+    # any subprocesses (scripts, tool wrappers) write into the correct
+    # profile directory instead of the default ~/.hermes. Defensive: keep
+    # existing env values intact while overriding HERMES_HOME explicitly.
     run_env["HERMES_HOME"] = str(_get_hermes_home())
     try:
         from hermes_constants import get_subprocess_home

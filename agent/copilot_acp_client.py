@@ -106,6 +106,20 @@ def _resolve_home_dir() -> str:
 def _build_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
     env["HOME"] = _resolve_home_dir()
+    # Ensure subprocesses spawned from this adapter inherit the active
+    # profile's HERMES_HOME when the gateway is running under a profile.
+    # This mirrors the same defensive env propagation the gateway uses when
+    # it spawns detached update processes and avoids falling back to the
+    # global default ~/.hermes root. See issue #18594.
+    try:
+        from hermes_constants import get_hermes_home
+
+        hermes_home = get_hermes_home()
+        if hermes_home:
+            env["HERMES_HOME"] = str(hermes_home)
+    except Exception:
+        # Best-effort only — the caller already has a usable HOME value.
+        pass
     return env
 
 
