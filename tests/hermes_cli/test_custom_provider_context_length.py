@@ -167,16 +167,22 @@ class TestGetCustomProviderContextLength:
             == 99_999
         )
 
-    def test_slug_collision_first_dict_key_wins(self):
-        """Two config keys whose bare slugs collide: 'acme/m' and 'bigco/m'.
+    def test_slug_fallback_and_exact_match_precedence_with_prefixed_keys(self):
+        """Slug fallback for a lone bare key; exact match wins over slug.
 
-        When runtime is 'acme/m' and only bare-slug 'm' is in the config,
-        the slug fallback is 'm'. When two *different* prefixed keys share
-        the same slug and neither matches exactly, dict insertion order
-        governs which slug entry wins — and that is acceptable because
-        the user's config is self-contradictory (two publishers, same slug,
-        same endpoint — ambiguous by definition).  The function does not
-        detect or warn about this; it simply returns the first match.
+        Part 1: runtime 'acme/m' with only bare-slug 'm' configured resolves
+        via the slug fallback.  Part 2: when two prefixed keys ('acme/m',
+        'bigco/m') exist, each prefixed runtime id hits its own exact key and
+        the slug path is never taken — so the result is deterministic and does
+        NOT depend on dict insertion order.
+
+        Note on a genuine collision (two *different* prefixed keys, runtime id
+        matches neither exactly, both share a bare slug): the function returns
+        the first matching entry in dict-iteration order.  That case is
+        intentionally not asserted here — it is order-dependent by nature and
+        only arises from a self-contradictory config (two publishers, same
+        slug, same endpoint).  Asserting on it would bake a brittle
+        ordering expectation into the suite.
         """
         # Only one bare slug key — no ambiguity.
         custom_single = [
@@ -292,6 +298,26 @@ class TestGetCustomProviderContextLength:
                 "pub/model@q4_k_m", "http://localhost:1234/v1", custom
             )
             is None
+        )
+
+    def test_multi_slash_id_strips_only_last_segment(self):
+        """rsplit('/', 1)[1] takes the final segment of a multi-slash id.
+
+        For 'org/team/model' the slug fallback is the last segment 'model'.
+        LM Studio ids are single-slash 'publisher/slug', so this is an edge
+        case, but pinning it documents the well-defined rsplit behavior.
+        """
+        custom = [
+            {
+                "base_url": "http://localhost:1234/v1",
+                "models": {"model": {"context_length": 65_536}},
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "org/team/model", "http://localhost:1234/v1", custom
+            )
+            == 65_536
         )
 
     def test_ignores_non_dict_entries(self):
