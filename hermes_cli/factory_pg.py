@@ -8,6 +8,12 @@ from hermes_cli.factory_db import DEFAULT_LANES, FACTORY_AGENTS, VALID_METHODS, 
 
 
 def available() -> bool:
+    # Pytest suites intentionally exercise the stdlib SQLite fallback with a
+    # temp HERMES_HOME. The developer shell may still carry Agent Core env vars,
+    # so keep tests isolated unless a test explicitly opts into Postgres.
+    import os
+    if os.getenv("PYTEST_CURRENT_TEST") and not os.getenv("HERMES_FACTORY_USE_POSTGRES"):
+        return False
     if not sql.enabled():
         return False
     try:

@@ -20,6 +20,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILE = REPO_ROOT / "runtime" / "agent-core-db" / "docker-compose.agent-core.yml"
 ENV_FILE = REPO_ROOT / "runtime" / "agent-core-db" / ".env"
+RUNTIME_SECRETS_FILE = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "runtime-secrets.env"
 
 DEFAULTS = {
     "AGENT_DB_ADMIN_USER": "agent_admin",
@@ -61,9 +62,12 @@ def load_env_file(path: Path) -> dict[str, str]:
 
 
 def runtime_env() -> dict[str, str]:
-    env = dict(os.environ)
-    env.update({k: v for k, v in DEFAULTS.items() if k not in env})
+    # Priority: defaults < local .env fallback < process env < Infisical runtime-secrets.env.
+    # Infisical is the canonical source of truth for running agents.
+    env = dict(DEFAULTS)
     env.update(load_env_file(ENV_FILE))
+    env.update(os.environ)
+    env.update(load_env_file(RUNTIME_SECRETS_FILE))
     if "AGENT_DB_ADMIN_PASSWORD" not in env:
         raise SystemExit(f"AGENT_DB_ADMIN_PASSWORD is required. Create {ENV_FILE} from .env.example or inject it from runtime secrets.")
     return env
@@ -74,7 +78,8 @@ def run(cmd: list[str], *, env: dict[str, str], input_text: str | None = None, c
 
 
 def compose(env: dict[str, str], args: list[str]) -> subprocess.CompletedProcess[str]:
-    return run(["docker", "compose", "--env-file", str(ENV_FILE), "-f", str(COMPOSE_FILE), *args], env=env)
+    env_file = RUNTIME_SECRETS_FILE if RUNTIME_SECRETS_FILE.exists() else ENV_FILE
+    return run(["docker", "compose", "--env-file", str(env_file), "-f", str(COMPOSE_FILE), *args], env=env)
 
 
 def psql(env: dict[str, str], database: str, sql: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:

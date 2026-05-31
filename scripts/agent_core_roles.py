@@ -15,6 +15,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = REPO_ROOT / "runtime" / "agent-core-db" / ".env"
+RUNTIME_SECRETS_FILE = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "runtime-secrets.env"
 
 DEFAULTS = {
     "AGENT_DB_CONTAINER": "agent-postgres",
@@ -67,8 +68,30 @@ def save_env_file(values: dict[str, str]) -> None:
     ENV_FILE.chmod(0o600)
 
 
+
+
+def _fill_passwords_from_urls(env: dict[str, str]) -> None:
+    from urllib.parse import urlparse, unquote
+    pairs = {
+        "AGENT_DB_RUNTIME_PASSWORD": "AGENT_DATABASE_URL",
+        "FACTORY_DB_RUNTIME_PASSWORD": "FACTORY_DATABASE_URL",
+        "CALENDAR_DB_RUNTIME_PASSWORD": "CALENDAR_DATABASE_URL",
+        "CRM_DB_RUNTIME_PASSWORD": "CRM_DATABASE_URL",
+    }
+    for password_key, url_key in pairs.items():
+        if env.get(password_key):
+            continue
+        url = (env.get(url_key) or "").strip().strip('"').strip("'")
+        if not url:
+            continue
+        parsed = urlparse(url)
+        if parsed.password:
+            env[password_key] = unquote(parsed.password)
+
 def runtime_env(write_missing: bool = False) -> dict[str, str]:
-    env = {**DEFAULTS, **os.environ, **load_env_file()}
+    # Priority: defaults < local .env fallback < process env < Infisical runtime-secrets.env.
+    # Infisical is canonical for operation; local .env only bootstraps dev/offline.
+    env = {**DEFAULTS, **load_env_file(ENV_FILE), **os.environ, **load_env_file(RUNTIME_SECRETS_FILE)}
     env.setdefault("AGENT_CORE_DB_ENABLED", "true")
     env.setdefault("AGENT_DB_HOST_BIND", "127.0.0.1")
     env.setdefault("AGENT_DB_HOST_PORT", "55430")
@@ -79,6 +102,7 @@ def runtime_env(write_missing: bool = False) -> dict[str, str]:
         ("CRM_DB_RUNTIME_USER", "crm_runtime"),
     ]:
         env.setdefault(key, default_user)
+    _fill_passwords_from_urls(env)
     if write_missing:
         alphabet = string.ascii_letters + string.digits
         for key in SECRET_KEYS:
@@ -131,6 +155,8 @@ END $$;
 
 
 def apply_grants(env: dict[str, str]) -> None:
+    # Keep the existing Postgres admin role password in sync with Infisical too.
+    ensure_login_role(env, "AGENT_DB_ADMIN_USER", "AGENT_DB_ADMIN_PASSWORD")
     for role_key, password_key in [
         ("AGENT_DB_RUNTIME_USER", "AGENT_DB_RUNTIME_PASSWORD"),
         ("FACTORY_DB_RUNTIME_USER", "FACTORY_DB_RUNTIME_PASSWORD"),

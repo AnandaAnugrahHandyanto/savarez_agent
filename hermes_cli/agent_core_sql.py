@@ -16,6 +16,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = REPO_ROOT / "runtime" / "agent-core-db" / ".env"
+RUNTIME_SECRETS_FILE = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "runtime-secrets.env"
 DEFAULTS = {
     "AGENT_CORE_DB_ENABLED": "true",
     "AGENT_DB_CONTAINER": "agent-postgres",
@@ -39,8 +40,38 @@ def load_env_file(path: Path = ENV_FILE) -> dict[str, str]:
     return values
 
 
+
+
+def _fill_passwords_from_urls(env: dict[str, str]) -> None:
+    from urllib.parse import urlparse, unquote
+    pairs = {
+        "AGENT_DB_RUNTIME_PASSWORD": "AGENT_DATABASE_URL",
+        "FACTORY_DB_RUNTIME_PASSWORD": "FACTORY_DATABASE_URL",
+        "CALENDAR_DB_RUNTIME_PASSWORD": "CALENDAR_DATABASE_URL",
+        "CRM_DB_RUNTIME_PASSWORD": "CRM_DATABASE_URL",
+    }
+    for password_key, url_key in pairs.items():
+        if env.get(password_key):
+            continue
+        url = (env.get(url_key) or "").strip().strip('"').strip("'")
+        if not url:
+            continue
+        parsed = urlparse(url)
+        if parsed.password:
+            env[password_key] = unquote(parsed.password)
+
+def _runtime_secrets_file() -> Path:
+    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "runtime-secrets.env"
+
+
 def runtime_env() -> dict[str, str]:
-    env = {**DEFAULTS, **os.environ, **load_env_file()}
+    # Infisical runtime-secrets.env is canonical for tools. Do not read the repo
+    # local .env here: tests redirect HERMES_HOME and must keep using SQLite, and
+    # runtime tools should only turn on Postgres when the process/Hermes env has
+    # received the secret sync. Resolve HERMES_HOME at call time because pytest
+    # monkeypatches it after modules are imported.
+    env = {**DEFAULTS, **os.environ, **load_env_file(_runtime_secrets_file())}
+    _fill_passwords_from_urls(env)
     return env
 
 
