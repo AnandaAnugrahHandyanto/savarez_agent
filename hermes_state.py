@@ -169,15 +169,22 @@ def apply_wal_with_fallback(
     the SQLite default and no PRAGMA we issued ever succeeded.
 
     On WAL-incompatible filesystems (NFS, SMB, some FUSE), SQLite raises
-    ``OperationalError("locking protocol")`` when setting WAL.  We fall
-    back to DELETE mode — the pre-WAL default, which works on NFS — and
-    log one WARNING explaining why.  On some filesystems (e.g. APFS
-    external SSDs under heavy contention) BOTH ``PRAGMA journal_mode=WAL``
-    and ``PRAGMA journal_mode=DELETE`` raise ``disk I/O error``; we log
-    a second WARNING and continue with whatever the connection's
-    journal_mode actually is (typically the SQLite default ``delete``),
-    because the connection is still usable for reads/writes and
-    propagating would crash every caller.
+    ``OperationalError("locking protocol")`` (or ``"not authorized"``) when
+    setting WAL.  We fall back to DELETE mode — the pre-WAL default, which
+    works on NFS — and log one WARNING explaining why.  A bare transient
+    ``disk I/O error`` on the WAL pragma alone is NOT treated as a WAL-incompat
+    marker and is re-raised so the caller can retry (downgrading on transient
+    EIO risks mixed-journal-mode cross-process corruption — see
+    ``_WAL_INCOMPAT_MARKERS`` and tests/test_hermes_state_wal_fallback.py::
+    test_reraises_on_disk_io_error).
+
+    When WAL fails for a recognized incompat reason and the ``DELETE``
+    fallback pragma *also* raises (e.g. APFS external SSDs under heavy
+    contention raising ``disk I/O error`` on the DELETE pragma), we log a
+    second WARNING and continue with whatever the connection's journal_mode
+    actually is (typically the SQLite default ``delete``), because the
+    connection is still usable for reads/writes and propagating would crash
+    every caller.
 
     The WARNING is deduplicated per ``db_label``: repeated connections
     to the same underlying DB (e.g. kanban_db.connect() which is called

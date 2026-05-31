@@ -226,36 +226,51 @@ class TestApplyWalWithFallback:
         )
 
     def test_falls_back_when_delete_pragma_also_fails(self, tmp_path, caplog):
-        """APFS external SSDs reject both WAL and DELETE — must not crash callers.
+        """WAL-incompat FS that ALSO rejects DELETE — must not crash callers.
 
-        The connection's default journal_mode is already DELETE, so the
-        connection is still usable; propagating the DELETE failure would
-        crash SessionDB / kanban_db / ResponseStore / holographic memory.
-        Returns ``"delete"`` and logs one WARNING per db_label.
+        Scenario: ``PRAGMA journal_mode=WAL`` raises a recognized WAL-incompat
+        marker (``locking protocol``), so the code legitimately falls back to
+        DELETE.  But the DELETE pragma *also* raises ``disk I/O error`` (observed
+        on APFS external SSDs under heavy contention).  The connection's default
+        journal_mode is already DELETE, so it is still usable; propagating the
+        DELETE failure would crash SessionDB / kanban_db / ResponseStore /
+        holographic memory.  Returns ``"delete"`` and logs one WARNING per
+        db_label.
+
+        Note: a *bare* ``disk I/O error`` on the WAL pragma alone must instead
+        re-raise (transient EIO is not a permanent WAL-incompat marker — see
+        ``test_reraises_on_disk_io_error``).  This test therefore drives WAL
+        with ``locking protocol`` and only DELETE with ``disk I/O error``.
         """
-        attempts = [0]
+        delete_attempts = [0]
 
-        class _BothPragmasFailConnection(sqlite3.Connection):
+        class _DeletePragmaFailsConnection(sqlite3.Connection):
             def execute(self, sql, *args, **kwargs):  # type: ignore[override]
-                if "journal_mode" in sql.lower():
-                    attempts[0] += 1
+                lowered = sql.lower().replace(" ", "")
+                if "journal_mode=wal" in lowered:
+                    raise sqlite3.OperationalError("locking protocol")
+                if "journal_mode=delete" in lowered:
+                    delete_attempts[0] += 1
+                    raise sqlite3.OperationalError("disk I/O error")
+                # Bare PRAGMA journal_mode reads (probe, on-disk check,
+                # contract read-back) also fail with disk I/O error so the
+                # function falls through to the "delete" default.
+                if "journal_mode" in lowered:
                     raise sqlite3.OperationalError("disk I/O error")
                 return super().execute(sql, *args, **kwargs)
 
         conn = sqlite3.connect(
             str(tmp_path / "apfs.db"),
-            factory=_BothPragmasFailConnection,
+            factory=_DeletePragmaFailsConnection,
             isolation_level=None,
         )
         with caplog.at_level("WARNING", logger="hermes_state"):
             mode = apply_wal_with_fallback(conn, db_label="apfs-test.db")
 
         assert mode == "delete"
-        # Three journal_mode SQL calls: set WAL, set DELETE, then the
-        # PRAGMA journal_mode read-back used to honor the docstring
-        # contract when both writes fail (also blocked by the factory,
-        # which causes the function to fall through to "delete").
-        assert attempts[0] == 3
+        # The DELETE pragma was attempted exactly once (its failure is what
+        # this test exercises).
+        assert delete_attempts[0] == 1
 
         # Two warnings: one for WAL fallback, one for DELETE-also-failed
         msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
@@ -289,9 +304,15 @@ class TestApplyWalWithFallback:
         class _WritesFailReadsSucceedConnection(sqlite3.Connection):
             def execute(self, sql, *args, **kwargs):  # type: ignore[override]
                 # Block PRAGMA WRITES (journal_mode=X) but allow the
-                # bare PRAGMA READ (journal_mode without `=`).
-                lowered = sql.lower().strip()
-                if "journal_mode=" in lowered:
+                # bare PRAGMA READ (journal_mode without `=`).  WAL fails
+                # with a recognized WAL-incompat marker so the fallback
+                # engages (a bare "disk I/O error" on WAL would re-raise —
+                # see test_reraises_on_disk_io_error); DELETE fails with
+                # disk I/O error to drive the both-fail read-back path.
+                lowered = sql.lower().replace(" ", "")
+                if "journal_mode=wal" in lowered:
+                    raise sqlite3.OperationalError("locking protocol")
+                if "journal_mode=delete" in lowered:
                     raise sqlite3.OperationalError("disk I/O error")
                 return super().execute(sql, *args, **kwargs)
 
@@ -326,7 +347,13 @@ class TestApplyWalWithFallback:
 
         class _BothPragmasFailConnection(sqlite3.Connection):
             def execute(self, sql, *args, **kwargs):  # type: ignore[override]
-                if "journal_mode" in sql.lower():
+                lowered = sql.lower().replace(" ", "")
+                # WAL fails with a recognized WAL-incompat marker (so the
+                # fallback engages); DELETE and bare reads fail with disk
+                # I/O error (so the function falls through to "delete").
+                if "journal_mode=wal" in lowered:
+                    raise sqlite3.OperationalError("locking protocol")
+                if "journal_mode" in lowered:
                     raise sqlite3.OperationalError("disk I/O error")
                 return super().execute(sql, *args, **kwargs)
 
@@ -449,7 +476,14 @@ class TestGetLastInitError:
 
         class _BothPragmasFailConnection(sqlite3.Connection):
             def execute(self, sql, *args, **kwargs):  # type: ignore[override]
-                if "journal_mode" in sql.lower():
+                lowered = sql.lower().replace(" ", "")
+                # WAL fails with a recognized WAL-incompat marker (engages
+                # the fallback); DELETE and bare journal_mode reads fail with
+                # disk I/O error.  apply_wal_with_fallback must absorb all of
+                # this and let SessionDB.__init__ proceed.
+                if "journal_mode=wal" in lowered:
+                    raise sqlite3.OperationalError("locking protocol")
+                if "journal_mode" in lowered:
                     raise sqlite3.OperationalError("disk I/O error")
                 return super().execute(sql, *args, **kwargs)
 
