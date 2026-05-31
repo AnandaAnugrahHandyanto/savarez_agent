@@ -86,7 +86,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, TextIO
 
 from toolsets import get_toolset_names
 
@@ -106,7 +106,7 @@ _IS_WINDOWS = sys.platform == "win32"
 # Maps id(conn) → open file handle for per-DB write locking.
 # sqlite3.Connection is a C-extension type: no attributes, no weakref.
 # We use id(conn) as key and accept the dict grows lazily.
-_KANBAN_WRITE_LOCKS: dict[int, Any] = {}
+_KANBAN_WRITE_LOCKS: dict[int, "TextIO | None"] = {}
 
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
