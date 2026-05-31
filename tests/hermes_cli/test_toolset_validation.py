@@ -17,6 +17,7 @@ def test_omitted_means_caller_loads_defaults():
 
 def test_all_alias_means_caller_loads_defaults():
     assert validate_explicit_toolsets("all") == (None, None)
+    assert validate_explicit_toolsets("*") == (None, None)
 
 
 def test_single_valid_toolset_is_accepted():
@@ -88,6 +89,15 @@ def test_unreadable_config_degrades_to_all_unknown(monkeypatch):
     valid, err = validate_explicit_toolsets("not_a_real_mcp", source="t")
     assert valid is None
     assert "not_a_real_mcp" in err
+
+
+def test_unimportable_validator_fails_closed(monkeypatch):
+    # If the `toolsets` module itself can't be imported, an explicit request
+    # must fail closed (error), never silently widen to the full set.
+    monkeypatch.setitem(sys.modules, "toolsets", None)
+    valid, err = validate_explicit_toolsets("web", source="t")
+    assert valid is None
+    assert err is not None and "failed to validate toolsets" in err
 
 
 def test_normalize_splits_and_strips():
