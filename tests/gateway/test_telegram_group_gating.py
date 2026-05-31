@@ -21,6 +21,7 @@ def _make_adapter(
     group_allowed_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
+    allow_bots=None,
     bot_username="hermes_bot",
 ):
     from gateway.platforms.telegram import TelegramAdapter
@@ -62,6 +63,8 @@ def _make_adapter(
         extra["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if allow_bots is not None:
+        extra["allow_bots"] = allow_bots
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -96,6 +99,7 @@ def _group_message(
     entities=None,
     caption=None,
     caption_entities=None,
+    is_bot=False,
 ):
     reply_to_message = None
     if reply_to_bot:
@@ -109,7 +113,7 @@ def _group_message(
         message_thread_id=thread_id,
         is_topic_message=thread_id is not None,
         chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=thread_id is not None),
-        from_user=SimpleNamespace(id=from_user_id, full_name=from_user_name, first_name=from_user_name.split()[0]),
+        from_user=SimpleNamespace(id=from_user_id, full_name=from_user_name, first_name=from_user_name.split()[0], is_bot=is_bot),
         reply_to_message=reply_to_message,
         date=None,
     )
@@ -543,6 +547,111 @@ def test_free_response_chats_bypass_mention_requirement():
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201)) is False
 
 
+def test_telegram_bot_senders_are_ignored_by_default_even_in_free_response_chats():
+    adapter = _make_adapter(require_mention=False, free_response_chats=["-200"])
+
+    assert adapter._should_process_message(
+        _group_message("status from another bot", chat_id=-200, from_user_id=333, is_bot=True)
+    ) is False
+
+
+def test_telegram_allow_bots_mentions_only_accepts_direct_bot_handoffs():
+    adapter = _make_adapter(require_mention=False, free_response_chats=["-200"], allow_bots="mentions")
+
+    assert adapter._should_process_message(
+        _group_message("status from another bot", chat_id=-200, from_user_id=333, is_bot=True)
+    ) is False
+
+    text = "@hermes_bot handoff_id=h_123 review this"
+    assert adapter._should_process_message(
+        _group_message(
+            text,
+            chat_id=-200,
+            from_user_id=333,
+            is_bot=True,
+            entities=[_mention_entity(text)],
+        )
+    ) is True
+
+    assert adapter._should_process_message(
+        _group_message("reply handoff", chat_id=-200, from_user_id=333, is_bot=True, reply_to_bot=True)
+    ) is True
+
+
+def test_telegram_allow_bots_all_still_ignores_own_reflected_messages():
+    adapter = _make_adapter(require_mention=False, allow_bots="all")
+
+    assert adapter._should_process_message(
+        _group_message("bot peer update", from_user_id=333, is_bot=True)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("our own reflected message", from_user_id=999, is_bot=True)
+    ) is False
+
+
+def test_telegram_bot_sources_authorized_when_allow_bots_enabled(monkeypatch):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.pairing_store = SimpleNamespace(is_approved=lambda *_args: False)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-100",
+        chat_type="group",
+        user_id="333",
+        user_name="Claude Code Bot",
+        is_bot=True,
+    )
+
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "mentions")
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_gateway_suppresses_claude_code_error_handoff_noise(monkeypatch):
+    from gateway.run import _gateway_should_suppress_bot_message
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-100",
+        chat_type="group",
+        user_id="333",
+        user_name="Claude Code Bot",
+        is_bot=True,
+    )
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "mentions")
+
+    assert _gateway_should_suppress_bot_message(
+        source,
+        "@hermes_m2_das_bot handoff_id=h_1234 BLOQUEADO: Claude Code falló: timeout",
+    ) is True
+    assert _gateway_should_suppress_bot_message(
+        source,
+        "@hermes_m2_das_bot handoff_id=h_1234 BLOQUEADO: Claude Code devolvió respuesta vacía.",
+    ) is True
+
+
+def test_gateway_does_not_suppress_normal_claude_code_handoff(monkeypatch):
+    from gateway.run import _gateway_should_suppress_bot_message
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-100",
+        chat_type="group",
+        user_id="333",
+        user_name="Claude Code Bot",
+        is_bot=True,
+    )
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "mentions")
+
+    assert _gateway_should_suppress_bot_message(
+        source,
+        "@hermes_m2_das_bot handoff_id=h_1234 estado: terminado resultado: revisión lista",
+    ) is False
+
+
 def test_guest_mode_allows_only_direct_mentions_outside_allowed_chats():
     adapter = _make_adapter(
         require_mention=True,
@@ -644,6 +753,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "  require_mention: true\n"
         "  guest_mode: true\n"
         "  exclusive_bot_mentions: true\n"
+        "  allow_bots: mentions\n"
         "  observe_unmentioned_group_messages: true\n"
         "  mention_patterns:\n"
         "    - \"^\\\\s*chompy\\\\b\"\n"
@@ -662,6 +772,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
     monkeypatch.delenv("TELEGRAM_MENTION_PATTERNS", raising=False)
     monkeypatch.delenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS", raising=False)
+    monkeypatch.delenv("TELEGRAM_ALLOW_BOTS", raising=False)
     monkeypatch.delenv("TELEGRAM_GUEST_MODE", raising=False)
     monkeypatch.delenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES", raising=False)
     monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_CHATS", raising=False)
@@ -676,6 +787,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert __import__("os").environ["TELEGRAM_GUEST_MODE"] == "true"
     assert __import__("os").environ["TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] == "true"
     assert __import__("os").environ["TELEGRAM_EXCLUSIVE_BOT_MENTIONS"] == "true"
+    assert __import__("os").environ["TELEGRAM_ALLOW_BOTS"] == "mentions"
     assert json.loads(__import__("os").environ["TELEGRAM_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
     assert __import__("os").environ["TELEGRAM_ALLOWED_CHATS"] == "-100"
@@ -688,6 +800,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("allowed_topics") == [8]
     assert tg_cfg.extra.get("exclusive_bot_mentions") is True
+    assert tg_cfg.extra.get("allow_bots") == "mentions"
     assert tg_cfg.extra.get("observe_unmentioned_group_messages") is True
 
 
