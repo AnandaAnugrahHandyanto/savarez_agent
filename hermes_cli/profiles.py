@@ -731,12 +731,19 @@ def create_profile(
             )
 
     if clone_all and source_dir:
-        # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
+        # Full copy of source profile (exclude sibling ~/.hermes/profiles/).
+        # If the source still carries Nix-store-inherited read-only mode bits
+        # on its skills tree (pre-fix Hermes builds), the clone target would
+        # inherit them via copy2. Restore writability afterwards so the new
+        # profile's tooling (curator, skill_manage) can edit files in-place.
         shutil.copytree(
             source_dir,
             profile_dir,
             ignore=_clone_all_copytree_ignore(source_dir),
         )
+        from tools.skills_sync import _make_tree_owner_writable
+
+        _make_tree_owner_writable(profile_dir)
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
@@ -770,6 +777,12 @@ def create_profile(
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
                 shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+                # Source skills tree may carry Nix-store-inherited read-only
+                # mode bits (pre-fix Hermes builds); restore writability so
+                # curator / skill_manage on the new profile work in-place.
+                from tools.skills_sync import _make_tree_owner_writable
+
+                _make_tree_owner_writable(profile_dir / "skills")
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:
