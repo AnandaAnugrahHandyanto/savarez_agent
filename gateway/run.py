@@ -1138,6 +1138,7 @@ from gateway.platforms.base import (
     MessageType,
     _reply_anchor_for_event,
     merge_pending_message_event,
+    resolve_channel_model,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -2534,6 +2535,21 @@ class GatewayRunner:
                 resolved_session_key = None
 
         model = _resolve_gateway_model(user_config)
+
+        # Per-route model overlay (Tier-1): channel_models on the source's
+        # platform config. A session /model override (below) still wins.
+        if source is not None and self.config is not None:
+            try:
+                plat_cfg = self.config.platforms.get(source.platform)
+                if routed := resolve_channel_model(
+                    plat_cfg.extra if plat_cfg else {},
+                    str(source.chat_id or ""),
+                    str(source.parent_chat_id or "") or None,
+                ):
+                    model = routed
+            except Exception:
+                logger.debug("channel_models lookup failed", exc_info=True)
+
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
             override_model = override.get("model", model)
