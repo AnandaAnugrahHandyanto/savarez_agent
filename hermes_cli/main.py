@@ -1793,6 +1793,11 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
+    # Programmatic callers can pass ``-q -`` to keep long/private prompts out of
+    # process listings. Read stdin before invoking the interactive CLI layer.
+    if getattr(args, "query", None) == "-" and not sys.stdin.isatty():
+        args.query = sys.stdin.read()
+
     _pin_kanban_board_env()
 
     if use_tui:

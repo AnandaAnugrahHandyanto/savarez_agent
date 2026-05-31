@@ -93,58 +93,79 @@ def get_current_session_key(default: str = "default") -> str:
 
 def _current_profile_id(default: str = "default") -> str:
     return (
-        os.getenv("HERMES_PROFILE_NAME")
+        os.getenv("HERMES_PROFILE_ID")
+        or os.getenv("HERMES_PROFILE_NAME")
         or os.getenv("HERMES_PROFILE")
         or default
     )
 
 
-def _control_approval_create(approval_id: str, command: str, description: str, *, ttl_seconds: int | None = None) -> bool:
+def _current_control_instance_id(default: str = "default") -> str:
+    return os.getenv("HERMES_CONTROL_INSTANCE_ID") or get_current_session_key(default)
+
+
+def _control_approval_create(approval_id: str, command: str, description: str, *, ttl_seconds: int | None = None) -> str | None:
     """Persist an approval request to the durable control plane.
 
-    Returns False on persistence failure. Callers in control_db authority mode
-    must treat False as a hard block; shadow-mode callers may continue through
-    the legacy synchronous prompt while DB rollout remains non-operative.
+    Returns the local approver instance id on success, or None on persistence
+    failure. Callers in control_db authority mode must treat None as a hard
+    block; shadow-mode callers may continue through the legacy synchronous
+    prompt while DB rollout remains non-operative.
     """
     try:
         from hermes_cli import control_db as cp
         conn = cp.connect()
         try:
             profile = _current_profile_id()
-            session_key = get_current_session_key("default")
+            requester_instance = _current_control_instance_id("default")
             approver_profile = os.getenv("HERMES_APPROVER_PROFILE", "default")
-            approver_instance = os.getenv("HERMES_APPROVER_INSTANCE_ID") or f"{approver_profile}:approver:{os.getpid()}"
-            cp.register_profile(conn, profile, role="worker")
-            cp.register_instance(conn, profile, instance_id=session_key)
-            cp.register_profile(conn, approver_profile, role="admin", actor_type="bootstrap")
-            cp.register_instance(conn, approver_profile, instance_id=approver_instance)
+            approver_instance = os.getenv("HERMES_APPROVER_INSTANCE_ID") or f"{approver_profile}:approver:{uuid.uuid4().hex}"
+            strict = cp.get_authority_mode(conn) == "control_db"
+            if strict:
+                cp._require_live_instance(conn, requester_instance, expected_profile=profile)
+                cp._require_admin_actor(conn, actor_profile=approver_profile, actor_instance_id=approver_instance, actor_type="admin")
+            else:
+                cp.register_profile(conn, profile, role="worker")
+                cp.register_instance(conn, profile, instance_id=requester_instance)
+                cp.register_profile(conn, approver_profile, role="admin", actor_type="bootstrap")
+                cp.register_instance(conn, approver_profile, instance_id=approver_instance, actor_type="bootstrap")
             cp.create_approval(
                 conn,
                 approval_id=approval_id,
                 requester_profile=profile,
-                requester_instance_id=session_key,
+                requester_instance_id=requester_instance,
                 approver_profile=approver_profile,
                 command_preview=command,
                 tool_args_preview=description,
                 ttl_ms=max(int(ttl_seconds or 300), 1) * 1000,
+                dispatch_id=os.getenv("HERMES_CONTROL_DISPATCH_ID") or None,
+                lease_epoch=(int(epoch_raw) if (epoch_raw := os.getenv("HERMES_CONTROL_LEASE_EPOCH")) else None),
+                cwd=os.getcwd(),
+                affected_paths=[],
+                operation_class="terminal_command",
+                risk_classification="dangerous",
+                reason_requested=description,
+                request_context={"session_key": get_current_session_key("default")},
             )
         finally:
             conn.close()
-        return True
+        return approver_instance
     except Exception as exc:
         logger.debug("Failed to persist control-plane approval %s: %s", approval_id, exc)
-        return False
+        return None
 
 
-def _control_approval_decide(approval_id: str, choice: str, *, reason: str | None = None) -> bool:
+def _control_approval_decide(approval_id: str, choice: str, *, reason: str | None = None, approver_instance_id: str | None = None) -> bool:
     try:
         from hermes_cli import control_db as cp
         conn = cp.connect()
         try:
             decision = "approved" if choice in {"once", "session", "always", "approved", "approve"} else "denied"
             approver_profile = os.getenv("HERMES_APPROVER_PROFILE", "default")
-            approver_instance = os.getenv("HERMES_APPROVER_INSTANCE_ID") or f"{approver_profile}:approver:{os.getpid()}"
-            cp.register_instance(conn, approver_profile, instance_id=approver_instance)
+            approver_instance = approver_instance_id or os.getenv("HERMES_APPROVER_INSTANCE_ID")
+            if not approver_instance:
+                logger.debug("Control-plane approval decision %s lacks HERMES_APPROVER_INSTANCE_ID", approval_id)
+                return False
             return cp.decide_approval(
                 conn,
                 approval_id,
@@ -165,7 +186,14 @@ def _control_approval_consume(approval_id: str) -> bool:
         from hermes_cli import control_db as cp
         conn = cp.connect()
         try:
-            return cp.consume_approval(conn, approval_id, requester_instance_id=get_current_session_key("default"), requester_profile=_current_profile_id())
+            return cp.consume_approval(
+                conn,
+                approval_id,
+                requester_instance_id=_current_control_instance_id("default"),
+                requester_profile=_current_profile_id(),
+                dispatch_id=os.getenv("HERMES_CONTROL_DISPATCH_ID") or None,
+                lease_epoch=(int(epoch_raw) if (epoch_raw := os.getenv("HERMES_CONTROL_LEASE_EPOCH")) else None),
+            )
         finally:
             conn.close()
     except Exception as exc:
@@ -706,7 +734,12 @@ def resolve_gateway_approval(session_key: str, choice: str,
         entry.result = choice
         aid = str((entry.data or {}).get("approval_id") or "")
         if aid:
-            _control_approval_decide(aid, choice, reason=f"gateway session {session_key}")
+            _control_approval_decide(
+                aid,
+                choice,
+                reason=f"gateway session {session_key}",
+                approver_instance_id=str((entry.data or {}).get("_control_approver_instance_id") or "") or None,
+            )
         entry.event.set()
     return len(targets)
 
@@ -739,7 +772,12 @@ def resolve_gateway_approval_by_id(approval_id: str, choice: str) -> int:
             return 0
 
     target.result = choice
-    _control_approval_decide(approval_id, choice, reason="gateway approval id")
+    _control_approval_decide(
+        approval_id,
+        choice,
+        reason="gateway approval id",
+        approver_instance_id=str((target.data or {}).get("_control_approver_instance_id") or "") or None,
+    )
     target.event.set()
     return 1
 
@@ -1387,13 +1425,16 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     # notification callback. Otherwise a fast resolver can approve the
     # in-memory entry before the durable DB row exists, leaving stale or
     # blocking state in control_db authority mode.
-    if not _control_approval_create(approval_id, command, description, ttl_seconds=timeout) and _control_db_authoritative():
+    control_approver_instance = _control_approval_create(approval_id, command, description, ttl_seconds=timeout)
+    if not control_approver_instance and _control_db_authoritative():
         return {
             "resolved": False,
             "choice": None,
             "notify_failed": False,
             "control_db_unavailable": True,
         }
+    if control_approver_instance:
+        approval_data["_control_approver_instance_id"] = control_approver_instance
 
     entry = _ApprovalEntry(approval_data)
     with _lock:
@@ -1421,7 +1462,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
     # Notify the user (bridges sync agent thread → async gateway)
     try:
-        notify_cb(approval_data)
+        notify_payload = {k: v for k, v in approval_data.items() if not str(k).startswith("_control_")}
+        notify_cb(notify_payload)
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         _drop_entry()

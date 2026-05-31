@@ -72,24 +72,6 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from tools.url_safety import is_safe_url
-from .bot_msg_protocol import (
-    DISCORD_BOT_MSG_KINDS as _DISCORD_BOT_MSG_KINDS,
-    DISCORD_BOT_MSG_CORRELATION_RE as _DISCORD_BOT_MSG_CORRELATION_RE,
-    DISCORD_BOT_MSG_PROTOCOL_VERSION as _DISCORD_BOT_MSG_PROTOCOL_VERSION,
-    bot_msg_required_error,
-    build_discord_bot_msg_v1,
-    discord_bot_msg_max_body_chars,
-    discord_bot_msg_protocol_version,
-    discord_bot_reply_false_reaction,
-    discord_content_mentioned_allowed_bots,
-    discord_content_mentions_allowed_bot,
-    discord_mention_id,
-    is_bot_msg_required_error,
-    is_discord_bot_routing_guard_error,
-    parse_discord_bot_msg_v1,
-    parse_discord_bot_approval_decision_body,
-)
-
 
 def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
     """Return discord.py's bundled Windows opus DLL path when present."""
@@ -168,52 +150,10 @@ def _has_raw_user_mention(content: str, user_id: Any) -> bool:
 
 
 
-def _discord_bot_reply_false_reaction() -> str:
-    """Reaction used to acknowledge BOT_MSG v1 messages that need no reply."""
-    return discord_bot_reply_false_reaction()
-
-
-def _discord_bot_msg_protocol_version() -> str:
-    return discord_bot_msg_protocol_version()
-
 
 def _discord_mention_id(mention: str) -> Optional[str]:
-    return discord_mention_id(mention)
-
-
-def _build_discord_bot_msg_v1(
-    *,
-    recipient_bot_id: str,
-    body: str,
-    reply_expected: bool,
-    kind: str,
-    correlation_id: str,
-) -> str:
-    return build_discord_bot_msg_v1(
-        recipient_bot_id=recipient_bot_id,
-        body=body,
-        reply_expected=reply_expected,
-        kind=kind,
-        correlation_id=correlation_id,
-    )
-
-
-def _parse_discord_bot_msg_v1(content: str, recipient_bot_id: Any) -> Optional[Dict[str, Any]]:
-    """Parse the strict Discord BOT_MSG v1 envelope.
-
-    Header grammar is deliberately narrow. Body lines are opaque and may
-    contain strings that look like protocol headers.
-    """
-    return parse_discord_bot_msg_v1(content, recipient_bot_id)
-
-
-def _discord_content_mentioned_allowed_bots(content: str, allowed_bot_ids: set[str]) -> list[str]:
-    """Return allowed bot IDs raw-mentioned in content, in content order."""
-    return discord_content_mentioned_allowed_bots(content, allowed_bot_ids)
-
-
-def _discord_content_mentions_allowed_bot(content: str, allowed_bot_ids: set[str]) -> Optional[str]:
-    return discord_content_mentions_allowed_bot(content, allowed_bot_ids)
+    match = re.fullmatch(r"<@!?(\d+)>", (mention or "").strip())
+    return match.group(1) if match else None
 
 
 def _build_allowed_mentions(*, replied_user: Optional[bool] = None):
@@ -692,9 +632,6 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
-        self._bot_threads = BotThreadMembershipTracker("discord")
-        self._bot_loop_fuse = BotLoopFuse("discord")
-        self._warned_unrestricted_bot_acceptance = False
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -716,39 +653,8 @@ class DiscordAdapter(BasePlatformAdapter):
     def _csv_env_set(name: str) -> set[str]:
         return {item.strip() for item in os.getenv(name, "").split(",") if item.strip()}
 
-    def _discord_allowed_bot_users(self) -> set[str]:
-        return self._csv_env_set("DISCORD_ALLOWED_BOT_USERS")
-
-    def _is_allowed_bot_user(self, user_id: Any) -> bool:
-        allowed = self._discord_allowed_bot_users()
-        if not allowed:
-            if not self._warned_unrestricted_bot_acceptance:
-                logger.warning(
-                    "[%s] DISCORD_ALLOW_BOTS admits bot messages but DISCORD_ALLOWED_BOT_USERS is unset; "
-                    "failing closed for bot-authored admission.",
-                    self.name,
-                )
-                self._warned_unrestricted_bot_acceptance = True
-            return False
-        return str(user_id) in allowed
-
-    def _discord_bot_control_channels(self) -> set[str]:
-        """Channels/parents where bot-thread invitations may register.
-
-        No fallback to DISCORD_ALLOWED_CHANNELS: bot-control scope is an explicit
-        authorization surface, and wildcard must be deliberately configured here.
-        """
-        return self._csv_env_set("DISCORD_BOT_CONTROL_CHANNELS")
-
     def _discord_approval_notify_mentions(self) -> list[str]:
-        """Raw Discord mentions to include in command-approval prompts.
-
-        Button approvals work for humans, but supervisor bots cannot click
-        Discord components. In bot-to-bot PM setups the approval prompt itself
-        must raw-mention the supervisor bot so the receiving gateway admits the
-        message under ``DISCORD_ALLOW_BOTS=mentions``. Keep this env-driven so
-        ordinary single-bot deployments do not gain noisy mentions.
-        """
+        """Raw human/operator Discord mentions to include in command approvals."""
         raw = (
             os.getenv("DISCORD_APPROVAL_NOTIFY_MENTIONS")
             or os.getenv("DISCORD_OPERATOR_MENTIONS")
@@ -760,219 +666,6 @@ class DiscordAdapter(BasePlatformAdapter):
             if item and item not in mentions:
                 mentions.append(item)
         return mentions
-
-    def _message_channel_ids(self, message: Any) -> set[str]:
-        channel_ids = {str(message.channel.id)}
-        parent_channel_id = None
-        thread_cls = getattr(discord, "Thread", None)
-        if thread_cls is not None and isinstance(message.channel, thread_cls):
-            parent_channel_id = self._get_parent_channel_id(message.channel)
-        elif hasattr(message.channel, "parent_id") and message.channel.parent_id:
-            parent_channel_id = str(message.channel.parent_id)
-        if parent_channel_id:
-            channel_ids.add(str(parent_channel_id))
-        return channel_ids
-
-    def _is_bot_control_scope(self, message: Any) -> bool:
-        allowed = self._discord_bot_control_channels()
-        return bool(allowed) and ("*" in allowed or bool(self._message_channel_ids(message) & allowed))
-
-    def _bot_thread_ids(self, message: Any) -> tuple[Optional[str], Optional[str]]:
-        thread_cls = getattr(discord, "Thread", None)
-        if thread_cls is None or not isinstance(message.channel, thread_cls):
-            return None, None
-        return str(message.channel.id), self._get_parent_channel_id(message.channel)
-
-    def _is_bot_fuse_suppressed(self, message: Any) -> bool:
-        if not self._client or not self._client.user:
-            return True
-        thread_id, _ = self._bot_thread_ids(message)
-        return self._bot_loop_fuse.is_suppressed(
-            receiver_bot_id=str(self._client.user.id),
-            sender_bot_id=str(message.author.id),
-            thread_id=thread_id,
-        )
-
-    def _record_bot_fuse_acceptance(self, message: Any) -> bool:
-        if not self._client or not self._client.user:
-            return False
-        thread_id, _ = self._bot_thread_ids(message)
-        return self._bot_loop_fuse.record_and_check(
-            receiver_bot_id=str(self._client.user.id),
-            sender_bot_id=str(message.author.id),
-            thread_id=thread_id,
-        )
-
-    def _register_bot_thread_invitation(self, message: Any) -> None:
-        if not self._client or not self._client.user:
-            return
-        thread_id, parent_channel_id = self._bot_thread_ids(message)
-        if not thread_id or not self._is_bot_control_scope(message):
-            return
-        self._bot_threads.mark(
-            receiver_bot_id=str(self._client.user.id),
-            sender_bot_id=str(message.author.id),
-            thread_id=thread_id,
-            parent_channel_id=parent_channel_id,
-            source_message_id=str(message.id),
-        )
-
-    def _allow_registered_bot_thread_followup(self, message: Any) -> bool:
-        if not self._client or not self._client.user:
-            return False
-        thread_id, _ = self._bot_thread_ids(message)
-        if not thread_id or not self._is_bot_control_scope(message):
-            return False
-        if not self._is_allowed_bot_user(message.author.id):
-            return False
-        if not self._bot_threads.contains(
-            receiver_bot_id=str(self._client.user.id),
-            sender_bot_id=str(message.author.id),
-            thread_id=thread_id,
-        ):
-            return False
-        self._bot_threads.refresh(
-            receiver_bot_id=str(self._client.user.id),
-            sender_bot_id=str(message.author.id),
-            thread_id=thread_id,
-        )
-        return True
-
-    def _is_terminal_send_error(self, error: Optional[str]) -> bool:
-        """Bot-routing guard failures must not retry or plain-text fallback."""
-        return is_bot_msg_required_error(error) or is_discord_bot_routing_guard_error(error)
-
-    def _should_react_malformed_bot_message(self, message: Any) -> bool:
-        """Return True only for explicit bot-targeted messages with malformed BOT_MSG v1.
-
-        Valid BOT_MSG envelopes can still be rejected for body caps or loop fuses;
-        those are not syntax failures and must not get a ❌ reaction that could be
-        interpreted by a peer bot as a retryable protocol failure.
-        """
-        if os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() not in {"1", "true", "yes"}:
-            return False
-        return bool(
-            self._client
-            and self._client.user
-            and _has_raw_user_mention(message.content, self._client.user.id)
-            and self._is_allowed_bot_user(message.author.id)
-            and _parse_discord_bot_msg_v1(message.content, self._client.user.id) is None
-        )
-
-    async def _handle_bot_approval_decision(self, message: Any, bot_msg: Dict[str, Any]) -> bool:
-        """Resolve a live gateway approval from a structured BOT_MSG decision.
-
-        Returns True when the message was syntactically an approval decision and
-        was handled without dispatching a model turn.  The sender has already
-        passed the allowlisted-bot gate before this method is called.
-        """
-        if os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() not in {"1", "true", "yes"}:
-            return False
-        if bot_msg.get("kind") != "approval_decision":
-            return False
-        parsed = parse_discord_bot_approval_decision_body(bot_msg.get("body") or "")
-        if parsed is None:
-            logger.warning(
-                "[%s] Rejecting malformed approval_decision BOT_MSG from %s",
-                self.name,
-                getattr(getattr(message, "author", None), "id", "unknown"),
-            )
-            try:
-                await asyncio.wait_for(self._add_reaction(message, "❌"), timeout=3.0)
-            except Exception:
-                pass
-            return True
-
-        decision = parsed["decision"]
-        if decision == "deny":
-            choice = "deny"
-        else:
-            choice = parsed["scope"]
-        try:
-            from tools.approval import resolve_gateway_approval_by_id
-            count = resolve_gateway_approval_by_id(parsed["approval_id"], choice)
-        except Exception as exc:
-            logger.warning("[%s] Failed resolving approval_decision: %s", self.name, exc)
-            count = 0
-        if count:
-            logger.info(
-                "[%s] Resolved gateway approval %s via BOT_MSG approval_decision from %s (%s)",
-                self.name,
-                parsed["approval_id"],
-                getattr(getattr(message, "author", None), "id", "unknown"),
-                choice,
-            )
-            reaction = "✅" if decision == "approve" else "🚫"
-        else:
-            logger.warning(
-                "[%s] Rejected approval_decision for non-live approval_id %s from %s",
-                self.name,
-                parsed["approval_id"],
-                getattr(getattr(message, "author", None), "id", "unknown"),
-            )
-            reaction = "❌"
-        try:
-            await asyncio.wait_for(self._add_reaction(message, reaction), timeout=3.0)
-        except Exception:
-            pass
-        return True
-
-    def _should_accept_bot_message(self, message: Any, allow_bots: str) -> bool:
-        if os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() not in {"1", "true", "yes"}:
-            return False
-        if allow_bots == "none":
-            return False
-        if allow_bots == "all":
-            if self._is_bot_fuse_suppressed(message):
-                logger.warning("[%s] Suppressing Discord bot message from %s: loop fuse active", self.name, message.author.id)
-                return False
-            self._record_bot_fuse_acceptance(message)
-            return True
-        if allow_bots != "mentions":
-            return False
-
-        if not self._client or not self._client.user:
-            return False
-        raw_self_mentioned = _has_raw_user_mention(message.content, self._client.user.id)
-        if not raw_self_mentioned:
-            return False
-        if not self._is_allowed_bot_user(message.author.id):
-            return False
-        bot_msg = _parse_discord_bot_msg_v1(message.content, self._client.user.id)
-        if bot_msg is None:
-            logger.warning(
-                "[%s] Rejecting Discord bot message from %s: malformed or missing BOT_MSG v1 envelope",
-                self.name,
-                message.author.id,
-            )
-            return False
-        max_body_chars = discord_bot_msg_max_body_chars()
-        body_len = len(bot_msg.get("body") or "")
-        if body_len > max_body_chars:
-            logger.warning(
-                "[%s] Rejecting Discord bot message from %s: BOT_MSG v1 body length %s exceeds configured cap %s",
-                self.name,
-                message.author.id,
-                body_len,
-                max_body_chars,
-            )
-            return False
-        if not bot_msg["reply_expected"]:
-            return True
-        if self._is_bot_fuse_suppressed(message):
-            logger.warning("[%s] Suppressing Discord bot message from %s: loop fuse active", self.name, message.author.id)
-            return False
-        if raw_self_mentioned:
-            self._register_bot_thread_invitation(message)
-        tripped = self._record_bot_fuse_acceptance(message)
-        if tripped:
-            logger.warning(
-                "[%s] Discord bot loop fuse tripped for sender=%s thread=%s; suppressing further messages temporarily",
-                self.name,
-                message.author.id,
-                getattr(message.channel, "id", "channel"),
-            )
-        return True
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -1015,16 +708,6 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
             return False
-        protocol_version = _discord_bot_msg_protocol_version()
-        if protocol_version != _DISCORD_BOT_MSG_PROTOCOL_VERSION:
-            logger.error(
-                "[%s] Unsupported Discord bot message protocol %r; supported: %s",
-                self.name,
-                protocol_version,
-                _DISCORD_BOT_MSG_PROTOCOL_VERSION,
-            )
-            return False
-
         try:
             if not self._acquire_platform_lock('discord-bot-token', self.config.token, 'Discord bot token'):
                 return False
@@ -1136,61 +819,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return
 
-                # Bot message filtering (DISCORD_ALLOW_BOTS):
-                #   "none"     — ignore all other bots (default)
-                #   "mentions" — accept bot messages only when they @mention us
-                #   "all"      — accept all bot messages
-                # Must run BEFORE the user allowlist check so that bots
-                # permitted by DISCORD_ALLOW_BOTS are not rejected for
-                # not being in DISCORD_ALLOWED_USERS (fixes #4466).
+                # Discord is a human interaction surface only. Bot-authored
+                # messages are ignored unconditionally; inter-agent routing uses
+                # the Hermes control plane, not Discord message admission.
                 if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if not adapter_self._should_accept_bot_message(message, allow_bots):
-                        if adapter_self._should_react_malformed_bot_message(message):
-                            try:
-                                await asyncio.wait_for(adapter_self._add_reaction(message, "❌"), timeout=3.0)
-                            except asyncio.TimeoutError:
-                                logger.warning(
-                                    "[%s] Timed out rejecting malformed BOT_MSG v1 from %s",
-                                    adapter_self.name,
-                                    message.author.id,
-                                )
-                        return
-                    if allow_bots == "mentions" and adapter_self._client and adapter_self._client.user:
-                        _bot_msg = _parse_discord_bot_msg_v1(message.content, adapter_self._client.user.id)
-                        if _bot_msg is None:
-                            return
-                        if await adapter_self._handle_bot_approval_decision(message, _bot_msg):
-                            return
-                        if not _bot_msg["reply_expected"]:
-                            ack_reaction = _discord_bot_reply_false_reaction()
-                            try:
-                                ack_added = await asyncio.wait_for(adapter_self._add_reaction(message, ack_reaction), timeout=3.0)
-                                if not ack_added:
-                                    logger.warning(
-                                        "[%s] Failed acknowledging reply_expected=false BOT_MSG v1 from %s: add_reaction returned false",
-                                        adapter_self.name,
-                                        message.author.id,
-                                    )
-                            except asyncio.TimeoutError:
-                                logger.warning(
-                                    "[%s] Timed out acknowledging reply_expected=false BOT_MSG v1 from %s",
-                                    adapter_self.name,
-                                    message.author.id,
-                                )
-                            except Exception as exc:
-                                logger.warning(
-                                    "[%s] Failed acknowledging reply_expected=false BOT_MSG v1 from %s: %s",
-                                    adapter_self.name,
-                                    message.author.id,
-                                    exc,
-                                )
-                            return
-                        message.content = _bot_msg["body"]
-                    # Bot is permitted — skip the human-user allowlist below
-                    # (bots aren't in it).
-                else:
-                    # Non-bot: enforce the configured user/role allowlists.
+                    logger.debug(
+                        "[%s] Ignoring Discord bot-authored message from %s",
+                        adapter_self.name,
+                        getattr(message.author, "id", "unknown"),
+                    )
+                    return
+
+                # Non-bot: enforce the configured user/role allowlists.
                     # Pass guild + is_dm so role checks are scoped to the
                     # originating guild (prevents cross-guild DM bypass, see
                     # _is_allowed_user docstring).
@@ -1801,66 +1441,6 @@ class DiscordAdapter(BasePlatformAdapter):
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
 
-    def _validate_outbound_bot_msg_v1(
-        self,
-        formatted: str,
-        metadata: Optional[Dict[str, Any]],
-    ) -> Optional[str]:
-        """Fail closed for outbound messages that mention allowed supervisor bots."""
-        allowed_bot_ids = self._discord_allowed_bot_users()
-        mentioned_allowed_bots = _discord_content_mentioned_allowed_bots(formatted, allowed_bot_ids)
-        if len(mentioned_allowed_bots) > 1:
-            return "Multiple allowed bot mentions are not permitted in a BOT_MSG v1 envelope"
-        if not mentioned_allowed_bots:
-            return None
-
-        mentioned_allowed_bot = mentioned_allowed_bots[0]
-        is_internal_bot_msg = bool(metadata and metadata.get("_discord_bot_msg_v1_internal"))
-        parsed_bot_msg = _parse_discord_bot_msg_v1(formatted, mentioned_allowed_bot)
-        if not is_internal_bot_msg:
-            return (
-                f"Outbound raw mention of allowed bot {mentioned_allowed_bot} requires "
-                "send_bot_message(...) to create a BOT_MSG v1 envelope"
-            )
-        if parsed_bot_msg is None:
-            return (
-                f"Internal BOT_MSG v1 envelope addressed to allowed bot {mentioned_allowed_bot} "
-                "is invalid"
-            )
-        if len(formatted) > self.MAX_MESSAGE_LENGTH:
-            return "BOT_MSG v1 envelope exceeds Discord message length and will not be chunked"
-        return None
-
-    async def send_bot_message(
-        self,
-        chat_id: str,
-        *,
-        recipient_bot_id: str,
-        body: str,
-        reply_expected: bool,
-        kind: str,
-        correlation_id: str,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send a structured BOT_MSG v1 envelope to another Discord bot."""
-        if os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() not in {"1", "true", "yes"}:
-            return SendResult(success=False, error="legacy_discord_bot_to_bot_disabled")
-        try:
-            envelope = _build_discord_bot_msg_v1(
-                recipient_bot_id=recipient_bot_id,
-                body=body,
-                reply_expected=reply_expected,
-                kind=kind,
-                correlation_id=correlation_id,
-            )
-        except ValueError as exc:
-            return SendResult(success=False, error=str(exc))
-        outbound_metadata = dict(metadata or {})
-        outbound_metadata["_discord_bot_msg_v1_internal"] = True
-        outbound_metadata["source_is_bot"] = True
-        return await self.send(chat_id, envelope, reply_to=reply_to, metadata=outbound_metadata)
-
     async def send(
         self,
         chat_id: str,
@@ -1906,9 +1486,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
-            validation_error = self._validate_outbound_bot_msg_v1(formatted, metadata)
-            if validation_error:
-                return SendResult(success=False, error=validation_error)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             message_ids = []
@@ -2020,9 +1597,6 @@ class DiscordAdapter(BasePlatformAdapter):
         # module — no cross-module import needed.
 
         formatted = self.format_message(content)
-        validation_error = self._validate_outbound_bot_msg_v1(formatted, metadata)
-        if validation_error:
-            return SendResult(success=False, error=validation_error)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
         thread_name = _derive_forum_thread_name(content)
@@ -4342,9 +3916,8 @@ class DiscordAdapter(BasePlatformAdapter):
         if limit <= 0:
             return ""
 
-        # Determine which bot messages to include in context
-        allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-        include_other_bots = allow_bots_raw != "none"
+        # Discord bot-authored messages are ignored as an interaction surface.
+        include_other_bots = False
 
         # Use the in-memory cache to narrow the fetch window on hot paths.
         # If we know our last message ID in this channel, pass it as `after`
@@ -4387,9 +3960,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     continue
 
-                # Respect DISCORD_ALLOW_BOTS for other bots.
-                # For history context, "mentions" is treated as "all" — we are
-                # deciding what context to show, not whether to respond.
+                # Other bots are excluded from context; Discord bot-to-bot
+                # routing is not an interaction surface.
                 if getattr(msg.author, "bot", False) and not include_other_bots:
                     continue
 
@@ -4676,55 +4248,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     f"{session_key}\0{command}".encode("utf-8")
                 ).hexdigest()[:24]
 
-            self_mention = ""
-            try:
-                if self._client and self._client.user:
-                    self_mention = f"<@{self._client.user.id}>"
-            except Exception:
-                self_mention = ""
             notify_mentions = self._discord_approval_notify_mentions()
-            legacy_bot_to_bot_enabled = os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() in {"1", "true", "yes"}
-            content_lines = []
-            used_bot_msg_envelope = False
-            if notify_mentions:
-                allowed_bot_ids = self._discord_allowed_bot_users()
-                recipient_bot_id = next(
-                    (
-                        mention_id
-                        for mention in notify_mentions
-                        for mention_id in [_discord_mention_id(mention)]
-                        if mention_id and mention_id in allowed_bot_ids
-                    ),
-                    None,
-                )
-                if recipient_bot_id and legacy_bot_to_bot_enabled:
-                    body_lines = [
-                        "approval required",
-                        f"approval_id: {approval_id}",
-                        "Use send_bot_approval_decision with this approval_id to approve or deny this live request.",
-                        "Do not answer with legacy slash-command approval text.",
-                    ]
-                    content_lines.append(
-                        _build_discord_bot_msg_v1(
-                            recipient_bot_id=recipient_bot_id,
-                            body="\n".join(body_lines),
-                            reply_expected=True,
-                            kind="approval_request",
-                            correlation_id=f"approval:{approval_id}",
-                        )
-                    )
-                    used_bot_msg_envelope = True
-                else:
-                    human_mentions = [m for m in notify_mentions if not (_discord_mention_id(m) and _discord_mention_id(m) in allowed_bot_ids)]
-                    if human_mentions:
-                        content_lines.append(" ".join(human_mentions) + " approval required")
-            if self_mention and not used_bot_msg_envelope and legacy_bot_to_bot_enabled:
-                content_lines.append(
-                    "Galt/another supervisor bot can approve only by sending a structured "
-                    "approval_decision BOT_MSG for this live request. Human operators can use "
-                    "the buttons below or reply `/approve` / `/deny`."
-                )
-            content = "\n".join(content_lines) or None
+            content = (" ".join(notify_mentions) + " approval required") if notify_mentions else None
 
             view = ExecApprovalView(
                 session_key=session_key,
@@ -5688,14 +5213,14 @@ def _define_discord_view_classes() -> None:
         def __init__(
             self,
             session_key: str,
-            approval_id: str,
-            allowed_user_ids: set,
+            approval_id: Optional[str] = None,
+            allowed_user_ids: Optional[set] = None,
             allowed_role_ids: Optional[set] = None,
         ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.session_key = session_key
-            self.approval_id = approval_id
-            self.allowed_user_ids = allowed_user_ids
+            self.approval_id = approval_id or session_key
+            self.allowed_user_ids = allowed_user_ids or set()
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
 
@@ -6435,9 +5960,6 @@ def _standalone_sanitize_error(text) -> str:
     )
 
 
-def _standalone_allowed_bot_users() -> set[str]:
-    raw = os.getenv("DISCORD_ALLOWED_BOT_USERS", "")
-    return {uid for uid in _clean_discord_user_ids(raw) if uid.isdigit()}
 
 
 async def _standalone_send(
@@ -6448,8 +5970,6 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[list] = None,
     force_document: bool = False,
-    bot_msg_internal: bool = False,
-    recipient_bot_id: Optional[str] = None,
     reply_to: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send via Discord REST API without a live gateway adapter.
@@ -6478,18 +5998,6 @@ async def _standalone_send(
     if not token:
         return {"error": "Discord standalone send: DISCORD_BOT_TOKEN is not set"}
 
-    allowed_bot_ids = _standalone_allowed_bot_users()
-    mentioned_allowed_bots = _discord_content_mentioned_allowed_bots(message, allowed_bot_ids)
-    if len(mentioned_allowed_bots) > 1:
-        return {"error": "Multiple allowed bot mentions are not permitted in a BOT_MSG v1 envelope"}
-    if mentioned_allowed_bots and not bot_msg_internal:
-        return {"error": bot_msg_required_error(mentioned_allowed_bots[0])}
-    if bot_msg_internal:
-        if len(message) > DiscordAdapter.MAX_MESSAGE_LENGTH:
-            return {"error": "BOT_MSG v1 envelope exceeds Discord message length and will not be chunked"}
-        if not recipient_bot_id or _parse_discord_bot_msg_v1(message, recipient_bot_id) is None:
-            return {"error": f"Internal BOT_MSG v1 envelope addressed to allowed bot {recipient_bot_id} is invalid"}
-
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
@@ -6502,13 +6010,6 @@ async def _standalone_send(
 
         def _message_payload(content: str) -> dict:
             payload = {"content": content}
-            if bot_msg_internal and recipient_bot_id:
-                payload["allowed_mentions"] = {
-                    "parse": [],
-                    "users": [str(recipient_bot_id)],
-                    "roles": [],
-                    "replied_user": False,
-                }
             if reply_to:
                 payload["message_reference"] = {"message_id": str(reply_to), "fail_if_not_exists": False}
             return payload
@@ -6672,73 +6173,6 @@ async def _standalone_send(
         return result
     except Exception as e:
         return {"error": _standalone_sanitize_error(f"Discord send failed: {e}")}
-
-
-async def _standalone_send_bot_message(
-    pconfig,
-    chat_id: str,
-    *,
-    recipient_bot_id: str,
-    body: str,
-    reply_expected: bool,
-    kind: str,
-    correlation_id: str,
-    thread_id: Optional[str] = None,
-    reply_to: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Send a structured BOT_MSG v1 envelope via Discord REST without a live adapter."""
-    if os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() not in {"1", "true", "yes"}:
-        return {"status": "error", "error": "legacy_discord_bot_to_bot_disabled"}
-    try:
-        envelope = _build_discord_bot_msg_v1(
-            recipient_bot_id=recipient_bot_id,
-            body=body,
-            reply_expected=reply_expected,
-            kind=kind,
-            correlation_id=correlation_id,
-        )
-    except ValueError as exc:
-        return {"error": str(exc)}
-    if len(envelope) > DiscordAdapter.MAX_MESSAGE_LENGTH:
-        return {"error": "BOT_MSG v1 envelope exceeds Discord message length and will not be chunked"}
-    result = await _standalone_send(
-        pconfig,
-        chat_id,
-        envelope,
-        thread_id=thread_id,
-        bot_msg_internal=True,
-        recipient_bot_id=recipient_bot_id,
-        reply_to=reply_to,
-    )
-    if result.get("success"):
-        result.update(
-            {
-                "bot_msg_v1": True,
-                "recipient_bot_id": str(recipient_bot_id),
-                "kind": kind,
-                "reply_expected": bool(reply_expected),
-                "correlation_id": correlation_id,
-            }
-        )
-    return result
-
-
-# ── Plugin entry point ────────────────────────────────────────────────────────
-
-
-def _clean_discord_user_ids(raw: str) -> list:
-    """Strip common Discord mention prefixes from a comma-separated ID string."""
-    cleaned = []
-    for uid in raw.replace(" ", "").split(","):
-        uid = uid.strip()
-        if uid.startswith("<@") and uid.endswith(">"):
-            uid = uid.lstrip("<@!").rstrip(">")
-        if uid.lower().startswith("user:"):
-            uid = uid[5:]
-        if uid:
-            cleaned.append(uid)
-    return cleaned
-
 
 def interactive_setup() -> None:
     """Guide the user through Discord bot setup.

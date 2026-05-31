@@ -281,12 +281,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
-| `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. Bot-to-bot operative traffic must also use `BOT_MSG v1`; see [Bot-to-bot approvals](#bot-to-bot-approvals). |
-| `DISCORD_ALLOWED_BOT_USERS` | No | — | Comma-separated Discord bot user IDs allowed to send bot-to-bot messages. Keep separate from human `DISCORD_ALLOWED_USERS`. |
-| `DISCORD_APPROVAL_NOTIFY_MENTIONS` | No | — | Raw mention tokens (for example `<@123>`) prepended to dangerous-command approval prompts so supervisor bots receive `approval_request` BOT_MSG envelopes. |
-| `DISCORD_BOT_MSG_PROTOCOL` | No | `v1` | Bot-to-bot protocol version. Unknown values fail gateway startup instead of accepting ambiguous machine traffic. |
-| `DISCORD_BOT_MSG_MAX_BODY_CHARS` | No | `1800` | Maximum BOT_MSG v1 body size accepted from another bot. |
-| `DISCORD_BOT_REPLY_FALSE_REACTION` | No | `👀` | Reaction used for valid BOT_MSG traffic with `reply_expected: false`. |
+| `DISCORD_APPROVAL_NOTIFY_MENTIONS` | No | — | Raw human/operator mention tokens (for example `<@123>`) prepended to dangerous-command approval prompts. Discord bot-authored approval traffic is ignored; use buttons or human text approval commands. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
@@ -307,15 +302,9 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 
 ## Bot-to-bot approvals
 
-Discord bot-to-bot traffic is fail-closed. If `DISCORD_ALLOW_BOTS=mentions` is enabled, a peer bot message is accepted only when it raw-mentions this bot and parses as `BOT_MSG v1`. Free-form raw mentions such as `<@pm_bot> /approve` are rejected on outbound send when the mentioned ID is in `DISCORD_ALLOWED_BOT_USERS`; ordinary `send_message` is not a bot control channel.
+Discord bot-to-bot approval routing has been decommissioned. The gateway ignores Discord messages authored by bots regardless of legacy environment variables, and the `send_bot_message` / `send_bot_approval_decision` model tools are no longer registered.
 
-Dangerous-command approvals between Hermes bots use the structured approval path:
-
-1. The subordinate bot sends an `approval_request` BOT_MSG and includes an opaque `approval_id` in the body.
-2. The supervisor bot calls `send_bot_approval_decision` with `target`, `recipient_bot_id`, `approval_id`, `decision=approve|deny`, and optional `scope=once|session|always`.
-3. Hermes sends an `approval_decision` BOT_MSG with `reply_expected: false`. The receiver resolves only a live matching approval ID; replay or stale IDs are rejected.
-
-Human operators can still use platform buttons or gateway text commands where supported. Bot supervisors must not answer approval prompts with raw slash-command text.
+Dangerous-command approvals are human/operator mediated: use Discord buttons, gateway text approval commands, or `DISCORD_APPROVAL_NOTIFY_MENTIONS` to ping human operators. Raw bot mentions are ordinary message content, not control-plane authority.
 
 ### Config File (`config.yaml`)
 

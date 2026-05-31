@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from pathlib import Path
@@ -171,7 +172,7 @@ def test_admin_mutations_require_live_admin_instance_or_bootstrap(tmp_path):
         with pytest.raises(PermissionError):
             cp.register_profile(conn, "default", role="admin")
         cp.register_profile(conn, "default", role="admin", actor_type="bootstrap")
-        inst = cp.register_instance(conn, "default", instance_id="admin-live")
+        inst = cp.register_instance(conn, "default", instance_id="admin-live", actor_type="bootstrap")
         cp.set_authority_mode(conn, "control_db", actor_type="admin", actor_profile="default", actor_instance_id=inst)
         cp.add_route_policy(conn, effect="allow", created_by_type="admin", created_by="default", created_by_instance_id=inst, sender_profile="a", receiver_profile="b", kind="status", capability="message")
         with pytest.raises(PermissionError):
@@ -184,7 +185,9 @@ def test_register_instance_does_not_demote_existing_admin_profile(tmp_path):
     conn = db(tmp_path)
     try:
         cp.register_profile(conn, "default", role="admin", display_name="Default", actor_type="bootstrap")
-        cp.register_instance(conn, "default", instance_id="default-1")
+        with pytest.raises(PermissionError):
+            cp.register_instance(conn, "default", instance_id="default-1")
+        cp.register_instance(conn, "default", instance_id="default-1", actor_type="bootstrap")
         row = conn.execute("SELECT role, display_name FROM cp_profiles WHERE profile_id='default'").fetchone()
         assert row["role"] == "admin"
         assert row["display_name"] == "Default"
@@ -320,7 +323,9 @@ def test_approval_atomic_consume_once_and_requester_bound(tmp_path):
         other = cp.register_instance(conn, "worker", instance_id="worker-2")
         aid = cp.create_approval(conn, requester_profile="worker", requester_instance_id=inst, approver_profile="default", command_preview="rm -rf /tmp/x")
         assert cp.consume_approval(conn, aid, requester_instance_id=inst) is False
-        admin_inst = cp.register_instance(conn, "default", instance_id="default-admin")
+        with pytest.raises(PermissionError):
+            cp.register_instance(conn, "default", instance_id="forged-admin")
+        admin_inst = cp.register_instance(conn, "default", instance_id="default-admin", actor_type="bootstrap")
         assert cp.decide_approval(conn, aid, approver_profile="default", approver_instance_id=admin_inst, decision="approved") is True
         assert cp.consume_approval(conn, aid, requester_instance_id=other, requester_profile="worker") is False
         assert cp.consume_approval(conn, aid, requester_instance_id=inst, requester_profile="other-profile") is False
@@ -336,8 +341,9 @@ def test_approval_rejects_invalid_decision(tmp_path):
         cp.register_profile(conn, "default", role="admin", actor_type="bootstrap")
         inst = cp.register_instance(conn, "worker", instance_id="worker-1")
         aid = cp.create_approval(conn, requester_profile="worker", requester_instance_id=inst, approver_profile="default", command_preview="cmd")
+        admin_inst = cp.register_instance(conn, "default", instance_id="default-admin", actor_type="bootstrap")
         with pytest.raises(cp.ControlPlaneError):
-            cp.decide_approval(conn, aid, approver_profile="default", approver_instance_id=cp.register_instance(conn, "default", instance_id="default-admin"), decision="approve")  # type: ignore[arg-type]
+            cp.decide_approval(conn, aid, approver_profile="default", approver_instance_id=admin_inst, decision="approve")  # type: ignore[arg-type]
     finally:
         conn.close()
 
@@ -364,9 +370,363 @@ def test_doctor_flags_wrong_root_and_stale_instances(tmp_path):
     conn = cp.connect(root=real_root)
     try:
         cp.register_instance(conn, "worker", instance_id="stale", lease_ms=-1)
+        cp.bootstrap_statutepm_policies(conn, seed_instances=True, instance_lease_ms=-1)
         issues = cp.doctor(conn, root=tmp_path / "expected")
         codes = {i.code for i in issues}
         assert "wrong_root" in codes
         assert "stale_instances" in codes
+        assert "stale_bootstrap_instances" in codes
+        assert "stale_spawned_instances" in codes
+    finally:
+        conn.close()
+
+
+def test_dispatch_claim_requires_receiver_profile_live_instance(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.add_route_policy(conn, effect="allow", created_by_type="bootstrap", sender_profile="default", receiver_profile="worker-a", kind="dispatch", capability="dispatch")
+        right = cp.register_instance(conn, "worker-a", instance_id="worker-a:1")
+        wrong = cp.register_instance(conn, "worker-b", instance_id="worker-b:1")
+        did = cp.create_dispatch(conn, sender_profile="default", receiver_profile="worker-a", payload={"task": "x"})
+        with pytest.raises(PermissionError):
+            cp.claim_next_for_profile(conn, receiver_profile="worker-a", instance_id=wrong)
+        assert cp.claim_next_for_profile(conn, receiver_profile="worker-a", instance_id=right) == (did, 1)
+    finally:
+        conn.close()
+
+
+def test_dispatch_claim_by_id_requires_receiver_profile_live_instance(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.add_route_policy(conn, effect="allow", created_by_type="bootstrap", sender_profile="default", receiver_profile="worker-a", kind="dispatch", capability="dispatch")
+        cp.register_instance(conn, "worker-b", instance_id="worker-b:1")
+        did = cp.create_dispatch(conn, sender_profile="default", receiver_profile="worker-a", payload={"task": "x"})
+        assert cp.claim_dispatch_by_id(conn, dispatch_id=did, instance_id="worker-b:1") == (False, None)
+        cp.register_instance(conn, "worker-a", instance_id="worker-a:1", lease_ms=-1)
+        with pytest.raises(PermissionError):
+            cp.claim_dispatch_by_id(conn, dispatch_id=did, instance_id="worker-a:1")
+    finally:
+        conn.close()
+
+
+def test_record_result_requires_current_lease_holder_and_is_migrated(tmp_path):
+    conn = db(tmp_path)
+    try:
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='cp_dispatch_results'").fetchone()
+        cp.add_route_policy(conn, effect="allow", created_by_type="bootstrap", sender_profile="default", receiver_profile="worker", kind="dispatch", capability="dispatch")
+        inst = cp.register_instance(conn, "worker", instance_id="worker:1")
+        other = cp.register_instance(conn, "worker", instance_id="worker:2")
+        did = cp.create_dispatch(conn, sender_profile="default", receiver_profile="worker", payload={"task": "x"})
+        ok, epoch = cp.claim_dispatch_by_id(conn, dispatch_id=did, instance_id=inst)
+        assert ok and epoch == 1
+        with pytest.raises(PermissionError):
+            cp.record_result(conn, dispatch_id=did, instance_id=other, lease_epoch=epoch, result={"schema": "control_result_v1"})
+        cp.record_result(conn, dispatch_id=did, instance_id=inst, lease_epoch=epoch, result={"schema": "control_result_v1", "status": "completed", "token": "secretsecretsecret"})
+        latest = cp.get_latest_dispatch_result(conn, did)
+        assert latest and latest["lease_epoch"] == 1
+        assert "secretsecret" not in latest["result_json"]
+    finally:
+        conn.close()
+
+
+def test_record_result_retry_retains_distinct_lease_epoch_history(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.add_route_policy(conn, effect="allow", created_by_type="bootstrap", sender_profile="default", receiver_profile="worker", kind="dispatch", capability="dispatch")
+        inst = cp.register_instance(conn, "worker", instance_id="worker:1")
+        did = cp.create_dispatch(conn, sender_profile="default", receiver_profile="worker", payload={"task": "x"}, max_attempts=2)
+        ok, epoch1 = cp.claim_dispatch_by_id(conn, dispatch_id=did, instance_id=inst, lease_ms=100_000)
+        assert ok and epoch1 == 1
+        cp.record_result(conn, dispatch_id=did, instance_id=inst, lease_epoch=epoch1, result={"status": "failed", "summary": "first"})
+        conn.execute("UPDATE cp_dispatches SET lease_expires_at_ms=0 WHERE dispatch_id=?", (did,))
+        cp.reap_expired_dispatches(conn, now_ms=cp.now_ms() + 10)
+        ok, epoch2 = cp.claim_dispatch_by_id(conn, dispatch_id=did, instance_id=inst)
+        assert ok and epoch2 == 2
+        cp.record_result(conn, dispatch_id=did, instance_id=inst, lease_epoch=epoch2, result={"status": "completed", "summary": "second"})
+        assert [r["result"]["summary"] for r in cp.list_dispatch_results(conn, did)] == ["first", "second"]
+    finally:
+        conn.close()
+
+
+def test_mark_expired_worker_instances_offline_is_status_only_and_role_scoped(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.register_profile(conn, "default", role="admin", actor_type="bootstrap")
+        cp.register_profile(conn, "statutepm", role="pm", actor_type="bootstrap")
+        worker = cp.register_instance(conn, "worker", instance_id="worker:expired", lease_ms=-1)
+        live_worker = cp.register_instance(conn, "worker", instance_id="worker:live", lease_ms=100_000)
+        admin = cp.register_instance(conn, "default", instance_id="default:expired", lease_ms=-1, actor_type="bootstrap")
+        pm = cp.register_instance(conn, "statutepm", instance_id="statutepm:expired", lease_ms=-1, actor_type="bootstrap")
+
+        changed = cp.mark_expired_worker_instances_offline(conn, now_ms_value=cp.now_ms() + 10)
+
+        assert changed == [worker]
+        statuses = {
+            row["instance_id"]: row["status"]
+            for row in conn.execute(
+                "SELECT instance_id,status FROM cp_profile_instances WHERE instance_id IN (?,?,?,?)",
+                (worker, live_worker, admin, pm),
+            ).fetchall()
+        }
+        assert statuses[worker] == "offline"
+        assert statuses[live_worker] == "online"
+        assert statuses[admin] == "online"
+        assert statuses[pm] == "online"
+        assert conn.execute("SELECT COUNT(*) FROM cp_profile_instances WHERE instance_id=?", (worker,)).fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_create_dispatch_requires_live_sender_instance(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.add_route_policy(conn, effect="allow", created_by_type="bootstrap", sender_profile="default", receiver_profile="worker", kind="dispatch", capability="dispatch")
+        sender = cp.register_instance(conn, "default", instance_id="default:1")
+        did = cp.create_dispatch_from_instance(conn, sender_instance_id=sender, receiver_profile="worker", payload={"task": "x"})
+        assert did.startswith("disp_")
+        cp.register_instance(conn, "other", instance_id="other:1")
+        with pytest.raises(cp.RouteDenied):
+            cp.create_dispatch_from_instance(conn, sender_instance_id="other:1", receiver_profile="worker", payload={"task": "x"})
+    finally:
+        conn.close()
+
+
+def test_create_message_requires_live_sender_instance(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.add_route_policy(conn, effect="allow", created_by_type="bootstrap", sender_profile="worker", receiver_profile="default", kind="status", capability="message")
+        sender = cp.register_instance(conn, "worker", instance_id="worker:1")
+        mid = cp.create_message_from_instance(conn, sender_instance_id=sender, receiver_profile="default", kind="status", body="ok")
+        assert mid.startswith("msg_")
+        with pytest.raises(PermissionError):
+            cp.create_message_from_instance(conn, sender_instance_id="missing", receiver_profile="default", kind="status", body="ok")
+    finally:
+        conn.close()
+
+
+def test_record_artifact_requires_current_lease_holder(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.add_route_policy(conn, effect="allow", created_by_type="bootstrap", sender_profile="default", receiver_profile="worker", kind="dispatch", capability="dispatch")
+        inst = cp.register_instance(conn, "worker", instance_id="worker:1")
+        did = cp.create_dispatch(conn, sender_profile="default", receiver_profile="worker", payload={"task": "x"})
+        ok, epoch = cp.claim_dispatch_by_id(conn, dispatch_id=did, instance_id=inst)
+        assert ok
+        art = cp.record_artifact(conn, dispatch_id=did, instance_id=inst, lease_epoch=epoch, path=str(tmp_path / "artifact.txt"), summary="ok")
+        assert art.startswith("art_")
+        with pytest.raises(PermissionError):
+            cp.record_artifact(conn, dispatch_id=did, instance_id=inst, lease_epoch=epoch + 1, path="/tmp/nope")
+    finally:
+        conn.close()
+
+
+def test_bootstrap_statutepm_policies_idempotent(tmp_path):
+    conn = db(tmp_path)
+    try:
+        first = cp.bootstrap_statutepm_policies(conn, seed_instances=True)
+        second = cp.bootstrap_statutepm_policies(conn, seed_instances=True)
+        assert first["instances"] == {"default": "default:bootstrap", "statutepm": "statutepm:bootstrap"}
+        assert second["profiles"]["default"]["status"] == "existing"
+        assert cp.route_allowed(conn, sender_profile="default", receiver_profile="statutepm", kind="dispatch", capability="dispatch")
+        assert cp.route_allowed(conn, sender_profile="statutepm", receiver_profile="statute-worker", kind="dispatch", capability="dispatch")
+        assert not cp.route_allowed(conn, sender_profile="statute-worker", receiver_profile="default", kind="dispatch", capability="dispatch")
+    finally:
+        conn.close()
+
+
+def test_bootstrap_statutepm_seed_instances_renews_leases_with_clock_seam(tmp_path, monkeypatch):
+    conn = db(tmp_path)
+    try:
+        monkeypatch.setattr(cp, "now_ms", lambda: 1_000)
+        cp.bootstrap_statutepm_policies(conn, seed_instances=True, instance_lease_ms=10_000)
+        first = conn.execute("SELECT lease_expires_at_ms FROM cp_profile_instances WHERE instance_id='statutepm:bootstrap'").fetchone()[0]
+        monkeypatch.setattr(cp, "now_ms", lambda: 5_000)
+        cp.bootstrap_statutepm_policies(conn, seed_instances=True, instance_lease_ms=10_000)
+        second = conn.execute("SELECT lease_expires_at_ms FROM cp_profile_instances WHERE instance_id='statutepm:bootstrap'").fetchone()[0]
+        assert first == 11_000
+        assert second == 15_000
+    finally:
+        conn.close()
+
+
+def test_control_db_cutover_requires_online_actor_profile_and_unexpired_lease(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.bootstrap_statutepm_policies(conn, seed_instances=True, instance_lease_ms=-1)
+        with pytest.raises(PermissionError):
+            cp.set_authority_mode(conn, "control_db", actor_type="admin", actor_profile="default", actor_instance_id="default:bootstrap")
+        cp.bootstrap_statutepm_policies(conn, seed_instances=True)
+        with pytest.raises(PermissionError):
+            cp.set_authority_mode(conn, "control_db", actor_type="admin", actor_profile="statutepm", actor_instance_id="default:bootstrap")
+        cp.set_authority_mode(conn, "control_db", actor_type="admin", actor_profile="default", actor_instance_id="default:bootstrap")
+        assert cp.get_authority_mode(conn) == "control_db"
+    finally:
+        conn.close()
+
+
+def test_pm_admin_instances_require_bootstrap_or_live_admin(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.bootstrap_statutepm_policies(conn)
+        with pytest.raises(PermissionError):
+            cp.register_instance(conn, "statutepm", instance_id="statutepm:ambient")
+        seeded = cp.bootstrap_statutepm_policies(conn, seed_instances=True)["instances"]["statutepm"]
+        assert seeded == "statutepm:bootstrap"
+    finally:
+        conn.close()
+
+
+def _create_v2_control_db(path: Path, *, partial_v3_meta: bool = False) -> None:
+    path.parent.mkdir(parents=True)
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE cp_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
+            CREATE TABLE cp_profiles(profile_id TEXT PRIMARY KEY, role TEXT NOT NULL DEFAULT 'worker', display_name TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+            CREATE TABLE cp_profile_instances(instance_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL REFERENCES cp_profiles(profile_id), pid INTEGER, host TEXT, started_at_ms INTEGER NOT NULL, heartbeat_at_ms INTEGER NOT NULL, lease_expires_at_ms INTEGER, status TEXT NOT NULL DEFAULT 'online', metadata_json TEXT NOT NULL DEFAULT '{}');
+            CREATE TABLE cp_route_policies(policy_id TEXT PRIMARY KEY, priority INTEGER NOT NULL DEFAULT 0, effect TEXT NOT NULL, sender_profile TEXT NOT NULL DEFAULT '*', receiver_profile TEXT NOT NULL DEFAULT '*', kind TEXT NOT NULL DEFAULT '*', capability TEXT NOT NULL DEFAULT '*', created_by TEXT NOT NULL, created_by_type TEXT NOT NULL, created_at_ms INTEGER NOT NULL, UNIQUE(priority,effect,sender_profile,receiver_profile,kind,capability));
+            CREATE TABLE cp_messages(message_id TEXT PRIMARY KEY, kind TEXT NOT NULL, sender_profile TEXT NOT NULL, receiver_profile TEXT NOT NULL, capability TEXT NOT NULL DEFAULT 'message', body TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending', created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, idempotency_key TEXT UNIQUE);
+            CREATE TABLE cp_message_events(event_id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES cp_messages(message_id), event_type TEXT NOT NULL, event_json TEXT NOT NULL DEFAULT '{}', created_at_ms INTEGER NOT NULL);
+            CREATE TABLE cp_dispatches(dispatch_id TEXT PRIMARY KEY, message_id TEXT REFERENCES cp_messages(message_id), sender_profile TEXT NOT NULL, receiver_profile TEXT NOT NULL, capability TEXT NOT NULL DEFAULT 'dispatch', status TEXT NOT NULL DEFAULT 'pending', payload_json TEXT NOT NULL DEFAULT '{}', lease_instance_id TEXT REFERENCES cp_profile_instances(instance_id), lease_epoch INTEGER NOT NULL DEFAULT 0, lease_expires_at_ms INTEGER, attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3, last_error TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, idempotency_key TEXT UNIQUE);
+            CREATE TABLE cp_dispatch_events(event_id TEXT PRIMARY KEY, dispatch_id TEXT NOT NULL REFERENCES cp_dispatches(dispatch_id), event_type TEXT NOT NULL, event_json TEXT NOT NULL DEFAULT '{}', created_at_ms INTEGER NOT NULL);
+            CREATE TABLE cp_artifacts(artifact_id TEXT PRIMARY KEY, dispatch_id TEXT REFERENCES cp_dispatches(dispatch_id), path TEXT NOT NULL, summary TEXT, created_at_ms INTEGER NOT NULL);
+            CREATE TABLE cp_dispatch_results(dispatch_id TEXT NOT NULL REFERENCES cp_dispatches(dispatch_id), lease_epoch INTEGER NOT NULL, instance_id TEXT NOT NULL REFERENCES cp_profile_instances(instance_id), result_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, PRIMARY KEY(dispatch_id, lease_epoch));
+            CREATE TABLE cp_approvals(approval_id TEXT PRIMARY KEY, requester_profile TEXT NOT NULL, requester_instance_id TEXT NOT NULL, approver_profile TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'pending', command_preview TEXT NOT NULL, tool_args_preview TEXT, decision TEXT, decision_reason TEXT, consumed_by_instance_id TEXT, consumed_at_ms INTEGER, expires_at_ms INTEGER NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+            CREATE TABLE cp_outbox(outbox_id TEXT PRIMARY KEY, subject_type TEXT NOT NULL, subject_id TEXT NOT NULL, subject_version INTEGER NOT NULL, event_id TEXT, target_platform TEXT, target_ref_hmac TEXT, payload_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+            CREATE TABLE cp_inbound_receipts(receipt_id TEXT PRIMARY KEY, platform TEXT NOT NULL, external_id_hmac TEXT NOT NULL, subject_type TEXT, subject_id TEXT, payload_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, UNIQUE(platform, external_id_hmac));
+            CREATE TABLE cp_mirror_state(subject_type TEXT NOT NULL, subject_id TEXT NOT NULL, target_platform TEXT NOT NULL, target_ref_hmac TEXT NOT NULL, subject_version INTEGER NOT NULL, external_id_hmac TEXT, status TEXT NOT NULL, updated_at_ms INTEGER NOT NULL, PRIMARY KEY(subject_type, subject_id,target_platform,target_ref_hmac));
+            CREATE INDEX idx_cp_messages_receiver_status ON cp_messages(receiver_profile,status,created_at_ms);
+            CREATE INDEX idx_cp_dispatches_receiver_status ON cp_dispatches(receiver_profile,status,lease_expires_at_ms);
+            CREATE INDEX idx_cp_dispatch_results_dispatch ON cp_dispatch_results(dispatch_id, lease_epoch DESC);
+            CREATE INDEX idx_cp_approvals_status ON cp_approvals(status,expires_at_ms);
+            CREATE INDEX idx_cp_outbox_status ON cp_outbox(status,created_at_ms);
+            """
+        )
+        conn.execute("INSERT INTO cp_meta VALUES('schema_version',?,0)", ("3" if partial_v3_meta else "2",))
+        conn.execute("INSERT INTO cp_meta VALUES('authority_mode','shadow',0)")
+        if partial_v3_meta:
+            conn.execute("CREATE TABLE cp_runtime_mappings(control_profile_id TEXT PRIMARY KEY, runtime_profile TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'worker', enabled INTEGER NOT NULL DEFAULT 1, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_migrates_v2_schema_before_creating_v3_indexes(tmp_path):
+    root = tmp_path / ".hermes"
+    path = cp.control_db_path(root)
+    _create_v2_control_db(path)
+
+    conn = cp.connect(root=root)
+    try:
+        assert conn.execute("SELECT value FROM cp_meta WHERE key='schema_version'").fetchone()[0] == "3"
+        dispatch_cols = {row[1] for row in conn.execute("PRAGMA table_info(cp_dispatches)")}
+        assert "parent_dispatch_id" in dispatch_cols
+        assert conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_cp_dispatches_parent_status'").fetchone()
+    finally:
+        conn.close()
+
+
+def test_partial_v3_migration_does_not_mark_schema_complete(tmp_path):
+    root = tmp_path / ".hermes"
+    path = cp.control_db_path(root)
+    _create_v2_control_db(path, partial_v3_meta=True)
+
+    with pytest.raises(cp.ControlPlaneError, match="partial control DB schema"):
+        cp.connect(root=root)
+
+    conn = sqlite3.connect(path)
+    try:
+        assert conn.execute("SELECT value FROM cp_meta WHERE key='schema_version'").fetchone()[0] == "3"
+        assert "parent_dispatch_id" not in {row[1] for row in conn.execute("PRAGMA table_info(cp_dispatches)")}
+    finally:
+        conn.close()
+
+
+def test_v3_schema_status_blocker_supervision_runtime_mapping_and_approval_context(tmp_path):
+    conn = db(tmp_path)
+    try:
+        assert conn.execute("SELECT value FROM cp_meta WHERE key='schema_version'").fetchone()[0] == "3"
+        for table in ["cp_status_events", "cp_blockers", "cp_supervision_runs", "cp_runtime_mappings"]:
+            assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+        for table, column in [
+            ("cp_dispatches", "parent_dispatch_id"),
+            ("cp_dispatches", "dispatch_schema"),
+            ("cp_approvals", "dispatch_id"),
+            ("cp_approvals", "lease_epoch"),
+            ("cp_approvals", "request_context_json"),
+            ("cp_approvals", "decision_by_instance_id"),
+        ]:
+            cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            assert column in cols
+    finally:
+        conn.close()
+
+
+def test_status_and_blocker_lifecycle_are_identity_and_lease_bound(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.add_route_policy(conn, effect="allow", created_by_type="bootstrap", sender_profile="default", receiver_profile="worker", kind="dispatch", capability="dispatch")
+        cp.register_profile(conn, "default", role="admin", actor_type="bootstrap")
+        admin = cp.register_instance(conn, "default", instance_id="default:admin", actor_type="bootstrap")
+        worker = cp.register_instance(conn, "worker", instance_id="worker:1")
+        other = cp.register_instance(conn, "other", instance_id="other:1")
+        did = cp.create_dispatch(conn, sender_profile="default", receiver_profile="worker", payload={"task": "x"}, dispatch_schema="generic_dispatch_v1")
+        ok, epoch = cp.claim_dispatch_by_id(conn, dispatch_id=did, instance_id=worker)
+        assert ok and epoch == 1
+        event_id = cp.emit_status(conn, instance_id=worker, dispatch_id=did, status="running", summary="running")
+        assert event_id.startswith("evt_")
+        with pytest.raises(PermissionError):
+            cp.emit_status(conn, instance_id=other, dispatch_id=did, status="running", summary="spoof")
+        blocker_id = cp.open_blocker(conn, dispatch_id=did, instance_id=worker, severity="blocked", kind="missing_context", summary="need input", response_profile="default")
+        assert blocker_id.startswith("blk_")
+        with pytest.raises(PermissionError):
+            cp.resolve_blocker(conn, blocker_id, resolver_instance_id=other, resolution={"summary": "no"})
+        assert cp.resolve_blocker(conn, blocker_id, resolver_instance_id=admin, resolution={"summary": "ok"}) is True
+        row = conn.execute("SELECT status FROM cp_blockers WHERE blocker_id=?", (blocker_id,)).fetchone()
+        assert row["status"] == "resolved"
+    finally:
+        conn.close()
+
+
+def test_supervision_run_records_findings_and_dry_run_reap_does_not_mutate(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.register_profile(conn, "default", role="admin", actor_type="bootstrap")
+        admin = cp.register_instance(conn, "default", instance_id="default:admin", actor_type="bootstrap")
+        rid = cp.start_supervision_run(conn, actor_instance_id=admin, scope={"dry_run": True})
+        cp.finish_supervision_run(conn, rid, status="completed", findings=[{"code": "ok"}], actions=[])
+        row = conn.execute("SELECT status, findings_json FROM cp_supervision_runs WHERE run_id=?", (rid,)).fetchone()
+        assert row["status"] == "completed"
+        assert json.loads(row["findings_json"])[0]["code"] == "ok"
+    finally:
+        conn.close()
+
+
+def test_approval_context_binds_dispatch_and_lease_epoch(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.register_profile(conn, "default", role="admin", actor_type="bootstrap")
+        admin = cp.register_instance(conn, "default", instance_id="default:admin", actor_type="bootstrap")
+        worker = cp.register_instance(conn, "worker", instance_id="worker:1")
+        aid = cp.create_approval(
+            conn,
+            requester_profile="worker",
+            requester_instance_id=worker,
+            approver_profile="default",
+            command_preview="git push",
+            dispatch_id="disp_1",
+            lease_epoch=4,
+            cwd="/tmp/work",
+            affected_paths=["/tmp/work/file.py"],
+            operation_class="git_push",
+            risk_classification="dangerous",
+            reason_requested="test",
+            request_context={"source": "unit"},
+        )
+        assert cp.decide_approval(conn, aid, approver_profile="default", approver_instance_id=admin, decision="approved")
+        assert cp.consume_approval(conn, aid, requester_instance_id=worker, requester_profile="worker", dispatch_id="disp_2", lease_epoch=4) is False
+        assert cp.consume_approval(conn, aid, requester_instance_id=worker, requester_profile="worker", dispatch_id="disp_1", lease_epoch=5) is False
+        assert cp.consume_approval(conn, aid, requester_instance_id=worker, requester_profile="worker", dispatch_id="disp_1", lease_epoch=4) is True
     finally:
         conn.close()

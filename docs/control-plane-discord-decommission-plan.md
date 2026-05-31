@@ -7,7 +7,7 @@ Discord bot-to-bot messages were being used as an authority/control path between
 ## Target State
 
 1. Discord gateway returns to baseline mirror/ingress behavior.
-2. Legacy Discord BOT_MSG authority is disabled by default and only available behind `HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT=1` for rollback/testing.
+2. Legacy Discord BOT_MSG authority is decommissioned, not env-gated: Discord bot-authored messages are ignored and bot-message model tools are not registered.
 3. Local SQLite control-plane DB under the root Hermes home is the deterministic authority surface for profiles, routes, durable messages, approvals, dispatch lifecycle, and outbox observer events.
 4. DB operations are explicit, redacted, lease/epoch fenced, and test-covered.
 
@@ -36,8 +36,8 @@ Discord bot-to-bot messages were being used as an authority/control path between
 - Mirror dangerous command approvals into `cp_approvals`.
 - Persist approval decision and consume approved grants atomically.
 - In `control_db` authority mode, fail closed if DB approval persistence/consume fails.
-- Disable `send_bot_message` / `send_bot_approval_decision` registration and handlers by default.
-- Gate inbound Discord bot messages/approval decisions behind `HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT=1`.
+- Remove `send_bot_message` / `send_bot_approval_decision` registration and handlers.
+- Ignore inbound Discord bot messages/approval decisions regardless of legacy env vars.
 - Gate: approval persistence tests and legacy-disable tests.
 
 ### Slice 5 — dispatch lifecycle
@@ -46,8 +46,8 @@ Discord bot-to-bot messages were being used as an authority/control path between
 
 ### Slice 6 — Discord gateway baseline
 - Remove default operational routing guard/bot authority behavior from normal Discord gateway path.
-- Preserve legacy behavior only under explicit env flag for rollback tests.
-- Gate: gateway bot filter/hardening tests updated to assert baseline default and env-gated legacy.
+- Do not preserve a Discord legacy bot-to-bot rollback path; rollback should be a git revert, not a runtime env switch.
+- Gate: gateway bot filter/hardening tests updated to assert bot authors are ignored even when legacy env vars are set.
 
 ## Verification
 

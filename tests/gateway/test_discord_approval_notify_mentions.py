@@ -47,7 +47,6 @@ def test_approval_notify_mentions_falls_back_to_operator_mentions(monkeypatch):
 @pytest.mark.asyncio
 async def test_send_exec_approval_mentions_supervisor_and_includes_text_command_fallback(monkeypatch):
     adapter = _make_adapter()
-    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
     monkeypatch.setenv("DISCORD_APPROVAL_NOTIFY_MENTIONS", "<@***>")
 
     channel = MagicMock()
@@ -66,17 +65,14 @@ async def test_send_exec_approval_mentions_supervisor_and_includes_text_command_
     assert result.success is True
     channel.send.assert_awaited_once()
     content = channel.send.await_args.kwargs["content"]
-    assert "approval required" in content
-    assert "approval_decision BOT_MSG" in content
-    assert "`/approve` / `/deny`" in content
+    assert content == "<@***> approval required"
     assert channel.send.await_args.kwargs["embed"] is not None
     assert channel.send.await_args.kwargs["view"] is not None
 
 
 @pytest.mark.asyncio
-async def test_send_exec_approval_uses_bot_msg_for_allowed_supervisor_bot(monkeypatch):
+async def test_send_exec_approval_mentions_allowed_supervisor_without_bot_msg(monkeypatch):
     adapter = _make_adapter()
-    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
     monkeypatch.setenv("DISCORD_APPROVAL_NOTIFY_MENTIONS", "<@777>")
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
 
@@ -94,22 +90,12 @@ async def test_send_exec_approval_uses_bot_msg_for_allowed_supervisor_bot(monkey
     )
 
     assert result.success is True
-    content = channel.send.await_args.kwargs["content"]
-    parsed = discord_adapter._parse_discord_bot_msg_v1(content, "777")
-    assert parsed is not None
-    assert parsed["reply_expected"] is True
-    assert parsed["kind"] == "approval_request"
-    assert parsed["correlation_id"].startswith("approval:")
-    assert "approval required" in parsed["body"]
-    assert "approval_id:" in parsed["body"]
-    assert "send_bot_approval_decision" in parsed["body"]
-    assert "/approve" not in parsed["body"]
+    assert channel.send.await_args.kwargs["content"] == "<@777> approval required"
 
 
 @pytest.mark.asyncio
 async def test_send_exec_approval_keeps_content_optional_without_notify(monkeypatch):
     adapter = _make_adapter()
-    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
     monkeypatch.delenv("DISCORD_APPROVAL_NOTIFY_MENTIONS", raising=False)
     monkeypatch.delenv("DISCORD_OPERATOR_MENTIONS", raising=False)
 
@@ -126,9 +112,4 @@ async def test_send_exec_approval_keeps_content_optional_without_notify(monkeypa
     )
 
     assert result.success is True
-    content = channel.send.await_args.kwargs["content"]
-    assert content == (
-        "Galt/another supervisor bot can approve only by sending a structured "
-        "approval_decision BOT_MSG for this live request. Human operators can use "
-        "the buttons below or reply `/approve` / `/deny`."
-    )
+    assert channel.send.await_args.kwargs["content"] is None

@@ -1,7 +1,8 @@
-"""Shared Discord BOT_MSG v1 protocol helpers.
+"""Quarantined Discord BOT_MSG v1 protocol helpers.
 
-This module is intentionally dependency-light so it can be used by the live
-Discord adapter, standalone REST senders, gateway retry guards, and tools.
+Discord bot-to-bot control routing is decommissioned. Normal runtime files must
+not import this module; it remains only so old references/tests can fail or be
+removed deliberately without deleting tracked history in this change.
 """
 
 from __future__ import annotations

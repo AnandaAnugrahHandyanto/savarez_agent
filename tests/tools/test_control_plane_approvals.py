@@ -9,8 +9,9 @@ def test_dangerous_approval_persists_to_control_db(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_APPROVER_PROFILE", "default")
     token = approval.set_current_session_key("sess-a")
     try:
-        approval._control_approval_create("gw-test-approval", "rm -rf /tmp/x", "delete files", ttl_seconds=60)
-        approval._control_approval_decide("gw-test-approval", "once", reason="test")
+        approver_instance = approval._control_approval_create("gw-test-approval", "rm -rf /tmp/x", "delete files", ttl_seconds=60)
+        assert approver_instance
+        approval._control_approval_decide("gw-test-approval", "once", reason="test", approver_instance_id=approver_instance)
         assert approval._control_approval_get_choice("gw-test-approval") == "once"
         approval._control_approval_consume("gw-test-approval")
     finally:
@@ -31,3 +32,39 @@ def test_dangerous_approval_persists_to_control_db(monkeypatch, tmp_path):
         assert outbox_count == 3
     finally:
         conn.close()
+
+
+def test_control_plane_approval_prefers_control_identity(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_PROFILE", "legacy-worker")
+    monkeypatch.setenv("HERMES_PROFILE_ID", "worker-a")
+    monkeypatch.setenv("HERMES_CONTROL_INSTANCE_ID", "worker-a:inst")
+    monkeypatch.setenv("HERMES_APPROVER_PROFILE", "default")
+    approver_instance = approval._control_approval_create("identity-approval", "rm -rf /tmp/x", "delete files", ttl_seconds=60)
+    assert approver_instance
+    from hermes_cli import control_db as cp
+
+    conn = cp.connect(root=tmp_path)
+    try:
+        row = conn.execute("SELECT requester_profile, requester_instance_id FROM cp_approvals WHERE approval_id='identity-approval'").fetchone()
+        assert tuple(row) == ("worker-a", "worker-a:inst")
+    finally:
+        conn.close()
+
+
+def test_strict_control_db_blocks_missing_approval_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_PROFILE_ID", "worker-a")
+    monkeypatch.setenv("HERMES_CONTROL_INSTANCE_ID", "worker-a:missing")
+    monkeypatch.setenv("HERMES_APPROVER_PROFILE", "default")
+    monkeypatch.setenv("HERMES_APPROVER_INSTANCE_ID", "default:missing")
+    from hermes_cli import control_db as cp
+
+    conn = cp.connect(root=tmp_path)
+    try:
+        cp.register_profile(conn, "default", role="admin", actor_type="bootstrap")
+        cp.register_instance(conn, "default", instance_id="default:bootstrap", actor_type="bootstrap")
+        cp.set_authority_mode(conn, "control_db", actor_type="admin", actor_profile="default", actor_instance_id="default:bootstrap")
+    finally:
+        conn.close()
+    assert approval._control_approval_create("strict-missing", "rm -rf /tmp/x", "delete files", ttl_seconds=60) is None

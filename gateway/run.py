@@ -6611,9 +6611,10 @@ class GatewayRunner:
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
-        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
+        # Some non-Discord platforms can explicitly admit bot-authored events.
+        # Discord bot-authored messages are ignored at the adapter and must not
+        # bypass the human allowlist here.
         platform_allow_bots_map = {
-            Platform.DISCORD: "DISCORD_ALLOW_BOTS",
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",
         }
 
