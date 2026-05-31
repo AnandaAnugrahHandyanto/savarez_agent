@@ -1977,7 +1977,65 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "zai",
     "gemini",
     "google",
+    # DigitalOcean Gradient AI does not implement /v1/models, so live
+    # discovery is intentionally skipped (see commit 24a6e1e5). The 76 DO
+    # model IDs + context_length live in the bundled models.dev catalog;
+    # this entry surfaces them in the picker via _merge_with_models_dev().
+    "digitalocean",
 })
+
+
+def _sort_models_dev_catalog(provider: str, model_ids: list[str]) -> list[str]:
+    """Sort a models.dev-sourced model list: A-Z by base name, newest first within base.
+
+    Intended for router-like providers that rely on the models.dev catalog
+    rather than a live /v1/models endpoint (e.g. DigitalOcean, and any future
+    provider in ``_MODELS_DEV_PREFERRED``).
+
+    "Base name" is the portion of the ID before the first version-like segment
+    (a segment that starts with a digit).
+    e.g. ``anthropic-claude-opus-4.8`` and ``anthropic-claude-opus-4.5`` share
+    base ``anthropic-claude-opus``; ``openai-gpt-5.4`` and ``openai-gpt-5``
+    share base ``openai-gpt``.
+
+    Sort key: (base_name asc, release_date desc, full_id asc).
+    Models with no catalog metadata (e.g. router IDs) use full_id as base_name
+    and sort last within their alphabetical position.
+    """
+    try:
+        from agent.models_dev import fetch_models_dev
+
+        data = fetch_models_dev()
+        catalog: dict = data.get(provider, {}).get("models", {})
+    except Exception:
+        catalog = {}
+
+    def _base_name(mid: str) -> str:
+        """Strip trailing version segments (starting with a digit)."""
+        parts = mid.split("-")
+        base = []
+        for part in parts:
+            if part and part[0].isdigit():
+                break
+            base.append(part)
+        return "-".join(base) if base else mid
+
+    def sort_key(mid: str) -> tuple:
+        entry = catalog.get(mid)
+        release = ""
+        if isinstance(entry, dict):
+            release = str(entry.get("release_date") or "")
+        base = _base_name(mid)
+        # Invert date chars so newer ISO dates sort first within the base group.
+        # No metadata → \x7f → sorts last within base group.
+        date_desc = "".join(chr(0x7F - ord(c)) for c in release) if release else "\x7f"
+        return (base, date_desc, mid)
+
+    return sorted(model_ids, key=sort_key)
+
+
+def _sort_digitalocean_models(model_ids: list[str]) -> list[str]:
+    return _sort_models_dev_catalog("digitalocean", model_ids)
 
 
 def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
@@ -2143,6 +2201,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
 
+    # DigitalOcean: prepend routers (user + presets) to models.dev catalog
+    if normalized == "digitalocean":
+        # Fetch user routers + presets from DO API, prepend to models.dev list
+        routers = fetch_digitalocean_routers(force_refresh=force_refresh)
+        curated_static = list(_PROVIDER_MODELS.get(normalized, []))
+        # Merge with models.dev catalog (routers first, then fixed models)
+        merged = _merge_with_models_dev(normalized, curated_static)
+        router_plus_models = routers + merged
+        return _sort_models_dev_catalog(normalized, router_plus_models)
+
     # ── Profile-based generic live fetch (all simple api-key providers) ──
     # Handles any provider registered in providers/ with auth_type="api_key".
     # Replaces per-provider copy-paste blocks (stepfun, gmi, zai, etc.).
@@ -2172,7 +2240,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
-        return _merge_with_models_dev(normalized, curated_static)
+        merged = _merge_with_models_dev(normalized, curated_static)
+        return _sort_models_dev_catalog(normalized, merged)
     return curated_static
 
 
@@ -3347,6 +3416,135 @@ def fetch_ollama_cloud_models(
     if stale is not None:
         return stale["models"]
 
+    return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DigitalOcean Inference Router Enumeration
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DO_ROUTERS_CACHE_TTL = 86400  # 24 hours
+
+
+def _do_routers_cache_path() -> Path:
+    """Return the path for the DigitalOcean routers cache."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "digitalocean_routers_cache.json"
+
+
+def _load_do_routers_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
+    """Load cached DigitalOcean routers from disk.
+    
+    Args:
+        ignore_ttl: If True, return data even if the TTL has expired (stale fallback).
+    """
+    try:
+        cache_path = _do_routers_cache_path()
+        if not cache_path.exists():
+            return None
+        with open(cache_path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        routers = data.get("routers")
+        if not (isinstance(routers, list)):
+            return None
+        if not ignore_ttl:
+            cached_at = data.get("cached_at", 0)
+            if (time.time() - cached_at) > _DO_ROUTERS_CACHE_TTL:
+                return None  # stale
+        return data
+    except Exception:
+        pass
+    return None
+
+
+def _save_do_routers_cache(routers: list[str]) -> None:
+    """Persist the DigitalOcean routers list to disk."""
+    try:
+        from utils import atomic_json_write
+        cache_path = _do_routers_cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(cache_path, {"routers": routers, "cached_at": time.time()}, indent=None)
+    except Exception:
+        pass
+
+
+def fetch_digitalocean_routers(api_token: Optional[str] = None, *, force_refresh: bool = False) -> list[str]:
+    """Fetch DigitalOcean Inference Router model IDs with disk cache.
+    
+    Fetches from two DO API endpoints:
+      1. User-defined routers: GET /v2/gen-ai/models/routers (requires auth)
+      2. Preset routers: GET /v2/gen-ai/models/routers/presets (no auth required)
+    
+    Returns model IDs in the format 'router:<name>' or 'router:<slug>'.
+    Falls back to cached data or empty list on error.
+    """
+    # 1. Check disk cache
+    if not force_refresh:
+        cached = _load_do_routers_cache()
+        if cached is not None:
+            return cached.get("routers", [])
+    
+    # 2. Resolve API token (env var or passed)
+    token = api_token
+    if not token:
+        token = os.getenv("DIGITALOCEAN_API_TOKEN", "").strip()
+    
+    routers: list[str] = []
+    
+    # 3. Fetch user routers (requires auth)
+    if token:
+        try:
+            req = urllib.request.Request(
+                "https://api.digitalocean.com/v2/gen-ai/models/routers",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "User-Agent": _HERMES_USER_AGENT,
+                },
+            )
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                data = json.loads(resp.read().decode())
+                for router in data.get("model_routers", []):
+                    router_name = router.get("name", "").strip()
+                    if router_name:
+                        routers.append(f"router:{router_name}")
+        except Exception:
+            pass  # Fall through to presets
+    
+    # 4. Fetch preset routers (no auth required, but try with token if available)
+    try:
+        headers = {"User-Agent": _HERMES_USER_AGENT}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(
+            "https://api.digitalocean.com/v2/gen-ai/models/routers/presets",
+            headers=headers,
+        )
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            data = json.loads(resp.read().decode())
+            for preset in data.get("presets", []):
+                preset_slug = preset.get("slug", "").strip()
+                if preset_slug:
+                    routers.append(f"router:{preset_slug}")
+    except Exception:
+        pass
+    
+    # 5. Deduplicate and sort
+    routers = sorted(list(set(routers)))
+    
+    # 6. Save to cache
+    if routers:
+        _save_do_routers_cache(routers)
+    
+    # 7. Return, or stale cache as fallback
+    if routers:
+        return routers
+    
+    stale = _load_do_routers_cache(ignore_ttl=True)
+    if stale is not None:
+        return stale.get("routers", [])
+    
     return []
 
 

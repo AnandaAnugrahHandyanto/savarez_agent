@@ -222,6 +222,19 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
       return
     }
 
+    // PageUp / PageDown fast-scroll (jump VISIBLE items at a time)
+    if (key.pageUp) {
+      setSel(v => Math.max(0, v - VISIBLE + 1))
+
+      return
+    }
+
+    if (key.pageDown) {
+      setSel(v => Math.min(count - 1, v + VISIBLE - 1))
+
+      return
+    }
+
     if (key.return) {
       if (stage === 'provider') {
         if (!provider) {
@@ -511,7 +524,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         {allowPersistGlobal ? ' · g toggle' : ' only'}
       </Text>
       <OverlayHint t={t}>
-        {models.length ? '↑/↓ select · Enter switch · Esc back · q close' : 'Enter/Esc back · q close'}
+        {models.length ? '↑/↓ select · PgUp/PgDown page · Enter switch · Esc back · q close' : 'Enter/Esc back · q close'}
       </OverlayHint>
     </Box>
   )

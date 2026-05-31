@@ -1072,8 +1072,8 @@ def list_authenticated_providers(
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
-        _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
-        get_curated_nous_model_ids,
+        _MODELS_DEV_PREFERRED, _merge_with_models_dev, _sort_models_dev_catalog,
+        provider_model_ids, get_curated_nous_model_ids,
     )
 
     results: List[dict] = []
@@ -1233,15 +1233,14 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Unified pathway: route through cached_provider_model_ids() so the
-        # /model picker sees the SAME list `hermes model` would build, with
-        # disk caching to keep the picker open snappy. Falls back to the
-        # curated static list when the live fetcher returns nothing.
-        model_ids = cached_provider_model_ids(hermes_id)
-        if not model_ids:
-            model_ids = curated.get(hermes_id, [])
-            if hermes_id in _MODELS_DEV_PREFERRED:
-                model_ids = _merge_with_models_dev(hermes_id, model_ids)
+        # Use curated list, falling back to models.dev if no curated list.
+        # For preferred providers, merge models.dev entries into the curated
+        # catalog so newly released models (e.g. mimo-v2.5-pro on opencode-go)
+        # show up in the picker without requiring a Hermes release.
+        model_ids = curated.get(hermes_id, [])
+        if hermes_id in _MODELS_DEV_PREFERRED:
+            model_ids = _merge_with_models_dev(hermes_id, model_ids)
+            model_ids = _sort_models_dev_catalog(hermes_id, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -1360,14 +1359,12 @@ def list_authenticated_providers(
             except Exception:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
         else:
-            # Unified pathway — see Section 1 rationale. Fall back to the
-            # curated dict (with models.dev merge for preferred providers)
-            # when the live fetcher comes up empty.
-            model_ids = cached_provider_model_ids(hermes_slug)
-            if not model_ids:
-                model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
-                if hermes_slug in _MODELS_DEV_PREFERRED:
-                    model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+            # Use curated list — look up by Hermes slug, fall back to overlay key
+            model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+            # Merge with models.dev for preferred providers (same rationale as above).
+            if hermes_slug in _MODELS_DEV_PREFERRED:
+                model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+                model_ids = _sort_models_dev_catalog(hermes_slug, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 
