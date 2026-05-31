@@ -11729,6 +11729,16 @@ def main():
         help="Replace any existing gateway instance (useful for systemd)",
     )
     gateway_run.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Start even when a systemd/launchd-managed gateway for this "
+            "profile is already running. Without this, running a gateway from "
+            "a shell on a supervised host is refused to avoid orphaning a "
+            "second dispatcher that corrupts the shared kanban.db."
+        ),
+    )
+    gateway_run.add_argument(
         "--no-supervise",
         action="store_true",
         help=(
@@ -11785,6 +11795,15 @@ def main():
         "--all",
         action="store_true",
         help="Kill ALL gateway processes across all profiles before restarting",
+    )
+    gateway_restart.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "When restart falls back to a manual foreground start, start even "
+            "if a systemd/launchd-managed gateway for this profile is already "
+            "running (otherwise refused to avoid orphaning a second dispatcher)."
+        ),
     )
 
     # gateway status
