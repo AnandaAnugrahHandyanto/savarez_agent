@@ -99,6 +99,10 @@ class ReviewLoopCircuitBreaker(RuntimeError):
     """Reviewer findings repeated too many times for one issue run."""
 
 
+class ReviewMergeGateError(RuntimeError):
+    """Reviewer output or PR state did not satisfy automatic merge gates."""
+
+
 @dataclass(frozen=True)
 class IssueResolutionRequest:
     """Normalized request to resolve one GitHub issue."""
@@ -370,7 +374,11 @@ async def _issue_queue_worker() -> None:
         notify = _RUN_NOTIFIERS.get(run.id) or _DEFAULT_NOTIFY or _noop_notify
         try:
             await _execute_run(store, run, notify)
-        except (ReviewTagParseError, ReviewLoopCircuitBreaker) as exc:
+        except (
+            ReviewTagParseError,
+            ReviewLoopCircuitBreaker,
+            ReviewMergeGateError,
+        ) as exc:
             store.mark_failed(run.id, str(exc))
             await notify(
                 f"Hermes: Issue run #{run.id} failed review safety gate: {exc}"
@@ -526,13 +534,27 @@ async def _execute_single_issue(
             f"({findings_count}/{REVIEW_FINDINGS_MAX_FIX_ATTEMPTS}).",
         )
         raise ReviewFindingsRetry("review_findings queued same-branch coding fix")
+
+    if not can_merge_pr(routing_tag, pr):
+        await _post_pr_audit_comment(
+            run.repo,
+            pr,
+            f"Hermes audit: automatic merge blocked for run #{run.id}; routing state "
+            f"`{routing_tag.state}` next action `{routing_tag.next_action}`.",
+        )
+        raise ReviewMergeGateError(
+            f"PR #{pr.number} did not receive a current-head ready_for_merge tag"
+        )
+
+    await _merge_ready_pr(run.repo, issue, pr, run)
     store.mark_completed(run.id)
     await _post_pr_audit_comment(
         run.repo,
         pr,
-        f"Hermes audit: review completed for run #{run.id}; routing state `{routing_tag.state}`.",
+        f"Hermes audit: review completed for run #{run.id}; routing state `{routing_tag.state}`; "
+        "PR merged and linked issue closure requested.",
     )
-    await notify(f"Hermes: Cloud reviewer posted feedback on PR #{pr.number}.")
+    await notify(f"Hermes: PR #{pr.number} merged and Issue #{issue.number} closed.")
 
 
 async def _run_cloud_reviewer_with_tag(
@@ -1310,8 +1332,85 @@ def is_review_findings_for_coder(tag: ReviewRoutingTag | None) -> bool:
 def can_merge_pr(tag: ReviewRoutingTag | None, pr: PullRequestMetadata) -> bool:
     """Fail closed unless review output says the current PR head is ready."""
     return bool(
-        tag and tag.state == "ready_for_merge" and tag.head_ref_oid == pr.head_ref_oid
+        tag
+        and tag.state == "ready_for_merge"
+        and tag.next_action == "ready_for_merge"
+        and tag.head_ref_oid == pr.head_ref_oid
     )
+
+
+async def _merge_ready_pr(
+    repo: str,
+    issue: IssueMetadata,
+    pr: PullRequestMetadata,
+    run: IssueRun,
+) -> None:
+    """Merge a reviewer-approved PR and explicitly close the linked issue."""
+    await _assert_pr_merge_ready(repo, pr)
+    await _post_pr_audit_comment(
+        repo,
+        pr,
+        f"Hermes audit: automatic merge started for run #{run.id} at head `{pr.head_ref_oid}`.",
+    )
+    await _run([
+        "gh",
+        "pr",
+        "merge",
+        str(pr.number),
+        "--repo",
+        repo,
+        "--squash",
+        "--delete-branch",
+    ])
+    await _post_pr_audit_comment(
+        repo,
+        pr,
+        f"Hermes audit: PR #{pr.number} merged automatically for run #{run.id}.",
+    )
+    await _post_issue_audit_comment(
+        repo,
+        issue.number,
+        f"Hermes audit: PR #{pr.number} merged automatically for run #{run.id}; closing issue.",
+    )
+    await _run([
+        "gh",
+        "issue",
+        "close",
+        str(issue.number),
+        "--repo",
+        repo,
+        "--comment",
+        f"Hermes audit: Issue closed after automatic merge of PR #{pr.number} for run #{run.id}.",
+    ])
+
+
+async def _assert_pr_merge_ready(repo: str, pr: PullRequestMetadata) -> None:
+    """Fail closed unless GitHub reports the live PR as clean and current-head."""
+    result = await _run([
+        "gh",
+        "pr",
+        "view",
+        str(pr.number),
+        "--repo",
+        repo,
+        "--json",
+        "state,isDraft,mergeStateStatus,headRefOid",
+    ])
+    data = json.loads(result.stdout or "{}")
+    live_head = str(data.get("headRefOid") or "")
+    if live_head != pr.head_ref_oid:
+        raise ReviewMergeGateError(
+            f"PR #{pr.number} head changed from {pr.head_ref_oid} to {live_head}; rerun review"
+        )
+    if str(data.get("state") or "").upper() != "OPEN":
+        raise ReviewMergeGateError(f"PR #{pr.number} is not open")
+    if bool(data.get("isDraft")):
+        raise ReviewMergeGateError(f"PR #{pr.number} is draft")
+    merge_state = str(data.get("mergeStateStatus") or "").upper()
+    if merge_state != "CLEAN":
+        raise ReviewMergeGateError(
+            f"PR #{pr.number} mergeStateStatus is {merge_state or 'unknown'}; required checks not clean"
+        )
 
 
 async def _load_issue(repo: str, issue_number: int) -> IssueMetadata:

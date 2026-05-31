@@ -18,6 +18,7 @@ from gateway.issue_resolution import (
     cancel_issue_resolution,
     ReviewFindingsRetry,
     ReviewLoopCircuitBreaker,
+    ReviewMergeGateError,
     ReviewTagParseError,
     IssueStateStore,
     _execute_master_issue,
@@ -333,6 +334,15 @@ def test_can_merge_pr_requires_ready_for_current_head():
     assert (
         can_merge_pr(
             parse_review_routing_tag(
+                "kyber-tag.state=ready_for_merge\nnext_action=rerun_reviewer\nhead_ref_oid=abc123"
+            ),
+            pr,
+        )
+        is False
+    )
+    assert (
+        can_merge_pr(
+            parse_review_routing_tag(
                 "kyber-tag.state=review_findings\nnext_action=coding_subagent\nhead_ref_oid=abc123"
             ),
             pr,
@@ -423,6 +433,14 @@ async def test_execute_single_issue_queues_fix_run_on_review_findings(
             return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
         if command[:3] == ["gh", "pr", "diff"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "view"]:
+            payload = {
+                "state": "OPEN",
+                "isDraft": False,
+                "mergeStateStatus": "CLEAN",
+                "headRefOid": "abc123",
+            }
+            return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
         if command[:3] == ["gh", "issue", "comment"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["gh", "pr", "comment"]:
@@ -520,6 +538,14 @@ async def test_execute_single_issue_trips_review_findings_circuit_breaker(
             return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
         if command[:3] == ["gh", "pr", "diff"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "view"]:
+            payload = {
+                "state": "OPEN",
+                "isDraft": False,
+                "mergeStateStatus": "CLEAN",
+                "headRefOid": "abc123",
+            }
+            return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
         if command[:3] == ["gh", "issue", "comment"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["gh", "pr", "comment"]:
@@ -552,6 +578,217 @@ async def test_execute_single_issue_trips_review_findings_circuit_breaker(
         await _execute_single_issue(store, run, issue, notify)
 
     assert store.get_run(run.id).review_findings_count == 3
+
+
+@pytest.mark.asyncio
+async def test_execute_single_issue_merges_and_closes_ready_for_merge(
+    tmp_path, monkeypatch
+):
+    """Current-head ready_for_merge reviews should merge PRs and close issues."""
+    store = IssueStateStore(tmp_path / "issues.db")
+    store.enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", 42, tmp_path),
+        run_type=IssueRunType.ISSUE,
+    )
+    run = store.claim_next_run()
+    assert run is not None
+    issue = IssueMetadata(
+        number=42,
+        title="Add PnL summary",
+        body="body",
+        url="https://github.com/m0nklabs/cryptotrader/issues/42",
+    )
+    commands: list[list[str]] = []
+    messages: list[str] = []
+
+    async def notify(message: str):
+        messages.append(message)
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        commands.append(command)
+        if command[:4] == ["gh", "repo", "view", "m0nklabs/cryptotrader"]:
+            return CompletedProcess(
+                command=command,
+                returncode=0,
+                stdout=json.dumps({"defaultBranchRef": {"name": "master"}}),
+                stderr="",
+            )
+        if command == ["git", "branch", "--show-current"]:
+            return CompletedProcess(command, 0, stdout="feature\n", stderr="")
+        if command == ["git", "status", "--porcelain"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["git", "checkout", "-B"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["git", "push", "-u"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "create"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout="https://github.com/m0nklabs/cryptotrader/pull/77\n",
+                stderr="",
+            )
+        if command[:3] == ["gh", "pr", "list"]:
+            payload = [
+                {
+                    "number": 77,
+                    "url": "https://github.com/m0nklabs/cryptotrader/pull/77",
+                    "headRefName": "issue/cryptotrader-42-add-pnl-summary",
+                    "headRefOid": "abc123",
+                }
+            ]
+            return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        if command[:3] == ["gh", "pr", "diff"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "view"]:
+            payload = {
+                "state": "OPEN",
+                "isDraft": False,
+                "mergeStateStatus": "CLEAN",
+                "headRefOid": "abc123",
+            }
+            return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        if command[:3] == ["gh", "issue", "comment"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "comment"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "review"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "merge"]:
+            return CompletedProcess(command, 0, stdout="merged", stderr="")
+        if command[:3] == ["gh", "issue", "close"]:
+            return CompletedProcess(command, 0, stdout="closed", stderr="")
+        if "--message" in command:
+            message = command[command.index("--message") + 1]
+            if "Review this new PR" in message:
+                return CompletedProcess(
+                    command,
+                    0,
+                    stdout=(
+                        "kyber-tag.state=ready_for_merge\n"
+                        "next_action=ready_for_merge\n"
+                        "head_ref_oid=abc123\n"
+                    ),
+                    stderr="",
+                )
+            return CompletedProcess(command, 0, stdout="local coder done", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+    monkeypatch.setenv("AIDER_BIN", "/opt/aider/bin/aider")
+    monkeypatch.setenv("AIDER_GUARDIAN_API_KEY", "local-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "cloud-key")
+    monkeypatch.setenv("KYBERM0NK_ENV", str(tmp_path / "missing.env"))
+
+    await _execute_single_issue(store, run, issue, notify)
+
+    assert store.get_run(run.id).status is IssueRunStatus.COMPLETED
+    assert any(command[:3] == ["gh", "pr", "merge"] for command in commands)
+    assert any(command[:3] == ["gh", "issue", "close"] for command in commands)
+    assert any("merged and Issue #42 closed" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_execute_single_issue_blocks_stale_ready_for_merge_tag(
+    tmp_path, monkeypatch
+):
+    """Stale ready_for_merge tags should fail closed without merging."""
+    store = IssueStateStore(tmp_path / "issues.db")
+    store.enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", 42, tmp_path),
+        run_type=IssueRunType.ISSUE,
+    )
+    run = store.claim_next_run()
+    assert run is not None
+    issue = IssueMetadata(
+        number=42,
+        title="Add PnL summary",
+        body="body",
+        url="https://github.com/m0nklabs/cryptotrader/issues/42",
+    )
+    commands: list[list[str]] = []
+
+    async def notify(_message: str):
+        return None
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        commands.append(command)
+        if command[:4] == ["gh", "repo", "view", "m0nklabs/cryptotrader"]:
+            return CompletedProcess(
+                command=command,
+                returncode=0,
+                stdout=json.dumps({"defaultBranchRef": {"name": "master"}}),
+                stderr="",
+            )
+        if command == ["git", "branch", "--show-current"]:
+            return CompletedProcess(command, 0, stdout="feature\n", stderr="")
+        if command == ["git", "status", "--porcelain"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["git", "checkout", "-B"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["git", "push", "-u"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "create"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout="https://github.com/m0nklabs/cryptotrader/pull/77\n",
+                stderr="",
+            )
+        if command[:3] == ["gh", "pr", "list"]:
+            payload = [
+                {
+                    "number": 77,
+                    "url": "https://github.com/m0nklabs/cryptotrader/pull/77",
+                    "headRefName": "issue/cryptotrader-42-add-pnl-summary",
+                    "headRefOid": "abc123",
+                }
+            ]
+            return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        if command[:3] == ["gh", "pr", "diff"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "view"]:
+            payload = {
+                "state": "OPEN",
+                "isDraft": False,
+                "mergeStateStatus": "CLEAN",
+                "headRefOid": "abc123",
+            }
+            return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        if command[:3] == ["gh", "issue", "comment"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "comment"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "review"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if "--message" in command:
+            message = command[command.index("--message") + 1]
+            if "Review this new PR" in message:
+                return CompletedProcess(
+                    command,
+                    0,
+                    stdout=(
+                        "kyber-tag.state=ready_for_merge\n"
+                        "next_action=ready_for_merge\n"
+                        "head_ref_oid=stale\n"
+                    ),
+                    stderr="",
+                )
+            return CompletedProcess(command, 0, stdout="local coder done", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+    monkeypatch.setenv("AIDER_BIN", "/opt/aider/bin/aider")
+    monkeypatch.setenv("AIDER_GUARDIAN_API_KEY", "local-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "cloud-key")
+    monkeypatch.setenv("KYBERM0NK_ENV", str(tmp_path / "missing.env"))
+
+    with pytest.raises(ReviewMergeGateError):
+        await _execute_single_issue(store, run, issue, notify)
+
+    assert store.get_run(run.id).status is IssueRunStatus.RUNNING
+    assert not any(command[:3] == ["gh", "pr", "merge"] for command in commands)
+    assert not any(command[:3] == ["gh", "issue", "close"] for command in commands)
 
 
 @pytest.mark.asyncio
@@ -614,12 +851,24 @@ async def test_execute_single_issue_retries_malformed_review_tag_once(
             return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
         if command[:3] == ["gh", "pr", "diff"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "view"]:
+            payload = {
+                "state": "OPEN",
+                "isDraft": False,
+                "mergeStateStatus": "CLEAN",
+                "headRefOid": "abc123",
+            }
+            return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
         if command[:3] == ["gh", "issue", "comment"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["gh", "pr", "comment"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["gh", "pr", "review"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "merge"]:
+            return CompletedProcess(command, 0, stdout="merged", stderr="")
+        if command[:3] == ["gh", "issue", "close"]:
+            return CompletedProcess(command, 0, stdout="closed", stderr="")
         if "--message" in command:
             message = command[command.index("--message") + 1]
             if "Review this new PR" in message:
