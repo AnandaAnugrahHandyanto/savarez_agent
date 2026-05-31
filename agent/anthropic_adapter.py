@@ -1783,11 +1783,18 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
                     tool_result_ids.add(block.get("tool_use_id"))
     for m in result:
         if m["role"] == "assistant" and isinstance(m["content"], list):
-            m["content"] = [
+            kept = [
                 b
                 for b in m["content"]
                 if b.get("type") != "tool_use" or b.get("id") in tool_result_ids
             ]
+            if len(kept) != len(m["content"]):
+                kept = [
+                    b
+                    for b in kept
+                    if not (isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"})
+                ]
+            m["content"] = kept
             if not m["content"]:
                 m["content"] = [{"type": "text", "text": "(tool call removed)"}]
 
