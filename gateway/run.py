@@ -2295,6 +2295,24 @@ class GatewayRunner:
                 platform.value, time.monotonic() - started_at, e,
             )
 
+    async def _teardown_adapters(self) -> None:
+        """Tear every adapter down concurrently during clean shutdown.
+
+        Each teardown is individually bounded (see _safe_adapter_teardown),
+        so running them under one gather makes the phase ~max(timeout)
+        instead of N×timeout — a wedged adapter no longer extends the window
+        launchd/systemd allow before SIGKILL. Adapters touch only their own
+        state; shared cleanup runs after this returns. return_exceptions is
+        belt-and-suspenders: the helper never raises.
+        """
+        await asyncio.gather(
+            *(
+                self._safe_adapter_teardown(adapter, platform)
+                for platform, adapter in list(self.adapters.items())
+            ),
+            return_exceptions=True,
+        )
+
     async def _bounded_shutdown_send(self, adapter, *args, **kwargs):
         """Send a shutdown notification under the shared per-adapter timeout.
 
@@ -6520,8 +6538,7 @@ class GatewayRunner:
                     )
                     self._cleanup_agent_resources(_agent)
 
-            for platform, adapter in list(self.adapters.items()):
-                await self._safe_adapter_teardown(adapter, platform)
+            await self._teardown_adapters()
             logger.info(
                 "Shutdown phase: all adapters disconnected at +%.2fs",
                 _phase_elapsed(),

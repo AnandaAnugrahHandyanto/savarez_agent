@@ -92,3 +92,18 @@ async def test_fatal_error_disconnect_is_bounded(monkeypatch):
     # reconnection bookkeeping that follows still runs.
     await asyncio.wait_for(runner._handle_adapter_fatal_error(adapter), timeout=2.0)
     assert pf not in runner.adapters
+
+
+@pytest.mark.asyncio
+async def test_teardown_runs_adapters_concurrently(monkeypatch):
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.2")
+    runner = _runner()
+    runner.adapters = {Platform.TELEGRAM: _HangingDisconnect(), Platform.DISCORD: _HangingDisconnect()}
+
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await asyncio.wait_for(runner._teardown_adapters(), timeout=2.0)
+    elapsed = loop.time() - start
+
+    # Concurrent: ~one timeout (0.2s), not the 0.4s a sequential loop would take.
+    assert elapsed < 0.35
