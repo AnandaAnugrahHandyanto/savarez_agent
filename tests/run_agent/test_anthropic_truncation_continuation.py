@@ -100,15 +100,21 @@ class TestTruncatedAnthropicResponseNormalization:
 
 
 class TestContinuationLogicBranching:
-    """Symbolic check that the api_mode gate now includes anthropic_messages."""
+    """Symbolic check that the api_mode gate includes all shared continuation modes."""
 
-    @pytest.mark.parametrize("api_mode", ["chat_completions", "bedrock_converse", "anthropic_messages"])
-    def test_all_three_api_modes_hit_continuation_branch(self, api_mode):
-        # The guard in run_agent.py is:
-        #   if self.api_mode in ("chat_completions", "bedrock_converse", "anthropic_messages"):
-        assert api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}
+    @pytest.mark.parametrize(
+        "api_mode",
+        ["chat_completions", "bedrock_converse", "anthropic_messages", "codex_responses"],
+    )
+    def test_all_supported_api_modes_hit_continuation_branch(self, api_mode):
+        from agent.conversation_loop import TEXT_CONTINUATION_API_MODES
 
-    def test_codex_responses_still_excluded(self):
-        # codex_responses has its own truncation path (not continuation-based)
-        # and should NOT be routed through the shared block.
-        assert "codex_responses" not in {"chat_completions", "bedrock_converse", "anthropic_messages"}
+        assert api_mode in TEXT_CONTINUATION_API_MODES
+
+    def test_truncated_tool_call_modes_match_text_continuation_modes(self):
+        from agent.conversation_loop import (
+            TEXT_CONTINUATION_API_MODES,
+            TRUNCATED_TOOL_CALL_API_MODES,
+        )
+
+        assert TRUNCATED_TOOL_CALL_API_MODES == TEXT_CONTINUATION_API_MODES

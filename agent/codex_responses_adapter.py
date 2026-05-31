@@ -960,7 +960,7 @@ def _extract_responses_message_text(item: Any) -> str:
         text = getattr(part, "text", None)
         if isinstance(text, str) and text:
             chunks.append(text)
-    return "".join(chunks).strip()
+    return "".join(chunks)
 
 
 def _extract_responses_reasoning_text(item: Any) -> str:
@@ -1194,7 +1194,7 @@ def _normalize_codex_response(
                 function=SimpleNamespace(name=fn_name, arguments=arguments),
             ))
 
-    final_text = "\n".join([p for p in content_parts if p]).strip()
+    final_text = "\n".join([p for p in content_parts if p])
     if not final_text and hasattr(response, "output_text"):
         out_text = getattr(response, "output_text", "")
         if isinstance(out_text, str):
