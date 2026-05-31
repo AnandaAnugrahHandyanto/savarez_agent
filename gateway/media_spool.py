@@ -111,6 +111,38 @@ class MediaSpool:
             pass
 
 
+_VIDEO_EXTS = frozenset({".mp4", ".mov", ".webm", ".mkv", ".avi"})
+_AUDIO_EXTS = frozenset({".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac", ".aac"})
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg"})
+
+
+def kind_for(path: str, is_voice: bool) -> str:
+    ext = Path(path).suffix.lower()
+    if is_voice or (ext in _AUDIO_EXTS and is_voice):
+        return "voice"
+    if ext in _IMAGE_EXTS:
+        return "image"
+    if ext in _VIDEO_EXTS:
+        return "video"
+    if ext in _AUDIO_EXTS:
+        return "voice"
+    return "document"
+
+
+def mint_outbound(spool: MediaSpool, media_files: list[tuple[str, bool]]) -> list[dict]:
+    """Mint refs for worker-produced files (path, is_voice) → wire dicts."""
+    import mimetypes
+
+    refs = []
+    for path, is_voice in media_files:
+        p = Path(path)
+        kind = kind_for(path, is_voice)
+        mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        ref = spool.mint(p.read_bytes(), filename=p.name, mime=mime, kind=kind, is_voice=is_voice)
+        refs.append(ref.to_wire())
+    return refs
+
+
 def materialize_inbound(spool: MediaSpool, refs: list[dict], dest_dir: Path) -> list[tuple[Path, MediaRef]]:
     """Resolve inbound wire refs to local files in *dest_dir* (worker side).
 

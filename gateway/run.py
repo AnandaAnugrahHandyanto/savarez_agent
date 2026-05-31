@@ -8694,17 +8694,50 @@ class GatewayRunner:
                 # Live streaming relay is a refinement; the final reply is sent below.
                 pass
 
+        async def _media_handler(media_event):
+            await self._deliver_worker_media(event, source, media_event)
+
         result = await client.dispatch(
             input=event.text,
             instructions=getattr(event, "channel_prompt", None),
             session_id=session_key,
             consumer=_FrontConsumer(),
+            media_handler=_media_handler,
         )
         output = (result or {}).get("output", "")
         adapter = self.adapters.get(source.platform)
         if output and adapter:
             await adapter.send(source.chat_id, output, reply_to=self._reply_anchor_for_event(event))
         return result or {}
+
+    async def _deliver_worker_media(self, event, source, media_event) -> None:
+        """Resolve a worker's response.media refs to front-local files and upload
+        them via the platform's existing send_* methods, then unlink the spool."""
+        from gateway.media_spool import MediaSpool, MediaRef, default_spool_root
+        from gateway.platforms.base import get_image_cache_dir, get_document_cache_dir
+
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return
+        spool = MediaSpool(default_spool_root())
+        images: list[tuple[str, str]] = []
+        for data in media_event.get("media", []):
+            mref = MediaRef.from_wire(data)
+            dest = get_image_cache_dir() if mref.kind == "image" else get_document_cache_dir()
+            path = str(spool.materialize(mref.ref, dest, filename=mref.filename))
+            try:
+                if mref.kind == "image" and not mref.as_document:
+                    images.append((f"file://{path}", ""))
+                elif mref.kind == "voice":
+                    await adapter.send_voice(source.chat_id, path)
+                elif mref.kind == "video":
+                    await adapter.send_video(source.chat_id, path)
+                else:
+                    await adapter.send_document(source.chat_id, path)
+            finally:
+                spool.unlink(mref.ref)  # eager cleanup on fetch
+        if images:
+            await adapter.send_multiple_images(source.chat_id, images)
 
     async def _reset_routed_worker(self, event, source, profile: str) -> None:
         """Forward /new or /reset to the routed worker, scoped to its own session."""

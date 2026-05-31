@@ -973,6 +973,24 @@ class APIServerAdapter(BasePlatformAdapter):
                 lines.append(f"[User sent a file: {path}]")
         return (user_message + "\n" + "\n".join(lines)).strip() if lines else user_message
 
+    def _emit_outbound_media(self, run_id: str, output: str, q) -> tuple[list, str]:
+        """Mint refs for the worker's MEDIA: output, emit response.media, return tag-free text."""
+        from gateway.media_spool import MediaSpool, mint_outbound, default_spool_root
+        from gateway.platforms.base import BasePlatformAdapter
+
+        media_files, cleaned = BasePlatformAdapter.extract_media(output or "")
+        if not media_files:
+            return [], output
+        refs = mint_outbound(MediaSpool(default_spool_root()), media_files)
+        if refs:
+            q.put_nowait({
+                "event": "response.media",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "media": refs,
+            })
+        return refs, cleaned
+
     def _create_agent(
         self,
         ephemeral_system_prompt: Optional[str] = None,
@@ -3792,6 +3810,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    # Outbound media claim-check: mint refs from MEDIA: tags and
+                    # strip them, so the front delivers via its own send_*; the
+                    # output is guaranteed tag-free (same parse → no double-send).
+                    media_wire, final_response = self._emit_outbound_media(run_id, final_response, q)
                     q.put_nowait({
                         "event": "run.completed",
                         "run_id": run_id,

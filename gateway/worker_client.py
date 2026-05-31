@@ -55,6 +55,7 @@ class WorkerClient:
         session_id: Optional[str] = None,
         model: Optional[str] = None,
         approval_handler: Callable[[dict], Awaitable[str]] | None = None,
+        media_handler: Callable[[dict], Awaitable[None]] | None = None,
     ) -> dict:
         """Run one turn on the worker; relay deltas, handle approvals, return the terminal event."""
         body = {k: v for k, v in {
@@ -70,6 +71,9 @@ class WorkerClient:
             name = event.get("event")
             if name == "message.delta":
                 consumer.on_delta(event.get("delta", ""))
+            elif name == "response.media":
+                if media_handler:
+                    await media_handler(event)
             elif name == "approval.request":
                 choice = await approval_handler(event) if approval_handler else "deny"
                 await self._post(f"{self.base_url}/v1/runs/{run_id}/approval", {"choice": choice})
