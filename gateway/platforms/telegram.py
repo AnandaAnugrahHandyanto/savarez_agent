@@ -840,6 +840,142 @@ class TelegramAdapter(BasePlatformAdapter):
                 stack.append(context)
         return False
 
+    @staticmethod
+    def _looks_like_pool_timeout(error: Exception) -> bool:
+        """Return True for PTB/httpx general-pool exhaustion errors."""
+        text = str(error).lower()
+        return (
+            "pool timeout" in text
+            or "connection pool are occupied" in text
+            or "all connections in the connection pool are occupied" in text
+        )
+
+    @staticmethod
+    def _telegram_request_kwargs() -> Dict[str, Any]:
+        """Return the shared HTTPXRequest kwargs used by Telegram send paths."""
+
+        def _env_int(name: str, default: int) -> int:
+            try:
+                return int(os.getenv(name, str(default)))
+            except (TypeError, ValueError):
+                return default
+
+        def _env_float(name: str, default: float) -> float:
+            try:
+                return float(os.getenv(name, str(default)))
+            except (TypeError, ValueError):
+                return default
+
+        return {
+            "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
+            "pool_timeout": _env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
+            "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
+            "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
+            "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+        }
+
+    async def _send_text_via_bot(
+        self,
+        bot: Bot,
+        *,
+        chat_id: int,
+        chunk: str,
+        reply_to_id: Optional[int],
+        thread_kwargs: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Message:
+        """Send one text chunk through the given bot, preserving fallbacks."""
+        try:
+            return await bot.send_message(
+                chat_id=chat_id,
+                text=chunk,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_to_message_id=reply_to_id,
+                **thread_kwargs,
+                **self._link_preview_kwargs(),
+                **self._notification_kwargs(metadata),
+            )
+        except Exception as md_error:
+            # Markdown parsing failed, try plain text.
+            if "parse" not in str(md_error).lower() and "markdown" not in str(md_error).lower():
+                raise
+            logger.warning(
+                "[%s] MarkdownV2 parse failed, falling back to plain text: %s",
+                self.name,
+                md_error,
+            )
+            plain_chunk = _strip_mdv2(chunk)
+            return await bot.send_message(
+                chat_id=chat_id,
+                text=plain_chunk,
+                parse_mode=None,
+                reply_to_message_id=reply_to_id,
+                **thread_kwargs,
+                **self._link_preview_kwargs(),
+                **self._notification_kwargs(metadata),
+            )
+
+    async def _send_text_via_fresh_request(
+        self,
+        *,
+        chat_id: int,
+        chunk: str,
+        reply_to_id: Optional[int],
+        thread_kwargs: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Message:
+        """Retry a send through a fresh one-shot Bot/API request session."""
+        request_kwargs = self._telegram_request_kwargs()
+        disable_fallback = os.getenv(
+            "HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        fallback_ips = self._fallback_ips()
+        proxy_targets = ["api.telegram.org", *fallback_ips]
+        proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
+
+        if fallback_ips and not proxy_url and not disable_fallback:
+            request = HTTPXRequest(
+                **request_kwargs,
+                httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+            )
+        elif proxy_url:
+            request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+        else:
+            request = HTTPXRequest(**request_kwargs)
+
+        bot_kwargs: Dict[str, Any] = {
+            "token": self.config.token,
+            "request": request,
+        }
+        custom_base_url = self.config.extra.get("base_url")
+        if custom_base_url:
+            bot_kwargs["base_url"] = custom_base_url
+            bot_kwargs["base_file_url"] = self.config.extra.get(
+                "base_file_url", custom_base_url
+            )
+        if self.config.extra.get("local_mode"):
+            bot_kwargs["local_mode"] = True
+
+        bot = Bot(**bot_kwargs)
+        try:
+            return await self._send_text_via_bot(
+                bot,
+                chat_id=chat_id,
+                chunk=chunk,
+                reply_to_id=reply_to_id,
+                thread_kwargs=thread_kwargs,
+                metadata=metadata,
+            )
+        finally:
+            try:
+                await request.shutdown()
+            except Exception:
+                logger.debug(
+                    "[%s] Fresh Telegram request shutdown failed (non-fatal)",
+                    self.name,
+                    exc_info=True,
+                )
+
     def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
         value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
         if value is None:
@@ -1500,25 +1636,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # PTB defaults (pool_timeout=1s) are too aggressive on flaky networks and
             # can trigger "Pool timeout: All connections in the connection pool are occupied"
             # during reconnect/bootstrap. Use safer defaults and allow env overrides.
-            def _env_int(name: str, default: int) -> int:
-                try:
-                    return int(os.getenv(name, str(default)))
-                except (TypeError, ValueError):
-                    return default
-
-            def _env_float(name: str, default: float) -> float:
-                try:
-                    return float(os.getenv(name, str(default)))
-                except (TypeError, ValueError):
-                    return default
-
-            request_kwargs = {
-                "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
-                "pool_timeout": _env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
-                "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
-                "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
-                "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
-            }
+            request_kwargs = self._telegram_request_kwargs()
 
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
@@ -1901,33 +2019,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
-                        # Try Markdown first, fall back to plain text if it fails
-                        try:
-                            msg = await self._bot.send_message(
-                                chat_id=int(chat_id),
-                                text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
-                                reply_to_message_id=reply_to_id,
-                                **thread_kwargs,
-                                **self._link_preview_kwargs(),
-                                **self._notification_kwargs(metadata),
-                            )
-                        except Exception as md_error:
-                            # Markdown parsing failed, try plain text
-                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                                plain_chunk = _strip_mdv2(chunk)
-                                msg = await self._bot.send_message(
-                                    chat_id=int(chat_id),
-                                    text=plain_chunk,
-                                    parse_mode=None,
-                                    reply_to_message_id=reply_to_id,
-                                    **thread_kwargs,
-                                    **self._link_preview_kwargs(),
-                                    **self._notification_kwargs(metadata),
-                                )
-                            else:
-                                raise
+                        msg = await self._send_text_via_bot(
+                            self._bot,
+                            chat_id=int(chat_id),
+                            chunk=chunk,
+                            reply_to_id=reply_to_id,
+                            thread_kwargs=thread_kwargs,
+                            metadata=metadata,
+                        )
                         break  # success
                     except _NetErr as send_err:
                         # BadRequest is a subclass of NetworkError in
@@ -2007,6 +2106,26 @@ class TelegramAdapter(BasePlatformAdapter):
                             and isinstance(send_err, _TimedOut)
                             and not self._looks_like_connect_timeout(send_err)
                         ):
+                            if self._looks_like_pool_timeout(send_err):
+                                if _send_attempt == 0:
+                                    logger.warning(
+                                        "[%s] Telegram send hit general pool timeout, retrying once before fresh-session fallback: %s",
+                                        self.name,
+                                        send_err,
+                                    )
+                                    continue
+                                logger.warning(
+                                    "[%s] Telegram send general pool remained exhausted; retrying through fresh request session",
+                                    self.name,
+                                )
+                                msg = await self._send_text_via_fresh_request(
+                                    chat_id=int(chat_id),
+                                    chunk=chunk,
+                                    reply_to_id=reply_to_id,
+                                    thread_kwargs=thread_kwargs,
+                                    metadata=metadata,
+                                )
+                                break
                             raise
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
