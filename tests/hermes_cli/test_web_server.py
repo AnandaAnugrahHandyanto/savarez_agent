@@ -605,6 +605,71 @@ class TestWebServerEndpoints:
         if resp.status_code == 200:
             assert "FastAPI" not in resp.text  # Should not serve the actual source
 
+    def test_set_model_main_nous_applies_gateway_defaults(self, monkeypatch):
+        """Switching the main provider to Nous calls apply_nous_managed_defaults
+        (mirroring the CLI's post-model-selection Tool Gateway routing) and
+        surfaces the routed tools in the response."""
+        import hermes_cli.nous_subscription as ns
+
+        called = {}
+
+        def fake_apply(config, *, enabled_toolsets=None, force_fresh=False):
+            called["enabled"] = set(enabled_toolsets or ())
+            called["force_fresh"] = force_fresh
+            # Simulate routing the unconfigured web tool through the gateway.
+            web = config.setdefault("web", {})
+            web["backend"] = "firecrawl"
+            return {"web"}
+
+        monkeypatch.setattr(ns, "apply_nous_managed_defaults", fake_apply)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "nous", "model": "hermes-4"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["provider"] == "nous"
+        assert data["gateway_tools"] == ["web"]
+        assert called["force_fresh"] is True
+
+    def test_set_model_main_non_nous_skips_gateway_defaults(self, monkeypatch):
+        """Non-Nous providers must NOT trigger Tool Gateway auto-routing."""
+        import hermes_cli.nous_subscription as ns
+
+        def boom(*args, **kwargs):  # pragma: no cover - must not be called
+            raise AssertionError("apply_nous_managed_defaults called for non-nous provider")
+
+        monkeypatch.setattr(ns, "apply_nous_managed_defaults", boom)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data.get("gateway_tools", []) == []
+
+    def test_set_model_main_gateway_failure_does_not_block_save(self, monkeypatch):
+        """A Portal/gateway hiccup must never prevent saving the model."""
+        import hermes_cli.nous_subscription as ns
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("portal unreachable")
+
+        monkeypatch.setattr(ns, "apply_nous_managed_defaults", boom)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "nous", "model": "hermes-4"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data.get("gateway_tools", []) == []
+
 
 # ---------------------------------------------------------------------------
 # _build_schema_from_config tests

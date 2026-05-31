@@ -1396,8 +1396,44 @@ async def set_model_assignment(body: ModelAssignment):
             if "context_length" in model_cfg:
                 model_cfg.pop("context_length", None)
             cfg["model"] = model_cfg
+
+            # When switching the main provider to Nous, mirror the CLI's
+            # post-model-selection behaviour (hermes_cli/main.py
+            # prompt_enable_tool_gateway / tools_config apply_nous_managed_defaults):
+            # auto-route any *unconfigured* tools through the Nous Tool Gateway.
+            # This is purely additive — apply_nous_managed_defaults skips every
+            # tool where the user already has a direct key (FIRECRAWL_API_KEY,
+            # FAL_KEY, etc.) or an explicit backend/provider in config, so it
+            # never overwrites a user's own setup. GUI users thus land on the
+            # gateway the same way CLI users do, without a separate prompt.
+            gateway_tools: list[str] = []
+            if provider.strip().lower() == "nous":
+                try:
+                    from hermes_cli.nous_subscription import apply_nous_managed_defaults
+                    from hermes_cli.tools_config import _get_platform_tools
+
+                    enabled = _get_platform_tools(
+                        cfg, "cli", include_default_mcp_servers=False
+                    )
+                    changed = apply_nous_managed_defaults(
+                        cfg,
+                        enabled_toolsets=enabled,
+                        force_fresh=True,
+                    )
+                    gateway_tools = sorted(changed)
+                except Exception:
+                    # Portal lookup hiccups / non-subscriber / non-nous gating
+                    # must never block saving the model assignment.
+                    _log.debug("apply_nous_managed_defaults skipped", exc_info=True)
+
             save_config(cfg)
-            return {"ok": True, "scope": "main", "provider": provider, "model": model}
+            return {
+                "ok": True,
+                "scope": "main",
+                "provider": provider,
+                "model": model,
+                "gateway_tools": gateway_tools,
+            }
 
         # scope == "auxiliary"
         aux = cfg.get("auxiliary")
