@@ -71,7 +71,6 @@ new locking.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -102,6 +101,14 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+
+# Optional fcntl import — Windows does not ship fcntl.
+# On non-Windows platforms, used for per-DB inter-process write locking.
+# On Windows, _KANBAN_WRITE_LOCKS entries are None and flock is a no-op.
+try:
+    import fcntl  # type: ignore[import-not-found,import-untyped]
+except ImportError:
+    fcntl = None  # type: ignore[assignment]  # Windows / other platforms without fcntl
 
 # Maps id(conn) → open file handle for per-DB write locking.
 # sqlite3.Connection is a C-extension type: no attributes, no weakref.
@@ -1404,11 +1411,14 @@ def connect(
         # corrupt the WAL under heavy concurrent write pressure (task_events +
         # task_runs + status transitions all within the same tick).  Windows
         # (no fcntl) and network filesystems gracefully fall back to no-op.
-        lock_path = path.with_suffix('.db.lock')
-        try:
-            _KANBAN_WRITE_LOCKS[id(conn)] = open(lock_path, 'w')
-        except OSError:
-            _KANBAN_WRITE_LOCKS[id(conn)] = None  # best-effort: don't fail
+        if fcntl is not None:
+            lock_path = path.with_suffix('.db.lock')
+            try:
+                _KANBAN_WRITE_LOCKS[id(conn)] = open(lock_path, 'w')
+            except OSError:
+                _KANBAN_WRITE_LOCKS[id(conn)] = None  # best-effort: don't fail
+        else:
+            _KANBAN_WRITE_LOCKS[id(conn)] = None  # Windows / no-fcntl: skip file lock entirely
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
