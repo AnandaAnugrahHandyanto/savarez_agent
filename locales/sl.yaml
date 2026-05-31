@@ -1,0 +1,354 @@
+# Hermes statični katalog sporočil -- Slovenščina
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  NEVAREN UKAZ: {description}"
+  choose_long:     "      [e]enkrat  |  [s]eja  |  [v]edno  |  [z]avrni"
+  choose_short:    "      [e]enkrat  |  [s]eja  |  [z]avrni"
+  prompt_long:     "      Izbira [e/s/v/Z]: "
+  prompt_short:    "      Izbira [e/s/Z]: "
+  timeout:         "      ⏱ Čas potekel — ukaz zavrnjen"
+  allowed_once:    "      ✓ Dovoljeno enkrat"
+  allowed_session: "      ✓ Dovoljeno za to sejo"
+  allowed_always:  "      ✓ Dodano na trajni seznam dovoljenj"
+  denied:          "      ✗ Zavrnjeno"
+  cancelled:       "      ✗ Preklicano"
+  blocklist_message: "Ta ukaz je na seznamu brezpogojne blokade in ga ni mogoče odobriti."
+
+gateway:
+  approval_expired: "⚠️ Odobritev je potekla (agent ne čaka več). Prosi agenta, naj poskusi znova."
+  draining:         "⏳ Čakam na zaključek {count} aktivnega/aktivnih agenta/agentov pred ponovnim zagonom..."
+  goal_cleared:     "✓ Cilj izbrisan."
+  no_active_goal:   "Ni aktivnega cilja."
+  config_read_failed: "⚠️ Ni mogoče prebrati config.yaml: {error}"
+  config_save_failed: "⚠️ Ni mogoče shraniti nastavitev: {error}"
+
+  model:
+    error_prefix:           "Napaka: {error}"
+    switched:               "Model spremenjen v `{model}`"
+    provider_label:         "Ponudnik: {provider}"
+    context_label:          "Kontekst: {tokens} žetonov"
+    max_output_label:       "Največji izpis: {tokens} žetonov"
+    cost_label:             "Strošek: {cost}"
+    capabilities_label:     "Zmožnosti: {capabilities}"
+    prompt_caching_enabled: "Predpomnjenje pozivov: omogočeno"
+    warning_prefix:         "Opozorilo: {warning}"
+    saved_global:           "Shranjeno v config.yaml (`--global`)"
+    session_only_hint:      "_(samo za to sejo — dodaj `--global` za trajno shranjevanje)_"
+    current_label:          "Trenutni: `{model}` pri {provider}"
+    current_tag:            " (trenutni)"
+    more_models_suffix:     " (+{count} več)"
+    usage_switch_model:     "`/model <ime>` — zamenjaj model"
+    usage_switch_provider:  "`/model <ime> --provider <oznaka>` — zamenjaj ponudnika"
+    usage_persist:          "`/model <ime> --global` — shrani trajno"
+
+  agents:
+    header:                "🤖 **Aktivni agenti in opravila**"
+    active_agents:         "**Aktivni agenti:** {count}"
+    this_chat:             " · ta klepet"
+    more:                  "... in {count} več"
+    running_processes:     "**Running processes v ozadju:** {count}"
+    async_jobs:            "**Asinhrona opravila prehodnika:** {count}"
+    none:                  "Ni aktivnih agentov ali tekočih opravil."
+    state_starting:        "zaganjanje"
+    state_running:         "tekoč"
+
+  approve:
+    no_pending:            "Ni nobenega čakajočega ukaza za odobritev."
+    once_singular:         "✅ Ukaz odobren. Agent nadaljuje..."
+    once_plural:           "✅ Ukazi odobreni ({count} ukazov). Agent nadaljuje..."
+    session_singular:      "✅ Ukaz odobren (vzorec odobren za to sejo). Agent nadaljuje..."
+    session_plural:        "✅ Ukazi odobreni (vzorec odobren za to sejo) ({count} ukazov). Agent nadaljuje..."
+    always_singular:       "✅ Ukaz odobren (vzorec trajno odobren). Agent nadaljuje..."
+    always_plural:         "✅ Ukazi odobreni (vzorec trajno odobren) ({count} ukazov). Agent nadaljuje..."
+
+  background:
+    usage:                 "Uporaba: /background <poziv>\nPrimer: /background Povzemi današnje najpomembnejše HN novice\n\nZažene poziv v ločeni seji. Lahko nadaljuješ s klepetom — rezultat se bo prikazal tukaj, ko bo končano."
+    started:               "🔄 Opravilo v ozadju začeto: \"{preview}\"\nID opravila: {task_id}\nLahko nadaljuješ s klepetom — rezultati se bodo prikazali, ko bodo končani."
+
+  branch:
+    db_unavailable:        "Podatkovna baza sej ni na voljo."
+    no_conversation:       "Ni konverzacije za razvejevanje — najprej pošlji sporočilo."
+    create_failed:         "Ustvarjanje veje ni uspelo: {error}"
+    switch_failed:         " veja ustvarjena, vendar preklop nanjo ni uspel."
+    branched_one:          "⑂ Razvejano v **{title}** ({count} sporočilo kopirano)\nIzvirno: `{parent}`\n veja: `{new}`\nUporabi `/resume` za vrnitev na izvirno."
+    branched_many:         "⑂ Razvejano v **{title}** ({count} sporočil kopiranih)\nIzvirno: `{parent}`\n veja: `{new}`\nUporabi `/resume` za vrnitev na izvirno."
+
+  commands:
+    usage:                 "Uporaba: `/commands [stran]`"
+    skill_header:          "⚡ **Ukazi veščin**:"
+    default_desc:          "Ukaz veščine"
+    none:                  "Na voljo ni nobenih ukazov."
+    header:                "📚 **Ukazi** ({total} skupaj, stran {page}/{total_pages})"
+    nav_prev:              "`/commands {page}` ← nazaj"
+    nav_next:              "naprej → `/commands {page}`"
+    out_of_range:          "_(Zahtevana stran {requested} je izven obsega, prikazujem stran {page}.)_"
+
+  compress:
+    not_enough:            "Ni dovolj konverzacije za stiskanje (potrebuješ vsaj 4 sporočila)."
+    no_provider:           "Noben ponudnik ni nastavljen — stiskanje ni mogoče."
+    nothing_to_do:         "Trenutno ni kaj stiskati (transkript je še vedno vse zaščiteno besedilo)."
+    focus_line:            "Osredotočenost: \"{topic}\""
+    summary_failed:        "⚠️ Ustvarjanje povzetka ni uspelo ({error}). {count} zgodovinskih sporočil je bilo odstranjenih in nadomeščenih z oznako; prejšnji kontekst ni več mogoče pridobiti. Premisli o preverjanju nastavitev modela auxiliary.compression."
+    aborted:               "⚠️ Stiskanje preklicano ({error}). Nobeno sporočilo ni bilo izpuščeno — konverzacija je nespremenjena. Za ponovitev zaženi /compress, za čisto sejo /reset, ali pa preveri nastavitve modela auxiliary.compression."
+    aux_failed:            "ℹ️ Nastavljeni model za stiskanje `{model}` ni uspel ({error}). Okrevanje z glavnim modelom — kontekst je nedotaknjen — vendar morda želiš preveriti `auxiliary.compression.model` v config.yaml."
+    failed:                "Stiskanje ni uspelo: {error}"
+
+  debug:
+    upload_failed:         "✗ Nalaganje poročila za razhroščevanje ni uspelo: {error}"
+    header:                "**Poročilo za razhroščevanje naloženo:**"
+    auto_delete:           "⏱ Pastesi se bodo samodejno izbrisali čez 6 ur."
+    full_logs_hint:        "Za nalaganje celotnih dnevnikov uporabi `hermes debug share` v terminalu."
+    share_hint:            "Deli te povezave z ekipo Hermes za podporo."
+
+  deny:
+    stale:                 "❌ Ukaz zavrnjen (odobritev je zastarela)."
+    no_pending:            "Ni nobenega čakajočega ukaza za zavrnitev."
+    denied_singular:       "❌ Ukaz zavrnjen."
+    denied_plural:         "❌ Ukazi zavrnjeni ({count} ukazov)."
+
+  fast:
+    not_supported:         "⚡ /fast je na voljo samo za OpenAI modele, ki podpirajo prednostno obdelavo."
+    status:                "⚡ Prednostna obdelava\n\nTrenutni način: `{mode}`\n\n_Uporaba:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ Neznan argument: `{arg}`\n\n**Veljavne možnosti:** normal, fast, status"
+    saved:                 "⚡ ✓ Prednostna obdelava: **{label}** (shranjeno v nastavitvah)\n_(učinkuje pri naslednjem sporočilu)_"
+    session_only:          "⚡ ✓ Prednostna obdelava: **{label}** (samo ta seja)"
+    label_fast:            "HITRO"
+    label_normal:          "NORMALNO"
+    status_fast:           "fast"
+    status_normal:         "normal"
+
+  footer:
+    status:                "📎 Footer časa izvajanja: **{state}**\nPolja: `{fields}`\nPlatforma: `{platform}`"
+    usage:                 "Uporaba: `/footer [on|off|status]`"
+    saved:                 "📎 Footer časa izvajanja: **{state}**{example}\n_(shranjeno globalno — učinkuje pri naslednjem sporočilu)_"
+    example_line:          "\nPrimer: `{preview}`"
+    state_on:              "VKLJUČENO"
+    state_off:             "IZKLJUČENO"
+
+  goal:
+    unavailable:           "Cilji niso na voljo v tej seji."
+    no_goal_set:           "Noben cilj ni nastavljen."
+    paused:                "⏸ Cilj na pavzi: {goal}"
+    no_resume:             "Ni cilja za nadaljevanje."
+    resumed:               "▶ Cilj nadaljovan: {goal}\nPošlji katerokoli sporočilo za nadaljevanje, ali pa počakaj — naslednji korak bom naredil v naslednjem obratu."
+    invalid:               "Cilj ni veljaven: {error}"
+    set:                   "⊙ Cilj nastavljen (proračun {budget} obratov): {goal}\nBom nadaljeval, dokler cilj ne bo dosežen, ga ne boš ustavil/izbrisal, ali pa bo proračun porabljen.\nKontrole: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **Ukazi Hermesa**\n"
+    skill_header:          "\n⚡ **Ukazi veščin** ({count} aktivnih):"
+    more_use_commands:     "\n... in {count} več. Uporabi `/commands` za celoten paginiran seznam."
+
+  insights:
+    invalid_days:          "Neveljavna vrednost --days: {value}"
+    error:                 "Napaka pri ustvarjanju vpogledov: {error}"
+
+  kanban:
+    error_prefix:          "⚠ napaka kanban: {error}"
+    subscribed_suffix:     "(naročen — prejel boš obvestilo, ko bo {task_id} končan ali blokiran)"
+    truncated_suffix:      "… (okrajšano; uporabi `hermes kanban …` v terminalu za celoten izpis)"
+    no_output:             "(ni izpisa)"
+
+  personality:
+    none_configured:       "Nobena osebnost ni nastavljena v `{path}/config.yaml`"
+    header:                "🎭 **Razpoložljive osebnosti**\n"
+    none_option:           "• `none` — (brez prekrivanja osebnosti)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nUporaba: `/personality <ime>`"
+    save_failed:           "⚠️ Shranjevanje spremembe osebnosti ni uspelo: {error}"
+    cleared:               "🎭 Osebnost izbrisana — uporabljam osnovno vedenje agenta.\n_(učinkuje pri naslednjem sporočilu)_"
+    set_to:                "🎭 Osebnost nastavljena na **{name}**\n_(učinkuje pri naslednjem sporočilu)_"
+    unknown:               "Neznana osebnost: `{name}`\n\nRazpoložljive: {available}"
+
+  profile:
+    header:                "👤 **Profil:** `{profile}`"
+    home:                  "📂 **Domača mapa:** `{home}`"
+
+  reasoning:
+    level_default:             "srednje (privzeto)"
+    level_disabled:            "nobeno (onemogočeno)"
+    scope_session:             "preglasitev seje"
+    scope_global:              "globalne nastavitve"
+    status:                    "🧠 **Nastavitve razmišljanja**\n\n**Trud:** `{level}`\n**Obseg:** {scope}\n**Prikaz:** {display}\n\n_Uporaba:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    display_on:                "vključeno ✓"
+    display_off:               "izključeno"
+    display_set_on:            "🧠 ✓ Prikaz razmišljanja: **VKLJUČEN**\nRazmišljanje modela bo prikazano pred vsakim odgovorom na **{platform}**."
+    display_set_off:           "🧠 ✓ Prikaz razmišljanja: **IZKLJUČEN** za **{platform}**"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global` ni podprto. Uporabi `/reasoning <stopnja> --global` za spremembo globalne privzete vrednosti."
+    reset_done:                "🧠 ✓ Preglasitev razmišljanja seje izbrisana; vračanje na globalne nastavitve."
+    unknown_arg:               "⚠️ Neznan argument: `{arg}`\n\n**Veljavne stopnje:** none, minimal, low, medium, high, xhigh\n**Prikaz:** show, hide\n**Ohranitev:** dodaj `--global` za shranjevanje poleg te seje"
+    set_global:                "🧠 ✓ Trud razmišljanja nastavljen na `{effort}` (shranjeno v nastavitvah)\n_(učinkuje pri naslednjem sporočilu)_"
+    set_global_save_failed:    "🧠 ✓ Trud razmišljanja nastavljen na `{effort}` (samo ta seja — shranjevanje nastavitev ni uspelo)\n_(učinkuje pri naslednjem sporočilu)_"
+    set_session:               "🧠 ✓ Trud razmišljanja nastavljen na `{effort}` (samo ta seja — dodaj `--global` za trajno)\n_(učinkuje pri naslednjem sporočilu)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp preklican. MCP orodja nespremenjena."
+    always_followup:       "ℹ️ Prihodnji klici `/reload-mcp` se bodo izvajali brez potrditve. Znova omogoči prek `approvals.mcp_reload_confirm: true` v config.yaml."
+    confirm_prompt:        "⚠️ **Potrdi /reload-mcp**\n\nPonovno nalaganje MCP strežnikov重新 gradi nabor orodij za to sejo in **razveljavi predpomnilnik pozivov ponudnika** — naslednje sporočilo bo znova poslalo polne vhodne žetone. Pri modelih z dolgim kontekstom ali visokim razmišljanjem je to lahko drago.\n\nIzberi:\n• **Odobri enkrat** — naloži znova zdaj\n• **Vedno odobri** — naloži znova zdaj in trajno utišaj to opozorilo\n• **Prekliči** — pusti MCP orodja nespremenjena\n\n_Nadomestno besedilo: odgovori `/approve`, `/always`, ali `/cancel`._"
+    header:                "🔄 **MCP strežniki znova naloženi**\n"
+    reconnected:           "♻️ Ponovno povezani: {names}"
+    added:                 "➕ Dodani: {names}"
+    removed:               "➖ Odstranjeni: {names}"
+    none_connected:        "Noben MCP strežnik ni povezan."
+    tools_available:       "\n🔧 {tools} orodje/orodij na voljo iz {servers} strežnika/strežnikov"
+    failed:                "❌ Ponovno nalaganje MCP ni uspelo: {error}"
+
+  reload_skills:
+    header:                "🔄 **Veščine znova naložene**\n"
+    no_new:                "Nove veščine niso bile zaznane."
+    total:                 "\n📚 {count} veščin na voljo"
+    added_header:          "➕ **Dodane veščine:**"
+    removed_header:        "➖ **Odstranjene veščine:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ Ponovno nalaganje veščin ni uspelo: {error}"
+
+  reset:
+    header_default:        "✨ Seja ponastavljena! Začenjam znova."
+    header_new:            "✨ Nova seja začeta!"
+    header_titled:         "✨ Nova seja začeta: {title}"
+    title_rejected:        "\n⚠️ Naslov zavrnjen: {error}"
+    title_error_untitled:  "\n⚠️ {error} — seja začeta brez naslova."
+    title_empty_untitled:  "\n⚠️ Naslov je prazen po čiščenju — seja začeta brez naslova."
+    tip:                   "\n✦ Namig: {tip}"
+
+  restart:
+    in_progress:           "⏳ Ponovni zagon prehodnika že poteka..."
+    restarting:            "♻ Ponovni zagon prehodnika. Če ne prejmeš obvestila v 60 sekundah, ponovno zaženi iz konzole z `hermes gateway restart`."
+
+  resume:
+    db_unavailable:        "Podatkovna baza sej ni na voljo."
+    no_named_sessions:     "Ni poimenovanih sej.\nUporabi `/title Moja Seja` za poimenovanje trenutne seje, nato `/resume Moja Seja` za vrnitev nanjo kasneje."
+    list_header:           "📋 **Poimenovane seje**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nUporaba: `/resume <ime seje>`"
+    list_footer_numbered:  "\nUporaba: `/resume <ime seje>` ali `/resume <številka>` (npr. `/resume 1` za najnovejšo)"
+    list_failed:           "Seznam sej ni mogoče pridobiti: {error}"
+    out_of_range:          "Indeks nadaljevanja {index} je izven obsega.\nUporabi `/resume` brez argumentov za ogled razpoložljivih sej."
+    not_found:             "Nobena sea se ne ujema z '**{name}**'.\nUporabi `/resume` brez argumentov za ogled razpoložljivih sej."
+    already_on:            "📌 Že v seji **{name}**."
+    switch_failed:         "Preklop seje ni uspel."
+    resumed_one:           "↻ Seja **{title}** nadaljeva ({count} sporočilo). Konverzacija obnovljena."
+    resumed_many:          "↻ Seja **{title}** nadaljeva ({count} sporočil). Konverzacija obnovljena."
+    resumed_no_count:      "↻ Seja **{title}** nadaljeva. Konverzacija obnovljena."
+
+  retry:
+    no_previous:           "Ni predhodnega sporočila za ponovitev."
+
+  rollback:
+    not_enabled:           "Kontrolne točke niso omogočene.\nOmogoči v config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "Nobena kontrolna točka ni najdena za {cwd}"
+    invalid_number:        "Neveljavna številka kontrolne točke. Uporabi 1-{max}."
+    restored:              "✅ Obnovljeno na kontrolno točko {hash}: {reason}\nPred-rollback posnetek je bil samodejno shranjen."
+    restore_failed:        "❌ {error}"
+
+  set_home:
+    save_failed:           "Shranjevanje domačega kanala ni uspelo: {error}"
+    success:               "✅ Domači kanal nastavljen na **{name}** (ID: {chat_id}).\nCron opravila in navzkrižna sporočila platform bodo dostavljena sem."
+
+  status:
+    header:                "📊 **Stanje prehodnika Hermes**"
+    session_id:            "**ID seje:** `{session_id}`"
+    title:                 "**Naslov:** {title}"
+    created:               "**Ustvarjeno:** {timestamp}"
+    last_activity:         "**Zadnja aktivnost:** {timestamp}"
+    tokens:                "**Skupni API žetoni (ponovno poslani ob vsakem klicu):** {tokens}"
+    agent_running:         "**Agent teče:** {state}"
+    state_yes:             "Da ⚡"
+    state_no:              "Ne"
+    queued:                "**Čakajoči nadaljnji koraki:** {count}"
+    platforms:             "**Povezane platforme:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ Ustavljeno. Agent še ni bil zagnan — lahko nadaljuješ to sejo."
+    stopped:               "⚡ Ustavljeno. Lahko nadaljuješ to sejo."
+    no_active:             "Ni aktivnega opravila za zaustavitev."
+
+  title:
+    db_unavailable:        "Podatkovna baza sej ni na voljo."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ Naslov je prazen po čiščenju. Uporabi natisljive znake."
+    set_to:                "✏️ Naslov seje nastavljen: **{title}**"
+    not_found:             "Sea ni najdena v podatkovni bazi."
+    current_with_title:    "📌 Seja: `{session_id}`\nNaslov: **{title}**"
+    current_no_title:      "📌 Seja: `{session_id}`\nNoben naslov ni nastavljen. Uporaba: `/title Moje Ime Seje`"
+
+  topic:
+    not_telegram_dm:         "Ukaz /topic je na voljo samo v zasebnih Telegram klepetih."
+    no_session_db:           "Podatkovna baza sej ni na voljo."
+    unauthorized:            "Nimaš dovoljenja za uporabo /topic na tem botu."
+    restore_needs_topic:     "Če želiš obnoviti sejo, najprej ustvari ali odpri Telegram temo, nato pošlji /topic <session-id> znotraj te teme. Če želiš ustvariti novo temo, odpri All Messages in pošlji katerokoli sporočilo tam."
+    topics_disabled:         "Teme Telegram še niso omogočene za ta bot.\n\nKako jih omogočiti:\n1. Odpri @BotFather.\n2. Izberi svojega bota.\n3. Odpri Bot Settings → Threads Settings.\n4. Vključi Threaded Mode in se prepričaj, da so uporabnikom dovoljene nove teme.\n\nNato pošlji /topic znova."
+    topics_user_disallowed:  "Teme Telegram so omogočene, vendar uporabnikom ni dovoljeno ustvarjati novih tem.\n\nOdpri @BotFather → izberi svojega bota → Bot Settings → Threads Settings, nato izključi 'Disallow users to create new threads'.\n\nNato pošlji /topic znova."
+    enable_failed:           "Omogočanje načina tem Telegram ni uspelo: {error}"
+    bound_status:            "Ta tema je povezana z:\nSea: {label}\nID: {session_id}\n\nUporabi /new za nadomestitev te teme s svežo sejo.\nZa vzporedno delo odpri All Messages in pošlji sporočilo tam, da ustvariš novo temo."
+    thread_ready:            "Večsejne teme Telegram so omogočene.\n\nTa tema se bo uporabljala kot neodvisna seja Hermesa. Uporabi /new za nadomestitev trenutne seje te teme. Za vzporedno delo odpri All Messages in pošlji sporočilo tam, da ustvariš novo temo."
+    untitled_session:        "Sea brez naslova"
+
+  undo:
+    nothing:               "Nič za razveljavitev."
+    removed:               "↩️ Razveljavljeno {count} sporočil.\nOdstranjeno: \"{preview}\""
+
+  update:
+    platform_not_messaging:  "✗ /update je na voljo samo iz platform za sporočanje. Zaženi `hermes update` iz terminala."
+    not_git_repo:            "✗ Ni git skladišče — posodobitev ni mogoča."
+    hermes_cmd_not_found:    "✗ Ukaza `hermes` ni mogoče najti. Hermes teče, vendar ukaz za posodobitev ni mogel najti izvedljive datoteke v PATH ali prek trenutnega tolmača Python. Poskusi ročno zaženiti `hermes update` v terminalu."
+    start_failed:            "✗ Zagon posodobitve ni uspel: {error}"
+    starting:                "⚕ Začenjam posodobitev Hermesa… tu bom prikazoval napredek."
+
+  usage:
+    rate_limits:              "⏱️ **Omejitve hitrosti:** {state}"
+    header_session:           "📊 **Uporaba žetonov seje**"
+    label_model:              "Model: `{model}`"
+    label_input_tokens:       "Vhodni žetoni: {count}"
+    label_cache_read:         "Žetoni branja predpomnilnika: {count}"
+    label_cache_write:        "Žetoni pisanja predpomnilnika: {count}"
+    label_output_tokens:      "Izhodni žetoni: {count}"
+    label_total:              "Skupaj: {count}"
+    label_api_calls:          "API klici: {count}"
+    label_cost:               "Strošek: {prefix}${amount}"
+    label_cost_included:      "Strošek: vključeno"
+    label_context:            "Kontekst: {used} / {total} ({pct}%)"
+    label_compressions:       "Stiskanja: {count}"
+    header_session_info:      "📊 **Info seje**"
+    label_messages:           "Sporočila: {count}"
+    label_estimated_context:  "Ocenjeni kontekst: ~{count} žetonov"
+    detailed_after_first:     "_(Podrobna uporaba na voljo po prvem odgovoru agenta)_"
+    no_data:                  "Nobeni podatki o uporabi niso na voljo za to sejo."
+
+  verbose:
+    not_enabled:           "Ukaz `/verbose` ni omogočen za platforme za sporočanje.\n\nOmogoči ga v `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ Napredek orodij: **IZKLJUČEN** — nobena aktivnost orodij ni prikazana."
+    mode_new:              "⚙️ Napredek orodij: **NOV** — prikazano, ko se orodje spremeni (dolžina predogleda: `display.tool_preview_length`, privzeto 40)."
+    mode_all:              "⚙️ Napredek orodij: **VSI** — prikazan vsak klic orodja (dolžina predogleda: `display.tool_preview_length`, privzeto 40)."
+    mode_verbose:          "⚙️ Napredek orodij: **VERBOSE** — vsak klic orodja s polnimi argumenti."
+    saved_suffix:          "_(shranjeno za **{platform}** — učinkuje pri naslednjem sporočilu)_"
+    save_failed:           "_(shranjevanje v nastavitve ni mogoče: {error})_"
+
+  voice:
+    enabled_voice_only:    "Glasovni način omogočen.\nOdgovoril bom z glasom, ko boš poslal glasovna sporočila.\nUporabi /voice tts za glasovne odgovore na vsa sporočila."
+    disabled_text:         "Glasovni način onemogočen. Samo besedilni odgovori."
+    tts_enabled:           "Samodejni TTS omogočen.\nVsi odgovori bodo vključevali glasovno sporočilo."
+    status_mode:           "Glasovni način: {label}"
+    status_channel:        "Glasovni kanal: #{channel}"
+    status_participants:   "Udeleženci: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (govori)"
+    enabled_short:         "Glasovni način omogočen."
+    disabled_short:        "Glasovni način onemogočen."
+    label_off:             "Izključeno (samo besedilo)"
+    label_voice_only:      "Vključeno (glasovni odgovor na glasovna sporočila)"
+    label_all:             "TTS (glasovni odgovor na vsa sporočila)"
+
+  yolo:
+    disabled:                   "⚠️ Način YOLO **IZKLJUČEN** za to sejo — nevarni ukazi bodo zahtevali odobritev."
+    enabled:                    "⚡ Način YOLO **VKLJUČEN** za to sejo — vsi ukazi samodejno odobreni. Uporabi previdno."
+
+  shared:
+    session_db_unavailable:      "Podatkovna baza sej ni na voljo."
+    session_db_unavailable_prefix: "Podatkovna baza sej ni na voljo"
+    session_not_found:           "Sea ni najdena v podatkovni bazi."
+    warn_passthrough:            "⚠️ {error}"
