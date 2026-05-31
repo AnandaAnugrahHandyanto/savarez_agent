@@ -8,9 +8,25 @@ the sessions dir and survive restarts.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from gateway.session import SessionSource
+
+# A leading @<profile> followed by a message body (profile names are
+# [a-z0-9][a-z0-9_-]*).  Requires a body so a bare "@name" isn't a route.
+_MENTION_RE = re.compile(r"^@([a-z0-9][a-z0-9_-]*)\s+(\S.*)$", re.IGNORECASE | re.DOTALL)
+
+
+def parse_profile_mention(text: str) -> tuple[str | None, str]:
+    """Split a leading ``@profile`` override off *text*.
+
+    Returns ``(profile, body)`` for ``@coder do x`` → ``("coder", "do x")``,
+    else ``(None, text)`` unchanged.  The caller still gates on whether the
+    named profile exists before routing.
+    """
+    m = _MENTION_RE.match(text or "")
+    return (m.group(1), m.group(2)) if m else (None, text)
 
 
 def chat_binding_key(source: SessionSource) -> str:

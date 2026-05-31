@@ -3627,17 +3627,24 @@ class BasePlatformAdapter(ABC):
         try:
             from gateway.routing import resolve_profile_route
 
-            # An explicit /profile binding for this chat wins over the config
-            # routing table (deliberate user action).
-            bound = None
-            bindings = getattr(self, "_chat_bindings", None)
-            if bindings is not None:
-                from gateway.chat_bindings import chat_binding_key
+            from gateway.chat_bindings import chat_binding_key, parse_profile_mention
 
-                bound = bindings.get(chat_binding_key(event.source))
-            event.routed_profile = bound or resolve_profile_route(
-                getattr(self, "_profile_routing", None), event.source
-            )
+            # Precedence: per-turn @mention > persisted /profile binding >
+            # config routing table.  A @mention only routes if it names a real
+            # profile; otherwise it stays literal text.
+            mention, body = parse_profile_mention(event.text or "")
+            if mention:
+                from hermes_cli.profiles import profile_exists
+
+                if profile_exists(mention):
+                    event.text = body
+                    event.routed_profile = mention
+            if event.routed_profile is None:
+                bindings = getattr(self, "_chat_bindings", None)
+                bound = bindings.get(chat_binding_key(event.source)) if bindings is not None else None
+                event.routed_profile = bound or resolve_profile_route(
+                    getattr(self, "_profile_routing", None), event.source
+                )
         except Exception:
             logger.warning("profile route resolution failed; staying on host profile", exc_info=True)
             event.routed_profile = None
