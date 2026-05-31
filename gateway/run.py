@@ -12917,6 +12917,13 @@ class GatewayRunner:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    # Also rename the Telegram topic if we're in a DM topic lane
+                    try:
+                        self._schedule_telegram_topic_title_rename(
+                            source, session_id, sanitized,
+                        )
+                    except Exception:
+                        logger.debug("Failed to schedule Telegram topic rename from /title", exc_info=True)
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")
