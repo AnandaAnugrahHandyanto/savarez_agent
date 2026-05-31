@@ -134,6 +134,7 @@ _GATEWAY_BOT_NOISE_RE = re.compile(
     r"|⚠️\s*empty\s+response\s+from\s+model\s+—\s+retrying\s+\(\d+/\d+\)"
     r"|❌\s*model\s+returned\s+no\s+content\s+after\s+all\s+retries.*"
     r"|⚠️\s*no\s+first\s+byte\s+from\s+provider.*"
+    r"|(?:@\w+\s+)?handoff_id\s*[:=]\s*\S+\s+bloqueado:\s+claude\s+code\s+(?:fall[oó]|devolvi[oó]).*"
     r")\s*$",
     re.IGNORECASE | re.DOTALL,
 )
@@ -6780,6 +6781,7 @@ class GatewayRunner:
         platform_allow_bots_map = {
             Platform.DISCORD: "DISCORD_ALLOW_BOTS",
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",
+            Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
         }
 
         # Plugin platforms: check the registry for auth env var names

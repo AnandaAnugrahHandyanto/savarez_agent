@@ -411,6 +411,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
+        self._allow_bots: str = self._telegram_allow_bots()
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -4657,6 +4658,65 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
+    def _telegram_allow_bots(self) -> str:
+        """Return how Telegram bot senders should be handled.
+
+        Modes mirror Slack/Feishu:
+        - ``none``: ignore bot-authored messages (default, safest)
+        - ``mentions``: accept bot messages only when they directly address us
+          (mention, reply-to-bot, or configured mention pattern)
+        - ``all``: accept bot messages that otherwise pass normal group gates
+
+        This is separate from Telegram/BotFather's delivery-side toggle: if
+        Telegram starts delivering bot-originated updates, Hermes still needs a
+        local loop-prevention gate before agent dispatch.
+        """
+        configured = self.config.extra.get("allow_bots", None)
+        if configured is None:
+            configured = os.getenv("TELEGRAM_ALLOW_BOTS", "none")
+        mode = str(configured or "none").strip().lower()
+        if mode in {"true", "yes", "1"}:
+            mode = "all"
+        elif mode in {"false", "no", "0", ""}:
+            mode = "none"
+        if mode not in {"none", "mentions", "all"}:
+            logger.warning(
+                "[%s] Unknown telegram allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
+                self.name,
+                configured,
+            )
+            return "none"
+        return mode
+
+    def _should_process_bot_sender(self, message: Message) -> bool:
+        """Gate bot-authored Telegram updates before normal dispatch.
+
+        Telegram historically did not deliver Bot API bot→bot messages, but
+        newer Telegram clients/settings may allow bot messages in shared chats.
+        Keep loop prevention local and explicit so free-response groups do not
+        turn every bot status line into a new agent run.
+        """
+        user = getattr(message, "from_user", None)
+        if not user or not bool(getattr(user, "is_bot", False)):
+            return True
+
+        # Never consume our own outbound messages if Telegram reflects them.
+        if self._bot and getattr(user, "id", None) == getattr(self._bot, "id", None):
+            return False
+
+        mode = getattr(self, "_allow_bots", None) or self._telegram_allow_bots()
+        if mode == "all":
+            return True
+        if mode == "none":
+            return False
+
+        # "mentions": bot-to-bot handoffs must be deliberate and addressed.
+        return (
+            self._is_reply_to_bot(message)
+            or self._message_mentions_bot(message)
+            or self._message_matches_mention_patterns(message)
+        )
+
     @staticmethod
     def _extract_bot_mention_usernames(message: Message) -> set[str]:
         """Extract explicit Telegram bot usernames mentioned in text/captions.
@@ -4966,7 +5026,7 @@ class TelegramAdapter(BasePlatformAdapter):
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
         if not self._is_group_chat(message):
-            return True
+            return self._should_process_bot_sender(message)
 
         thread_id = getattr(message, "message_thread_id", None)
         allowed_topics = self._telegram_allowed_topics()
@@ -4994,6 +5054,9 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
 
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+            return False
+
+        if not self._should_process_bot_sender(message):
             return False
 
         # Resolve guest-mode mention bypass once so _message_mentions_bot
