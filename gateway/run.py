@@ -8814,6 +8814,12 @@ class GatewayRunner:
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
+                                    session_db=self.session_store._db,
+                                    platform=(
+                                        "cli"
+                                        if source.platform == Platform.LOCAL
+                                        else source.platform.value
+                                    ),
                                 )
                                 try:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
@@ -12581,6 +12587,12 @@ class GatewayRunner:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
+                session_db=self.session_store._db,
+                platform=(
+                    "cli"
+                    if source.platform == Platform.LOCAL
+                    else source.platform.value
+                ),
             )
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
