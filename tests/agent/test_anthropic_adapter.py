@@ -1757,6 +1757,31 @@ class TestThinkingBlockSignatureManagement:
         assert len(thinking) == 1
         assert thinking[0]["thinking"] == "First thought."
 
+    def test_thinking_dropped_when_orphaned_tool_use_stripped(self):
+        """Stripping an orphaned tool_use invalidates the turn's thinking signature."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool1", "arguments": "{}"}},
+                    {"id": "tc_2", "function": {"name": "tool2", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Plan.", "signature": "sig_1"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+
+        assistant = next(m for m in result if m["role"] == "assistant")
+        types = [b.get("type") for b in assistant["content"]]
+        assert "thinking" not in types
+        assert "redacted_thinking" not in types
+        tool_use_ids = [b["id"] for b in assistant["content"] if b.get("type") == "tool_use"]
+        assert tool_use_ids == ["tc_1"]
+
     def test_empty_content_after_strip_gets_placeholder(self):
         """If stripping thinking leaves an empty message, a placeholder is added."""
         messages = [
