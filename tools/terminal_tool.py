@@ -1959,6 +1959,27 @@ def terminal_tool(
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
 
+                if session_key and effective_cwd:
+                    try:
+                        from gateway.active_task import ActiveTaskStore, resolve_git_branch
+                        from gateway.session_context import get_session_env as _gse
+
+                        ActiveTaskStore().upsert(
+                            session_key=session_key,
+                            session_id=effective_task_id,
+                            platform=_gse("HERMES_SESSION_PLATFORM", ""),
+                            chat_id=_gse("HERMES_SESSION_CHAT_ID", ""),
+                            thread_id=_gse("HERMES_SESSION_THREAD_ID", ""),
+                            repo_path=effective_cwd,
+                            branch=resolve_git_branch(effective_cwd),
+                            command=command,
+                            status="active",
+                            process_session_id=proc_session.id,
+                            pid=proc_session.pid,
+                        )
+                    except Exception:
+                        logger.debug("Failed to update active task store", exc_info=True)
+
                 # Nudge: background=True without notify_on_complete=True OR
                 # watch_patterns is a silent process. The agent has NO way to
                 # learn it finished short of calling process(action="poll"/"wait")
@@ -2047,6 +2068,19 @@ def terminal_tool(
                 if watch_patterns and background:
                     proc_session.watch_patterns = list(watch_patterns)
                     result_data["watch_patterns"] = proc_session.watch_patterns
+
+                process_registry.update_session_metadata(
+                    proc_session.id,
+                    notify_on_complete=getattr(proc_session, "notify_on_complete", False),
+                    watcher_platform=getattr(proc_session, "watcher_platform", ""),
+                    watcher_chat_id=getattr(proc_session, "watcher_chat_id", ""),
+                    watcher_user_id=getattr(proc_session, "watcher_user_id", ""),
+                    watcher_user_name=getattr(proc_session, "watcher_user_name", ""),
+                    watcher_thread_id=getattr(proc_session, "watcher_thread_id", ""),
+                    watcher_message_id=getattr(proc_session, "watcher_message_id", ""),
+                    watcher_interval=getattr(proc_session, "watcher_interval", 0),
+                    watch_patterns=list(getattr(proc_session, "watch_patterns", []) or []),
+                )
 
                 return json.dumps(result_data, ensure_ascii=False)
             except Exception as e:

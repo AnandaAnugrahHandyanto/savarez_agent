@@ -1353,6 +1353,29 @@ class ProcessRegistry:
 
     # ----- Checkpoint (crash recovery) -----
 
+    def update_session_metadata(self, session_id: str, **fields: Any) -> bool:
+        """Update persisted metadata for a tracked background process."""
+        allowed_fields = {
+            "watcher_platform",
+            "watcher_chat_id",
+            "watcher_user_id",
+            "watcher_user_name",
+            "watcher_thread_id",
+            "watcher_message_id",
+            "watcher_interval",
+            "notify_on_complete",
+            "watch_patterns",
+        }
+        with self._lock:
+            session = self._running.get(session_id) or self._finished.get(session_id)
+            if session is None:
+                return False
+            for key, value in fields.items():
+                if key in allowed_fields:
+                    setattr(session, key, value)
+        self._write_checkpoint()
+        return True
+
     def _write_checkpoint(self):
         """Write running process metadata to checkpoint file atomically."""
         try:

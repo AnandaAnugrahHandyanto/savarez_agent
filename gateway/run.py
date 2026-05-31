@@ -1694,6 +1694,8 @@ class GatewayRunner:
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
         )
+        from gateway.active_task import ActiveTaskStore
+        self.active_task_store = ActiveTaskStore()
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1860,6 +1862,59 @@ class GatewayRunner:
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+
+
+    def _resolve_agent_working_directory(
+        self,
+        session_key: str,
+        fallback_cwd: Optional[str] = None,
+    ) -> str:
+        """Resolve the workspace cwd for a gateway agent turn."""
+        from pathlib import Path
+
+        store = getattr(self, "active_task_store", None)
+        if store is not None and session_key:
+            try:
+                record = store.get(session_key)
+            except Exception:
+                record = None
+            if (
+                record is not None
+                and record.is_fresh()
+                and record.has_usable_workspace()
+            ):
+                return str(Path(record.repo_path).expanduser())
+
+        # Placeholder for future explicit per-session workspace bindings.  No
+        # inspected gateway path currently persists such a binding.
+
+        terminal_cwd = os.getenv("TERMINAL_CWD", "").strip()
+        if terminal_cwd:
+            try:
+                path = Path(terminal_cwd).expanduser()
+                if path.exists():
+                    return str(path)
+            except OSError:
+                pass
+
+        return fallback_cwd or os.getcwd()
+
+
+    def _build_resume_recovery_note(
+        self,
+        session_key: str,
+        resume_reason: str,
+    ) -> str:
+        from gateway.active_task import build_active_task_recovery_note
+
+        record = None
+        store = getattr(self, "active_task_store", None)
+        if store is not None and session_key:
+            try:
+                record = store.get(session_key)
+            except Exception:
+                record = None
+        return build_active_task_recovery_note(record, resume_reason)
 
 
     def _wire_teams_pipeline_runtime(self) -> None:
@@ -16679,6 +16734,10 @@ class GatewayRunner:
             )
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+            session_cwd = self._resolve_agent_working_directory(
+                session_key,
+                fallback_cwd=os.getcwd(),
+            )
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
@@ -16843,6 +16902,17 @@ class GatewayRunner:
                         _cache[session_key] = (agent, _sig)
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+
+            previous_session_cwd = getattr(agent, "session_cwd", None)
+            if previous_session_cwd and previous_session_cwd != session_cwd:
+                codex_session = getattr(agent, "_codex_session", None)
+                if codex_session is not None:
+                    try:
+                        codex_session.close()
+                    except Exception:
+                        logger.debug("Failed to close stale codex app-server session", exc_info=True)
+                    agent._codex_session = None
+            agent.session_cwd = session_cwd
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
@@ -17170,21 +17240,7 @@ class GatewayRunner:
 
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
-                _reason_phrase = (
-                    "a gateway restart"
-                    if _reason == "restart_timeout"
-                    else "a gateway shutdown"
-                    if _reason == "shutdown_timeout"
-                    else "a gateway interruption"
-                )
-                message = (
-                    f"[System note: Your previous turn in this session was interrupted "
-                    f"by {_reason_phrase}. The conversation history below is intact. "
-                    f"If it contains unfinished tool result(s), process them first and "
-                    f"summarize what was accomplished, then address the user's new "
-                    f"message below.]\n\n"
-                    + message
-                )
+                message = self._build_resume_recovery_note(session_key, _reason) + "\n\n" + message
             elif _has_fresh_tool_tail:
                 message = (
                     "[System note: Your previous turn was interrupted before you could "
