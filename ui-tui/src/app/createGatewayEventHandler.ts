@@ -309,8 +309,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // config. No startup prompt here (this is mid-session, not a cold boot).
     const recoverSid = recoverSidRef?.current
 
-    if (recoverSid) {
-      recoverSidRef!.current = null
+    if (recoverSidRef && recoverSid) {
+      recoverSidRef.current = null
       resumeById(recoverSid)
       // After resumeById: it synchronously sets status to 'resuming…' on entry,
       // so override it here to keep the distinct "recovering" label visible for

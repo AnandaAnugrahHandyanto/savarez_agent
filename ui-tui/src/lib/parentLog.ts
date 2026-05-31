@@ -23,9 +23,11 @@ const CRASH_LOG = join(logDir, 'tui_gateway_crash.log')
 // Skipped under vitest so unit tests exercising start()/kill() can't write into
 // a real ~/.hermes (tests must stay hermetic — see AGENTS.md).
 const enabled = !process.env.VITEST
-// Cap a single breadcrumb, matching GatewayClient's in-memory log-line cap, so
-// a pathological value (e.g. a giant error) can't bloat the shared crash log or
-// add noticeable blocking on the synchronous append during a failure path.
+// Slice a single breadcrumb's value to MAX_BREADCRUMB chars (a short
+// "[truncated …]" marker is appended, so the written line is slightly longer)
+// so a pathological value (e.g. a giant error) can't bloat the shared crash log
+// or add noticeable blocking on the synchronous append. Mirrors the spirit of
+// GatewayClient's in-memory log-line cap.
 const MAX_BREADCRUMB = 4096
 let warned = false
 
