@@ -38,6 +38,8 @@ class CliShimProfile(ProviderProfile):
 cli_shim = CliShimProfile(
     name="cli-shim",
     aliases=("local-cli-shim", "cli"),
+    display_name="CLI shim (claude/codex/gemini)",
+    description="Local claude/codex/gemini CLIs via their own OAuth login — no API key",
     api_mode="chat_completions",
     env_vars=(),  # OAuth-only — managed by the CLIs themselves
     base_url="cli://shim",
