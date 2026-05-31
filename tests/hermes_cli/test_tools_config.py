@@ -270,6 +270,30 @@ def test_get_platform_tools_configurable_only_no_expansion():
     assert "web" not in enabled
 
 
+def test_get_platform_tools_plugin_defaults_respect_explicit_config():
+    """Bundled plugin toolsets belong on the default surface, but must not
+    bypass an explicit per-platform selection.
+    """
+    default_enabled = _get_platform_tools(
+        {}, "api_server", include_default_mcp_servers=False
+    )
+    explicit_enabled = _get_platform_tools(
+        {"platform_toolsets": {"api_server": ["web", "terminal"]}},
+        "api_server",
+        include_default_mcp_servers=False,
+    )
+    empty_enabled = _get_platform_tools(
+        {"platform_toolsets": {"api_server": []}},
+        "api_server",
+        include_default_mcp_servers=False,
+    )
+
+    assert "eikon" in default_enabled
+    assert "eikon" not in explicit_enabled
+    assert "eikon" not in empty_enabled
+    assert {"web", "terminal"}.issubset(explicit_enabled)
+
+
 def test_get_platform_tools_mixed_does_not_resurrect_default_off():
     """Expansion must subtract _DEFAULT_OFF_TOOLSETS from the implicit
     pull-in. Without this, ``hermes-cli`` expansion would re-enable

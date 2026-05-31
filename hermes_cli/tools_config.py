@@ -1145,9 +1145,10 @@ def _get_platform_tools(
     from toolsets import resolve_toolset, TOOLSETS
 
     platform_toolsets = config.get("platform_toolsets") or {}
-    toolset_names = platform_toolsets.get(platform)
+    raw_toolset_names = platform_toolsets.get(platform)
+    using_platform_default = raw_toolset_names is None or not isinstance(raw_toolset_names, list)
 
-    if toolset_names is None or not isinstance(toolset_names, list):
+    if using_platform_default:
         plat_info = PLATFORMS.get(platform)
         if plat_info:
             default_ts = plat_info["default_toolset"]
@@ -1155,6 +1156,8 @@ def _get_platform_tools(
             # Plugin platform — derive toolset name from platform key
             default_ts = f"hermes-{platform}"
         toolset_names = [default_ts]
+    else:
+        toolset_names = raw_toolset_names
 
     # YAML may parse bare numeric names (e.g. ``12306:``) as int.
     # Normalise to str so downstream sorted() never mixes types.
@@ -1296,16 +1299,23 @@ def _get_platform_tools(
             enabled_toolsets.add(ts_key)
             claimed.update(ts_tools)
 
-    # Plugin toolsets: enabled by default unless explicitly disabled, or
-    # unless the toolset is in _DEFAULT_OFF_TOOLSETS (e.g. spotify —
-    # shipped as a bundled plugin but user must opt in via `hermes tools`
-    # so we don't ship 7 Spotify tool schemas to users who don't use it).
-    # A plugin toolset is "known" for a platform once `hermes tools`
-    # has been saved for that platform (tracked via known_plugin_toolsets).
-    # Unknown plugins default to enabled; known-but-absent = disabled.
+    # Plugin toolsets: enabled by default only on the platform default
+    # composite surface, unless explicitly disabled/recorded via
+    # known_plugin_toolsets or listed in _DEFAULT_OFF_TOOLSETS (e.g.
+    # spotify). Once a platform has an explicit configurable selection,
+    # that saved list is authoritative: newly bundled plugin toolsets should
+    # not sneak into a user-selected `web,terminal` surface.
     if plugin_ts_keys:
         known_map = config.get("known_plugin_toolsets", {})
         known_for_platform = set(known_map.get(platform, []))
+        has_default_composite = any(
+            ts in platform_default_keys or ts == f"hermes-{platform}"
+            for ts in toolset_names
+        )
+        enable_unknown_plugin_defaults = (
+            using_platform_default
+            or (not has_explicit_config and has_default_composite)
+        )
         for pts in plugin_ts_keys:
             if pts in toolset_names:
                 # Explicitly listed in config — enabled
@@ -1313,10 +1323,11 @@ def _get_platform_tools(
             elif pts in _DEFAULT_OFF_TOOLSETS:
                 # Opt-in plugin toolset — stay off until user picks it
                 continue
-            elif pts not in known_for_platform:
-                # New plugin not yet seen by hermes tools — default enabled
+            elif enable_unknown_plugin_defaults and pts not in known_for_platform:
+                # Default/composite platform surface — expose newly available
+                # plugin toolsets until `hermes tools` has recorded a choice.
                 enabled_toolsets.add(pts)
-            # else: known but not in config = user disabled it
+            # else: explicit user selection or known-but-absent = disabled
 
     # Context-engine tools are runtime-provided by the active engine, so they
     # are not part of any static platform composite. When a non-default engine
