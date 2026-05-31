@@ -2086,12 +2086,13 @@ function Install-Desktop {
         throw "Desktop build completed but no Hermes.exe was found under $desktopDir\release\*-unpacked\"
     }
 
-    # 3b. Stamp the Hermes icon + identity onto Hermes.exe ourselves.
-    #     electron-builder's own rcedit step is disabled (signAndEditExecutable
+    # 3b. The Hermes icon + identity are stamped onto Hermes.exe by the
+    #     electron-builder `afterPack` hook (apps/desktop/scripts/after-pack.cjs)
+    #     during `npm run pack` above — for every build, so the installer's
+    #     --update rebuild stays branded too. No separate stamp step needed here.
+    #     electron-builder's own rcedit step stays disabled (signAndEditExecutable
     #     =false) because enabling it drags in signtool -> winCodeSign -> the
-    #     unfixable symlink crash. So we run rcedit directly on the produced
-    #     exe — no signing, no winCodeSign, just PE resource editing.
-    Set-DesktopExeIdentity -TargetExe $desktopExe -DesktopDir $desktopDir
+    #     unfixable symlink crash; the afterPack hook runs rcedit directly.
 
     # 4. Create Start Menu + Desktop shortcuts pointing DIRECTLY at the packed
     #    Hermes.exe. We deliberately do NOT point them at `hermes desktop`: that
@@ -2100,57 +2101,6 @@ function Install-Desktop {
     #    launching it directly is instant, and updates flow through the
     #    installer's --update path (which rebuilds once, then relaunches).
     New-DesktopShortcuts -TargetExe $desktopExe
-}
-
-function Set-DesktopExeIdentity {
-    # Stamp the Hermes icon + version metadata into Hermes.exe via rcedit,
-    # delegated to apps/desktop/scripts/set-exe-identity.cjs (which uses the
-    # `rcedit` npm package — a direct devDependency, so always present).
-    #
-    # Why a Node script instead of calling rcedit from PowerShell: passing
-    # arguments through PowerShell -> exe -> JSON parsers double-escapes
-    # Windows backslashes and breaks app-builder's --args JSON. Letting Node
-    # build the rcedit argv natively sidesteps all shell-quoting hazards.
-    #
-    # This replaces electron-builder's built-in signAndEditExecutable step
-    # (kept false, because enabling it re-triggers signtool -> winCodeSign ->
-    # the macOS-symlink 7-Zip crash on non-admin Windows). rcedit is a pure PE
-    # resource editor — no signing, no certs, no winCodeSign, no symlinks.
-    #
-    # Best-effort: a stamping failure must not fail an otherwise-good install
-    # (worst case is the stock Electron icon, not a broken app).
-    param(
-        [Parameter(Mandatory = $true)][string]$TargetExe,
-        [Parameter(Mandatory = $true)][string]$DesktopDir
-    )
-
-    $nodeExe = Get-Command node -ErrorAction SilentlyContinue
-    if (-not $nodeExe) {
-        Write-Warn "node not on PATH; cannot stamp Hermes.exe identity (it will keep the stock Electron icon)"
-        return
-    }
-
-    $script = Join-Path $DesktopDir "scripts\set-exe-identity.cjs"
-    if (-not (Test-Path $script)) {
-        Write-Warn "set-exe-identity.cjs not found at $script; skipping exe identity stamp"
-        return
-    }
-
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    # Run from $DesktopDir so the script's `require('rcedit')` resolves against
-    # the desktop workspace's node_modules.
-    Push-Location $DesktopDir
-    & $nodeExe.Source $script $TargetExe 2>&1 | ForEach-Object { "$_" }
-    $code = $LASTEXITCODE
-    Pop-Location
-    $ErrorActionPreference = $prevEAP
-
-    if ($code -eq 0) {
-        Write-Success "Stamped Hermes icon + identity onto $TargetExe"
-    } else {
-        Write-Warn "Exe identity stamp failed (exit $code); Hermes.exe keeps the stock Electron icon"
-    }
 }
 
 function New-DesktopShortcuts {

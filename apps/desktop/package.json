@@ -141,6 +141,7 @@
       "package.json"
     ],
     "beforeBuild": "scripts/before-build.cjs",
+    "afterPack": "scripts/after-pack.cjs",
     "extraResources": [
       {
         "from": "build/install-stamp.json",
