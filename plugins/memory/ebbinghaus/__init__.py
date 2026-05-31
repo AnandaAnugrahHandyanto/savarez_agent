@@ -889,3 +889,22 @@ def _extract_candidate_memories(text: str) -> list[tuple[str, float]]:
 def register(ctx) -> None:
     """Register Ebbinghaus memory provider with the plugin system."""
     ctx.register_memory_provider(EbbinghausMemoryProvider())
+    if hasattr(ctx, "register_skill"):
+        try:
+            from hermes_constants import get_bundled_skills_dir
+
+            default_skills = Path(__file__).resolve().parents[3] / "skills"
+            skill_path = (
+                get_bundled_skills_dir(default_skills)
+                / "autonomous-ai-agents"
+                / "ebbinghaus-memory"
+                / "SKILL.md"
+            )
+            if skill_path.exists():
+                ctx.register_skill(
+                    "ebbinghaus-memory",
+                    skill_path,
+                    "Use Ebbinghaus memory sleep, recall, and decay.",
+                )
+        except Exception as exc:
+            logger.debug("Ebbinghaus skill registration skipped: %s", exc)
