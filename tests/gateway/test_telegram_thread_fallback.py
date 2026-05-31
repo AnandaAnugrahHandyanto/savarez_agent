@@ -1279,6 +1279,30 @@ async def test_send_marks_wrapped_connect_timeout_retryable_after_exhaustion():
 
 
 @pytest.mark.asyncio
+async def test_send_retries_pool_timeout_once_then_uses_fresh_request(monkeypatch):
+    """General-pool exhaustion gets one same-pool retry, then a fresh-session send."""
+    adapter = _make_adapter()
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        raise FakeTimedOut("Pool timeout: All connections in the connection pool are occupied.")
+
+    async def mock_fresh_send(**kwargs):
+        return SimpleNamespace(message_id=202)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    monkeypatch.setattr(adapter, "_send_text_via_fresh_request", mock_fresh_send)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is True
+    assert result.message_id == "202"
+    assert attempt[0] == 2
+
+
+@pytest.mark.asyncio
 async def test_thread_fallback_only_fires_once():
     """After clearing thread_id, subsequent chunks should also use None."""
     adapter = _make_adapter()
