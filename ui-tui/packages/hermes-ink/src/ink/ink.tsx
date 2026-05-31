@@ -75,6 +75,7 @@ import {
   startSelection,
   updateSelection
 } from './selection.js'
+import { safeColumns, safeRows, safeTerminalSize } from './terminal-dimensions.js'
 import {
   needsAltScreenResizeScrollbackClear,
   supportsExtendedKeys,
@@ -332,8 +333,9 @@ export default class Ink {
       stdout: options.stdout,
       stderr: options.stderr
     }
-    this.terminalColumns = options.stdout.columns || 80
-    this.terminalRows = options.stdout.rows || 24
+    const { columns, rows } = safeTerminalSize(options.stdout)
+    this.terminalColumns = columns
+    this.terminalRows = rows
     this.altScreenParkPatch = makeAltScreenParkPatch(this.terminalRows)
     this.stylePool = new StylePool()
     this.charPool = new CharPool()
@@ -486,8 +488,7 @@ export default class Ink {
   // one microtask per burst: vscode fires many SIGWINCHes per panel
   // drag, each ~80ms uncoalesced = event loop visibly locks up.
   private handleResize = () => {
-    const cols = this.options.stdout.columns || 80
-    const rows = this.options.stdout.rows || 24
+    const { columns: cols, rows } = safeTerminalSize(this.options.stdout)
     const dimsChanged = cols !== this.terminalColumns || rows !== this.terminalRows
 
     // Terminals often emit 2+ resize events for one user action
@@ -709,8 +710,8 @@ export default class Ink {
     // an extra React re-render cycle.
     flushInteractionTime()
     const renderStart = performance.now()
-    const terminalWidth = this.options.stdout.columns || 80
-    const terminalRows = this.options.stdout.rows || 24
+    const terminalWidth = safeColumns(this.options.stdout)
+    const terminalRows = safeRows(this.options.stdout)
 
     const frame = this.renderer({
       frontFrame: this.frontFrame,

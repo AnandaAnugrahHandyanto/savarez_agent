@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import { safeColumns } from '../lib/terminalDimensions.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
@@ -83,7 +84,7 @@ function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
 }
 
 export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
-  const term = useStdout().stdout?.columns ?? 80
+  const term = safeColumns(useStdout().stdout)
   const cols = Math.max(1, Math.min(term, maxWidth ?? term))
 
   if (cols < HIDE_BELOW) {
@@ -158,7 +159,7 @@ const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
-  const term = useStdout().stdout?.columns ?? 100
+  const term = safeColumns(useStdout().stdout, 100)
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
   const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))

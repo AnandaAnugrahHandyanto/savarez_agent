@@ -23,6 +23,7 @@ import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { safeColumns } from '../lib/terminalDimensions.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
@@ -137,14 +138,14 @@ export async function startPromptLiveSession({
 export function useMainApp(gw: GatewayClient) {
   const { exit } = useApp()
   const { stdout } = useStdout()
-  const [cols, setCols] = useState(stdout?.columns ?? 80)
+  const [cols, setCols] = useState(safeColumns(stdout))
 
   useEffect(() => {
     if (!stdout) {
       return
     }
 
-    const sync = () => setCols(stdout.columns ?? 80)
+    const sync = () => setCols(safeColumns(stdout))
 
     stdout.on('resize', sync)
 
@@ -555,7 +556,7 @@ export function useMainApp(gw: GatewayClient) {
           scrollRef.current.scrollToBottom()
         }
 
-        void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
+        void rpc<TerminalResizeResponse>('terminal.resize', { cols: safeColumns(stdout), session_id: ui.sid })
       }, 100)
     }
 

@@ -6,6 +6,7 @@ import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { safeColumns } from '../lib/terminalDimensions.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems } from './overlayControls.js'
@@ -34,7 +35,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
   // to-fit with alignSelf="flex-start") doesn't resize as long provider /
   // model names scroll into view, and so `wrap="truncate-end"` on each row
   // has an actual constraint to truncate against.
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, safeColumns(stdout) - 6))
 
   useEffect(() => {
     gw.request<ModelOptionsResponse>('model.options', sessionId ? { session_id: sessionId } : {})

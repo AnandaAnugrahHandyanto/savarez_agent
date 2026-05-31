@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
+import { safeColumns } from '../lib/terminalDimensions.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
@@ -23,7 +24,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   const [loading, setLoading] = useState(true)
 
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, safeColumns(stdout) - 6))
 
   useEffect(() => {
     gw.request<{ skills?: Record<string, string[]> }>('skills.manage', { action: 'list' })

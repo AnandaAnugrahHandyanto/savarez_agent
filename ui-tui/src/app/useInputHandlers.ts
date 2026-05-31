@@ -12,6 +12,7 @@ import type {
 } from '../gatewayTypes.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
+import { safeRows } from '../lib/terminalDimensions.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
@@ -85,7 +86,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
   const overlay = useStore($overlayState)
   const isBlocked = useStore($isBlocked)
-  const pagerPageSize = Math.max(5, (terminal.stdout?.rows ?? 24) - 6)
+  const pagerPageSize = Math.max(5, safeRows(terminal.stdout) - 6)
   const scrollIdleTimer = useRef<null | ReturnType<typeof setTimeout>>(null)
 
   // Wheel accel ported from claude-code: inter-event timing drives step size,
@@ -402,7 +403,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (key.pageUp || key.pageDown) {
       // Half-viewport keeps 50% continuity and stays under Ink's
       // `delta < innerHeight` DECSTBM fast-path threshold.
-      const viewport = terminal.scrollRef.current?.getViewportHeight() ?? Math.max(6, (terminal.stdout?.rows ?? 24) - 8)
+      const viewport = terminal.scrollRef.current?.getViewportHeight() ?? Math.max(6, safeRows(terminal.stdout) - 8)
       const step = Math.max(4, Math.floor(viewport / 2))
 
       return scrollTranscript(key.pageUp ? -step : step)

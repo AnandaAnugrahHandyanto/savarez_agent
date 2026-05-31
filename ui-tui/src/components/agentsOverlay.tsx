@@ -29,6 +29,7 @@ import {
   treeTotals,
   widthByDepth
 } from '../lib/subagentTree.js'
+import { safeColumns, safeRows } from '../lib/terminalDimensions.js'
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { SubagentNode, SubagentProgress } from '../types.js'
@@ -735,8 +736,8 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const selected = rows[cursor] ?? null
 
-  const cols = stdout?.columns ?? 80
-  const rowsH = Math.max(8, (stdout?.rows ?? 24) - 10)
+  const cols = safeColumns(stdout)
+  const rowsH = Math.max(8, safeRows(stdout) - 10)
   const listWindowStart = Math.max(0, cursor - Math.floor(rowsH / 2))
 
   // ── Effects ────────────────────────────────────────────────────────

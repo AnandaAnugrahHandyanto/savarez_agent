@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionDeleteResponse, SessionListItem, SessionListResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { safeColumns } from '../lib/terminalDimensions.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowOffset } from './overlayControls.js'
@@ -37,7 +38,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   const [deleting, setDeleting] = useState(false)
 
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, safeColumns(stdout) - 6))
 
   useOverlayKeys({ onClose: onCancel })
 

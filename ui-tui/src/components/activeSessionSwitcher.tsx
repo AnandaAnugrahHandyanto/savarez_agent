@@ -5,6 +5,7 @@ import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionActiveItem, SessionActiveListResponse, SessionCloseResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { safeColumns } from '../lib/terminalDimensions.js'
 import type { Theme } from '../theme.js'
 
 import { ModelPicker } from './modelPicker.js'
@@ -252,7 +253,7 @@ export function ActiveSessionSwitcher({
   const [closingId, setClosingId] = useState('')
   const initialSelectionAppliedRef = useRef(false)
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, safeColumns(stdout) - 6))
   const promptColumns = Math.max(20, width - 11)
 
   const load = useCallback(
