@@ -548,6 +548,19 @@ def _video_message(url: str, preview_url: str) -> Dict[str, Any]:
     }
 
 
+def _line_message_type(msg_type: str) -> MessageType:
+    """Map LINE webhook message types to Hermes gateway message types."""
+    return {
+        "text": MessageType.TEXT,
+        "image": MessageType.PHOTO,
+        "audio": MessageType.AUDIO,
+        "video": MessageType.VIDEO,
+        "file": MessageType.DOCUMENT,
+        "sticker": MessageType.STICKER,
+        "location": MessageType.LOCATION,
+    }.get(msg_type, MessageType.TEXT)
+
+
 def build_postback_button_message(
     text: str, button_label: str, request_id: str
 ) -> Dict[str, Any]:
@@ -968,7 +981,7 @@ class LineAdapter(BasePlatformAdapter):
 
         event_obj = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT if msg_type == "text" else MessageType.IMAGE,
+            message_type=_line_message_type(msg_type),
             source=source_obj,
             raw_message=event,
             message_id=message_id,
