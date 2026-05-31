@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Claude Code Proxy", version="2.0.0")
 
 _sessions: dict[str, str] = {}
+_last_init: dict = {}  # Latest SystemMessage init data; updated on each query
 
 def _load_sessions() -> None:
     global _sessions
@@ -146,6 +147,7 @@ async def _stream_claude(
                 model = msg.data.get("model", model)
                 if not sid:
                     sid = msg.data.get("session_id", "")
+                _last_init.update(msg.data)
                 if emit_status:
                     ver = msg.data.get("claude_code_version", "")
                     src = msg.data.get("apiKeySource", "none")
@@ -313,6 +315,18 @@ async def chat_completions(request: Request):
         "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     })
+
+
+@app.get("/v1/status")
+async def proxy_status():
+    """Current auth and model info — reads credentials file, no Claude call."""
+    return {
+        "auth": "OAuth" if _last_init.get("apiKeySource", "none") == "none" else f"key:{_last_init.get('apiKeySource')}",
+        "subscription": _subscription_type(),
+        "model": _last_init.get("model", (lambda c: c.get("model", {}).get("default", "claude-sonnet-4-6") if isinstance(c, dict) else "claude-sonnet-4-6")({})),
+        "version": _last_init.get("claude_code_version", ""),
+        "sessions": len(_sessions),
+    }
 
 
 @app.delete("/v1/sessions")

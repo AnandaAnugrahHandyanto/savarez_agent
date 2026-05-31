@@ -7730,6 +7730,9 @@ class GatewayRunner:
                 execute=_do_reset,
             )
 
+        if canonical == "clear":
+            return await self._handle_clear_command(event)
+
         if canonical == "topic":
             return await self._handle_topic_command(event)
         
@@ -9763,6 +9766,39 @@ class GatewayRunner:
         if session_info:
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
         return EphemeralReply(f"{header}{_tip_line}")
+
+    async def _handle_clear_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /clear — resets Hermes session and clears the Claude Code proxy session."""
+        # Reset Hermes conversation history (same logic as /new)
+        result = await self._handle_reset_command(event)
+
+        # Also clear the proxy session so Claude Code starts fresh
+        _proxy_base = None
+        try:
+            _cfg = self.config if isinstance(self.config, dict) else {}
+            _proxy_base = (_cfg.get("model") or {}).get("base_url", "").rstrip("/")
+        except Exception:
+            pass
+        if not _proxy_base:
+            _proxy_base = "http://127.0.0.1:8765/v1"
+
+        try:
+            import asyncio as _asyncio
+            import urllib.request as _urlreq
+
+            def _delete_sessions():
+                req = _urlreq.Request(
+                    _proxy_base.rstrip("/v1").rstrip("/") + "/v1/sessions",
+                    method="DELETE",
+                )
+                with _urlreq.urlopen(req, timeout=2):
+                    pass
+
+            await _asyncio.to_thread(_delete_sessions)
+        except Exception:
+            pass  # proxy not running or unreachable — don't fail /clear
+
+        return result
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
