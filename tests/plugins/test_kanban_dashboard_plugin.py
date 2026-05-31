@@ -99,6 +99,7 @@ def test_create_task_appears_on_board(client):
     assert task["title"] == "Research LLM caching"
     assert task["assignee"] == "researcher"
     assert task["status"] == "ready"  # no parents -> immediately ready
+    assert task["live_status"] == "working"
     assert task["priority"] == 3
     assert task["tenant"] == "acme"
     task_id = task["id"]
@@ -108,8 +109,10 @@ def test_create_task_appears_on_board(client):
     assert r.status_code == 200
     data = r.json()
     ready = next(c for c in data["columns"] if c["name"] == "ready")
+    assert ready["live_status"] == "working"
     assert len(ready["tasks"]) == 1
     assert ready["tasks"][0]["id"] == task_id
+    assert ready["tasks"][0]["live_status"] == "working"
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
 
@@ -134,9 +137,10 @@ def test_scheduled_tasks_have_their_own_column_not_todo(client):
 
     r = client.get("/api/plugins/kanban/board")
     assert r.status_code == 200
-    columns = {c["name"]: c["tasks"] for c in r.json()["columns"]}
-    assert any(t["id"] == task["id"] for t in columns["scheduled"])
-    assert not any(t["id"] == task["id"] for t in columns["todo"])
+    columns = {c["name"]: c for c in r.json()["columns"]}
+    assert columns["scheduled"]["live_status"] == "waiting"
+    assert any(t["id"] == task["id"] and t["live_status"] == "waiting" for t in columns["scheduled"]["tasks"])
+    assert not any(t["id"] == task["id"] for t in columns["todo"]["tasks"])
 
 
 def test_tenant_filter(client):

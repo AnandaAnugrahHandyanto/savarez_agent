@@ -25,6 +25,27 @@ def kanban_home(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Live status aliases
+# ---------------------------------------------------------------------------
+
+
+def test_live_status_for_maps_internal_compatibility_aliases():
+    assert kb.LIVE_STATUSES == {"working", "waiting", "blocked", "dormant"}
+    assert kb.live_status_for("ready") == "working"
+    assert kb.live_status_for("queue") == "working"
+    assert kb.live_status_for("running") == "working"
+    assert kb.live_status_for("in_progress") == "working"
+    assert kb.live_status_for("review") == "working"
+    assert kb.live_status_for("todo") == "waiting"
+    assert kb.live_status_for("scheduled") == "waiting"
+    assert kb.live_status_for("blocked") == "blocked"
+    assert kb.live_status_for("triage") == "dormant"
+    # Completion/history states are not live availability states.
+    assert kb.live_status_for("done") == "done"
+    assert kb.live_status_for("archived") == "archived"
+
+
+# ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------
 

@@ -137,7 +137,7 @@ def _conn(board: Optional[str] = None):
 # tasks into ``todo`` and makes the dashboard look like the Scheduled column
 # disappeared.
 BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
+    "triage", "todo", "scheduled", "ready", "running", "review", "blocked", "done",
 ]
 
 
@@ -161,6 +161,7 @@ def _task_dict(
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
     # ``tasks.result``. ``None`` when no run has produced a summary yet.
     d["latest_summary"] = latest_summary
+    d["live_status"] = kanban_db.live_status_for(task.status)
     # Keep body short on list endpoints; full body comes from /tasks/:id.
     return d
 
@@ -473,7 +474,7 @@ def get_board(
 
         return {
             "columns": [
-                {"name": name, "tasks": columns[name]} for name in columns.keys()
+                {"name": name, "live_status": kanban_db.live_status_for(name), "tasks": columns[name]} for name in columns.keys()
             ],
             "tenants": tenants,
             "assignees": assignees,

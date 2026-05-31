@@ -97,6 +97,34 @@ _log = logging.getLogger(__name__)
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+# User-facing live status vocabulary.  The storage-level task.status column
+# intentionally keeps the legacy workflow aliases above for migration and DB
+# compatibility; UI/API/CLI surfaces can call live_status_for() when presenting
+# active work to humans.
+LIVE_STATUSES = {"working", "waiting", "blocked", "dormant"}
+_LIVE_STATUS_ALIASES = {
+    "ready": "working",
+    "queue": "working",
+    "running": "working",
+    "in_progress": "working",
+    "review": "working",
+    "todo": "waiting",
+    "scheduled": "waiting",
+    "blocked": "blocked",
+    "triage": "dormant",
+}
+
+
+def live_status_for(status: str) -> str:
+    """Return the canonical live status for an internal Kanban status.
+
+    ``done`` and ``archived`` are completion/history states, not live profile
+    availability states, so they pass through unchanged for historical views.
+    """
+    return _LIVE_STATUS_ALIASES.get(status, status)
+
+
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 

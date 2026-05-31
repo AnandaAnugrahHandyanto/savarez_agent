@@ -31,6 +31,10 @@ The following is the complete skill definition that Hermes loads when this skill
 
 > You're seeing this skill because the Hermes Kanban dispatcher spawned you as a worker with `--skills kanban-worker` — it's loaded automatically for every dispatched worker. The **lifecycle** (6 steps: orient → work → heartbeat → block/complete) also lives in the `KANBAN_GUIDANCE` block that's auto-injected into your system prompt. This skill is the deeper detail: good handoff shapes, retry diagnostics, edge cases.
 
+## Live status vocabulary
+
+Use canonical live statuses in user-facing prose: `working`, `waiting`, `blocked`, `dormant`. Internal Kanban DB/workflow aliases remain valid during migration: `ready`/`queue`/`running`/`in_progress`/`review` map to `working`; dependency-held `todo` and `scheduled` map to `waiting`; unspecced `triage` maps to `dormant`; `done` is completion history only. Reserve `blocked` for a specific active task/duty/dependency prevented by human action.
+
 ## Workspace handling
 
 Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORKSPACE`:

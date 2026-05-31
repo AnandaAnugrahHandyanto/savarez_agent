@@ -69,27 +69,33 @@
     return body || raw;
   }
 
-  // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  // Order matches BOARD_COLUMNS in plugin_api.py. Column names remain the
+  // storage-level compatibility aliases; labels/help expose canonical live
+  // statuses (working/waiting/blocked/dormant) plus done history.
+  const COLUMN_ORDER = ["triage", "todo", "scheduled", "ready", "running", "review", "blocked", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
   const FALLBACK_COLUMN_LABEL = {
-    triage: "Triage",
-    todo: "Todo",
-    ready: "Ready",
-    running: "In Progress",
+    triage: "Dormant (triage)",
+    todo: "Waiting (dependencies)",
+    scheduled: "Waiting (scheduled)",
+    ready: "Working (queued)",
+    running: "Working (running)",
+    review: "Working (review)",
     blocked: "Blocked",
-    done: "Done",
+    done: "Done (history)",
     archived: "Archived",
   };
   const FALLBACK_COLUMN_HELP = {
-    triage: "Raw ideas — a specifier will flesh out the spec",
-    todo: "Waiting on dependencies or unassigned",
-    ready: "Dependencies satisfied; assign a profile to dispatch",
-    running: "Claimed by a worker — in-flight",
-    blocked: "Worker asked for human input",
-    done: "Completed",
+    triage: "Dormant: no concrete active spec yet; human/specifier instruction is needed to resume",
+    todo: "Waiting: a concrete task exists but dependencies or assignment are not ready",
+    scheduled: "Waiting: paused on a non-human time/schedule condition",
+    ready: "Working: queued and immediately spawnable by the dispatcher",
+    running: "Working: claimed by a worker and in-flight",
+    review: "Working: reviewer work is claimable",
+    blocked: "Blocked: a specific active task is prevented by required human action",
+    done: "Completion history; not a live availability state",
     archived: "Archived",
   };
   const FALLBACK_DESTRUCTIVE = {
@@ -2985,7 +2991,7 @@
             }, t.title || tx(i18n, "untitled", "(untitled)")),
       ),
       h("div", { className: "hermes-kanban-drawer-meta" },
-        h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
+        h(MetaRow, { label: tx(i18n, "status", "Status"), value: `${(t.live_status || t.status)}${t.live_status && t.live_status !== t.status ? " (alias: " + t.status + ")" : ""}` }),
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,

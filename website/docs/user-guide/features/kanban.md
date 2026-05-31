@@ -59,7 +59,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   (e.g. one per project, repo, or domain); see [Boards (multi-project)](#boards-multi-project)
   below. Single-project users stay on the `default` board and never see the
   word "board" outside this docs section.
-- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
+- **Task** — a row with title, optional body, one assignee (a profile name), an internal workflow status (`triage | todo | scheduled | ready | running | blocked | review | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation). User-facing live status reports map those workflow aliases to `working | waiting | blocked | dormant`; `done` is completion history, not live availability.
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
 - **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
 - **Workspace** — the directory a worker operates in. Three kinds:
@@ -68,6 +68,19 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Use `worktree:<path>` to pin the exact target path. Worker-side `git worktree add` creates it, using `--branch` when provided.
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
+
+## Live status vocabulary
+
+Kanban keeps the legacy storage-level workflow states for DB and dispatcher compatibility, but new user-facing reports, dashboard labels, and coordinator/profile status lines should use this live vocabulary:
+
+| Live status | Meaning | Compatibility aliases |
+|---|---|---|
+| `working` | Active work is underway or immediately queued/spawnable. | `ready`, `queue`, `running`, `in_progress`, `review` |
+| `waiting` | A specific active task/duty/dependency exists, but progress is paused on a non-human/system condition. | `todo` with unfinished parents, `scheduled` |
+| `blocked` | A specific active task/duty/dependency is prevented until a human acts. | `blocked` only; do not use it for system waits or idle lanes |
+| `dormant` | No active actionable assignment exists. Human instruction is needed to resume, but no specific dependency is currently prevented. | unspecced `triage`, taskless profiles/projects |
+
+`done` remains valid as task completion history. It is not a live profile/project availability state; a profile with no active work is `dormant`, not `done`.
 
 ## Boards (multi-project)
 
