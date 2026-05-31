@@ -396,6 +396,14 @@ class TestGeneratedSystemdUnits:
 
 
 class TestGatewayStopCleanup:
+    @pytest.fixture(autouse=True)
+    def _clear_in_gateway_env(self, monkeypatch):
+        """Some module-level imports (gateway/run.py) export HERMES_IN_GATEWAY=1
+        as a side-effect.  The self-targeting guard added in PR #30728 reads
+        this var; without an explicit unset these "outside-gateway" tests
+        would exit(1) at the guard instead of exercising the cleanup path."""
+        monkeypatch.delenv("HERMES_IN_GATEWAY", raising=False)
+
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
         """Without --all, stop uses systemd (if available) and does NOT call
         the global kill_gateway_processes()."""

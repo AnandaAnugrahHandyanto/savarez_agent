@@ -166,6 +166,10 @@ def cron_status():
 
 
 def cron_create(args):
+    # The gateway-lifecycle guard lives in cron.jobs.create_job so it fires
+    # on every job-creation path (CLI + agent's `cronjob` model tool). When
+    # it blocks, the tool wrapper surfaces the message as result["error"]
+    # below — no separate guard needed here.
     result = _cron_api(
         action="create",
         schedule=args.schedule,
