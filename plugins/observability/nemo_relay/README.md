@@ -3,6 +3,36 @@
 Optional Hermes observability plugin that maps Hermes observer hooks to
 NeMo Relay scopes, LLM spans, tool spans, marks, ATOF, and ATIF.
 
+NeMo Relay is NVIDIA's runtime layer for agent execution boundaries. It does
+not replace Hermes Agent's planner, tools, memory, model provider routing, or
+CLI UX. Instead, this plugin lets Hermes emit NeMo Relay lifecycle events for
+the work Hermes already owns: sessions, turns, provider/API calls, tool calls,
+approval prompts, and delegated subagents.
+
+With this plugin enabled, Hermes Agent can:
+
+- Preserve Hermes execution as NeMo Relay scopes, LLM spans, tool spans, and
+  mark events.
+- Export raw lifecycle events as Agent Trajectory Observability Format (ATOF)
+  JSONL for debugging and offline inspection.
+- Export Agent Trajectory Interchange Format (ATIF) trajectories for replay,
+  evaluation, and harness analysis workflows.
+- Correlate parent sessions, delegated subagents, tool calls, and provider
+  calls through shared session, turn, and trajectory metadata.
+
+See the NeMo Relay overview for the broader runtime model:
+https://docs.nvidia.com/nemo/relay/about-nemo-relay/overview
+
+ATOF is NVIDIA's canonical JSONL event stream representation for NeMo Relay
+lifecycle events. The format is documented in the NeMo Agent Toolkit:
+https://github.com/NVIDIA/NeMo-Agent-Toolkit/blob/develop/packages/nvidia_nat_atif/atof-event-format.md
+
+ATIF is the trajectory representation produced from those events. NVIDIA and
+Harbor upstreamed ATIF v1.7 support for complex harness workflows, including
+subagent trajectory embedding, trajectory IDs, multi-LLM-call step metadata, and
+deterministic no-LLM orchestration steps:
+https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md
+
 ## Enablement
 
 Enable the plugin before setting export options:
@@ -26,13 +56,56 @@ Runs started with `--ignore_user_config` skip the enabled-plugin state from
 `HERMES_HOME`, so local E2E tests should omit that flag unless the test harness
 loads `observability/nemo_relay` explicitly another way.
 
+`HERMES_HOME` is the Hermes profile/config home used by both
+`hermes plugins enable ...` and the later `hermes chat ...` run. If unset,
+Hermes uses the user's default home, usually `~/.hermes`. For isolated smoke
+tests, choose any writable temporary directory and use the same value for every
+command in that test:
+
+```bash
+export HERMES_HOME=/tmp/hermes-nemo-relay-test
+hermes plugins enable observability/nemo_relay
+hermes chat --query 'Reply exactly ok' --provider custom --model qwen3.6:35b
+```
+
+For source checkouts, make sure the `hermes` command you run is built from the
+checkout that contains this plugin. A globally installed older CLI will not see
+new bundled plugins from your working tree.
+
+```bash
+uv sync --extra nemo-relay
+uv run hermes plugins enable observability/nemo_relay
+uv run hermes chat --query 'Reply exactly ok' --provider custom --model qwen3.6:35b
+```
+
+To ship the updated CLI into another environment, build and install a fresh
+wheel from this checkout, then install the official NeMo Relay runtime extra:
+
+```bash
+uv build --wheel
+python -m pip install --force-reinstall dist/hermes_agent-*.whl
+python -m pip install "nemo-relay==0.3"
+hermes plugins enable observability/nemo_relay
+```
+
 The plugin fails open when `nemo-relay` is not installed. Install and test it against the official NeMo Relay 0.3 PyPI distribution:
 
 ```bash
 pip install "nemo-relay==0.3"
 ```
 
-## Export Settings
+## Export Configuration
+
+The plugin can configure exporters directly from `HERMES_NEMO_RELAY_*`
+environment variables, or delegate exporter setup to a NeMo Relay
+`plugins.toml` component config.
+
+Use environment variables for local smoke tests, CI jobs, and one-off CLI
+runs. Use `plugins.toml` when you want one NeMo Relay configuration document to
+own observability components such as ATOF, ATIF, OpenTelemetry, and
+OpenInference.
+
+### Environment Variables
 
 Useful local export settings after the plugin is enabled:
 
@@ -43,15 +116,8 @@ export HERMES_NEMO_RELAY_ATIF_ENABLED=1
 export HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY=.nemo-relay/atif
 ```
 
-To initialize NeMo Relay from a component config instead, set:
-
-```bash
-export HERMES_NEMO_RELAY_PLUGINS_TOML=.nemo-relay/plugins.toml
-```
-
 Optional overrides:
 
-- `HERMES_NEMO_RELAY_PLUGINS_TOML`
 - `HERMES_NEMO_RELAY_ATOF_FILENAME`
 - `HERMES_NEMO_RELAY_ATOF_MODE` (`append` or `overwrite`)
 - `HERMES_NEMO_RELAY_ATIF_FILENAME_TEMPLATE`
@@ -59,6 +125,45 @@ Optional overrides:
 - `HERMES_NEMO_RELAY_ATIF_AGENT_VERSION`
 - `HERMES_NEMO_RELAY_ATIF_MODEL_NAME`
 - `HERMES_NEMO_RELAY_ATIF_SUBAGENT_EXPORT_MODE` (`embedded` by default; set `all` to also write standalone child files)
+
+### NeMo Relay Component Config
+
+To initialize NeMo Relay from a component config, create a `plugins.toml` file
+and point Hermes at it:
+
+```bash
+export HERMES_NEMO_RELAY_PLUGINS_TOML=.nemo-relay/plugins.toml
+```
+
+Minimal ATOF and ATIF config:
+
+```toml
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 1
+
+[components.config.atof]
+enabled = true
+output_directory = ".nemo-relay/atof"
+filename = "events.jsonl"
+mode = "overwrite"
+
+[components.config.atif]
+enabled = true
+output_directory = ".nemo-relay/atif"
+filename_template = "trajectory-{session_id}.json"
+agent_name = "Hermes Agent"
+agent_version = "local"
+```
+
+When `HERMES_NEMO_RELAY_PLUGINS_TOML` is set and initializes successfully, NeMo
+Relay owns exporter lifecycle through that config. The direct
+`HERMES_NEMO_RELAY_ATOF_*` fallback setup is skipped.
 
 ## Canonical Local Examples
 
