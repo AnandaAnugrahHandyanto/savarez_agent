@@ -509,6 +509,16 @@ def _cache_mcp_image_block(block) -> str:
 # ---------------------------------------------------------------------------
 
 
+class _MCPInvalidContentTypeError(Exception):
+    """Raised when an HTTP MCP endpoint returns a non-MCP content type.
+
+    A genuine MCP streamable-HTTP server responds with ``application/json``
+    or ``text/event-stream``.  Receiving ``text/html`` typically means the
+    URL points at a web application root rather than an MCP endpoint.
+    This error is non-retryable: retrying will always return the same page.
+    """
+
+
 class InvalidMcpUrlError(ValueError):
     """Raised when a remote MCP server's ``url`` cannot be parsed as http(s)://.
 
@@ -1592,11 +1602,40 @@ class MCPServerTask:
                         response.next_request.headers.pop("authorization", None)
                         response.next_request.headers.pop("Authorization", None)
 
+            _server_name_for_hook = self.name
+
+            async def _detect_non_mcp_content_type(response):
+                """Fail fast when the server returns a non-MCP content type.
+
+                A valid MCP streamable-HTTP endpoint responds with
+                ``application/json`` or ``text/event-stream``.  Any other
+                content type on a 2xx response (e.g. ``text/html`` from a
+                web app root) means the URL is misconfigured.  Raising here
+                cancels the transport before the SDK waits out the full
+                connect_timeout, turning a 60-second hang into an immediate
+                failure with an actionable message.
+                """
+                if response.status_code >= 400:
+                    return  # Let HTTP error handling deal with 4xx/5xx
+                ct = response.headers.get("content-type", "")
+                ct_base = ct.split(";")[0].strip().lower()
+                _VALID_MCP_CONTENT_TYPES = {"application/json", "text/event-stream"}
+                if ct_base and ct_base not in _VALID_MCP_CONTENT_TYPES:
+                    raise _MCPInvalidContentTypeError(
+                        f"MCP server '{_server_name_for_hook}' returned unexpected "
+                        f"content type '{ct}' — expected application/json or "
+                        "text/event-stream. Verify the URL points to an MCP endpoint, "
+                        "not a web application root."
+                    )
+
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
-                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                "event_hooks": {"response": [
+                    _strip_auth_on_cross_origin_redirect,
+                    _detect_non_mcp_content_type,
+                ]},
             }
             if headers:
                 client_kwargs["headers"] = headers
@@ -1751,6 +1790,15 @@ class MCPServerTask:
                         logger.warning(
                             "MCP server '%s' failed initial OAuth authentication, "
                             "not retrying automatically: %s",
+                            self.name, exc,
+                        )
+                        self._error = exc
+                        self._ready.set()
+                        return
+                    if isinstance(exc, _MCPInvalidContentTypeError):
+                        logger.warning(
+                            "MCP server '%s' returned a non-MCP response and will "
+                            "not be retried: %s",
                             self.name, exc,
                         )
                         self._error = exc
