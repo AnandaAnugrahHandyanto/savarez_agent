@@ -143,9 +143,33 @@ def _has_bom(text: Optional[str]) -> bool:
     return bool(text) and text.startswith(_UTF8_BOM)
 
 
+def _windows_bash_path_to_drive(path: str) -> str:
+    """Convert Git Bash/MSYS drive paths back to native Windows syntax."""
+    if os.name != "nt" or not path:
+        return path
+    match = re.match(r"^/mnt/([a-zA-Z])(?:/(.*))?$", path)
+    if match:
+        drive = match.group(1).upper()
+        tail = (match.group(2) or "").replace("/", "\\")
+        if tail:
+            return f"{drive}:\\{tail}"
+        return f"{drive}:\\"
+    match = re.match(r"^/([a-zA-Z])(?:/(.*))?$", path)
+    if not match:
+        return path
+    drive = match.group(1).upper()
+    tail = (match.group(2) or "").replace("/", "\\")
+    if tail:
+        return f"{drive}:\\{tail}"
+    return f"{drive}:\\"
+
+
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
-    return _shared_is_write_denied(path)
+    if _shared_is_write_denied(path):
+        return True
+    native_path = _windows_bash_path_to_drive(path)
+    return native_path != path and _shared_is_write_denied(native_path)
 
 
 # =============================================================================
@@ -472,6 +496,32 @@ def _looks_like_linter_unusable(base_cmd: str, output: str) -> bool:
     return any(p in lower for p in patterns)
 
 
+def _is_windows_wsl_bash(bash_path: str) -> bool:
+    """Return True for Windows WSL bash launchers."""
+    if os.name != "nt" or not bash_path:
+        return False
+    normalized = os.path.normcase(os.path.normpath(bash_path))
+    return (
+        normalized.endswith(r"\windows\system32\bash.exe")
+        or normalized.endswith(r"\microsoft\windowsapps\bash.exe")
+    )
+
+
+def _windows_drive_path_for_bash(path: str, path_style: str = "msys") -> str:
+    """Convert native Windows drive paths to bash drive path syntax."""
+    if os.name != "nt" or not path:
+        return path
+    match = re.match(r"^([a-zA-Z]):[\\/](.*)$", path)
+    if not match:
+        return path
+    drive = match.group(1).lower()
+    tail = match.group(2).replace("\\", "/")
+    prefix = f"/mnt/{drive}" if path_style == "wsl" else f"/{drive}"
+    if tail:
+        return f"{prefix}/{tail}"
+    return f"{prefix}/"
+
+
 def _lint_json_inproc(content: str) -> tuple[bool, str]:
     """In-process JSON syntax check.  Returns (ok, error_message)."""
     import json as _json
@@ -638,6 +688,24 @@ class ShellFileOperations(FileOperations):
 
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
+
+    def _uses_msys_paths(self) -> bool:
+        """Return True when this backend expects MSYS-style drive paths."""
+        return bool(getattr(self.env, "uses_msys_paths", False))
+
+    def _windows_bash_path_style(self) -> str:
+        """Return the POSIX drive-prefix style expected by this Windows shell."""
+        explicit = getattr(self.env, "windows_bash_path_style", None)
+        if explicit in {"msys", "wsl"}:
+            return explicit
+        try:
+            from tools.environments.local import _find_bash
+        except Exception:
+            return "msys"
+        try:
+            return "wsl" if _is_windows_wsl_bash(_find_bash()) else "msys"
+        except Exception:
+            return "msys"
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
@@ -762,6 +830,8 @@ class ShellFileOperations(FileOperations):
                         suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
                         return user_home + suffix
         
+        if self._uses_msys_paths():
+            return _windows_drive_path_for_bash(path, self._windows_bash_path_style())
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:
