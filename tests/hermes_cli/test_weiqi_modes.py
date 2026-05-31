@@ -23,9 +23,9 @@ def test_weiqi_mode_presets():
         "论文": ("research", "openai-codex", "gpt-5.5", "high"),
         "研究": ("research", "openai-codex", "gpt-5.5", "high"),
         "MBA": ("business", "openai-codex", "gpt-5.5", "high"),
-        "顾问": ("advisor", "copilot-acp", "opus", "high"),
-        "播客": ("creative", "copilot-acp", "opus", "high"),
-        "创意": ("creative", "copilot-acp", "opus", "high"),
+        "顾问": ("advisor", "copilot-acp", "claude-opus-4-8", "high"),
+        "播客": ("creative", "copilot-acp", "claude-opus-4-8", "high"),
+        "创意": ("creative", "copilot-acp", "claude-opus-4-8", "high"),
         "整理": ("notes", "openai-codex", "gpt-5.5", "high"),
         "中文润色": ("polish", "openrouter", "moonshotai/kimi-k2.6", "medium"),
         "省钱": ("cheap", "openrouter", "qwen/qwen3.6-plus", "low"),
@@ -43,7 +43,7 @@ def test_mode_arg_resolution_and_status():
     assert is_status_request("mode", "状态")
     assert is_auto_request("自动", "")
     assert is_auto_request("mode", "smart")
-    assert OPUS_STATUS == "OPUS_ENABLED_CLAUDE_CODE_MAX_CHAT_ONLY"
+    assert OPUS_STATUS == "OPUS_ENABLED_CLAUDE_CODE_MAX_OPUS_4_8_CHAT_ONLY_NO_TOOLS"
     assert len(list_weiqi_modes()) == 8
 
 

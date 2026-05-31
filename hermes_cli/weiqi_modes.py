@@ -26,7 +26,7 @@ class WeiqiModePreset:
     acp_args: tuple[str, ...] | None = None
 
 
-OPUS_STATUS = "OPUS_ENABLED_CLAUDE_CODE_MAX_CHAT_ONLY"
+OPUS_STATUS = "OPUS_ENABLED_CLAUDE_CODE_MAX_OPUS_4_8_CHAT_ONLY_NO_TOOLS"
 OPUS_ACP_COMMAND = "/Users/neo/.hermes/bin/claude-code-print-acp"
 
 _PRESETS: dict[str, WeiqiModePreset] = {
@@ -61,11 +61,11 @@ _PRESETS: dict[str, WeiqiModePreset] = {
         key="advisor",
         label="顾问/第二意见",
         provider="copilot-acp",
-        model="opus",
+        model="claude-opus-4-8",
         reasoning="high",
         description="第二意见、盲点挑战、战略顾问、教授/投资人视角；适合需要品味和判断的深度反馈。",
-        aliases=("顾问", "advisor"),
-        note=f"Opus 已通过 Claude Code Max 订阅路线启用；此模式仅作聊天大脑，不让 Opus 自己调用工具：{OPUS_STATUS}。",
+        aliases=("顾问", "advisor", "opus"),
+        note=f"Opus 4.8 已通过 Claude Code Max 订阅路线启用；此模式仅作聊天大脑，不让 Opus 自己调用工具：{OPUS_STATUS}。",
         base_url="acp://copilot",
         acp_command=OPUS_ACP_COMMAND,
         acp_args=(),
@@ -74,11 +74,11 @@ _PRESETS: dict[str, WeiqiModePreset] = {
         key="creative",
         label="播客/创意/品牌",
         provider="copilot-acp",
-        model="opus",
+        model="claude-opus-4-8",
         reasoning="high",
         description="播客、内容方向、品牌创意、sevenchic、slogan/命名/叙事；优先使用 Opus 创意路线。",
         aliases=("播客", "创意", "creative", "podcast"),
-        note=f"Opus 已通过 Claude Code Max 订阅路线启用；此模式仅作聊天大脑，不让 Opus 自己调用工具：{OPUS_STATUS}。",
+        note=f"Opus 4.8 已通过 Claude Code Max 订阅路线启用；此模式仅作聊天大脑，不让 Opus 自己调用工具：{OPUS_STATUS}。",
         base_url="acp://copilot",
         acp_command=OPUS_ACP_COMMAND,
         acp_args=(),
