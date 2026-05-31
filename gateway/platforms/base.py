@@ -3627,7 +3627,15 @@ class BasePlatformAdapter(ABC):
         try:
             from gateway.routing import resolve_profile_route
 
-            event.routed_profile = resolve_profile_route(
+            # An explicit /profile binding for this chat wins over the config
+            # routing table (deliberate user action).
+            bound = None
+            bindings = getattr(self, "_chat_bindings", None)
+            if bindings is not None:
+                from gateway.chat_bindings import chat_binding_key
+
+                bound = bindings.get(chat_binding_key(event.source))
+            event.routed_profile = bound or resolve_profile_route(
                 getattr(self, "_profile_routing", None), event.source
             )
         except Exception:

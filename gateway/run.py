@@ -4485,6 +4485,7 @@ class GatewayRunner:
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
             adapter._profile_routing = self.config.profile_routing
+            adapter._chat_bindings = self._chat_bindings()
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -6203,6 +6204,7 @@ class GatewayRunner:
 
                     adapter.set_message_handler(self._handle_message)
                     adapter._profile_routing = self.config.profile_routing
+                    adapter._chat_bindings = self._chat_bindings()
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -10168,19 +10170,42 @@ class GatewayRunner:
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
         return EphemeralReply(f"{header}{_tip_line}")
 
+    def _chat_bindings(self) -> "ChatBindings":
+        from gateway.chat_bindings import ChatBindings
+
+        if getattr(self, "_chat_bindings_store", None) is None:
+            self._chat_bindings_store = ChatBindings(Path(self.config.sessions_dir) / "chat_bindings.json")
+        return self._chat_bindings_store
+
     async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show active profile name and home directory."""
+        """Handle /profile [ls | <name>] — show, list, or bind this chat's profile."""
         from hermes_constants import display_hermes_home
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.profiles import get_active_profile_name, list_profiles, profile_exists, validate_profile_name
+        from gateway.chat_bindings import chat_binding_key
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        arg = event.get_command_args().strip()
 
+        if arg in {"ls", "list"}:
+            names = ", ".join(sorted(p.name for p in list_profiles())) or "(none)"
+            return f"Available profiles: {names}"
+
+        if arg:
+            try:
+                validate_profile_name(arg)
+            except ValueError as e:
+                return f"⚠️ {e}"
+            if not profile_exists(arg):
+                return f"⚠️ No such profile '{arg}'. Try /profile ls."
+            self._chat_bindings().set(chat_binding_key(event.source), arg)
+            return f"✅ This chat is now bound to the '{arg}' profile."
+
+        bound = self._chat_bindings().get(chat_binding_key(event.source))
         lines = [
-            t("gateway.profile.header", profile=profile_name),
-            t("gateway.profile.home", home=display),
+            t("gateway.profile.header", profile=get_active_profile_name()),
+            t("gateway.profile.home", home=display_hermes_home()),
         ]
-
+        if bound:
+            lines.append(f"This chat is routed to: {bound}")
         return "\n".join(lines)
 
 
