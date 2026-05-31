@@ -941,13 +941,115 @@ def test_kb_publish_previews_without_committing(monkeypatch):
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
-    assert ctx.calls == [("mcp_kb_engine_prod_publication_preview_commit", {"message": "Publish KB update"})]
+    assert ctx.calls == [
+        ("mcp_kb_engine_prod_closeout_packet", {"limit": 5}),
+        ("mcp_kb_engine_prod_publication_preview_commit", {"message": "Publish KB update"}),
+    ]
     text = adapter.sent[0]["text"]
     assert "KB Publish Preview" in text
     assert "Changed paths: 2" in text
     assert "accounts/mistral/state.md" in text
     assert "To publish: /kb publish confirm" in text
     assert "No commit or push has been made." in text
+
+
+def test_kb_publish_renders_descriptor_confirm_action_button(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_closeout_packet": {
+                "result": {
+                    "packet_type": "closeout.packet",
+                    "contract_id": "kb.closeout.operation.v1",
+                    "action_descriptors": [
+                        {
+                            "packet_type": "dashboard_action_descriptor",
+                            "schema_version": 2,
+                            "action_id": "publication.preview_commit",
+                            "label": "Preview publication commit",
+                            "method": "publication.preview_commit",
+                            "mutation": "read_only",
+                            "target_kind": "publication",
+                            "target_ref": "publication",
+                            "preview_tool": "publication.preview_commit",
+                            "confirm_tool": "",
+                            "params": {"message": "Publish KB update"},
+                            "dashboard_owned_write": False,
+                            "requires_canonical_tool": True,
+                        },
+                        {
+                            "packet_type": "dashboard_action_descriptor",
+                            "schema_version": 2,
+                            "action_id": "publication.commit_confirmed",
+                            "label": "Confirm publication commit",
+                            "method": "publication.commit_confirmed",
+                            "mutation": "workspace_write",
+                            "target_kind": "publication",
+                            "target_ref": "publication",
+                            "preview_tool": "publication.preview_commit",
+                            "confirm_tool": "publication.commit_confirmed",
+                            "params": {"message": "Publish KB update"},
+                            "dashboard_owned_write": False,
+                            "requires_canonical_tool": True,
+                            "confirmation_copy": "Confirm publication only after reviewing the commit preview.",
+                        },
+                    ],
+                }
+            },
+            "mcp_kb_engine_prod_publication_preview_commit": {
+                "result": {
+                    "status": "ready",
+                    "ok": True,
+                    "message": "Publish KB update",
+                    "changed_paths": ["accounts/mistral/state.md"],
+                    "git": {"branch": "main", "head": "abc123", "upstream": "origin/main"},
+                }
+            },
+            "mcp_kb_engine_prod_publication_commit_confirmed": {
+                "result": {
+                    "status": "committed",
+                    "ok": True,
+                    "publication": {
+                        "status": "committed",
+                        "changed_paths": ["accounts/mistral/state.md"],
+                        "commit": "def456",
+                    },
+                }
+            },
+            "mcp_kb_engine_prod_publication_push_confirmed": {
+                "result": {"status": "pushed", "ok": True, "publication": {"status": "pushed"}},
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb publish"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert adapter.sent[0]["actions"]
+    confirm_action = adapter.sent[0]["actions"][0]
+    assert confirm_action.label == "Confirm Publish"
+
+    confirm_card = confirm_action.handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
+    if asyncio.iscoroutine(confirm_card):
+        confirm_card = asyncio.run(confirm_card)
+
+    assert "KB Published" in confirm_card["text"]
+    assert [call[0] for call in ctx.calls] == [
+        "mcp_kb_engine_prod_closeout_packet",
+        "mcp_kb_engine_prod_publication_preview_commit",
+        "mcp_kb_engine_prod_publication_preview_commit",
+        "mcp_kb_engine_prod_publication_commit_confirmed",
+        "mcp_kb_engine_prod_publication_push_confirmed",
+    ]
+    commit_args = ctx.calls[-2][1]
+    assert commit_args["user_confirmation"]["confirmed"] is True
+    assert commit_args["user_confirmation"]["preview_required"] is True
+    assert commit_args["expected_changed_paths"] == ["accounts/mistral/state.md"]
 
 
 def test_kb_publish_confirm_commits_and_pushes_after_fresh_preview(monkeypatch):
@@ -993,11 +1095,12 @@ def test_kb_publish_confirm_commits_and_pushes_after_fresh_preview(monkeypatch):
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
     assert [call[0] for call in ctx.calls] == [
+        "mcp_kb_engine_prod_closeout_packet",
         "mcp_kb_engine_prod_publication_preview_commit",
         "mcp_kb_engine_prod_publication_commit_confirmed",
         "mcp_kb_engine_prod_publication_push_confirmed",
     ]
-    commit_args = ctx.calls[1][1]
+    commit_args = ctx.calls[2][1]
     assert commit_args["expected_git_head"] == "abc123"
     assert commit_args["expected_changed_paths"] == ["accounts/mistral/state.md"]
     assert commit_args["user_confirmation"]["confirmed"] is True
@@ -1034,7 +1137,10 @@ def test_kb_publish_confirm_noops_when_preview_has_no_changes(monkeypatch):
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
-    assert ctx.calls == [("mcp_kb_engine_prod_publication_preview_commit", {"message": "Publish KB update"})]
+    assert ctx.calls == [
+        ("mcp_kb_engine_prod_closeout_packet", {"limit": 5}),
+        ("mcp_kb_engine_prod_publication_preview_commit", {"message": "Publish KB update"}),
+    ]
     assert "Nothing to publish" in adapter.sent[0]["text"]
 
 

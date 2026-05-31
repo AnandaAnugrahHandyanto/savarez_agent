@@ -1668,7 +1668,143 @@ def _publication_git_line(git_state: Any) -> str:
     return " · ".join(bits)
 
 
-def _render_publish_preview(payload: Any, *, confirm_hint: str = "/kb publish confirm") -> dict[str, Any]:
+def _closeout_action_descriptors(ctx: Any, target: str) -> list[dict[str, Any]]:
+    payload = _result_payload(ctx.dispatch_tool(_mcp_tool_name(target, "closeout.packet"), {"limit": 5}))
+    if not isinstance(payload, dict):
+        return []
+    actions = payload.get("action_descriptors")
+    if not isinstance(actions, list):
+        return []
+    return [action for action in actions if isinstance(action, dict)]
+
+
+def _publication_descriptor(descriptors: list[dict[str, Any]], method: str) -> dict[str, Any] | None:
+    for descriptor in descriptors:
+        if descriptor.get("dashboard_owned_write") is True:
+            continue
+        if descriptor.get("target_kind") != "publication":
+            continue
+        if descriptor.get("method") == method or descriptor.get("preview_tool") == method or descriptor.get("confirm_tool") == method:
+            return descriptor
+    return None
+
+
+def _publication_descriptor_args(descriptor: dict[str, Any] | None, *, message: str) -> dict[str, Any]:
+    params = descriptor.get("params") if isinstance(descriptor, dict) and isinstance(descriptor.get("params"), dict) else {}
+    args = dict(params)
+    if message:
+        args["message"] = message
+    return args
+
+
+def _render_publish_descriptor_confirm(
+    ctx: Any,
+    target: str,
+    *,
+    preview_descriptor: dict[str, Any] | None,
+    confirm_descriptor: dict[str, Any],
+    message: str,
+    callback_ctx: Any,
+) -> dict[str, Any]:
+    preview_tool = _descriptor_tool_name(
+        target,
+        (preview_descriptor or {}).get("preview_tool") or (preview_descriptor or {}).get("method") or "publication.preview_commit",
+    )
+    commit_tool = _descriptor_tool_name(target, confirm_descriptor.get("confirm_tool") or confirm_descriptor.get("method"))
+    push_tool = _mcp_tool_name(target, "publication.push_confirmed")
+    actor = _queue_callback_actor(callback_ctx)
+    source = "Hermes Telegram Action Card"
+    session_id = f"telegram-kb-publish-{int(time.time())}"
+    preview_payload = _result_payload(
+        ctx.dispatch_tool(preview_tool, _publication_descriptor_args(preview_descriptor, message=message))
+    )
+    if not isinstance(preview_payload, dict) or preview_payload.get("error"):
+        return _render_publish_preview(preview_payload)
+    changed_paths = _changed_paths(preview_payload)
+    if not changed_paths:
+        return {
+            "title": "KB Publish",
+            "text": _render_publish_preview(preview_payload)["text"].replace("KB Publish Preview", "KB Publish"),
+            "actions": [],
+        }
+    confirmation = {
+        "confirmed": True,
+        "surface": "telegram",
+        "action": "publication.commit_and_push",
+        "preview_required": True,
+        "confirmation_text": str(confirm_descriptor.get("confirmation_copy") or "Confirm publication after preview."),
+    }
+    commit_args = _publication_descriptor_args(confirm_descriptor, message=message)
+    commit_args.update(
+        {
+            "expected_git_head": _short(_get_path(preview_payload, "git", "head"), ""),
+            "expected_changed_paths": changed_paths,
+            "push": False,
+            "actor": actor,
+            "source": source,
+            "session_id": session_id,
+            "user_confirmation": confirmation,
+        }
+    )
+    commit_payload = _result_payload(ctx.dispatch_tool(commit_tool, commit_args))
+    if not isinstance(commit_payload, dict) or not commit_payload.get("ok"):
+        return _render_publish_result(preview_payload, commit_payload, None)
+    push_payload = _result_payload(
+        ctx.dispatch_tool(
+            push_tool,
+            {
+                "actor": actor,
+                "source": source,
+                "session_id": session_id,
+                "user_confirmation": confirmation,
+            },
+        )
+    )
+    return _render_publish_result(preview_payload, commit_payload, push_payload)
+
+
+def _publish_confirm_action(
+    ctx: Any,
+    target: str,
+    *,
+    preview_descriptor: dict[str, Any] | None,
+    confirm_descriptor: dict[str, Any] | None,
+    message: str,
+) -> list[Any]:
+    if not confirm_descriptor:
+        return []
+    try:
+        from tools.kb_callback_registry import KbAction
+    except Exception:
+        return []
+    return [
+        KbAction(
+            label="Confirm Publish",
+            action_id="publication.commit_confirmed.confirm",
+            handler=lambda callback_ctx: _render_publish_descriptor_confirm(
+                ctx,
+                target,
+                preview_descriptor=preview_descriptor,
+                confirm_descriptor=confirm_descriptor,
+                message=message,
+                callback_ctx=callback_ctx,
+            ),
+            metadata={
+                "target_kind": "publication",
+                "preview_tool": (preview_descriptor or {}).get("preview_tool") or "publication.preview_commit",
+                "confirm_tool": confirm_descriptor.get("confirm_tool") or confirm_descriptor.get("method"),
+                "preview_required": True,
+            },
+        )
+    ]
+
+
+def _render_publish_preview(
+    payload: Any,
+    *,
+    confirm_hint: str = "/kb publish confirm",
+    actions: list[Any] | None = None,
+) -> dict[str, Any]:
     if isinstance(payload, dict) and payload.get("error"):
         return {"title": "KB Publish", "text": f"KB Publish Preview Failed\n{payload['error']}", "actions": []}
     if not isinstance(payload, dict):
@@ -1704,7 +1840,7 @@ def _render_publish_preview(payload: Any, *, confirm_hint: str = "/kb publish co
             "No commit or push has been made.",
         ]
     )
-    return {"title": "KB Publish", "text": "\n".join(lines), "actions": []}
+    return {"title": "KB Publish", "text": "\n".join(lines), "actions": actions or []}
 
 
 def _render_publish_result(preview: Any, commit: Any, push: Any) -> dict[str, Any]:
@@ -1756,15 +1892,38 @@ def _render_publish_result(preview: Any, commit: Any, push: Any) -> dict[str, An
 
 def _render_publish_command(ctx: Any, target: str, args: str) -> dict[str, Any]:
     confirm, message = _publish_args(args)
-    preview_tool = _mcp_tool_name(target, "publication.preview_commit")
-    commit_tool = _mcp_tool_name(target, "publication.commit_confirmed")
+    descriptors = _closeout_action_descriptors(ctx, target)
+    preview_descriptor = _publication_descriptor(descriptors, "publication.preview_commit")
+    commit_descriptor = _publication_descriptor(descriptors, "publication.commit_confirmed")
+    preview_tool = _descriptor_tool_name(
+        target,
+        (preview_descriptor or {}).get("preview_tool") or (preview_descriptor or {}).get("method") or "publication.preview_commit",
+    )
+    commit_tool = _descriptor_tool_name(
+        target,
+        (commit_descriptor or {}).get("confirm_tool") or (commit_descriptor or {}).get("method") or "publication.commit_confirmed",
+    )
     push_tool = _mcp_tool_name(target, "publication.push_confirmed")
     actor = "telegram:operator"
     source = "Hermes Telegram"
     session_id = f"telegram-kb-publish-{int(time.time())}"
-    preview_payload = _result_payload(ctx.dispatch_tool(preview_tool, {"message": message}))
+    preview_payload = _result_payload(ctx.dispatch_tool(preview_tool, _publication_descriptor_args(preview_descriptor, message=message)))
     if not confirm:
-        return _render_publish_preview(preview_payload)
+        preview_card = _render_publish_preview(
+            preview_payload,
+            actions=(
+                _publish_confirm_action(
+                    ctx,
+                    target,
+                    preview_descriptor=preview_descriptor,
+                    confirm_descriptor=commit_descriptor,
+                    message=message,
+                )
+                if _changed_paths(preview_payload)
+                else []
+            ),
+        )
+        return preview_card
     if not isinstance(preview_payload, dict) or preview_payload.get("error"):
         return _render_publish_preview(preview_payload)
     changed_paths = _changed_paths(preview_payload)
@@ -1785,6 +1944,7 @@ def _render_publish_command(ctx: Any, target: str, args: str) -> dict[str, Any]:
         ctx.dispatch_tool(
             commit_tool,
             {
+                **_publication_descriptor_args(commit_descriptor, message=message),
                 "message": message,
                 "expected_git_head": _short(_get_path(preview_payload, "git", "head"), ""),
                 "expected_changed_paths": changed_paths,
