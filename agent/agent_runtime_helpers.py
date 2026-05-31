@@ -1693,12 +1693,26 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "delegate_task":
         return agent._dispatch_delegate_task(function_args)
     else:
+        # Bridge gateway source context directly to tool handlers so tools
+        # (especially kanban_create) can auto-subscribe the originating chat
+        # to created tasks without relying on process-global environment
+        # mutation that could leak across concurrent gateway sessions.
+        gateway_source = {
+            "platform": str(agent.platform),
+            "chat_id": str(agent.chat_id),
+            "thread_id": str(agent.thread_id) if getattr(agent, "thread_id", None) else None,
+            "user_id": str(agent.user_id) if getattr(agent, "user_id", None) else None,
+        } if getattr(agent, "platform", None) and getattr(agent, "chat_id", None) else None
+        tool_kwargs = {}
+        if gateway_source is not None:
+            tool_kwargs["gateway_source"] = gateway_source
         return _ra().handle_function_call(
             function_name, function_args, effective_task_id,
             tool_call_id=tool_call_id,
             session_id=agent.session_id or "",
             enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
             skip_pre_tool_call_hook=True,
+            **tool_kwargs,
         )
 
 

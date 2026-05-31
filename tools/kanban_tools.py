@@ -116,6 +116,51 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
+def _auto_subscribe_gateway_source(kb, conn, task_id: str, gateway_source: Optional[dict] = None) -> None:
+    """Create a kanban notify subscription when gateway source context is set.
+
+    ``agent/agent_runtime_helpers.py`` passes the originating gateway chat as
+    ``gateway_source`` when a tool call runs inside a gateway session. When
+    all required values are present, this helper calls ``kb.add_notify_sub``.
+    It is idempotent — harmless double-call.
+
+    For compatibility with older call paths and tests, falls back to the
+    ``HERMES_KANBAN_SUB_*`` environment variables when ``gateway_source`` is
+    not provided. Silent no-op on CLI / batch / docker paths where no gateway
+    source exists.
+    """
+    if gateway_source is not None:
+        platform = gateway_source.get("platform")
+        chat_id = gateway_source.get("chat_id")
+        thread_id = gateway_source.get("thread_id") or None
+        user_id = gateway_source.get("user_id") or None
+    else:
+        platform = os.environ.get("HERMES_KANBAN_SUB_PLATFORM")
+        chat_id = os.environ.get("HERMES_KANBAN_SUB_CHAT_ID")
+        thread_id = os.environ.get("HERMES_KANBAN_SUB_THREAD_ID") or None
+        user_id = os.environ.get("HERMES_KANBAN_SUB_USER_ID") or None
+    if not platform or not chat_id:
+        return
+    notifier_profile = os.environ.get("HERMES_PROFILE") or None
+    try:
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            notifier_profile=notifier_profile,
+        )
+    except Exception:
+        # Best-effort only — never fail a kanban_create because of
+        # a subscription glitch.
+        logger.debug(
+            "auto-subscribe skipped for %s: add_notify_sub raised", task_id,
+            exc_info=True,
+        )
+
+
 def _stamp_worker_session_metadata(
     task_id: str, metadata: Optional[dict]
 ) -> Optional[dict]:
@@ -1144,6 +1189,9 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    workflow_key = args.get("workflow_key")
+    if workflow_key is not None:
+        workflow_key = str(workflow_key).strip() or None
     model_override, model_routing_decision = _resolve_model_routing(
         args,
         args.get("model_override"),
@@ -1186,12 +1234,17 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                workflow_key=workflow_key,
                 model_override=model_override,
                 model_provider_override=(model_routing_decision or {}).get("provider"),
                 model_reasoning_effort=(model_routing_decision or {}).get("reasoning_effort"),
             )
             new_task = kb.get_task(conn, new_tid)
             task_status = new_task.status if new_task else None
+            # Auto-subscribe the originating gateway chat so the user
+            # receives terminal-event notifications without polling.
+            # Mirrors the gateway's auto-subscribe on /kanban create.
+            _auto_subscribe_gateway_source(kb, conn, new_tid, kw.get("gateway_source"))
             skill_list = list(skills or []) if isinstance(skills, (list, tuple)) else []
             _append_kanban_route_telemetry(
                 "route.selected",
@@ -1679,6 +1732,17 @@ KANBAN_CREATE_SCHEMA = {
                     "require immediate human ops (R3 gate) to skip the "
                     "brief running-to-blocked transition. Defaults to "
                     "'running', which preserves the usual dispatch path."
+                ),
+            },
+            "workflow_key": {
+                "type": "string",
+                "description": (
+                    "Optional grouping key for tasks that belong to the "
+                    "same orchestrator workflow. All tasks sharing a key "
+                    "can be listed with ``hermes kanban workflow <key>``. "
+                    "Use this to tag child tasks created in a fan-out so "
+                    "the originating chat receives a unified status report "
+                    "when the finalizer task completes."
                 ),
             },
             "skills": {

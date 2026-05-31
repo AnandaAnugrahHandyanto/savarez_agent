@@ -689,6 +689,8 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Lightweight grouping key for tasks in one orchestrator workflow.
+    workflow_key: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -767,6 +769,9 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            workflow_key=(
+                row["workflow_key"] if "workflow_key" in keys else None
             ),
         )
 
@@ -910,7 +915,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
-    session_id           TEXT
+    session_id           TEXT,
+    -- Lightweight grouping key for tasks that belong to the same
+    -- orchestrator-created workflow. NULL for one-off tasks.
+    workflow_key         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1537,6 +1545,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "session_id", "session_id TEXT"
         )
+    if "workflow_key" not in cols:
+        # Lightweight grouping key for tasks that belong to the same
+        # orchestrator-created workflow. Enables the ``hermes kanban
+        # workflow`` command and downstream aggregation without requiring
+        # a separate workflow table. NULL on legacy rows and for tasks
+        # created outside an explicit workflow.
+        _add_column_if_missing(
+            conn, "tasks", "workflow_key", "workflow_key TEXT"
+        )
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -1551,6 +1568,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_workflow_key ON tasks(workflow_key)"
     )
 
     # task_events gained a run_id column; back-fill it as NULL for
@@ -2052,6 +2072,7 @@ def create_task(
     max_retries: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    workflow_key: Optional[str] = None,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -2238,8 +2259,8 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
                         skills, model_override, model_provider_override,
-                        model_reasoning_effort, max_retries, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        model_reasoning_effort, max_retries, session_id, workflow_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2262,6 +2283,7 @@ def create_task(
                         model_reasoning_effort,
                         int(max_retries) if max_retries is not None else None,
                         session_id,
+                        workflow_key or None,
                     ),
                 )
                 for pid in parents:
@@ -2338,6 +2360,7 @@ def list_tasks(
     order_by: Optional[str] = None,
     workflow_template_id: Optional[str] = None,
     current_step_key: Optional[str] = None,
+    workflow_key: Optional[str] = None,
 ) -> list[Task]:
     query = "SELECT * FROM tasks WHERE 1=1"
     params: list[Any] = []
@@ -2361,6 +2384,9 @@ def list_tasks(
     if current_step_key is not None:
         query += " AND current_step_key = ?"
         params.append(current_step_key)
+    if workflow_key is not None:
+        query += " AND workflow_key = ?"
+        params.append(workflow_key)
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
     if order_by is not None:
@@ -2376,6 +2402,28 @@ def list_tasks(
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()
     return [Task.from_row(r) for r in rows]
+
+
+def list_tasks_by_workflow_key(
+    conn: sqlite3.Connection,
+    workflow_key: str,
+    *,
+    include_archived: bool = False,
+) -> list[Task]:
+    """List all tasks sharing a ``workflow_key``, ordered by creation time.
+
+    Convenience wrapper that feeds through :func:`list_tasks` so all existing
+    filters compose naturally.  Tasks without a workflow key are excluded
+    (passing an empty string raises ``ValueError``).
+    """
+    if not workflow_key or not workflow_key.strip():
+        raise ValueError("workflow_key is required and cannot be empty")
+    return list_tasks(
+        conn,
+        workflow_key=workflow_key.strip(),
+        include_archived=include_archived,
+        order_by="created",
+    )
 
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:

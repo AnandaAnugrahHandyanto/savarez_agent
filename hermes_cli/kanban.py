@@ -659,6 +659,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_stats.add_argument("--json", action="store_true")
 
+    # --- workflow <key> ---
+    p_wf = sub.add_parser(
+        "workflow",
+        help="List all tasks sharing a workflow key",
+    )
+    p_wf.add_argument(
+        "key",
+        help="Workflow key to query (created by passing workflow_key to kanban_create)",
+    )
+
     # --- notify subscribe / list / remove ---
     p_nsub = sub.add_parser(
         "notify-subscribe",
@@ -951,8 +961,9 @@ def kanban_command(args: argparse.Namespace) -> int:
         "notify-unsubscribe": _cmd_notify_unsubscribe,
         "context":  _cmd_context,
         "specify":  _cmd_specify,
-        "decompose":  _cmd_decompose,
+        "workflow": _cmd_workflow,
         "gc":       _cmd_gc,
+        "decompose":  _cmd_decompose,
     }
     handler = handlers.get(action)
     if not handler:
@@ -2540,6 +2551,34 @@ def _cmd_specify(args: argparse.Namespace) -> int:
     # --all: succeed if at least one promotion landed; exit 1 only when
     # every candidate failed (honest signal for scripts).
     return 0 if (ok_count > 0 or not ids) else 1
+
+
+def _cmd_workflow(args: argparse.Namespace) -> int:
+    """List all tasks sharing a ``workflow_key``, one per line.
+
+    Usage: ``hermes kanban workflow <key>``
+    """
+    key = getattr(args, "key", None)
+    if not key:
+        print("kanban workflow: key is required", file=sys.stderr)
+        return 2
+    with kb.connect_closing() as conn:
+        try:
+            tasks = kb.list_tasks_by_workflow_key(conn, key)
+        except ValueError as exc:
+            print(f"kanban workflow: {exc}", file=sys.stderr)
+            return 1
+        if not tasks:
+            print(f"No tasks found for workflow_key={key!r}")
+            return 0
+        for t in tasks:
+            age = time.time() - t.created_at if t.created_at else 0
+            age_str = f"{age:.0f}s" if age < 120 else f"{age / 60:.1f}m"
+            print(
+                f"{t.id}  {t.status:<10}  @{t.assignee or '':<16}  "
+                f"{age_str:<8}  {t.title[:80]}"
+            )
+    return 0
 
 
 def _cmd_decompose(args: argparse.Namespace) -> int:
