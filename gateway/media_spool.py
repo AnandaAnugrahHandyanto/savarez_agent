@@ -140,7 +140,7 @@ _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif
 
 def kind_for(path: str, is_voice: bool) -> str:
     ext = Path(path).suffix.lower()
-    if is_voice or (ext in _AUDIO_EXTS and is_voice):
+    if is_voice:
         return "voice"
     if ext in _IMAGE_EXTS:
         return "image"
