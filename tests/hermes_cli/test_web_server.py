@@ -510,6 +510,108 @@ class TestConfigRoundTrip:
         web_config["agent"]["max_turns"] = original_turns
         self.client.put("/api/config", json={"config": web_config})
 
+    def test_model_routing_get_returns_model_and_fallbacks(self):
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "gemini-3.1-pro-preview",
+                "provider": "sub2api",
+                "base_url": "https://sub2api.example/v1",
+                "api_mode": "openai",
+                "context_length": 100000,
+            },
+            "fallback_providers": [
+                {
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-pro",
+                    "base_url": "https://deepseek.example/v1/",
+                    "api_mode": "openai",
+                }
+            ],
+        })
+
+        resp = self.client.get("/api/model/routing")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == {
+            "default": "gemini-3.1-pro-preview",
+            "provider": "sub2api",
+            "base_url": "https://sub2api.example/v1",
+            "api_mode": "openai",
+            "context_length": 100000,
+        }
+        assert data["fallback_providers"] == [
+            {
+                "provider": "deepseek",
+                "model": "deepseek-v4-pro",
+                "base_url": "https://deepseek.example/v1/",
+                "api_mode": "openai",
+            }
+        ]
+
+    def test_model_routing_put_updates_only_model_and_fallbacks(self):
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "agent": {"max_turns": 7},
+            "model": {
+                "default": "old/model",
+                "provider": "old-provider",
+                "base_url": "https://old.example/v1",
+                "api_mode": "openai",
+            },
+            "fallback_providers": [
+                {"provider": "old-fallback", "model": "old/fallback"},
+            ],
+        })
+
+        resp = self.client.put(
+            "/api/model/routing",
+            json={
+                "model": {
+                    "default": "gemini-3.1-pro-preview",
+                    "provider": "sub2api",
+                    "base_url": "https://sub2api.example/v1",
+                    "api_mode": "openai",
+                    "context_length": "200000",
+                },
+                "fallback_providers": [
+                    {
+                        "provider": "deepseek",
+                        "model": "deepseek-v4-pro",
+                        "base_url": "https://deepseek.example/v1",
+                    }
+                ],
+            },
+        )
+
+        assert resp.status_code == 200
+        after = load_config()
+        assert after["agent"]["max_turns"] == 7
+        assert after["model"]["provider"] == "sub2api"
+        assert after["model"]["default"] == "gemini-3.1-pro-preview"
+        assert after["model"]["context_length"] == 200000
+        assert after["fallback_providers"] == [
+            {
+                "provider": "deepseek",
+                "model": "deepseek-v4-pro",
+                "base_url": "https://deepseek.example/v1",
+            }
+        ]
+
+    def test_model_routing_rejects_invalid_fallbacks(self):
+        resp = self.client.put(
+            "/api/model/routing",
+            json={
+                "model": {"default": "test/model", "provider": "test"},
+                "fallback_providers": [{"provider": "missing-model"}],
+            },
+        )
+
+        assert resp.status_code == 400
+
     def test_schema_types_match_config_values(self):
         """Every schema field should have a matching-type value in the config."""
         config = self.client.get("/api/config").json()

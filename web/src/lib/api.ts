@@ -255,10 +255,17 @@ export const api = {
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
   getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
+  getModelRouting: () => fetchJSON<ModelRoutingResponse>("/api/model/routing"),
   getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
   setModelAssignment: (body: ModelAssignmentRequest) =>
     fetchJSON<ModelAssignmentResponse>("/api/model/set", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  saveModelRouting: (body: ModelRoutingResponse) =>
+    fetchJSON<{ ok: boolean }>("/api/model/routing", {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
@@ -832,6 +839,30 @@ export interface ModelOptionsResponse {
   model?: string;
   provider?: string;
   providers?: ModelOptionProvider[];
+}
+
+export interface ModelRouteConfig {
+  provider?: string;
+  default?: string;
+  model?: string;
+  base_url?: string;
+  api_mode?: string;
+  context_length?: number | string;
+  max_tokens?: number | string;
+}
+
+export interface FallbackProviderConfig {
+  provider: string;
+  model: string;
+  base_url?: string;
+  api_mode?: string;
+  context_length?: number | string;
+  max_tokens?: number | string;
+}
+
+export interface ModelRoutingResponse {
+  model: ModelRouteConfig;
+  fallback_providers: FallbackProviderConfig[];
 }
 
 export interface AuxiliaryTaskAssignment {
