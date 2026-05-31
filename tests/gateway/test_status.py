@@ -358,6 +358,36 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_write_runtime_status_refreshes_live_argv_each_time(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_GITHUB_USERNAME", "Huntas-Claw")
+
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 1000.0,
+            "kind": "hermes-gateway",
+            "argv": ["/old/path/hermes", "gateway", "run"],
+            "github_username": "stale-user",
+            "platforms": {
+                "discord": {
+                    "state": "connected",
+                    "updated_at": "2025-01-01T00:00:00Z",
+                }
+            },
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+
+        monkeypatch.setattr(status.sys, "argv", ["/new/path/hermes", "gateway", "run", "--replace"])
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 2000)
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["argv"] == ["/new/path/hermes", "gateway", "run", "--replace"]
+        assert payload["github_username"] == "Huntas-Claw"
+        assert payload["platforms"]["discord"]["state"] == "connected"
+
 
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):

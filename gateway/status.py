@@ -217,6 +217,7 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "restart_requested": False,
         "active_agents": 0,
         "platforms": {},
+        "github_username": str(os.getenv("HERMES_GITHUB_USERNAME") or "").strip() or None,
         "updated_at": _utc_now_iso(),
     })
     return payload
@@ -521,6 +522,7 @@ def write_runtime_status(
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
+    payload["github_username"] = str(os.getenv("HERMES_GITHUB_USERNAME") or "").strip() or None
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:
