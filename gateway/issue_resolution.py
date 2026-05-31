@@ -373,7 +373,9 @@ async def _execute_master_issue(
     for position, task in enumerate(tasks, start=1):
         if store.subissue_exists(run.id, position):
             continue
-        sub_issue = await _create_sub_issue(run.repo, issue, task, position)
+        sub_issue = await _find_existing_sub_issue(run.repo, issue, task, position)
+        if sub_issue is None:
+            sub_issue = await _create_sub_issue(run.repo, issue, task, position)
         store.record_subissue(run.id, position, task, sub_issue)
         store.enqueue_run(
             IssueResolutionRequest(
@@ -1243,6 +1245,53 @@ async def _load_default_branch(repo: str) -> str:
     data = json.loads(result.stdout)
     ref = data.get("defaultBranchRef") if isinstance(data, dict) else {}
     return str(ref.get("name") or "main") if isinstance(ref, dict) else "main"
+
+
+async def _find_existing_sub_issue(
+    repo: str,
+    master_issue: IssueMetadata,
+    task: EpicTask,
+    position: int,
+) -> IssueMetadata | None:
+    """Return an existing Master Epic sub-issue for this task when a retry finds one."""
+    result = await _run([
+        "gh",
+        "issue",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "all",
+        "--search",
+        f'"Part of Master Issue #{master_issue.number}" "## Task {position}"',
+        "--json",
+        "number,title,body,url",
+        "--limit",
+        "100",
+    ])
+    rows = json.loads(result.stdout or "[]")
+    if not isinstance(rows, list):
+        return None
+    expected_markers = (
+        f"Part of Master Issue #{master_issue.number}",
+        f"## Task {position}",
+        task.body.strip(),
+    )
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        body = str(row.get("body") or "")
+        title = str(row.get("title") or "")
+        if title != task.title:
+            continue
+        if all(marker in body for marker in expected_markers if marker):
+            return IssueMetadata(
+                number=int(row["number"]),
+                title=title,
+                body=body,
+                url=str(row.get("url") or ""),
+            )
+    return None
 
 
 async def _create_sub_issue(

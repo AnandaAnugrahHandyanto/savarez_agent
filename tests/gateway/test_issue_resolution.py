@@ -23,6 +23,7 @@ from gateway.issue_resolution import (
     _execute_single_issue,
     _guard_managed_repo_before_issue_dispatch,
     _inspect_managed_repo,
+    _find_existing_sub_issue,
     _issue_branch_name,
     _load_next_open_issue,
     _pr_body,
@@ -731,6 +732,38 @@ def test_issue_state_store_fails_after_retry_budget(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_find_existing_sub_issue_matches_master_task(monkeypatch):
+    """Crash retries should reuse already-created Master Epic sub-issues."""
+    task = EpicTask(title="Task one", body="Do one")
+    master = IssueMetadata(
+        number=10,
+        title="Master",
+        body="# Master Project Plan\n\nShip it.",
+        url="https://github.com/m0nklabs/cryptotrader/issues/10",
+    )
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        assert command[:3] == ["gh", "issue", "list"]
+        payload = [
+            {
+                "number": 182,
+                "title": "Task one",
+                "body": "Part of Master Issue #10.\n\n## Task 1\n\nDo one",
+                "url": "https://github.com/m0nklabs/cryptotrader/issues/182",
+            }
+        ]
+        return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+
+    existing = await _find_existing_sub_issue("m0nklabs/cryptotrader", master, task, 1)
+
+    assert existing is not None
+    assert existing.number == 182
+    assert existing.title == "Task one"
+
+
+@pytest.mark.asyncio
 async def test_master_expansion_creates_persisted_subissue_runs(tmp_path, monkeypatch):
     """Master expansion creates GitHub sub-issues and queues each one."""
     store = IssueStateStore(tmp_path / "issues.db")
@@ -751,6 +784,9 @@ async def test_master_expansion_creates_persisted_subissue_runs(tmp_path, monkey
             EpicTask(title="Task two", body="Do two"),
         ]
 
+    async def fake_find_existing_sub_issue(_repo, _master_issue, _task, _position):
+        return None
+
     async def fake_create_sub_issue(_repo, _master_issue, task, position):
         return IssueMetadata(
             number=100 + position,
@@ -766,6 +802,10 @@ async def test_master_expansion_creates_persisted_subissue_runs(tmp_path, monkey
 
     monkeypatch.setattr(
         "gateway.issue_resolution.decompose_master_plan", fake_decompose
+    )
+    monkeypatch.setattr(
+        "gateway.issue_resolution._find_existing_sub_issue",
+        fake_find_existing_sub_issue,
     )
     monkeypatch.setattr(
         "gateway.issue_resolution._create_sub_issue", fake_create_sub_issue
@@ -787,6 +827,64 @@ async def test_master_expansion_creates_persisted_subissue_runs(tmp_path, monkey
         IssueRunType.SUB_ISSUE,
     ]
     assert any("expanded into 2" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_master_expansion_reuses_existing_subissues(tmp_path, monkeypatch):
+    """Master expansion should not duplicate a sub-issue found after a crash."""
+    store = IssueStateStore(tmp_path / "issues.db")
+    run = store.enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", 10, tmp_path),
+        run_type=IssueRunType.MASTER,
+    )
+    issue = IssueMetadata(
+        number=10,
+        title="Master",
+        body="# Master Project Plan\n\nShip it.",
+        url="https://github.com/m0nklabs/cryptotrader/issues/10",
+    )
+    created: list[EpicTask] = []
+
+    async def fake_decompose(_issue):
+        return [EpicTask(title="Task one", body="Do one")]
+
+    async def fake_find_existing_sub_issue(_repo, _master_issue, task, _position):
+        return IssueMetadata(
+            number=182,
+            title=task.title,
+            body=task.body,
+            url="https://github.com/m0nklabs/cryptotrader/issues/182",
+        )
+
+    async def fake_create_sub_issue(_repo, _master_issue, task, _position):
+        created.append(task)
+        return IssueMetadata(
+            number=999,
+            title=task.title,
+            body=task.body,
+            url="https://github.com/m0nklabs/cryptotrader/issues/999",
+        )
+
+    async def notify(_message: str):
+        return None
+
+    monkeypatch.setattr(
+        "gateway.issue_resolution.decompose_master_plan", fake_decompose
+    )
+    monkeypatch.setattr(
+        "gateway.issue_resolution._find_existing_sub_issue",
+        fake_find_existing_sub_issue,
+    )
+    monkeypatch.setattr(
+        "gateway.issue_resolution._create_sub_issue", fake_create_sub_issue
+    )
+
+    await _execute_master_issue(store, run, issue, notify)
+
+    children = store.list_child_runs(run.id)
+
+    assert created == []
+    assert [child.issue_number for child in children] == [182]
 
 
 @pytest.mark.asyncio
