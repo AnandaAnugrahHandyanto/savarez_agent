@@ -558,7 +558,13 @@ def run_conversation(
             _should_review_memory = True
             agent._turns_since_memory = 0
 
-    # Add user message
+    if agent._memory_manager:
+        try:
+            if ctx := agent._memory_manager.get_per_turn_context():
+                user_message += f"\n\n{ctx}"
+        except Exception:
+            pass
+
     user_msg = {"role": "user", "content": user_message}
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1

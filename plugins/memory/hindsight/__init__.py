@@ -49,9 +49,35 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
-_MIN_CLIENT_VERSION = "0.4.22"
+_MIN_CLIENT_VERSION = "0.6.0"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
+
+# Leverages thread-safe functools.lru_cache with dynamic time-based cache key invalidation.
+# Extracts self._cache_ttl at runtime if available to support custom configured TTL values,
+# calculating stateless division to prevent generator race conditions in concurrent execution.
+def ttl_cache(maxsize=128, default_ttl=300):
+    from functools import wraps, lru_cache
+    import time
+    def wrapper(func):
+        @lru_cache(maxsize=maxsize)
+        def ttl_func(ttl_hash, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            self_obj = args[0] if args else None
+            ttl = getattr(self_obj, "_cache_ttl", default_ttl)
+            if not isinstance(ttl, (int, float)) or ttl <= 0:
+                ttl = default_ttl if isinstance(default_ttl, (int, float)) and default_ttl > 0 else 300
+            ttl_hash = int(time.time() / ttl)
+            return ttl_func(ttl_hash, *args, **kwargs)
+
+        wrapped.cache_clear = ttl_func.cache_clear
+        wrapped.cache_info = ttl_func.cache_info
+        return wrapped
+    return wrapper
+
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
 # Without it, reusing a stable session-scoped document_id silently
@@ -334,6 +360,9 @@ def _load_config() -> dict:
                 "bankId": os.environ.get("HINDSIGHT_BANK_ID", "hermes"),
                 "budget": os.environ.get("HINDSIGHT_BUDGET", "mid"),
                 "enabled": True,
+                "user_model_id": os.environ.get("HINDSIGHT_USER_MODEL_ID", ""),
+                "agent_model_id": os.environ.get("HINDSIGHT_AGENT_MODEL_ID", ""),
+                "cache_ttl": _parse_int_setting(os.environ.get("HINDSIGHT_CACHE_TTL"), 300),
             }
         },
     }
@@ -671,8 +700,8 @@ class HindsightMemoryProvider(MemoryProvider):
         env_writes: dict = {}
 
         # Step 2: Install/upgrade deps for selected mode
-        _MIN_CLIENT_VERSION = "0.4.22"
-        cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION}"
+        _MIN_CLIENT_VERSION = "0.6.0"
+        cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION},<0.8"
         local_dep = "hindsight-all"
         if mode == "local_embedded":
             deps_to_install = [local_dep]
@@ -874,6 +903,9 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
+            {"key": "user_model_id", "description": "Hindsight mental model ID for the user", "default": "", "env_var": "HINDSIGHT_USER_MODEL_ID"},
+            {"key": "agent_model_id", "description": "Hindsight mental model ID for the agent", "default": "", "env_var": "HINDSIGHT_AGENT_MODEL_ID"},
+            {"key": "cache_ttl", "description": "Cache TTL in seconds for user and agent mental models", "default": 300, "env_var": "HINDSIGHT_CACHE_TTL"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
         ]
@@ -881,53 +913,56 @@ class HindsightMemoryProvider(MemoryProvider):
     def _get_client(self):
         """Return the cached Hindsight client (created once, reused)."""
         if self._client is None:
-            if self._mode == "local_embedded":
-                available, reason = _check_local_runtime()
-                if not available:
-                    raise RuntimeError(
-                        "Hindsight local runtime is unavailable"
-                        + (f": {reason}" if reason else "")
+            async def _create_client():
+                if self._mode == "local_embedded":
+                    available, reason = _check_local_runtime()
+                    if not available:
+                        raise RuntimeError(
+                            "Hindsight local runtime is unavailable"
+                            + (f": {reason}" if reason else "")
+                        )
+                    try:
+                        from tools.lazy_deps import ensure as _lazy_ensure
+                        _lazy_ensure("memory.hindsight", prompt=False)
+                    except ImportError:
+                        pass
+                    except Exception as _e:
+                        raise ImportError(str(_e))
+                    from hindsight import HindsightEmbedded
+                    HindsightEmbedded.__del__ = lambda self: None
+                    llm_provider = self._config.get("llm_provider", "")
+                    if llm_provider in {"openai_compatible", "openrouter"}:
+                        llm_provider = "openai"
+                    logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
+                                 self._config.get("profile", "hermes"), llm_provider)
+                    kwargs = dict(
+                        profile=self._config.get("profile", "hermes"),
+                        llm_provider=llm_provider,
+                        llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
+                        llm_model=self._config.get("llm_model", ""),
                     )
-                try:
-                    from tools.lazy_deps import ensure as _lazy_ensure
-                    _lazy_ensure("memory.hindsight", prompt=False)
-                except ImportError:
-                    pass
-                except Exception as _e:
-                    raise ImportError(str(_e))
-                from hindsight import HindsightEmbedded
-                HindsightEmbedded.__del__ = lambda self: None
-                llm_provider = self._config.get("llm_provider", "")
-                if llm_provider in {"openai_compatible", "openrouter"}:
-                    llm_provider = "openai"
-                logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
-                             self._config.get("profile", "hermes"), llm_provider)
-                kwargs = dict(
-                    profile=self._config.get("profile", "hermes"),
-                    llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
-                    llm_model=self._config.get("llm_model", ""),
-                )
-                if self._llm_base_url:
-                    kwargs["llm_base_url"] = self._llm_base_url
-                idle_timeout = _parse_int_setting(
-                    self._config.get("idle_timeout")
-                    if self._config.get("idle_timeout") is not None
-                    else os.environ.get("HINDSIGHT_IDLE_TIMEOUT", self._idle_timeout),
-                    _DEFAULT_IDLE_TIMEOUT,
-                )
-                self._idle_timeout = idle_timeout
-                kwargs["idle_timeout"] = idle_timeout
-                self._client = HindsightEmbedded(**kwargs)
-            else:
-                from hindsight_client import Hindsight
-                timeout = self._timeout or _DEFAULT_TIMEOUT
-                kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
-                if self._api_key:
-                    kwargs["api_key"] = self._api_key
-                logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
-                             self._api_url, bool(self._api_key), kwargs["timeout"])
-                self._client = Hindsight(**kwargs)
+                    if self._llm_base_url:
+                        kwargs["llm_base_url"] = self._llm_base_url
+                    idle_timeout = _parse_int_setting(
+                        self._config.get("idle_timeout")
+                        if self._config.get("idle_timeout") is not None
+                        else os.environ.get("HINDSIGHT_IDLE_TIMEOUT", self._idle_timeout),
+                        _DEFAULT_IDLE_TIMEOUT,
+                    )
+                    self._idle_timeout = idle_timeout
+                    kwargs["idle_timeout"] = idle_timeout
+                    return HindsightEmbedded(**kwargs)
+                else:
+                    from hindsight_client import Hindsight
+                    timeout = self._timeout or _DEFAULT_TIMEOUT
+                    kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
+                    if self._api_key:
+                        kwargs["api_key"] = self._api_key
+                    logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
+                                 self._api_url, bool(self._api_key), kwargs["timeout"])
+                    return Hindsight(**kwargs)
+
+            self._client = self._run_sync(_create_client())
         return self._client
 
     def _run_sync(self, coro):
@@ -1211,6 +1246,13 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
         self._retain_async = self._config.get("retain_async", True)
+
+        # Mental model settings and state tracking
+        self._user_model_id = os.environ.get("HINDSIGHT_USER_MODEL_ID") or banks.get("user_model_id", "")
+        self._agent_model_id = os.environ.get("HINDSIGHT_AGENT_MODEL_ID") or banks.get("agent_model_id", "")
+        self._cache_ttl = max(1, _parse_int_setting(os.environ.get("HINDSIGHT_CACHE_TTL") or banks.get("cache_ttl"), 300))
+        self._baked_user_model_content = None
+        self._baked_agent_model_content = None
 
         _client_version = "unknown"
         try:
@@ -1710,6 +1752,72 @@ class HindsightMemoryProvider(MemoryProvider):
             "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
             self._session_id, self._parent_session_id, reset, self._document_id,
         )
+
+    @ttl_cache(maxsize=128, default_ttl=300)
+    def _fetch_mental_model_from_api(self, model_id: str) -> str:
+        """Fetch the mental model content directly from Hindsight API."""
+        async def _fetch(client):
+            res = await client.mental_models.get_mental_model(bank_id=self._bank_id, mental_model_id=model_id)
+
+            if not res:
+                return ""
+            if hasattr(res, "content") and res.content is not None:
+                return str(res.content)
+            if isinstance(res, dict) and "content" in res and res["content"] is not None:
+                return str(res["content"])
+            if isinstance(res, str):
+                return res
+            return "" if res is None else str(res)
+
+        return self._run_hindsight_operation(_fetch)
+
+    def get_user_model_content(self) -> str | None:
+        """Return the user mental model content if configured."""
+        if not self._user_model_id:
+            return None
+        try:
+            return self._fetch_mental_model_from_api(self._user_model_id)
+        except Exception as e:
+            logger.warning("Failed to fetch hindsight mental model %s: %s", self._user_model_id, e)
+            return self._baked_user_model_content
+
+    def get_agent_model_content(self) -> str | None:
+        """Return the agent mental model content if configured."""
+        if not self._agent_model_id:
+            return None
+        try:
+            return self._fetch_mental_model_from_api(self._agent_model_id)
+        except Exception as e:
+            logger.warning("Failed to fetch hindsight mental model %s: %s", self._agent_model_id, e)
+            return self._baked_agent_model_content
+
+    def get_soul_extension_prompt(self) -> str:
+        """Return the agent mental model content to inject right after soul.md persona."""
+        content = self.get_agent_model_content()
+        self._baked_agent_model_content = content
+        return content or ""
+
+    def get_user_profile_extension_prompt(self) -> str:
+        """Return the user mental model content to inject right after the user profile block."""
+        content = self.get_user_model_content()
+        self._baked_user_model_content = content
+        return content or ""
+
+    def get_per_turn_context(self) -> str:
+        """Return the combined updated agent and user mental models as a per-turn context block."""
+        parts = []
+
+        agent_content = self.get_agent_model_content()
+        if agent_content and agent_content != self._baked_agent_model_content:
+            clean_context = agent_content.replace("</agent-context>", "")
+            parts.append(f"<agent-context>\n{clean_context}\n</agent-context>")
+
+        user_content = self.get_user_model_content()
+        if user_content and user_content != self._baked_user_model_content:
+            clean_context = user_content.replace("</user-context>", "")
+            parts.append(f"<user-context>\n{clean_context}\n</user-context>")
+
+        return "\n\n".join(parts) if parts else ""
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
