@@ -4931,9 +4931,9 @@ def start_server(
         # and cause an immediate exit even though uvicorn bound successfully.
         # Skip the auto-open attempt on headless systems and let the user
         # open the URL manually.  macOS and Windows are always considered
-        # display-capable.
+        # display-capable; Linux and FreeBSD require DISPLAY/WAYLAND_DISPLAY.
         _has_display = (
-            sys.platform != "linux"
+            sys.platform in {"darwin", "win32", "cygwin"}
             or bool(os.environ.get("DISPLAY"))
             or bool(os.environ.get("WAYLAND_DISPLAY"))
         )

@@ -54,12 +54,65 @@ If you already have Git installed, the installer detects it and uses that instea
 >
 > **Windows:** Native Windows is supported as an **early beta** — the PowerShell one-liner above installs everything, but expect rough edges and please file issues when you hit them. If you'd rather use WSL2 (our most battle-tested Windows path), the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.  The only Hermes feature that currently needs WSL2 specifically is the browser-based dashboard chat pane (it uses a POSIX PTY — classic CLI and gateway both run natively).
 
-After installation:
+### FreeBSD (bare-metal and jails) — Community Port
+
+> **Status:** Tested on FreeBSD 14 (bare-metal and iocage jails). Core chat, memory, skills, cron, and the Telegram/Discord gateway all work. Browser-based features (Playwright, dashboard chat pane) are not supported — Chromium on FreeBSD is available via `pkg install chromium` but is not wired up automatically.
+
+Ensure `bash` is installed, then run the standard installer:
 
 ```bash
-source ~/.bashrc    # reload shell (or: source ~/.zshrc)
-hermes              # start chatting!
+pkg install bash        # if not already installed
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh)"
 ```
+
+The installer detects FreeBSD and installs all dependencies via `pkg` (Node.js, ripgrep, ffmpeg, etc.). The `uv` Python package manager is also pulled from ports — the upstream astral.sh binary does not ship a FreeBSD build.
+
+**Authentication on FreeBSD**
+
+The Claude Code binary (`claude setup-token`) is a Linux ELF binary and cannot run on FreeBSD. The recommended path is [OpenRouter](https://openrouter.ai) — it supports pay-as-you-go access to 200+ models with no platform restriction:
+
+1. Create an account at [openrouter.ai](https://openrouter.ai) and add credits.
+2. Run `hermes model` and select **OpenRouter** as the provider.
+3. Enter your `sk-or-v1-...` API key when prompted.
+
+A few dollars of credits (€5) will last several months of typical use.
+
+If you have an Anthropic API key (`sk-ant-api03-...`) you can use it directly — run `hermes model`, pick **Anthropic**, and paste the key. Note that OAuth tokens from a Claude Pro/Max subscription (`sk-ant-oat...`) require purchasing separate "extra usage" credits and are not recommended.
+
+**Persistent service with rc.d**
+
+To start Hermes automatically at boot (e.g. for the gateway):
+
+```bash
+# /usr/local/etc/rc.d/hermes
+#!/bin/sh
+# PROVIDE: hermes
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+. /etc/rc.subr
+name="hermes"
+rcvar="hermes_enable"
+command="/usr/local/bin/hermes"
+command_args="gateway start"
+load_rc_config $name
+run_rc_command "$1"
+```
+
+```bash
+chmod +x /usr/local/etc/rc.d/hermes
+sysrc hermes_enable=YES
+service hermes start
+```
+
+**Terminfo warning**
+
+If you see `zsh: echoti: no such terminfo capability: colors`, add this to your shell profile:
+
+```bash
+export TERM=xterm-256color
+```
+
+After installation:
 
 ---
 
@@ -195,6 +248,8 @@ source .venv/bin/activate
 uv pip install -e ".[all,dev]"
 scripts/run_tests.sh
 ```
+
+**FreeBSD contributors:** install `uv` via `pkg install uv` (the astral.sh installer has no FreeBSD binary), then follow the manual path above. `setup-hermes.sh` also works and installs `ripgrep` from ports automatically.
 
 ---
 

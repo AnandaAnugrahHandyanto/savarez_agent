@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import sys
 import sysconfig
 from contextvars import ContextVar, Token
 from pathlib import Path
@@ -329,6 +330,11 @@ def is_termux() -> bool:
     """
     prefix = os.getenv("PREFIX", "")
     return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+
+
+def is_freebsd() -> bool:
+    """Return True when running on FreeBSD."""
+    return sys.platform.startswith("freebsd")
 
 
 _wsl_detected: bool | None = None

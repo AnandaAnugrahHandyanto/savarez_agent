@@ -256,10 +256,10 @@ resolve_install_layout() {
         return 0
     fi
 
-    # Root on Linux: prefer FHS layout unless a legacy install already exists.
+    # Root on Linux/FreeBSD: prefer FHS layout unless a legacy install exists.
     # macOS root installs keep the legacy layout because /usr/local/ on macOS
     # is Homebrew territory and we don't want to fight that.
-    if [ "$OS" = "linux" ] && [ "$(id -u)" -eq 0 ]; then
+    if { [ "$OS" = "linux" ] || [ "$OS" = "freebsd" ]; } && [ "$(id -u)" -eq 0 ]; then
         if [ -d "$HERMES_HOME/hermes-agent/.git" ]; then
             INSTALL_DIR="$HERMES_HOME/hermes-agent"
             log_info "Existing install detected at $INSTALL_DIR — keeping legacy layout"
@@ -341,6 +341,10 @@ detect_os() {
             OS="macos"
             DISTRO="macos"
             ;;
+        FreeBSD*)
+            OS="freebsd"
+            DISTRO="freebsd"
+            ;;
         CYGWIN*|MINGW*|MSYS*)
             OS="windows"
             DISTRO="windows"
@@ -393,6 +397,52 @@ install_uv() {
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         log_success "uv found at ~/.cargo/bin ($UV_VERSION)"
         return 0
+    fi
+
+    # FreeBSD: astral.sh ships no FreeBSD binary — use pkg or pip instead.
+    if [ "$OS" = "freebsd" ]; then
+        log_info "Installing uv (fast Python package manager)..."
+        local _uv_pkg_cmd=""
+        if [ "$(id -u)" -eq 0 ]; then
+            _uv_pkg_cmd="pkg install -y uv"
+        elif command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
+            _uv_pkg_cmd="sudo pkg install -y uv"
+        fi
+        if [ -n "$_uv_pkg_cmd" ]; then
+            log_info "Trying pkg install uv..."
+            if $_uv_pkg_cmd >/dev/null 2>&1 && command -v uv &>/dev/null; then
+                UV_CMD="uv"
+                UV_VERSION=$(uv --version 2>/dev/null)
+                log_success "uv installed via pkg ($UV_VERSION)"
+                return 0
+            fi
+        fi
+        # pkg not available or failed — try pip install --user uv
+        local _pip=""
+        for _candidate in pip3.11 pip3 pip; do
+            if command -v "$_candidate" &>/dev/null; then
+                _pip="$_candidate"
+                break
+            fi
+        done
+        if [ -n "$_pip" ]; then
+            log_info "Trying $_pip install --user uv..."
+            if "$_pip" install --user uv >/dev/null 2>&1; then
+                if [ -x "$HOME/.local/bin/uv" ]; then
+                    UV_CMD="$HOME/.local/bin/uv"
+                    UV_VERSION=$($UV_CMD --version 2>/dev/null)
+                    log_success "uv installed via pip ($UV_VERSION)"
+                    return 0
+                fi
+            fi
+        fi
+        log_error "Could not install uv on FreeBSD."
+        log_info "Install it manually with one of:"
+        log_info "  sudo pkg install uv          # recommended"
+        log_info "  pip3 install --user uv       # if Python 3 is already installed"
+        log_info "  cargo install uv             # if Rust is installed"
+        log_info "Then re-run this installer."
+        exit 1
     fi
 
     # Install uv
@@ -632,6 +682,9 @@ check_git() {
         android)
             log_info "  pkg install git"
             ;;
+        freebsd)
+            log_info "  sudo pkg install git"
+            ;;
         macos)
             log_info "  xcode-select --install"
             log_info "  Or: brew install git"
@@ -699,8 +752,28 @@ install_node() {
 
     local node_os
     case "$OS" in
-        linux) node_os="linux"  ;;
-        macos) node_os="darwin" ;;
+        linux)   node_os="linux"  ;;
+        macos)   node_os="darwin" ;;
+        freebsd)
+            log_info "Installing Node.js via pkg..."
+            local _node_installed=false
+            if [ "$(id -u)" -eq 0 ]; then
+                pkg install -y node npm >/dev/null 2>&1 && _node_installed=true
+            elif command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
+                sudo pkg install -y node npm >/dev/null 2>&1 && _node_installed=true
+            fi
+            if $_node_installed && command -v node &> /dev/null; then
+                local installed_ver
+                installed_ver=$(node --version 2>/dev/null)
+                log_success "Node.js $installed_ver installed via pkg"
+                HAS_NODE=true
+            else
+                log_warn "Could not auto-install Node.js on FreeBSD"
+                log_info "Install manually: sudo pkg install node npm"
+                HAS_NODE=false
+            fi
+            return 0
+            ;;
         *)
             log_warn "Unsupported OS for Node.js auto-install"
             HAS_NODE=false
@@ -894,6 +967,46 @@ install_system_packages() {
         return 0
     fi
 
+    # ── FreeBSD: pkg ──
+    if [ "$OS" = "freebsd" ]; then
+        local pkg_install="pkg install -y"
+        local install_cmd="$pkg_install ${pkgs[*]}"
+        if [ "$(id -u)" -eq 0 ]; then
+            log_info "Installing ${pkgs[*]} via pkg..."
+            if $install_cmd; then
+                [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
+                [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                return 0
+            fi
+        elif command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
+            log_info "Installing ${pkgs[*]} via pkg..."
+            if sudo $install_cmd; then
+                [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
+                [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                return 0
+            fi
+        elif command -v sudo &> /dev/null; then
+            if [ "$IS_INTERACTIVE" = true ]; then
+                echo ""
+                log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via pkg."
+                log_info "Hermes Agent itself does not require or retain root access."
+                if prompt_yes_no "Install ${description}? (requires sudo)" "no"; then
+                    if sudo $install_cmd; then
+                        [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
+                        [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                        return 0
+                    fi
+                fi
+            else
+                log_warn "Non-interactive mode — cannot install system packages"
+                log_info "Install manually after setup completes: sudo $install_cmd"
+            fi
+        fi
+        log_warn "Could not auto-install (pkg failed or not available)"
+        log_info "Install manually: sudo pkg install ${pkgs[*]}"
+        return 0
+    fi
+
     # ── Linux: resolve package manager command ──
     local pkg_install=""
     case "$DISTRO" in
@@ -998,6 +1111,9 @@ show_manual_install_hint() {
             ;;
         android)
             log_info "  pkg install $pkg"
+            ;;
+        freebsd)
+            log_info "  sudo pkg install $pkg"
             ;;
         macos) log_info "  brew install $pkg" ;;
     esac
@@ -1773,6 +1889,13 @@ install_node_deps() {
                     cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
                         log_warn "Playwright browser installation failed — install dependencies above and retry."
                     }
+                    ;;
+                freebsd)
+                    log_warn "Playwright bundled Chromium is not available on FreeBSD."
+                    log_info "Browser tools are disabled by default on FreeBSD."
+                    log_info "To enable them, install Chromium from ports and point Hermes at it:"
+                    log_info "  sudo pkg install chromium"
+                    log_info "  export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/local/bin/chromium"
                     ;;
                 *)
                     log_warn "Playwright does not support automatic dependency installation on $DISTRO."
