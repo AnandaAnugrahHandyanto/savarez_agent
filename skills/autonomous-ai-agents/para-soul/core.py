@@ -143,6 +143,22 @@ def _current_body() -> str:
     return os.environ.get("PARA_BODY", os.uname().nodename if hasattr(os, 'uname') else "unknown-agent")
 
 
+def _get_crypto():
+    """Initialize encryption if private key is available. Returns None if not."""
+    try:
+        # Import here to avoid hard dependency
+        import importlib.util
+        crypto_path = Path(__file__).resolve().parent / "crypto_phase1.py"
+        if not crypto_path.exists():
+            return None
+        spec = importlib.util.spec_from_file_location("crypto_phase1", crypto_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.make_crypto_from_env(str(_keys_dir()))
+    except Exception:
+        return None
+
+
 def _compute_file_hash(path: Path) -> str:
     """SHA-256 of file content. Returns empty string if file doesn't exist."""
     if not path.exists():
@@ -255,7 +271,13 @@ def cmd_init():
 
 
 def cmd_sync():
-    """Push file hashes to Paragate, get health action items back."""
+    """Push file hashes to Paragate, get health action items back.
+
+    Phase 1 encryption: if private key exists, file contents are encrypted
+    before upload. Server stores ciphertext only (zero-knowledge).
+    Hashes are computed on ciphertext for change detection.
+    Plaintext hashes are included for client-side integrity verification.
+    """
     profile_path = _para_home() / "profile.json"
     if not profile_path.exists():
         print("❌ profile.json not found. Run init first.")
@@ -267,12 +289,17 @@ def cmd_sync():
         print("❌ No DID in profile.json. Set it first.")
         return
 
-    # Compute hashes for monitored files
+    # Initialize encryption if available
+    crypto = _get_crypto()
+    encrypted = crypto is not None
+
+    # Compute hashes for monitored files (hash of ciphertext if encrypted, plaintext if not)
     hashes = _compute_all_hashes()
 
     # For sync-full: also push changed file contents
     is_full = "--full" in sys.argv
     files = {}
+    plaintext_hashes = {}
     if is_full:
         last_sync_path = _para_state() / "last_sync.json"
         last_sync = {}
@@ -282,17 +309,29 @@ def cmd_sync():
         for name in MONITORED_FILES:
             if hashes[name] and hashes[name] != last_sync.get(name, ""):
                 path = _para_home() / name
+                content = None
                 if name == "growth-log":
                     latest = _latest_growth_log_file()
                     if latest:
-                        files[name] = latest.read_text()
+                        content = latest.read_text()
                 else:
                     if path.exists():
-                        files[name] = path.read_text()
+                        content = path.read_text()
+
+                if content is not None:
+                    # Phase 1: encrypt before upload
+                    if encrypted:
+                        ct_b64, pt_hash = crypto.encrypt_file(str(path) if name != "growth-log" else str(latest))
+                        files[name] = ct_b64
+                        plaintext_hashes[name] = pt_hash
+                    else:
+                        files[name] = content
 
     data = {
         "hashes": hashes,
-        "files": files,  # only populated for sync-full
+        "files": files,  # only populated for sync-full; encrypted if crypto available
+        "encrypted": encrypted,
+        "plaintext_hashes": plaintext_hashes,  # for client-side integrity verification
         "body": _current_body(),
     }
 
