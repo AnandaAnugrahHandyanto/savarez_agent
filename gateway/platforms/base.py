@@ -2616,12 +2616,25 @@ class BasePlatformAdapter(ABC):
         # keep it out of the user-visible cleaned text.
         cleaned = cleaned.replace("[[as_document]]", "")
         
+        # Build spans covered by fenced code blocks and inline code
+        # so that MEDIA: examples inside code are not treated as real attachments.
+        code_spans: list = []
+        for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
+            code_spans.append((m.start(), m.end()))
+        for m in re.finditer(r'`[^`\n]+`', content):
+            code_spans.append((m.start(), m.end()))
+
+        def _in_code(pos: int) -> bool:
+            return any(s <= pos < e for s, e in code_spans)
+
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs. The extension
         # set is the shared MEDIA_DELIVERY_EXTS source of truth (built once into
         # MEDIA_TAG_CLEANUP_RE) so it can never drift from extract_local_files.
         media_pattern = MEDIA_TAG_CLEANUP_RE
         for match in media_pattern.finditer(content):
+            if _in_code(match.start()):
+                continue
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
@@ -2635,8 +2648,13 @@ class BasePlatformAdapter(ABC):
                     continue
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
+        # Only remove those NOT inside code blocks
         if media:
-            cleaned = media_pattern.sub('', cleaned)
+            def _remove_if_real(m):
+                if _in_code(m.start()):
+                    return m.group(0)
+                return ''
+            cleaned = media_pattern.sub(_remove_if_real, cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
