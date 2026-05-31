@@ -343,3 +343,148 @@ class TestHandleFunctionCallSafety:
             result = handle_function_call("web_search", {"q": "test"}, task_id="t1", tool_call_id="c1", session_id="s1")
         assert result == '{"ok":true}'
         mock_dispatch.assert_called_once()
+
+
+# =========================================================================
+# Tool Execution Metrics
+# =========================================================================
+
+class TestToolMetrics:
+    """Tests for _record_tool_metric(), _get_tool_metrics(), _reset_tool_metrics()."""
+
+    def test_record_metric_basic(self):
+        from model_tools import _record_tool_metric, _get_tool_metrics, _reset_tool_metrics
+        _reset_tool_metrics()
+        _record_tool_metric("web_search", 150, True)
+        metrics = _get_tool_metrics()
+        assert "web_search" in metrics
+        assert metrics["web_search"]["call_count"] == 1
+        assert metrics["web_search"]["total_duration_ms"] == 150
+        assert metrics["web_search"]["success_count"] == 1
+        assert metrics["web_search"]["failure_count"] == 0
+
+    def test_record_metric_failure(self):
+        from model_tools import _record_tool_metric, _get_tool_metrics, _reset_tool_metrics
+        _reset_tool_metrics()
+        _record_tool_metric("slow_tool", 5000, False)
+        metrics = _get_tool_metrics()
+        assert metrics["slow_tool"]["failure_count"] == 1
+        assert metrics["slow_tool"]["success_count"] == 0
+
+    def test_record_metric_accumulates(self):
+        from model_tools import _record_tool_metric, _get_tool_metrics, _reset_tool_metrics
+        _reset_tool_metrics()
+        _record_tool_metric("web_search", 100, True)
+        _record_tool_metric("web_search", 200, True)
+        _record_tool_metric("web_search", 300, False)
+        metrics = _get_tool_metrics()
+        assert metrics["web_search"]["call_count"] == 3
+        assert metrics["web_search"]["total_duration_ms"] == 600
+        assert metrics["web_search"]["success_count"] == 2
+        assert metrics["web_search"]["failure_count"] == 1
+
+    def test_reset_metrics(self):
+        from model_tools import _record_tool_metric, _get_tool_metrics, _reset_tool_metrics
+        _reset_tool_metrics()
+        _record_tool_metric("web_search", 100, True)
+        _reset_tool_metrics()
+        metrics = _get_tool_metrics()
+        assert len(metrics) == 0
+
+    def test_metrics_collected_when_enabled(self):
+        fake_safety_cfg = {
+            "tool_timeout_seconds": 0.0,
+            "tool_max_output_chars": 0,
+            "tool_validate_input": False,
+            "metrics_enabled": True,
+        }
+        from model_tools import _get_tool_metrics, _reset_tool_metrics
+        _reset_tool_metrics()
+        with (
+            patch("model_tools._load_tool_safety_config", return_value=fake_safety_cfg),
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+        ):
+            handle_function_call("web_search", {"q": "test"}, task_id="t1", tool_call_id="c1", session_id="s1")
+        metrics = _get_tool_metrics()
+        assert "web_search" in metrics
+        assert metrics["web_search"]["call_count"] == 1
+        assert metrics["web_search"]["success_count"] == 1
+
+
+# =========================================================================
+# Tool Error Classification
+# =========================================================================
+
+class TestToolErrorClassification:
+    """Tests for classify_tool_error()."""
+
+    def test_transient_timeout(self):
+        from model_tools import classify_tool_error
+        assert classify_tool_error("Tool 'foo' timed out after 30 seconds") == "transient"
+
+    def test_transient_rate_limit(self):
+        from model_tools import classify_tool_error
+        assert classify_tool_error("Rate limit exceeded, try again later") == "transient"
+
+    def test_transient_503(self):
+        from model_tools import classify_tool_error
+        assert classify_tool_error("HTTP 503 Service Unavailable") == "transient"
+
+    def test_transient_429(self):
+        from model_tools import classify_tool_error
+        assert classify_tool_error("HTTP 429 Too Many Requests") == "transient"
+
+    def test_permanent_validation(self):
+        from model_tools import classify_tool_error
+        assert classify_tool_error("Validation failed: missing required field 'name'") == "permanent"
+
+    def test_permanent_not_found(self):
+        from model_tools import classify_tool_error
+        assert classify_tool_error("Tool 'unknown_tool' not found in registry") == "permanent"
+
+    def test_unknown_empty(self):
+        from model_tools import classify_tool_error
+        assert classify_tool_error("") == "unknown"
+
+    def test_unknown_none_like(self):
+        from model_tools import classify_tool_error
+        assert classify_tool_error(None) == "unknown"
+
+    def test_permanent_generic_error(self):
+        from model_tools import classify_tool_error
+        assert classify_tool_error("Something went wrong") == "permanent"
+
+
+# =========================================================================
+# Configurable Per-Tool Timeout
+# =========================================================================
+
+class TestPerToolTimeout:
+    """Tests for _get_tool_timeout()."""
+
+    def test_uses_default_when_no_override(self):
+        from model_tools import _get_tool_timeout
+        with patch("hermes_cli.config.load_config", side_effect=Exception("no config")):
+            timeout = _get_tool_timeout("web_search", 30.0)
+        assert timeout == 30.0
+
+    def test_uses_per_tool_override(self):
+        from model_tools import _get_tool_timeout
+        fake_config = {"tools": {"safety": {"tool_timeouts": {"web_search": 60.0}}}}
+        with patch("hermes_cli.config.load_config", return_value=fake_config):
+            timeout = _get_tool_timeout("web_search", 30.0)
+        assert timeout == 60.0
+
+    def test_falls_back_for_unconfigured_tool(self):
+        from model_tools import _get_tool_timeout
+        fake_config = {"tools": {"safety": {"tool_timeouts": {"other_tool": 10.0}}}}
+        with patch("hermes_cli.config.load_config", return_value=fake_config):
+            timeout = _get_tool_timeout("web_search", 30.0)
+        assert timeout == 30.0
+
+    def test_handles_empty_config(self):
+        from model_tools import _get_tool_timeout
+        with patch("hermes_cli.config.load_config", return_value={}):
+            timeout = _get_tool_timeout("web_search", 30.0)
+        assert timeout == 30.0

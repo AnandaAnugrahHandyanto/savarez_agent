@@ -67,6 +67,8 @@ def _load_tool_safety_config() -> dict:
             "tool_timeout_seconds": 0.0,
             "tool_max_output_chars": 0,
             "tool_validate_input": False,
+            "metrics_enabled": False,
+            "tool_timeouts": {},
         }
         try:
             from hermes_cli.config import load_config
@@ -77,6 +79,8 @@ def _load_tool_safety_config() -> dict:
                 cfg["tool_timeout_seconds"] = float(safes.get("timeout_seconds", 0.0))
                 cfg["tool_max_output_chars"] = int(safes.get("max_output_chars", 0))
                 cfg["tool_validate_input"] = bool(safes.get("validate_input", False))
+                cfg["metrics_enabled"] = bool(safes.get("metrics_enabled", False))
+                cfg["tool_timeouts"] = dict(safes.get("tool_timeouts") or {})
         except Exception:
             pass
 
@@ -226,6 +230,118 @@ def _truncate_tool_result(function_name: str, result: str, max_chars: int) -> st
         function_name, len(result), max_chars,
     )
     return truncated + f"\n... (truncated {len(result) - max_chars} chars)"
+
+
+# =============================================================================
+# Tool Execution Metrics — track call counts, durations, success/failure
+# =============================================================================
+# Thread-safe metrics collector for tool calls.  Gated by
+# ``tools.safety.metrics_enabled`` in config.yaml (default: off).
+# =============================================================================
+
+_TOOL_METRICS = {}
+_TOOL_METRICS_LOCK = threading.Lock()
+
+
+def _record_tool_metric(function_name: str, duration_ms: int, success: bool) -> None:
+    """Record a tool call metric (thread-safe).
+
+    Tracks per-tool: call_count, total_duration_ms, success_count, failure_count.
+    """
+    with _TOOL_METRICS_LOCK:
+        if function_name not in _TOOL_METRICS:
+            _TOOL_METRICS[function_name] = {
+                "call_count": 0,
+                "total_duration_ms": 0,
+                "success_count": 0,
+                "failure_count": 0,
+            }
+        m = _TOOL_METRICS[function_name]
+        m["call_count"] += 1
+        m["total_duration_ms"] += duration_ms
+        if success:
+            m["success_count"] += 1
+        else:
+            m["failure_count"] += 1
+
+
+def _get_tool_metrics() -> dict:
+    """Return a copy of all collected tool metrics."""
+    with _TOOL_METRICS_LOCK:
+        return dict(_TOOL_METRICS)
+
+
+def _reset_tool_metrics() -> None:
+    """Reset all tool metrics (for testing)."""
+    with _TOOL_METRICS_LOCK:
+        _TOOL_METRICS.clear()
+
+
+# =============================================================================
+# Tool Error Classification — transient vs permanent
+# =============================================================================
+# Classifies tool errors so callers can decide whether to retry.
+# =============================================================================
+
+_TRANSIENT_ERROR_PATTERNS = [
+    "timed out",
+    "timeout",
+    "connection reset",
+    "connection refused",
+    "connection aborted",
+    "temporary failure",
+    "service unavailable",
+    "rate limit",
+    "too many requests",
+    "503",
+    "502",
+    "429",
+]
+
+
+def classify_tool_error(error_message: str) -> str:
+    """Classify a tool error as 'transient' or 'permanent'.
+
+    Transient errors are typically network-related or rate-limited and
+    may succeed on retry.  Permanent errors are logic/validation errors
+    that will fail again on retry.
+
+    Returns 'transient', 'permanent', or 'unknown'.
+    """
+    if not error_message:
+        return "unknown"
+
+    lower = error_message.lower()
+    for pattern in _TRANSIENT_ERROR_PATTERNS:
+        if pattern in lower:
+            return "transient"
+
+    return "permanent"
+
+
+# =============================================================================
+# Configurable Per-Tool Timeout
+# =============================================================================
+# Allows different timeout values per tool name via config.
+# Config path: tools.safety.tool_timeouts (dict of tool_name -> seconds)
+# =============================================================================
+
+
+def _get_tool_timeout(function_name: str, default_timeout: float) -> float:
+    """Get the timeout for a specific tool, falling back to default.
+
+    Checks tools.safety.tool_timeouts.<function_name> in config, then
+    falls back to the global default_timeout.
+    """
+    try:
+        from hermes_cli.config import load_config
+        user_cfg = load_config()
+        tool_timeouts = (user_cfg.get("tools", {}).get("safety", {}).get("tool_timeouts") or {})
+        if isinstance(tool_timeouts, dict) and function_name in tool_timeouts:
+            return float(tool_timeouts[function_name])
+    except Exception:
+        pass
+    return default_timeout
 
 
 # =============================================================================
@@ -1178,10 +1294,12 @@ def handle_function_call(
         # Wrap the registry.dispatch() call with an optional wall-clock
         # timeout via a shared ThreadPoolExecutor.  When timeout is 0
         # (default) the dispatch runs synchronously with zero overhead.
+        # Supports per-tool timeout overrides via tools.safety.tool_timeouts.
         # Gated by ``tools.safety.timeout_seconds`` in config.yaml or the
         # ``HERMES_TOOL_TIMEOUT`` env var.
         # ------------------------------------------------------------------
-        _timeout = _safety_config.get("tool_timeout_seconds", 0.0)
+        _global_timeout = _safety_config.get("tool_timeout_seconds", 0.0)
+        _timeout = _get_tool_timeout(function_name, _global_timeout)
         _dispatch_start = time.monotonic()
 
         if function_name == "execute_code":
@@ -1201,6 +1319,14 @@ def handle_function_call(
             )
 
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+
+        # ── Tool Safety Layer 4: Execution Metrics ─────────────────────
+        # Record per-tool call count, duration, and success/failure.
+        # Gated by ``tools.safety.metrics_enabled`` in config.yaml.
+        # ------------------------------------------------------------------
+        if _safety_config.get("metrics_enabled"):
+            _is_success = not (isinstance(result, str) and result.lstrip().startswith('{"error"'))
+            _record_tool_metric(function_name, duration_ms, _is_success)
 
         # ── Tool Safety Layer 3: Output Truncation ─────────────────────
         # Trim oversized tool results so the LLM's context window isn't

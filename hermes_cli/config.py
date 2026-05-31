@@ -1837,6 +1837,13 @@ DEFAULT_CONFIG = {
             # Schema before dispatching.  Also settable via the
             # HERMES_TOOL_VALIDATE_INPUT env var ("1" / "true" / "yes").
             "validate_input": False,
+            # Whether to collect per-tool execution metrics (call count,
+            # duration, success/failure).  Gated for zero overhead when off.
+            "metrics_enabled": False,
+            # Per-tool timeout overrides.  Keys are tool names, values are
+            # timeout seconds.  Overrides the global timeout_seconds for
+            # specific tools.
+            "tool_timeouts": {},
         },
     },
 
