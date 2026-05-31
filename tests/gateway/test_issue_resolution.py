@@ -18,7 +18,9 @@ from gateway.issue_resolution import (
     _execute_master_issue,
     _guard_managed_repo_before_issue_dispatch,
     _inspect_managed_repo,
+    _issue_branch_name,
     _load_next_open_issue,
+    _pr_body,
     build_aider_invocation,
     github_issue_webhook_command,
     is_master_issue,
@@ -81,6 +83,59 @@ def test_github_issue_webhook_command_builds_slash_command():
         github_issue_webhook_command(payload)
         == "/issue --repo m0nklabs/cryptotrader --issue 5"
     )
+
+
+def test_issue_branch_name_includes_managed_repo_slug():
+    """Managed issue branches should be repo-scoped for auditability."""
+    issue = IssueMetadata(
+        number=42,
+        title="Add PnL summary!",
+        body="body",
+        url="https://github.com/m0nklabs/cryptotrader/issues/42",
+    )
+
+    assert (
+        _issue_branch_name(issue, "m0nklabs/cryptotrader")
+        == "issue/cryptotrader-42-add-pnl-summary"
+    )
+
+
+def test_pr_body_records_issue_run_validation_risk_and_review_contract(tmp_path):
+    """Hermes PR bodies should be reviewable without local SQLite context."""
+    store = IssueStateStore(tmp_path / "issues.db")
+    run = store.enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", 42, tmp_path),
+        run_type=IssueRunType.ISSUE,
+    )
+    issue = IssueMetadata(
+        number=42,
+        title="Add PnL summary",
+        body="body",
+        url="https://github.com/m0nklabs/cryptotrader/issues/42",
+    )
+
+    body = _pr_body(
+        "m0nklabs/cryptotrader",
+        issue,
+        "issue/cryptotrader-42-add-pnl-summary",
+        "master",
+        run=run,
+    )
+
+    assert "Closes #42" in body
+    assert "Issue: #42 — https://github.com/m0nklabs/cryptotrader/issues/42" in body
+    assert "Branch: `issue/cryptotrader-42-add-pnl-summary`" in body
+    assert f"Hermes issue run: #{run.id}" in body
+    assert "## Validation evidence" in body
+    assert "Validation is pending" in body
+    assert "## Risk notes" in body
+    assert (
+        "Direct implementation drift on protected CryptoTrader `master`/`main` is forbidden"
+        in body
+    )
+    assert "## Review handoff" in body
+    assert "State: `ready_for_review`" in body
+    assert "Reviewer lane: `cloud_reviewer`" in body
 
 
 def test_master_issue_label_detection():
