@@ -493,6 +493,19 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+class CommandAllowlistUpsert(BaseModel):
+    pattern: str
+
+
+class CommandAllowlistDelete(BaseModel):
+    pattern: str
+
+
+class CommandAllowlistReplace(BaseModel):
+    old_pattern: str
+    new_pattern: str
+
+
 class ModelAssignment(BaseModel):
     """Payload for POST /api/model/set — assign a provider/model to a slot.
 
@@ -922,6 +935,132 @@ async def get_defaults():
 @app.get("/api/config/schema")
 async def get_schema():
     return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
+
+
+@app.get("/api/config/command-allowlist")
+async def get_command_allowlist():
+    cfg = load_config() or {}
+    raw_patterns = cfg.get("command_allowlist", []) or []
+    if not isinstance(raw_patterns, list):
+        raw_patterns = []
+    patterns = [str(p) for p in raw_patterns if str(p).strip()]
+    return {"patterns": patterns}
+
+
+@app.post("/api/config/command-allowlist")
+async def add_command_allowlist_entry(body: CommandAllowlistUpsert):
+    try:
+        pattern = body.pattern.strip()
+        if not pattern:
+            raise HTTPException(status_code=400, detail="Pattern cannot be empty")
+        cfg = load_config() or {}
+        raw_patterns = cfg.get("command_allowlist", []) or []
+        if not isinstance(raw_patterns, list):
+            raw_patterns = []
+        patterns = [str(p) for p in raw_patterns if str(p).strip()]
+        if pattern in patterns:
+            return {
+                "ok": True,
+                "pattern": pattern,
+                "created": False,
+                "patterns": patterns,
+            }
+        patterns.append(pattern)
+        cfg["command_allowlist"] = patterns
+        save_config(cfg)
+        return {
+            "ok": True,
+            "pattern": pattern,
+            "created": True,
+            "patterns": patterns,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/config/command-allowlist failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/api/config/command-allowlist")
+async def delete_command_allowlist_entry(body: CommandAllowlistDelete):
+    try:
+        cfg = load_config() or {}
+        raw_patterns = cfg.get("command_allowlist", []) or []
+        if not isinstance(raw_patterns, list):
+            raw_patterns = []
+        patterns = [str(p) for p in raw_patterns]
+        next_patterns = [p for p in patterns if p != body.pattern]
+        removed_count = len(patterns) - len(next_patterns)
+        if removed_count <= 0:
+            raise HTTPException(status_code=404, detail="Pattern not found in command_allowlist")
+        cfg["command_allowlist"] = next_patterns
+        save_config(cfg)
+        return {
+            "ok": True,
+            "pattern": body.pattern,
+            "removed_count": removed_count,
+            "patterns": next_patterns,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("DELETE /api/config/command-allowlist failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.put("/api/config/command-allowlist")
+async def replace_command_allowlist_entry(body: CommandAllowlistReplace):
+    try:
+        old_pattern = body.old_pattern.strip()
+        new_pattern = body.new_pattern.strip()
+        if not old_pattern:
+            raise HTTPException(status_code=400, detail="Existing pattern cannot be empty")
+        if not new_pattern:
+            raise HTTPException(status_code=400, detail="Replacement pattern cannot be empty")
+
+        cfg = load_config() or {}
+        raw_patterns = cfg.get("command_allowlist", []) or []
+        if not isinstance(raw_patterns, list):
+            raw_patterns = []
+        patterns = [str(p) for p in raw_patterns if str(p).strip()]
+
+        if old_pattern not in patterns:
+            raise HTTPException(status_code=404, detail="Pattern not found in command_allowlist")
+        if new_pattern != old_pattern and new_pattern in patterns:
+            raise HTTPException(status_code=409, detail="Replacement pattern already exists")
+
+        first_index = patterns.index(old_pattern)
+        next_patterns = [p for p in patterns if p != old_pattern]
+        next_patterns.insert(first_index, new_pattern)
+        cfg["command_allowlist"] = next_patterns
+        save_config(cfg)
+        return {
+            "ok": True,
+            "old_pattern": old_pattern,
+            "new_pattern": new_pattern,
+            "patterns": next_patterns,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/config/command-allowlist failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/config/command-allowlist/clear")
+async def clear_command_allowlist():
+    try:
+        cfg = load_config() or {}
+        raw_patterns = cfg.get("command_allowlist", []) or []
+        if not isinstance(raw_patterns, list):
+            raw_patterns = []
+        cleared_count = len(raw_patterns)
+        cfg["command_allowlist"] = []
+        save_config(cfg)
+        return {"ok": True, "cleared_count": cleared_count, "patterns": []}
+    except Exception:
+        _log.exception("POST /api/config/command-allowlist/clear failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 _EMPTY_MODEL_INFO: dict = {

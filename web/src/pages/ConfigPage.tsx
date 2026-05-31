@@ -35,6 +35,9 @@ import {
   Shield,
   FileOutput,
   RefreshCw,
+  Trash2,
+  Copy,
+  Pencil,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { getNestedValue, setNestedValue } from "@/lib/nested";
@@ -120,6 +123,18 @@ export default function ConfigPage() {
   const [configPath, setConfigPath] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string>("");
   const [confirmReset, setConfirmReset] = useState(false);
+  const [allowlistPatterns, setAllowlistPatterns] = useState<string[]>([]);
+  const [allowlistDraft, setAllowlistDraft] = useState("");
+  const [allowlistLoading, setAllowlistLoading] = useState(true);
+  const [allowlistBusy, setAllowlistBusy] = useState(false);
+  const [allowlistError, setAllowlistError] = useState<string | null>(null);
+  const [allowlistEditTarget, setAllowlistEditTarget] = useState<string | null>(null);
+  const [allowlistEditDraft, setAllowlistEditDraft] = useState("");
+  const [allowlistTestCommand, setAllowlistTestCommand] = useState("");
+  const [allowlistRestartingGateway, setAllowlistRestartingGateway] = useState(false);
+  const [allowlistConfirm, setAllowlistConfirm] = useState<
+    { type: "delete"; pattern: string } | { type: "clear" } | null
+  >(null);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
@@ -161,6 +176,23 @@ export default function ConfigPage() {
     return cat.charAt(0).toUpperCase() + cat.slice(1);
   }
 
+  const loadCommandAllowlist = async (showErrorToast = false) => {
+    setAllowlistLoading(true);
+    setAllowlistError(null);
+    try {
+      const resp = await api.getCommandAllowlist();
+      setAllowlistPatterns(resp.patterns ?? []);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setAllowlistError(message);
+      if (showErrorToast) {
+        showToast(`Failed to load always-allow patterns: ${message}`, "error");
+      }
+    } finally {
+      setAllowlistLoading(false);
+    }
+  };
+
   useEffect(() => {
     api
       .getConfig()
@@ -181,6 +213,7 @@ export default function ConfigPage() {
       .getStatus()
       .then((resp) => setConfigPath(resp.config_path))
       .catch(() => {});
+    loadCommandAllowlist();
   }, []);
 
   // Set active category when categories load
@@ -255,6 +288,12 @@ export default function ConfigPage() {
       ([, s]) => String(s.category ?? "general") === activeCategory,
     );
   }, [schema, activeCategory, isSearching]);
+
+  const exactTestCandidate = allowlistTestCommand.trim();
+  const exactTestMatch = useMemo(() => {
+    if (!exactTestCandidate) return null;
+    return allowlistPatterns.find((pattern) => pattern === exactTestCandidate) ?? null;
+  }, [allowlistPatterns, exactTestCandidate]);
 
   /* ---- Handlers ---- */
   const handleSave = async () => {
@@ -347,6 +386,119 @@ export default function ConfigPage() {
     reader.readAsText(file);
   };
 
+  const executeAllowlistAction = async () => {
+    if (!allowlistConfirm) return;
+    setAllowlistBusy(true);
+    try {
+      if (allowlistConfirm.type === "delete") {
+        const resp = await api.deleteCommandAllowlistEntry(allowlistConfirm.pattern);
+        setAllowlistPatterns(resp.patterns ?? []);
+        if (allowlistEditTarget === allowlistConfirm.pattern) {
+          cancelAllowlistEdit();
+        }
+        showToast("Always-allow pattern removed.", "success");
+      } else {
+        const resp = await api.clearCommandAllowlist();
+        setAllowlistPatterns(resp.patterns ?? []);
+        cancelAllowlistEdit();
+        showToast("Always-allow list cleared.", "success");
+      }
+      setAllowlistConfirm(null);
+    } catch (e) {
+      showToast(
+        `Failed to update always-allow list: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+      );
+    } finally {
+      setAllowlistBusy(false);
+    }
+  };
+
+  const handleAddAllowlistPattern = async () => {
+    const pattern = allowlistDraft.trim();
+    if (!pattern) {
+      showToast("Pattern cannot be empty.", "error");
+      return;
+    }
+    setAllowlistBusy(true);
+    try {
+      const resp = await api.addCommandAllowlistEntry(pattern);
+      setAllowlistPatterns(resp.patterns ?? []);
+      setAllowlistDraft("");
+      showToast(
+        resp.created ? "Always-allow pattern added." : "Pattern already exists.",
+        "success",
+      );
+    } catch (e) {
+      showToast(
+        `Failed to add always-allow pattern: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+      );
+    } finally {
+      setAllowlistBusy(false);
+    }
+  };
+
+  const startAllowlistEdit = (pattern: string) => {
+    setAllowlistEditTarget(pattern);
+    setAllowlistEditDraft(pattern);
+  };
+
+  const cancelAllowlistEdit = () => {
+    setAllowlistEditTarget(null);
+    setAllowlistEditDraft("");
+  };
+
+  const handleSaveAllowlistEdit = async () => {
+    if (!allowlistEditTarget) return;
+    const replacement = allowlistEditDraft.trim();
+    if (!replacement) {
+      showToast("Replacement pattern cannot be empty.", "error");
+      return;
+    }
+    setAllowlistBusy(true);
+    try {
+      const resp = await api.updateCommandAllowlistEntry(allowlistEditTarget, replacement);
+      setAllowlistPatterns(resp.patterns ?? []);
+      cancelAllowlistEdit();
+      showToast("Always-allow pattern updated.", "success");
+    } catch (e) {
+      showToast(
+        `Failed to update always-allow pattern: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+      );
+    } finally {
+      setAllowlistBusy(false);
+    }
+  };
+
+  const handleCopyToClipboard = async (value: string, label = "Copied to clipboard.") => {
+    try {
+      await navigator.clipboard.writeText(value);
+      showToast(label, "success");
+    } catch (e) {
+      showToast(
+        `Could not copy to clipboard: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+      );
+    }
+  };
+
+  const handleRestartGateway = async () => {
+    setAllowlistRestartingGateway(true);
+    try {
+      await api.restartGateway();
+      showToast("Gateway restart started.", "success");
+    } catch (e) {
+      showToast(
+        `Failed to restart gateway: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+      );
+    } finally {
+      setAllowlistRestartingGateway(false);
+    }
+  };
+
   /* ---- Loading ---- */
   if (!config || !schema) {
     return (
@@ -410,6 +562,257 @@ export default function ConfigPage() {
       );
     });
   };
+
+  const renderAlwaysAllowCard = () => (
+    <Card>
+      <CardHeader className="py-3 px-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Shield className="h-4 w-4" />
+              Always Allow
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Persistent dangerous-command approvals saved in <code>command_allowlist</code>.
+              Removing an entry stops future auto-approval, but active Hermes sessions or gateway processes may need a restart or a fresh session to fully drop in-memory approvals.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 sm:shrink-0">
+            <Badge tone={allowlistPatterns.length > 0 ? "warning" : "secondary"} className="text-xs">
+              {allowlistPatterns.length} pattern{allowlistPatterns.length === 1 ? "" : "s"}
+            </Badge>
+            <Button
+              ghost
+              size="icon"
+              onClick={() => loadCommandAllowlist(true)}
+              title="Refresh always-allow list"
+              aria-label="Refresh always-allow list"
+              disabled={allowlistLoading || allowlistBusy}
+            >
+              <RefreshCw />
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-4 px-4 pb-4">
+        <div className="grid gap-2">
+          <p className="text-xs text-muted-foreground">
+            Add an exact command pattern to the persistent allowlist.
+          </p>
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-stretch">
+            <Input
+              value={allowlistDraft}
+              onChange={(e) => setAllowlistDraft(e.target.value)}
+              placeholder="e.g. docker ps --format {{.Names}}"
+              className="text-xs"
+              disabled={allowlistBusy}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void handleAddAllowlistPattern();
+                }
+              }}
+            />
+            <Button
+              size="sm"
+              className="h-9 min-w-[140px] justify-center whitespace-nowrap"
+              onClick={() => void handleAddAllowlistPattern()}
+              disabled={allowlistBusy || allowlistDraft.trim().length === 0}
+            >
+              Add pattern
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid gap-2 border border-border/60 bg-muted/10 px-4 py-3">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium">Test exact match</p>
+              <p className="text-xs text-muted-foreground">
+                Paste a full command to see whether it exactly matches one saved always-allow pattern.
+              </p>
+            </div>
+            {exactTestCandidate ? (
+              <Badge tone={exactTestMatch ? "success" : "destructive"} className="text-xs">
+                {exactTestMatch ? "Matched" : "No match"}
+              </Badge>
+            ) : null}
+          </div>
+          <Input
+            value={allowlistTestCommand}
+            onChange={(e) => setAllowlistTestCommand(e.target.value)}
+            placeholder="Paste the full command you want to test"
+            className="text-xs"
+            disabled={allowlistBusy}
+          />
+          {exactTestCandidate ? (
+            exactTestMatch ? (
+              <p className="text-xs text-emerald-400">
+                Exact match found: <code>{exactTestMatch}</code>
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                No saved pattern matches this command exactly.
+              </p>
+            )
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Matching is exact string matching, not substring or wildcard matching.
+            </p>
+          )}
+        </div>
+
+        {allowlistLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <Spinner className="text-xl text-primary" />
+          </div>
+        ) : allowlistError ? (
+          <p className="text-sm text-destructive">{allowlistError}</p>
+        ) : allowlistPatterns.length === 0 ? (
+          <div className="border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
+            No always-allow patterns saved.
+          </div>
+        ) : (
+          <div className="grid gap-2">
+            {allowlistPatterns.map((pattern) => {
+              const isEditing = allowlistEditTarget === pattern;
+              return (
+                <div
+                  key={pattern}
+                  className="grid gap-3 border border-border/60 px-3 py-3"
+                >
+                  {isEditing ? (
+                    <>
+                      <Input
+                        value={allowlistEditDraft}
+                        onChange={(e) => setAllowlistEditDraft(e.target.value)}
+                        className="text-xs"
+                        disabled={allowlistBusy}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void handleSaveAllowlistEdit();
+                          }
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            cancelAllowlistEdit();
+                          }
+                        }}
+                      />
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <Button
+                          size="sm"
+                          outlined
+                          onClick={cancelAllowlistEdit}
+                          disabled={allowlistBusy}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => void handleSaveAllowlistEdit()}
+                          disabled={allowlistBusy || allowlistEditDraft.trim().length === 0}
+                        >
+                          Save changes
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <code className="min-w-0 flex-1 break-all text-xs text-foreground">
+                        {pattern}
+                      </code>
+                      <div className="flex flex-wrap items-center justify-end gap-2 sm:shrink-0">
+                        <Button
+                          ghost
+                          size="sm"
+                          prefix={<Copy className="h-3.5 w-3.5" />}
+                          onClick={() => void handleCopyToClipboard(pattern, "Pattern copied.")}
+                          disabled={allowlistBusy}
+                        >
+                          Copy
+                        </Button>
+                        <Button
+                          ghost
+                          size="sm"
+                          prefix={<Pencil className="h-3.5 w-3.5" />}
+                          onClick={() => startAllowlistEdit(pattern)}
+                          disabled={allowlistBusy}
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          ghost
+                          size="sm"
+                          className="text-destructive"
+                          prefix={<Trash2 className="h-3.5 w-3.5" />}
+                          title="Delete pattern"
+                          aria-label={`Delete pattern ${pattern}`}
+                          onClick={() => setAllowlistConfirm({ type: "delete", pattern })}
+                          disabled={allowlistBusy}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="border border-border/60 bg-muted/10 px-4 py-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium">Runtime refresh</p>
+              <p className="text-xs text-muted-foreground">
+                Config updates are saved immediately. Gateway chats may still hold old approvals in memory until restart. CLI/TUI sessions usually need a fresh session.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 sm:justify-end">
+              <Button
+                size="sm"
+                outlined
+                onClick={() => void handleCopyToClipboard("/restart", "Restart command copied.")}
+                disabled={allowlistBusy}
+              >
+                Copy /restart
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void handleRestartGateway()}
+                disabled={allowlistRestartingGateway}
+              >
+                {allowlistRestartingGateway ? "Restarting..." : "Restart gateway"}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <div className="border border-destructive/30 bg-destructive/5 px-4 py-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium text-destructive">Danger zone</p>
+              <p className="text-xs text-muted-foreground">
+                Clear the full always-allow list. This removes every persistent dangerous-command approval pattern from config.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              outlined
+              prefix={<Trash2 />}
+              className="text-destructive"
+              onClick={() => setAllowlistConfirm({ type: "clear" })}
+              disabled={allowlistBusy || allowlistPatterns.length === 0}
+            >
+              Clear all
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -638,6 +1041,7 @@ export default function ConfigPage() {
           </div>
         </div>
       )}
+      {renderAlwaysAllowCard()}
       <PluginSlot name="config:bottom" />
       <ConfirmDialog
         open={confirmReset}
@@ -654,6 +1058,24 @@ export default function ConfigPage() {
         } field(s) to their default values.`}
         destructive
         confirmLabel={t.config.resetDefaults}
+      />
+      <ConfirmDialog
+        open={!!allowlistConfirm}
+        onCancel={() => setAllowlistConfirm(null)}
+        onConfirm={executeAllowlistAction}
+        title={
+          allowlistConfirm?.type === "delete"
+            ? "Delete always-allow pattern?"
+            : "Clear all always-allow patterns?"
+        }
+        description={
+          allowlistConfirm?.type === "delete"
+            ? `This will remove the persistent approval pattern:\n${allowlistConfirm.pattern}`
+            : "This will remove every persistent dangerous-command approval from command_allowlist."
+        }
+        destructive
+        loading={allowlistBusy}
+        confirmLabel={allowlistConfirm?.type === "delete" ? "Delete pattern" : "Clear all"}
       />
     </div>
   );
