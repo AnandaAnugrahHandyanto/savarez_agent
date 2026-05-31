@@ -73,6 +73,7 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
+import VirtualHqPage from "@/pages/VirtualHqPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -116,6 +117,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
+  "/virtual-hq": VirtualHqPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
@@ -147,6 +149,11 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "analytics",
     label: "Analytics",
     icon: BarChart3,
+  },
+  {
+    path: "/virtual-hq",
+    label: "Virtual HQ",
+    icon: Shield,
   },
   {
     path: "/models",
