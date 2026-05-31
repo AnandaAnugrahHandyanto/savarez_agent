@@ -123,6 +123,177 @@ class TestGetCustomProviderContextLength:
         assert get_custom_provider_context_length("m", "http://x", None) is None
         assert get_custom_provider_context_length("m", "http://x", []) is None
 
+    # ------------------------------------------------------------------
+    # Slug-normalisation fallback (LM Studio "publisher/slug" runtime ids)
+    # ------------------------------------------------------------------
+
+    def test_slug_fallback_prefixed_runtime_matches_bare_config_key(self):
+        """Runtime model is 'lmstudio/phi-4'; config key is bare 'phi-4'.
+
+        This is the primary LM Studio scenario: probe_lmstudio_models returns
+        'publisher/slug' keys; users typically configure only the bare slug.
+        """
+        custom = [
+            {
+                "base_url": "http://localhost:1234/v1",
+                "models": {"phi-4": {"context_length": 131_072}},
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "lmstudio/phi-4", "http://localhost:1234/v1", custom
+            )
+            == 131_072
+        )
+
+    def test_exact_match_wins_over_slug_fallback(self):
+        """When the runtime id has a '/' AND appears as a literal key, exact
+        match must be returned without consulting the slug fallback.
+        """
+        custom = [
+            {
+                "base_url": "http://localhost:1234/v1",
+                "models": {
+                    "pub/phi-4": {"context_length": 99_999},  # exact key
+                    "phi-4": {"context_length": 131_072},      # slug-only key
+                },
+            }
+        ]
+        # Exact match wins — returns the exact-key value, not the slug value.
+        assert (
+            get_custom_provider_context_length(
+                "pub/phi-4", "http://localhost:1234/v1", custom
+            )
+            == 99_999
+        )
+
+    def test_slug_collision_first_dict_key_wins(self):
+        """Two config keys whose bare slugs collide: 'acme/m' and 'bigco/m'.
+
+        When runtime is 'acme/m' and only bare-slug 'm' is in the config,
+        the slug fallback is 'm'. When two *different* prefixed keys share
+        the same slug and neither matches exactly, dict insertion order
+        governs which slug entry wins — and that is acceptable because
+        the user's config is self-contradictory (two publishers, same slug,
+        same endpoint — ambiguous by definition).  The function does not
+        detect or warn about this; it simply returns the first match.
+        """
+        # Only one bare slug key — no ambiguity.
+        custom_single = [
+            {
+                "base_url": "http://localhost:1234/v1",
+                "models": {"m": {"context_length": 8_192}},
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "acme/m", "http://localhost:1234/v1", custom_single
+            )
+            == 8_192
+        )
+
+        # Two prefixed keys, same bare slug 'm' — exact match on 'acme/m'
+        # returns the correct entry; 'bigco/m' is not reached.
+        custom_two_prefixed = [
+            {
+                "base_url": "http://localhost:1234/v1",
+                "models": {
+                    "acme/m": {"context_length": 8_192},
+                    "bigco/m": {"context_length": 32_768},
+                },
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "acme/m", "http://localhost:1234/v1", custom_two_prefixed
+            )
+            == 8_192  # exact hit, not slug path
+        )
+        assert (
+            get_custom_provider_context_length(
+                "bigco/m", "http://localhost:1234/v1", custom_two_prefixed
+            )
+            == 32_768  # exact hit
+        )
+
+    def test_reverse_direction_not_handled(self):
+        """Bare runtime id 'm' does NOT match a config key 'pub/m'.
+
+        The fix is one-directional: runtime has '/', config key is bare slug.
+        The reverse (runtime bare, config key prefixed) is not a real scenario
+        because LM Studio always returns prefixed ids from its native API and
+        normalize_model_for_provider does not strip the publisher prefix for
+        the lmstudio provider.  Implementing the reverse would risk spurious
+        cross-publisher collisions and is explicitly out of scope.
+        """
+        custom = [
+            {
+                "base_url": "http://localhost:1234/v1",
+                "models": {"pub/m": {"context_length": 8_192}},
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "m", "http://localhost:1234/v1", custom
+            )
+            is None
+        )
+
+    def test_case_sensitive_slug_fallback(self):
+        """Slug fallback is case-sensitive, matching _model_id_matches precedent.
+
+        Config key 'Nemotron' does not match runtime 'nvidia/nemotron'.
+        Users must match case exactly, same as everywhere else in Hermes config.
+        """
+        custom = [
+            {
+                "base_url": "http://localhost:1234/v1",
+                "models": {"Nemotron": {"context_length": 131_072}},
+            }
+        ]
+        # Wrong case — must miss.
+        assert (
+            get_custom_provider_context_length(
+                "nvidia/nemotron", "http://localhost:1234/v1", custom
+            )
+            is None
+        )
+        # Correct case — must hit.
+        custom_correct = [
+            {
+                "base_url": "http://localhost:1234/v1",
+                "models": {"nemotron": {"context_length": 131_072}},
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "nvidia/nemotron", "http://localhost:1234/v1", custom_correct
+            )
+            == 131_072
+        )
+
+    def test_quant_suffix_in_slug_not_supported(self):
+        """Runtime id 'pub/model@q4_k_m' — slug fallback yields 'model@q4_k_m',
+        not 'model'.  Quant-suffix stripping is explicitly out of scope for this
+        fix.  LM Studio's native /api/v1/models returns plain 'publisher/slug'
+        keys with no '@' quant suffix (confirmed by probe_lmstudio_models which
+        uses raw.get('key') or raw.get('id')).  If a user manually writes a
+        quant-suffixed config key, they must match the full runtime id exactly.
+        """
+        custom = [
+            {
+                "base_url": "http://localhost:1234/v1",
+                "models": {"model": {"context_length": 32_768}},
+            }
+        ]
+        # Falls through to slug 'model@q4_k_m' — does not match bare 'model'.
+        assert (
+            get_custom_provider_context_length(
+                "pub/model@q4_k_m", "http://localhost:1234/v1", custom
+            )
+            is None
+        )
+
     def test_ignores_non_dict_entries(self):
         """Malformed entries must not crash the lookup."""
         custom = [
