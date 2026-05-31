@@ -583,37 +583,23 @@ def _looks_like_image(data: bytes) -> bool:
     return False
 
 
-def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
+def cache_media_from_bytes(data: bytes, ext: str = ".bin") -> str:
+    """Save raw media bytes to the cache and return the absolute file path."""
+    import uuid
+    from hermes_constants import get_hermes_dir
+    # Ensure directory exists
+    cache_dir = get_hermes_dir("cache/media", "media_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    
+    file_path = cache_dir / f"{uuid.uuid4().hex}{ext}"
+    with open(file_path, "wb") as f:
+        f.write(data)
+    return str(file_path.absolute())
+
+
+async def cache_media_from_url(url: str, ext: str = ".bin", retries: int = 2) -> str:
     """
-    Save raw image bytes to the cache and return the absolute file path.
-
-    Args:
-        data: Raw image bytes.
-        ext:  File extension including the dot (e.g. ".jpg", ".png").
-
-    Returns:
-        Absolute path to the cached image file as a string.
-
-    Raises:
-        ValueError: If *data* does not look like a valid image (e.g. an HTML
-            error page returned by the upstream server).
-    """
-    if not _looks_like_image(data):
-        snippet = data[:80].decode("utf-8", errors="replace")
-        raise ValueError(
-            f"Refusing to cache non-image data as {ext} "
-            f"(starts with: {snippet!r})"
-        )
-    cache_dir = get_image_cache_dir()
-    filename = f"img_{uuid.uuid4().hex[:12]}{ext}"
-    filepath = cache_dir / filename
-    filepath.write_bytes(data)
-    return str(filepath)
-
-
-async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
-    """
-    Download an image from a URL and save it to the local cache.
+    Download media from a URL and save it to the local cache.
 
     Retries on transient failures (timeouts, 429, 5xx) with exponential
     backoff so a single slow CDN response doesn't lose the media.
@@ -624,7 +610,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
         retries: Number of retry attempts on transient failures.
 
     Returns:
-        Absolute path to the cached image file as a string.
+        Absolute path to the cached media file as a string.
 
     Raises:
         ValueError: If the URL targets a private/internal network (SSRF protection).
@@ -647,11 +633,11 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
-                        "Accept": "image/*,*/*;q=0.8",
+                        "Accept": "*/*",
                     },
                 )
                 response.raise_for_status()
-                return cache_image_from_bytes(response.content, ext)
+                return cache_media_from_bytes(response.content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -668,6 +654,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
+    raise ValueError("Max retries exceeded")
 
 
 def cleanup_image_cache(max_age_hours: int = 24) -> int:
