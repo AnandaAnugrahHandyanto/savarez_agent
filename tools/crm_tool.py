@@ -154,12 +154,27 @@ def _twenty_record_id(payload: Any) -> str | None:
         for key in ("id", "recordId"):
             if payload.get(key):
                 return str(payload[key])
-        data = payload.get("data")
-        if isinstance(data, dict):
-            for key in ("id", "recordId"):
-                if data.get(key):
-                    return str(data[key])
+        for key in ("data", "createCompany", "updateCompany", "createPerson", "updatePerson", "createOpportunity", "updateOpportunity"):
+            if key in payload:
+                found = _twenty_record_id(payload[key])
+                if found:
+                    return found
+        for value in payload.values():
+            if isinstance(value, dict):
+                found = _twenty_record_id(value)
+                if found:
+                    return found
     return None
+
+def _twenty_link(value: Any) -> dict[str, Any] | None:
+    if not value:
+        return None
+    url = str(value).strip()
+    if not url:
+        return None
+    if "://" not in url:
+        url = f"https://{url}"
+    return {"primaryLinkLabel": "", "primaryLinkUrl": url, "secondaryLinks": []}
 
 
 def _sync_twenty(local_type: str, local_id: str, external_type: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -204,7 +219,7 @@ def _handle_org_upsert(args: dict, **_kwargs) -> str:
         if args.get("sync_twenty"):
             sync = _sync_twenty("organization", oid, "companies", {
                 "name": name,
-                "domainName": args.get("domain") or args.get("website"),
+                "domainName": _twenty_link(args.get("website") or args.get("domain")),
                 "address": args.get("metadata", {}).get("address") if isinstance(args.get("metadata"), dict) else None,
             })
         return _ok(organization=row, twenty=sync)
