@@ -25,7 +25,8 @@ function setProviders(providers: OAuthProvider[]) {
     mode: 'oauth',
     providers,
     reason: null,
-    requested: false
+    requested: false,
+    manual: false
   } satisfies DesktopOnboardingState)
 }
 
@@ -39,7 +40,8 @@ afterEach(() => {
     mode: 'oauth',
     providers: null,
     reason: null,
-    requested: false
+    requested: false,
+    manual: false
   })
 })
 

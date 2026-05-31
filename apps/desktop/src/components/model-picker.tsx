@@ -6,6 +6,7 @@ import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/
 import type { HermesGateway } from '../hermes'
 import { getGlobalModelOptions } from '../hermes'
 import { cn } from '../lib/utils'
+import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'
 import { Button } from './ui/button'
@@ -83,6 +84,15 @@ export function ModelPickerDialog({
     onOpenChange(false)
   }
 
+  // Open the full onboarding provider selector to add/switch a provider.
+  // Reuses the entire onboarding flow (OAuth rows, API-key form, device-code,
+  // model-confirm) instead of duplicating provider UI here. Closes the picker
+  // so the onboarding overlay (z-1300) isn't rendered underneath it.
+  const addProvider = () => {
+    startManualOnboarding()
+    onOpenChange(false)
+  }
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className={cn('max-h-[85vh] max-w-2xl gap-0 overflow-hidden p-0', contentClassName)}>
@@ -125,9 +135,14 @@ export function ModelPickerDialog({
             {sessionId ? 'Persist globally (otherwise this session only)' : 'Persist globally'}
           </label>
 
-          <Button onClick={() => onOpenChange(false)} variant="outline">
-            Cancel
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button onClick={addProvider} variant="ghost">
+              Add provider
+            </Button>
+            <Button onClick={() => onOpenChange(false)} variant="outline">
+              Cancel
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -176,9 +191,14 @@ function ModelResults({
     provider.name.toLowerCase().includes(q) ||
     provider.slug.toLowerCase().includes(q)
 
+  // Only configured providers (those with curated models) are selectable
+  // here. Switching to a NOT-yet-configured provider goes through the
+  // "Add provider" footer button, which opens the full onboarding selector.
+  const configured = providers.filter(p => (p.models ?? []).length > 0)
+
   return (
     <>
-      {providers.map(provider => {
+      {configured.map(provider => {
         // Preserve the backend's curated order — filter in place, no re-sort.
         const models = (provider.models ?? []).filter(m => matches(provider, m))
 

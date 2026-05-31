@@ -29,6 +29,7 @@ function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnbo
     providers: null,
     reason: null,
     requested: false,
+    manual: false,
     ...overrides
   }
 }

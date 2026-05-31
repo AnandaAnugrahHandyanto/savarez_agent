@@ -23,6 +23,7 @@ import { $desktopBoot, type DesktopBootState } from '@/store/boot'
 import {
   $desktopOnboarding,
   cancelOnboardingFlow,
+  closeManualOnboarding,
   confirmOnboardingModel,
   copyDeviceCode,
   copyExternalCommand,
@@ -147,14 +148,19 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
   // Mount from frame 1 so we replace the boot overlay seamlessly. The
   // configured field stays null until the runtime check resolves; only then
   // do we know whether to dismiss (true) or surface the picker (false).
-  if (onboarding.configured === true) {
+  // EXCEPTION: manual mode (user opened the selector from a working app to
+  // add/switch a provider) shows the overlay regardless of configured state.
+  if (onboarding.configured === true && !onboarding.manual) {
     return null
   }
 
   const { flow } = onboarding
   const rawReason = onboarding.reason?.trim() || null
   const reason = rawReason && !isProviderSetupErrorMessage(rawReason) ? rawReason : null
-  const ready = enabled && onboarding.configured === false
+  // In manual mode the app is already configured, so the flow is "ready"
+  // immediately — no runtime gate needed. Otherwise wait for the readiness
+  // check (configured === false) before showing the picker.
+  const ready = onboarding.manual || (enabled && onboarding.configured === false)
   const showPicker = flow.status === 'idle' || flow.status === 'success'
 
   return (
@@ -162,6 +168,17 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
       <div className="w-full max-w-[45rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-sm">
         <Header />
         <div className="grid gap-3 p-5">
+          {onboarding.manual ? (
+            <div className="flex justify-end">
+              <button
+                className="text-xs font-medium text-muted-foreground transition hover:text-foreground"
+                onClick={() => closeManualOnboarding()}
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+          ) : null}
           {reason ? <ReasonNotice reason={reason} /> : null}
           {ready ? showPicker ? <Picker ctx={ctx} /> : <FlowPanel ctx={ctx} flow={flow} /> : <Preparing boot={boot} />}
         </div>

@@ -54,6 +54,11 @@ export interface DesktopOnboardingState {
   providers: null | OAuthProvider[]
   reason: null | string
   requested: boolean
+  /** True when the user explicitly opened the provider selector to add /
+   *  switch providers from an already-configured app (e.g. via the model
+   *  picker's "Add provider" button). Forces the overlay to show the picker
+   *  even when configured === true, and adds a close affordance. */
+  manual: boolean
 }
 
 export interface OnboardingContext {
@@ -100,7 +105,8 @@ const INITIAL: DesktopOnboardingState = {
   mode: 'oauth',
   providers: null,
   reason: null,
-  requested: false
+  requested: false,
+  manual: false
 }
 
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
@@ -325,6 +331,28 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
   patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
 }
 
+// Open the onboarding provider selector on demand from an already-configured
+// app — e.g. the model picker's "Add provider" button. Reuses the entire
+// onboarding flow (OAuth rows, API-key form, model-confirm) instead of
+// duplicating provider UI. Sets manual=true so the overlay shows the picker
+// even though configured===true, and refreshes the provider list.
+export function startManualOnboarding(reason = 'Add or switch inference provider.') {
+  patch({
+    manual: true,
+    requested: true,
+    reason: reason.trim() || DEFAULT_ONBOARDING_REASON,
+    flow: { status: 'idle' }
+  })
+  void refreshProviders()
+}
+
+// Dismiss a manually-opened provider selector without touching the existing
+// (working) configuration. Only valid in the manual path — the unconfigured
+// first-run flow has no close affordance because the app can't run yet.
+export function closeManualOnboarding() {
+  patch({ manual: false, requested: false, flow: { status: 'idle' } })
+}
+
 export function completeDesktopOnboarding() {
   clearPoll()
   writeCachedConfigured(true)
@@ -334,7 +362,8 @@ export function completeDesktopOnboarding() {
     mode: 'oauth',
     providers: null,
     reason: null,
-    requested: false
+    requested: false,
+    manual: false
   })
 }
 
@@ -343,6 +372,15 @@ export function setOnboardingMode(mode: OnboardingMode) {
 }
 
 export async function refreshOnboarding(ctx: OnboardingContext) {
+  // Manual mode (user opened the selector from a working app): never
+  // auto-dismiss on runtime-ready — the whole point is to let them add /
+  // switch a provider while already configured. Just ensure the provider
+  // list is loaded and show the picker.
+  if ($desktopOnboarding.get().manual) {
+    await refreshProviders()
+    return false
+  }
+
   const runtime = await checkRuntime(ctx)
 
   if (runtime.ready) {
