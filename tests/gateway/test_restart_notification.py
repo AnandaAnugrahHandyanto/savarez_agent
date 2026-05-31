@@ -1,13 +1,14 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
 import json
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import gateway.run as gateway_run
-from gateway.config import HomeChannel, Platform
+from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import (
@@ -227,6 +228,67 @@ async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_shutdown_home_notification_writes_startup_notify_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+        thread_id="topic-7",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    notify_path = tmp_path / ".startup_notify.json"
+    assert notify_path.exists()
+    data = json.loads(notify_path.read_text())
+    assert len(data["targets"]) == 1
+    target = data["targets"][0]
+    assert target["platform"] == "telegram"
+    assert target["chat_id"] == "home-42"
+    assert target["thread_id"] == "topic-7"
+    assert target["reason"] == "signal_shutdown"
+    assert isinstance(target["created_at"], float)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_home_notification_writes_startup_marker_when_home_was_active_session(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+        thread_id="topic-7",
+    )
+    source = make_restart_source(chat_id="home-42", thread_id="topic-7")
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = object()
+    runner._cache_session_source(session_key, source)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    # The active-session send already covered the home target, so shutdown
+    # delivery is deduped to one message — but the matching startup marker must
+    # still be persisted or the operator gets a half-handshake.
+    adapter.send.assert_awaited_once()
+    data = json.loads((tmp_path / ".startup_notify.json").read_text())
+    assert len(data["targets"]) == 1
+    target = data["targets"][0]
+    assert target["platform"] == "telegram"
+    assert target["chat_id"] == "home-42"
+    assert target["thread_id"] == "topic-7"
+    assert target["reason"] == "signal_shutdown"
+
+
+@pytest.mark.asyncio
 async def test_send_home_channel_startup_notification_to_configured_home(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
@@ -334,6 +396,121 @@ async def test_send_home_channel_startup_notification_ignores_false_send_result(
 
     assert delivered == set()
     adapter.send.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_startup_notify_marker_sends_back_up_message_and_cleans_up(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".startup_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "home-42",
+        "created_at": time.time(),
+        "reason": "signal_shutdown",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="startup"))
+
+    delivered = await runner._send_startup_notification_from_marker()
+
+    assert delivered == {("telegram", "home-42", None)}
+    adapter.send.assert_called_once_with(
+        "home-42",
+        "♻ Gateway restarted successfully. Hermes is back and ready.",
+        metadata=None,
+    )
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_startup_notify_marker_preserves_thread_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".startup_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "parent-42",
+        "thread_id": "topic-7",
+        "created_at": time.time(),
+        "reason": "signal_shutdown",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="startup"))
+
+    delivered = await runner._send_startup_notification_from_marker()
+
+    assert delivered == {("telegram", "parent-42", "topic-7")}
+    adapter.send.assert_called_once_with(
+        "parent-42",
+        "♻ Gateway restarted successfully. Hermes is back and ready.",
+        metadata={"thread_id": "topic-7"},
+    )
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_startup_notify_marker_skipped_when_flag_disabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".startup_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "home-42",
+        "created_at": time.time(),
+        "reason": "signal_shutdown",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="startup"))
+
+    delivered = await runner._send_startup_notification_from_marker()
+
+    assert delivered == set()
+    adapter.send.assert_not_called()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_startup_notify_marker_ignores_and_unlinks_stale_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".startup_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "home-42",
+        "created_at": time.time() - gateway_run._STARTUP_NOTIFY_TTL_SECONDS - 1,
+        "reason": "signal_shutdown",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="late"))
+
+    delivered = await runner._send_startup_notification_from_marker()
+
+    assert delivered == set()
+    adapter.send.assert_not_called()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_startup_lifecycle_notifications_consume_startup_marker_after_restart_marker(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, _adapter = make_restart_runner()
+    runner._send_restart_notification = AsyncMock(return_value=("telegram", "42", None))
+    runner._send_startup_notification_from_marker = AsyncMock(return_value={("telegram", "home-42", None)})
+    runner._send_home_channel_startup_notifications = AsyncMock(return_value=set())
+
+    await runner._send_startup_lifecycle_notifications()
+
+    runner._send_restart_notification.assert_awaited_once()
+    runner._send_startup_notification_from_marker.assert_awaited_once_with(
+        skip_targets={("telegram", "42", None)}
+    )
+    runner._send_home_channel_startup_notifications.assert_awaited_once_with(
+        skip_targets={("telegram", "42", None), ("telegram", "home-42", None)}
+    )
 
 
 # ── _send_restart_notification ───────────────────────────────────────────
@@ -622,3 +799,95 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
         "⚠️ Gateway shutting down — Your current task will be interrupted.",
         metadata={"thread_id": "topic-7"},
     )
+
+
+# ── multi-platform fan-out + guarded marker write ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_shutdown_marker_fans_out_to_every_home_channel(tmp_path, monkeypatch):
+    """A multi-platform operator gets the back-up message on EVERY home channel.
+
+    Regression: the marker previously stored a single target and the shutdown
+    loop overwrote that one file per platform, so only the last platform
+    written was notified on startup (last-platform-wins).
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, telegram_adapter = make_restart_runner()
+    telegram_adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="tg"))
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="tg-home", name="TG Home",
+    )
+
+    discord_adapter = MagicMock()
+    discord_adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="dc"))
+    runner.config.platforms[Platform.DISCORD] = PlatformConfig(enabled=True, token="***")
+    runner.config.platforms[Platform.DISCORD].home_channel = HomeChannel(
+        platform=Platform.DISCORD, chat_id="dc-home", name="DC Home",
+    )
+    runner.adapters[Platform.DISCORD] = discord_adapter
+
+    # Shutdown records one marker entry per home channel (not last-write-wins).
+    await runner._notify_active_sessions_of_shutdown()
+
+    data = json.loads((tmp_path / ".startup_notify.json").read_text())
+    recorded = {(t["platform"], t["chat_id"]) for t in data["targets"]}
+    assert recorded == {("telegram", "tg-home"), ("discord", "dc-home")}
+
+    # Isolate the startup phase from the shutdown-warning sends above.
+    telegram_adapter.send.reset_mock()
+    discord_adapter.send.reset_mock()
+
+    # Startup fans the back-up message out to BOTH home channels exactly once.
+    delivered = await runner._send_startup_notification_from_marker()
+
+    assert delivered == {
+        ("telegram", "tg-home", None),
+        ("discord", "dc-home", None),
+    }
+    telegram_adapter.send.assert_awaited_once_with(
+        "tg-home",
+        "♻ Gateway restarted successfully. Hermes is back and ready.",
+        metadata=None,
+    )
+    discord_adapter.send.assert_awaited_once_with(
+        "dc-home",
+        "♻ Gateway restarted successfully. Hermes is back and ready.",
+        metadata=None,
+    )
+    assert not (tmp_path / ".startup_notify.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_marker_write_failure_does_not_abort_teardown(tmp_path, monkeypatch):
+    """A marker-write failure must be swallowed so it can't abort _stop_impl teardown.
+
+    Regression: the marker write sat outside the per-home try/except, and
+    ``_notify_active_sessions_of_shutdown`` is awaited inside ``_stop_impl`` with
+    no surrounding try — so a disk / read-only / permission error would
+    propagate out and skip the rest of teardown (exit code,
+    ``_update_runtime_status("stopped")``, adapter disconnects). Asserting at
+    this boundary (the function that held the unguarded write) is what
+    guarantees teardown continues: if the write still raised, the awaited call
+    below would raise and fail the test.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(gateway_run, "atomic_json_write", _boom)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    # Must not raise even though the marker write fails.
+    await runner._notify_active_sessions_of_shutdown()
+
+    # The shutdown warning was still delivered; the failed marker just isn't written.
+    adapter.send.assert_awaited_once()
+    assert not (tmp_path / ".startup_notify.json").exists()
