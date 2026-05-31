@@ -37,8 +37,11 @@ For bots specifically:
                         puts in ``mentions[].id.open_id`` when someone
                         @-mentions the bot.  Used for mention gating only.
 
-In single-bot mode (what Hermes currently supports), open_id works as a
+In single-bot mode (the default), open_id works as a
 de-facto unique user identifier since there is only one app context.
+When multi-app mode is enabled (FEISHU_MULTI_APP=true), multiple
+distinct app_ids can coexist and union_id is used for stable
+session isolation across apps.
 
 Session-key participant isolation prefers ``union_id`` (via user_id_alt)
 over ``open_id`` (via user_id) so that sessions stay stable if the same
@@ -191,6 +194,10 @@ _MAX_TEXT_INJECT_BYTES = 100 * 1024
 _FEISHU_CONNECT_ATTEMPTS = 3
 _FEISHU_SEND_ATTEMPTS = 3
 _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
+# Allow multiple Feishu/Lark apps to run concurrently in the same gateway.
+# When True, the per-app-id scoped lock is skipped so that multiple distinct
+# app_ids (different organisations / bots) can coexist.
+_FEISHU_MULTI_APP_MODE = os.getenv("FEISHU_MULTI_APP", "false").strip().lower() in {"true", "1", "yes", "on"}
 _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
 _DEFAULT_TEXT_BATCH_MAX_CHARS = 4000
@@ -1645,28 +1652,36 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             return False
         if self._connection_mode == "webhook" and not (self._verification_token or self._encrypt_key):
-            logger.error(
-                "[Feishu] Webhook mode requires FEISHU_VERIFICATION_TOKEN or FEISHU_ENCRYPT_KEY."
-            )
-            return False
+            # Lark 自定义机器人模式：不需要 verification_token，使用 sign_secret 验证
+            if not getattr(self, '_sign_secret', None):
+                logger.error(
+                    "[Feishu] Webhook mode requires FEISHU_VERIFICATION_TOKEN or FEISHU_ENCRYPT_KEY."
+                )
+                return False
 
         try:
             self._app_lock_identity = self._app_id
-            acquired, existing = acquire_scoped_lock(
-                _FEISHU_APP_LOCK_SCOPE,
-                self._app_lock_identity,
-                metadata={"platform": self.platform.value},
-            )
-            if not acquired:
-                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
-                message = (
-                    "Another local Hermes gateway is already using this Feishu app_id"
-                    + (f" (PID {owner_pid})." if owner_pid else ".")
-                    + " Stop the other gateway before starting a second Feishu websocket client."
+            if not _FEISHU_MULTI_APP_MODE:
+                acquired, existing = acquire_scoped_lock(
+                    _FEISHU_APP_LOCK_SCOPE,
+                    self._app_lock_identity,
+                    metadata={"platform": self.platform.value},
                 )
-                logger.error("[Feishu] %s", message)
-                self._set_fatal_error("feishu_app_lock", message, retryable=False)
-                return False
+                if not acquired:
+                    owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+                    message = (
+                        "Another local Hermes gateway is already using this Feishu app_id"
+                        + (f" (PID {owner_pid})." if owner_pid else ".")
+                        + " Stop the other gateway before starting a second Feishu websocket client."
+                    )
+                    logger.error("[Feishu] %s", message)
+                    self._set_fatal_error("feishu_app_lock", message, retryable=False)
+                    return False
+            else:
+                logger.info(
+                    "[Feishu] Multi-app mode enabled — skipping app_id lock for %s",
+                    self._app_id,
+                )
 
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
@@ -4594,12 +4609,12 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _release_app_lock(self) -> None:
         if not self._app_lock_identity:
             return
-        try:
-            release_scoped_lock(_FEISHU_APP_LOCK_SCOPE, self._app_lock_identity)
-        except Exception as exc:
-            logger.warning("[Feishu] Failed to release app lock: %s", exc, exc_info=True)
-        finally:
-            self._app_lock_identity = None
+        if not _FEISHU_MULTI_APP_MODE:
+            try:
+                release_scoped_lock(_FEISHU_APP_LOCK_SCOPE, self._app_lock_identity)
+            except Exception as exc:
+                logger.warning("[Feishu] Failed to release app lock: %s", exc, exc_info=True)
+        self._app_lock_identity = None
 
     # =========================================================================
     # Lark API request builders
