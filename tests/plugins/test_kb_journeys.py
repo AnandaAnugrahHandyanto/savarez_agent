@@ -93,6 +93,24 @@ def _drain_scheduled_tasks():
     asyncio.run(_drain())
 
 
+def _advisory_guidance(summary="Use advisory guidance to reason about this KB action."):
+    return {
+        "packet_type": "kb_advisory_guidance",
+        "schema_version": 1,
+        "mode": "advisory_only",
+        "authority": "no_mutation_authority",
+        "llm_prompt": "kb.review_guidance",
+        "llm_invocation": "explicit_user_request_only",
+        "mutates_state": False,
+        "requires_preview_before_write": True,
+        "summary": summary,
+        "recommended_sequence": [
+            "Read the canonical KB context and evidence first.",
+            "Preview with the canonical preview tool before confirmation.",
+        ],
+    }
+
+
 def test_kbtoday_command_renders_attention_cockpit_with_native_adapter(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 
@@ -301,6 +319,9 @@ def test_dashboard_situation_descriptor_renders_readonly_action_button(monkeypat
                                             "params": {
                                                 "object_path": "situations/2026-05-acme-launch-decision/state.md"
                                             },
+                                            "advisory_guidance": _advisory_guidance(
+                                                "Use advisory guidance to reason about the Acme Launch Decision."
+                                            ),
                                             "dashboard_owned_write": False,
                                         }
                                     ],
@@ -330,6 +351,8 @@ def test_dashboard_situation_descriptor_renders_readonly_action_button(monkeypat
     assert adapter.sent[0]["actions"]
     action = adapter.sent[0]["actions"][0]
     assert action.label == "Open situation"
+    guidance_action = adapter.sent[0]["actions"][1]
+    assert guidance_action.label == "Guidance"
 
     card = action.handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
     if asyncio.iscoroutine(card):
@@ -341,6 +364,15 @@ def test_dashboard_situation_descriptor_renders_readonly_action_button(monkeypat
         "mcp_kb_engine_prod_object_context",
         {"object_path": "situations/2026-05-acme-launch-decision/state.md"},
     )
+
+    guidance_card = guidance_action.handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
+    if asyncio.iscoroutine(guidance_card):
+        guidance_card = asyncio.run(guidance_card)
+
+    assert "KB Situation Guidance" in guidance_card["text"]
+    assert "kb.review_guidance" in guidance_card["text"]
+    assert "no_mutation_authority" in guidance_card["text"]
+    assert "Advisory output never confirms" in guidance_card["text"]
 
 
 def test_plain_non_kb_commands_are_left_for_system_handlers(monkeypatch):
@@ -587,6 +619,9 @@ def test_kbqueue_review_item_renders_descriptor_preview_and_confirm_buttons(monk
                                     "requires_canonical_tool": True,
                                     "expected_result": "Preview first, then reject after confirmation.",
                                     "confirmation_copy": "Confirm Reject after reviewing the preview.",
+                                    "advisory_guidance": _advisory_guidance(
+                                        "Use advisory guidance to reason about Reject before previewing."
+                                    ),
                                 }
                             ],
                         }
@@ -609,7 +644,17 @@ def test_kbqueue_review_item_renders_descriptor_preview_and_confirm_buttons(monk
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
     assert adapter.sent[0]["actions"]
-    preview_action = adapter.sent[0]["actions"][0]
+    guidance_action = adapter.sent[0]["actions"][0]
+    assert guidance_action.label == "Guidance"
+    guidance_card = guidance_action.handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
+    if asyncio.iscoroutine(guidance_card):
+        guidance_card = asyncio.run(guidance_card)
+    assert "KB Queue Guidance" in guidance_card["text"]
+    assert "Use advisory guidance to reason about Reject" in guidance_card["text"]
+    assert "kb.review_guidance" in guidance_card["text"]
+    assert "Advisory output never confirms" in guidance_card["text"]
+
+    preview_action = next(action for action in adapter.sent[0]["actions"] if action.label == "Preview Reject")
     assert preview_action.label == "Preview Reject"
 
     preview_card = preview_action.handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))

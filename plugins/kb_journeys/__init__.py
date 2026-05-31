@@ -494,9 +494,63 @@ def _dashboard_descriptor_actions(ctx: Any, target: str, sections: list[Any]) ->
                         },
                     )
                 )
+                guidance = _descriptor_advisory_guidance(descriptor)
+                if guidance:
+                    actions.append(
+                        KbAction(
+                            label="Guidance",
+                            action_id=f"{action_id}.guidance",
+                            handler=lambda callback_ctx, d=descriptor_copy: _render_descriptor_guidance(
+                                d,
+                                title="KB Situation Guidance",
+                            ),
+                            metadata={
+                                "target_kind": descriptor.get("target_kind"),
+                                "target_ref": descriptor.get("target_ref"),
+                                "advisory_only": True,
+                            },
+                        )
+                    )
                 if len(actions) >= 4:
                     return actions
     return actions
+
+
+def _descriptor_advisory_guidance(descriptor: dict[str, Any]) -> dict[str, Any]:
+    guidance = descriptor.get("advisory_guidance")
+    if not isinstance(guidance, dict):
+        return {}
+    if guidance.get("packet_type") != "kb_advisory_guidance":
+        return {}
+    if guidance.get("mutates_state") is True:
+        return {}
+    return guidance
+
+
+def _render_descriptor_guidance(descriptor: dict[str, Any], *, title: str = "KB Guidance") -> dict[str, Any]:
+    guidance = _descriptor_advisory_guidance(descriptor)
+    if not guidance:
+        return {"title": title, "text": f"{title}\nNo advisory guidance was attached to this action.", "actions": []}
+    lines = [
+        title,
+        _short(descriptor.get("label") or descriptor.get("action_id") or "KB action", "KB action"),
+        "",
+        _clip(guidance.get("summary") or "Guidance is advisory only and cannot mutate durable KB state.", 520),
+        "",
+        f"Prompt: {_short(guidance.get('llm_prompt'), 'kb.review_guidance')}",
+        f"Mode: {_short(guidance.get('mode'), 'advisory_only')}",
+        f"Authority: {_short(guidance.get('authority'), 'no_mutation_authority')}",
+        "Mutates KB: no",
+    ]
+    sequence = guidance.get("recommended_sequence") if isinstance(guidance.get("recommended_sequence"), list) else []
+    if sequence:
+        lines.append("")
+        lines.append("Suggested sequence:")
+        for step in sequence[:4]:
+            lines.append(f"- {_clip(step, 180)}")
+    lines.append("")
+    lines.append("Advisory output never confirms, applies, commits, or publishes. Use the preview/confirm button path for writes.")
+    return {"title": title, "text": "\n".join(lines), "actions": []}
 
 
 def _render_readonly_descriptor_action(
@@ -920,6 +974,31 @@ def _queue_descriptor_actions(ctx: Any, target: str, item: dict[str, Any], *, in
         return []
 
     actions: list[Any] = []
+    guidance_descriptor = next(
+        (
+            descriptor
+            for descriptor in _safe_actions_for_item(item)
+            if isinstance(descriptor, dict) and _descriptor_advisory_guidance(descriptor)
+        ),
+        None,
+    )
+    if guidance_descriptor:
+        descriptor_copy = dict(guidance_descriptor)
+        actions.append(
+            KbAction(
+                label="Guidance",
+                action_id="queue.advisory_guidance",
+                handler=lambda callback_ctx, d=descriptor_copy: _render_descriptor_guidance(
+                    d,
+                    title="KB Queue Guidance",
+                ),
+                metadata={
+                    "target_kind": "proposal_queue",
+                    "target_ref": _item_target(item),
+                    "advisory_only": True,
+                },
+            )
+        )
     for descriptor in _safe_actions_for_item(item):
         if descriptor.get("dashboard_owned_write") is True:
             continue
