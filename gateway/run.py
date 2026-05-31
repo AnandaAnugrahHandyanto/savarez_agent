@@ -1671,8 +1671,8 @@ class GatewayRunner:
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
-    _busy_input_mode: str = "interrupt"
-    _busy_text_mode: str = "interrupt"
+    _busy_input_mode: str = "steer"
+    _busy_text_mode: str = "steer"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -3035,9 +3035,9 @@ class GatewayRunner:
             mode = str(cfg_get(cfg, "display", "busy_input_mode", default="") or "").strip().lower()
         if mode == "queue":
             return "queue"
-        if mode == "steer":
-            return "steer"
-        return "interrupt"
+        if mode == "interrupt":
+            return "interrupt"
+        return "steer"
 
     @staticmethod
     def _load_busy_text_mode() -> str:
@@ -3048,7 +3048,9 @@ class GatewayRunner:
             mode = str(cfg_get(cfg, "display", "busy_text_mode", default="") or "").strip().lower()
         if mode == "interrupt":
             return "interrupt"
-        return "queue"
+        if mode == "queue":
+            return "queue"
+        return "steer"
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -10326,9 +10328,10 @@ class GatewayRunner:
         # Docker/Podman container, use the service restart path: exit with
         # code 75 so the service manager / container restart policy restarts
         # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # reliably under service managers (systemd KillMode/cgroups; launchd
+        # KeepAlive with SuccessfulExit=false) or Docker (tini exits when the
+        # gateway dies, taking the detached helper with it).
+        _under_service = self._running_under_service_manager()
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)
@@ -10387,6 +10390,24 @@ class GatewayRunner:
                 return False
         return event.platform_update_id <= recorded_uid
 
+
+    @staticmethod
+    def _running_under_service_manager() -> bool:
+        """Return True when the gateway process is supervised by a service manager.
+
+        systemd exposes ``INVOCATION_ID``. Hermes-generated launchd plists expose
+        ``HERMES_GATEWAY_SERVICE_MANAGER=launchd``; older launchd plists may not,
+        so also accept the generic ``HERMES_SERVICE_MANAGER`` spelling for hand-
+        rolled deployments.
+        """
+        if os.environ.get("INVOCATION_ID"):
+            return True
+        manager = (
+            os.environ.get("HERMES_GATEWAY_SERVICE_MANAGER")
+            or os.environ.get("HERMES_SERVICE_MANAGER")
+            or ""
+        ).strip().lower()
+        return manager in {"launchd", "systemd", "s6"}
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""

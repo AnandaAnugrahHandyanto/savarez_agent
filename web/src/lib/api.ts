@@ -246,6 +246,40 @@ export const api = {
     if (params.component && params.component !== "all") qs.set("component", params.component);
     return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
   },
+  uploadAudio: async (file: File) => {
+    const token = await getSessionToken();
+    return fetchJSON<AudioUploadResponse>(
+      `/api/uploads/audio?filename=${encodeURIComponent(file.name)}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": file.type || "application/octet-stream",
+          [SESSION_HEADER]: token,
+        },
+        body: file,
+      },
+    );
+  },
+  getAudioAnalysis: (storedName: string) =>
+    fetchJSON<AudioAnalysisResponse>(
+      `/api/uploads/audio/${encodeURIComponent(storedName)}/analysis`,
+    ),
+  setAudioSpeakers: (storedName: string, speakers: Record<string, string>) =>
+    fetchJSON<AudioAnalysisResponse>(
+      `/api/uploads/audio/${encodeURIComponent(storedName)}/speakers`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ speakers }),
+      },
+    ),
+  createVoiceSession: () => fetchJSON<VoiceSessionResponse>("/api/voice/session", { method: "POST" }),
+  runVoiceTool: (body: VoiceToolRequest) =>
+    fetchJSON<VoiceToolResponse>("/api/voice/tool", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   getAnalytics: (days: number) =>
     fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
   getModelsAnalytics: (days: number) =>
@@ -641,6 +675,55 @@ export interface SessionMessagesResponse {
 export interface LogsResponse {
   file: string;
   lines: string[];
+}
+
+export interface AudioUploadResponse {
+  ok: boolean;
+  original_name: string;
+  stored_name: string;
+  path: string;
+  size_bytes: number;
+  rolly_user: string;
+  prompt: string;
+  analysis_status: string;
+  analysis_url: string;
+}
+
+export interface AudioAnalysisSpeaker {
+  speaker: string;
+  example: string;
+}
+
+export interface AudioAnalysisTurn {
+  speaker: string;
+  text: string;
+}
+
+export interface AudioAnalysisResponse {
+  status: "not_started" | "queued" | "running" | "needs_speaker_names" | "complete" | "failed" | string;
+  speakers?: AudioAnalysisSpeaker[];
+  turns?: AudioAnalysisTurn[];
+  transcript?: string;
+  named_transcript?: string;
+  speaker_names?: Record<string, string>;
+  error?: string;
+}
+
+export interface VoiceToolRequest {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface VoiceToolResponse {
+  ok: boolean;
+  result: string;
+  error?: string;
+}
+
+export interface VoiceSessionResponse {
+  endpoint: string;
+  model: string;
+  client_secret: string;
 }
 
 export interface AnalyticsDailyEntry {

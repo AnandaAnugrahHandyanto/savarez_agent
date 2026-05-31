@@ -1,0 +1,12 @@
+{
+  "name": "rolly-people",
+  "label": "People",
+  "description": "Rolly founder-PM people surface \u2014 contacts, follow-ups, and relationship visibility",
+  "icon": "Users",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/people",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js"
+}

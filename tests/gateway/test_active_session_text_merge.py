@@ -352,16 +352,17 @@ async def test_single_followup_is_stored_as_is():
     assert not adapter._active_sessions[session_key].is_set()
 
 
-def test_adapter_defaults_to_queue_mode(monkeypatch):
+def test_adapter_defaults_to_steer_mode(monkeypatch):
     monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
     adapter = _make_initialized_adapter()
-    assert adapter._busy_text_mode == "queue"
-    assert adapter._is_queue_text_debounce_candidate(_make_event("hello"))
+    assert adapter._busy_text_mode == "steer"
+    assert not adapter._is_queue_text_debounce_candidate(_make_event("hello"))
 
 
-def test_adapter_is_queue_text_debounce_candidate_by_default():
-    adapter = _make_adapter()
-    assert adapter._is_queue_text_debounce_candidate(_make_event("hello world"))
+def test_initialized_adapter_is_not_queue_text_debounce_candidate_by_default(monkeypatch):
+    monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
+    adapter = _make_initialized_adapter()
+    assert not adapter._is_queue_text_debounce_candidate(_make_event("hello world"))
 
 
 def test_command_messages_bypass_debounce_even_in_queue_mode():

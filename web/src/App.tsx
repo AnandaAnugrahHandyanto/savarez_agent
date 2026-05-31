@@ -42,6 +42,7 @@ import {
   Sparkles,
   Star,
   Terminal,
+  UploadCloud,
   Users,
   Wrench,
   X,
@@ -66,6 +67,7 @@ import DocsPage from "@/pages/DocsPage";
 import EnvPage from "@/pages/EnvPage";
 import SessionsPage from "@/pages/SessionsPage";
 import LogsPage from "@/pages/LogsPage";
+import UploadPage from "@/pages/UploadPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import ModelsPage from "@/pages/ModelsPage";
 import CronPage from "@/pages/CronPage";
@@ -118,6 +120,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
+  "/upload": UploadPage,
   "/cron": CronPage,
   "/skills": SkillsPage,
   "/plugins": PluginsPage,
@@ -155,6 +158,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     icon: Cpu,
   },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
+  { path: "/upload", labelKey: "upload", label: "Upload", icon: UploadCloud },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
@@ -182,6 +186,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Puzzle,
   Sparkles,
   Terminal,
+  UploadCloud,
   Globe,
   Database,
   Shield,

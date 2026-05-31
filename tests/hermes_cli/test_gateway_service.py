@@ -76,6 +76,7 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         gateway_cli.systemd_start()
 
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
@@ -106,6 +107,7 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         gateway_cli.systemd_restart()
 
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
@@ -198,6 +200,7 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         gateway_cli.systemd_restart()
 
         output = capsys.readouterr().out
@@ -773,6 +776,7 @@ class TestGatewaySystemServiceRouting:
             lambda system=False, previous_pid=None: calls.append(("wait", system, previous_pid)) or True,
         )
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         gateway_cli.systemd_restart()
 
         assert ("graceful", 654, 17.0) in calls
@@ -813,6 +817,7 @@ class TestGatewaySystemServiceRouting:
             lambda system=False, previous_pid=None: calls.append(("wait", system, previous_pid)) or True,
         )
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         gateway_cli.systemd_restart()
 
         assert ("graceful", 777, 15.0) in calls
@@ -866,6 +871,7 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         gateway_cli.systemd_restart()
 
         assert ["restart", gateway_cli.get_service_name()] in calls
@@ -922,6 +928,7 @@ class TestGatewaySystemServiceRouting:
             lambda pid: {"pid": pid, "gateway_state": "running"},
         )
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         gateway_cli.systemd_restart()
 
         assert any(call[0] == "reset-failed" for call in calls)
@@ -2579,3 +2586,13 @@ class TestServiceWorkingDirIsStable:
         assert m, "plist has no WorkingDirectory entry"
         assert Path(m.group(1)).resolve() == home.resolve()
         assert "/.worktrees/" not in m.group(1)
+
+    def test_launchd_plist_marks_gateway_as_launchd_managed(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>HERMES_GATEWAY_SERVICE_MANAGER</key>" in plist
+        assert "<string>launchd</string>" in plist

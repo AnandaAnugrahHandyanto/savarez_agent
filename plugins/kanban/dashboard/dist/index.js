@@ -232,6 +232,38 @@
     } catch (_e) { /* ignore quota / private mode */ }
   }
 
+  function readUrlParam(name) {
+    try { return new URLSearchParams(window.location.search).get(name); }
+    catch (_e) { return null; }
+  }
+
+  function writeUrlParams(patch) {
+    try {
+      const url = new URL(window.location.href);
+      Object.keys(patch).forEach(function (key) {
+        const value = patch[key];
+        if (value === null || value === undefined || value === "") url.searchParams.delete(key);
+        else url.searchParams.set(key, value);
+      });
+      window.history.replaceState({}, "", url.toString());
+    } catch (_e) { /* ignore */ }
+  }
+
+  function copyTextToClipboard(text, onCopied) {
+    const value = text || "";
+    const fallback = function () { window.prompt("Copy this text:", value); };
+    try {
+      const p = navigator.clipboard && navigator.clipboard.writeText(value);
+      if (p && p.then) {
+        p.then(function () { if (onCopied) onCopied(); }).catch(fallback);
+      } else {
+        fallback();
+      }
+    } catch (_e) {
+      fallback();
+    }
+  }
+
   function withBoard(url, board) {
     // Always append ?board=<slug> when we have one picked — including
     // "default". Omitting the param would fall through to the backend's
@@ -464,7 +496,7 @@
 
   function KanbanPage() {
     const { t } = useI18n();
-    const [board, setBoard] = useState(() => readSelectedBoard() || null);
+    const [board, setBoard] = useState(() => readUrlParam("board") || readSelectedBoard() || null);
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
 
@@ -488,13 +520,22 @@
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
 
-    const [selectedTaskId, setSelectedTaskId] = useState(null);
+    const [selectedTaskId, setSelectedTaskId] = useState(() => readUrlParam("task"));
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());
     const [draggingTaskId, setDraggingTaskId] = useState(null);
     const handleDragStart = useCallback(function (taskId) { setDraggingTaskId(taskId); }, []);
     const handleDragEnd = useCallback(function () { setDraggingTaskId(null); }, []);
+    const openTask = useCallback(function (taskId) {
+      if (!taskId) return;
+      setSelectedTaskId(taskId);
+      writeUrlParams({ task: taskId });
+    }, []);
+    const closeTask = useCallback(function () {
+      setSelectedTaskId(null);
+      writeUrlParams({ task: null });
+    }, []);
     // Per-task event counter incremented whenever the WS stream reports
     // a new event for that task id. TaskDrawer useEffect-depends on its
     // own task's counter so it reloads itself on live events instead of
@@ -506,6 +547,14 @@
     const wsRef = useRef(null);
     const wsBackoffRef = useRef(1000);
     const wsClosedRef = useRef(false);
+
+    useEffect(function () {
+      function onPopState() {
+        setSelectedTaskId(readUrlParam("task"));
+      }
+      window.addEventListener("popstate", onPopState);
+      return function () { window.removeEventListener("popstate", onPopState); };
+    }, []);
 
     // --- load config once ---------------------------------------------------
     useEffect(function () {
@@ -898,6 +947,8 @@
       setLoading(true);
       setBoard(nextSlug);
       writeSelectedBoard(nextSlug);
+      setSelectedTaskId(null);
+      writeUrlParams({ board: nextSlug, task: null });
       // Reset filters so stale search/tenant/assignee don't persist across boards.
       setSearch("");
       setTenantFilter("");
@@ -993,7 +1044,7 @@
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
         }),
         h(BoardToolbar, {
           board: boardData,
@@ -1032,14 +1083,14 @@
           onMove: moveTask,
           onMoveSelected: moveSelected,
           onDelete: deleteTask,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
           boardSlug: board,
-          onClose: function () { setSelectedTaskId(null); },
+          onClose: closeTask,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -3161,6 +3212,71 @@
     );
   }
 
+  function CardWorkspaceSection(props) {
+    const { t: i18n } = useI18n();
+    const task = props.task;
+    const [payload, setPayload] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState(null);
+    const [copied, setCopied] = useState(null);
+    const hasWorkspace = !!(task && task.workspace_path);
+
+    const loadContext = function () {
+      if (!task || busy) return;
+      setBusy(true);
+      setErr(null);
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(task.id)}/claude-context`, props.boardSlug))
+        .then(function (d) { setPayload(d); })
+        .catch(function (e) { setErr(parseApiErrorMessage(e)); })
+        .finally(function () { setBusy(false); });
+    };
+    const markCopied = function (key) {
+      setCopied(key);
+      setTimeout(function () { setCopied(null); }, 2000);
+    };
+
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head" },
+        tx(i18n, "cardWorkspace", "Card workspace")),
+      h("div", { className: "text-xs text-muted-foreground mb-2" },
+        tx(i18n, "cardWorkspaceHint",
+          "Manual Claude Code launch only: copy the command and prompt; nothing is auto-started.")),
+      !hasWorkspace ? h("div", { className: "text-xs text-destructive mb-2" },
+        tx(i18n, "cardWorkspaceNoWorkspace",
+          "Set a concrete workspace_path before launching Claude Code.")) : null,
+      h("div", { className: "flex flex-wrap items-center gap-2 mb-2" },
+        h(Button, {
+          size: "sm",
+          variant: "outline",
+          disabled: busy || !hasWorkspace,
+          onClick: loadContext,
+        }, busy
+          ? tx(i18n, "preparing", "Preparing…")
+          : (payload ? tx(i18n, "refreshLaunchContext", "Refresh launch context")
+                     : tx(i18n, "prepareClaudeCode", "Prepare Claude Code prompt"))),
+        payload ? h(Button, {
+          size: "sm",
+          variant: "outline",
+          onClick: function () { copyTextToClipboard(payload.command, function () { markCopied("command"); }); },
+        }, copied === "command" ? tx(i18n, "copied", "Copied") : tx(i18n, "copyCommand", "Copy command")) : null,
+        payload ? h(Button, {
+          size: "sm",
+          variant: "outline",
+          onClick: function () { copyTextToClipboard(payload.prompt, function () { markCopied("prompt"); }); },
+        }, copied === "prompt" ? tx(i18n, "copied", "Copied") : tx(i18n, "copyPrompt", "Copy prompt")) : null,
+      ),
+      err ? h("div", { className: "text-xs text-destructive mb-2" }, err) : null,
+      payload ? h("div", { className: "space-y-2" },
+        h(MetaRow, { label: tx(i18n, "mode", "Mode"), value: payload.mode || "manual-copy" }),
+        h(MetaRow, { label: tx(i18n, "workspace", "Workspace"), value: payload.workspace_path || "" }),
+        h("div", { className: "text-xs font-medium" }, tx(i18n, "command", "Command")),
+        h("pre", { className: "hermes-kanban-codeblock text-xs whitespace-pre-wrap" }, payload.command || ""),
+        h("div", { className: "text-xs font-medium" }, tx(i18n, "prompt", "Prompt")),
+        h("pre", { className: "hermes-kanban-codeblock text-xs whitespace-pre-wrap" }, payload.prompt || ""),
+      ) : null,
+    );
+  }
+
   function TaskDetail(props) {
     const { t: i18n } = useI18n();
     const t = props.data.task;
@@ -3212,6 +3328,10 @@
         onPatch: props.onPatch,
         onSpecify: props.onSpecify,
         onDecompose: props.onDecompose,
+      }),
+      h(CardWorkspaceSection, {
+        task: t,
+        boardSlug: props.boardSlug,
       }),
       h(DiagnosticsSection, {
         task: t,

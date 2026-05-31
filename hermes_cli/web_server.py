@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
 import stat
 import subprocess
@@ -23,6 +24,8 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -150,6 +153,62 @@ def _require_token(request: Request) -> None:
     """Validate the ephemeral session token.  Raises 401 on mismatch."""
     if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+class VoiceToolRequest(BaseModel):
+    name: str
+    arguments: Dict[str, Any] = {}
+
+
+def _create_openai_realtime_session(user: str | None = None) -> Dict[str, Any]:
+    """Create an ephemeral OpenAI Realtime session for the dashboard voice UI."""
+    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("VOICE_TOOLS_OPENAI_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OpenAI voice credentials are not configured")
+    model = os.getenv("HERMES_VOICE_REALTIME_MODEL", "gpt-realtime")
+    voice = os.getenv("HERMES_VOICE_REALTIME_VOICE", "alloy")
+    body = json.dumps({"model": model, "voice": voice}).encode()
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/realtime/sessions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to create voice session: {exc}") from exc
+    return data
+
+
+def _run_voice_research(question: str, user: str | None = None) -> str:
+    """Bridge a constrained voice tool call into the existing agent runtime."""
+    from run_agent import AIAgent
+
+    agent = AIAgent(platform="dashboard", enabled_toolsets=["web", "session_search"])
+    return agent.chat(question)
+
+
+@app.post("/api/voice/session")
+async def create_voice_session(request: Request):
+    _require_token(request)
+    return _create_openai_realtime_session(user=request.headers.get("X-Hermes-User"))
+
+
+@app.post("/api/voice/tool")
+async def run_voice_tool(payload: VoiceToolRequest, request: Request):
+    _require_token(request)
+    if payload.name != "research":
+        raise HTTPException(status_code=400, detail="Unsupported voice tool")
+    question = str(payload.arguments.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Missing question")
+    result = _run_voice_research(question, user=request.headers.get("X-Hermes-User"))
+    return {"ok": True, "result": result, "error": None}
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks
@@ -2553,6 +2612,306 @@ async def delete_session_endpoint(session_id: str):
         return {"ok": True}
     finally:
         db.close()
+
+
+
+# ---------------------------------------------------------------------------
+# Audio upload + diarization endpoints
+# ---------------------------------------------------------------------------
+
+_AUDIO_EXTENSIONS = {
+    ".aac", ".aif", ".aiff", ".flac", ".m4a", ".mp3", ".mp4",
+    ".oga", ".ogg", ".opus", ".wav", ".webm",
+}
+
+
+def _audio_uploads_dir() -> Path:
+    path = get_hermes_home() / "uploads" / "audio"
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+    return path
+
+
+def _safe_audio_filename(filename: str) -> str:
+    original = (filename or "").strip()
+    if not original:
+        raise HTTPException(status_code=400, detail="filename is required")
+    suffix = Path(original).suffix.lower()
+    if suffix not in _AUDIO_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported audio file extension: {suffix or '(none)'}")
+    stem = Path(original).stem
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-._") or "audio"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{stamp}-{uuid.uuid4().hex[:8]}-{safe_stem}{suffix}"
+
+
+def _audio_path_for_stored_name(stored_name: str) -> Path:
+    name = Path(stored_name).name
+    if name != stored_name or not name:
+        raise HTTPException(status_code=400, detail="Invalid stored audio name")
+    path = (_audio_uploads_dir() / name).resolve()
+    root = _audio_uploads_dir().resolve()
+    if root not in path.parents and path != root:
+        raise HTTPException(status_code=400, detail="Invalid stored audio path")
+    return path
+
+
+def _audio_analysis_path(audio_path: Path) -> Path:
+    return audio_path.with_suffix(audio_path.suffix + ".analysis.json")
+
+
+def _write_audio_analysis(audio_path: Path, data: Dict[str, Any]) -> None:
+    path = _audio_analysis_path(audio_path)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _read_audio_analysis(audio_path: Path) -> Dict[str, Any]:
+    path = _audio_analysis_path(audio_path)
+    if not path.exists():
+        return {"status": "not_started"}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"status": "failed", "error": f"Could not read analysis: {exc}"}
+
+
+def _turns_from_words(words: Any) -> List[Dict[str, Any]]:
+    if not isinstance(words, list):
+        return []
+    turns: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+    for word in words:
+        if not isinstance(word, dict):
+            continue
+        speaker = word.get("speaker") or word.get("speaker_id") or word.get("speakerId")
+        token = str(word.get("word") or word.get("text") or "").strip()
+        if not token:
+            continue
+        if current is None or current.get("speaker") != speaker:
+            current = {"speaker": str(speaker if speaker is not None else "Speaker 1"), "text": token}
+            turns.append(current)
+        else:
+            current["text"] = (current.get("text", "") + " " + token).strip()
+    return turns
+
+
+def _turns_from_labelled_text(text: str) -> List[Dict[str, str]]:
+    turns: List[Dict[str, str]] = []
+    current: Optional[Dict[str, str]] = None
+    label_re = re.compile(r"^(?:\[?((?:SPEAKER[_ -]?\d+)|(?:Speaker\s*\d+))\]?\s*[:\-]\s*)(.+)$", re.I)
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        match = label_re.match(line)
+        if match:
+            current = {"speaker": match.group(1).replace(" ", "_"), "text": match.group(2).strip()}
+            turns.append(current)
+        elif current is not None:
+            current["text"] = (current["text"] + " " + line).strip()
+    return turns
+
+
+def _speaker_examples(turns: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    examples: Dict[str, str] = {}
+    for turn in turns:
+        speaker = str(turn.get("speaker") or "Speaker 1")
+        text_value = str(turn.get("text") or "").strip()
+        if text_value and speaker not in examples:
+            examples[speaker] = text_value[:240]
+    return [{"speaker": speaker, "example": example} for speaker, example in examples.items()]
+
+
+def _run_audio_cli(audio_path: Path) -> Dict[str, Any]:
+    """Run Rolly's canonical audio transcription CLI and return its JSON output."""
+    cli = Path("/Users/rolly/bin/rolly-transcribe-diarize")
+    if not cli.exists():
+        raise RuntimeError(f"Audio transcription CLI not found: {cli}")
+    proc = subprocess.run(
+        [str(cli), str(audio_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=900,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"rolly-transcribe-diarize exited {proc.returncode}: {detail[:500]}")
+    try:
+        result = json.loads(proc.stdout)
+    except Exception as exc:
+        raise RuntimeError(f"rolly-transcribe-diarize returned non-JSON output: {proc.stdout[:500]}") from exc
+    if not result.get("ok"):
+        raise RuntimeError(f"rolly-transcribe-diarize failed: {result}")
+    return result
+
+
+def _load_cli_audio_result(cli_result: Dict[str, Any]) -> Dict[str, Any]:
+    out_dir = Path(str(cli_result.get("out_dir") or "")).expanduser()
+    if not out_dir.exists():
+        raise RuntimeError(f"CLI analysis directory not found: {out_dir}")
+
+    transcript = ""
+    transcript_path = out_dir / "transcript.txt"
+    if transcript_path.exists():
+        transcript = transcript_path.read_text(encoding="utf-8", errors="replace").strip()
+
+    turns: List[Dict[str, Any]] = []
+    turns_path = out_dir / "speaker-turns.json"
+    if turns_path.exists():
+        raw_turns = json.loads(turns_path.read_text(encoding="utf-8"))
+        if isinstance(raw_turns, list):
+            for turn in raw_turns:
+                if isinstance(turn, dict):
+                    turns.append({
+                        "speaker": str(turn.get("speaker") if turn.get("speaker") is not None else "unknown"),
+                        "text": str(turn.get("text") or "").strip(),
+                        **({"start": turn.get("start")} if turn.get("start") is not None else {}),
+                        **({"end": turn.get("end")} if turn.get("end") is not None else {}),
+                    })
+
+    raw_path = out_dir / "xai-stt-raw.json"
+    if raw_path.exists() and not turns:
+        try:
+            raw_result = json.loads(raw_path.read_text(encoding="utf-8"))
+            transcript = transcript or str(raw_result.get("text") or "").strip()
+            turns = _turns_from_words(raw_result.get("words")) or _turns_from_words(raw_result.get("segments"))
+        except Exception:
+            pass
+
+    if not turns and transcript:
+        turns = [{"speaker": "Speaker 1", "text": transcript}]
+
+    speakers = _speaker_examples(turns)
+    speaker_count = len({s["speaker"] for s in speakers})
+    status = "needs_speaker_names" if speaker_count > 1 else "complete"
+    named_transcript = "\n".join(f"{turn.get('speaker')}: {turn.get('text', '')}" for turn in turns).strip()
+    return {
+        "status": status,
+        "provider": str(cli_result.get("provider") or "xai"),
+        "transcript": transcript,
+        "turns": turns,
+        "speakers": speakers,
+        "speaker_names": {},
+        "named_transcript": named_transcript,
+        "analysis_dir": str(out_dir),
+        "files": cli_result.get("files") or [],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _run_audio_diarization(audio_path: Path) -> None:
+    running = _read_audio_analysis(audio_path)
+    running.update({"status": "running"})
+    _write_audio_analysis(audio_path, running)
+    try:
+        cli_result = _run_audio_cli(audio_path)
+        analysis = _load_cli_audio_result(cli_result)
+        _write_audio_analysis(audio_path, analysis)
+        transcript_path = audio_path.with_suffix(audio_path.suffix + ".transcript.txt")
+        transcript_path.write_text(analysis.get("named_transcript") or analysis.get("transcript") or "", encoding="utf-8")
+        try:
+            transcript_path.chmod(0o600)
+        except OSError:
+            pass
+    except Exception as exc:
+        _log.error("Audio diarization failed for %s: %s", audio_path, exc, exc_info=True)
+        failed = _read_audio_analysis(audio_path)
+        failed.update({"status": "failed", "error": str(exc), "updated_at": datetime.now(timezone.utc).isoformat()})
+        _write_audio_analysis(audio_path, failed)
+
+def _start_audio_diarization(audio_path: Path) -> None:
+    queued = _read_audio_analysis(audio_path)
+    queued.update({"status": "queued", "updated_at": datetime.now(timezone.utc).isoformat()})
+    _write_audio_analysis(audio_path, queued)
+    thread = threading.Thread(target=_run_audio_diarization, args=(audio_path,), daemon=True)
+    thread.start()
+
+
+class AudioSpeakersUpdate(BaseModel):
+    speakers: Dict[str, str]
+
+
+@app.post("/api/uploads/audio")
+async def upload_audio(request: Request, filename: str = ""):
+    stored_name = _safe_audio_filename(filename)
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Audio upload body is empty")
+    audio_path = _audio_uploads_dir() / stored_name
+    audio_path.write_bytes(body)
+    try:
+        audio_path.chmod(0o600)
+    except OSError:
+        pass
+    rolly_user = request.headers.get("X-Rolly-User") or request.headers.get("x-rolly-user") or "unknown"
+    metadata = {
+        "ok": True,
+        "original_name": filename,
+        "stored_name": stored_name,
+        "path": str(audio_path),
+        "size_bytes": len(body),
+        "rolly_user": rolly_user,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    metadata_path = audio_path.with_suffix(audio_path.suffix + ".json")
+    metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        metadata_path.chmod(0o600)
+    except OSError:
+        pass
+    _start_audio_diarization(audio_path)
+    prompt = f"Uploaded meeting/call audio saved at:\n{audio_path}"
+    return {
+        **metadata,
+        "prompt": prompt,
+        "analysis_status": "queued",
+        "analysis_url": f"/api/uploads/audio/{stored_name}/analysis",
+    }
+
+
+@app.get("/api/uploads/audio/{stored_name}/analysis")
+async def get_audio_analysis(stored_name: str):
+    audio_path = _audio_path_for_stored_name(stored_name)
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Uploaded audio not found")
+    return _read_audio_analysis(audio_path)
+
+
+@app.post("/api/uploads/audio/{stored_name}/speakers")
+async def set_audio_speakers(stored_name: str, body: AudioSpeakersUpdate):
+    audio_path = _audio_path_for_stored_name(stored_name)
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Uploaded audio not found")
+    analysis = _read_audio_analysis(audio_path)
+    turns = analysis.get("turns") or []
+    named_lines: List[str] = []
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        speaker = str(turn.get("speaker") or "Speaker 1")
+        name = body.speakers.get(speaker, speaker)
+        named_lines.append(f"{name}: {turn.get('text', '')}")
+    analysis["speaker_names"] = body.speakers
+    analysis["named_transcript"] = "\n".join(named_lines).strip() or analysis.get("transcript", "")
+    analysis["status"] = "complete"
+    analysis["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_audio_analysis(audio_path, analysis)
+    transcript_path = audio_path.with_suffix(audio_path.suffix + ".transcript.txt")
+    transcript_path.write_text(analysis["named_transcript"], encoding="utf-8")
+    try:
+        transcript_path.chmod(0o600)
+    except OSError:
+        pass
+    return analysis
 
 
 # ---------------------------------------------------------------------------

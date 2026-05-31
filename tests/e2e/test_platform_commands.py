@@ -89,6 +89,7 @@ class TestSlashCommands:
             pytest.skip("Plaintext restart shortcut is intentionally DM/Telegram-focused")
 
         monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
+        monkeypatch.delenv("HERMES_GATEWAY_SERVICE_MANAGER", raising=False)
         runner.request_restart = MagicMock(return_value=True)
 
         send = await send_and_capture(adapter, "restart gateway", platform)

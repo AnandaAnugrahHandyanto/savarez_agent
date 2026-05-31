@@ -1,0 +1,12 @@
+{
+  "name": "rolly-loops",
+  "label": "Loops",
+  "description": "Rolly recurring operating loops \u2014 playbooks, retros, and scheduled runs",
+  "icon": "Zap",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/loops",
+    "position": "after:people"
+  },
+  "entry": "dist/index.js"
+}

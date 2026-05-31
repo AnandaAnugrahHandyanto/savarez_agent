@@ -40,6 +40,7 @@ import hmac
 import json
 import logging
 import os
+import shlex
 import sqlite3
 import time
 from dataclasses import asdict
@@ -52,6 +53,7 @@ from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_diagnostics as kd
+from hermes_cli.kanban_card_context import CardContextError, build_claude_card_launch
 
 log = logging.getLogger(__name__)
 
@@ -562,6 +564,31 @@ def get_task(
         }
     finally:
         conn.close()
+
+
+@router.get("/tasks/{task_id}/claude-context")
+def get_task_claude_context(task_id: str, board: Optional[str] = Query(None)):
+    """Return a copy-paste Claude Code launch prompt for a card workspace.
+
+    v0 deliberately does not auto-launch Claude Code or touch tmux/user
+    sessions. The server validates the card and workdir, then returns the
+    exact prompt plus a shell hint the browser can copy.
+    """
+    board = _resolve_board(board)
+    try:
+        launch = build_claude_card_launch(task_id, board=board)
+    except CardContextError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    command = f"cd {shlex.quote(launch['workspace_path'])} && claude"
+    return {
+        "task_id": launch["task_id"],
+        "workspace_path": launch["workspace_path"],
+        "prompt": launch["prompt"],
+        "command": command,
+        "mode": "manual-copy",
+    }
 
 
 # ---------------------------------------------------------------------------

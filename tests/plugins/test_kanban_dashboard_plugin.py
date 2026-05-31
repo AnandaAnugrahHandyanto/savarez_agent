@@ -114,6 +114,45 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_claude_context_endpoint_returns_manual_copy_launch(client, tmp_path):
+    workspace = tmp_path / "work dir"
+    workspace.mkdir()
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "Implement card workspace",
+            "body": "Keep launch manual.",
+            "workspace_kind": "dir",
+            "workspace_path": str(workspace),
+        },
+    )
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task"]["id"]
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task_id}/claude-context")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["mode"] == "manual-copy"
+    assert data["task_id"] == task_id
+    assert data["workspace_path"] == str(workspace.resolve())
+    assert data["command"] == f"cd '{workspace.resolve()}' && claude"
+    assert "Implement card workspace" in data["prompt"]
+    assert "manual Claude Code" in data["prompt"]
+
+
+def test_claude_context_endpoint_rejects_missing_workspace(client):
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "No workspace yet"},
+    )
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task"]["id"]
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task_id}/claude-context")
+    assert r.status_code == 409
+    assert "workspace_path" in r.json()["detail"]
+
+
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
     """Scheduled/time-delay tasks must not be silently bucketed into todo."""
 
@@ -240,7 +279,7 @@ def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
     js = bundle.read_text()
 
-    assert 'useState(() => readSelectedBoard() || null)' in js
+    assert 'useState(() => readUrlParam("board") || readSelectedBoard() || null)' in js
     assert "const storedBoard = readSelectedBoard();" in js
     assert "if (!storedBoard && !board && data && data.current)" in js
     assert "setBoard(data.current);" in js

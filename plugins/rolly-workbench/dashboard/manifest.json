@@ -1,0 +1,12 @@
+{
+  "name": "rolly-workbench",
+  "label": "Workbench",
+  "description": "Rolly workbench \u2014 embedded chat, active sessions, logs, and operator visibility",
+  "icon": "Wrench",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/workbench",
+    "position": "after:loops"
+  },
+  "entry": "dist/index.js"
+}
