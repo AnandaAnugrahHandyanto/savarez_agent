@@ -90,7 +90,6 @@ QR_TIMEOUT_MS = 35_000
 
 MAX_CONSECUTIVE_FAILURES = 3
 RETRY_DELAY_SECONDS = 2
-BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
@@ -1343,9 +1342,20 @@ class WeixinAdapter(BasePlatformAdapter):
                         consecutive_failures,
                         MAX_CONSECUTIVE_FAILURES,
                     )
-                    await asyncio.sleep(BACKOFF_DELAY_SECONDS if consecutive_failures >= MAX_CONSECUTIVE_FAILURES else RETRY_DELAY_SECONDS)
                     if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                        consecutive_failures = 0
+                        self._set_fatal_error(
+                            "weixin_poll_failure",
+                            f"getUpdates failed {MAX_CONSECUTIVE_FAILURES} times consecutively",
+                            retryable=True,
+                            auto_notify=False,
+                        )
+                        # Ensure the fatal-error notification is delivered before
+                        # breaking the poll loop.  auto_notify=False suppresses
+                        # the create_task in _set_fatal_error since we own
+                        # delivery here.
+                        await self._notify_fatal_error()
+                        break
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
                     continue
 
                 consecutive_failures = 0
@@ -1361,9 +1371,19 @@ class WeixinAdapter(BasePlatformAdapter):
             except Exception as exc:
                 consecutive_failures += 1
                 logger.error("[%s] poll error (%d/%d): %s", self.name, consecutive_failures, MAX_CONSECUTIVE_FAILURES, exc)
-                await asyncio.sleep(BACKOFF_DELAY_SECONDS if consecutive_failures >= MAX_CONSECUTIVE_FAILURES else RETRY_DELAY_SECONDS)
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    consecutive_failures = 0
+                    self._set_fatal_error(
+                        "weixin_poll_exception",
+                        f"Poll raised exception {MAX_CONSECUTIVE_FAILURES} times consecutively: {exc}",
+                        retryable=True,
+                        auto_notify=False,
+                    )
+                    # Same reasoning as the API-error path above: await the
+                    # notification before break.  auto_notify=False suppresses the
+                    # create_task in _set_fatal_error since we own delivery here.
+                    await self._notify_fatal_error()
+                    break
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
 
     async def _process_message_safe(self, message: Dict[str, Any]) -> None:
         try:
