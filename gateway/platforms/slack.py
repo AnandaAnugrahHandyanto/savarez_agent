@@ -622,6 +622,26 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_file_change(event, say):
                 pass
 
+            # These workspace activity events are intentionally subscribed for
+            # future/diagnostic use in some Slack apps but are not actionable for
+            # Hermes responses. Ack them explicitly so Slack Bolt does not emit
+            # high-volume "unhandled request" warnings that bury real errors.
+            @self._app.event("reaction_added")
+            async def handle_reaction_added(event, say):
+                pass
+
+            @self._app.event("reaction_removed")
+            async def handle_reaction_removed(event, say):
+                pass
+
+            @self._app.event("member_joined_channel")
+            async def handle_member_joined_channel(event, say):
+                pass
+
+            @self._app.event("member_left_channel")
+            async def handle_member_left_channel(event, say):
+                pass
+
             @self._app.event("assistant_thread_started")
             async def handle_assistant_thread_started(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)

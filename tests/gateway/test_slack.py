@@ -189,6 +189,10 @@ class TestAppMentionHandler:
         assert "app_mention" in registered_events
         assert "assistant_thread_started" in registered_events
         assert "assistant_thread_context_changed" in registered_events
+        assert "reaction_added" in registered_events
+        assert "reaction_removed" in registered_events
+        assert "member_joined_channel" in registered_events
+        assert "member_left_channel" in registered_events
         # Slack slash commands are registered via a single regex matcher
         # covering every COMMAND_REGISTRY entry (e.g. /hermes, /btw, /stop,
         # /model, ...) so users get native-slash parity with Discord and
