@@ -115,6 +115,19 @@ def _get_process_start_time(pid: int) -> Optional[int]:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text(encoding="utf-8").split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        pass
+    # No /proc (macOS / Windows / non-Linux): fall back to psutil's create_time
+    # (epoch seconds, stable per pid). Without this the value is None on those
+    # platforms, so the gateway takeover / planned-stop markers — which require a
+    # non-None start time on both sides to match — never match. That misclassifies
+    # every `--replace` / `gateway stop` SIGTERM as an unexpected crash, which under
+    # a KeepAlive supervisor (launchd/systemd) causes a restart flap and can get the
+    # service booted out entirely.
+    try:
+        import psutil  # type: ignore
+
+        return int(psutil.Process(pid).create_time())
+    except Exception:
         return None
 
 
