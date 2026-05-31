@@ -249,6 +249,33 @@ class TestBoardCRUD:
         assert Path(res["new_path"]).exists()
         assert "toremove" not in [b["slug"] for b in kb.list_boards()]
 
+    def test_remove_archive_tombstone_prevents_stale_dispatch_recreate(self, fresh_home):
+        """A stale gateway tick may connect to a board after archive.
+
+        The archived tombstone at the original path must keep that harmless
+        connect/init_db from resurrecting an empty active board.
+        """
+        kb.create_board("race-board")
+        res = kb.remove_board("race-board")
+        assert res["action"] == "archived"
+        assert "race-board" not in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+        with kb.connect(board="race-board"):
+            pass
+
+        assert "race-board" not in [b["slug"] for b in kb.list_boards(include_archived=False)]
+        archived = [b for b in kb.list_boards(include_archived=True) if b["slug"] == "race-board"]
+        assert archived and archived[0]["archived"] is True
+
+        kb.create_board("race-board")
+        assert "race-board" in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+    def test_archived_current_board_pointer_falls_back_to_default(self, fresh_home):
+        kb.create_board("old-board")
+        kb.set_current_board("old-board")
+        kb.remove_board("old-board")
+        assert kb.get_current_board() == "default"
+
     def test_remove_hard_delete(self, fresh_home):
         kb.create_board("nuke")
         d = kb.board_dir("nuke")
@@ -280,7 +307,7 @@ class TestBoardCRUD:
         # downstream readers hit `no such table: task_events`.
         kb.create_board("recycle")
         # First connect populates _INITIALIZED_PATHS for this DB.
-        with kb.connect(board="recycle") as conn:
+        with kb.connect_closing(board="recycle") as conn:
             kb.create_task(conn, title="t1", assignee="dev")
         db_path = kb.board_dir("recycle") / "kanban.db"
         assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
