@@ -152,3 +152,73 @@ class TestAnthropicXmlToolLeakRecovery:
         assert len(result.tool_calls) == 2
         names = [tc.name for tc in result.tool_calls]
         assert names == ["patch", "read_file"]
+
+
+# The degenerate shape captured from a SECOND real leaking session: the leading
+# ``<`` is dropped AND the Anthropic-ML namespace prefix ``antml:`` is present.
+# Byte-for-byte from state.db:  ...call\n\nantml:invoke name="process">\n...
+_LEAKED_ANTML = (
+    '我现在用 systematic-debugging 验证这个假设。\n\n'
+    'call\n\n'
+    'antml:invoke name="process">\n'
+    '<parameter name="action">poll</parameter>\n'
+    '<parameter name="session_id">abc123</parameter>\n'
+    '</invoke>'
+)
+
+
+class TestAnthropicAntmlNamespaceLeakRecovery:
+    """The degenerate ``antml:invoke`` shape (no leading ``<``, namespace
+    prefix) must be recovered exactly like the bare ``<invoke>`` shape."""
+
+    def test_antml_invoke_without_leading_bracket_is_recovered(self):
+        transport = _get_transport()
+        response = _make_response(_text_block(_LEAKED_ANTML))
+
+        result = transport.normalize_response(response)
+
+        assert result.tool_calls, (
+            "leaked antml:invoke (no '<', namespace prefix) must be recovered"
+        )
+        assert len(result.tool_calls) == 1
+        tc = result.tool_calls[0]
+        assert tc.name == "process"
+
+        import json
+        args = json.loads(tc.arguments)
+        assert args["action"] == "poll"
+        assert args["session_id"] == "abc123"
+
+    def test_antml_finish_reason_becomes_tool_calls(self):
+        transport = _get_transport()
+        response = _make_response(_text_block(_LEAKED_ANTML))
+
+        result = transport.normalize_response(response)
+
+        assert result.finish_reason == "tool_calls"
+
+    def test_antml_xml_stripped_from_visible_content(self):
+        transport = _get_transport()
+        response = _make_response(_text_block(_LEAKED_ANTML))
+
+        result = transport.normalize_response(response)
+
+        content = result.content or ""
+        assert "invoke" not in content
+        assert "parameter" not in content
+        assert "验证这个假设" in content
+
+    def test_antml_underscore_variant_is_recovered(self):
+        """Some gateways emit ``antml_invoke`` (underscore) instead of colon."""
+        transport = _get_transport()
+        leaked = (
+            'antml_invoke name="read_file">\n'
+            '<parameter name="path">/tmp/y.md</parameter>\n'
+            '</antml_invoke>'
+        )
+        response = _make_response(_text_block(leaked))
+
+        result = transport.normalize_response(response)
+
+        assert result.tool_calls
+        assert result.tool_calls[0].name == "read_file"

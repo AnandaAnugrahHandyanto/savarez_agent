@@ -23,17 +23,25 @@ from agent.transports.types import NormalizedResponse
 # We only ever parse these as a *recovery* path (when the response carried no
 # native tool_use block), so the regexes can be permissive about surrounding
 # whitespace / the stray ``call`` prefix the models emit.
+# NOTE: some gateways/models leak a *degenerate* shape that drops the leading
+# ``<`` and/or carries the Anthropic-ML namespace prefix ``antml:`` (also seen
+# as ``antml_``). We therefore make the leading ``<`` optional and accept an
+# optional ``antml:``/``antml_`` prefix on both ``invoke`` and ``parameter``,
+# and on the closing tags.
 _LEAKED_INVOKE_RE = re.compile(
-    r"<invoke\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</invoke>",
+    r"<?(?:antml[:_])?invoke\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</?(?:antml[:_])?invoke>",
     re.DOTALL | re.IGNORECASE,
 )
 _LEAKED_PARAM_RE = re.compile(
-    r"<parameter\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</parameter>",
+    r"<?(?:antml[:_])?parameter\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</?(?:antml[:_])?parameter>",
     re.DOTALL | re.IGNORECASE,
 )
 # A bare ``call`` token on its own line immediately preceding an <invoke> is an
-# artefact of the degeneration; strip it from the surviving prose.
-_LEAKED_CALL_PREFIX_RE = re.compile(r"(?:^|\n)[ \t]*call[ \t]*(?=\n*<invoke\b)", re.IGNORECASE)
+# artefact of the degeneration; strip it from the surviving prose. The invoke
+# lookahead mirrors the optional ``<`` / ``antml:`` prefix above.
+_LEAKED_CALL_PREFIX_RE = re.compile(
+    r"(?:^|\n)[ \t]*call[ \t]*(?=\n*<?(?:antml[:_])?invoke\b)", re.IGNORECASE
+)
 
 
 def _parse_leaked_tool_calls(text: str):
@@ -52,7 +60,7 @@ def _parse_leaked_tool_calls(text: str):
     import json
     from agent.transports.types import ToolCall
 
-    if not isinstance(text, str) or "<invoke" not in text.lower():
+    if not isinstance(text, str) or "invoke" not in text.lower():
         return [], text
 
     tool_calls = []
@@ -220,7 +228,7 @@ class AnthropicTransport(ProviderTransport):
         # runs AND the raw XML leaks to the user (Telegram/CLI).  Only attempt
         # this when the model produced NO native tool_use blocks — a real
         # tool_use block is always authoritative and must not be double-counted.
-        if not tool_calls and content and "<invoke" in content.lower():
+        if not tool_calls and content and "invoke" in content.lower():
             recovered, cleaned = _parse_leaked_tool_calls(content)
             if recovered:
                 tool_calls = recovered
