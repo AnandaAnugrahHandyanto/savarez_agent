@@ -39,3 +39,23 @@ async def test_hung_disconnect_does_not_stall_teardown(monkeypatch):
         _runner()._safe_adapter_teardown(_HangingDisconnect(), _platform()),
         timeout=2.0,
     )
+
+
+class _HangingSend:
+    """send() never completes — models a TCP black-hole platform."""
+
+    platform = _platform()
+
+    async def send(self, *args, **kwargs):
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_hung_notify_send_is_bounded(monkeypatch):
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.1")
+    result = await asyncio.wait_for(
+        _runner()._bounded_shutdown_send(_HangingSend(), "chat-id", "bye"),
+        timeout=2.0,
+    )
+    # A timed-out send yields None (no structured result); shutdown continues.
+    assert result is None

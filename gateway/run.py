@@ -2294,6 +2294,28 @@ class GatewayRunner:
                 platform.value, time.monotonic() - started_at, e,
             )
 
+    async def _bounded_shutdown_send(self, adapter, *args, **kwargs):
+        """Send a shutdown notification under the shared per-adapter timeout.
+
+        Returns the adapter's result, or None on timeout. A wedged send
+        (half-dead platform, TCP black-hole) must not hang _stop_impl before
+        adapter teardown runs. None matches the adapter contract for a send
+        with no structured result, so callers fall through their existing
+        ``result is not None`` failure check and stop re-targeting the same
+        wedged chat.
+        """
+        timeout = self._adapter_disconnect_timeout_secs()
+        try:
+            if timeout <= 0:
+                return await adapter.send(*args, **kwargs)
+            return await asyncio.wait_for(adapter.send(*args, **kwargs), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Timed out after %.1fs sending shutdown notification to %s; continuing",
+                timeout, getattr(getattr(adapter, "platform", None), "value", None),
+            )
+            return None
+
     def _adapter_disconnect_timeout_secs(self) -> float:
         """Return the per-adapter disconnect timeout used during shutdown."""
         raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
@@ -3706,7 +3728,7 @@ class GatewayRunner:
                     adapter=adapter,
                 )
 
-                result = await adapter.send(chat_id, msg, metadata=metadata)
+                result = await self._bounded_shutdown_send(adapter, chat_id, msg, metadata=metadata)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
@@ -3761,9 +3783,9 @@ class GatewayRunner:
                     adapter=adapter,
                 )
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    result = await self._bounded_shutdown_send(adapter, str(home.chat_id), msg, metadata=metadata)
                 else:
-                    result = await adapter.send(str(home.chat_id), msg)
+                    result = await self._bounded_shutdown_send(adapter, str(home.chat_id), msg)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
