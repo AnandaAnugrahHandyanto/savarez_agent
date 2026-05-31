@@ -608,6 +608,14 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return cache_media_from_bytes(data, ext=ext)
 
 
+async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
+    """
+    Download an image from a URL and save it to the local cache.
+    (Deprecated alias for cache_media_from_url)
+    """
+    return await cache_media_from_url(url, ext=ext, retries=retries)
+
+
 async def cache_media_from_url(url: str, ext: str = ".bin", retries: int = 2) -> str:
     """
     Download media from a URL and save it to the local cache.
