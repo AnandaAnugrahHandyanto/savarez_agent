@@ -1,8 +1,24 @@
-# Hermes Desktop
+# Hermes Desktop ☤
 
-The native desktop app for [Hermes Agent](../../README.md) — the self-improving AI agent from [Nous Research](https://nousresearch.com). Same agent, same skills, same memory as the CLI and gateway, in a polished native window: chat with streaming tool output, side-by-side previews, a file browser, voice, and settings — no terminal required.
+<p align="center">
+  <a href="https://github.com/NousResearch/hermes-agent/releases"><img src="https://img.shields.io/badge/Download-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-FFD700?style=for-the-badge" alt="Download"></a>
+  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
+  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+</p>
 
-Available for **macOS, Windows, and Linux**.
+**The native desktop app for [Hermes Agent](../../README.md) — the self-improving AI agent from [Nous Research](https://nousresearch.com).** Same agent, same skills, same memory as the CLI and gateway, in a polished native window — chat with streaming tool output, side-by-side previews, a file browser, voice, and settings, no terminal required. Available for **macOS, Windows, and Linux**.
+
+<table>
+<tr><td><b>Chat with the full agent</b></td><td>Streaming responses, live tool activity, structured tool summaries, and the same conversation history as every other Hermes surface.</td></tr>
+<tr><td><b>Side-by-side previews</b></td><td>Render web pages, files, and tool outputs in a right-hand pane while you keep chatting.</td></tr>
+<tr><td><b>File browser</b></td><td>Explore and preview the working directory without leaving the app.</td></tr>
+<tr><td><b>Voice</b></td><td>Talk to Hermes and hear it back.</td></tr>
+<tr><td><b>Settings & onboarding</b></td><td>Manage providers, models, tools, and credentials from a real UI. First-run setup gets you to your first message in seconds.</td></tr>
+<tr><td><b>Stays current</b></td><td>Built-in updates pull the latest agent and rebuild the app in place.</td></tr>
+</table>
+
+---
 
 ## Install
 
@@ -26,14 +42,7 @@ It builds and launches the GUI against your existing install — same config, ke
 
 When a release ships desktop installers they're attached to its [releases page](https://github.com/NousResearch/hermes-agent/releases) — `.dmg` (macOS), `.exe` / `.msi` (Windows), `.AppImage` / `.deb` / `.rpm` (Linux). These are published manually, so the install-with-Hermes path above is the most reliable way to get the latest.
 
-## What you get
-
-- **Chat with the full agent** — streaming responses, live tool activity, structured tool summaries, and the same conversation history as every other Hermes surface.
-- **Side-by-side previews** — render web pages, files, and outputs in a right-hand pane while you keep chatting.
-- **File browser & editor previews** — explore the working directory without leaving the app.
-- **Voice** — talk to Hermes and hear it back.
-- **Settings & onboarding** — manage providers, models, tools, and credentials from a real UI; first-run setup gets you to your first message in seconds.
-- **Stays current** — built-in updates pull the latest agent and rebuild the app in place.
+---
 
 ## Updating
 
@@ -43,16 +52,18 @@ The app checks for updates in the background and offers a one-click update when 
 hermes update
 ```
 
+---
+
 ## Requirements
 
 The installer handles everything for you (Python 3.11+, a portable Git, ripgrep). The only thing worth knowing:
 
-- **Windows:** the installer bundles its own Git and Python — no admin rights or system changes required.
-- **macOS / Linux:** uses your system Python 3.11+ (installed automatically if missing).
+- **Windows** — the installer bundles its own Git and Python; no admin rights or system changes required.
+- **macOS / Linux** — uses your system Python 3.11+ (installed automatically if missing).
 
 ---
 
-## For contributors
+## Development
 
 Want to hack on the app itself? Install workspace deps from the repo root once, then run the dev server from this directory:
 
@@ -108,3 +119,19 @@ rm -rf "$HOME/.hermes/hermes-agent/venv"                     # macOS/Linux
 # Reset a stuck macOS microphone prompt
 tccutil reset Microphone com.nousresearch.hermes
 ```
+
+---
+
+## Community
+
+- 💬 [Discord](https://discord.gg/NousResearch)
+- 📖 [Documentation](https://hermes-agent.nousresearch.com/docs/)
+- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
+
+---
+
+## License
+
+MIT — see [LICENSE](../../LICENSE).
+
+Built by [Nous Research](https://nousresearch.com).
