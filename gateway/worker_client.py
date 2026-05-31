@@ -54,6 +54,7 @@ class WorkerClient:
         instructions: Optional[str] = None,
         session_id: Optional[str] = None,
         model: Optional[str] = None,
+        media_refs: list[dict] | None = None,
         approval_handler: Callable[[dict], Awaitable[str]] | None = None,
         media_handler: Callable[[dict], Awaitable[None]] | None = None,
     ) -> dict:
@@ -63,6 +64,7 @@ class WorkerClient:
             "instructions": instructions,
             "session_id": session_id,
             "model": model,
+            "media_refs": media_refs or None,
         }.items() if v is not None}
         started = await self._post(f"{self.base_url}/v1/runs", body)
         run_id = started.get("run_id")

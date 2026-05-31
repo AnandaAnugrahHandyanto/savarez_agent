@@ -25,6 +25,7 @@ def _event(profile=None, text="hi"):
     ev.source = src
     ev.routed_profile = profile
     ev.channel_prompt = None
+    ev.media_urls = []
     return ev, src
 
 

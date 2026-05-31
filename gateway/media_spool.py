@@ -12,12 +12,33 @@ HTTP-fetch resolver is an additive swap with no schema change.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
 VALID_KINDS = frozenset({"image", "voice", "video", "document"})
+
+
+def sign_ref(run_id: str, ref: str, secret: str) -> str:
+    """HMAC binding a ref to its run, so a token can't be replayed across runs."""
+    return hmac.new(secret.encode(), f"{run_id}:{ref}".encode(), hashlib.sha256).hexdigest()
+
+
+def verify_ref(run_id: str, ref: str, token: str, secret: str) -> bool:
+    return hmac.compare_digest(sign_ref(run_id, ref, secret), token or "")
+
+
+def confine_to_safe_root(path: str, safe_root: Path | str) -> Path:
+    """Resolve *path* under *safe_root*, rejecting any escape (harvested from #18510)."""
+    root = Path(safe_root).resolve()
+    candidate = Path(path)
+    resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(f"path {path!r} escapes safe_root {safe_root!r}")
+    return resolved
 
 
 def default_spool_root() -> Path:
@@ -77,7 +98,8 @@ class MediaSpool:
         self._filenames: dict[str, str] = {}
 
     def _path(self, ref: str) -> Path:
-        return self.root / ref
+        # Refs come off the wire — confine to the spool root, never trust them.
+        return confine_to_safe_root(ref, self.root)
 
     def mint(self, data: bytes, *, filename: str, mime: str, kind: str, **flags) -> MediaRef:
         ref = secrets.token_hex(24)

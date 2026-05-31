@@ -8697,13 +8697,25 @@ class GatewayRunner:
         async def _media_handler(media_event):
             await self._deliver_worker_media(event, source, media_event)
 
-        result = await client.dispatch(
-            input=event.text,
-            instructions=getattr(event, "channel_prompt", None),
-            session_id=session_key,
-            consumer=_FrontConsumer(),
-            media_handler=_media_handler,
-        )
+        # Mint claim-check refs for any inbound media so the worker can
+        # materialize them without ever seeing a front-local path.
+        from gateway.media_spool import MediaSpool, mint_outbound, default_spool_root
+
+        spool = MediaSpool(default_spool_root())
+        media_urls = getattr(event, "media_urls", None) or []
+        inbound = mint_outbound(spool, [(p, False) for p in media_urls]) if media_urls else []
+        try:
+            result = await client.dispatch(
+                input=event.text,
+                instructions=getattr(event, "channel_prompt", None),
+                session_id=session_key,
+                media_refs=inbound,
+                consumer=_FrontConsumer(),
+                media_handler=_media_handler,
+            )
+        finally:
+            for ref in inbound:
+                spool.unlink(ref["ref"])  # terminal cleanup of inbound spool bytes
         output = (result or {}).get("output", "")
         adapter = self.adapters.get(source.platform)
         if output and adapter:
