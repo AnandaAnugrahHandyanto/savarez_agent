@@ -829,7 +829,6 @@ if _config_path.exists():
                 "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
                 "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
                 "docker_env": "TERMINAL_DOCKER_ENV",
-                "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
                 "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
                 "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
                 "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
@@ -10498,7 +10497,7 @@ class GatewayRunner:
                         current_model=current_model,
                         user_providers=user_provs,
                         custom_providers=custom_provs,
-                        max_models=50,
+                        max_models=0,
                     )
                 except Exception:
                     providers = []
