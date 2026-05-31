@@ -9412,6 +9412,23 @@ class GatewayRunner:
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
 
+            # Append token usage footer for debugging
+            _tok_in = agent_result.get("input_tokens", 0) or 0
+            _tok_out = agent_result.get("output_tokens", 0) or 0
+            _tok_cache_r = agent_result.get("cache_read_tokens", 0) or 0
+            _tok_cache_w = agent_result.get("cache_write_tokens", 0) or 0
+            _tok_model = agent_result.get("model") or ""
+            if response and (_tok_in or _tok_out or _tok_cache_r or _tok_cache_w):
+                _model_short = _tok_model.split("/")[-1] if _tok_model else ""
+                _footer_parts = [f"in: {_tok_in:,}", f"out: {_tok_out:,}"]
+                if _tok_cache_w:
+                    _footer_parts.append(f"cache+: {_tok_cache_w:,}")
+                if _tok_cache_r:
+                    _footer_parts.append(f"cache~: {_tok_cache_r:,}")
+                if _model_short:
+                    _footer_parts.append(_model_short)
+                response = response + "\n\n`📊 " + " | ".join(_footer_parts) + "`"
+
             return response
             
         except Exception as e:
@@ -9590,9 +9607,12 @@ class GatewayRunner:
             f"◆ Context: {ctx_display} tokens ({ctx_source})",
         ]
 
-        # Show endpoint for local/custom setups
+        # Show endpoint for local/custom setups — use friendly name for known proxies
         if base_url and ("localhost" in base_url or "127.0.0.1" in base_url or "0.0.0.0" in base_url):
-            lines.append(f"◆ Endpoint: {base_url}")
+            _friendly = {
+                "8765": "Claude Code (local proxy)",
+            }.get(base_url.split(":")[-1].split("/")[0].strip(), base_url)
+            lines.append(f"◆ Endpoint: {_friendly}")
 
         return "\n".join(lines)
 
@@ -17596,10 +17616,12 @@ class GatewayRunner:
             _agent = agent_holder[0]
             if _agent and hasattr(_agent, "context_compressor"):
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
-                _input_toks = getattr(_agent, "session_prompt_tokens", 0)
-                _output_toks = getattr(_agent, "session_completion_tokens", 0)
+                _input_toks = getattr(_agent, "last_turn_input_tokens", 0) or getattr(_agent, "session_prompt_tokens", 0)
+                _output_toks = getattr(_agent, "last_turn_output_tokens", 0) or getattr(_agent, "session_completion_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
+            _cache_read_toks = getattr(_agent, "last_turn_cache_read_tokens", 0) if _agent else 0
+            _cache_write_toks = getattr(_agent, "last_turn_cache_write_tokens", 0) if _agent else 0
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
@@ -17619,10 +17641,12 @@ class GatewayRunner:
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
+                    "cache_read_tokens": _cache_read_toks,
+                    "cache_write_tokens": _cache_write_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
                 }
-            
+
             # Scan tool results for MEDIA:<path> tags that need to be delivered
             # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
             # in its JSON response, but the model's final text reply usually
@@ -17799,6 +17823,8 @@ class GatewayRunner:
                 "last_prompt_tokens": _last_prompt_toks,
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
+                "cache_read_tokens": _cache_read_toks,
+                "cache_write_tokens": _cache_write_toks,
                 "model": _resolved_model,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
@@ -18497,6 +18523,30 @@ class GatewayRunner:
                     _content_delivered,
                 )
                 response["already_sent"] = True
+
+                # Edit the last streamed message to append token usage footer
+                _sc_msg_id = _sc and getattr(_sc, "_message_id", None)
+                if _sc_msg_id:
+                    _tok_in = response.get("input_tokens", 0) or 0
+                    _tok_out = response.get("output_tokens", 0) or 0
+                    _tok_ctx = response.get("last_prompt_tokens", 0) or 0
+                    _tok_model = response.get("model") or ""
+                    if _tok_in or _tok_out:
+                        _model_short = _tok_model.split("/")[-1] if _tok_model else ""
+                        _footer_parts = [f"in: {_tok_in:,}", f"out: {_tok_out:,}"]
+                        if _tok_ctx:
+                            _footer_parts.append(f"ctx: {_tok_ctx:,}")
+                        if _model_short:
+                            _footer_parts.append(_model_short)
+                        _footer = "\n\n`📊 " + " | ".join(_footer_parts) + "`"
+                        _adapter = self.adapters.get(source.platform)
+                        if _adapter and hasattr(_adapter, "edit_message"):
+                            try:
+                                await _adapter.edit_message(
+                                    source.chat_id, _sc_msg_id, _final + _footer
+                                )
+                            except Exception as _ef:
+                                logger.debug("Token footer edit failed: %s", _ef)
             elif not _is_empty_sentinel and _transformed and _sc is not None:
                 # Plugin hooks transformed the response after streaming — edit the
                 # existing streamed message instead of sending a duplicate.

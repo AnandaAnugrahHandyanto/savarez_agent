@@ -1023,6 +1023,23 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
             agent._rate_limited_until = time.monotonic() + 60
+        # Record per-provider:model cooldown so subsequent chain entries can be skipped.
+        _cur_model = (getattr(agent, "model", "") or "").strip()
+        if current_provider and _cur_model:
+            _cd_key = f"{current_provider}:{_cur_model}"
+            _cd_secs = 1800.0 if reason == FailoverReason.billing else 60.0
+            _last_err = getattr(agent, "_last_api_error", None)
+            if _last_err is not None:
+                try:
+                    _ec = agent._extract_api_error_context(_last_err)
+                    _reset_at = _ec.get("reset_at")
+                    if _reset_at:
+                        _cd_secs = max(_cd_secs, float(_reset_at) - time.time())
+                except Exception:
+                    pass
+            _ra_mod = _ra()
+            with _ra_mod._provider_cooldowns_lock:
+                _ra_mod._provider_cooldowns[_cd_key] = time.monotonic() + _cd_secs
     if agent._fallback_index >= len(agent._fallback_chain):
         return False
 
@@ -1032,6 +1049,20 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback()  # skip invalid, try next
+
+    # Skip this fallback entry if it is still in cooldown.
+    _fb_key = f"{fb_provider}:{fb_model}"
+    _ra_mod = _ra()
+    with _ra_mod._provider_cooldowns_lock:
+        _fb_cooldown_until = _ra_mod._provider_cooldowns.get(_fb_key, 0)
+    if _fb_cooldown_until > time.monotonic():
+        _fb_remaining = _fb_cooldown_until - time.monotonic()
+        _fb_mins = int(_fb_remaining // 60)
+        _fb_secs = int(_fb_remaining % 60)
+        _fb_until_str = f"{_fb_mins}m{_fb_secs:02d}s" if _fb_mins else f"{_fb_secs}s"
+        logger.info("Skipping cooldown fallback %s:%s (available in %s)", fb_provider, fb_model, _fb_until_str)
+        agent._emit_status(f"⏭ {fb_model} — cooldown {_fb_until_str}, skipping")
+        return agent._try_activate_fallback(reason)  # try next in chain
 
     # Skip entries that resolve to the current (provider, model) — falling
     # back to the same backend that just failed loops the failure. Compare

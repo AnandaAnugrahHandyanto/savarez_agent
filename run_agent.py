@@ -44,6 +44,13 @@ import sys
 import tempfile
 import time
 import threading
+from types import SimpleNamespace
+
+# Per-provider/model cooldown registry — shared across all agent instances.
+# Key: "provider:model"  Value: time.monotonic() when the provider is available again.
+_provider_cooldowns: dict = {}
+_provider_cooldowns_lock = threading.Lock()
+import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
@@ -598,6 +605,10 @@ class AIAgent:
         self.session_cache_read_tokens = 0
         self.session_cache_write_tokens = 0
         self.session_reasoning_tokens = 0
+        self.last_turn_input_tokens = 0
+        self.last_turn_output_tokens = 0
+        self.last_turn_cache_read_tokens = 0
+        self.last_turn_cache_write_tokens = 0
         self.session_api_calls = 0
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
@@ -961,7 +972,7 @@ class AIAgent:
         detail = (detail or exc.__class__.__name__).strip()
         if len(detail) > 220:
             detail = detail[:217].rstrip() + "..."
-        self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
+        logger.warning("Auxiliary %s failed: %s", task, detail)
 
     def _current_main_runtime(self) -> Dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""

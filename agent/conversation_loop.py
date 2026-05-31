@@ -1840,6 +1840,10 @@ def run_conversation(
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+                    agent.last_turn_input_tokens = canonical_usage.input_tokens
+                    agent.last_turn_output_tokens = canonical_usage.output_tokens
+                    agent.last_turn_cache_read_tokens = canonical_usage.cache_read_tokens
+                    agent.last_turn_cache_write_tokens = canonical_usage.cache_write_tokens
 
                     # Log API call details for debugging/observability
                     _cache_pct = ""
