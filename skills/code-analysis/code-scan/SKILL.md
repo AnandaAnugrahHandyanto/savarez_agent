@@ -12,7 +12,11 @@ Never auto-injected; triggered explicitly by the user.
 ## Orchestration Steps
 
 1. **Confirm target:** Ask user for target directory or use working directory.
-2. **Run scan:** `python scripts/code-scan/scan_project.py <target_dir> --output <temp_scan.json>`
+2. **Check fingerprints & run scan:**
+   - If `.hermes/code-state/fingerprints.json` exists → use `--incremental` for a fast diff scan.
+   - If fingerprints are absent → `--incremental` is safe and behaves like a full scan.
+   - If user requests a forced full rescan → use `--full` instead.
+   - Command: `python scripts/code-scan/scan_project.py <target_dir> --incremental --output <temp_scan.json>`
 3. **Run import extraction:** `python scripts/code-scan/extract_imports.py <temp_scan.json> > <temp_imports.json>`
 4. **Read artifacts:** Read both JSON outputs.
 5. **Synthesize (LLM-only):** From scan data produce:
@@ -27,6 +31,7 @@ Never auto-injected; triggered explicitly by the user.
 - If scan fails, report the error; do not guess.
 - .hermesignore rules are already enforced by scan_project.py.
 - Only synthesize name, description, and framework fields. Everything else is deterministic.
+- `--incremental` relies on `.hermes/code-state/fingerprints.json`; omit or use `--full` to force a complete rescan.
 
 ## Output Format
 
