@@ -192,6 +192,18 @@ export async function buildWsAuthParam(): Promise<[string, string]> {
   return ["token", token];
 }
 
+type CommandAllowlistEntry = {
+  pattern: string;
+  kind: "manual" | "danger_category";
+};
+
+type CommandAllowlistResponse = {
+  patterns: string[];
+  entries: CommandAllowlistEntry[];
+  manual_count: number;
+  danger_category_count: number;
+};
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
@@ -253,6 +265,42 @@ export const api = {
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
+  getCommandAllowlist: () =>
+    fetchJSON<CommandAllowlistResponse>("/api/config/command-allowlist"),
+  addCommandAllowlistEntry: (pattern: string) =>
+    fetchJSON<CommandAllowlistResponse & { ok: boolean; pattern: string; created: boolean }>(
+      "/api/config/command-allowlist",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pattern }),
+      },
+    ),
+  updateCommandAllowlistEntry: (old_pattern: string, new_pattern: string) =>
+    fetchJSON<CommandAllowlistResponse & { ok: boolean; old_pattern: string; new_pattern: string }>(
+      "/api/config/command-allowlist",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old_pattern, new_pattern }),
+      },
+    ),
+  deleteCommandAllowlistEntry: (pattern: string) =>
+    fetchJSON<CommandAllowlistResponse & { ok: boolean; pattern: string; removed_count: number }>(
+      "/api/config/command-allowlist",
+      {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pattern }),
+      },
+    ),
+  clearCommandAllowlist: () =>
+    fetchJSON<CommandAllowlistResponse & { ok: boolean; cleared_count: number }>(
+      "/api/config/command-allowlist/clear",
+      {
+        method: "POST",
+      },
+    ),
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
   getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
   getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),

@@ -50,6 +50,7 @@ from hermes_cli.config import (
 )
 from gateway.status import get_running_pid, read_runtime_status
 from utils import env_var_enabled
+from tools.approval import DANGEROUS_PATTERNS
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -493,6 +494,19 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+class CommandAllowlistUpsert(BaseModel):
+    pattern: str
+
+
+class CommandAllowlistDelete(BaseModel):
+    pattern: str
+
+
+class CommandAllowlistReplace(BaseModel):
+    old_pattern: str
+    new_pattern: str
+
+
 class ModelAssignment(BaseModel):
     """Payload for POST /api/model/set — assign a provider/model to a slot.
 
@@ -922,6 +936,155 @@ async def get_defaults():
 @app.get("/api/config/schema")
 async def get_schema():
     return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
+
+
+_DANGEROUS_APPROVAL_KEYS: set[str] = {
+    str(description).strip()
+    for _pattern, description in DANGEROUS_PATTERNS
+    if str(description).strip()
+}
+
+
+def _serialize_command_allowlist(raw_patterns: list[Any]) -> dict[str, Any]:
+    patterns = [str(p) for p in raw_patterns if str(p).strip()]
+    entries = [
+        {
+            "pattern": pattern,
+            "kind": "danger_category" if pattern in _DANGEROUS_APPROVAL_KEYS else "manual",
+        }
+        for pattern in patterns
+    ]
+    return {
+        "patterns": patterns,
+        "entries": entries,
+        "manual_count": sum(1 for entry in entries if entry["kind"] == "manual"),
+        "danger_category_count": sum(1 for entry in entries if entry["kind"] == "danger_category"),
+    }
+
+
+@app.get("/api/config/command-allowlist")
+async def get_command_allowlist():
+    cfg = load_config() or {}
+    raw_patterns = cfg.get("command_allowlist", []) or []
+    if not isinstance(raw_patterns, list):
+        raw_patterns = []
+    return _serialize_command_allowlist(raw_patterns)
+
+
+@app.post("/api/config/command-allowlist")
+async def add_command_allowlist_entry(body: CommandAllowlistUpsert):
+    try:
+        pattern = body.pattern.strip()
+        if not pattern:
+            raise HTTPException(status_code=400, detail="Pattern cannot be empty")
+        cfg = load_config() or {}
+        raw_patterns = cfg.get("command_allowlist", []) or []
+        if not isinstance(raw_patterns, list):
+            raw_patterns = []
+        patterns = [str(p) for p in raw_patterns if str(p).strip()]
+        if pattern in patterns:
+            return {
+                "ok": True,
+                "pattern": pattern,
+                "created": False,
+                **_serialize_command_allowlist(patterns),
+            }
+        patterns.append(pattern)
+        cfg["command_allowlist"] = patterns
+        save_config(cfg)
+        return {
+            "ok": True,
+            "pattern": pattern,
+            "created": True,
+            **_serialize_command_allowlist(patterns),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/config/command-allowlist failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/api/config/command-allowlist")
+async def delete_command_allowlist_entry(body: CommandAllowlistDelete):
+    try:
+        cfg = load_config() or {}
+        raw_patterns = cfg.get("command_allowlist", []) or []
+        if not isinstance(raw_patterns, list):
+            raw_patterns = []
+        patterns = [str(p) for p in raw_patterns]
+        next_patterns = [p for p in patterns if p != body.pattern]
+        removed_count = len(patterns) - len(next_patterns)
+        if removed_count <= 0:
+            raise HTTPException(status_code=404, detail="Pattern not found in command_allowlist")
+        cfg["command_allowlist"] = next_patterns
+        save_config(cfg)
+        return {
+            "ok": True,
+            "pattern": body.pattern,
+            "removed_count": removed_count,
+            **_serialize_command_allowlist(next_patterns),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("DELETE /api/config/command-allowlist failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.put("/api/config/command-allowlist")
+async def replace_command_allowlist_entry(body: CommandAllowlistReplace):
+    try:
+        old_pattern = body.old_pattern.strip()
+        new_pattern = body.new_pattern.strip()
+        if not old_pattern:
+            raise HTTPException(status_code=400, detail="Existing pattern cannot be empty")
+        if not new_pattern:
+            raise HTTPException(status_code=400, detail="Replacement pattern cannot be empty")
+
+        cfg = load_config() or {}
+        raw_patterns = cfg.get("command_allowlist", []) or []
+        if not isinstance(raw_patterns, list):
+            raw_patterns = []
+        patterns = [str(p) for p in raw_patterns if str(p).strip()]
+
+        if old_pattern not in patterns:
+            raise HTTPException(status_code=404, detail="Pattern not found in command_allowlist")
+        if new_pattern != old_pattern and new_pattern in patterns:
+            raise HTTPException(status_code=409, detail="Replacement pattern already exists")
+
+        first_index = patterns.index(old_pattern)
+        next_patterns = [p for p in patterns if p != old_pattern]
+        next_patterns.insert(first_index, new_pattern)
+        cfg["command_allowlist"] = next_patterns
+        save_config(cfg)
+        return {
+            "ok": True,
+            "old_pattern": old_pattern,
+            "new_pattern": new_pattern,
+            **_serialize_command_allowlist(next_patterns),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/config/command-allowlist failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/config/command-allowlist/clear")
+async def clear_command_allowlist():
+    try:
+        cfg = load_config() or {}
+        raw_patterns = cfg.get("command_allowlist", []) or []
+        if not isinstance(raw_patterns, list):
+            raw_patterns = []
+        cleared_count = len(raw_patterns)
+        cfg["command_allowlist"] = []
+        save_config(cfg)
+        return {"ok": True, "cleared_count": cleared_count, **_serialize_command_allowlist([])}
+    except Exception:
+        _log.exception("POST /api/config/command-allowlist/clear failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 _EMPTY_MODEL_INFO: dict = {
