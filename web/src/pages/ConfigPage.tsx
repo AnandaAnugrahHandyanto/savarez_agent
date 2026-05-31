@@ -38,6 +38,7 @@ import {
   Trash2,
   Copy,
   Pencil,
+  CircleHelp,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { getNestedValue, setNestedValue } from "@/lib/nested";
@@ -587,27 +588,39 @@ export default function ConfigPage() {
     });
   };
 
-  const renderAllowlistEntryRows = (entries: AllowlistEntry[]) => (
+  const renderAllowlistEntryRows = (
+    entries: AllowlistEntry[],
+    options?: { compactDangerCategory?: boolean },
+  ) => (
     <div className="grid gap-2">
       {entries.map((entry) => {
         const pattern = entry.pattern;
         const isEditing = allowlistEditTarget === pattern;
         const isDangerCategory = entry.kind === "danger_category";
-        const badgeTone = isDangerCategory ? "warning" : "secondary";
+        const compactDangerCategory = isDangerCategory && options?.compactDangerCategory;
         const badgeLabel = isDangerCategory ? "Danger category" : "Manual";
+        const badgeClassName = isDangerCategory
+          ? "border-amber-400/80 bg-amber-400/18 text-amber-100 shadow-[inset_0_0_0_1px_rgba(251,191,36,0.18)]"
+          : "border-sky-400/70 bg-sky-500/12 text-sky-100 shadow-[inset_0_0_0_1px_rgba(56,189,248,0.14)]";
+        const dangerTooltip =
+          "This is a broad approval key saved from an approval prompt. It can cover future commands that match the same dangerous-command category, not just the one original command text.";
+        const rowClassName = compactDangerCategory
+          ? "grid gap-2 border border-amber-500/35 bg-amber-500/4 px-2.5 py-2"
+          : isDangerCategory
+            ? "grid gap-3 border border-amber-500/30 bg-amber-500/5 px-3 py-3"
+            : "grid gap-3 border border-border/60 px-3 py-3";
+        const valueBoxClassName = compactDangerCategory
+          ? "grid gap-1.5 border border-amber-500/20 bg-background/20 px-2.5 py-2"
+          : "grid gap-2 border border-border/60 bg-muted/10 px-3 py-3";
+        const actionButtonClassName = compactDangerCategory
+          ? "h-8 min-w-[88px] justify-center px-2.5 text-[11px]"
+          : "h-9 min-w-[96px] justify-center";
         return (
-          <div
-            key={`${entry.kind}:${pattern}`}
-            className={`grid gap-3 border px-3 py-3 ${
-              isDangerCategory
-                ? "border-amber-500/30 bg-amber-500/5"
-                : "border-border/60"
-            }`}
-          >
+          <div key={`${entry.kind}:${pattern}`} className={rowClassName}>
             {isEditing ? (
               <>
                 <div className="flex items-center justify-between gap-3">
-                  <Badge tone={badgeTone} className="text-[11px] uppercase tracking-wide">
+                  <Badge tone="secondary" className={`text-[11px] uppercase tracking-wide ${badgeClassName}`}>
                     {badgeLabel}
                   </Badge>
                   <p className="text-[11px] text-muted-foreground">Manual exact pattern edit</p>
@@ -647,19 +660,40 @@ export default function ConfigPage() {
                 </div>
               </>
             ) : (
-              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-stretch">
-                <div className="grid gap-2 border border-border/60 bg-muted/10 px-3 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <Badge tone={badgeTone} className="text-[11px] uppercase tracking-wide">
-                      {badgeLabel}
-                    </Badge>
+              <div
+                className={`grid gap-2.5 ${
+                  compactDangerCategory
+                    ? "lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start"
+                    : "gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-stretch"
+                }`}
+              >
+                <div className={valueBoxClassName}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        tone="secondary"
+                        className={`text-[11px] uppercase tracking-wide ${badgeClassName}`}
+                        title={isDangerCategory ? dangerTooltip : "Manual exact-match entry saved as-is."}
+                      >
+                        {badgeLabel}
+                      </Badge>
+                      {isDangerCategory ? (
+                        <span
+                          className="inline-flex h-5 w-5 items-center justify-center rounded border border-amber-400/35 bg-amber-400/10 text-amber-200"
+                          title={dangerTooltip}
+                          aria-label={`What does danger category ${pattern} cover?`}
+                        >
+                          <CircleHelp className="h-3.5 w-3.5" />
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
-                  <div className="flex min-h-9 min-w-0 items-center font-mono text-xs text-foreground">
+                  <div className={`flex min-w-0 items-center font-mono text-foreground ${compactDangerCategory ? "min-h-7 text-[11px]" : "min-h-9 text-xs"}`}>
                     <span className="min-w-0 break-all">{pattern}</span>
                   </div>
                   {isDangerCategory ? (
-                    <p className="text-[11px] text-amber-300/90">
-                      Stored from an approval prompt as a broad danger key. Delete it to remove the approval, or add a separate manual exact pattern if needed.
+                    <p className={compactDangerCategory ? "text-[10.5px] leading-5 text-amber-200/95" : "text-[11px] text-amber-300/90"}>
+                      Covers future commands that hit this same dangerous-command category. Delete it to remove the broad approval, or add a separate manual exact pattern if needed.
                     </p>
                   ) : (
                     <p className="text-[11px] text-muted-foreground">
@@ -667,11 +701,11 @@ export default function ConfigPage() {
                     </p>
                   )}
                 </div>
-                <div className="flex flex-wrap items-stretch justify-end gap-2 lg:shrink-0">
+                <div className={`flex flex-wrap items-stretch justify-end gap-2 ${compactDangerCategory ? "lg:shrink-0 lg:self-start" : "lg:shrink-0"}`}>
                   <Button
                     outlined
                     size="sm"
-                    className="h-9 min-w-[96px] justify-center"
+                    className={actionButtonClassName}
                     prefix={<Copy className="h-3.5 w-3.5" />}
                     onClick={() => void handleCopyToClipboard(pattern, "Entry copied.")}
                     disabled={allowlistBusy}
@@ -681,7 +715,7 @@ export default function ConfigPage() {
                   <Button
                     outlined
                     size="sm"
-                    className="h-9 min-w-[96px] justify-center"
+                    className={actionButtonClassName}
                     prefix={<Pencil className="h-3.5 w-3.5" />}
                     onClick={() => startAllowlistEdit(entry)}
                     disabled={allowlistBusy || isDangerCategory}
@@ -701,7 +735,7 @@ export default function ConfigPage() {
                   <Button
                     outlined
                     size="sm"
-                    className="h-9 min-w-[96px] justify-center text-destructive"
+                    className={`${actionButtonClassName} text-destructive`}
                     prefix={<Trash2 className="h-3.5 w-3.5" />}
                     title="Delete entry"
                     aria-label={`Delete entry ${pattern}`}
@@ -851,11 +885,11 @@ export default function ConfigPage() {
               )}
             </div>
 
-            <div className="grid gap-2 border border-amber-500/20 bg-amber-500/5 px-4 py-3">
+            <div className="grid gap-2 border border-amber-500/20 bg-amber-500/5 px-3 py-2.5">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-medium">Approval-generated danger categories</p>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-[11px] leading-5 text-muted-foreground">
                     Broader dangerous-command approval keys created from prompt approvals, not reconstructed full commands.
                   </p>
                 </div>
@@ -864,9 +898,9 @@ export default function ConfigPage() {
                 </Badge>
               </div>
               {dangerCategoryAllowlistEntries.length > 0 ? (
-                renderAllowlistEntryRows(dangerCategoryAllowlistEntries)
+                renderAllowlistEntryRows(dangerCategoryAllowlistEntries, { compactDangerCategory: true })
               ) : (
-                <div className="border border-dashed border-border px-4 py-4 text-xs text-muted-foreground">
+                <div className="border border-dashed border-border px-3 py-3 text-[11px] text-muted-foreground">
                   No approval-generated danger categories saved.
                 </div>
               )}
