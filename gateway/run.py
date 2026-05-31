@@ -1868,6 +1868,7 @@ class GatewayRunner:
         # from _session_expiry_watcher().
         import threading as _threading
 
+        self._model_menu_state: dict = {}
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
 
@@ -1892,10 +1893,6 @@ class GatewayRunner:
         # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
-
-        # Per-session text-based model picker state (for platforms without interactive pickers).
-        # Key: session_key, Value: {"step": "provider"|"model", "providers": [...], ...}
-        self._model_menu_state: Dict[str, Dict[str, Any]] = {}
 
         # Slash-confirm state lives in tools.slash_confirm (module-level),
         # so platform adapters can resolve callbacks without a backref to
@@ -6415,13 +6412,6 @@ class GatewayRunner:
                             platform.value,
                             backoff,
                         )
-                        if attempt >= _PAUSE_AFTER_FAILURES:
-                            self._pause_failed_platform(
-                                platform,
-                                reason=(
-                                    adapter.fatal_error_message or "failed to reconnect"
-                                ),
-                            )
                         # Retryable failures (network/DNS blips) keep retrying
                         # at the backoff cap indefinitely — they self-heal once
                         # connectivity returns. We do NOT auto-pause them: a
@@ -7737,19 +7727,6 @@ class GatewayRunner:
                     # itself will produce the next user-facing message.
                     return ""
 
-        # Intercept digit replies to the text-based /model numbered menu
-        # (for platforms without inline-button pickers, e.g. WhatsApp).
-        _model_menu = getattr(self, "_model_menu_state", {})
-        if _model_menu.get(_quick_key):
-            _raw_menu_reply = (event.text or "").strip()
-            if _raw_menu_reply and not _raw_menu_reply.startswith("/"):
-                return await self._handle_model_menu_reply(
-                    event, _quick_key, _raw_menu_reply
-                )
-            elif _raw_menu_reply.startswith("/"):
-                # User issued a slash command while the menu is open — clear it.
-                _model_menu.pop(_quick_key, None)
-
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are
         # /approve, /always, /cancel (plus short aliases).  Anything else
@@ -8695,6 +8672,12 @@ class GatewayRunner:
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
+
+        # /model numbered-menu: route digit replies to the menu handler
+        if not command and _quick_key in self._model_menu_state:
+            _menu_reply = await self._handle_model_menu_reply(event, _quick_key)
+            if _menu_reply is not None:
+                return _menu_reply
 
         if self._is_telegram_topic_root_lobby(source):
             # Debounce the lobby reminder so a user who forgets about
@@ -11633,9 +11616,8 @@ class GatewayRunner:
                     if result.success:
                         return None  # Picker sent — adapter handles the response
 
-            # Fallback: numbered menu (for platforms without inline-button pickers).
-            # Step 1 — show a numbered list of providers so the user can reply with a digit.
-            provider_label = get_label(current_provider)
+            # Fallback: numbered menu (for platforms without picker or if picker failed)
+            _MENU_PAGE_SIZE = 8
             try:
                 providers = list_authenticated_providers(
                     current_provider=current_provider,
@@ -11649,64 +11631,43 @@ class GatewayRunner:
                 providers = []
 
             if providers:
-                _MENU_PAGE_SIZE = 8
-                _prov_page = 0
-                # Save state so the next digit reply can advance to step 2.
+                session_key = self._session_key_for_source(event.source)
+                prov_page = 0
+                page = providers[
+                    prov_page * _MENU_PAGE_SIZE : (prov_page + 1) * _MENU_PAGE_SIZE
+                ]
+                has_next = len(providers) > (prov_page + 1) * _MENU_PAGE_SIZE
+                lines = ["Choose a provider:"]
+                for i, p in enumerate(page, 1):
+                    tag = " (current)" if p["is_current"] else ""
+                    n_models = p.get("total_models") or len(
+                        p.get("models") or p.get("all_models") or []
+                    )
+                    count = f" [{n_models} models]" if n_models else ""
+                    lines.append(f"{i}. {p['name']}{tag}{count}")
+                if has_next:
+                    lines.append(f"{len(page) + 1}. Next page ▶")
                 self._model_menu_state[session_key] = {
                     "step": "provider",
                     "providers": providers,
-                    "provider_page": _prov_page,
+                    "prov_page": prov_page,
                     "menu_page_size": _MENU_PAGE_SIZE,
-                    "current_model": current_model,
-                    "current_provider": current_provider,
-                    "current_base_url": current_base_url,
-                    "current_api_key": current_api_key,
-                    "user_provs": user_provs,
-                    "custom_provs": custom_provs,
                 }
-                _page_provs = providers[
-                    _prov_page * _MENU_PAGE_SIZE : (_prov_page + 1) * _MENU_PAGE_SIZE
-                ]
-                _has_more_provs = len(providers) > (_prov_page + 1) * _MENU_PAGE_SIZE
-                lines = [
-                    t(
-                        "gateway.model.current_label",
-                        model=current_model or "unknown",
-                        provider=provider_label,
-                    ),
-                    "",
-                    "Select a provider:",
-                ]
-                for i, p in enumerate(_page_provs, 1):
-                    tag = " ✓" if p["is_current"] else ""
-                    preview = ""
-                    if p["models"]:
-                        preview = " — " + ", ".join(p["models"][:3])
-                        if p["total_models"] > 3:
-                            preview += f" +{p['total_models'] - 3}"
-                    lines.append(f"{i}. {p['name']}{tag}{preview}")
-                _nav_idx = len(_page_provs) + 1
-                if _has_more_provs:
-                    lines.append(f"{_nav_idx}. Next page ▶")
-                    _nav_idx += 1
-                if _prov_page > 0:
-                    lines.append(f"{_nav_idx}. ◀ Previous page")
-                lines.append("")
-                lines.append("Reply with a number, or `/model <name>` to set directly.")
                 return "\n".join(lines)
-            else:
-                lines = [
-                    t(
-                        "gateway.model.current_label",
-                        model=current_model or "unknown",
-                        provider=provider_label,
-                    ),
-                    "",
-                ]
-                lines.append(t("gateway.model.usage_switch_model"))
-                lines.append(t("gateway.model.usage_switch_provider"))
-                lines.append(t("gateway.model.usage_persist"))
-                return "\n".join(lines)
+
+            provider_label = get_label(current_provider)
+            lines = [
+                t(
+                    "gateway.model.current_label",
+                    model=current_model or "unknown",
+                    provider=provider_label,
+                ),
+                "",
+            ]
+            lines.append(t("gateway.model.usage_switch_model"))
+            lines.append(t("gateway.model.usage_switch_provider"))
+            lines.append(t("gateway.model.usage_persist"))
+            return "\n".join(lines)
 
         # Perform the switch
         result = _switch_model(
@@ -11876,303 +11837,217 @@ class GatewayRunner:
         return "\n".join(lines)
 
     async def _handle_model_menu_reply(
-        self, event: MessageEvent, session_key: str, raw_reply: str
-    ) -> str:
-        """Handle a digit (or 'cancel') reply to the text-based /model numbered menu.
-
-        Step 1 (provider selection): user replies with a provider number → show models.
-        Step 2 (model selection): user replies with a model number → switch model.
-        """
-        from hermes_cli.model_switch import (
-            resolve_display_context_length,
-        )
-        from hermes_cli.model_switch import (
-            switch_model as _switch_model,
-        )
+        self, event: MessageEvent, session_key: str
+    ) -> Optional[str]:
+        """Handle a digit reply during a /model numbered-menu flow."""
+        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.model_switch import switch_model as _switch_model
 
         state = self._model_menu_state.get(session_key)
-        if state is None:
-            return ""
+        if not state:
+            return None
 
-        # Allow "cancel" / "0" to exit the menu at any step.
-        if raw_reply.strip().lower() in {"cancel", "exit", "quit", "0"}:
-            self._model_menu_state.pop(session_key, None)
-            return "Model selection cancelled."
+        raw = event.text.strip()
+        if not raw.isdigit():
+            del self._model_menu_state[session_key]
+            return None
 
-        # Parse the reply as an integer.
-        try:
-            choice = int(raw_reply.strip())
-        except ValueError:
-            # Non-numeric reply while menu is active — prompt for a number.
-            step = state.get("step")
-            if step == "provider":
-                n = len(state.get("providers", []))
-            else:
-                n = len(state.get("selected_provider", {}).get("models", []))
-            return f"Please reply with a number (1\u2013{n}) or /model to restart."
+        choice = int(raw)
+        _MENU_PAGE_SIZE = state.get("menu_page_size", 8)
 
-        step = state.get("step")
-
-        if step == "provider":
+        if state["step"] == "provider":
             providers = state["providers"]
-            page_size = state.get("menu_page_size", 8)
-            prov_page = state.get("provider_page", 0)
-            page_provs = providers[prov_page * page_size : (prov_page + 1) * page_size]
-            has_more = len(providers) > (prov_page + 1) * page_size
-            next_opt = len(page_provs) + 1  # number assigned to "Next page"
-
-            # Calculate nav option numbers
+            prov_page = state.get("prov_page", 0)
+            page = providers[
+                prov_page * _MENU_PAGE_SIZE : (prov_page + 1) * _MENU_PAGE_SIZE
+            ]
+            has_next = len(providers) > (prov_page + 1) * _MENU_PAGE_SIZE
             has_prev = prov_page > 0
-            next_opt = len(page_provs) + 1
-            prev_opt = next_opt + (1 if has_more else 0)
+            next_idx = len(page) + 1
+            prev_idx = len(page) + 2 if has_next else len(page) + 1
 
-            def _build_prov_page_lines(pp, pg_provs, has_nxt, has_prv):
-                ls = ["Select a provider:"]
-                for ii, p in enumerate(pg_provs, 1):
-                    tag = " ✓" if p["is_current"] else ""
-                    preview = ""
-                    if p["models"]:
-                        preview = " — " + ", ".join(p["models"][:3])
-                        if p["total_models"] > 3:
-                            preview += f" +{p['total_models'] - 3}"
-                    ls.append(f"{ii}. {p['name']}{tag}{preview}")
-                nav = len(pg_provs) + 1
-                if has_nxt:
-                    ls.append(f"{nav}. Next page ▶")
-                    nav += 1
-                if has_prv:
-                    ls.append(f"{nav}. ◀ Previous page")
-                ls.append("")
-                ls.append("Reply with a number, or /model to restart.")
-                return "\n".join(ls)
-
-            # "Next page" option
-            if has_more and choice == next_opt:
+            if has_next and choice == next_idx:
                 prov_page += 1
-                state["provider_page"] = prov_page
-                page_provs = providers[
-                    prov_page * page_size : (prov_page + 1) * page_size
+                new_page = providers[
+                    prov_page * _MENU_PAGE_SIZE : (prov_page + 1) * _MENU_PAGE_SIZE
                 ]
-                has_more = len(providers) > (prov_page + 1) * page_size
-                return _build_prov_page_lines(
-                    prov_page, page_provs, has_more, prov_page > 0
-                )
+                has_next2 = len(providers) > (prov_page + 1) * _MENU_PAGE_SIZE
+                lines = ["Choose a provider:"]
+                for i, p in enumerate(new_page, 1):
+                    tag = " (current)" if p["is_current"] else ""
+                    n_models = p.get("total_models") or len(
+                        p.get("models") or p.get("all_models") or []
+                    )
+                    count = f" [{n_models} models]" if n_models else ""
+                    lines.append(f"{i}. {p['name']}{tag}{count}")
+                if has_next2:
+                    lines.append(f"{len(new_page) + 1}. Next page ▶")
+                if prov_page > 0:
+                    n = len(new_page) + 2 if has_next2 else len(new_page) + 1
+                    lines.append(f"{n}. ◀ Prev page")
+                state["prov_page"] = prov_page
+                return "\n".join(lines)
 
-            # "Previous page" option
-            if has_prev and choice == prev_opt:
+            if has_prev and choice == prev_idx:
                 prov_page -= 1
-                state["provider_page"] = prov_page
-                page_provs = providers[
-                    prov_page * page_size : (prov_page + 1) * page_size
+                new_page = providers[
+                    prov_page * _MENU_PAGE_SIZE : (prov_page + 1) * _MENU_PAGE_SIZE
                 ]
-                has_more = len(providers) > (prov_page + 1) * page_size
-                return _build_prov_page_lines(
-                    prov_page, page_provs, has_more, prov_page > 0
-                )
+                has_next2 = len(providers) > (prov_page + 1) * _MENU_PAGE_SIZE
+                lines = ["Choose a provider:"]
+                for i, p in enumerate(new_page, 1):
+                    tag = " (current)" if p["is_current"] else ""
+                    n_models = p.get("total_models") or len(
+                        p.get("models") or p.get("all_models") or []
+                    )
+                    count = f" [{n_models} models]" if n_models else ""
+                    lines.append(f"{i}. {p['name']}{tag}{count}")
+                if has_next2:
+                    lines.append(f"{len(new_page) + 1}. Next page ▶")
+                if prov_page > 0:
+                    n = len(new_page) + 2 if has_next2 else len(new_page) + 1
+                    lines.append(f"{n}. ◀ Prev page")
+                state["prov_page"] = prov_page
+                return "\n".join(lines)
 
-            max_opt = len(page_provs) + (1 if has_more else 0) + (1 if has_prev else 0)
-            if choice < 1 or choice > len(page_provs):
-                return f"Please reply with a number between 1 and {max_opt}, or /model to restart."
+            if choice < 1 or choice > len(page):
+                del self._model_menu_state[session_key]
+                return "Invalid choice. /model to start over."
 
-            selected = page_provs[choice - 1]
-            models = selected.get("models", [])
-            total = selected.get("total_models", len(models))
-
-            if not models and not selected.get("api_url"):
-                # No discoverable models for this provider.
-                self._model_menu_state.pop(session_key, None)
-                return (
-                    f"No models found for {selected['name']}. "
-                    f"Try `/model <name> --provider {selected['slug']}` to set directly."
-                )
-
-            # Advance to step 2: show numbered model list.
+            selected = page[choice - 1]
+            model_page = 0
+            all_models = selected.get("all_models") or selected.get("models") or []
+            page_m = all_models[
+                model_page * _MENU_PAGE_SIZE : (model_page + 1) * _MENU_PAGE_SIZE
+            ]
+            has_next_m = len(all_models) > (model_page + 1) * _MENU_PAGE_SIZE
+            lines = [f"Models for {selected['name']}:"]
+            for i, m in enumerate(page_m, 1):
+                lines.append(f"{i}. {m}")
+            if has_next_m:
+                lines.append(f"{len(page_m) + 1}. Next page ▶")
             state["step"] = "model"
             state["selected_provider"] = selected
-            state["model_page"] = 0
-            page_size = state.get("menu_page_size", 8)
-            page_models = models[0:page_size]
-            has_more_models = len(models) > page_size
-            lines = [f"*{selected['name']} models*"]
-            if total > len(models):
-                lines[0] += f" (showing {len(models)} of {total})"
-            lines.append("")
-            cur_model = state.get("current_model", "")
-            for i, m in enumerate(page_models, 1):
-                marker = (
-                    " \u2713" if (selected["is_current"] and m == cur_model) else ""
-                )
-                lines.append(f"{i}. {m}{marker}")
-            _mnav = len(page_models) + 1
-            if has_more_models:
-                lines.append(f"{_mnav}. Next page ▶")
-                _mnav += 1
-            # model_page is always 0 here (first display), no prev page
-            lines.append("")
-            lines.append("Reply with a number to switch, or /model to restart.")
+            state["model_page"] = model_page
+            state["all_models"] = all_models
             return "\n".join(lines)
 
-        elif step == "model":
-            selected_provider = state.get("selected_provider", {})
-            models = selected_provider.get("models", [])
-            page_size = state.get("menu_page_size", 8)
+        elif state["step"] == "model":
+            selected_prov = state["selected_provider"]
+            all_models = state.get("all_models", [])
             model_page = state.get("model_page", 0)
-            page_models = models[model_page * page_size : (model_page + 1) * page_size]
-            has_more_models = len(models) > (model_page + 1) * page_size
-            next_opt = len(page_models) + 1
+            page_m = all_models[
+                model_page * _MENU_PAGE_SIZE : (model_page + 1) * _MENU_PAGE_SIZE
+            ]
+            has_next_m = len(all_models) > (model_page + 1) * _MENU_PAGE_SIZE
+            has_prev_m = model_page > 0
+            next_idx = len(page_m) + 1
+            prev_idx = len(page_m) + 2 if has_next_m else len(page_m) + 1
 
-            has_prev_model = model_page > 0
-            prev_model_opt = next_opt + (1 if has_more_models else 0)
-
-            def _build_model_page_lines(
-                pg_models, has_nxt, has_prv, prov_name, is_cur_prov, cur_mdl
-            ):
-                ls = [f"*{prov_name} models*", ""]
-                for ii, m in enumerate(pg_models, 1):
-                    marker = " \u2713" if (is_cur_prov and m == cur_mdl) else ""
-                    ls.append(f"{ii}. {m}{marker}")
-                nav = len(pg_models) + 1
-                if has_nxt:
-                    ls.append(f"{nav}. Next page ▶")
-                    nav += 1
-                if has_prv:
-                    ls.append(f"{nav}. ◀ Previous page")
-                ls.append("")
-                ls.append("Reply with a number to switch, or /model to restart.")
-                return "\n".join(ls)
-
-            cur_model = state.get("current_model", "")
-            prov_name = selected_provider.get("name", "")
-            is_cur_prov = selected_provider.get("is_current", False)
-
-            # "Next page" option
-            if has_more_models and choice == next_opt:
+            if has_next_m and choice == next_idx:
                 model_page += 1
-                state["model_page"] = model_page
-                page_models = models[
-                    model_page * page_size : (model_page + 1) * page_size
+                new_page_m = all_models[
+                    model_page * _MENU_PAGE_SIZE : (model_page + 1) * _MENU_PAGE_SIZE
                 ]
-                has_more_models = len(models) > (model_page + 1) * page_size
-                return _build_model_page_lines(
-                    page_models,
-                    has_more_models,
-                    model_page > 0,
-                    prov_name,
-                    is_cur_prov,
-                    cur_model,
-                )
+                has_next2 = len(all_models) > (model_page + 1) * _MENU_PAGE_SIZE
+                lines = [f"Models for {selected_prov['name']}:"]
+                for i, m in enumerate(new_page_m, 1):
+                    lines.append(f"{i}. {m}")
+                if has_next2:
+                    lines.append(f"{len(new_page_m) + 1}. Next page ▶")
+                if model_page > 0:
+                    n = len(new_page_m) + 2 if has_next2 else len(new_page_m) + 1
+                    lines.append(f"{n}. ◀ Prev page")
+                state["model_page"] = model_page
+                return "\n".join(lines)
 
-            # "Previous page" option
-            if has_prev_model and choice == prev_model_opt:
+            if has_prev_m and choice == prev_idx:
                 model_page -= 1
-                state["model_page"] = model_page
-                page_models = models[
-                    model_page * page_size : (model_page + 1) * page_size
+                new_page_m = all_models[
+                    model_page * _MENU_PAGE_SIZE : (model_page + 1) * _MENU_PAGE_SIZE
                 ]
-                has_more_models = len(models) > (model_page + 1) * page_size
-                return _build_model_page_lines(
-                    page_models,
-                    has_more_models,
-                    model_page > 0,
-                    prov_name,
-                    is_cur_prov,
-                    cur_model,
-                )
+                has_next2 = len(all_models) > (model_page + 1) * _MENU_PAGE_SIZE
+                lines = [f"Models for {selected_prov['name']}:"]
+                for i, m in enumerate(new_page_m, 1):
+                    lines.append(f"{i}. {m}")
+                if has_next2:
+                    lines.append(f"{len(new_page_m) + 1}. Next page ▶")
+                if model_page > 0:
+                    n = len(new_page_m) + 2 if has_next2 else len(new_page_m) + 1
+                    lines.append(f"{n}. ◀ Prev page")
+                state["model_page"] = model_page
+                return "\n".join(lines)
 
-            max_opt = (
-                len(page_models)
-                + (1 if has_more_models else 0)
-                + (1 if has_prev_model else 0)
-            )
-            if choice < 1 or choice > len(page_models):
-                return f"Please reply with a number between 1 and {max_opt}, or /model to restart."
+            if choice < 1 or choice > len(page_m):
+                del self._model_menu_state[session_key]
+                return "Invalid choice. /model to start over."
 
-            model_id = page_models[choice - 1]
-            provider_slug = selected_provider.get("slug", "")
+            chosen_model = page_m[choice - 1]
+            del self._model_menu_state[session_key]
 
-            # Execute the switch — same logic as the Telegram picker callback.
+            current_model = ""
+            current_provider = "openrouter"
+            current_base_url = ""
+            current_api_key = ""
+            user_provs = None
+            custom_provs = None
+            try:
+                cfg = _load_gateway_config()
+                if cfg:
+                    model_cfg = cfg.get("model", {})
+                    if isinstance(model_cfg, dict):
+                        current_model = model_cfg.get("default", "")
+                        current_provider = model_cfg.get("provider", current_provider)
+                        current_base_url = model_cfg.get("base_url", "")
+                    user_provs = cfg.get("providers")
+                    try:
+                        from hermes_cli.config import get_compatible_custom_providers
+
+                        custom_provs = get_compatible_custom_providers(cfg)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             result = _switch_model(
-                raw_input=model_id,
-                current_provider=state.get("current_provider", ""),
-                current_model=state.get("current_model", ""),
-                current_base_url=state.get("current_base_url", ""),
-                current_api_key=state.get("current_api_key", ""),
+                raw_input=chosen_model,
+                current_provider=current_provider,
+                current_model=current_model,
+                current_base_url=current_base_url,
+                current_api_key=current_api_key,
                 is_global=False,
-                explicit_provider=provider_slug,
-                user_providers=state.get("user_provs"),
-                custom_providers=state.get("custom_provs"),
+                explicit_provider=selected_prov["slug"],
+                user_providers=user_provs,
+                custom_providers=custom_provs,
             )
-
-            # Always clear the menu state after an attempt.
-            self._model_menu_state.pop(session_key, None)
-
             if not result.success:
-                return t("gateway.model.error_prefix", error=result.error_message)
+                return f"Switch failed: {result.error_message}"
 
-            # Update cached agent in-place (best effort).
+            cached_entry = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
             if _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached_entry = _cache.get(session_key)
-                if cached_entry and cached_entry[0] is not None:
-                    try:
-                        cached_entry[0].switch_model(
-                            new_model=result.new_model,
-                            new_provider=result.target_provider,
-                            api_key=result.api_key,
-                            base_url=result.base_url,
-                            api_mode=result.api_mode,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Text menu model switch failed for cached agent: %s", exc
-                        )
+            if cached_entry and cached_entry[0] is not None:
+                try:
+                    cached_entry[0].switch_model(
+                        new_model=result.new_model,
+                        new_provider=result.new_provider,
+                        new_base_url=result.new_base_url,
+                        new_api_key=result.new_api_key,
+                    )
+                except Exception as exc:
+                    import logging
 
-            # Store model-switch note so the model knows about the change.
-            if not hasattr(self, "_pending_model_notes"):
-                self._pending_model_notes = {}
-            self._pending_model_notes[session_key] = (
-                f"[Note: model was just switched from {state.get('current_model')} to {result.new_model} "
-                f"via {result.provider_label or result.target_provider}. "
-                f"Adjust your self-identification accordingly.]"
-            )
+                    logging.getLogger(__name__).warning(
+                        "Picker model switch failed for cached agent: %s", exc
+                    )
 
-            # Store session override for the next agent creation.
-            self._session_model_overrides[session_key] = {
-                "model": result.new_model,
-                "provider": result.target_provider,
-                "api_key": result.api_key,
-                "base_url": result.base_url,
-                "api_mode": result.api_mode,
-            }
-            self._evict_cached_agent(session_key)
+            return result.confirmation_message or f"Switched to {chosen_model}"
 
-            # Build confirmation message.
-            plabel = result.provider_label or result.target_provider
-            lines = [t("gateway.model.switched", model=result.new_model)]
-            lines.append(t("gateway.model.provider_label", provider=plabel))
-            mi = result.model_info
-            ctx = resolve_display_context_length(
-                result.new_model,
-                result.target_provider,
-                base_url=result.base_url or state.get("current_base_url") or "",
-                api_key=result.api_key or state.get("current_api_key") or "",
-                model_info=mi,
-                custom_providers=state.get("custom_provs"),
-            )
-            if ctx:
-                lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
-            if mi and mi.max_output:
-                lines.append(
-                    t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}")
-                )
-            lines.append(t("gateway.model.session_only_hint"))
-            return "\n".join(lines)
-
-        # Unknown step — clear and bail.
-        self._model_menu_state.pop(session_key, None)
-        return ""
+        del self._model_menu_state[session_key]
+        return None
 
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
         """Handle /codex-runtime command in the gateway.
@@ -19231,11 +19106,6 @@ class GatewayRunner:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
                         _TOOL_MEDIA_RE = re.compile(
-                            r"MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|"
-                            r"mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|"
-                            r"flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|"
-                            r"txt|csv|apk|ipa))",
-                            re.IGNORECASE,
                             r"MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|"
                             r"mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|"
                             r"flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|"
@@ -19576,11 +19446,6 @@ class GatewayRunner:
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
                             _TOOL_MEDIA_RE = re.compile(
-                                r"MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|"
-                                r"mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|"
-                                r"flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|"
-                                r"txt|csv|apk|ipa))",
-                                re.IGNORECASE,
                                 r"MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|"
                                 r"mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|"
                                 r"flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|"
