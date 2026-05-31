@@ -352,14 +352,27 @@ export default function App() {
   // the flag is off — see AnalyticsPage), but hiding the nav entry avoids
   // surfacing misleading token/cost numbers in the sidebar.  Default off.
   const [showTokenAnalytics, setShowTokenAnalytics] = useState(false);
+
+  // Dashboard Chat sub-feature flags (persisted to config.yaml).
+  const [chatSystemMonitorEnabled, setChatSystemMonitorEnabled] = useState(true);
+  const [chatByAgentProfileEnabled, setChatByAgentProfileEnabled] = useState(true);
+  // Bumped when the user switches the active agent profile -- causes the PTY
+  // WebSocket to reconnect under the new profile HERMES_HOME.
+  const [channelBumpKey, setChannelBumpKey] = useState(0);
+  const bumpChannel = useCallback(() => setChannelBumpKey((k) => k + 1), []);
   useEffect(() => {
     api
       .getConfig()
       .then((cfg) => {
         const dash = (cfg?.dashboard ?? {}) as {
           show_token_analytics?: unknown;
+          chat_ui?: unknown;
+          chat_system_monitor?: unknown;
+          chat_by_agent_profile?: unknown;
         };
         setShowTokenAnalytics(dash.show_token_analytics === true);
+        setChatSystemMonitorEnabled(dash.chat_system_monitor !== false);
+        setChatByAgentProfileEnabled(dash.chat_by_agent_profile !== false);
       })
       .catch(() => setShowTokenAnalytics(false));
   }, []);
@@ -737,7 +750,13 @@ export default function App() {
                       )}
                       aria-hidden={!isChatRoute}
                     >
-                      <ChatPage isActive={isChatRoute} />
+                      <ChatPage
+                        isActive={isChatRoute}
+                        chatSystemMonitor={chatSystemMonitorEnabled}
+                        chatByAgentProfile={chatByAgentProfileEnabled}
+                        channelBumpKey={channelBumpKey}
+                        onProfileActivated={bumpChannel}
+                      />
                     </div>
                   ))}
               </div>
