@@ -5563,7 +5563,7 @@ class GatewayRunner:
         if not candidates:
             return
 
-        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.platforms.base import BasePlatformAdapter, MediaKind
         candidates = BasePlatformAdapter.filter_local_delivery_paths(candidates)
         if not candidates:
             return
@@ -5573,12 +5573,19 @@ class GatewayRunner:
 
         from urllib.parse import quote as _quote
 
+        # Skip-and-warn for kinds the adapter can't natively deliver, so the
+        # base send_* stub never leaks a local file path as chat text.
+        declared_kinds = getattr(adapter, "MEDIA_KINDS", frozenset())
+
         # Partition images so they ride a single send_multiple_images call
         # on platforms that support batch image uploads (Signal/Slack RPCs).
         image_paths = [p for p in candidates if _Path(p).suffix.lower() in _IMAGE_EXTS]
         other_paths = [p for p in candidates if _Path(p).suffix.lower() not in _IMAGE_EXTS]
 
-        if image_paths:
+        if image_paths and MediaKind.IMAGE not in declared_kinds:
+            logger.warning("kanban notifier: %s cannot deliver image; skipping %d artifact(s)",
+                           getattr(adapter, "name", "?"), len(image_paths))
+        elif image_paths:
             try:
                 batch = [(f"file://{_quote(p)}", "") for p in image_paths]
                 await adapter.send_multiple_images(
@@ -5591,8 +5598,13 @@ class GatewayRunner:
 
         for path in other_paths:
             ext = _Path(path).suffix.lower()
+            kind = MediaKind.VIDEO if ext in _VIDEO_EXTS else MediaKind.DOCUMENT
+            if kind not in declared_kinds:
+                logger.warning("kanban notifier: %s cannot deliver %s; skipping %s",
+                               getattr(adapter, "name", "?"), kind.value, path)
+                continue
             try:
-                if ext in _VIDEO_EXTS:
+                if kind is MediaKind.VIDEO:
                     await adapter.send_video(
                         chat_id=chat_id, video_path=path, metadata=metadata,
                     )

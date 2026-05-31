@@ -77,3 +77,36 @@ def test_partial_capability_delivers_only_declared_kind():
     adapter = _RecordingAdapter(frozenset({MediaKind.IMAGE}))
     _deliver(adapter, "both\nMEDIA:/tmp/shot.png\nMEDIA:/tmp/report.pdf")
     assert [c[0] for c in adapter.calls] == ["image"]
+
+
+def _deliver_kanban(adapter, artifacts):
+    asyncio.run(run_mod.GatewayRunner._deliver_kanban_artifacts(
+        _StubRunner(), adapter=adapter, chat_id="c", metadata={},
+        event_payload={"artifacts": [str(a) for a in artifacts]}, task=None,
+    ))
+
+
+def test_kanban_undeclared_kinds_skipped_without_leak(tmp_path, caplog):
+    pdf = tmp_path / "report.pdf"
+    pdf.write_text("x", encoding="utf-8")
+    adapter = _RecordingAdapter(frozenset())
+    with caplog.at_level(logging.WARNING):
+        _deliver_kanban(adapter, [pdf])
+    assert adapter.calls == []
+    assert any("report.pdf" in r.message for r in caplog.records)
+
+
+def test_kanban_declared_document_delivered(tmp_path):
+    pdf = tmp_path / "report.pdf"
+    pdf.write_text("x", encoding="utf-8")
+    adapter = _RecordingAdapter(frozenset({MediaKind.DOCUMENT}))
+    _deliver_kanban(adapter, [pdf])
+    assert [c[0] for c in adapter.calls] == ["document"]
+
+
+def test_kanban_image_skipped_when_not_declared(tmp_path):
+    png = tmp_path / "shot.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n")
+    adapter = _RecordingAdapter(frozenset({MediaKind.DOCUMENT}))
+    _deliver_kanban(adapter, [png])
+    assert adapter.calls == []
