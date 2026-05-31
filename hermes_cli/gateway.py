@@ -135,16 +135,14 @@ def _get_service_pids() -> set:
                 timeout=5,
             )
             if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[2] == label:
-                        try:
-                            pid = int(parts[0])
-                            if pid > 0:
-                                pids.add(pid)
-                        except ValueError:
-                            pass
+                pid = _parse_launchd_pid(result.stdout or "", label)
+                if pid:
+                    pids.add(pid)
+            else:
+                state = _launchd_service_state()
+                pid = state.get("pid")
+                if isinstance(pid, int) and pid > 0:
+                    pids.add(pid)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -1026,16 +1024,7 @@ def _recover_pending_systemd_restart(
 def _probe_launchd_service_running() -> bool:
     if not get_launchd_plist_path().exists():
         return False
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        return False
-    return result.returncode == 0
+    return bool(_launchd_service_state().get("running"))
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -3004,6 +2993,113 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
+def _parse_launchd_pid(output: str, label: str) -> int | None:
+    """Extract a live PID from either `launchctl list` or `launchctl print`.
+
+    macOS has at least three shapes in the wild:
+    - tabular `launchctl list <label>` output: `PID\tStatus\tLabel`
+    - `launchctl print gui/<uid>/<label>` output: `pid = 123`
+    - dictionary `launchctl list <label>` output: `\"PID\" = 123;`
+    """
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == label:
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            if pid > 0:
+                return pid
+
+        stripped = line.strip()
+        if stripped.startswith("pid = "):
+            raw_pid = stripped.split("=", 1)[1]
+        elif stripped.startswith('"PID" = '):
+            raw_pid = stripped.split("=", 1)[1]
+        else:
+            continue
+
+        try:
+            pid = int(raw_pid.strip().rstrip(";"))
+        except ValueError:
+            continue
+        if pid > 0:
+            return pid
+    return None
+
+
+def _launchd_service_state() -> dict:
+    """Return launchd load/running state for the current profile service.
+
+    macOS has two useful views here. `launchctl list <label>` is concise but
+    can return a false negative in some GUI domains; `launchctl print
+    gui/<uid>/<label>` is more explicit and has proven more reliable for the
+    LaunchAgent status path.
+    """
+    label = get_launchd_label()
+    state: dict = {
+        "loaded": False,
+        "running": False,
+        "pid": None,
+        "output": "",
+        "source": "",
+    }
+
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        result = None
+
+    if result is not None and result.returncode == 0:
+        output = result.stdout or ""
+        pid = _parse_launchd_pid(output, label)
+        state.update(
+            {
+                "loaded": True,
+                "running": bool(pid),
+                "pid": pid,
+                "output": output,
+                "source": "launchctl list",
+            }
+        )
+        return state
+
+    target = f"{_launchd_domain()}/{label}"
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", target],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return state
+
+    if result.returncode != 0:
+        state["output"] = result.stderr or result.stdout or ""
+        state["source"] = "launchctl print"
+        return state
+
+    output = result.stdout or ""
+    pid = _parse_launchd_pid(output, label)
+    running = "state = running" in output or bool(pid)
+    state.update(
+        {
+            "loaded": True,
+            "running": running,
+            "pid": pid,
+            "output": output,
+            "source": "launchctl print",
+        }
+    )
+    return state
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     # Stable cwd anchor — never the volatile source checkout. See
@@ -3355,19 +3451,11 @@ def launchd_restart():
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        loaded = result.returncode == 0
-        loaded_output = result.stdout
-    except subprocess.TimeoutExpired:
-        loaded = False
-        loaded_output = ""
+    state = _launchd_service_state()
+    loaded = bool(state.get("loaded"))
+    running = bool(state.get("running"))
+    pid = state.get("pid")
+    loaded_output = str(state.get("output") or "")
 
     print(f"Launchd plist: {plist_path}")
     if launchd_plist_is_current():
@@ -3378,7 +3466,13 @@ def launchd_status(deep: bool = False):
 
     if loaded:
         print("✓ Gateway service is loaded")
-        print(loaded_output)
+        if running:
+            detail = f"PID {pid}" if isinstance(pid, int) and pid > 0 else "running"
+            print(f"✓ Gateway service is running ({detail})")
+        else:
+            print("⚠ Gateway service is loaded but not running")
+        if loaded_output:
+            print(loaded_output)
     else:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
