@@ -72,18 +72,29 @@
   // FastAPI bodies look like ``{"detail":"<message>"}``.  Pull the
   // human-readable message out so banners/toasts don't have to leak HTTP
   // plumbing at the user (e.g. ``409: {"detail":"…"}``).  See #26744.
-  function parseApiErrorMessage(err) {
+  function parseApiErrorDetail(err) {
     const raw = (err && err.message) ? String(err.message) : String(err || "");
     const m = raw.match(/^(\d{3}):\s*(.*)$/s);
+    const status = m ? Number(m[1]) : null;
     const body = m ? m[2] : raw;
     try {
       const parsed = JSON.parse(body);
-      if (parsed && typeof parsed.detail === "string") return parsed.detail;
+      if (parsed && typeof parsed.detail === "string") {
+        return { status, message: parsed.detail, code: null };
+      }
       if (parsed && parsed.detail && typeof parsed.detail.message === "string") {
-        return parsed.detail.message;
+        return {
+          status,
+          message: parsed.detail.message,
+          code: typeof parsed.detail.code === "string" ? parsed.detail.code : null,
+        };
       }
     } catch (_e) { /* not JSON — fall through to raw body */ }
-    return body || raw;
+    return { status, message: body || raw, code: null };
+  }
+
+  function parseApiErrorMessage(err) {
+    return parseApiErrorDetail(err).message;
   }
 
   // Order matches BOARD_COLUMNS in plugin_api.py.
@@ -480,6 +491,7 @@
     const [config, setConfig] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [errorCode, setErrorCode] = useState(null);
 
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
@@ -533,9 +545,12 @@
           setBoardData(data);
           cursorRef.current = data.latest_event_id || 0;
           setError(null);
+          setErrorCode(null);
         })
         .catch(function (err) {
-          setError(String(err && err.message ? err.message : err));
+          const detail = parseApiErrorDetail(err);
+          setError(String(detail.message || ""));
+          setErrorCode(detail.code || null);
         })
         .finally(function () { setLoading(false); });
     }, [tenantFilter, includeArchived, board]);
@@ -961,13 +976,34 @@
         tx(t, "loading", "Loading Kanban board…"));
     }
     if (error && !boardData) {
-      return h(Card, null,
-        h(CardContent, { className: "p-6" },
-          h("div", { className: "text-sm text-destructive" },
-            tx(t, "loadFailed", "Failed to load Kanban board: "), error),
-          h("div", { className: "text-xs text-muted-foreground mt-2" },
-            tx(t, "loadFailedHint",
-              "The backend auto-creates kanban.db on first read. If this persists, check the dashboard logs.")),
+      const isCorruptBoardError = errorCode === "kanban_db_corrupt";
+      const loadFailedHint = isCorruptBoardError
+        ? tx(t, "loadFailedCorruptHint",
+          "This board's database looks corrupt. Switch to another board, or restore the preserved backup path shown above.")
+        : tx(t, "loadFailedHint",
+          "The backend auto-creates kanban.db on first read. If this persists, check the dashboard logs.");
+      return h(ErrorBoundary, null,
+        h("div", { className: "hermes-kanban flex flex-col gap-4" },
+          h(BoardSwitcher, {
+            board: board,
+            boardList: boardList,
+            onSwitch: switchBoard,
+            onNewClick: function () { setShowNewBoard(true); },
+            onDeleteBoard: deleteBoard,
+          }),
+          showNewBoard ? h(NewBoardDialog, {
+            onCancel: function () { setShowNewBoard(false); },
+            onCreate: function (payload) {
+              return createNewBoard(payload).then(function () { setShowNewBoard(false); });
+            },
+          }) : null,
+          h(Card, null,
+            h(CardContent, { className: "p-6" },
+              h("div", { className: "text-sm text-destructive" },
+                tx(t, "loadFailed", "Failed to load Kanban board: "), error),
+              h("div", { className: "text-xs text-muted-foreground mt-2" }, loadFailedHint),
+            ),
+          ),
         ),
       );
     }
@@ -2741,6 +2777,8 @@
     // Ready/Block/Complete buttons feel like no-ops.  See #26744.
     const [patchErr, setPatchErr] = useState(null);
     const [newComment, setNewComment] = useState("");
+    const [uploadBusy, setUploadBusy] = useState(false);
+    const [uploadErr, setUploadErr] = useState(null);
     const [editing, setEditing] = useState(false);
     // Home-channel notification toggles. homeChannels is the list of platforms
     // the user has a /sethome on; each entry has a `subscribed` bool telling
@@ -2787,6 +2825,49 @@
         load();
         props.onRefresh();
       }).catch(function (e) { setErr(String(e.message || e)); });
+    };
+
+    // File upload uses raw fetch (not SDK.fetchJSON, which JSON-encodes)
+    // so the browser sets the multipart boundary. Auth rides the session
+    // cookie + bearer token, matching the rest of the dashboard.
+    const handleUpload = function (fileList) {
+      const files = Array.prototype.slice.call(fileList || []);
+      if (!files.length) return;
+      setUploadBusy(true);
+      setUploadErr(null);
+      const token = window.__HERMES_SESSION_TOKEN__ || "";
+      const headers = token ? { Authorization: "Bearer " + token } : {};
+      const url = withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/attachments`, boardSlug);
+      // Upload sequentially so a partial failure leaves a clear state.
+      let chain = Promise.resolve();
+      files.forEach(function (f) {
+        chain = chain.then(function () {
+          const fd = new FormData();
+          fd.append("file", f, f.name);
+          return fetch(url, { method: "POST", headers: headers, credentials: "same-origin", body: fd })
+            .then(function (resp) {
+              if (!resp.ok) {
+                return resp.text().then(function (txt) {
+                  throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
+                });
+              }
+            });
+        });
+      });
+      chain.then(function () {
+        load();
+        props.onRefresh();
+      }).catch(function (e) {
+        setUploadErr(String(e.message || e));
+      }).finally(function () {
+        setUploadBusy(false);
+      });
+    };
+
+    const handleDeleteAttachment = function (attachmentId) {
+      return SDK.fetchJSON(withBoard(`${API}/attachments/${attachmentId}`, boardSlug), { method: "DELETE" })
+        .then(function () { load(); props.onRefresh(); })
+        .catch(function (e) { setUploadErr(String(e.message || e)); });
     };
 
     const doPatch = function (patch, opts) {
@@ -2946,6 +3027,10 @@
           homeBusy: homeBusy,
           onToggleHomeSub: toggleHomeSubscription,
           onRefresh: props.onRefresh,
+          onUpload: handleUpload,
+          onDeleteAttachment: handleDeleteAttachment,
+          uploadBusy: uploadBusy,
+          uploadErr: uploadErr,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -2968,11 +3053,118 @@
     );
   }
 
+  function _fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  // Attachments section in the task drawer (#35338). Upload button +
+  // list with download links and a delete (×) per row. The download
+  // link hits GET /attachments/:id which streams the file; the worker
+  // context surfaces the same files' absolute paths so a kanban worker
+  // can read them with the file/terminal tools.
+  function AttachmentsSection(props) {
+    const i18n = props.i18n;
+    const atts = props.attachments || [];
+    const fileRef = useRef(null);
+    const [dlErr, setDlErr] = useState(null);
+    // Download via authenticated fetch → blob → synthetic anchor click.
+    // A plain <a href> can't carry the session header/bearer the dashboard
+    // auth middleware requires in loopback mode, so fetch with the token
+    // and hand the browser a blob URL instead.
+    function downloadAttachment(a) {
+      const token = window.__HERMES_SESSION_TOKEN__ || "";
+      const headers = token ? { Authorization: "Bearer " + token } : {};
+      const url = withBoard(`${API}/attachments/${a.id}`, props.boardSlug);
+      setDlErr(null);
+      fetch(url, { headers: headers, credentials: "same-origin" })
+        .then(function (resp) {
+          if (!resp.ok) {
+            return resp.text().then(function (txt) {
+              throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
+            });
+          }
+          return resp.blob();
+        })
+        .then(function (blob) {
+          const objUrl = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = objUrl;
+          link.download = a.filename || "attachment";
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setTimeout(function () { URL.revokeObjectURL(objUrl); }, 10000);
+        })
+        .catch(function (e) { setDlErr(String(e.message || e)); });
+    }
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head" },
+        `${tx(i18n, "attachments", "Attachments")} (${atts.length})`),
+      h("input", {
+        ref: fileRef,
+        type: "file",
+        multiple: true,
+        style: { display: "none" },
+        onChange: function (e) {
+          if (props.onUpload) props.onUpload(e.target.files);
+          // Reset so selecting the same file again re-triggers onChange.
+          try { e.target.value = ""; } catch (_e) { /* ignore */ }
+        },
+      }),
+      h("div", { className: "flex items-center gap-2 mb-2" },
+        h(Button, {
+          size: "sm",
+          variant: "outline",
+          disabled: !!props.uploadBusy,
+          onClick: function () { if (fileRef.current) fileRef.current.click(); },
+        }, props.uploadBusy
+            ? tx(i18n, "uploading", "Uploading…")
+            : tx(i18n, "uploadFile", "Upload file")),
+      ),
+      (props.uploadErr || dlErr)
+        ? h("div", { className: "text-xs text-destructive mb-2" }, props.uploadErr || dlErr)
+        : null,
+      atts.length === 0
+        ? h("div", { className: "text-xs text-muted-foreground" },
+            tx(i18n, "noAttachments", "— no attachments —"))
+        : atts.map(function (a) {
+            return h("div", {
+              key: a.id,
+              className: "flex items-center justify-between gap-2 py-1 text-sm",
+            },
+              h("button", {
+                type: "button",
+                className: "hermes-kanban-attachment-link truncate",
+                title: a.filename,
+                onClick: function () { downloadAttachment(a); },
+              }, a.filename),
+              h("span", { className: "text-xs text-muted-foreground whitespace-nowrap" },
+                _fmtBytes(a.size)),
+              h("button", {
+                type: "button",
+                className: "hermes-kanban-drawer-close",
+                title: tx(i18n, "removeAttachment", "Remove attachment"),
+                onClick: function () {
+                  if (window.confirm(tx(i18n, "confirmRemoveAttachment",
+                      "Remove this attachment?"))) {
+                    if (props.onDelete) props.onDelete(a.id);
+                  }
+                },
+              }, "×"),
+            );
+          }),
+    );
+  }
+
   function TaskDetail(props) {
     const { t: i18n } = useI18n();
     const t = props.data.task;
     const comments = props.data.comments || [];
     const events = props.data.events || [];
+    const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
 
     return h("div", { className: "hermes-kanban-drawer-body" },
@@ -3042,6 +3234,15 @@
         h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
         h(MarkdownBlock, { source: t.result, enabled: props.renderMarkdown }),
       ) : null,
+      h(AttachmentsSection, {
+        attachments: attachments,
+        boardSlug: props.boardSlug,
+        onUpload: props.onUpload,
+        onDelete: props.onDeleteAttachment,
+        uploadBusy: props.uploadBusy,
+        uploadErr: props.uploadErr,
+        i18n: i18n,
+      }),
       h("div", { className: "hermes-kanban-section" },
         h("div", { className: "hermes-kanban-section-head" },
           `${tx(i18n, "comments", "Comments")} (${comments.length})`),
