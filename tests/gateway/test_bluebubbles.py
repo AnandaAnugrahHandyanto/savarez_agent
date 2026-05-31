@@ -132,6 +132,35 @@ class TestBlueBubblesHelpers:
 
 
 class TestBlueBubblesWebhookParsing:
+    @pytest.mark.asyncio
+    async def test_webhook_applies_channel_prompt_from_chat_guid(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            channel_prompts={"any;-;+15551234567": "Use Google Calendar task rules."},
+        )
+        events = []
+
+        async def fake_handle_message(event):
+            events.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        class Request:
+            query = {"password": "secret"}
+            headers = {}
+
+            async def read(self):
+                return b'{"type":"new-message","data":{"guid":"MESSAGE-GUID","text":"Todo send invoice tomorrow at noon","handle":{"address":"+15551234567"},"isFromMe":false,"chats":[{"guid":"any;-;+15551234567","chatIdentifier":"+15551234567"}]}}'
+
+        response = await adapter._handle_webhook(Request())
+        assert response.status == 200
+
+        import asyncio
+
+        await asyncio.sleep(0)
+        assert len(events) == 1
+        assert events[0].channel_prompt == "Use Google Calendar task rules."
+
     def test_webhook_prefers_chat_guid_over_message_guid(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         payload = {
@@ -422,19 +451,24 @@ class TestBlueBubblesAttachmentDownload:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """_webhook_url preserves explicit loopback host choices."""
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        # Default webhook_host is 0.0.0.0 → normalized to explicit IPv4 loopback.
+        assert "127.0.0.1" in adapter._webhook_url
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
 
-    @pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1", "localhost", "::"])
-    def test_local_hosts_normalized(self, monkeypatch, host):
+    @pytest.mark.parametrize("host", ["0.0.0.0", "::"])
+    def test_wildcard_hosts_normalized_to_ipv4_loopback(self, monkeypatch, host):
         adapter = _make_adapter(monkeypatch, webhook_host=host)
-        assert adapter._webhook_url.startswith("http://localhost:")
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+    def test_explicit_loopback_hosts_preserved(self, monkeypatch, host):
+        adapter = _make_adapter(monkeypatch, webhook_host=host)
+        assert adapter._webhook_url.startswith(f"http://{host}:")
 
     def test_custom_host_preserved(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")

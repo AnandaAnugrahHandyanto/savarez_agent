@@ -1158,6 +1158,58 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     return {"resolved": resolved, "choice": choice}
 
 
+def _bluebubbles_apple_calendar_guard(command: str) -> tuple[bool, str | None]:
+    """Block Apple Calendar automation from BlueBubbles/mobile sessions.
+
+    Nick's mobile/iMessage capture flow must use Google Calendar by default.
+    Apple Calendar/Fantastical are synced views only unless Nick explicitly asks
+    for Apple Calendar.  The terminal approval layer only sees the command, not
+    the original user intent, so BlueBubbles sessions fail closed for direct
+    Apple Calendar osascript automation; explicitly requested Apple Calendar
+    edits should be performed from a non-BlueBubbles/manual context.
+    """
+    if _get_session_platform().lower() != "bluebubbles":
+        return (False, None)
+    normalized = _normalize_command_for_detection(command).lower()
+    if "osascript" not in normalized:
+        return (False, None)
+    if re.search(r'\btell\s+application\s+["\']?(calendar|ical)["\']?', normalized):
+        return (True, "Apple Calendar osascript is blocked from BlueBubbles/mobile sessions; use Google Calendar via google_api.py instead")
+    return (False, None)
+
+
+def _bluebubbles_apple_reminders_guard(command: str) -> tuple[bool, str | None]:
+    """Block Apple Reminders creation from BlueBubbles/mobile sessions.
+
+    The mobile path has repeatedly interpreted dated/timed event requests as
+    Apple Reminders. For BlueBubbles, fail closed on direct reminder creation so
+    dated/timed requests route to Google Calendar unless Nick explicitly asks in
+    a manual/non-mobile context for Apple Reminders.
+    """
+    if _get_session_platform().lower() != "bluebubbles":
+        return (False, None)
+    normalized = _normalize_command_for_detection(command).lower()
+    if not re.search(r"\bremindctl\b", normalized):
+        return (False, None)
+    if re.search(r"\b(add|edit)\b", normalized):
+        return (True, "Apple Reminders creation/editing is blocked from BlueBubbles/mobile sessions; dated or timed mobile requests must use Google Calendar via google_api.py")
+    return (False, None)
+
+
+def _bluebubbles_calendar_block_result(description: str) -> dict:
+    return {
+        "approved": False,
+        "message": (
+            f"BLOCKED: {description}. Mobile/iMessage dated or timed captures must "
+            "create and read events through Google Calendar by default. Do not retry "
+            "with Apple Calendar or Apple Reminders automation; use the "
+            "google-workspace skill or google_api.py."
+        ),
+        "outcome": "blocked",
+        "user_consent": False,
+    }
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
@@ -1170,6 +1222,26 @@ def check_all_command_guards(command: str, env_type: str,
     # Skip containers for both checks
     if env_type in {"docker", "singularity", "modal", "daytona"}:
         return {"approved": True, "message": None}
+
+    is_bluebubbles_calendar, bluebubbles_calendar_desc = _bluebubbles_apple_calendar_guard(command)
+    if is_bluebubbles_calendar:
+        desc = bluebubbles_calendar_desc or "Apple Calendar osascript is blocked from BlueBubbles/mobile sessions"
+        logger.warning(
+            "BlueBubbles Apple Calendar guard block: %s (command: %s)",
+            desc,
+            command[:200],
+        )
+        return _bluebubbles_calendar_block_result(desc)
+
+    is_bluebubbles_reminders, bluebubbles_reminders_desc = _bluebubbles_apple_reminders_guard(command)
+    if is_bluebubbles_reminders:
+        desc = bluebubbles_reminders_desc or "Apple Reminders are blocked from BlueBubbles/mobile sessions for dated or timed captures"
+        logger.warning(
+            "BlueBubbles Apple Reminders guard block: %s (command: %s)",
+            desc,
+            command[:200],
+        )
+        return _bluebubbles_calendar_block_result(desc)
 
     # Hardline floor: unconditional block for catastrophic commands
     # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
@@ -1481,6 +1553,26 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     # in check_all_command_guards / check_dangerous_command.
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
         return {"approved": True, "message": None}
+
+    is_bluebubbles_calendar, bluebubbles_calendar_desc = _bluebubbles_apple_calendar_guard(code)
+    if is_bluebubbles_calendar:
+        desc = bluebubbles_calendar_desc or "Apple Calendar osascript is blocked from BlueBubbles/mobile sessions"
+        logger.warning(
+            "BlueBubbles Apple Calendar guard block in execute_code (session %s): %s",
+            get_current_session_key(""),
+            desc,
+        )
+        return _bluebubbles_calendar_block_result(desc)
+
+    is_bluebubbles_reminders, bluebubbles_reminders_desc = _bluebubbles_apple_reminders_guard(code)
+    if is_bluebubbles_reminders:
+        desc = bluebubbles_reminders_desc or "Apple Reminders are blocked from BlueBubbles/mobile sessions for dated or timed captures"
+        logger.warning(
+            "BlueBubbles Apple Reminders guard block in execute_code (session %s): %s",
+            get_current_session_key(""),
+            desc,
+        )
+        return _bluebubbles_calendar_block_result(desc)
 
     # --yolo or approvals.mode=off: bypass (session- or process-scoped).
     approval_mode = _get_approval_mode()

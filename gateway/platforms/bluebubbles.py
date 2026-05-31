@@ -30,6 +30,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
     cache_audio_from_bytes,
     cache_document_from_bytes,
+    resolve_channel_prompt,
 )
 from gateway.platforms.helpers import strip_markdown
 
@@ -229,8 +230,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _webhook_url(self) -> str:
         """Compute the external webhook URL for BlueBubbles registration."""
         host = self.webhook_host
-        if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
-            host = "localhost"
+        if host in {"0.0.0.0", "::"}:
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property
@@ -945,6 +946,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             ),
             media_urls=media_urls,
             media_types=media_types,
+            channel_prompt=resolve_channel_prompt(
+                self.config.extra,
+                str(session_chat_id),
+                str(chat_identifier) if chat_identifier else None,
+            ),
         )
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)

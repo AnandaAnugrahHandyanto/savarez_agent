@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import json
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -665,6 +666,13 @@ def build_session_key(
     return ":".join(key_parts)
 
 
+def _slugify_shared_session_key(value: Any) -> str:
+    """Normalize a configured shared-session key into a safe key fragment."""
+    raw = str(value or "").strip().lower()
+    slug = re.sub(r"[^a-z0-9_.-]+", "-", raw).strip("-._")
+    return slug[:96]
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -741,8 +749,41 @@ class SessionStore:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
+    def _shared_session_extra(self, source: SessionSource) -> Dict[str, Any]:
+        """Return platform ``extra`` settings that request a shared session."""
+        try:
+            platform_cfg = self.config.platforms.get(source.platform)
+        except Exception:
+            platform_cfg = None
+        extra = getattr(platform_cfg, "extra", {}) if platform_cfg else {}
+        return extra if isinstance(extra, dict) else {}
+
+    def _shared_session_key(self, source: SessionSource) -> Optional[str]:
+        """Return a configured shared session key for this source, if any.
+
+        This intentionally affects only Hermes's transcript/session lookup. The
+        original ``SessionSource.chat_id`` is preserved on the event so replies,
+        auth, notices, and delivery still target the real platform chat.
+        """
+        extra = self._shared_session_extra(source)
+        raw_key = extra.get("shared_session_key")
+        slug = _slugify_shared_session_key(raw_key)
+        if not slug:
+            return None
+        platform = source.platform.value
+        return f"agent:main:{platform}:shared:{slug}"
+
+    def _shared_session_title(self, source: SessionSource) -> Optional[str]:
+        """Return the optional display title for a configured shared session."""
+        extra = self._shared_session_extra(source)
+        title = str(extra.get("shared_session_title") or "").strip()
+        return title or None
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
+        shared_key = self._shared_session_key(source)
+        if shared_key:
+            return shared_key
         return build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
@@ -865,6 +906,7 @@ class SessionStore:
         Creates a session record in SQLite when a new session starts.
         """
         session_key = self._generate_session_key(source)
+        shared_title = self._shared_session_title(source)
         now = _now()
 
         # SQLite calls are made outside the lock to avoid holding it during I/O.
@@ -900,6 +942,8 @@ class SessionStore:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
                     entry.updated_at = now
+                    if shared_title and entry.display_name != shared_title:
+                        entry.display_name = shared_title
                     self._save()
                     return entry
                 else:
@@ -923,7 +967,7 @@ class SessionStore:
                 created_at=now,
                 updated_at=now,
                 origin=source,
-                display_name=source.chat_name,
+                display_name=shared_title or source.chat_name,
                 platform=source.platform,
                 chat_type=source.chat_type,
                 was_auto_reset=was_auto_reset,
@@ -949,6 +993,11 @@ class SessionStore:
         if self._db and db_create_kwargs:
             try:
                 self._db.create_session(**db_create_kwargs)
+                if shared_title:
+                    try:
+                        self._db.set_session_title(session_id, shared_title)
+                    except ValueError as e:
+                        logger.debug("Could not title shared gateway session %s: %s", session_id, e)
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 
