@@ -163,6 +163,7 @@ class ReviewRoutingTag:
 
     state: str
     next_action: str | None = None
+    head_ref_oid: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1044,6 +1045,7 @@ def parse_review_routing_tag(output: str) -> ReviewRoutingTag | None:
     """Extract the kyber-tag routing state from reviewer output."""
     state: str | None = None
     next_action: str | None = None
+    head_ref_oid: str | None = None
     for raw_line in (output or "").splitlines():
         line = raw_line.strip()
         if not line:
@@ -1052,15 +1054,28 @@ def parse_review_routing_tag(output: str) -> ReviewRoutingTag | None:
             state = line.split("=", 1)[1].strip()
         elif line.startswith("next_action="):
             next_action = line.split("=", 1)[1].strip()
+        elif line.startswith("head_ref_oid="):
+            head_ref_oid = line.split("=", 1)[1].strip()
     if not state:
         return None
-    return ReviewRoutingTag(state=state, next_action=next_action or None)
+    return ReviewRoutingTag(
+        state=state,
+        next_action=next_action or None,
+        head_ref_oid=head_ref_oid or None,
+    )
 
 
 def is_review_findings_for_coder(tag: ReviewRoutingTag | None) -> bool:
     """Return true when review output should queue same-branch coder fixes."""
     return bool(
         tag and tag.state == "review_findings" and tag.next_action == "coding_subagent"
+    )
+
+
+def can_merge_pr(tag: ReviewRoutingTag | None, pr: PullRequestMetadata) -> bool:
+    """Fail closed unless review output says the current PR head is ready."""
+    return bool(
+        tag and tag.state == "ready_for_merge" and tag.head_ref_oid == pr.head_ref_oid
     )
 
 

@@ -14,6 +14,7 @@ from gateway.issue_resolution import (
     IssueSelectionRequest,
     IssueRunStatus,
     IssueRunType,
+    PullRequestMetadata,
     ReviewFindingsRetry,
     IssueStateStore,
     _execute_master_issue,
@@ -24,6 +25,7 @@ from gateway.issue_resolution import (
     _load_next_open_issue,
     _pr_body,
     build_aider_invocation,
+    can_merge_pr,
     is_review_findings_for_coder,
     parse_review_routing_tag,
     github_issue_webhook_command,
@@ -149,12 +151,14 @@ def test_parse_review_routing_tag_detects_findings_for_coder():
         Summary: fixes needed.
         kyber-tag.state=review_findings
         next_action=coding_subagent
+        head_ref_oid=abc123
         """
     )
 
     assert tag is not None
     assert tag.state == "review_findings"
     assert tag.next_action == "coding_subagent"
+    assert tag.head_ref_oid == "abc123"
     assert is_review_findings_for_coder(tag) is True
 
 
@@ -165,6 +169,45 @@ def test_parse_review_routing_tag_ignores_non_coder_next_action():
     )
 
     assert is_review_findings_for_coder(tag) is False
+
+
+def test_can_merge_pr_requires_ready_for_current_head():
+    """Merge gates should fail closed on stale or findings-bearing review tags."""
+    pr = PullRequestMetadata(
+        number=77,
+        url="https://github.com/m0nklabs/cryptotrader/pull/77",
+        head_ref_name="issue/cryptotrader-42-add-pnl-summary",
+        head_ref_oid="abc123",
+    )
+
+    assert (
+        can_merge_pr(
+            parse_review_routing_tag(
+                "kyber-tag.state=ready_for_merge\nhead_ref_oid=abc123"
+            ),
+            pr,
+        )
+        is True
+    )
+    assert (
+        can_merge_pr(
+            parse_review_routing_tag(
+                "kyber-tag.state=ready_for_merge\nhead_ref_oid=stale"
+            ),
+            pr,
+        )
+        is False
+    )
+    assert (
+        can_merge_pr(
+            parse_review_routing_tag(
+                "kyber-tag.state=review_findings\nnext_action=coding_subagent\nhead_ref_oid=abc123"
+            ),
+            pr,
+        )
+        is False
+    )
+    assert can_merge_pr(None, pr) is False
 
 
 @pytest.mark.asyncio
