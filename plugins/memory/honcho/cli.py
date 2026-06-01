@@ -290,8 +290,8 @@ def _resolve_api_key(cfg: dict) -> str:
     config shapes, e.g. ``localhost:8000``) still pass — the Honcho SDK
     will reject them itself with a clearer error than ours.
     """
-    host_key = _host_block(cfg, _host_key()).get("apiKey")
-    key = host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+    from plugins.memory.honcho.client import resolve_api_key_from_raw
+    key = resolve_api_key_from_raw(cfg, _host_key()) or ""
     if not key:
         base_url = cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "")
         base_url = (base_url or "").strip()
