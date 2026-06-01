@@ -83,3 +83,12 @@ class TestAuditSkillSecurity:
         h1 = content_hash(SAFE_SKILL)
         h2 = content_hash(SAFE_SKILL)
         assert h1 == h2
+
+    def test_github_auth_not_false_positive_fail(self):
+        """Bundled github-auth uses tokens and .env by design — must not FAIL on prose."""
+        repo_root = Path(__file__).resolve().parents[2]
+        result = audit_skill_security(repo_root / "skills" / "github" / "github-auth")
+        assert result.verdict in ("pass", "review")
+        assert "prompt_injection_ignore" not in {f.check_id for f in result.findings}
+        assert "sudo_usage" not in {f.check_id for f in result.findings}
+        assert "shell_background_detach" not in {f.check_id for f in result.findings}
