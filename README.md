@@ -244,6 +244,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\start-hermes
 
 Set `HERMES_WEBUI_ROOT` if not using `~/Desktop/hermes-webui`.
 
+**Host migration / recovery:**
+
+Surface-to-mothership recovery is documented in `docs/migration/windows_surface_to_mothership.md`.
+Use `scripts/windows/export-hermes-host-migration.ps1`,
+`scripts/windows/import-hermes-host-migration.ps1`, and
+`scripts/windows/verify-hermes-host-migration.ps1` to move config and scheduled-task state without committing secrets.
+
 ---
 
 ## Inherited Upstream Capabilities
