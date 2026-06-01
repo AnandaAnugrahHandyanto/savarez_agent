@@ -33,7 +33,8 @@ function renderHome(){
   const cards=[['Action required',q.action_required],['Open tasks',q.open_tasks],['Running',q.running_tasks],['Blocked',q.blocked_tasks],['Approvals',q.pending_approvals],['Failed runs',q.failed_executions],['Review',q.review_tasks],['Completed',q.completed_tasks]];
   $('#metricCards').innerHTML=cards.map(([k,v])=>`<div class="card"><label>${k}</label><strong>${v}</strong></div>`).join('');
   $('#nextBestAction').innerHTML=`<div class="item"><div class="title">${escapeHtml(state.dashboard.next_best_action.label)}</div><div class="meta">kind=${escapeHtml(state.dashboard.next_best_action.kind)}</div></div>`;
-  $('#doniStatus').innerHTML=`<p>Status: ${badge(state.dashboard.status.status)}</p><p class="path">Home: ${escapeHtml(state.dashboard.status.agents_os_home)}</p><p class="path">DB: ${escapeHtml(state.dashboard.status.state_db)}</p>`;
+  const ui=state.dashboard.status.operator_ui||{};
+  $('#doniStatus').innerHTML=`<p>Status: ${badge(state.dashboard.status.status)} ${badge(ui.local_only?'local-only':'check')}</p><p>UI: ${escapeHtml(ui.product||'Mission Control')} · launcher=${escapeHtml(Boolean(ui.launcher_hardened))}</p><p>Safe stop: ${escapeHtml(ui.safe_stop||'Ctrl+C on web process')}</p><p class="path">Home: ${escapeHtml(state.dashboard.status.agents_os_home)}</p><p class="path">DB: ${escapeHtml(state.dashboard.status.state_db)}</p>`;
   $('#recentEvents').innerHTML=state.dashboard.events.slice(0,8).map(e=>item(escapeHtml(e.event_type), `${escapeHtml(e.created_at)} task=${escapeHtml(e.task_id||'-')}`)).join('') || '<p class="muted">No events.</p>';
   $('#latestArtifacts').innerHTML=state.dashboard.artifacts.slice(0,6).map(a=>item(escapeHtml(a.title), `${escapeHtml(a.kind)} · ${escapeHtml(a.path)}`, `<button onclick="showArtifact('${a.id}')">Open artifact</button>`)).join('') || '<p class="muted">No artifacts.</p>';
 }

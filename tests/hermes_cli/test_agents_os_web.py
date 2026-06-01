@@ -425,3 +425,59 @@ def test_cli_web_json_and_http_server_smoke(tmp_path, monkeypatch, capsys):
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_web_json_reports_launcher_health_and_windows_command(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    assert agents_os.main(["--vault-root", str(vault), "web", "--port", "59999", "--json"]) == 0
+    payload = _json(capsys)
+
+    assert payload["launcher"]["mode"] == "status"
+    assert payload["launcher"]["local_only"] is True
+    assert payload["launcher"]["health_url"] == "http://127.0.0.1:59999/api/status"
+    assert payload["launcher"]["ui_url"] == "http://127.0.0.1:59999/"
+    assert payload["launcher"]["existing_server"]["running"] is False
+    assert "HERMES_HOME=" in payload["launcher"]["start_command"]
+    assert "agents-os" in payload["launcher"]["start_command"]
+    assert " web " in payload["launcher"]["start_command"]
+    assert payload["launcher"]["windows_launcher"]["path"].endswith("Launch-Agents-OS-Mission-Control.bat")
+    assert "127.0.0.1:59999" in payload["launcher"]["windows_launcher"]["command"]
+
+
+def test_web_json_detects_existing_local_server_for_reuse(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    from hermes_cli.agents_os_web import MissionControlWebApp, create_server
+
+    app = MissionControlWebApp(agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault))))
+    server = create_server(app, host="127.0.0.1", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = str(server.server_address[1])
+        assert agents_os.main(["--vault-root", str(vault), "web", "--port", port, "--json"]) == 0
+        payload = _json(capsys)
+        existing = payload["launcher"]["existing_server"]
+        assert existing["running"] is True
+        assert existing["reusable"] is True
+        assert existing["status_url"].endswith(f":{port}/api/status")
+        assert existing["status"]["ok"] is True
+        assert existing["status"]["data"]["bind_host"] == "127.0.0.1"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_status_payload_exposes_operator_ui_health_contract(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    from hermes_cli.agents_os_web import MissionControlWebApp
+
+    app = MissionControlWebApp(agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault))))
+    status = app.handle_json("GET", "/api/status")
+
+    ui = status["data"]["operator_ui"]
+    assert ui["product"] == "Agents OS Mission Control"
+    assert ui["local_only"] is True
+    assert ui["launcher_hardened"] is True
+    assert ui["safe_stop"] == "Ctrl+C on the Mission Control web process only"
+    assert ui["gateway_restart"] is False
+    assert ui["required_panels"] == ["home", "tasks", "approvals", "runs", "sessions", "skills", "cron", "agents", "artifacts", "workflows", "safety"]

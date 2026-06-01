@@ -10,6 +10,7 @@ import argparse
 import json
 from datetime import datetime, timezone
 import mimetypes
+import os
 import re
 import sqlite3
 import sys
@@ -20,6 +21,8 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+import urllib.error
+import urllib.request
 from urllib.parse import parse_qs, urlparse
 
 from hermes_cli import agents_os
@@ -43,6 +46,7 @@ API_ROUTES = [
     "/api/cron",
 ]
 STATIC_DIR = Path(__file__).with_name("agents_os_web_static")
+REQUIRED_PANELS = ["home", "tasks", "approvals", "runs", "sessions", "skills", "cron", "agents", "artifacts", "workflows", "safety"]
 
 
 def ok(data: Any) -> dict[str, Any]:
@@ -120,6 +124,15 @@ class MissionControlWebApp:
             "vault_root": str(self.paths.vault_root),
             "schema_version": checks["schema_version"],
             "routes": ["/"] + API_ROUTES,
+            "operator_ui": {
+                "product": "Agents OS Mission Control",
+                "local_only": True,
+                "launcher_hardened": True,
+                "safe_stop": "Ctrl+C on the Mission Control web process only",
+                "gateway_restart": False,
+                "required_panels": REQUIRED_PANELS,
+                "health_contract": "GET /api/status must return ok=true over 127.0.0.1 before operator handoff",
+            },
             "safety": {
                 "local_only": True,
                 "network_side_effects": False,
@@ -954,6 +967,7 @@ class MissionControlWebApp:
         return RequestResult(200, ctype, target.read_bytes())
 
 
+
 def create_server(app: MissionControlWebApp, host: str = "127.0.0.1", port: int = 18790) -> ThreadingHTTPServer:
     if host not in {"127.0.0.1", "localhost"}:
         raise ValueError("Agents OS Mission Control web server is local-only; host must be 127.0.0.1")
@@ -962,6 +976,7 @@ def create_server(app: MissionControlWebApp, host: str = "127.0.0.1", port: int 
         def _send(self, result: RequestResult) -> None:
             self.send_response(result.status)
             self.send_header("Content-Type", result.content_type)
+            self.send_header("X-Agents-OS-Local-Only", "true")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(result.body)
@@ -980,6 +995,63 @@ def create_server(app: MissionControlWebApp, host: str = "127.0.0.1", port: int 
     return ThreadingHTTPServer((host, port), Handler)
 
 
+def _probe_existing_server(host: str, port: int) -> dict[str, Any]:
+    status_url = f"http://{host}:{port}/api/status"
+    result: dict[str, Any] = {"running": False, "reusable": False, "status_url": status_url, "status": None, "error": None}
+    try:
+        with urllib.request.urlopen(status_url, timeout=1.5) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        payload = json.loads(raw)
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        result["error"] = exc.__class__.__name__
+        return result
+    result["running"] = True
+    result["status"] = payload
+    data = payload.get("data") if isinstance(payload, dict) else None
+    result["reusable"] = bool(
+        payload.get("ok") is True
+        and isinstance(data, dict)
+        and data.get("operator_ui", {}).get("product") == "Agents OS Mission Control"
+        and data.get("safety", {}).get("local_only") is True
+    )
+    return result
+
+
+def _write_windows_launcher(paths: agents_os.AgentsOSPaths, host: str, port: int) -> dict[str, str]:
+    launcher_dir = paths.root / "launchers"
+    launcher_path = launcher_dir / "Launch-Agents-OS-Mission-Control.bat"
+    command = f"start \"Agents OS Mission Control\" http://{host}:{port}/"
+    try:
+        launcher_dir.mkdir(parents=True, exist_ok=True)
+        launcher_path.write_text(
+            "@echo off\r\n"
+            "setlocal\r\n"
+            "REM Local-only browser launcher. Does not restart Hermes gateway.\r\n"
+            f"{command}\r\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    return {"path": str(launcher_path), "command": command}
+
+
+def _launcher_payload(args: argparse.Namespace, app: MissionControlWebApp, host: str, port: int) -> dict[str, Any]:
+    url = f"http://{host}:{port}"
+    hermes_home = os.environ.get("HERMES_HOME") or str(app.paths.home)
+    vault_arg = f" --vault-root {app.paths.vault_root}" if app.paths.vault_root else ""
+    start_command = f"HERMES_HOME={hermes_home} hermes agents-os{vault_arg} web --host {host} --port {port}"
+    return {
+        "mode": "status",
+        "local_only": True,
+        "ui_url": f"{url}/",
+        "health_url": f"{url}/api/status",
+        "existing_server": _probe_existing_server(host, port),
+        "start_command": start_command,
+        "safe_stop": "Ctrl+C on the Mission Control web process only; do not restart Hermes gateway",
+        "windows_launcher": _write_windows_launcher(app.paths, host, port),
+    }
+
+
 def web_cmd(args: argparse.Namespace) -> int:
     host = args.host or "127.0.0.1"
     if host not in {"127.0.0.1", "localhost"}:
@@ -987,14 +1059,35 @@ def web_cmd(args: argparse.Namespace) -> int:
         return 2
     app = MissionControlWebApp(agents_os.resolve_paths(args), bind_host=host)
     routes = ["/"] + API_ROUTES
-    payload = {"status": "ok", "bind_host": host, "port": args.port, "url": f"http://{host}:{args.port}", "routes": routes, "safety": app.status_payload()["safety"]}
+    launcher = _launcher_payload(args, app, host, args.port)
+    payload = {
+        "status": "ok",
+        "bind_host": host,
+        "port": args.port,
+        "url": f"http://{host}:{args.port}",
+        "routes": routes,
+        "safety": app.status_payload()["safety"],
+        "operator_ui": app.status_payload()["operator_ui"],
+        "launcher": launcher,
+    }
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    if launcher["existing_server"].get("reusable"):
+        print(f"Agents OS Mission Control already running: {launcher['ui_url']}")
+        print("Reusing existing local-only server. Hermes gateway was not restarted.")
+        if args.open:
+            try:
+                webbrowser.open(launcher["ui_url"])
+            except Exception:
+                pass
         return 0
     server = create_server(app, host=host, port=args.port)
     url = f"http://{host}:{server.server_address[1]}"
     print(f"Agents OS Mission Control: {url}")
-    print("Local-only. Press Ctrl+C to stop.")
+    print(f"Health: {url}/api/status")
+    print(f"Windows launcher: {launcher['windows_launcher']['path']}")
+    print("Local-only. Press Ctrl+C to stop this web process only. Hermes gateway is not restarted.")
     if args.open:
         try:
             webbrowser.open(url)
