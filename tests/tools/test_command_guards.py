@@ -9,6 +9,7 @@ import tools.approval as approval_module
 from tools.approval import (
     approve_session,
     check_all_command_guards,
+    check_dangerous_command,
     is_approved,
     set_current_session_key,
     reset_current_session_key,
@@ -38,6 +39,7 @@ def _clean_state():
     approval_module._session_approved.clear()
     approval_module._pending.clear()
     approval_module._permanent_approved.clear()
+    approval_module._session_yolo.clear()
     saved = {}
     for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
         if k in os.environ:
@@ -46,6 +48,7 @@ def _clean_state():
     approval_module._session_approved.clear()
     approval_module._pending.clear()
     approval_module._permanent_approved.clear()
+    approval_module._session_yolo.clear()
     for k, v in saved.items():
         os.environ[k] = v
     for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
@@ -88,6 +91,59 @@ class TestTirithAllowSafeCommand:
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
     def test_noninteractive_skips_external_scan(self, mock_tirith):
         result = check_all_command_guards("echo hello", "local")
+        assert result["approved"] is True
+        mock_tirith.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Raw GitHub PR creation is a hard worker-publish block
+# ---------------------------------------------------------------------------
+
+class TestRawGhPrCreateGuard:
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_raw_gh_pr_create_blocks_before_tirith_or_auto_allow(self, mock_tirith):
+        result = check_all_command_guards(
+            "gh pr create --title 'Small fix' --body 'Body' --base main",
+            "local",
+        )
+
+        assert result["approved"] is False
+        assert result["raw_pr_create_guard"] is True
+        assert "gh pr create" in result["message"]
+        mock_tirith.assert_not_called()
+
+    def test_raw_gh_pr_create_blocks_legacy_entrypoint_too(self):
+        result = check_dangerous_command(
+            "gh pr create --title 'Small fix' --body 'Body'",
+            "local",
+        )
+
+        assert result["approved"] is False
+        assert result["raw_pr_create_guard"] is True
+
+    def test_raw_gh_pr_create_blocks_even_with_session_yolo(self):
+        token = set_current_session_key("raw-pr-create-yolo")
+        approval_module.enable_session_yolo("raw-pr-create-yolo")
+        try:
+            result = check_all_command_guards(
+                "bash -lc 'gh pr create --title x --body y'",
+                "local",
+            )
+        finally:
+            reset_current_session_key(token)
+
+        assert result["approved"] is False
+        assert result["raw_pr_create_guard"] is True
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_other_gh_pr_commands_still_allowed(self, mock_tirith):
+        result = check_all_command_guards("gh pr view 123 --json files", "local")
+        assert result["approved"] is True
+        mock_tirith.assert_not_called()
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_searching_for_command_text_is_allowed(self, mock_tirith):
+        result = check_all_command_guards("rg 'gh pr create' tools tests", "local")
         assert result["approved"] is True
         mock_tirith.assert_not_called()
 

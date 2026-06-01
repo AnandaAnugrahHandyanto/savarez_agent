@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -325,6 +326,63 @@ def _sudo_stdin_block_result(description: str) -> dict:
             "attack vector. Set SUDO_PASSWORD in your .env file if the "
             "agent needs passwordless sudo, or run the sudo command "
             "manually in your own terminal."
+        ),
+    }
+
+
+# =========================================================================
+# Raw GitHub PR creation guard
+# =========================================================================
+#
+# Worker agents must not publish GitHub PRs directly from the terminal tool.
+# A raw `gh pr create` has no branch-scope contract: the agent can push a
+# small intended commit from a branch that also contains a stale fork stack,
+# and GitHub will publish the whole `base...head` diff. PR-body lint cannot
+# catch that. Require an external/operator PR path with a real pre-create
+# diff guard instead.
+_RAW_GH_PR_CREATE_RE = re.compile(r'\bgh\s+pr\s+create\b', re.IGNORECASE)
+_RAW_GH_PR_CREATE_READ_ONLY_HEADS = {
+    "echo",
+    "printf",
+    "grep",
+    "rg",
+    "ripgrep",
+}
+
+
+def _check_raw_gh_pr_create_guard(command: str) -> tuple:
+    """Detect raw `gh pr create` attempts from agent terminal commands."""
+    normalized = _normalize_command_for_detection(command)
+    if not _RAW_GH_PR_CREATE_RE.search(normalized):
+        return (False, None)
+    try:
+        tokens = shlex.split(normalized, posix=True)
+    except ValueError:
+        tokens = normalized.split()
+    if tokens:
+        head = tokens[0].lower()
+        # Let agents inspect code/docs mentioning the command. These heads are
+        # read-only by convention; `bash -lc "gh pr create"` and compounds still
+        # block because their head is not one of these search/print commands.
+        if head in _RAW_GH_PR_CREATE_READ_ONLY_HEADS:
+            return (False, None)
+        if head == "git" and len(tokens) > 1 and tokens[1].lower() == "grep":
+            return (False, None)
+    return (True, "raw GitHub PR creation from agent terminal (gh pr create)")
+
+
+def _raw_gh_pr_create_block_result(description: str) -> dict:
+    """Build the standard block result for raw PR publishing."""
+    return {
+        "approved": False,
+        "hardline": True,
+        "raw_pr_create_guard": True,
+        "message": (
+            f"BLOCKED: {description}. Worker agents must not call "
+            "`gh pr create` directly because it can publish an entire stacked "
+            "or fork-only branch history. Use an operator-reviewed PR opener "
+            "with a branch diff/scope guard, or run the GitHub PR creation "
+            "yourself outside the agent."
         ),
     }
 
@@ -971,6 +1029,12 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    is_raw_pr_create, raw_pr_create_desc = _check_raw_gh_pr_create_guard(command)
+    if is_raw_pr_create:
+        logger.warning("Raw gh pr create block: %s (command: %s)",
+                       raw_pr_create_desc, command[:200])
+        return _raw_gh_pr_create_block_result(raw_pr_create_desc)
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
@@ -1211,6 +1275,12 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    is_raw_pr_create, raw_pr_create_desc = _check_raw_gh_pr_create_guard(command)
+    if is_raw_pr_create:
+        logger.warning("Raw gh pr create block: %s (command: %s)",
+                       raw_pr_create_desc, command[:200])
+        return _raw_gh_pr_create_block_result(raw_pr_create_desc)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
