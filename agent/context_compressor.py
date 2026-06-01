@@ -708,6 +708,13 @@ class ContextCompressor(ContextEngine):
         """
         if rough_tokens < self.threshold_tokens:
             return False
+        # After a fresh compression, the rough estimate is known to overcount
+        # tool schema tokens by 20-30K.  Defer to the next real API call for
+        # an accurate count, unless the estimate is critically high (>=95% of
+        # the context window — at that point we shouldn't risk a rejection).
+        if self.awaiting_real_usage_after_compression:
+            if rough_tokens < self.context_length * 0.95:
+                return True
         if self.last_real_prompt_tokens <= 0:
             return False
         if self.last_real_prompt_tokens >= self.threshold_tokens:

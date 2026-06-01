@@ -625,7 +625,10 @@ def run_conversation(
             # Skipped when deferring — a deferred estimate is known to over-count
             # vs the last real provider prompt, so trusting it for the display
             # would re-introduce the very desync we're avoiding.
-            if _preflight_tokens > (_compressor.last_prompt_tokens or 0):
+            # Don't overwrite the -1 sentinel (compression just ran,
+            # awaiting real API data). Updating it here would re-trigger
+            # compression via should_compress() in the step below.
+            if _compressor.last_prompt_tokens != -1 and _preflight_tokens > (_compressor.last_prompt_tokens or 0):
                 _compressor.last_prompt_tokens = _preflight_tokens
 
         if _preflight_deferred:
