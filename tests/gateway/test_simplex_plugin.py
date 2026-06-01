@@ -7,6 +7,8 @@ sibling platform-plugin tests on the same xdist worker.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -65,6 +67,19 @@ class _RespondingWS:
         await self.adapter._handle_event(
             {"corrId": decoded["corrId"], "resp": self.response}
         )
+
+
+class _PingableQuietWS:
+    def __init__(self):
+        self.closed = False
+        self.ping_count = 0
+
+    async def ping(self):
+        self.ping_count += 1
+        return None
+
+    async def close(self):
+        self.closed = True
 
 
 def _install_fake_websockets(monkeypatch, *, connect=None):
@@ -374,19 +389,72 @@ async def test_send_streaming_uses_live_flag_and_returns_item_id(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 8. Native call signaling commands
+# 8. WebSocket health monitor
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_health_monitor_keeps_quiet_ping_healthy_ws(monkeypatch, caplog):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    ws = _PingableQuietWS()
+    adapter._ws = ws
+    adapter._running = True
+    adapter._last_ws_activity = (
+        _simplex.time.time() - _simplex.HEALTH_CHECK_STALE_THRESHOLD - 5
+    )
+    monkeypatch.setattr(_simplex, "HEALTH_CHECK_INTERVAL", 0.01)
+    caplog.set_level("WARNING")
+
+    task = asyncio.create_task(adapter._health_monitor())
+    await asyncio.sleep(0.05)
+    adapter._running = False
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert ws.ping_count >= 1
+    assert ws.closed is False
+    assert "forcing reconnect" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# 9. Native call signaling commands
 # ---------------------------------------------------------------------------
 
 def test_native_call_offer_command_uses_compact_json():
     cmd = _simplex._native_call_offer_command(
         "42",
-        {"rtcSession": "offer-b64", "rtcIceCandidates": "ice-b64"},
+        {
+            "rtcSession": "offer-b64",
+            "rtcIceCandidates": "ice-b64",
+            "callDhPubKey": "dh-pub-b64",
+        },
     )
 
     assert cmd == (
         '/_call offer @42 {"callType":{"media":"audio","capabilities":{"encryption":false}},'
-        '"rtcSession":{"rtcSession":"offer-b64","rtcIceCandidates":"ice-b64"}}'
+        '"rtcSession":{"rtcSession":"offer-b64","rtcIceCandidates":"ice-b64"},'
+        '"callDhPubKey":"dh-pub-b64"}'
     )
+
+
+def test_native_call_invite_command_uses_audio_encryption():
+    cmd = _simplex._native_call_invite_command("42", media="audio", encrypted=True)
+
+    assert cmd == '/_call invite @42 {"media":"audio","capabilities":{"encryption":true}}'
+
+
+def test_native_call_answer_command_uses_compact_json():
+    cmd = _simplex._native_call_answer_command(
+        "42",
+        {
+            "rtcSession": "answer-b64",
+            "rtcIceCandidates": "answer-ice-b64",
+        },
+    )
+
+    assert cmd == '/_call answer @42 {"rtcSession":"answer-b64","rtcIceCandidates":"answer-ice-b64"}'
 
 
 @pytest.mark.asyncio
@@ -415,6 +483,51 @@ async def test_send_native_call_offer_sends_exact_command():
 
 
 @pytest.mark.asyncio
+async def test_send_native_call_invitation_sends_exact_command():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    sent = []
+
+    async def fake_send_command(cmd):
+        sent.append(cmd)
+        return {"type": "ok"}
+
+    adapter._send_command = fake_send_command  # type: ignore[method-assign]
+
+    ok = await adapter.send_native_call_invitation("42", media="audio", encrypted=True)
+
+    assert ok is True
+    assert sent == [
+        '/_call invite @42 {"media":"audio","capabilities":{"encryption":true}}'
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_native_call_answer_sends_exact_command():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    sent = []
+
+    async def fake_send_command(cmd):
+        sent.append(cmd)
+        return {"type": "ok"}
+
+    adapter._send_command = fake_send_command  # type: ignore[method-assign]
+
+    ok = await adapter.send_native_call_answer(
+        "42",
+        {"rtcSession": "answer-b64", "rtcIceCandidates": "answer-ice-b64"},
+    )
+
+    assert ok is True
+    assert sent == [
+        '/_call answer @42 {"rtcSession":"answer-b64","rtcIceCandidates":"answer-ice-b64"}'
+    ]
+
+
+@pytest.mark.asyncio
 async def test_send_native_call_offer_serializes_native_media_offer():
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
@@ -430,6 +543,7 @@ async def test_send_native_call_offer_serializes_native_media_offer():
         rtc_session="offer-b64",
         rtc_ice_candidates="ice-b64",
         capabilities={"encryption": True},
+        call_dh_pub_key="dh-pub-b64",
     )
 
     ok = await adapter.send_native_call_offer("42", offer, media="audio")
@@ -437,7 +551,8 @@ async def test_send_native_call_offer_serializes_native_media_offer():
     assert ok is True
     assert sent == [
         '/_call offer @42 {"callType":{"media":"audio","capabilities":{"encryption":true}},'
-        '"rtcSession":{"rtcSession":"offer-b64","rtcIceCandidates":"ice-b64"}}'
+        '"rtcSession":{"rtcSession":"offer-b64","rtcIceCandidates":"ice-b64"},'
+        '"callDhPubKey":"dh-pub-b64"}'
     ]
 
 
@@ -927,6 +1042,226 @@ async def test_handle_new_chat_item_routes_native_call_to_enabled_handler():
 
 
 @pytest.mark.asyncio
+async def test_handle_new_chat_item_routes_call_shaped_content_type_to_handler():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={
+            "ws_url": "ws://localhost:5225",
+            "native_calls": {"enabled": True},
+        },
+    )
+    adapter = SimplexAdapter(cfg)
+    adapter.handle_message = AsyncMock()  # type: ignore[method-assign]
+    adapter.reject_native_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    adapter.send = AsyncMock()  # type: ignore[method-assign]
+    adapter._mark_chat_items_read = AsyncMock()  # type: ignore[method-assign]
+    adapter.gateway_runner = MagicMock()
+    adapter.gateway_runner._is_user_authorized.return_value = True
+    adapter.native_call_handler = AsyncMock(
+        return_value=NativeCallResult(ok=True, code="accepted", message="")
+    )
+
+    raw_content = {
+        "type": "rcvCallInvitation",
+        "status": "pending",
+        "duration": 0,
+        "callType": {"media": "audio", "capabilities": {"encryption": True}},
+        "sharedKey": "shared-secret",
+    }
+    await adapter._handle_new_chat_item(
+        {
+            "chatInfo": {
+                "type": "direct",
+                "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+            },
+            "chatItem": {
+                "chatDir": {"type": "directRcv"},
+                "meta": {"itemId": 18, "itemStatus": {"type": "rcvNew"}},
+                "content": raw_content,
+            },
+        }
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    adapter.native_call_handler.assert_awaited_once()
+    _source, invitation = adapter.native_call_handler.await_args.args
+    assert invitation.contact_id == "4"
+    assert invitation.media == "audio"
+    assert invitation.encrypted is True
+    assert invitation.shared_key == "shared-secret"
+    adapter.reject_native_call.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+    adapter._mark_chat_items_read.assert_awaited_once_with("4", [18])
+
+
+@pytest.mark.asyncio
+async def test_duplicate_pending_native_call_events_start_one_handler():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={
+            "ws_url": "ws://localhost:5225",
+            "native_calls": {"enabled": True},
+        },
+    )
+    adapter = SimplexAdapter(cfg)
+    adapter.handle_message = AsyncMock()  # type: ignore[method-assign]
+    adapter.reject_native_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    adapter.send = AsyncMock()  # type: ignore[method-assign]
+    adapter._mark_chat_items_read = AsyncMock()  # type: ignore[method-assign]
+    adapter.gateway_runner = MagicMock()
+    adapter.gateway_runner._is_user_authorized.return_value = True
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    handler_calls = 0
+
+    async def _handler(_source, _invitation):
+        nonlocal handler_calls
+        handler_calls += 1
+        if handler_calls == 1:
+            started.set()
+            await release.wait()
+        return NativeCallResult(ok=True, code="accepted", message="")
+
+    adapter.native_call_handler = AsyncMock(side_effect=_handler)
+
+    first = asyncio.create_task(
+        adapter._handle_call_invitation(
+            {
+                "type": "callInvitation",
+                "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+                "status": "pending",
+                "duration": 0,
+                "callType": {
+                    "media": "audio",
+                    "capabilities": {"encryption": True},
+                },
+                "sharedKey": "shared-secret",
+            }
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    await adapter._handle_new_chat_item(
+        {
+            "chatInfo": {
+                "type": "direct",
+                "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+            },
+            "chatItem": {
+                "chatDir": {"type": "directRcv"},
+                "meta": {"itemId": 14, "itemStatus": {"type": "rcvNew"}},
+                "content": {
+                    "type": "rcvCall",
+                    "status": "pending",
+                    "duration": 0,
+                    "callType": {
+                        "media": "audio",
+                        "capabilities": {"encryption": True},
+                    },
+                    "sharedKey": "shared-secret",
+                },
+            },
+        }
+    )
+
+    assert adapter.native_call_handler.await_count == 1
+    adapter.reject_native_call.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+    adapter._mark_chat_items_read.assert_awaited_once_with("4", [14])
+
+    release.set()
+    await asyncio.wait_for(first, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_accepted_native_call_suppresses_duplicate_pending_items_until_end():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={
+            "ws_url": "ws://localhost:5225",
+            "native_calls": {"enabled": True},
+        },
+    )
+    adapter = SimplexAdapter(cfg)
+    adapter.handle_message = AsyncMock()  # type: ignore[method-assign]
+    adapter.reject_native_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    adapter.send = AsyncMock()  # type: ignore[method-assign]
+    adapter._mark_chat_items_read = AsyncMock()  # type: ignore[method-assign]
+    adapter.gateway_runner = MagicMock()
+    adapter.gateway_runner._is_user_authorized.return_value = True
+    adapter.native_call_handler = AsyncMock(
+        return_value=NativeCallResult(ok=True, code="accepted", message="")
+    )
+    adapter.native_call_signal_handler = AsyncMock(
+        return_value=types.SimpleNamespace(ok=True)
+    )
+
+    await adapter._handle_call_invitation(
+        {
+            "type": "callInvitation",
+            "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+            "status": "pending",
+            "duration": 0,
+            "callType": {"media": "audio"},
+        }
+    )
+
+    await adapter._handle_new_chat_item(
+        {
+            "chatInfo": {
+                "type": "direct",
+                "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+            },
+            "chatItem": {
+                "chatDir": {"type": "directRcv"},
+                "meta": {"itemId": 14, "itemStatus": {"type": "rcvNew"}},
+                "content": {
+                    "type": "rcvCall",
+                    "status": "pending",
+                    "duration": 0,
+                    "callType": {"media": "audio"},
+                },
+            },
+        }
+    )
+
+    assert adapter.native_call_handler.await_count == 1
+    adapter._mark_chat_items_read.assert_awaited_once_with("4", [14])
+
+    await adapter._handle_event(
+        {
+            "type": "callEnded",
+            "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+        }
+    )
+    await adapter._handle_new_chat_item(
+        {
+            "chatInfo": {
+                "type": "direct",
+                "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+            },
+            "chatItem": {
+                "chatDir": {"type": "directRcv"},
+                "meta": {"itemId": 15, "itemStatus": {"type": "rcvNew"}},
+                "content": {
+                    "type": "rcvCall",
+                    "status": "pending",
+                    "duration": 0,
+                    "callType": {"media": "audio"},
+                },
+            },
+        }
+    )
+
+    assert adapter.native_call_handler.await_count == 2
+    assert adapter._mark_chat_items_read.await_args_list[-1].args == ("4", [15])
+
+
+@pytest.mark.asyncio
 async def test_handle_new_chat_item_handler_failure_sends_loud_message_without_double_reject():
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(
@@ -975,6 +1310,28 @@ async def test_handle_new_chat_item_handler_failure_sends_loud_message_without_d
     adapter.send.assert_awaited_once()
     assert "sidecar failure" in adapter.send.await_args.args[1]
     adapter._mark_chat_items_read.assert_awaited_once_with("4", [15])
+
+
+@pytest.mark.asyncio
+async def test_configure_native_call_handler_attaches_gateway_runner_for_authorization():
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={
+            "ws_url": "ws://localhost:5225",
+            "native_calls": {"enabled": True},
+        },
+    )
+    adapter = SimplexAdapter(cfg)
+    runner = object.__new__(GatewayRunner)
+    runner._is_user_authorized = lambda _source: True
+
+    runner._configure_native_call_handler(adapter)
+
+    assert adapter.gateway_runner is runner
+    assert callable(adapter.native_call_handler)
+    assert callable(adapter.native_call_signal_handler)
 
 
 @pytest.mark.asyncio
@@ -1139,6 +1496,110 @@ async def test_handle_event_rejects_simplex_call_invitation_event():
     adapter._send_command.assert_awaited_once_with("/_call reject @4")
     adapter.send.assert_awaited_once()
     assert "cannot answer native SimpleX calls yet" in adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_handle_event_routes_call_answer_to_native_signal_handler():
+    """SimpleX call answers must reach the live native sidecar session."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "native_calls": {"enabled": True}},
+    )
+    adapter = SimplexAdapter(cfg)
+    adapter.handle_message = AsyncMock()  # type: ignore[method-assign]
+    adapter.native_call_signal_handler = AsyncMock(
+        return_value=types.SimpleNamespace(ok=True)
+    )
+
+    await adapter._handle_event(
+        {
+            "type": "callAnswer",
+            "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+            "answer": {
+                "rtcSession": "answer-b64",
+                "rtcIceCandidates": "answer-ice-b64",
+            },
+        }
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    adapter.native_call_signal_handler.assert_awaited_once()
+    source, signal = adapter.native_call_signal_handler.await_args.args
+    assert source.chat_id == "4"
+    assert signal.contact_id == "4"
+    assert signal.signal_type == "answer"
+    assert signal.payload == {
+        "rtcSession": "answer-b64",
+        "rtcIceCandidates": "answer-ice-b64",
+    }
+
+
+@pytest.mark.asyncio
+async def test_handle_event_routes_call_offer_to_native_signal_handler():
+    """SimpleX outbound call offers must trigger our local WebRTC answer path."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "native_calls": {"enabled": True}},
+    )
+    adapter = SimplexAdapter(cfg)
+    adapter.native_call_signal_handler = AsyncMock(
+        return_value=types.SimpleNamespace(ok=True)
+    )
+
+    await adapter._handle_event(
+        {
+            "type": "callOffer",
+            "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+            "callType": {"media": "audio", "capabilities": {"encryption": True}},
+            "offer": {
+                "rtcSession": "offer-b64",
+                "rtcIceCandidates": "offer-ice-b64",
+            },
+            "sharedKey": "shared-b64",
+            "askConfirmation": False,
+        }
+    )
+
+    adapter.native_call_signal_handler.assert_awaited_once()
+    source, signal = adapter.native_call_signal_handler.await_args.args
+    assert source.chat_id == "4"
+    assert signal.contact_id == "4"
+    assert signal.signal_type == "offer"
+    assert signal.payload == {
+        "rtcSession": "offer-b64",
+        "rtcIceCandidates": "offer-ice-b64",
+        "sharedKey": "shared-b64",
+    }
+    assert signal.raw["callType"]["capabilities"]["encryption"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_event_routes_call_extra_info_to_native_signal_handler():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "native_calls": {"enabled": True}},
+    )
+    adapter = SimplexAdapter(cfg)
+    adapter.native_call_signal_handler = AsyncMock(
+        return_value=types.SimpleNamespace(ok=True)
+    )
+
+    await adapter._handle_event(
+        {
+            "type": "callExtraInfo",
+            "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+            "extraInfo": {"rtcIceCandidates": "extra-ice-b64"},
+        }
+    )
+
+    adapter.native_call_signal_handler.assert_awaited_once()
+    _source, signal = adapter.native_call_signal_handler.await_args.args
+    assert signal.contact_id == "4"
+    assert signal.signal_type == "extra"
+    assert signal.payload == {"rtcIceCandidates": "extra-ice-b64"}
 
 
 @pytest.mark.asyncio
