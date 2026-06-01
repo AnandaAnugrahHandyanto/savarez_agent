@@ -6315,6 +6315,9 @@ def _gateway_command_inner(args):
             try:
                 gateway_windows.restart()
                 return
+            except gateway_windows.GatewayRestartPrerequisiteError as exc:
+                print(f"✗ {exc}")
+                sys.exit(1)
             except (subprocess.CalledProcessError, RuntimeError, OSError):
                 pass
 
