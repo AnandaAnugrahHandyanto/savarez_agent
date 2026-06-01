@@ -1,11 +1,12 @@
 # Project State: UA Flywheel Integration
 
-> **Last updated:** 2026-05-30T16:37:37Z (Phase 3 D1-D3 merged to local main at `0133a0a4b` via PR #6; CI green)
+> **Last updated:** 2026-06-01T03:05:36Z (Phase 4 approved for autonomous execution on `feat/ua-phase4-structural-semantic`; D1 active)
 > **Full state:** `.plans/project-state-ua-flywheel.md`
 > **Strategy:** `.plans/ua-incorporation-strategy.md`
 > **Phase 2 plan:** `.plans/phase-2-flywheel-ua-integration.md`
 > **Phase 3 plan:** `.plans/phase-3-incremental-analysis.md`
-> **Execution beads:** D1: `.beads/phase3-d1-fingerprint-model.md`, D2: `.beads/phase3-d2-incremental-scan.md`, D3: `.beads/phase3-d3-assemble-graph.md`, D4: `.beads/phase3-d4-skill-integration-deferred.md`
+> **Phase 4 draft plan:** `.plans/phase-4-structural-semantic-understanding.md`
+> **Execution beads:** Phase 4 D1-D7 draft beads under `.beads/phase4-*.md`; Phase 3 D4 remains deferred.
 
 ## Phase 1 — ✅ COMPLETE
 Committed: `24356edcd` | Tests: 80 passed
@@ -40,6 +41,25 @@ Committed: `24356edcd` | Tests: 80 passed
 - D3 graph assembly: 64 D3 tests PASS, 132 regression tests PASS, fixture CLI E2E PASS, real pipeline E2E PASS, absolute-path canonicalization PASS, reviewer PASS. Evidence: `/tmp/ua-flywheel-phase3-d3-verification-latest.log`. Merged at `0133a0a4b` via PR #6.
 - CI on local main: Tests ✅, Lint ✅, Nix ✅.
 - D4 deferred by default; no execution authorized.
+
+## Phase 4 — 🚧 APPROVED / EXECUTING
+- JC approval received 2026-06-01T03:05:36Z:
+  > I approve Phase 4 Understand-Anything Structural/Semantic Understanding for autonomous planning-to-execution on a new branch. Approved scope: D1-D7 as written, with D7 checkpointed if needed. Guardrails: JIT-only, no dashboard/UI, no auto-injection, no SQLite/vector store, no tree-sitter/WASM/new runtime dependencies, no LLM summaries inside scanner scripts, no edits to tools/skills_sync.py or tests/tools/test_skills_sync.py, and no commit/push/merge without evidence and my approval.
+- Execution branch: `feat/ua-phase4-structural-semantic` created from local `main` HEAD `dd977f1da`.
+- Draft plan created: `.plans/phase-4-structural-semantic-understanding.md`.
+- Draft beads created:
+  - `.beads/phase4-d1-import-classification.md`
+  - `.beads/phase4-d2-entrypoint-detection.md`
+  - `.beads/phase4-d3-orphan-triage.md`
+  - `.beads/phase4-d4-hub-ranking.md`
+  - `.beads/phase4-d5-semantic-extraction.md`
+  - `.beads/phase4-d6-delta-reporting.md`
+  - `.beads/phase4-d7-scan-report-artifact.md`
+- Active bead: `phase4-d1-import-classification`.
+- Implementation status: D1 starting; D2-D7 pending.
+- Guardrails remain: JIT-only, no dashboard/UI, no auto-injection, no SQLite/vector store, no tree-sitter/WASM/new runtime deps, no LLM summaries inside scanner scripts, no forbidden-file edits, no commit/push/merge without JC approval.
+- Existing unrelated WIP remains out of scope: `tools/skills_sync.py`, `tests/tools/test_skills_sync.py`.
+- External draft artifacts from planning swarm exist but are not authoritative: `/home/jarrad/PHASE4_ARCHITECTURE.md` and `.plans/phase-4-review-risk-draft.md`.
 
 ## Constraints
 - JIT/explicit-invocation only

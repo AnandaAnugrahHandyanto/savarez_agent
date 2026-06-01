@@ -2,7 +2,7 @@
 
 > **Purpose:** Canonical entry point for the Understand-Anything → Hermes Flywheel integration.
 > All details live in `.plans/` and `.beads/`. This file is a navigation pointer.
-> **Last updated:** 2026-05-30 (Phase 3 D1-D3 merged to local main at `0133a0a4b` via PR #6; CI green)
+> **Last updated:** 2026-06-01 (Phase 4 structural/semantic understanding plan drafted; implementation not yet approved)
 
 ## Key Documents
 
@@ -11,6 +11,7 @@
 | Incorporation Strategy | `.plans/ua-incorporation-strategy.md` | What to adopt from UA, what to skip, phased roadmap |
 | Phase 2 Execution Plan | `.plans/phase-2-flywheel-ua-integration.md` | Full Phase 2 scope, approval gates, verification matrix |
 | Phase 3 Execution Plan | `.plans/phase-3-incremental-analysis.md` | Full Phase 3 approved D1-D3 scope, gates, verification matrix |
+| Phase 4 Draft Plan | `.plans/phase-4-structural-semantic-understanding.md` | Proposed deterministic structural/semantic insight layer; not yet approved |
 | Project State | `.plans/project-state-ua-flywheel.md` | Current status of every deliverable |
 | Review Doc | `understand-anything-to-flywheel-review.md` | Full risk analysis and artifact inventory |
 
@@ -43,6 +44,21 @@ All deliverables committed in `24356edcd`. 80 tests pass.
 
 > **Phase 3 D1-D3 merged to local main at `0133a0a4b`** (PR #6 squash merge). CI on main: Tests ✅, Lint ✅, Nix ✅. D4 remains deferred by default.
 > Approval doc: `.plans/phase-3-incremental-analysis.md`.
+
+## Phase 4 (Structural/Semantic Understanding) — 📝 DRAFT / NOT APPROVED
+
+| Bead | File | Status |
+|---|---|---|
+| D1 — import classification | `.beads/phase4-d1-import-classification.md` | Draft |
+| D2 — entrypoint detection | `.beads/phase4-d2-entrypoint-detection.md` | Draft |
+| D3 — orphan triage | `.beads/phase4-d3-orphan-triage.md` | Draft |
+| D4 — hub ranking | `.beads/phase4-d4-hub-ranking.md` | Draft |
+| D5 — semantic extraction | `.beads/phase4-d5-semantic-extraction.md` | Draft |
+| D6 — delta reporting | `.beads/phase4-d6-delta-reporting.md` | Draft |
+| D7 — scan-to-report artifact | `.beads/phase4-d7-scan-report-artifact.md` | Draft; T3/checkpointed |
+
+> Phase 4 plan: `.plans/phase-4-structural-semantic-understanding.md`.
+> No Phase 4 implementation is authorized until JC explicitly approves the plan/bead scope.
 
 ## Execution Model
 
