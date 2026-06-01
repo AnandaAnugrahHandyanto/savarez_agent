@@ -72,7 +72,7 @@ class LocalWhisperSTT:
     async def events(self) -> AsyncIterator[TranscriptEvent]:
         # No partials this slice: a real, empty async generator.
         if False:  # pragma: no cover - never yields
-            yield  # type: ignore[unreachable]
+            yield
 
     async def finalize(self) -> TranscriptEvent | None:
         if not self._buffer:
