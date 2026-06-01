@@ -414,8 +414,8 @@ NOUS_EXTRA_BODY = _nous_extra_body()
 auxiliary_is_nous: bool = False
 
 # Default auxiliary models per provider
-_OPENROUTER_MODEL = "google/gemini-3-flash-preview"
-_NOUS_MODEL = "google/gemini-3-flash-preview"
+_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+_NOUS_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
@@ -2979,6 +2979,65 @@ def _resolve_single_provider(
     )
     return client
 
+
+def _try_declared_main_fallback_chain(
+    failed_provider: str,
+    main_model: str,
+) -> Tuple[Optional[Any], Optional[str], str]:
+    """Try only user-declared fallback_providers/fallback_model entries.
+
+    This is used when Step-1 main-provider routing fails while a runtime
+    session model is active (e.g. gateway `/model` override). In that state
+    we avoid silently broadening to unrelated credential-pool providers and
+    honor only the user's declared fallback chain.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        chain = get_fallback_chain(load_config())
+    except Exception:
+        chain = []
+
+    if not chain:
+        return None, None, ""
+
+    skip_provider = (failed_provider or "").strip().lower()
+    skip_model = (main_model or "").strip().lower()
+    tried: list[str] = []
+    for i, entry in enumerate(chain, 1):
+        fb_provider = str(entry.get("provider") or "").strip()
+        fb_model = str(entry.get("model") or "").strip()
+        if not fb_provider or not fb_model:
+            continue
+        if fb_provider.lower() == skip_provider and fb_model.lower() == skip_model:
+            continue
+        if _is_provider_unhealthy(fb_provider):
+            _log_skip_unhealthy(fb_provider)
+            tried.append(f"{fb_provider} (unhealthy)")
+            continue
+        try:
+            fb_client, resolved = resolve_provider_client(
+                provider=fb_provider,
+                model=fb_model,
+                explicit_base_url=entry.get("base_url"),
+                explicit_api_key=entry.get("api_key"),
+            )
+        except Exception:
+            fb_client, resolved = None, None
+        label = f"declared_fallback[{i}]({fb_provider})"
+        if fb_client is not None:
+            return fb_client, resolved or fb_model, label
+        tried.append(label)
+
+    if tried:
+        logger.info(
+            "Auxiliary auto-detect: declared fallback chain exhausted (tried: %s)",
+            ", ".join(tried),
+        )
+    return None, None, ""
+
+
 def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain.
 
@@ -3076,6 +3135,18 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
                             main_provider, resolved or main_model)
                 return client, resolved or main_model
+        # Runtime session override is active and the main provider failed.
+        # Try only the user's declared fallback chain before the broad chain.
+        if runtime_provider and runtime_model:
+            fb_client, fb_model, fb_label = _try_declared_main_fallback_chain(
+                resolved_provider, main_model
+            )
+            if fb_client is not None:
+                logger.info(
+                    "Auxiliary auto-detect: main provider %s unavailable; using %s (%s)",
+                    main_provider, fb_label, fb_model or "default",
+                )
+                return fb_client, fb_model
 
     # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []

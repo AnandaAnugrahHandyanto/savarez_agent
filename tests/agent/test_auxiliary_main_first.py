@@ -161,6 +161,75 @@ class TestResolveAutoMainFirst:
         assert mock_resolve.call_args.args[0] == "anthropic"
         assert mock_resolve.call_args.args[1] == "runtime-model"
 
+    def test_runtime_override_uses_declared_fallback_chain_before_broad_chain(self):
+        """Runtime /model override should prefer declared fallback_providers."""
+        main_client = MagicMock()
+        fb_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="openrouter",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="openrouter/owl-alpha",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=[
+                (None, None),  # main provider unavailable
+                (fb_client, "openrouter/gpt-120b:free"),  # declared fallback
+            ],
+        ) as mock_resolve, patch(
+            "agent.auxiliary_client._get_provider_chain",
+            return_value=[("openai-codex", lambda: (main_client, "gpt-5.5"))],
+        ), patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "fallback_providers": [
+                    {"provider": "openrouter", "model": "openrouter/gpt-120b:free"},
+                    {"provider": "openrouter", "model": "openrouter/deepseek-v4-flash:free"},
+                ]
+            },
+        ):
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(main_runtime={
+                "provider": "openrouter",
+                "model": "openrouter/owl-alpha",
+                "base_url": "",
+                "api_key": "runtime-key",
+                "api_mode": "",
+            })
+
+        assert client is fb_client
+        assert model == "openrouter/gpt-120b:free"
+        assert mock_resolve.call_count == 2
+
+    def test_runtime_override_without_declared_chain_can_still_use_broad_chain(self):
+        """When no declared fallback exists, preserve legacy broad-chain behavior."""
+        broad_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="openrouter",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="openrouter/owl-alpha",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),  # main provider unavailable
+        ), patch(
+            "hermes_cli.config.load_config", return_value={},
+        ), patch(
+            "agent.auxiliary_client._get_provider_chain",
+            return_value=[("openai-codex", lambda: (broad_client, "gpt-5.5"))],
+        ):
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(main_runtime={
+                "provider": "openrouter",
+                "model": "openrouter/owl-alpha",
+                "base_url": "",
+                "api_key": "runtime-key",
+                "api_mode": "",
+            })
+
+        assert client is broad_client
+        assert model == "gpt-5.5"
+
 
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────
 
