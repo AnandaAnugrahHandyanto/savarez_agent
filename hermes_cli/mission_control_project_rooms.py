@@ -21,16 +21,17 @@ from hermes_cli.mission_control import redact_text, redact_value
 
 MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 ALLOWED_ATTACHMENT_TYPES: dict[str, set[str]] = {
-    ".txt": {"text/plain"},
-    ".md": {"text/markdown", "text/plain"},
-    ".log": {"text/plain"},
-    ".json": {"application/json", "text/plain"},
-    ".csv": {"text/csv", "application/vnd.ms-excel", "text/plain"},
+    ".txt": {"application/octet-stream", "text/plain"},
+    ".md": {"application/octet-stream", "text/markdown", "text/plain"},
+    ".log": {"application/octet-stream", "text/plain"},
+    ".json": {"application/json", "application/octet-stream", "text/plain"},
+    ".csv": {"application/octet-stream", "text/csv", "application/vnd.ms-excel", "text/plain"},
     ".png": {"image/png"},
     ".jpg": {"image/jpeg"},
     ".jpeg": {"image/jpeg"},
     ".webp": {"image/webp"},
 }
+TEXT_ATTACHMENT_EXTENSIONS = {".txt", ".md", ".log", ".json", ".csv"}
 BLOCKED_ATTACHMENT_EXTENSIONS = {
     ".bat",
     ".cmd",
@@ -51,14 +52,39 @@ DEFAULT_ROOMS: tuple[dict[str, str], ...] = (
         "description": "Local planning context for Tool & Tally.",
     },
     {
-        "title": "Shorts pipeline",
-        "project_key": "shorts-pipeline",
+        "title": "Hermes OS / Main Jenny",
+        "project_key": "hermes-os-main-jenny",
+        "description": "Local Hermes OS and Main Jenny operating context.",
+    },
+    {
+        "title": "Longform Video",
+        "project_key": "longform-video",
+        "description": "Local notes for longform video workflow.",
+    },
+    {
+        "title": "Shorts Video",
+        "project_key": "shorts-video",
         "description": "Local notes for short-form video workflow.",
     },
     {
-        "title": "Longform video",
-        "project_key": "longform-video",
-        "description": "Local notes for longform video workflow.",
+        "title": "Reliability / Ops",
+        "project_key": "reliability-ops",
+        "description": "Local reliability and dashboard context.",
+    },
+    {
+        "title": "Repo Add / Main Jenny",
+        "project_key": "repo-add-main-jenny",
+        "description": "Local repo-add and Main Jenny coordination context.",
+    },
+    {
+        "title": "Codex Configuration / Workflow",
+        "project_key": "codex-configuration-workflow",
+        "description": "Local Codex configuration and workflow context.",
+    },
+    {
+        "title": "Hermes Agent Issues",
+        "project_key": "hermes-agent-issues",
+        "description": "Local Hermes Agent issue triage context.",
     },
     {
         "title": "Signal Room",
@@ -66,12 +92,7 @@ DEFAULT_ROOMS: tuple[dict[str, str], ...] = (
         "description": "Local signal and research context.",
     },
     {
-        "title": "Hermes reliability",
-        "project_key": "hermes-reliability",
-        "description": "Local reliability and dashboard context.",
-    },
-    {
-        "title": "General / Inbox",
+        "title": "General Inbox",
         "project_key": "general-inbox",
         "description": "Local inbox for unsorted project material.",
     },
@@ -120,35 +141,66 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(8)}"
 
 
+def _default_room_record(item: dict[str, str], created_at: str) -> dict[str, Any]:
+    slug = _slugify(item["title"])
+    return {
+        "id": f"room_{slug.replace('-', '_')}",
+        "slug": slug,
+        "title": item["title"],
+        "project_key": item["project_key"],
+        "description": item["description"],
+        "trusted_for_execution": False,
+        "inert_context_only": True,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "message_count": 0,
+        "attachment_count": 0,
+    }
+
+
+def _ensure_default_rooms_unlocked(rooms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    now = _now_iso()
+    existing_by_slug = {str(room.get("slug") or ""): room for room in rooms}
+    default_slugs = {_slugify(item["title"]) for item in DEFAULT_ROOMS}
+    ordered: list[dict[str, Any]] = []
+
+    for item in DEFAULT_ROOMS:
+        slug = _slugify(item["title"])
+        existing = existing_by_slug.get(slug)
+        if existing:
+            merged = {
+                **existing,
+                "slug": slug,
+                "title": item["title"],
+                "project_key": item["project_key"],
+                "description": item["description"],
+                "trusted_for_execution": False,
+                "inert_context_only": True,
+            }
+            ordered.append(merged)
+        else:
+            ordered.append(_default_room_record(item, now))
+
+    ordered.extend(room for room in rooms if str(room.get("slug") or "") not in default_slugs)
+    return ordered
+
+
 def _load_rooms_unlocked() -> list[dict[str, Any]]:
     path = _rooms_path()
     if not path.exists():
-        rooms: list[dict[str, Any]] = []
         created_at = _now_iso()
-        for item in DEFAULT_ROOMS:
-            slug = _slugify(item["title"])
-            rooms.append(
-                {
-                    "id": f"room_{slug.replace('-', '_')}",
-                    "slug": slug,
-                    "title": item["title"],
-                    "project_key": item["project_key"],
-                    "description": item["description"],
-                    "trusted_for_execution": False,
-                    "inert_context_only": True,
-                    "created_at": created_at,
-                    "updated_at": created_at,
-                    "message_count": 0,
-                    "attachment_count": 0,
-                }
-            )
+        rooms = [_default_room_record(item, created_at) for item in DEFAULT_ROOMS]
         _atomic_write_json(path, {"rooms": rooms})
         return rooms
     data = json.loads(path.read_text(encoding="utf-8"))
     rooms = data.get("rooms") if isinstance(data, dict) else []
     if not isinstance(rooms, list):
         raise ProjectRoomError("rooms.json is invalid")
-    return [room for room in rooms if isinstance(room, dict)]
+    valid_rooms = [room for room in rooms if isinstance(room, dict)]
+    merged_rooms = _ensure_default_rooms_unlocked(valid_rooms)
+    if merged_rooms != valid_rooms:
+        _atomic_write_json(path, {"rooms": merged_rooms})
+    return merged_rooms
 
 
 def _save_rooms_unlocked(rooms: list[dict[str, Any]]) -> None:
@@ -319,8 +371,13 @@ def _validate_attachment(filename: str, mime_type: str, content: bytes) -> None:
         raise OverflowError("Attachment exceeds maximum size")
     suffix = Path(filename).suffix.lower()
     allowed_mimes = ALLOWED_ATTACHMENT_TYPES.get(suffix, set())
-    if mime_type not in allowed_mimes:
-        raise ProjectRoomError("Attachment MIME type is not allowed")
+    if mime_type in allowed_mimes:
+        return
+    if suffix in TEXT_ATTACHMENT_EXTENSIONS and mime_type.startswith("text/"):
+        return
+    if suffix in TEXT_ATTACHMENT_EXTENSIONS and not mime_type:
+        return
+    raise ProjectRoomError("Attachment MIME type is not allowed")
 
 
 def add_attachment(room_id: str, *, filename: str, mime_type: str, content: bytes) -> dict[str, Any]:

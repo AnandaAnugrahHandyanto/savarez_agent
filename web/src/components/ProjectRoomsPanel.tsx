@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Clipboard, FileUp, MessageSquare, ShieldCheck } from "lucide-react";
+import { Clipboard, Download, FileUp, MessageSquare, ShieldCheck } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import type { ProjectRoom, ProjectRoomMessage } from "@/lib/api";
+import type { ProjectRoom, ProjectRoomAttachment, ProjectRoomMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const panel = "rounded-xl border border-[#284848] bg-black/30 p-4";
@@ -40,6 +40,7 @@ export function ProjectRoomsPanel() {
   const [noteText, setNoteText] = useState("");
   const [sourceRefs, setSourceRefs] = useState("");
   const [packetIds, setPacketIds] = useState("");
+  const [attachments, setAttachments] = useState<ProjectRoomAttachment[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -53,7 +54,10 @@ export function ProjectRoomsPanel() {
     setRooms(response.rooms);
     const nextId = preferredId || response.rooms[0]?.id || "";
     setSelectedId(nextId);
-    if (!nextId) setMessages([]);
+    if (!nextId) {
+      setMessages([]);
+      setAttachments([]);
+    }
   }, []);
 
   const loadMessages = useCallback(async (roomId: string) => {
@@ -72,9 +76,12 @@ export function ProjectRoomsPanel() {
 
   useEffect(() => {
     if (!selectedId) return;
-    loadMessages(selectedId).catch((error) => {
-      setMessage(error instanceof Error ? error.message : "Could not load room messages");
-    });
+    const timer = window.setTimeout(() => {
+      loadMessages(selectedId).catch((error) => {
+        setMessage(error instanceof Error ? error.message : "Could not load room messages");
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [loadMessages, selectedId]);
 
   const addNote = async () => {
@@ -110,7 +117,8 @@ export function ProjectRoomsPanel() {
     setMessage(null);
     try {
       for (const file of Array.from(files)) {
-        await api.uploadProjectRoomAttachment(selectedRoom.id, file);
+        const response = await api.uploadProjectRoomAttachment(selectedRoom.id, file);
+        setAttachments((current) => [response.attachment, ...current]);
       }
       await loadRooms(selectedRoom.id);
       setMessage("Attachment metadata saved; files remain inert project context.");
@@ -127,6 +135,21 @@ export function ProjectRoomsPanel() {
       setMessage("Copied Project Room text.");
     } catch {
       setMessage("Copy failed.");
+    }
+  };
+
+  const downloadAttachment = async (attachment: ProjectRoomAttachment) => {
+    if (!selectedRoom) return;
+    setBusy(attachment.id);
+    setMessage(null);
+    try {
+      const blob = await api.downloadProjectRoomAttachment(selectedRoom.id, attachment.id);
+      URL.revokeObjectURL(URL.createObjectURL(blob));
+      setMessage(`Attachment detail verified for ${attachment.original_filename}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not download attachment");
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -170,7 +193,10 @@ export function ProjectRoomsPanel() {
                 <button
                   key={room.id}
                   type="button"
-                  onClick={() => setSelectedId(room.id)}
+                  onClick={() => {
+                    setAttachments([]);
+                    setSelectedId(room.id);
+                  }}
                   className={cn(
                     "w-full rounded-lg border px-3 py-2 text-left text-sm transition",
                     selectedRoom?.id === room.id
@@ -228,6 +254,33 @@ export function ProjectRoomsPanel() {
                   Attach files
                   <input className="hidden" type="file" multiple onChange={(event) => attachFiles(event.target.files)} />
                 </label>
+              </div>
+            </div>
+
+            <div className={panel}>
+              <div className="mb-3 text-sm font-semibold uppercase tracking-[0.08em] text-emerald-100/90">Attachment metadata</div>
+              <div className="space-y-2">
+                {attachments.length ? (
+                  attachments.map((attachment) => (
+                    <div key={attachment.id} className="rounded-lg border border-[#284848] bg-black/25 p-3">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="break-words text-sm font-semibold text-text-primary">{attachment.original_filename}</div>
+                          <div className="mt-1 text-xs leading-5 text-text-secondary">
+                            {attachment.mime_type} · {attachment.size_bytes} bytes · trusted_for_execution=false · inert_context_only=true
+                          </div>
+                          <div className="mt-1 break-all font-mono text-xs leading-5 text-text-secondary">sha256 {attachment.sha256}</div>
+                        </div>
+                        <Button ghost size="sm" onClick={() => downloadAttachment(attachment)} disabled={busy === attachment.id} className="w-fit shrink-0 gap-2">
+                          <Download className="h-4 w-4" />
+                          Download
+                        </Button>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm text-text-secondary">No attachment metadata in this browser session yet.</div>
+                )}
               </div>
             </div>
 

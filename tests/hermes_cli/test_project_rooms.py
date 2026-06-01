@@ -50,17 +50,127 @@ def test_default_rooms_exist_and_use_safe_state_path(dashboard_client):
     assert resp.status_code == 200
     body = resp.json()
     titles = [room["title"] for room in body["rooms"]]
-    assert titles[:6] == [
+    assert titles[:10] == [
         "Tool & Tally",
-        "Shorts pipeline",
-        "Longform video",
+        "Hermes OS / Main Jenny",
+        "Longform Video",
+        "Shorts Video",
+        "Reliability / Ops",
+        "Repo Add / Main Jenny",
+        "Codex Configuration / Workflow",
+        "Hermes Agent Issues",
         "Signal Room",
-        "Hermes reliability",
-        "General / Inbox",
+        "General Inbox",
     ]
     state_dir = get_hermes_home() / "state" / "mission-control" / "project-rooms"
     assert state_dir.is_dir()
     assert (state_dir / "rooms.json").is_file()
+
+
+def test_missing_default_rooms_are_added_to_existing_state(dashboard_client):
+    from hermes_constants import get_hermes_home
+
+    state_dir = get_hermes_home() / "state" / "mission-control" / "project-rooms"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    rooms_path = state_dir / "rooms.json"
+    rooms_path.write_text(
+        json.dumps(
+            {
+                "rooms": [
+                    {
+                        "id": "room_tool_tally",
+                        "slug": "tool-tally",
+                        "title": "Tool & Tally",
+                        "project_key": "tool-tally",
+                        "description": "Existing local context.",
+                        "trusted_for_execution": False,
+                        "inert_context_only": True,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                        "message_count": 1,
+                        "attachment_count": 2,
+                    }
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    resp = dashboard_client.get("/api/mission-control/project-rooms")
+
+    assert resp.status_code == 200
+    titles = [room["title"] for room in resp.json()["rooms"]]
+    assert titles[:10] == [
+        "Tool & Tally",
+        "Hermes OS / Main Jenny",
+        "Longform Video",
+        "Shorts Video",
+        "Reliability / Ops",
+        "Repo Add / Main Jenny",
+        "Codex Configuration / Workflow",
+        "Hermes Agent Issues",
+        "Signal Room",
+        "General Inbox",
+    ]
+    tool_tally = resp.json()["rooms"][0]
+    assert tool_tally["message_count"] == 1
+    assert tool_tally["attachment_count"] == 2
+
+
+def test_existing_default_rooms_get_current_display_names_without_resetting_counts(dashboard_client):
+    from hermes_constants import get_hermes_home
+
+    state_dir = get_hermes_home() / "state" / "mission-control" / "project-rooms"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    rooms_path = state_dir / "rooms.json"
+    rooms_path.write_text(
+        json.dumps(
+            {
+                "rooms": [
+                    {
+                        "id": "room_longform_video",
+                        "slug": "longform-video",
+                        "title": "Longform video",
+                        "project_key": "longform-video",
+                        "description": "Legacy longform description.",
+                        "trusted_for_execution": False,
+                        "inert_context_only": True,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                        "message_count": 3,
+                        "attachment_count": 4,
+                    },
+                    {
+                        "id": "room_general_inbox",
+                        "slug": "general-inbox",
+                        "title": "General / Inbox",
+                        "project_key": "general-inbox",
+                        "description": "Legacy inbox description.",
+                        "trusted_for_execution": False,
+                        "inert_context_only": True,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                        "message_count": 5,
+                        "attachment_count": 6,
+                    },
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    resp = dashboard_client.get("/api/mission-control/project-rooms")
+
+    assert resp.status_code == 200
+    by_slug = {room["slug"]: room for room in resp.json()["rooms"]}
+    assert by_slug["longform-video"]["title"] == "Longform Video"
+    assert by_slug["longform-video"]["message_count"] == 3
+    assert by_slug["longform-video"]["attachment_count"] == 4
+    assert by_slug["general-inbox"]["title"] == "General Inbox"
+    assert by_slug["general-inbox"]["message_count"] == 5
+    assert by_slug["general-inbox"]["attachment_count"] == 6
 
 
 def test_create_room_add_message_and_audit_are_redacted_and_inert(dashboard_client):
@@ -131,6 +241,13 @@ def test_upload_allowed_files_store_metadata_without_unsafe_path_or_secret(dashb
     assert "storage_path" not in meta
     assert "FILESECRET" not in rendered
 
+    browser_log = dashboard_client.post(
+        f"/api/mission-control/project-rooms/{room['id']}/attachments",
+        files={"file": ("browser.log", b"browser fixture", "text/x-log")},
+    )
+    assert browser_log.status_code == 200
+    assert browser_log.json()["attachment"]["original_filename"] == "browser.log"
+
     img = dashboard_client.post(
         f"/api/mission-control/project-rooms/{room['id']}/attachments",
         files={"file": ("screen.png", b"\x89PNG\r\n\x1a\nfake", "image/png")},
@@ -147,7 +264,7 @@ def test_upload_allowed_files_store_metadata_without_unsafe_path_or_secret(dashb
         / "attachments"
     )
     assert attachments_dir.is_dir()
-    assert len(list(attachments_dir.iterdir())) == 2
+    assert len(list(attachments_dir.iterdir())) == 3
 
 
 def test_upload_blocks_path_traversal_unsafe_types_and_size(dashboard_client):

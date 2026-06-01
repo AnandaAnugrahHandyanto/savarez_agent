@@ -39,6 +39,8 @@ def test_project_rooms_panel_renders_inert_workspace_without_forbidden_controls(
         "trusted_for_execution=false",
         "Paste text, logs, and notes",
         "Attach files",
+        "Attachment metadata",
+        "Download",
         "Copy text",
         "Mission Packet IDs",
         "No execution path is attached",
