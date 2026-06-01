@@ -7,7 +7,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { Suspense, useMemo, useRef } from 'react'
+import { Suspense, useCallback, useMemo, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
@@ -45,6 +45,8 @@ import { titlebarHeaderBaseClass, titlebarHeaderShadowClass } from '../shell/tit
 
 import { ChatDropOverlay } from './chat-drop-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
+import { requestComposerInsert } from './composer/focus'
+import { droppedFileInlineRef } from './composer/inline-refs'
 import type { ChatBarState } from './composer/types'
 import type { DroppedFile } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
@@ -270,12 +272,22 @@ export function ChatView({
   })
 
   // Drop files anywhere in the conversation area, not just on the composer
-  // input. Drops on the composer keep their own behavior (inline refs at the
-  // caret); drops elsewhere funnel through the same attach handler.
-  const { dragActive, dropHandlers } = useFileDropZone({
-    enabled: showChatBar,
-    onDropFiles: candidates => void onAttachDroppedItems(candidates)
-  })
+  // input — appending the same inline `@file:` ref chips the composer drop
+  // produces (vs. attachment cards) so both surfaces behave identically.
+  const onDropFiles = useCallback(
+    (candidates: DroppedFile[]) => {
+      const refs = candidates
+        .map(candidate => droppedFileInlineRef(candidate, currentCwd))
+        .filter((ref): ref is string => Boolean(ref))
+
+      if (refs.length) {
+        requestComposerInsert(refs.join(' '), { mode: 'inline', target: 'main' })
+      }
+    },
+    [currentCwd]
+  )
+
+  const { dragActive, dropHandlers } = useFileDropZone({ enabled: showChatBar, onDropFiles })
 
   return (
     <div
