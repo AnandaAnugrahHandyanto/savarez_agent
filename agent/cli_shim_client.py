@@ -422,9 +422,14 @@ class CliShimClient:
                 self._active_process = None
 
         if proc.returncode != 0:
-            tail = (stderr or "").strip()[-800:]
+            # Claude Code (and some other CLIs) print fatal errors to stdout,
+            # not stderr — so a stderr-only message leaves "exited N:" blank and
+            # the real cause invisible. Surface stdout too, preferring stderr.
+            err_tail = (stderr or "").strip()[-800:]
+            out_tail = (stdout or "").strip()[-800:]
+            detail = err_tail or out_tail or "(no output on stderr or stdout)"
             raise RuntimeError(
-                f"CLI '{command}' exited {proc.returncode}: {tail}"
+                f"CLI '{command}' exited {proc.returncode}: {detail}"
             )
 
         return (stdout or "").strip(), ""
@@ -494,9 +499,11 @@ class CliShimClient:
                     self._active_process = None
 
             if proc.returncode != 0:
-                tail = (stderr or "").strip()[-800:]
+                err_tail = (stderr or "").strip()[-800:]
+                out_tail = (stdout or "").strip()[-800:]
+                detail = err_tail or out_tail or "(no output on stderr or stdout)"
                 raise RuntimeError(
-                    f"CLI '{command}' exited {proc.returncode}: {tail}"
+                    f"CLI '{command}' exited {proc.returncode}: {detail}"
                 )
 
             # Read the clean last-message output
