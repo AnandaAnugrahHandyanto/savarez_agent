@@ -41,7 +41,8 @@ class HeartbeatInbox:
                     decision TEXT,
                     reason TEXT,
                     context_digest TEXT,
-                    error TEXT
+                    error TEXT,
+                    reviewed_at INTEGER
                 );
                 CREATE TABLE IF NOT EXISTS findings (
                     id TEXT PRIMARY KEY,
@@ -73,6 +74,12 @@ class HeartbeatInbox:
                 );
                 """
             )
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+            }
+            if "reviewed_at" not in columns:
+                conn.execute("ALTER TABLE runs ADD COLUMN reviewed_at INTEGER")
 
     def start_run(self, trigger: str) -> str:
         run_id = f"hbr_{uuid.uuid4().hex}"
@@ -101,6 +108,23 @@ class HeartbeatInbox:
                 """,
                 (int(time.time()), status, decision, reason, context_digest, error, run_id),
             )
+
+    def mark_review_started(self, run_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE runs SET reviewed_at = ? WHERE id = ?",
+                (int(time.time()), run_id),
+            )
+
+    def reviews_today(self) -> int:
+        now = int(time.time())
+        day_start = now - (now % 86400)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM runs WHERE reviewed_at >= ?",
+                (day_start,),
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def add_finding(
         self,

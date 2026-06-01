@@ -4,14 +4,22 @@ Goal: Add a lightweight proactive heartbeat system to Hermes-Agent.
 
 Status:
 - Discovery: Complete
-- Implementation Spec v0.1: Drafted for Review
-- Implementation: In Progress
+- Implementation Spec v0.1: Implemented
+- Implementation: Ready for live gateway smoke testing
 
 Operator enablement:
 
 1. Enable the standalone plugin: `hermes plugins enable heartbeat`
 2. Add `heartbeat.enabled: true` to `~/.hermes/config.yaml`
 3. Run the gateway. Automatic Heartbeat scheduling is gateway-hosted in v0.1.
+
+Operator notes:
+
+- Configure `heartbeat.delivery.targets` to send external notifications.
+- With no delivery targets, accepted findings still enter the durable inbox and
+  are injected into later Main-agent turns.
+- Restart the gateway after changing `interval_minutes` or `jitter_minutes`;
+  scheduling values are read when the plugin registers.
 
 Read order:
 

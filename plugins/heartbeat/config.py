@@ -12,7 +12,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "jitter_minutes": 5,
     "timezone": "",
     "active_hours": {"enabled": False, "start": "08:00", "end": "22:00"},
-    "budget": {"max_runtime_seconds": 90, "max_review_tokens": 1200},
+    "budget": {
+        "max_runtime_seconds": 90,
+        "max_review_tokens": 1200,
+        "max_reviews_per_day": 48,
+    },
     "delivery": {
         "targets": [],
         "cooldown_minutes": 60,
@@ -72,6 +76,23 @@ def _validate_time(value: Any, key: str) -> str:
     return f"{hour:02d}:{minute:02d}"
 
 
+def _validate_delivery_target(target: Any, index: int) -> None:
+    prefix = f"heartbeat.delivery.targets[{index}]"
+    if isinstance(target, str):
+        if not target.strip():
+            raise ValueError(f"{prefix} must not be empty")
+        return
+    if not isinstance(target, dict):
+        raise ValueError(f"{prefix} must be a string or mapping")
+    platform = target.get("platform")
+    if not isinstance(platform, str) or not platform.strip():
+        raise ValueError(f"{prefix}.platform must be a non-empty string")
+    for key in ("chat_id", "thread_id", "user_id"):
+        value = target.get(key)
+        if value is not None and (isinstance(value, (dict, list)) or not str(value).strip()):
+            raise ValueError(f"{prefix}.{key} must be a non-empty scalar when set")
+
+
 def load_heartbeat_config() -> Dict[str, Any]:
     from hermes_cli.config import read_raw_config
 
@@ -100,6 +121,7 @@ def load_heartbeat_config() -> Dict[str, Any]:
     _positive_int(cfg, "jitter_minutes", minimum=0)
     _positive_int(cfg["budget"], "max_runtime_seconds")
     _positive_int(cfg["budget"], "max_review_tokens")
+    _positive_int(cfg["budget"], "max_reviews_per_day")
     _positive_int(cfg["delivery"], "cooldown_minutes", minimum=0)
     _positive_int(cfg["delivery"], "max_notifications_per_day", minimum=0)
     _positive_int(cfg["inbox"], "ttl_hours")
@@ -112,4 +134,6 @@ def load_heartbeat_config() -> Dict[str, Any]:
     cfg["active_hours"]["end"] = _validate_time(cfg["active_hours"].get("end"), "end")
     if not isinstance(cfg["delivery"].get("targets"), list):
         raise ValueError("heartbeat.delivery.targets must be a list")
+    for index, target in enumerate(cfg["delivery"]["targets"]):
+        _validate_delivery_target(target, index)
     return cfg

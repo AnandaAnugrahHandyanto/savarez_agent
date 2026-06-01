@@ -99,6 +99,13 @@ def run_once(*, llm: Any, trigger: str = "periodic", dry_run: bool = False) -> D
             inbox.finish_run(run_id, status="skipped", reason="outside_active_hours")
             log_event("run_skipped", heartbeat_id=run_id, reason="outside_active_hours")
             return {"status": "skipped", "reason": "outside_active_hours", "run_id": run_id}
+        if (
+            trigger == "periodic"
+            and inbox.reviews_today() >= config["budget"]["max_reviews_per_day"]
+        ):
+            inbox.finish_run(run_id, status="skipped", reason="daily_review_cap")
+            log_event("run_skipped", heartbeat_id=run_id, reason="daily_review_cap")
+            return {"status": "skipped", "reason": "daily_review_cap", "run_id": run_id}
 
         pack = build_context_pack(
             run_id,
@@ -118,6 +125,7 @@ def run_once(*, llm: Any, trigger: str = "periodic", dry_run: bool = False) -> D
             return {"status": "skipped", "reason": "no_observations", "run_id": run_id}
         packed = json.dumps(pack.to_dict(), sort_keys=True, default=str)
         digest = hashlib.sha256(packed.encode("utf-8")).hexdigest()
+        inbox.mark_review_started(run_id)
         result = llm.complete_structured(
             instructions=REVIEW_INSTRUCTIONS,
             input=[{"type": "text", "text": packed}],

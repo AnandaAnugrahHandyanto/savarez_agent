@@ -358,6 +358,7 @@ heartbeat:
   budget:
     max_runtime_seconds: 90
     max_review_tokens: 1200
+    max_reviews_per_day: 48
 
   delivery:
     targets: []
@@ -391,6 +392,9 @@ Rules:
 - Resolve the workspace for `instructions_file` from explicit plugin config if
   added later, otherwise from gateway `terminal.cwd`.
 - Treat a missing instructions file as normal.
+- Require `delivery.targets` entries to be non-empty strings or mappings with a
+  non-empty `platform`. Empty targets disable external notifications without
+  disabling durable inbox injection.
 - Read config with the existing raw config path used by gateway runtime.
 - Register an auxiliary task name such as `heartbeat_review` so the user can
   route the review model independently.
