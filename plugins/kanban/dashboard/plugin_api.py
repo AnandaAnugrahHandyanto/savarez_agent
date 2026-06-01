@@ -973,8 +973,9 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
             except Exception as e:
                 failed_ids = {tid for _, tid in priority_updates}
                 for entry in results:
-                    if entry["id"] in failed_ids and entry.get("ok", False):
-                        entry.update(ok=False, error=str(e))
+                    if entry["id"] in failed_ids:
+                        entry["ok"] = False
+                        entry.setdefault("error", str(e))
 
         return {"results": results}
     finally:
