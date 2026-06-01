@@ -108,6 +108,48 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     )
 
 
+def _compression_exhausted_result_if_needed(
+    agent: Any,
+    messages: list,
+    conversation_history: Optional[list],
+    api_call_count: int,
+    prompt_tokens: int,
+) -> Optional[dict]:
+    """Build a terminal compression-exhausted result when no safe progress remains."""
+    compressor = getattr(agent, "context_compressor", None)
+    threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
+    if threshold <= 0 or int(prompt_tokens or 0) < threshold:
+        return None
+    if getattr(compressor, "_last_compression_failure_code", None) != "compression_exhausted":
+        return None
+
+    flush = getattr(agent, "_flush_status_buffer", None)
+    if callable(flush):
+        flush()
+    err = (
+        getattr(compressor, "_last_summary_error", None)
+        or "Context compression exhausted."
+    )
+    logger.error(
+        "%sPreflight compression exhausted: ~%s tokens still >= %s threshold",
+        getattr(agent, "log_prefix", "") or "",
+        f"{int(prompt_tokens or 0):,}",
+        f"{threshold:,}",
+    )
+    persist = getattr(agent, "_persist_session", None)
+    if callable(persist):
+        persist(messages, conversation_history)
+    return {
+        "messages": messages,
+        "completed": False,
+        "api_calls": api_call_count,
+        "error": err,
+        "partial": True,
+        "failed": True,
+        "compression_exhausted": True,
+    }
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.handle_function_call`` / ``run_agent._set_interrupt`` /
@@ -658,6 +700,20 @@ def run_conversation(
                     task_id=effective_task_id,
                 )
                 if len(messages) >= _orig_len:
+                    _preflight_tokens = estimate_request_tokens_rough(
+                        messages,
+                        system_prompt=active_system_prompt or "",
+                        tools=agent.tools or None,
+                    )
+                    _exhausted_result = _compression_exhausted_result_if_needed(
+                        agent,
+                        messages,
+                        conversation_history,
+                        api_call_count,
+                        _preflight_tokens,
+                    )
+                    if _exhausted_result is not None:
+                        return _exhausted_result
                     break  # Cannot compress further
                 # Compression created a new session — clear the history
                 # reference so _flush_messages_to_session_db writes ALL
@@ -682,6 +738,15 @@ def run_conversation(
                     tools=agent.tools or None,
                 )
                 if not _compressor.should_compress(_preflight_tokens):
+                    _exhausted_result = _compression_exhausted_result_if_needed(
+                        agent,
+                        messages,
+                        conversation_history,
+                        api_call_count,
+                        _preflight_tokens,
+                    )
+                    if _exhausted_result is not None:
+                        return _exhausted_result
                     break  # Under threshold or anti-thrash guard stopped it
 
     # Plugin hook: pre_llm_call
