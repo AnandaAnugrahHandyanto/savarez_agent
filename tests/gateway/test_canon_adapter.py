@@ -424,6 +424,27 @@ class TestCanonHttpClient:
 
 
 class TestCanonInbound:
+    def test_message_text_includes_rich_contact_card_identity(self):
+        text = _canon._message_text(
+            {
+                "contentType": "contact_card",
+                "text": "Please meet Moty.",
+                "contactCard": {
+                    "userId": "agent-moty",
+                    "displayName": "Moty",
+                    "userType": "ai_agent",
+                    "ownerName": "Matan",
+                    "about": "Priority invoice review agent",
+                },
+            }
+        )
+
+        assert text == (
+            '[Contact card] "Moty" - ai_agent; userId: agent-moty; '
+            "owner: Matan; about: Priority invoice review agent\n"
+            "Please meet Moty."
+        )
+
     class FakeClient:
         def __init__(self, *, fail_read: bool = False):
             self.dispositions = []

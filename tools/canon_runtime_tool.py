@@ -55,6 +55,19 @@ def resolve_canon_conversation_id(target: Any = None) -> str:
     )
 
 
+def _card_has_actions(card: dict[str, Any]) -> bool:
+    blocks = card.get("blocks")
+    if not isinstance(blocks, list):
+        return False
+    return any(
+        isinstance(block, dict)
+        and block.get("kind") == "actions"
+        and isinstance(block.get("actions"), list)
+        and bool(block.get("actions"))
+        for block in blocks
+    )
+
+
 def _new_canon_client():
     from plugins.platforms.canon.adapter import (
         DEFAULT_BASE_URL,
@@ -83,6 +96,8 @@ async def request_canon_runtime_card(
     card: dict[str, Any],
     card_id: Optional[str] = None,
     response_user_id: Optional[str] = None,
+    runtime_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     wait: bool = True,
     native: Optional[dict[str, Any]] = None,
@@ -100,12 +115,17 @@ async def request_canon_runtime_card(
             card_id=effective_card_id or None,
             expires_at=expires_at,
             response_user_id=response_user_id,
+            runtime_id=runtime_id,
+            turn_id=turn_id,
             native=native,
         )
         effective_card_id = (
             str(request.get("cardId") or effective_card_id or card.get("cardId") or "").strip()
         )
-        if not wait:
+        interactive = request.get("interactive")
+        if interactive is None:
+            interactive = _card_has_actions(card)
+        if not wait or interactive is False:
             return {
                 "status": "displayed",
                 "conversationId": conversation_id,
@@ -152,6 +172,7 @@ async def request_canon_runtime_input(
     choices: Optional[list[dict[str, Any]]] = None,
     questions: Optional[list[dict[str, Any]]] = None,
     response_user_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     sensitive: Optional[bool] = None,
     native: Optional[dict[str, Any]] = None,
@@ -172,6 +193,7 @@ async def request_canon_runtime_input(
             choices=choices,
             questions=questions,
             response_user_id=response_user_id,
+            turn_id=turn_id,
             sensitive=sensitive,
             native=native,
         )
@@ -215,6 +237,8 @@ async def canon_runtime_control(args: dict[str, Any], **_kwargs) -> str:
                 card=card,
                 card_id=args.get("cardId"),
                 response_user_id=args.get("responseUserId"),
+                runtime_id=args.get("runtimeId"),
+                turn_id=args.get("turnId"),
                 timeout_seconds=_safe_timeout_seconds(args.get("timeoutSeconds")),
                 wait=action == "request_card",
                 native=args.get("native") if isinstance(args.get("native"), dict) else None,
@@ -235,6 +259,7 @@ async def canon_runtime_control(args: dict[str, Any], **_kwargs) -> str:
                 choices=choices if isinstance(choices, list) else None,
                 questions=questions if isinstance(questions, list) else None,
                 response_user_id=args.get("responseUserId"),
+                turn_id=args.get("turnId"),
                 timeout_seconds=_safe_timeout_seconds(args.get("timeoutSeconds")),
                 sensitive=args.get("sensitive") if isinstance(args.get("sensitive"), bool) else None,
                 native=args.get("native") if isinstance(args.get("native"), dict) else None,
@@ -273,6 +298,8 @@ CANON_RUNTIME_CONTROL_SCHEMA = {
             "choices": {"type": "array", "items": {"type": "object"}},
             "questions": {"type": "array", "items": {"type": "object"}},
             "responseUserId": {"type": "string"},
+            "runtimeId": {"type": "string"},
+            "turnId": {"type": "string"},
             "timeoutSeconds": {"type": "integer"},
             "sensitive": {"type": "boolean"},
             "native": {"type": "object"},
@@ -284,10 +311,11 @@ CANON_RUNTIME_CONTROL_SCHEMA = {
 
 registry.register(
     name="canon_runtime_control",
-    toolset="canon_runtime",
+    toolset="canon",
     schema=CANON_RUNTIME_CONTROL_SCHEMA,
     handler=canon_runtime_control,
     check_fn=lambda: bool(os.getenv("CANON_API_KEY") or os.getenv("CANON_AGENT")),
     is_async=True,
     description=CANON_RUNTIME_CONTROL_SCHEMA["description"],
 )
+registry.register_toolset_alias("canon_runtime", "canon")

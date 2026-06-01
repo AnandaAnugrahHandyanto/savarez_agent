@@ -2383,20 +2383,45 @@ def _canon_channel_prompt(
     )
 
 
+def _format_contact_card_text(message: dict[str, Any]) -> str:
+    card = message.get("contactCard")
+    if not isinstance(card, dict):
+        return "[Contact card]"
+
+    display_name = (_first_string(card, "displayName") or "Unknown").strip() or "Unknown"
+    user_id = _first_string(card, "userId")
+    user_type = _first_string(card, "userType")
+    owner_name = _first_string(card, "ownerName")
+    about = _first_string(card, "about")
+
+    parts: list[str] = []
+    if user_type:
+        parts.append(user_type)
+    if user_id:
+        parts.append(f"userId: {user_id}")
+    if owner_name:
+        parts.append(f"owner: {owner_name}")
+    if about:
+        parts.append(f"about: {about}")
+
+    summary = f'[Contact card] "{display_name}"'
+    if parts:
+        summary = f"{summary} - {'; '.join(parts)}"
+
+    text = message.get("text")
+    if isinstance(text, str) and text.strip():
+        return f"{summary}\n{text.strip()}"
+    return summary
+
+
 def _message_text(message: dict[str, Any]) -> str:
+    content_type = message.get("contentType")
+    if content_type == "contact_card":
+        return _format_contact_card_text(message)
+
     text = message.get("text")
     if isinstance(text, str) and text.strip():
         return text
-
-    content_type = message.get("contentType")
-    if content_type == "contact_card":
-        card = message.get("contactCard")
-        name = (
-            _first_string(card, "displayName", "userId")
-            if isinstance(card, dict)
-            else None
-        )
-        return f"[Contact card: {name}]" if name else "[Contact card]"
 
     attachments = message.get("attachments")
     if isinstance(attachments, list) and attachments:
