@@ -5877,15 +5877,18 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
         file=sys.stderr,
         flush=True,
     )
-    # Block until the container is signalled. The supervised gateway's
-    # lifetime is independent of this process — s6-supervise restarts
-    # it on crash, and we don't want the container to exit when the
-    # gateway flaps. `sleep infinity` matches the static main-hermes
-    # service's pattern (see docker/s6-rc.d/main-hermes/run): the CMD
-    # process is a no-op heartbeat that keeps /init alive until
-    # `docker stop` sends SIGTERM, at which point /init runs stage 3
-    # shutdown (which tears down the supervised gateway cleanly).
-    os.execvp("sleep", ["sleep", "infinity"])
+    # Block until SIGTERM/SIGINT. The supervised gateway's lifetime is
+    # independent of this process — s6-supervise restarts it on crash,
+    # and we keep the CMD process alive as a no-op heartbeat so /init
+    # doesn't start stage-3 shutdown.  `signal.pause()` replaces the
+    # earlier os.execvp("sleep", …) which broke when the Python
+    # process's PATH didn't contain a directory with `sleep` on it
+    # (issue #36208).  Register a SIGTERM handler so the container
+    # exits cleanly on `docker stop` with the conventional signal
+    # exit code (128 + signum).
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
+    while True:
+        signal.pause()
 
 
 def _gateway_command_inner(args):
