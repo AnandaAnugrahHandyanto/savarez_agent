@@ -535,7 +535,7 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
     run_text = run_path.read_text()
     assert "export HOME=/opt/data" in run_text
     assert "hermes -p coder gateway run" in run_text
-    assert "s6-setuidgid hermes" in run_text
+    assert "exec s6-setuidgid hermes env HOME=/opt/data" in run_text
     # Sentinel marking this as the supervised-child invocation. Without
     # it, the supervised `gateway run` would re-enter the s6 redirect
     # in `_gateway_command_inner` and recurse. See the matching guard
@@ -588,7 +588,15 @@ def test_render_run_script_resets_home_before_exec() -> None:
     run_text = S6ServiceManager._render_run_script("coder", {})
 
     assert "export HOME=/opt/data" in run_text
-    assert "exec s6-setuidgid hermes hermes -p coder gateway run" in run_text
+    assert "exec s6-setuidgid hermes env HOME=/opt/data hermes -p coder gateway run" in run_text
+
+
+def test_render_run_script_resets_home_for_default_profile() -> None:
+
+    run_text = S6ServiceManager._render_run_script("default", {})
+
+    assert "export HOME=/opt/data" in run_text
+    assert "exec s6-setuidgid hermes env HOME=/opt/data hermes gateway run" in run_text
 
 
 def test_s6_register_rejects_invalid_profile_name(s6_scandir) -> None:
