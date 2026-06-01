@@ -1412,6 +1412,8 @@ AUTHOR_MAP = {
     "116212274+amathxbt@users.noreply.github.com": "amathxbt",  # PR #22155 (cache tool_output_limits)
     "takis312@hotmail.com": "ErnestHysa",  # PRs #32636/#32708 (MCP asyncio.sleep + O(n^2) watcher drain)
     "me@simontaggart.com": "SiTaggart",  # PR #35583 (docker_forward_env empty-secret .env fallback)
+    "hf23482@bristol.ac.uk": "TumCucTom",  # PR #36836 (devcontainer skill)
+    "tokbale@outlook.com": "TumCucTom",  # earlier commits by the same contributor
 }
 
 
