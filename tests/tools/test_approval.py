@@ -49,6 +49,7 @@ class TestSmartApproval:
 class TestWebhookReadonlyAllowlist:
     def _config(self):
         return {
+            "approvals": {"mode": "manual"},
             "safety": {
                 "webhook_allowlist": {
                     "terminal_readonly": True,
@@ -65,7 +66,8 @@ class TestWebhookReadonlyAllowlist:
         with mock_patch("hermes_cli.config.load_config", return_value=self._config()):
             token = approval_module._approval_session_key.set("webhook-test")
             try:
-                with mock_patch.dict("os.environ", {"HERMES_CRON_SESSION": ""}, clear=False):
+                env = {"HERMES_CRON_SESSION": "", "HERMES_GATEWAY_SESSION": "1"}
+                with mock_patch.dict("os.environ", env, clear=False):
                     with mock_patch("gateway.session_context.get_session_env", side_effect=lambda key, default="": "webhook" if key == "HERMES_SESSION_PLATFORM" else default):
                         return approval_module.check_all_command_guards(command, "local")
             finally:
@@ -80,6 +82,36 @@ class TestWebhookReadonlyAllowlist:
         result = self._check('curl -s -X POST https://mellow-mule-232.convex.site/api/tasks/comment')
         assert result["approved"] is True
         assert result.get("webhook_allowlisted") is True
+
+    def test_webhook_allows_grant_verdict_update_notes_post(self):
+        command = (
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
+            "-H 'content-type: application/json' "
+            "-d '{\"path\":\"tasks:updateNotes\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\",\"notes\":\"<!-- grant-verdict:2026-06-01T12:00:00Z:CHANGES_REQUIRED -->\"}}'"
+        )
+        result = self._check(command)
+        assert result["approved"] is True
+        assert result.get("webhook_allowlisted") is True
+
+    def test_webhook_blocks_generic_update_notes_post_without_grant_marker(self):
+        command = (
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
+            "-H 'content-type: application/json' "
+            "-d '{\"path\":\"tasks:updateNotes\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\",\"notes\":\"generic notes write\"}}'"
+        )
+        result = self._check(command)
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_blocks_other_free_text_mutation_writes(self):
+        command = (
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
+            "-H 'content-type: application/json' "
+            "-d '{\"path\":\"tasks:updateDescription\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\",\"description\":\"<!-- grant-verdict: not a notes verdict write -->\"}}'"
+        )
+        result = self._check(command)
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
 
     def test_webhook_still_blocks_recursive_delete(self):
         result = self._check("rm -rf /tmp/test/")

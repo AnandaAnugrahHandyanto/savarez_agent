@@ -943,18 +943,46 @@ def _extract_curl_method_and_url(tokens: list[str]) -> tuple[str, str]:
     return method, url
 
 
+def _extract_curl_payload(tokens: list[str]) -> str:
+    payloads = []
+    i = 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token in {"-d", "--data", "--data-raw", "--data-binary", "--form", "-F"} and i + 1 < len(tokens):
+            payloads.append(tokens[i + 1])
+            i += 2
+            continue
+        for prefix in ("--data=", "--data-raw=", "--data-binary=", "--form=", "-d"):
+            if token.startswith(prefix) and len(token) > len(prefix):
+                payloads.append(token[len(prefix):])
+                break
+        i += 1
+    return "\n".join(payloads)
+
+
+def _is_grant_verdict_write_curl(method: str, url: str, tokens: list[str]) -> bool:
+    if method != "POST" or url != "https://mellow-mule-232.convex.cloud/api/mutation":
+        return False
+    payload = _extract_curl_payload(tokens)
+    return "tasks:updateNotes" in payload and "<!-- grant-verdict:" in payload
+
+
+def _split_webhook_terminal_command(command: str) -> list[str]:
+    if _has_shell_control_operator(command):
+        return []
+    try:
+        import shlex
+        return shlex.split(command)
+    except ValueError:
+        return []
+
+
 def _is_webhook_readonly_terminal_command(command: str) -> bool:
     """Allow safe webhook review commands without interactive approval."""
     if not _is_webhook_session() or not _webhook_terminal_readonly_enabled():
         return False
-    if _has_shell_control_operator(command):
-        return False
 
-    try:
-        import shlex
-        tokens = shlex.split(command)
-    except ValueError:
-        return False
+    tokens = _split_webhook_terminal_command(command)
     if not tokens:
         return False
 
@@ -989,12 +1017,24 @@ def _is_webhook_readonly_terminal_command(command: str) -> bool:
             "https://github.com/",
         ]):
             return True
+        if method == "POST" and url == "https://mellow-mule-232.convex.cloud/api/mutation":
+            return _is_grant_verdict_write_curl(method, url, tokens)
         return method == "POST" and _match_internal_url(url, destinations)
     if name in {"python", "python3", "node"} and len(tokens) >= 3 and tokens[1] in {"-c", "-e"}:
         code = tokens[2].lower()
         blocked = {"subprocess", "os.system", "popen", "child_process", "exec(", "spawn("}
         return not any(term in code for term in blocked)
     return False
+
+
+def _is_webhook_blocked_terminal_write(command: str) -> bool:
+    if not _is_webhook_session() or not _webhook_terminal_readonly_enabled():
+        return False
+    tokens = _split_webhook_terminal_command(command)
+    if not tokens or os.path.basename(tokens[0]) != "curl":
+        return False
+    method, url = _extract_curl_method_and_url(tokens)
+    return method == "POST" and url == "https://mellow-mule-232.convex.cloud/api/mutation"
 
 
 def _smart_approve(command: str, description: str) -> str:
@@ -1245,6 +1285,8 @@ def check_all_command_guards(command: str, env_type: str,
 
     if _is_webhook_readonly_terminal_command(command):
         return {"approved": True, "message": None, "webhook_allowlisted": True}
+    if _is_webhook_blocked_terminal_write(command):
+        return {"approved": False, "message": "BLOCKED: Webhook curl POST is not allowlisted."}
 
     # --- Phase 1: Gather findings from both checks ---
 
