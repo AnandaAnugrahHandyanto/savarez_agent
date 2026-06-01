@@ -164,6 +164,15 @@ def _apply_mcp_preset(
 
 # ─── Discovery (temporary connect) ───────────────────────────────────────────
 
+def _connect_timeout_for_probe(config: dict) -> float:
+    """Return the configured MCP connection timeout for CLI probes."""
+    try:
+        timeout = float(config.get("connect_timeout", 30))
+    except (TypeError, ValueError):
+        return 30.0
+    return timeout if timeout > 0 else 30.0
+
+
 def _probe_single_server(
     name: str, config: dict, connect_timeout: float = 30
 ) -> List[Tuple[str, str]]:
@@ -580,7 +589,11 @@ def cmd_mcp_test(args):
     # Attempt connection
     start = time.monotonic()
     try:
-        tools = _probe_single_server(name, cfg)
+        tools = _probe_single_server(
+            name,
+            cfg,
+            connect_timeout=_connect_timeout_for_probe(cfg),
+        )
         elapsed_ms = (time.monotonic() - start) * 1000
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000

@@ -1146,6 +1146,28 @@ class TestToolsetInjection:
             assert "mcp_broken_ping" in result2
             assert call_count == 1  # Only broken retried
 
+    def test_registration_outer_timeout_honors_slowest_connect_timeout(self):
+        """Parallel discovery wrapper must outlive the slowest configured server."""
+        fake_config = {
+            "slow": {"url": "https://example.com/mcp", "connect_timeout": 180},
+            "default": {"command": "npx", "args": []},
+        }
+        captured = {}
+
+        def fake_run_on_mcp_loop(coro_or_fn, timeout=None):
+            captured["timeout"] = timeout
+            return None
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", {}), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop", side_effect=fake_run_on_mcp_loop):
+            from tools.mcp_tool import register_mcp_servers
+
+            register_mcp_servers(fake_config)
+
+        assert captured["timeout"] == 190.0
+
 
 # ---------------------------------------------------------------------------
 # Graceful fallback

@@ -437,6 +437,28 @@ class TestMcpTest:
         assert "Connected" in out
         assert "Tools discovered: 2" in out
 
+    def test_test_uses_configured_connect_timeout(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "slow-http": {
+                "url": "https://example.com/mcp",
+                "connect_timeout": 180,
+            },
+        })
+        seen = {}
+
+        def mock_probe(name, config, **kw):
+            seen["connect_timeout"] = kw.get("connect_timeout")
+            return [("slow_tool", "Slow discovery")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="slow-http"))
+        capsys.readouterr()
+        assert seen["connect_timeout"] == 180.0
+
 
 # ---------------------------------------------------------------------------
 # Tests: env var interpolation

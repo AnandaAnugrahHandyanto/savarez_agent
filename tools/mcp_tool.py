@@ -3122,6 +3122,23 @@ def _parse_boolish(value: Any, default: bool = True) -> bool:
     return default
 
 
+def _connect_timeout_value(config: dict) -> float:
+    """Return a positive per-server connect timeout from config."""
+    return float(_safe_numeric(
+        config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT),
+        _DEFAULT_CONNECT_TIMEOUT,
+        float,
+    ))
+
+
+def _registration_outer_timeout(servers: Dict[str, dict]) -> float:
+    """Return the wrapper timeout for parallel MCP discovery."""
+    if not servers:
+        return 120.0
+    max_connect_timeout = max(_connect_timeout_value(cfg) for cfg in servers.values())
+    return max(120.0, max_connect_timeout + 10.0)
+
+
 _UTILITY_CAPABILITY_METHODS = {
     "list_resources": "list_resources",
     "read_resource": "read_resource",
@@ -3345,7 +3362,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 
     Returns list of registered tool names.
     """
-    connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+    connect_timeout = _connect_timeout_value(config)
     server = await asyncio.wait_for(
         _connect_server(name, config),
         timeout=connect_timeout,
@@ -3432,8 +3449,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                 )
 
     # Per-server timeouts are handled inside _discover_and_register_server.
-    # The outer timeout is generous: 120s total for parallel discovery.
-    #
+    # The outer timeout must outlive the slowest configured server because the
+    # per-server discovery tasks run in parallel under this single wrapper.
+    discovery_timeout = _registration_outer_timeout(new_servers)
     # Temporarily clear the interrupt flag on the current thread so that MCP
     # discovery is never cancelled by a stale interrupt from a prior agent
     # session (executor threads get reused and may carry old interrupt state).
@@ -3442,7 +3460,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     if _was_interrupted:
         _set_interrupt(False)
     try:
-        _run_on_mcp_loop(_discover_all, timeout=120)
+        _run_on_mcp_loop(_discover_all, timeout=discovery_timeout)
     finally:
         if _was_interrupted:
             _set_interrupt(True)
