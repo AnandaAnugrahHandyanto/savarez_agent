@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
-from gateway.config import HomeChannel, Platform
+from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import (
@@ -422,7 +422,9 @@ async def test_send_restart_notification_noop_when_no_file(tmp_path, monkeypatch
 
 @pytest.mark.asyncio
 async def test_send_restart_notification_skips_when_adapter_missing(tmp_path, monkeypatch):
-    """If the requester's platform isn't connected, clean up without crashing."""
+    """If the requester's platform isn't connected AND isn't queued for
+    reconnect, clean up without crashing — nothing will ever retry it, so a
+    preserved marker would only leak into a later, unrelated restart."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     notify_path = tmp_path / ".restart_notify.json"
@@ -432,10 +434,95 @@ async def test_send_restart_notification_skips_when_adapter_missing(tmp_path, mo
     }))
 
     runner, _adapter = make_restart_runner()
+    # discord is not pending reconnect (empty _failed_platforms), so there is
+    # no retry coming — the marker must be consumed.
 
     await runner._send_restart_notification()
 
     # File cleaned up even though we couldn't send
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_deferred_when_platform_pending_reconnect(
+    tmp_path, monkeypatch
+):
+    """Regression: if the requester's platform is still reconnecting at startup,
+    the marker must be PRESERVED so the confirmation can be retried — not
+    deleted (which permanently dropped the /restart confirmation)."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "discord",  # not connected yet, queued for reconnect
+        "chat_id": "42",
+    }))
+
+    runner, _adapter = make_restart_runner()  # only telegram adapter connected
+    runner._failed_platforms = {
+        Platform.DISCORD: {
+            "config": PlatformConfig(enabled=True, token="t"),
+            "attempts": 1,
+            "next_retry": 0.0,
+        }
+    }
+
+    delivered_target = await runner._send_restart_notification()
+
+    # Nothing delivered yet, but the marker survives for the reconnect retry.
+    assert delivered_target is None
+    assert notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_retried_after_reconnect_delivers(
+    tmp_path, monkeypatch
+):
+    """Regression (end-to-end at the notification layer): a confirmation that
+    was deferred because the platform was reconnecting is delivered to the
+    requester's chat/thread once the platform comes back, then cleaned up."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+        "chat_type": "dm",
+        "thread_id": "777",
+    }))
+
+    runner, adapter = make_restart_runner()
+    # Simulate startup: telegram is not connected yet, queued for reconnect.
+    runner.adapters = {}
+    runner._failed_platforms = {
+        Platform.TELEGRAM: {
+            "config": PlatformConfig(enabled=True, token="t"),
+            "attempts": 1,
+            "next_retry": 0.0,
+        }
+    }
+
+    # First attempt (startup): adapter missing → marker preserved, no send.
+    first = await runner._send_restart_notification()
+    assert first is None
+    assert notify_path.exists()
+
+    # Platform reconnects: adapter is back and no longer in the retry queue.
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._failed_platforms = {}
+
+    # Retry (driven by the reconnect watcher) delivers to the requester thread.
+    second = await runner._send_restart_notification()
+    assert second == ("telegram", "42", "777")
+    adapter.send.assert_called_once()
+    call_args = adapter.send.call_args
+    assert call_args[0][0] == "42"  # chat_id
+    assert call_args[1]["metadata"] == {
+        "thread_id": "777",
+        "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "777",
+    }
     assert not notify_path.exists()
 
 

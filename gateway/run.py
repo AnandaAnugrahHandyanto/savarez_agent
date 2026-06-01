@@ -5997,6 +5997,20 @@ class GatewayRunner:
                             await build_channel_directory(self.adapters)
                         except Exception:
                             pass
+
+                        # A /restart confirmation may have been deferred at
+                        # startup because this platform wasn't connected yet.
+                        # Now that it's back, retry delivery — the marker is
+                        # consumed only once the send succeeds (or terminally
+                        # fails), so this is safe to call on every reconnect.
+                        try:
+                            await self._send_restart_notification()
+                        except Exception:
+                            logger.debug(
+                                "Restart notification retry after %s reconnect failed",
+                                platform.value,
+                                exc_info=True,
+                            )
                     # Check if the failure is non-retryable
                     elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
                         self._update_platform_runtime_status(
@@ -14903,6 +14917,15 @@ class GatewayRunner:
         if not notify_path.exists():
             return None
 
+        # Preserve the marker (instead of consuming it in the finally block)
+        # only when the requester's platform is still pending reconnect, so the
+        # confirmation can be retried once the platform comes back — the
+        # reconnect watcher calls this again on a successful reconnect. Every
+        # other outcome (delivered, suppressed, malformed, terminal send
+        # failure, or a platform that will never reconnect) consumes the marker
+        # so the same chat is never notified twice and no stale marker leaks
+        # into a later, unrelated restart.
+        preserve_marker = False
         try:
             data = json.loads(notify_path.read_text())
             platform_str = data.get("platform")
@@ -14916,10 +14939,18 @@ class GatewayRunner:
             platform = Platform(platform_str)
             adapter = self.adapters.get(platform)
             if not adapter:
-                logger.debug(
-                    "Restart notification skipped: %s adapter not connected",
-                    platform_str,
-                )
+                if platform in self._failed_platforms:
+                    logger.info(
+                        "Restart notification deferred: %s not connected yet, "
+                        "will retry after reconnect",
+                        platform_str,
+                    )
+                    preserve_marker = True
+                else:
+                    logger.debug(
+                        "Restart notification skipped: %s adapter not connected",
+                        platform_str,
+                    )
                 return None
 
             platform_cfg = self.config.platforms.get(platform)
@@ -14965,7 +14996,8 @@ class GatewayRunner:
             logger.warning("Restart notification failed: %s", e)
             return None
         finally:
-            notify_path.unlink(missing_ok=True)
+            if not preserve_marker:
+                notify_path.unlink(missing_ok=True)
 
     async def _send_home_channel_startup_notifications(
         self,
