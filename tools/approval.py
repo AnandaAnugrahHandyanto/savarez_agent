@@ -9,6 +9,7 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
+import json
 import logging
 import os
 import re
@@ -960,11 +961,28 @@ def _extract_curl_payload(tokens: list[str]) -> str:
     return "\n".join(payloads)
 
 
-def _is_grant_verdict_write_curl(method: str, url: str, tokens: list[str]) -> bool:
+_GRANT_REVIEW_MUTATION_PATHS = {"tasks:updateNotes", "tasks:updateStatus", "tasks:markChangesRequired"}
+
+
+def _extract_convex_mutation_path(payload: str) -> str:
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        match = re.search(r'"path"\s*:\s*"([^"]+)"', payload)
+        return match.group(1) if match else ""
+    return decoded.get("path", "") if isinstance(decoded, dict) else ""
+
+
+def _is_grant_review_mutation_curl(method: str, url: str, tokens: list[str]) -> bool:
     if method != "POST" or url != "https://mellow-mule-232.convex.cloud/api/mutation":
         return False
     payload = _extract_curl_payload(tokens)
-    return "tasks:updateNotes" in payload and "<!-- grant-verdict:" in payload
+    path = _extract_convex_mutation_path(payload)
+    if path not in _GRANT_REVIEW_MUTATION_PATHS:
+        return False
+    if path == "tasks:updateNotes":
+        return "<!-- grant-verdict:" in payload
+    return True
 
 
 def _split_webhook_terminal_command(command: str) -> list[str]:
@@ -1018,7 +1036,7 @@ def _is_webhook_readonly_terminal_command(command: str) -> bool:
         ]):
             return True
         if method == "POST" and url == "https://mellow-mule-232.convex.cloud/api/mutation":
-            return _is_grant_verdict_write_curl(method, url, tokens)
+            return _is_grant_review_mutation_curl(method, url, tokens)
         return method == "POST" and _match_internal_url(url, destinations)
     if name in {"python", "python3", "node"} and len(tokens) >= 3 and tokens[1] in {"-c", "-e"}:
         code = tokens[2].lower()
@@ -1034,7 +1052,9 @@ def _is_webhook_blocked_terminal_write(command: str) -> bool:
     if not tokens or os.path.basename(tokens[0]) != "curl":
         return False
     method, url = _extract_curl_method_and_url(tokens)
-    return method == "POST" and url == "https://mellow-mule-232.convex.cloud/api/mutation"
+    if method == "POST" and url == "https://mellow-mule-232.convex.cloud/api/mutation":
+        return not _is_grant_review_mutation_curl(method, url, tokens)
+    return False
 
 
 def _smart_approve(command: str, description: str) -> str:

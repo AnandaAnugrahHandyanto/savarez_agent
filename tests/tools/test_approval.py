@@ -93,6 +93,26 @@ class TestWebhookReadonlyAllowlist:
         assert result["approved"] is True
         assert result.get("webhook_allowlisted") is True
 
+    def test_webhook_allows_grant_mark_changes_required_post(self):
+        command = (
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
+            "-H 'content-type: application/json' "
+            "-d '{\"path\":\"tasks:markChangesRequired\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\"}}'"
+        )
+        result = self._check(command)
+        assert result["approved"] is True
+        assert result.get("webhook_allowlisted") is True
+
+    def test_webhook_allows_grant_update_status_post(self):
+        command = (
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
+            "-H 'content-type: application/json' "
+            "-d '{\"path\":\"tasks:updateStatus\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\",\"status\":\"done\"}}'"
+        )
+        result = self._check(command)
+        assert result["approved"] is True
+        assert result.get("webhook_allowlisted") is True
+
     def test_webhook_blocks_generic_update_notes_post_without_grant_marker(self):
         command = (
             "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
@@ -108,6 +128,36 @@ class TestWebhookReadonlyAllowlist:
             "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
             "-H 'content-type: application/json' "
             "-d '{\"path\":\"tasks:updateDescription\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\",\"description\":\"<!-- grant-verdict: not a notes verdict write -->\"}}'"
+        )
+        result = self._check(command)
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_blocks_remove_mutation_post(self):
+        command = (
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
+            "-H 'content-type: application/json' "
+            "-d '{\"path\":\"tasks:remove\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\"}}'"
+        )
+        result = self._check(command)
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_blocks_archive_mutation_post(self):
+        command = (
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
+            "-H 'content-type: application/json' "
+            "-d '{\"path\":\"tasks:archive\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\"}}'"
+        )
+        result = self._check(command)
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_blocks_task_comment_add_mutation_post(self):
+        command = (
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
+            "-H 'content-type: application/json' "
+            "-d '{\"path\":\"taskComments:add\",\"args\":{\"taskId\":\"kn715rhv354j03jchj738137qh87te4m\",\"body\":\"comment\"}}'"
         )
         result = self._check(command)
         assert result["approved"] is False
