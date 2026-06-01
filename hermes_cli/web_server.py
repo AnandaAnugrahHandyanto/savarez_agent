@@ -768,7 +768,17 @@ _ACTION_LOG_DIR: Path = get_hermes_home() / "logs"
 # Short ``name`` (from the URL) → absolute log file path.
 _ACTION_LOG_FILES: Dict[str, str] = {
     "gateway-restart": "gateway-restart.log",
+    "gateway-start": "gateway-start.log",
+    "gateway-stop": "gateway-stop.log",
     "hermes-update": "hermes-update.log",
+    "doctor": "action-doctor.log",
+    "security-audit": "action-security-audit.log",
+    "backup": "action-backup.log",
+    "import": "action-import.log",
+    "checkpoints-prune": "action-checkpoints-prune.log",
+    "skills-install": "action-skills-install.log",
+    "skills-uninstall": "action-skills-uninstall.log",
+    "skills-update": "action-skills-update.log",
 }
 
 # ``name`` → most recently spawned Popen handle.  Used so ``status`` can
@@ -4552,6 +4562,208 @@ async def reset_memory(body: MemoryReset):
             except OSError as exc:
                 raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}")
     return {"ok": True, "deleted": deleted}
+
+
+# ---------------------------------------------------------------------------
+# Operations endpoints — doctor / security audit / backup / import /
+# checkpoints / hooks.
+#
+# Diagnostic and maintenance commands.  The long-running / text-output ones
+# (doctor, security audit, backup, import, skills install) are spawned as
+# background actions whose logs the dashboard tails via
+# /api/actions/{name}/status — same pattern as gateway restart and update.
+# The cheap, structured reads (hooks list, checkpoints list) return JSON
+# directly.
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/ops/doctor")
+async def run_doctor():
+    try:
+        proc = _spawn_hermes_action(["doctor"], "doctor")
+    except Exception as exc:
+        _log.exception("Failed to spawn doctor")
+        raise HTTPException(status_code=500, detail=f"Failed to run doctor: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "doctor"}
+
+
+@app.post("/api/ops/security-audit")
+async def run_security_audit():
+    try:
+        proc = _spawn_hermes_action(["security", "audit"], "security-audit")
+    except Exception as exc:
+        _log.exception("Failed to spawn security audit")
+        raise HTTPException(status_code=500, detail=f"Failed to run security audit: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "security-audit"}
+
+
+class BackupRequest(BaseModel):
+    # Optional output path; defaults to a timestamped zip in the home dir.
+    output: Optional[str] = None
+
+
+@app.post("/api/ops/backup")
+async def run_backup(body: BackupRequest):
+    args = ["backup"]
+    if body.output:
+        args.append(body.output.strip())
+    try:
+        proc = _spawn_hermes_action(args, "backup")
+    except Exception as exc:
+        _log.exception("Failed to spawn backup")
+        raise HTTPException(status_code=500, detail=f"Failed to run backup: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "backup"}
+
+
+class ImportRequest(BaseModel):
+    archive: str
+
+
+@app.post("/api/ops/import")
+async def run_import(body: ImportRequest):
+    archive = (body.archive or "").strip()
+    if not archive:
+        raise HTTPException(status_code=400, detail="archive path is required")
+    if not os.path.isfile(archive):
+        raise HTTPException(status_code=404, detail=f"Archive not found: {archive}")
+    try:
+        proc = _spawn_hermes_action(["import", archive], "import")
+    except Exception as exc:
+        _log.exception("Failed to spawn import")
+        raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "import"}
+
+
+@app.get("/api/ops/hooks")
+async def list_hooks():
+    """Read-only list of configured shell hooks from config.yaml + allowlist."""
+    cfg = load_config()
+    hooks_cfg = cfg.get("hooks")
+    out = []
+    if isinstance(hooks_cfg, dict):
+        for event, entries in hooks_cfg.items():
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                out.append({
+                    "event": event,
+                    "matcher": entry.get("matcher"),
+                    "command": entry.get("command"),
+                    "timeout": entry.get("timeout"),
+                })
+    # Consent allowlist status (which commands have been approved for run).
+    allowlist: List[str] = []
+    try:
+        allow_path = get_hermes_home() / "shell-hooks-allowlist.json"
+        if allow_path.exists():
+            data = json.loads(allow_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                allowlist = list(data.keys())
+            elif isinstance(data, list):
+                allowlist = [str(x) for x in data]
+    except Exception:
+        _log.exception("Failed to read shell-hooks allowlist")
+    for h in out:
+        h["allowed"] = h.get("command") in allowlist
+    return {"hooks": out, "allowlist": allowlist}
+
+
+@app.get("/api/ops/checkpoints")
+async def list_checkpoints():
+    """List the /rollback shadow store checkpoints (read-only)."""
+    # Checkpoints live under <hermes_home>/checkpoints/.  Surface a count +
+    # total size so the dashboard can show what a prune would reclaim; the
+    # actual prune is a spawned action so confirmation/pruning logic stays
+    # in one place (the CLI).
+    cp_dir = get_hermes_home() / "checkpoints"
+    sessions = []
+    total_bytes = 0
+    if cp_dir.is_dir():
+        for child in sorted(cp_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            size = 0
+            count = 0
+            for f in child.rglob("*"):
+                if f.is_file():
+                    try:
+                        size += f.stat().st_size
+                        count += 1
+                    except OSError:
+                        pass
+            total_bytes += size
+            sessions.append({
+                "session": child.name,
+                "files": count,
+                "bytes": size,
+            })
+    return {"sessions": sessions, "total_bytes": total_bytes}
+
+
+@app.post("/api/ops/checkpoints/prune")
+async def prune_checkpoints():
+    try:
+        proc = _spawn_hermes_action(["checkpoints", "prune"], "checkpoints-prune")
+    except Exception as exc:
+        _log.exception("Failed to spawn checkpoints prune")
+        raise HTTPException(status_code=500, detail=f"Failed to prune checkpoints: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "checkpoints-prune"}
+
+
+# ---------------------------------------------------------------------------
+# Skills hub endpoints — search / install / uninstall / update.
+#
+# Search and install touch the network (GitHub, hub sources) and run the same
+# complex source-router pipeline the CLI uses, so they're spawned as background
+# actions whose logs the dashboard tails.  The already-installed skill list +
+# enable/disable toggle live in the existing /api/skills endpoints.
+# ---------------------------------------------------------------------------
+
+
+class SkillInstallRequest(BaseModel):
+    identifier: str
+
+
+@app.post("/api/skills/hub/install")
+async def install_skill_hub(body: SkillInstallRequest):
+    identifier = (body.identifier or "").strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="identifier is required")
+    try:
+        proc = _spawn_hermes_action(["skills", "install", identifier], "skills-install")
+    except Exception as exc:
+        _log.exception("Failed to spawn skills install")
+        raise HTTPException(status_code=500, detail=f"Failed to install skill: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "skills-install"}
+
+
+class SkillUninstallRequest(BaseModel):
+    name: str
+
+
+@app.post("/api/skills/hub/uninstall")
+async def uninstall_skill_hub(body: SkillUninstallRequest):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    try:
+        proc = _spawn_hermes_action(["skills", "uninstall", name, "--yes"], "skills-uninstall")
+    except Exception as exc:
+        _log.exception("Failed to spawn skills uninstall")
+        raise HTTPException(status_code=500, detail=f"Failed to uninstall skill: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "skills-uninstall"}
+
+
+@app.post("/api/skills/hub/update")
+async def update_skills_hub():
+    try:
+        proc = _spawn_hermes_action(["skills", "update"], "skills-update")
+    except Exception as exc:
+        _log.exception("Failed to spawn skills update")
+        raise HTTPException(status_code=500, detail=f"Failed to update skills: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "skills-update"}
 
 
 # ---------------------------------------------------------------------------
