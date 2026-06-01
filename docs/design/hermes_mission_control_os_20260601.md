@@ -1,0 +1,382 @@
+# Hermes Mission Control OS Discovery and Runbook
+
+Date: 2026-06-01
+
+## Goal
+
+Mission Control OS should turn the current Hermes dashboard into a safe local
+control plane for Travis/Jenny operations. It should make project state,
+worker results, approval gates, and next prompts visible without relying on
+Discord copy/paste, but it must not become autonomous computer use or a broad
+remote-control surface.
+
+This pass is discovery and architecture only. No dashboard rewrite, public
+exposure, autonomous mouse/keyboard/browser control, email sending, publishing,
+payment activation, customer outreach, destructive action, or always-on worker
+is in scope.
+
+## Current Status Board
+
+The dashboard is a React/Vite frontend served by `hermes_cli/web_server.py`
+through FastAPI/Uvicorn. `web/src/App.tsx` routes the landing page to
+`/mission-control`, and `web/src/pages/MissionControlPage.tsx` already provides
+the first Mission Control surface.
+
+Current dashboard pages include:
+
+- Mission Control: project cards, status-file links, daily drivers, approval
+  counts, gateway status, active automation, recent sessions, social platform
+  local status, and safe prompt templates.
+- Approvals: standing gates plus dynamic approval records under
+  `$HERMES_HOME/state/ops-center/approval-inbox.json`.
+- Ops Runs: read-only ledger combining recent Hermes sessions and cron jobs.
+- Sessions, Analytics, Models, Logs, Cron, Skills, Plugins, Profiles, Config,
+  Keys, Docs, and optional Chat.
+
+The dashboard data flow is mostly poll-based. Mission Control, Approvals, and
+Ops Runs call `api.getStatus`, `api.getCronJobs("all")`, `api.getSessions`,
+`api.getOpsApprovalSummary`, `api.getOpsApprovals`,
+`api.getOpsApprovalAudit`, `api.getOpsActionRegistryStatus`,
+`api.getOpsMemoryStatus`, and local social-status endpoints on a 30 second
+interval. The general status page has a faster refresh path.
+
+Private-access assumptions:
+
+- `hermes dashboard` binds to `127.0.0.1` by default.
+- FastAPI middleware rejects unexpected Host headers for loopback binds.
+- Most `/api/*` routes require an ephemeral per-process
+  `X-Hermes-Session-Token`; only a small public read-only list is exempt.
+- CORS is limited to localhost origins.
+- Binding to `0.0.0.0` requires `--insecure` and remains unsuitable for public
+  exposure because the dashboard can inspect and mutate local config/secrets.
+- Docker/s6 can supervise the dashboard only when `HERMES_DASHBOARD` is truthy;
+  otherwise the service slot exits and is not restarted.
+
+## Current Hermes API Capabilities
+
+There are two relevant API surfaces.
+
+The dashboard REST API in `hermes_cli/web_server.py` provides:
+
+- Health/status: `GET /api/status`.
+- Session access: `GET /api/sessions`, session search, message history, latest
+  descendant, and delete.
+- Logs and analytics: `GET /api/logs`, `/api/analytics/*`.
+- Cron/job state and mutation: list, create, update, pause, resume, trigger,
+  delete under `/api/cron/jobs`.
+- Ops state: approvals, approval audit, summary, fixed action registry,
+  memory status, local social platform status, and manual social status writes
+  under `/api/ops/*`.
+- Embedded TUI: `/api/pty` WebSocket when launched with `--tui`; this is the
+  real `hermes --tui`, not a React chat rewrite.
+
+The gateway API server in `gateway/platforms/api_server.py` provides an
+OpenAI-compatible local backend:
+
+- `POST /v1/chat/completions`.
+- `POST /v1/responses`, response retrieval, and response deletion.
+- `GET /v1/models`, `GET /v1/capabilities`.
+- Runs API: `POST /v1/runs`, `GET /v1/runs/{run_id}`,
+  `GET /v1/runs/{run_id}/events`, `POST /v1/runs/{run_id}/approval`, and
+  `POST /v1/runs/{run_id}/stop`.
+- Health: `GET /health` and `GET /health/detailed`.
+- Jobs API under `/api/jobs`.
+
+The API server defaults to `127.0.0.1:8642`, uses bearer auth from
+`API_SERVER_KEY`, requires a key for non-loopback binds, and does not enable
+browser CORS unless explicitly configured.
+
+## Existing Queue, Audit, Approval, and Artifact Patterns
+
+Approval gate:
+
+- `hermes_cli/ops_approvals.py` is profile-local JSON/JSONL storage.
+- It records decisions only by default. Approving a request sets
+  `execution_allowed` to false and generates a Jenny command for the normal
+  chat/tool flow.
+- Audit events append to
+  `$HERMES_HOME/state/ops-center/approval-audit.jsonl`.
+- Allowed risk labels include Read-only, Draft-only, Local-build,
+  Live-service, Money/customer, Credential/auth, Destructive, and Security
+  boundary.
+
+Fixed action registry:
+
+- `hermes_cli/ops_actions.py` exposes exactly one fixed action today:
+  `read_only_status_probe`.
+- Execution is disabled by default through `ops_center.action_execution_enabled`
+  and `ops_center.allowed_actions` in `DEFAULT_CONFIG`.
+- Even when enabled, the only executable path returns gateway/dashboard status
+  metadata and writes only audit-log events.
+- Arbitrary commands, gateway restart, cron mutation, credential change,
+  public/payment action, and messaging outreach are blocked classes.
+
+Task queue and worker output:
+
+- Hermes Kanban is the existing durable task queue. The shared board lives
+  under the Hermes root, with optional per-board SQLite DBs under
+  `<root>/kanban/boards/<slug>/`.
+- Task states include triage, todo, scheduled, ready, running, blocked,
+  review, done, and archived.
+- Worker runs write structured summaries, metadata, comments, events,
+  heartbeats, and per-task logs.
+- The Kanban dashboard plugin reads `task_events`, task runs, comments,
+  latest summaries, diagnostics, and worker logs. It can also receive live
+  updates over its authenticated WebSocket.
+- Worker handoffs are expected to use structured `summary` and `metadata`
+  fields. Review-required work is intentionally blocked for human review.
+
+Status artifacts:
+
+- Mission Control currently links to AI Ops Brain `PROJECT_STATUS.md` files
+  for project state and uses local JSON snapshots for social status.
+- Good future Mission Control state should continue to be file/DB-backed,
+  inspectable, and append-audited instead of hidden in transient chat.
+
+## Desired Control Plane
+
+Mission Control should become an operator console with four lanes:
+
+1. Observe: read status files, sessions, logs, cron state, Kanban tasks, worker
+   results, approval gates, and audit logs.
+2. Decide: create or update approval proposals and next Codex prompts without
+   executing risky work.
+3. Queue: save bounded prompts or Kanban tasks for later execution by the
+   correct Hermes profile.
+4. Notify: send lightweight notifications to Discord/WhatsApp when something
+   needs Travis, but keep the actual state and controls in Hermes.
+
+Discord should become notification-only because it is a poor source of truth:
+thread rollover loses context, copy/paste relays waste Codex turns, and
+important state is hard to query. Discord can still announce "approval needed",
+"worker blocked", or "new result ready", with a link or identifier pointing
+back to dashboard/API state.
+
+## Recommended Architecture
+
+Keep the existing dashboard and add narrow read models before write tools:
+
+- Source-of-truth layer:
+  - AI Ops Brain status files for human-readable project state.
+  - Kanban DB for durable task/work queue and worker results.
+  - SessionDB for Hermes conversations/tool traces.
+  - Cron job store for scheduled work.
+  - Ops approval JSON/JSONL for decision records and audit.
+  - Local ops snapshots for social/platform readiness.
+- Backend read facade:
+  - Add small `/api/mission-control/*` routes only when aggregation starts to
+    duplicate frontend logic or must be shared with MCP.
+  - Prefer read-only aggregate endpoints first:
+    `status`, `open-tasks`, `latest-worker-results`, `repo-status`,
+    `approval-gates`, and `recent-audit-log`.
+- Dashboard:
+  - Extend the existing Mission Control, Approvals, Ops Runs, and Kanban
+    plugin surfaces.
+  - Do not rebuild the primary chat transcript/composer in React; embedded
+    chat remains the real TUI.
+- Execution:
+  - Use Hermes API server runs or Kanban worker dispatch for agent work.
+  - Use `POST /v1/runs`, run polling, SSE events, approval resolution, and
+    stop support instead of screen control.
+  - Do not add mouse/keyboard/browser-control automation.
+
+## Future ChatGPT OAuth/MCP Bridge
+
+Hermes already has MCP server infrastructure:
+
+- `mcp_serve.py` runs a FastMCP stdio server for messaging/channel bridge
+  tools.
+- `agent/transports/hermes_tools_mcp_server.py` exposes a curated subset of
+  Hermes tools to Codex via stdio MCP.
+- `tools/mcp_tool.py`, `tools/mcp_oauth.py`, and
+  `tools/mcp_oauth_manager.py` implement MCP client support and OAuth 2.1 PKCE
+  token storage/recovery for outbound MCP servers.
+
+The future ChatGPT bridge should be a new narrow MCP server, not an expansion
+of the current broad messaging bridge and not a public dashboard. Recommended
+shape:
+
+- Add `mission_control_mcp_server.py` or a `hermes_cli/mission_control_mcp.py`
+  module that uses FastMCP and calls the same read facade used by the
+  dashboard.
+- Start with stdio/local transport for development. Add remote HTTP/SSE only
+  after OAuth, scope checks, rate limits, audit logging, and deployment
+  isolation are reviewed.
+- Use OAuth as an access boundary for ChatGPT, but never pass Hermes secrets,
+  API keys, cookies, or dashboard session tokens through MCP tool results.
+- Store bridge OAuth tokens under profile-local Hermes auth/token storage with
+  0o600 files and the existing secure-parent-dir pattern.
+- Scope the bridge to Mission Control tools only. It should not inherit the
+  broad Hermes tool registry, terminal, browser, file mutation, email, or
+  publishing tools.
+
+Safe first MCP tools:
+
+- `get_project_status`
+- `get_open_tasks`
+- `get_latest_worker_results`
+- `get_repo_status`
+- `get_approval_gates`
+- `get_recent_audit_log`
+- `save_next_codex_prompt`
+- `import_worker_result`
+- `pause_future_outreach`
+- `block_all_sends`
+
+The last four are writes, but should be local-control writes only:
+append/save a prompt packet, import a worker-result artifact into local state,
+or set local block flags. They must not send, publish, delete, launch, pay,
+or run a broad Codex session.
+
+Blocked MCP tools/actions:
+
+- `send_email`
+- `publish_video`
+- `activate_payment`
+- `delete_files`
+- `run_unbounded_codex`
+- `autonomous_computer_use`
+- `start_bulk_outreach`
+- Any arbitrary shell, dashboard token reveal, OAuth token reveal, API key
+  reveal, browser/mouse/keyboard control, credential mutation, public launch,
+  payment activation, customer outreach, or destructive filesystem action.
+
+## Approval Gates
+
+Keep current default posture:
+
+- Read-only and dry-run by default.
+- Fixed named actions only; no free-form command execution.
+- Dashboard approval records remain decision records, not direct execution
+  authority.
+- Execution stays disabled unless `ops_center.action_execution_enabled` is true
+  and the exact fixed action appears in `ops_center.allowed_actions`.
+- Expiring approvals and risk labels remain mandatory.
+- High-risk classes require exact Travis approval in current context:
+  live-service restart, customer/money/public action, credential/auth change,
+  destructive change, and security-boundary change.
+
+For the MCP bridge, every write-capable tool should:
+
+- Validate project/profile/scope.
+- Write an append-only audit record.
+- Return a dry-run preview unless explicitly told to save a local-only packet.
+- Refuse execution if the target maps to a blocked action class.
+
+## Audit Logging
+
+Use append-only JSONL for bridge actions, modelled after
+`approval-audit.jsonl`. Minimum event fields:
+
+- `timestamp`
+- `actor`
+- `surface` (`dashboard`, `mcp`, `chatgpt`, `cron`, or `kanban`)
+- `tool`
+- `project`
+- `profile`
+- `target`
+- `dry_run`
+- `result`
+- `source_ref`
+
+Never log secrets, OAuth tokens, API keys, cookies, raw Authorization headers,
+or dashboard session tokens. Redact previews before audit when source text may
+contain credentials.
+
+## Codex-Usage Minimization Strategy
+
+Current waste pattern:
+
+- Codex is being used as a relay between Discord threads, project status files,
+  dashboard state, and worker results.
+- Codex turns are spent summarizing state that should already be queryable.
+- Codex is asked to produce next prompts manually because there is no durable
+  prompt queue/control-plane packet.
+
+Mission Control should replace that with:
+
+- Dashboard state cards sourced from status files, Kanban, sessions, cron,
+  approvals, and audit logs.
+- A prompt packet queue that saves "next Codex prompt" artifacts without
+  starting Codex.
+- Worker results imported once into local state, then visible to dashboard and
+  ChatGPT through read-only APIs.
+- ChatGPT oversight through MCP reads: it can ask "what is blocked?" or "what
+  should Codex do next?" without Codex being the summarizer.
+- Codex reserved for bounded implementation prompts with exact repo, branch,
+  task, constraints, and verification commands.
+
+## Phased Rollout
+
+Phase 0: Discovery and runbook
+
+- Document existing dashboard/API/queue/approval/MCP surfaces.
+- Do not add broad UI or execution tools.
+
+Phase 1: Read-only aggregation
+
+- Add a backend Mission Control read facade if needed.
+- Aggregate project status, open tasks, latest worker results, repo status,
+  approval gates, and recent audit logs.
+- Keep the dashboard local-only and token-gated.
+
+Phase 2: Local packet writes
+
+- Add local-only `save_next_codex_prompt` and `import_worker_result`.
+- Add `pause_future_outreach` and `block_all_sends` as local block-flag writes
+  with audit records.
+- Add tests for validation, redaction, and blocked classes.
+
+Phase 3: ChatGPT MCP bridge, local/stdout first
+
+- Expose the narrow Mission Control tools through a dedicated FastMCP server.
+- Use stdio/local development first; no public endpoint.
+- Add OAuth only when remote transport is necessary and reviewed.
+
+Phase 4: OAuth-protected remote bridge
+
+- Add strict scopes, token storage, redaction, audit, rate limits, and explicit
+  network binding rules.
+- Keep the dashboard private. The MCP bridge should be the only remote surface,
+  and only for narrow Mission Control tools.
+
+Phase 5: Carefully gated actions
+
+- Consider additional fixed, dry-run-first local actions only after Phase 1-4
+  are stable.
+- Never add autonomous computer-use or real browser/mouse/keyboard control.
+
+## Next Implementation Prompt
+
+Do not start this yet. Use this when ready for the next small implementation
+pass:
+
+```text
+Repo: /home/jenny/.hermes/hermes-context-routing-deploy-20260530
+
+Goal:
+Implement Phase 1 of Hermes Mission Control OS as a read-only backend facade.
+Do not build broad UI and do not add execution tools.
+
+Tasks:
+1. Read AGENTS.md and docs/design/hermes_mission_control_os_20260601.md.
+2. Add a small read-only Mission Control aggregation module and dashboard API
+   routes only if they reduce duplicated frontend logic.
+3. First endpoints should be read-only and token-gated:
+   - GET /api/mission-control/project-status
+   - GET /api/mission-control/open-tasks
+   - GET /api/mission-control/latest-worker-results
+   - GET /api/mission-control/repo-status
+   - GET /api/mission-control/approval-gates
+   - GET /api/mission-control/recent-audit-log
+4. Use existing sources: AI Ops Brain status paths where already listed,
+   hermes_cli.kanban_db read helpers, SessionDB/dashboard sessions,
+   ApprovalStore, and existing status/log readers.
+5. Do not expose secrets, dashboard session tokens, OAuth tokens, API keys,
+   cookies, file mutation, terminal, browser control, email, publishing,
+   payment, outreach, or destructive actions.
+6. Add focused tests for redaction, read-only behavior, missing source files,
+   and route auth.
+7. Run the focused pytest targets and report changed files, validations,
+   risks, and next prompt.
+```
