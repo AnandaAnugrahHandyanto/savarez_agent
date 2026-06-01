@@ -417,9 +417,53 @@ async def test_build_streaming_pipeline_fake():
     await pipe.aclose()
 
 
-async def test_build_streaming_pipeline_real_not_implemented():
-    with pytest.raises(NotImplementedError):
-        build_streaming_pipeline({}, cognitive="real")
+async def test_build_streaming_pipeline_real_wiring():
+    from gateway.calls.native.streaming.fakes import (
+        FakeBrain,
+        FakeSTT,
+        FakeTTS,
+        FakeTurnDetection,
+    )
+
+    clock = VirtualClock()
+    turns = FakeTurnDetection([])
+    stt = FakeSTT()
+    tts = FakeTTS(VirtualClock())
+    pipe = build_streaming_pipeline(
+        {},
+        cognitive="real",
+        turn_detector=turns,
+        stt=stt,
+        tts=tts,
+        brain_factory=lambda: FakeBrain(VirtualClock(), text="hi"),
+        clock=clock,
+    )
+    assert pipe.is_streaming is True
+    assert pipe._session.turns is turns
+    assert pipe._session.stt is stt
+    assert pipe._session.tts is tts
+    assert pipe._session.clock is clock
+
+
+async def test_real_brain_factory_default_resolves_without_invoking():
+    from gateway.calls.native.streaming.brain import HermesSyncBrain
+    from gateway.calls.native.streaming.fakes import (
+        FakeSTT,
+        FakeTTS,
+        FakeTurnDetection,
+    )
+
+    pipe = build_streaming_pipeline(
+        {},
+        cognitive="real",
+        turn_detector=FakeTurnDetection([]),
+        stt=FakeSTT(),
+        tts=FakeTTS(VirtualClock()),
+        clock=VirtualClock(),
+    )
+    bf = pipe._session.brain_factory
+    brain = bf()
+    assert isinstance(brain, HermesSyncBrain)
 
 
 # ---------------------------------------------------------------------------
