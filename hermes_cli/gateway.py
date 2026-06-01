@@ -3220,7 +3220,7 @@ def launchd_start():
             timeout=30,
         )
     except subprocess.CalledProcessError as e:
-        if e.returncode not in {3, 113}:
+        if e.returncode not in {3, 113, 5, 125}:
             raise
         print("↻ launchd job was unloaded; reloading service definition")
         subprocess.run(
@@ -3339,7 +3339,7 @@ def launchd_restart():
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
-        if e.returncode not in {3, 113}:
+        if e.returncode not in {3, 113, 5, 125}:
             raise
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
