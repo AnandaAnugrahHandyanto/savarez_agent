@@ -308,6 +308,39 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn(f"up to {_get_max_concurrent_children()}", fn["description"])
         self.assertIn(f"max_spawn_depth={_get_max_spawn_depth()}", fn["description"])
 
+    def test_registry_handler_forwards_top_level_route_overrides(self):
+        """Model-visible delegate_task route fields must reach the runtime.
+
+        The route contract validates top-level provider/model/reasoning_effort
+        from the tool call. If the registry handler drops those fields, the
+        guard can pass while the spawned child silently inherits the parent
+        route.
+        """
+        from tools.registry import registry
+
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({"ok": True})
+
+        with patch("tools.delegate_tool.delegate_task", side_effect=fake_delegate_task):
+            result = registry.dispatch(
+                "delegate_task",
+                {
+                    "goal": "draft legal policies",
+                    "provider": "openai-codex",
+                    "model": "gpt-5.5",
+                    "reasoning_effort": "xhigh",
+                },
+                parent_agent=object(),
+            )
+
+        self.assertEqual(json.loads(result), {"ok": True})
+        self.assertEqual(captured["provider"], "openai-codex")
+        self.assertEqual(captured["model"], "gpt-5.5")
+        self.assertEqual(captured["reasoning_effort"], "xhigh")
+
 
 class TestChildSystemPrompt(unittest.TestCase):
     def test_goal_only(self):
