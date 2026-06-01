@@ -59,6 +59,15 @@ except ImportError:
     _HAS_PROJECT_STATE = False
     _append_project_state = None  # type: ignore[misc]
 
+# ── Runtime readiness (UA-P1-003) ────────────────────────────────────────
+try:
+    from runtime_readiness import build_readiness_artifact, readiness_to_markdown  # noqa: F401
+    _HAS_READINESS = True
+except ImportError:
+    _HAS_READINESS = False
+    build_readiness_artifact = None  # type: ignore[misc,assignment]
+    readiness_to_markdown = None  # type: ignore[misc,assignment]
+
 # ── Valid modes ─────────────────────────────────────────────────────────────
 
 VALID_MODES = frozenset([
@@ -511,6 +520,28 @@ class RunUA:
         self.artifact_paths[filename] = path
         return path
 
+    def _run_runtime_readiness(self) -> None:
+        """Run runtime readiness detection and write artifacts (UA-P1-003).
+
+        Writes runtime-readiness.json and runtime-readiness.md to the
+        output bundle and registers them in artifact_paths.
+        """
+        if not _HAS_READINESS:
+            return
+        artifact = build_readiness_artifact(self.target_dir)  # type: ignore[misc]
+        # Write JSON
+        json_path = os.path.join(self.out_dir, "runtime-readiness.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(artifact, f, indent=2)
+            f.write("\n")
+        self.artifact_paths["runtime-readiness.json"] = json_path
+        # Write Markdown
+        md_path = os.path.join(self.out_dir, "runtime-readiness.md")
+        md_content = readiness_to_markdown(artifact)  # type: ignore[misc]
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(md_content)
+        self.artifact_paths["runtime-readiness.md"] = md_path
+
     # ── mode routing ──────────────────────────────────────────
 
     def run(self) -> dict:
@@ -589,6 +620,9 @@ class RunUA:
         self._write_json("graph.json", self.graph_data)
         self._write_json("validation.json", self.validation_data)
 
+        # Runtime readiness (UA-P1-003)
+        self._run_runtime_readiness()
+
         self.summary_data = self._build_summary()
         self._write_json("summary.json", self.summary_data)
 
@@ -627,6 +661,9 @@ class RunUA:
 
         # Report
         self._write_text("REPORT.md", self._build_report_raw())
+
+        # Runtime readiness (UA-P1-003)
+        self._run_runtime_readiness()
 
         self.summary_data = self._build_summary()
         self._write_json("summary.json", self.summary_data)
@@ -673,6 +710,9 @@ class RunUA:
         else:
             self._record_missing("subagent-context.json")
 
+        # Runtime readiness (UA-P1-003)
+        self._run_runtime_readiness()
+
         self.summary_data = self._build_summary()
         self._write_json("summary.json", self.summary_data)
 
@@ -711,6 +751,9 @@ class RunUA:
 
         # Report
         self._write_text("REPORT.md", self._build_report_raw())
+
+        # Runtime readiness (UA-P1-003)
+        self._run_runtime_readiness()
 
         self.summary_data = self._build_summary()
         self._write_json("summary.json", self.summary_data)

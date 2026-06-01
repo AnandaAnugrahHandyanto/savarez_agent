@@ -107,3 +107,34 @@ Committed: `24356edcd` | Tests: 80 passed
 - Reviewer verdict: PASS; non-blocking notes only.
 - Handoff: `.hermes/handoffs/2026-06-01-2241-ua-p1-002-complete.md`.
 - Approval gate: no commit, push, merge, deploy, or production mutation performed. Further commit/push requires explicit JC approval.
+
+## UA Phase 1 Hardening — UA-P1-003 Completion Checkpoint
+- Timestamp: 2026-06-01T23:48:04Z.
+- Source plan package: `/home/jarrad/work/plans/ua-phase1-execution`.
+- Executed bead: `UA-P1-003 - Runtime Readiness Artifact`.
+- Live branch: `feat/ua-001-run-bundle` tracking `jc-fork/feat/ua-001-run-bundle`.
+- Base commit before bead: `ed64fc6b5 feat(code-scan): harden UA bundle cleanliness manifest`.
+- Changed in-scope files:
+  - `scripts/code-scan/run_bundle.py`
+  - `scripts/code-scan/run_ua.py`
+  - `scripts/code-scan/runtime_readiness.py`
+  - `tests/code_scan/test_runtime_readiness.py`
+  - `tests/code_scan/fixtures/runtime_readiness/go_project/go.mod`
+  - `tests/code_scan/fixtures/runtime_readiness/go_project/main.go`
+  - `tests/code_scan/fixtures/runtime_readiness/python_project/pyproject.toml`
+  - `tests/code_scan/fixtures/runtime_readiness/python_project/tests/test_smoke.py`
+  - `tests/code_scan/fixtures/runtime_readiness/unknown_project/README.txt`
+- Known out-of-scope dirty files preserved/excluded:
+  - `tests/tools/test_skills_sync.py`
+  - `tools/skills_sync.py`
+- Coder evidence: initial coder timed out after partial implementation; Hermes inspected partial state, ran tests, and used targeted recovery coder to fix RED-era wording in `test_runtime_readiness.py`.
+- Hermes focused verification: `python -m pytest tests/code_scan/test_runtime_readiness.py tests/code_scan/test_run_ua.py tests/code_scan/test_run_bundle.py -q` — PASS, `112 passed in 30.85s`.
+- Hermes full code-scan verification: `python -m pytest tests/code_scan -q` — PASS, `512 passed in 91.71s (0:01:31)`.
+- Compile check: `python -m py_compile scripts/code-scan/run_bundle.py scripts/code-scan/run_ua.py scripts/code-scan/runtime_readiness.py` — PASS.
+- Generated artifact inspection: Go fixture produced `runtime-readiness.json` with `detected_stacks: ["go"]`, unavailable `go`, `verification_status: "verification_blocked"`, and `go test -short ./...` as suggested verification; manifest registered `runtime-readiness.json` and `runtime-readiness.md`.
+- Diff hygiene: scoped `git diff --check` — PASS.
+- Added-lines secret scan: PASS.
+- Diff artifact: `/tmp/ua-p1-003-diff.patch` — 1018 lines / 41157 bytes.
+- Reviewer verdict: PASS; non-blocking unused-import note only.
+- Handoff: `.hermes/handoffs/2026-06-01-2348-ua-p1-003-complete.md`.
+- Approval gate: JC pre-approved sequential autonomous commit/push for UA-P1-003/004/005 if all gates pass. No merge, deploy, or production mutation performed.
