@@ -2923,13 +2923,25 @@ class SlackAdapter(BasePlatformAdapter):
         allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
         if allowed_csv:
             allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
-                logger.warning(
-                    "[Slack] Unauthorized approval click by %s (%s) — ignoring",
-                    user_name,
-                    user_id,
-                )
-                return
+            authorized = "*" in allowed_ids or user_id in allowed_ids
+        else:
+            # Fail closed: an unset SLACK_ALLOWED_USERS must not silently
+            # authorize every workspace member.  Button clicks bypass the
+            # normal message auth flow, so deny by default and require an
+            # explicit opt-in (SLACK_ALLOWED_USERS=* or GATEWAY_ALLOW_ALL_USERS)
+            # for no-restriction mode.  Mirrors the Telegram fix (#24457).
+            authorized = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
+                "true",
+                "1",
+                "yes",
+            }
+        if not authorized:
+            logger.warning(
+                "[Slack] Unauthorized approval click by %s (%s) — ignoring",
+                user_name,
+                user_id,
+            )
+            return
 
         # Map action_id to approval choice
         choice_map = {
