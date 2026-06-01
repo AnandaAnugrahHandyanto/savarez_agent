@@ -431,7 +431,7 @@ export const hu: Translations = {
     showValue: "Tényleges érték megjelenítése",
     hideValue: "Érték elrejtése",
   },
- 
+
   toolCall: {
     running: "running",
     error: "error",
@@ -441,7 +441,7 @@ export const hu: Translations = {
     diff: "Diff",
     result: "Result",
   },
- 
+
   oauth: {
     title: "Szolgáltatói bejelentkezések (OAuth)",
     providerLogins: "Szolgáltatói bejelentkezések (OAuth)",

@@ -431,7 +431,7 @@ export const ga: Translations = {
     showValue: "Taispeáin an fíorluach",
     hideValue: "Folaigh an luach",
   },
- 
+
   toolCall: {
     running: "running",
     error: "error",
@@ -441,7 +441,7 @@ export const ga: Translations = {
     diff: "Diff",
     result: "Result",
   },
- 
+
   oauth: {
     title: "Logálacha isteach soláthraí (OAuth)",
     providerLogins: "Logálacha isteach soláthraí (OAuth)",

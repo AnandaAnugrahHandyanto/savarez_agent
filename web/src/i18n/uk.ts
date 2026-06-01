@@ -431,7 +431,7 @@ export const uk: Translations = {
     showValue: "Показати справжнє значення",
     hideValue: "Сховати значення",
   },
- 
+
   toolCall: {
     running: "running",
     error: "error",
@@ -441,7 +441,7 @@ export const uk: Translations = {
     diff: "Diff",
     result: "Result",
   },
- 
+
   oauth: {
     title: "Входи постачальників (OAuth)",
     providerLogins: "Входи постачальників (OAuth)",

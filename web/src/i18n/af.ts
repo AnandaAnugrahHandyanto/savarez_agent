@@ -431,7 +431,7 @@ export const af: Translations = {
     showValue: "Wys werklike waarde",
     hideValue: "Versteek waarde",
   },
- 
+
   toolCall: {
     running: "running",
     error: "error",
@@ -441,7 +441,7 @@ export const af: Translations = {
     diff: "Diff",
     result: "Result",
   },
- 
+
   oauth: {
     title: "Verskaffer-aanmeldings (OAuth)",
     providerLogins: "Verskaffer-aanmeldings (OAuth)",

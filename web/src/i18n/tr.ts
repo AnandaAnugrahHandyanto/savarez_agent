@@ -431,7 +431,7 @@ export const tr: Translations = {
     showValue: "Gerçek değeri göster",
     hideValue: "Değeri gizle",
   },
- 
+
   toolCall: {
     running: "running",
     error: "error",
@@ -441,7 +441,7 @@ export const tr: Translations = {
     diff: "Diff",
     result: "Result",
   },
- 
+
   oauth: {
     title: "Sağlayıcı Girişleri (OAuth)",
     providerLogins: "Sağlayıcı Girişleri (OAuth)",

@@ -431,7 +431,7 @@ export const es: Translations = {
     showValue: "Mostrar valor real",
     hideValue: "Ocultar valor",
   },
- 
+
   toolCall: {
     running: "running",
     error: "error",
@@ -441,7 +441,7 @@ export const es: Translations = {
     diff: "Diff",
     result: "Result",
   },
- 
+
   oauth: {
     title: "Inicios de sesión de proveedores (OAuth)",
     providerLogins: "Inicios de sesión de proveedores (OAuth)",

@@ -431,7 +431,7 @@ export const zhHant: Translations = {
     showValue: "顯示實際值",
     hideValue: "隱藏值",
   },
- 
+
   toolCall: {
     running: "running",
     error: "error",
@@ -441,7 +441,7 @@ export const zhHant: Translations = {
     diff: "Diff",
     result: "Result",
   },
- 
+
   oauth: {
     title: "提供者登入（OAuth）",
     providerLogins: "提供者登入（OAuth）",

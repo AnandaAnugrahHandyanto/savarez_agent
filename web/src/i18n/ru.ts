@@ -431,7 +431,7 @@ export const ru: Translations = {
     showValue: "Показать реальное значение",
     hideValue: "Скрыть значение",
   },
- 
+
   toolCall: {
     running: "running",
     error: "error",
@@ -441,7 +441,7 @@ export const ru: Translations = {
     diff: "Diff",
     result: "Result",
   },
- 
+
   oauth: {
     title: "Входы провайдеров (OAuth)",
     providerLogins: "Входы провайдеров (OAuth)",

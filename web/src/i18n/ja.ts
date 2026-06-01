@@ -431,7 +431,7 @@ export const ja: Translations = {
     showValue: "実際の値を表示",
     hideValue: "値を非表示",
   },
- 
+
   toolCall: {
     running: "running",
     error: "error",
@@ -441,7 +441,7 @@ export const ja: Translations = {
     diff: "Diff",
     result: "Result",
   },
- 
+
   oauth: {
     title: "プロバイダーログイン (OAuth)",
     providerLogins: "プロバイダーログイン (OAuth)",

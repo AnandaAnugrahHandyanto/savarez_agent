@@ -431,7 +431,7 @@ export const ko: Translations = {
     showValue: "실제 값 표시",
     hideValue: "값 숨기기",
   },
- 
+
   toolCall: {
     running: "running",
     error: "error",
@@ -441,7 +441,7 @@ export const ko: Translations = {
     diff: "Diff",
     result: "Result",
   },
- 
+
   oauth: {
     title: "제공자 로그인 (OAuth)",
     providerLogins: "제공자 로그인 (OAuth)",
