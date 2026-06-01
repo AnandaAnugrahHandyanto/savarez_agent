@@ -268,3 +268,110 @@ class TestSnapshotEndToEnd:
         assert str(fake_n_bin) in output
         # bashrc short-circuited on the interactive guard — its export never ran
         assert "FROM_BASHRC=bashrc-should-not-appear" not in output
+
+
+class TestSnapshotSkipUnderscoreFunctions:
+    """Regression test for issue where ``_``-prefixed functions defined in
+    the user's shell init files leaked their bodies into the snapshot
+    file as top-level bash statements, producing ``local: can only be used
+    in a function`` errors and ``exit 127`` on every subsequent command.
+
+    The previous filter ``declare -f | grep -vE '^_[^_]'`` only matched
+    the function header line, so the body (including ``local``, ``export``,
+    closing brace) was kept verbatim and re-sourced at top level.  The fix
+    enumerates function names with ``compgen -A function`` and emits each
+    public function's full body via ``declare -f "$name"``, so the body
+    is never re-parsed.
+    """
+
+    def test_snapshot_excludes_underscore_function_body(
+        self, tmp_path, monkeypatch
+    ):
+        bashrc = tmp_path / ".bashrc"
+        bashrc.write_text(
+            "_helper() {\n"
+            "  local foo=1\n"
+            "  export MARKER_LEAK=$foo\n"
+            "}\n"
+            "keepme() {\n"
+            "  local bar=2\n"
+            "  echo 'keepme-ran: '$bar\n"
+            "}\n"
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+            env.init_session()
+            try:
+                # The snapshot file should be re-sourceable bash.
+                import subprocess
+                check = subprocess.run(
+                    ["bash", "-n", env._snapshot_path],
+                    capture_output=True,
+                    text=True,
+                )
+                snap_text = open(env._snapshot_path).read()
+            finally:
+                env.cleanup()
+
+        assert check.returncode == 0, (
+            f"snapshot is not valid bash; stderr={check.stderr!r}\n"
+            f"snapshot contents:\n{snap_text}"
+        )
+        # The private function body must NOT appear at top level.
+        # The public function name should still be present.
+        assert "local foo=1" not in snap_text, (
+            f"private function body leaked into snapshot:\n{snap_text}"
+        )
+        assert "keepme ()" in snap_text, (
+            f"public function should still be captured:\n{snap_text}"
+        )
+
+    def test_execute_works_when_bashrc_defines_underscore_functions(
+        self, tmp_path, monkeypatch
+    ):
+        """End-to-end regression: with a bashrc full of _-prefixed helpers,
+        a downstream ``echo`` should still return its actual output, not
+        the empty / exit 127 we used to see on every call.
+        """
+        bashrc = tmp_path / ".bashrc"
+        bashrc.write_text(
+            "_cc_inject_minimax() {\n"
+            "  local m=\"${1:-default-model}\"\n"
+            "  export ANTHROPIC_BASE_URL='https://example.invalid'\n"
+            "}\n"
+            "_load_minimax_key_for_claude() {\n"
+            "  local _mm_key=\"$HOME/.config/cc-profiles/minimax.key\"\n"
+            "  if [[ -f \"$_mm_key\" ]]; then\n"
+            "    export MINIMAX_API_KEY='***'\n"
+            "  fi\n"
+            "}\n"
+            "_private_helper() {\n"
+            "  local inner=42\n"
+            "  echo 'should-never-print: '$inner\n"
+            "}\n"
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+            try:
+                result = env.execute("echo TERMINAL_TOOL_WORKS")
+            finally:
+                env.cleanup()
+
+        assert result.get("returncode") == 0, (
+            f"execute returned non-zero: {result!r}"
+        )
+        assert "TERMINAL_TOOL_WORKS" in result.get("output", ""), (
+            f"expected stdout to contain echo output, got: {result!r}"
+        )
+        # The private function body must not have leaked into stdout.
+        assert "should-never-print" not in result.get("output", "")

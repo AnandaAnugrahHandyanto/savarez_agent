@@ -339,9 +339,27 @@ class BaseEnvironment(ABC):
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
         _quoted_cwd = shlex.quote(self.cwd)
+        # Skip private (_-prefixed) shell functions entirely, including the
+        # body lines, so the snapshot is always re-sourceable. The previous
+        # `declare -f | grep -vE '^_[^_]'` only matched the function header
+        # line, so the body lines (containing `local`, `export`, closing
+        # brace) leaked through and were re-sourced as top-level bash
+        # statements, producing "local: can only be used in a function"
+        # errors and `exit 127` on every subsequent command.
+        #
+        # The fix enumerates function names with `compgen -A function` (one
+        # name per line, portable across bash 3.2/4.x/5.x, unlike `declare
+        # -F` whose output format changed between versions), filters out
+        # the private ones, then emits each public function's full body via
+        # `declare -f "$name"`. We never try to parse function body text,
+        # so the result is robust to all `declare -f` output formatting
+        # variants (compact, indented, with/without trailing spaces).
         bootstrap = (
             f"export -p > {self._snapshot_path}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
+            f"while IFS= read -r _name; do "
+            f"[[ \"$_name\" =~ ^_[^_] ]] && continue; "
+            f"declare -f \"$_name\"; "
+            f"done < <(compgen -A function) >> {self._snapshot_path}\n"
             f"alias -p >> {self._snapshot_path}\n"
             f"echo 'shopt -s expand_aliases' >> {self._snapshot_path}\n"
             f"echo 'set +e' >> {self._snapshot_path}\n"
