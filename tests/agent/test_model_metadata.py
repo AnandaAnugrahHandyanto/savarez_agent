@@ -219,6 +219,52 @@ class TestDefaultContextLengths:
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
 
+    def test_minimax_m3_models_1m_context(self):
+        """MiniMax M3 family: 1M context per official docs.
+
+        https://platform.minimax.io/docs/guides/models-intro
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        # M3 entries present and at 1M
+        assert "minimax-m3" in DEFAULT_CONTEXT_LENGTHS, "minimax-m3 key missing"
+        assert DEFAULT_CONTEXT_LENGTHS["minimax-m3"] == 1_000_000, (
+            f"minimax-m3 should be 1_000_000, got {DEFAULT_CONTEXT_LENGTHS['minimax-m3']}"
+        )
+
+        # M2 catch-all still at 204,800 (must not regress)
+        assert DEFAULT_CONTEXT_LENGTHS["minimax"] == 204_800, (
+            f"minimax catch-all should be 204_800, got {DEFAULT_CONTEXT_LENGTHS['minimax']}"
+        )
+
+        # Resolution: M3 should get 1M, M2 variants should still get 204,800.
+        # Isolate from network/cache so the lookup falls through to Step 8.
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            m3_cases = [
+                ("MiniMax-M3", 1_000_000),
+            ]
+            for model_id, expected in m3_cases:
+                actual = get_model_context_length(model_id)
+                assert actual == expected, (
+                    f"{model_id}: expected {expected}, got {actual}"
+                )
+
+            m2_cases = [
+                ("MiniMax-M2.7", 204_800),
+                ("MiniMax-M2.7-highspeed", 204_800),
+                ("MiniMax-M2.5", 204_800),
+                ("MiniMax-M2.1", 204_800),
+                ("MiniMax-M2", 204_800),
+            ]
+            for model_id, expected in m2_cases:
+                actual = get_model_context_length(model_id)
+                assert actual == expected, (
+                    f"{model_id}: expected {expected}, got {actual}"
+                )
+
 
 # =========================================================================
 # Codex OAuth context-window resolution (provider="openai-codex")
