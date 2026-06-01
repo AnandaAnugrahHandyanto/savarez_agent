@@ -1226,3 +1226,45 @@ class TestMediaDeliveryDiagnosability:
         assert any(r.endswith("cache/documents") for r in roots)
         # Legacy layout still present.
         assert any(r.endswith("image_cache") for r in roots)
+
+
+class TestSniffAudioExt:
+    """_sniff_audio_ext returns the correct extension from magic bytes."""
+
+    def _call(self, data: bytes, fallback: str = ".ogg") -> str:
+        from gateway.platforms.base import _sniff_audio_ext
+        return _sniff_audio_ext(data, fallback)
+
+    def test_mp4_quicktime_ftyp(self):
+        # Reporter's exact payload: 4-byte size + b"ftyp" at offset 4
+        data = b"\x00\x00\x00\x14" + b"ftyp" + b"qt  " + b"\x00" * 100
+        assert self._call(data) == ".m4a"
+
+    def test_ogg_magic(self):
+        data = b"OggS" + b"\x00" * 100
+        assert self._call(data) == ".ogg"
+
+    def test_wav_riff_wave(self):
+        data = b"RIFF" + b"\x00\x00\x00\x00" + b"WAVE" + b"\x00" * 50
+        assert self._call(data) == ".wav"
+
+    def test_mp3_id3(self):
+        data = b"ID3" + b"\x00" * 100
+        assert self._call(data) == ".mp3"
+
+    def test_mp3_sync_frame(self):
+        data = b"\xff\xfb" + b"\x00" * 100
+        assert self._call(data) == ".mp3"
+
+    def test_flac_magic(self):
+        data = b"fLaC" + b"\x00" * 100
+        assert self._call(data) == ".flac"
+
+    def test_webm_ebml(self):
+        data = b"\x1aE\xdf\xa3" + b"\x00" * 100
+        assert self._call(data) == ".webm"
+
+    def test_unknown_returns_fallback(self):
+        data = b"\x00\x01\x02\x03" * 30
+        assert self._call(data, fallback=".ogg") == ".ogg"
+        assert self._call(data, fallback=".mp3") == ".mp3"
