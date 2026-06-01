@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -38,18 +37,6 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _fresh_report_command(report: Path, max_age_hours: float) -> str:
-    code = (
-        "import pathlib, sys, time; "
-        f"p = pathlib.Path({str(report)!r}); "
-        f"max_age = {float(max_age_hours)!r} * 3600; "
-        "ok = p.exists() and p.is_file() and p.stat().st_size > 0 and "
-        "(time.time() - p.stat().st_mtime) <= max_age; "
-        "sys.exit(0 if ok else 1)"
-    )
-    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
-
-
 def _write_manifest(manifest_path: Path, report: Path, result: Path, max_age_hours: float) -> None:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
@@ -63,11 +50,10 @@ def _write_manifest(manifest_path: Path, report: Path, result: Path, max_age_hou
                 "path": str(report),
             },
             {
-                "type": "command",
+                "type": "file_fresh",
                 "name": "Clawpatch weekly report is fresh and non-empty",
-                "command": _fresh_report_command(report, max_age_hours),
-                "expected_exit_code": 0,
-                "timeout": 10,
+                "path": str(report),
+                "max_age_seconds": max_age_hours * 3600,
             },
         ],
     }

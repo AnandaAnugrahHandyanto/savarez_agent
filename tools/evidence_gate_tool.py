@@ -67,56 +67,75 @@ def _check_file_exists(check: dict[str, Any], base_dir: Path) -> dict[str, Any]:
     }
 
 
-def _check_command(check: dict[str, Any], base_dir: Path) -> dict[str, Any]:
-    command = str(check.get("command", ""))
-    expected = int(check.get("expected_exit_code", 0))
-    timeout = float(check.get("timeout", 60))
-    cwd_value = check.get("cwd")
-    cwd = _resolve_path(str(cwd_value), base_dir) if cwd_value else base_dir
-    if not command:
-        return {
-            "type": "command",
-            "name": check.get("name") or "command",
-            "passed": False,
-            "expected_exit_code": expected,
-            "message": "command is required",
-        }
+def _file_state(path: Path) -> dict[str, Any]:
+    exists = path.exists()
+    is_file = path.is_file() if exists else False
+    size = path.stat().st_size if is_file else None
+    mtime = path.stat().st_mtime if is_file else None
+    return {
+        "path": str(path),
+        "exists": exists,
+        "is_file": is_file,
+        "size": size,
+        "mtime": mtime,
+    }
+
+
+def _check_file_non_empty(check: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    path = _resolve_path(str(check.get("path", "")), base_dir)
+    state = _file_state(path)
+    passed = bool(state["is_file"] and (state["size"] or 0) > 0)
+    return {
+        "type": "file_non_empty",
+        "name": check.get("name") or str(check.get("path", "")),
+        "passed": passed,
+        **state,
+        "message": (
+            "file exists and is non-empty"
+            if passed
+            else "file is missing, not a file, or empty"
+        ),
+    }
+
+
+def _check_file_fresh(check: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    path = _resolve_path(str(check.get("path", "")), base_dir)
+    state = _file_state(path)
     try:
-        proc = subprocess.run(
-            command,
-            cwd=str(cwd),
-            shell=True,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-        passed = proc.returncode == expected
-        return {
-            "type": "command",
-            "name": check.get("name") or command,
-            "passed": passed,
-            "command": command,
-            "cwd": str(cwd),
-            "expected_exit_code": expected,
-            "exit_code": proc.returncode,
-            "stdout": proc.stdout[-4000:],
-            "stderr": proc.stderr[-4000:],
-            "message": "expected exit code observed" if passed else "unexpected exit code",
-        }
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "type": "command",
-            "name": check.get("name") or command,
-            "passed": False,
-            "command": command,
-            "cwd": str(cwd),
-            "expected_exit_code": expected,
-            "timeout": timeout,
-            "stdout": (exc.stdout or "")[-4000:] if isinstance(exc.stdout, str) else "",
-            "stderr": (exc.stderr or "")[-4000:] if isinstance(exc.stderr, str) else "",
-            "message": "command timed out",
-        }
+        max_age_seconds = float(check.get("max_age_seconds"))
+    except (TypeError, ValueError):
+        max_age_seconds = -1
+    now = datetime.now(timezone.utc).timestamp()
+    age_seconds = (now - state["mtime"]) if state["mtime"] is not None else None
+    passed = bool(
+        state["is_file"]
+        and (state["size"] or 0) > 0
+        and max_age_seconds >= 0
+        and age_seconds is not None
+        and age_seconds <= max_age_seconds
+    )
+    return {
+        "type": "file_fresh",
+        "name": check.get("name") or str(check.get("path", "")),
+        "passed": passed,
+        **state,
+        "max_age_seconds": max_age_seconds,
+        "age_seconds": age_seconds,
+        "message": (
+            "file exists, is non-empty, and is fresh"
+            if passed
+            else "file is missing, empty, or stale"
+        ),
+    }
+
+
+def _check_command_unsupported(check: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "command",
+        "name": check.get("name") or "command",
+        "passed": False,
+        "message": "unsupported check type: command checks are not executed",
+    }
 
 
 def _porcelain_path(line: str) -> str:
@@ -179,8 +198,12 @@ def _evaluate_check(check: dict[str, Any], base_dir: Path) -> dict[str, Any]:
     check_type = str(check.get("type", "")).strip()
     if check_type == "file_exists":
         return _check_file_exists(check, base_dir)
+    if check_type == "file_non_empty":
+        return _check_file_non_empty(check, base_dir)
+    if check_type == "file_fresh":
+        return _check_file_fresh(check, base_dir)
     if check_type == "command":
-        return _check_command(check, base_dir)
+        return _check_command_unsupported(check)
     if check_type == "git_clean":
         return _check_git_clean(check, base_dir)
     if check_type == "manual":
@@ -327,7 +350,7 @@ registry.register(
         "name": "evidence_gate",
         "description": (
             "Evaluate an evidence manifest and write RESULT.md only with a "
-            "status supported by file, command, git-clean, or manual checks."
+            "status supported by non-executing file, git-clean, or manual checks."
         ),
         "parameters": {
             "type": "object",

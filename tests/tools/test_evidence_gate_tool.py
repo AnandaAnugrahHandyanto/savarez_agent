@@ -1,5 +1,7 @@
 import json
+import os
 import subprocess
+import time
 from pathlib import Path
 
 from tools.evidence_gate_tool import MANUAL, evidence_gate
@@ -20,12 +22,7 @@ def test_evidence_gate_writes_completed_when_checks_pass(tmp_path):
             "result_path": "RESULT.md",
             "checks": [
                 {"type": "file_exists", "path": "artifact.txt"},
-                {
-                    "type": "command",
-                    "command": "python -c 'import sys; sys.exit(0)'",
-                    "expected_exit_code": 0,
-                    "timeout": 5,
-                },
+                {"type": "file_non_empty", "path": "artifact.txt"},
             ],
         },
     )
@@ -34,7 +31,87 @@ def test_evidence_gate_writes_completed_when_checks_pass(tmp_path):
 
     assert result["status"] == "COMPLETED"
     assert result["success"] is True
-    assert (tmp_path / "RESULT.md").read_text(encoding="utf-8").startswith("# Result\n\nStatus: COMPLETED")
+    assert (tmp_path / "RESULT.md").read_text(encoding="utf-8").startswith(
+        "# Result\n\nStatus: COMPLETED"
+    )
+
+
+def test_evidence_gate_refuses_command_checks_without_executing(tmp_path):
+    marker = tmp_path / "marker"
+    manifest = _write_manifest(
+        tmp_path / "manifest.json",
+        {
+            "requested_status": "COMPLETED",
+            "result_path": "RESULT.md",
+            "checks": [
+                {
+                    "type": "command",
+                    "name": "malicious command",
+                    "command": f"touch {marker}",
+                },
+            ],
+        },
+    )
+
+    result = json.loads(evidence_gate(str(manifest)))
+
+    assert result["status"] == "FAILED"
+    assert result["success"] is False
+    assert result["checks"][0]["type"] == "command"
+    assert "unsupported" in result["checks"][0]["message"]
+    assert not marker.exists()
+
+
+def test_evidence_gate_file_fresh_requires_non_empty_recent_file(tmp_path):
+    artifact = tmp_path / "artifact.txt"
+    artifact.write_text("done\n", encoding="utf-8")
+    manifest = _write_manifest(
+        tmp_path / "manifest.json",
+        {
+            "requested_status": "COMPLETED",
+            "result_path": "RESULT.md",
+            "checks": [
+                {
+                    "type": "file_fresh",
+                    "path": "artifact.txt",
+                    "max_age_seconds": 60,
+                },
+            ],
+        },
+    )
+
+    result = json.loads(evidence_gate(str(manifest)))
+
+    assert result["status"] == "COMPLETED"
+    assert result["checks"][0]["size"] > 0
+    assert result["checks"][0]["age_seconds"] <= 60
+
+
+def test_evidence_gate_file_fresh_fails_for_stale_file(tmp_path):
+    artifact = tmp_path / "artifact.txt"
+    artifact.write_text("done\n", encoding="utf-8")
+    stale = time.time() - 120
+    os.utime(artifact, (stale, stale))
+    manifest = _write_manifest(
+        tmp_path / "manifest.json",
+        {
+            "requested_status": "COMPLETED",
+            "result_path": "RESULT.md",
+            "checks": [
+                {
+                    "type": "file_fresh",
+                    "path": "artifact.txt",
+                    "max_age_seconds": 60,
+                },
+            ],
+        },
+    )
+
+    result = json.loads(evidence_gate(str(manifest)))
+
+    assert result["status"] == "FAILED"
+    assert result["checks"][0]["passed"] is False
+    assert result["checks"][0]["age_seconds"] > 60
 
 
 def test_evidence_gate_refuses_completed_and_logs_when_evidence_fails(tmp_path):
