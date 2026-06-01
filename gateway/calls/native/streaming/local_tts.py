@@ -213,7 +213,7 @@ def build_piper_tts(
             "'hermes-agent[simplex-streaming-local-tts]'"
         )
 
-    import audioop
+    import audioop  # ty: ignore[unresolved-import]  # audioop-lts backports this on 3.13+
     from pathlib import Path
 
     from piper import PiperVoice
