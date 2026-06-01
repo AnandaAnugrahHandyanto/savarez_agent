@@ -71,7 +71,9 @@ class TestSendSlashConfirm:
         )
 
         assert result.success is True
-        assert "MARKDOWN_V2" in repr(sent["parse_mode"])
+        # Tolerate both the real ParseMode enum and the string shim that
+        # fake-telegram tests can leak into the module global.
+        assert str(getattr(sent["parse_mode"], "value", sent["parse_mode"])) == "MarkdownV2"
         # Underscores and dots must be escaped by format_message
         assert "script\\_name" in sent["text"]
         assert "\\." in sent["text"]
