@@ -52,6 +52,8 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
+    # Evidence-gated completion/result writing
+    "evidence_gate",
     # Code execution + delegation
     "execute_code", "delegate_task", "delegate_to_codex",
     # Cronjob management
@@ -227,6 +229,12 @@ TOOLSETS = {
         "tools": ["clarify"],
         "includes": []
     },
+
+    "evidence_gate": {
+        "description": "Evidence-gated RESULT.md writing and completion refusal logging",
+        "tools": ["evidence_gate"],
+        "includes": []
+    },
     
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
@@ -358,7 +366,7 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "todo", "memory",
             "session_search",
-            "execute_code", "delegate_task", "delegate_to_codex",
+            "execute_code", "delegate_task",
         ],
         "includes": []
     },
@@ -386,7 +394,7 @@ TOOLSETS = {
             # Session history search
             "session_search",
             # Code execution + delegation
-            "execute_code", "delegate_task", "delegate_to_codex",
+            "execute_code", "delegate_task",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
