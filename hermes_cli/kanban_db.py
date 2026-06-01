@@ -2934,6 +2934,38 @@ def claim_task(
                 """,
                 (now, int(stale["current_run_id"])),
             )
+        # ── Workspace collision guard ────────────────────────────────
+        # Reject the claim when another *running* task already owns the
+        # same non-scratch workspace.  Two workers editing the same dir:
+        # or worktree path simultaneously corrupt each other's work.
+        # Scratch workspaces are exempt — each task gets its own tmp dir
+        # and cannot collide.
+        ws_row = conn.execute(
+            "SELECT workspace_path, workspace_kind FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if ws_row and ws_row["workspace_path"] and ws_row["workspace_kind"] \
+           and ws_row["workspace_kind"] != "scratch":
+            collision = conn.execute(
+                "SELECT id FROM tasks "
+                "WHERE status = 'running' "
+                "  AND workspace_kind = ? "
+                "  AND workspace_path = ? "
+                "  AND id != ? "
+                "LIMIT 1",
+                (ws_row["workspace_kind"], ws_row["workspace_path"], task_id),
+            ).fetchone()
+            if collision:
+                _append_event(
+                    conn, task_id, "claim_rejected",
+                    {
+                        "reason": "workspace_collision",
+                        "conflict_with": collision["id"],
+                        "workspace_kind": ws_row["workspace_kind"],
+                        "workspace_path": ws_row["workspace_path"],
+                    },
+                )
+                return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -4705,10 +4737,14 @@ class DispatchResult:
     within ``dispatch_stale_timeout_seconds``."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """Tasks skipped by the respawn guard, as ``(task_id, reason)`` pairs.
-
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    workspace_collisions: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks skipped because another running task already owns the same
+    non-scratch workspace, as ``(task_id, conflict_with_task_id)`` pairs.
+    These tasks will be retried on the next tick once the occupying task
+    finishes — no operator action needed."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5951,6 +5987,31 @@ def dispatch_once(
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
+        # ── Workspace collision pre-check ────────────────────────
+        # Before claiming, check whether another running task already
+        # holds the same non-scratch workspace.  The in-transaction
+        # guard inside claim_task() is the atomic backstop; this
+        # pre-check lets the dispatch output report collisions
+        # explicitly so operators can see that a task is deferred
+        # rather than stuck.
+        ws_info = conn.execute(
+            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            (row["id"],),
+        ).fetchone()
+        if ws_info and ws_info["workspace_path"] and ws_info["workspace_kind"] \
+           and ws_info["workspace_kind"] != "scratch":
+            coll = conn.execute(
+                "SELECT id FROM tasks "
+                "WHERE status = 'running' "
+                "  AND workspace_kind = ? "
+                "  AND workspace_path = ? "
+                "  AND id != ? "
+                "LIMIT 1",
+                (ws_info["workspace_kind"], ws_info["workspace_path"], row["id"]),
+            ).fetchone()
+            if coll:
+                result.workspace_collisions.append((row["id"], coll["id"]))
+                continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue

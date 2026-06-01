@@ -2153,6 +2153,12 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    if res.workspace_collisions:
+        for tid, conflict_with in res.workspace_collisions:
+            print(
+                f"Deferred (workspace collision): {tid} "
+                f"(already held by running task {conflict_with})"
+            )
     return 0
 
 

@@ -2189,6 +2189,107 @@ def test_claim_task_recovers_from_invariant_leak(kanban_home):
         conn.close()
 
 
+def test_claim_task_rejects_workspace_collision(kanban_home):
+    """Two tasks on the same dir: workspace cannot be claimed concurrently.
+    The first claim succeeds; the second is rejected with a
+    workspace_collision claim_rejected event."""
+    conn = kb.connect()
+    try:
+        # Create two tasks sharing the same dir: workspace.
+        shared_path = str(kanban_home / "shared-workspace")
+        os.makedirs(shared_path, exist_ok=True)
+        tid_a = kb.create_task(
+            conn, title="first occupant", assignee="w",
+            workspace_kind="dir", workspace_path=shared_path,
+        )
+        tid_b = kb.create_task(
+            conn, title="second arrival", assignee="w",
+            workspace_kind="dir", workspace_path=shared_path,
+        )
+        # Promote to ready.
+        kb.recompute_ready(conn)
+        # First claim must succeed.
+        claimed_a = kb.claim_task(conn, tid_a)
+        assert claimed_a is not None, "first claim should succeed"
+        assert claimed_a.status == "running"
+
+        # Second claim on the same workspace must be rejected.
+        claimed_b = kb.claim_task(conn, tid_b)
+        assert claimed_b is None, "second claim on same workspace must be rejected"
+
+        # Verify the rejection event was logged.
+        events = kb.list_events(conn, tid_b)
+        rejected = [e for e in events if e.kind == "claim_rejected"]
+        assert len(rejected) >= 1
+        assert any(
+            e.payload.get("reason") == "workspace_collision"
+            for e in rejected
+        ), f"expected workspace_collision event, got {rejected}"
+
+        # Second task stays ready (not running).
+        task_b = kb.get_task(conn, tid_b)
+        assert task_b.status == "ready"
+
+        # After the first task completes, the second can claim.
+        kb.complete_task(conn, tid_a, result="done")
+        kb.recompute_ready(conn)
+        claimed_b_retry = kb.claim_task(conn, tid_b)
+        assert claimed_b_retry is not None, (
+            "second claim should succeed after first task completes"
+        )
+    finally:
+        conn.close()
+
+
+def test_claim_task_allows_different_workspaces(kanban_home):
+    """Two tasks on different dir: workspaces can claim concurrently."""
+    conn = kb.connect()
+    try:
+        path_a = str(kanban_home / "ws-a")
+        path_b = str(kanban_home / "ws-b")
+        os.makedirs(path_a, exist_ok=True)
+        os.makedirs(path_b, exist_ok=True)
+        tid_a = kb.create_task(
+            conn, title="task a", assignee="w",
+            workspace_kind="dir", workspace_path=path_a,
+        )
+        tid_b = kb.create_task(
+            conn, title="task b", assignee="w",
+            workspace_kind="dir", workspace_path=path_b,
+        )
+        kb.recompute_ready(conn)
+        claimed_a = kb.claim_task(conn, tid_a)
+        claimed_b = kb.claim_task(conn, tid_b)
+        assert claimed_a is not None, "first claim should succeed"
+        assert claimed_b is not None, "second claim on different workspace should succeed"
+        assert claimed_a.status == "running"
+        assert claimed_b.status == "running"
+    finally:
+        conn.close()
+
+
+def test_claim_task_scratch_exempt_from_collision(kanban_home):
+    """Scratch workspaces are always collision-exempt — each task gets
+    its own tmp dir."""
+    conn = kb.connect()
+    try:
+        tid_a = kb.create_task(
+            conn, title="scratch a", assignee="w",
+            workspace_kind="scratch",
+        )
+        tid_b = kb.create_task(
+            conn, title="scratch b", assignee="w",
+            workspace_kind="scratch",
+        )
+        kb.recompute_ready(conn)
+        claimed_a = kb.claim_task(conn, tid_a)
+        claimed_b = kb.claim_task(conn, tid_b)
+        assert claimed_a is not None
+        assert claimed_b is not None
+    finally:
+        conn.close()
+
+
 # -------------------------------------------------------------------------
 # Live-test findings (Apr 2026 third pass: auto-init, show --json carries runs)
 # -------------------------------------------------------------------------
