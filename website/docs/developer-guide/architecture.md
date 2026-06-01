@@ -46,6 +46,13 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 └───────────────────┘              │ MCP (dynamic)         │
                                    │ File, Vision, etc.    │
                                    └──────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                  Durable Coordination Subsystems                     │
+│                                                                     │
+│  Cron jobs (cron/)       Kanban boards (hermes_cli/kanban_*.py)     │
+│  Gateway dispatcher      Worker profiles + kanban_* tools           │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Directory Structure
@@ -90,7 +97,13 @@ hermes-agent/
 │   ├── tools_config.py       # hermes tools — enable/disable per platform
 │   ├── plugins.py            # PluginManager — discovery, loading, hooks
 │   ├── callbacks.py          # Terminal callbacks (clarify, sudo, approval)
-│   └── gateway.py            # hermes gateway start/stop
+│   ├── gateway.py            # hermes gateway start/stop
+│   ├── kanban.py             # Multi-agent board CLI, slash command parser
+│   ├── kanban_db.py          # SQLite kernel: tasks, links, runs, claims, events
+│   ├── kanban_diagnostics.py # Task distress signals and recovery hints
+│   ├── kanban_decompose.py   # Triage decomposition into child tasks
+│   ├── kanban_specify.py     # Triage-to-spec helper
+│   └── kanban_swarm.py       # In-harness swarm orchestration helpers
 │
 ├── tools/                    # Tool implementations (one file per tool)
 │   ├── registry.py           # Central tool registry
@@ -125,6 +138,7 @@ hermes-agent/
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                     # Scheduler (jobs.py, scheduler.py)
+├── plugins/kanban/           # Kanban dashboard plugin and API bridge
 ├── plugins/memory/           # Memory provider plugins
 ├── plugins/context_engine/   # Context engine plugins
 ├── skills/                   # Bundled skills (always available)
@@ -170,6 +184,21 @@ Scheduler tick → load due jobs from jobs.json
   → update job state and next_run
 ```
 
+### Kanban Worker Run
+
+```text
+Human / orchestrator / webhook creates a kanban task
+  → hermes_cli.kanban_db writes task + links + events to the selected board DB
+  → gateway-embedded dispatcher ticks every N seconds
+    → promotes unblocked dependencies from todo → ready
+    → atomically claims one ready task per eligible worker profile
+    → spawns `hermes -p <assignee> chat -q ...` in the task workspace
+      with HERMES_KANBAN_TASK / HERMES_KANBAN_BOARD / run env pinned
+  → worker model reads the task through kanban_show + performs real work
+  → worker must terminate with kanban_complete or kanban_block
+  → kanban_db records run outcome, summary, metadata, events, and retries
+```
+
 ## Recommended Reading Order
 
 If you are new to the codebase:
@@ -182,8 +211,9 @@ If you are new to the codebase:
 6. **[Tools Runtime](./tools-runtime.md)** — tool registry, dispatch, environments
 7. **[Session Storage](./session-storage.md)** — SQLite schema, FTS5, session lineage
 8. **[Gateway Internals](./gateway-internals.md)** — messaging platform gateway
-9. **[Context Compression & Prompt Caching](./context-compression-and-caching.md)** — compression and caching
-10. **[ACP Internals](./acp-internals.md)** — IDE integration
+9. **[Kanban](../user-guide/features/kanban.md)** — durable multi-agent boards and worker lifecycle
+10. **[Context Compression & Prompt Caching](./context-compression-and-caching.md)** — compression and caching
+11. **[ACP Internals](./acp-internals.md)** — IDE integration
 
 ## Major Subsystems
 
@@ -226,6 +256,22 @@ SQLite-based session storage with FTS5 full-text search. Sessions have lineage t
 Long-running process with 20 platform adapters, unified session routing, user authorization (allowlists + DM pairing), slash command dispatch, hook system, cron ticking, and background maintenance.
 
 → [Gateway Internals](./gateway-internals.md)
+
+### Kanban Multi-Agent Board
+
+Durable multi-agent coordination built around a per-board SQLite kernel (`hermes_cli/kanban_db.py`) plus a human/API surface (`hermes_cli/kanban.py`, `/kanban`, and `plugins/kanban/`). Kanban is the subsystem to use when work must survive context compaction, gateway restarts, worker crashes, human review, or multi-profile handoff.
+
+Key implementation pieces:
+
+- **Board kernel** — `hermes_cli/kanban_db.py` owns tasks, dependency links, comments, runs, events, board metadata, WAL-mode concurrency, compare-and-swap claiming, retry budgets, max-runtime checks, heartbeat/claim extension, stale-claim reclaim, and hallucination-gated completion metadata.
+- **CLI and slash-command surface** — `hermes_cli/kanban.py` exposes board/task lifecycle commands, multi-board selection, watch/tail/runs/stats, recovery actions, decomposition/specification helpers, and JSON output for scripts.
+- **Gateway dispatcher** — `gateway/run.py` hosts the default dispatcher loop (`kanban.dispatch_in_gateway: true`), sweeps all boards, promotes dependency-unblocked work, claims ready tasks, and spawns profile workers with `HERMES_KANBAN_TASK`, `HERMES_KANBAN_BOARD`, `HERMES_KANBAN_DB`, and workspace env pinned.
+- **Worker tool contract** — `tools/kanban_tools.py` exposes `kanban_show`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`, and `kanban_unblock` only when the worker context enables them. Workers interact through tools, not by shelling out to the CLI.
+- **Diagnostics and recovery** — `hermes_cli/kanban_diagnostics.py` folds stuck, stranded, crash-looping, missing-profile, and hallucination signals into operator-facing warnings used by the CLI and dashboard.
+- **Dashboard** — `plugins/kanban/` provides the board UI, task drawers, run history, diagnostics badges, board switching, and recovery controls.
+- **Skills** — `skills/devops/kanban-worker/` defines the worker lifecycle contract; `skills/devops/kanban-orchestrator/` defines decomposition/routing rules for orchestrator profiles.
+
+→ [Kanban User Guide](../user-guide/features/kanban.md), [Kanban Tutorial](../user-guide/features/kanban-tutorial.md), [Kanban Worker Lanes](../user-guide/features/kanban-worker-lanes.md)
 
 ### Plugin System
 
