@@ -43,6 +43,7 @@ from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
+from urllib.parse import quote
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -66,6 +67,16 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_KANBAN_TASK_ID_RE = re.compile(r"(?<![\w/])t_[0-9a-f]{8,32}\b", re.IGNORECASE)
+_KANBAN_CONTEXT_RE = re.compile(r"\b(?:kanban|card|task(?:\s+id)?|item)\b", re.IGNORECASE)
+_KANBAN_LINE_CONTEXT_RE = re.compile(
+    r"\bkanban\b|\b(?:card|task(?:\s+id)?|item)\s*:",
+    re.IGNORECASE,
+)
+_KANBAN_BOARD_HINT_RE = re.compile(
+    r"(?:--board\s+|\bboard\s*[:=]\s*)([A-Za-z0-9_.-]{1,64})",
+    re.IGNORECASE,
+)
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -285,6 +296,66 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+def _kanban_dashboard_base_url() -> str:
+    """Return the dashboard base URL used for user-facing kanban deeplinks."""
+    configured = os.environ.get("HERMES_DASHBOARD_PUBLIC_URL")
+    if not configured:
+        try:
+            from hermes_cli.config import load_config as _load_full_config
+            configured = cfg_get(
+                _load_full_config(), "dashboard", "public_url", default=""
+            )
+        except Exception:
+            configured = ""
+    base = str(configured or "").strip() or "http://127.0.0.1:9119"
+    return base.rstrip("/")
+
+
+def _kanban_dashboard_task_url(task_id: str, *, board: Optional[str] = None) -> str:
+    """Build a dashboard URL that opens the kanban task drawer."""
+    params = []
+    if board:
+        params.append(f"board={quote(str(board), safe='')}")
+    params.append(f"task={quote(str(task_id), safe='')}")
+    return f"{_kanban_dashboard_base_url()}/kanban?{'&'.join(params)}"
+
+
+def _linkify_kanban_task_ids(text: str) -> str:
+    """Link kanban card IDs in final chat replies to the local dashboard.
+
+    The rewrite is deliberately contextual: a bare ``t_deadbeef`` in ordinary
+    prose is left alone, but lines that mention kanban/card/task/item get a
+    clickable dashboard deeplink. Existing markdown links and URLs are not
+    rewritten.
+    """
+    if not text or "t_" not in text.lower() or not _KANBAN_CONTEXT_RE.search(text):
+        return text
+
+    board_match = _KANBAN_BOARD_HINT_RE.search(text)
+    board = board_match.group(1) if board_match else None
+
+    def _link_line(line: str) -> str:
+        if "t_" not in line.lower() or not _KANBAN_LINE_CONTEXT_RE.search(line):
+            return line
+
+        def _replace(match: re.Match[str]) -> str:
+            task_id = match.group(0)
+            start, end = match.span()
+            # Avoid double-linking markdown links: [t_...](...) or URLs.
+            if start >= 1 and line[start - 1] == "[":
+                return task_id
+            if end < len(line) and line[end:end + 2] == "](":
+                return task_id
+            prefix = line[max(0, start - 16):start].lower()
+            if "http://" in prefix or "https://" in prefix:
+                return task_id
+            return f"[{task_id}]({_kanban_dashboard_task_url(task_id, board=board)})"
+
+        return _KANBAN_TASK_ID_RE.sub(_replace, line)
+
+    return "\n".join(_link_line(line) for line in text.split("\n"))
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to high-noise chats.
 
@@ -300,7 +371,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
-    return redacted
+    return _linkify_kanban_task_ids(redacted)
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:

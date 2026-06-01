@@ -81,3 +81,36 @@ def test_telegram_final_response_keeps_normal_answers():
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+def test_telegram_final_response_links_kanban_card_ids(monkeypatch):
+    """Kanban card mentions in Telegram should deeplink to the local dashboard."""
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    raw = "KANBAN card: t_3f789716\nStatus: blocked placeholder"
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert (
+        "KANBAN card: [t_3f789716](http://127.0.0.1:9119/kanban?task=t_3f789716)"
+        in sanitized
+    )
+
+
+def test_telegram_final_response_links_kanban_card_ids_with_board(monkeypatch):
+    """Board hints should be preserved in generated kanban dashboard links."""
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dash.example/hermes/")
+    raw = "Verified with hermes kanban --board klasificados show t_3f789716"
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert (
+        "[t_3f789716](https://dash.example/hermes/kanban?board=klasificados&task=t_3f789716)"
+        in sanitized
+    )
+
+
+def test_telegram_final_response_does_not_link_bare_task_like_ids():
+    """Bare t_ identifiers without kanban context should not become links."""
+    raw = "The internal marker t_3f789716 is not a card reference here."
+
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, raw) == raw
