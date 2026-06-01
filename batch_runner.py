@@ -341,6 +341,7 @@ def _process_single_prompt(
             max_tokens=config.get("max_tokens"),
             reasoning_config=config.get("reasoning_config"),
             prefill_messages=config.get("prefill_messages"),
+            execution_context="background",
             skip_context_files=True,  # Don't pollute trajectories with SOUL.md/AGENTS.md
             skip_memory=True,  # Don't use persistent memory in batch runs
         )
@@ -1318,4 +1319,3 @@ def main(
 
 if __name__ == "__main__":
     fire.Fire(main)
-

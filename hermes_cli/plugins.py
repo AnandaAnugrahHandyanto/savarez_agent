@@ -39,8 +39,10 @@ import importlib.util
 import inspect
 import logging
 import os
+import random
 import sys
 import threading
+import time
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -276,6 +278,44 @@ class LoadedPlugin:
     hooks_registered: List[str] = field(default_factory=list)
     commands_registered: List[str] = field(default_factory=list)
     enabled: bool = False
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PeriodicTaskSpec:
+    """Registration contract for managed plugin periodic callbacks."""
+
+    name: str
+    interval_seconds: int
+    jitter_seconds: int = 0
+    run_immediately: bool = False
+    allow_overlap: bool = False
+
+
+@dataclass
+class _PeriodicTaskState:
+    """Internal runtime state for one managed periodic task."""
+
+    spec: PeriodicTaskSpec
+    plugin_name: str
+    callback: Callable[..., Any]
+    next_run_at: float
+    in_flight: int = 0
+    total_runs: int = 0
+    total_failures: int = 0
+    last_started_at: Optional[float] = None
+    last_finished_at: Optional[float] = None
+    last_error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PeriodicTaskRunResult:
+    """Structured outcome for one-shot periodic task execution."""
+
+    task_name: str
+    started: bool
+    success: bool
+    skipped_reason: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -949,6 +989,23 @@ class PluginContext:
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
+    def register_periodic_task(
+        self,
+        spec: PeriodicTaskSpec,
+        callback: Callable[..., Any],
+    ) -> None:
+        """Register a managed periodic callback owned by the host runtime.
+
+        Registration alone does not execute the task. Host runtimes
+        (for example gateway tickers) are expected to call the manager's
+        due-task APIs to trigger executions.
+        """
+        self._manager.register_periodic_task(
+            spec=spec,
+            callback=callback,
+            plugin_name=self.manifest.name,
+        )
+
     # -- skill registration -------------------------------------------------
 
     def register_skill(
@@ -1019,6 +1076,12 @@ class PluginManager:
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
+        # Plugin-managed periodic task registry.
+        self._periodic_tasks: Dict[str, _PeriodicTaskState] = {}
+        self._periodic_lock = threading.Lock()
+        self._periodic_threads: Set[threading.Thread] = set()
+        self._periodic_accepting_new_runs = True
+        self._periodic_rng = random.Random()
 
     # -----------------------------------------------------------------------
     # Public
@@ -1034,6 +1097,7 @@ class PluginManager:
         if self._discovered and not force:
             return
         if force:
+            self.shutdown_periodic_tasks(grace_seconds=0.2)
             self._plugins.clear()
             self._hooks.clear()
             self._plugin_tool_names.clear()
@@ -1041,6 +1105,8 @@ class PluginManager:
             self._plugin_commands.clear()
             self._plugin_skills.clear()
             self._aux_tasks.clear()
+            self._periodic_tasks.clear()
+            self._periodic_accepting_new_runs = True
             self._context_engine = None
         self._discovered = True
 
@@ -1614,6 +1680,342 @@ class PluginManager:
         """Remove a stale registry entry (silently ignores missing keys)."""
         self._plugin_skills.pop(qualified_name, None)
 
+    # -----------------------------------------------------------------------
+    # Managed periodic tasks
+    # -----------------------------------------------------------------------
+
+    def register_periodic_task(
+        self,
+        *,
+        spec: PeriodicTaskSpec,
+        callback: Callable[..., Any],
+        plugin_name: str,
+        now_monotonic: Optional[float] = None,
+    ) -> None:
+        """Register one managed periodic callback.
+
+        Duplicate names are rejected globally across plugins.
+        """
+        if not isinstance(spec, PeriodicTaskSpec):
+            raise TypeError("spec must be a PeriodicTaskSpec")
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        if not spec.name or not isinstance(spec.name, str):
+            raise ValueError("periodic task name must be a non-empty string")
+        if spec.interval_seconds <= 0:
+            raise ValueError("interval_seconds must be > 0")
+        if spec.jitter_seconds < 0:
+            raise ValueError("jitter_seconds must be >= 0")
+
+        now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        first_run = now if spec.run_immediately else now + spec.interval_seconds + self._periodic_jitter(spec)
+
+        with self._periodic_lock:
+            existing = self._periodic_tasks.get(spec.name)
+            if existing is not None:
+                raise ValueError(
+                    f"Periodic task name {spec.name!r} already registered by plugin "
+                    f"{existing.plugin_name!r}"
+                )
+            self._periodic_tasks[spec.name] = _PeriodicTaskState(
+                spec=spec,
+                plugin_name=plugin_name,
+                callback=callback,
+                next_run_at=first_run,
+            )
+
+        logger.debug(
+            "Plugin %s registered periodic task '%s' (interval=%ss jitter=%ss run_immediately=%s overlap=%s)",
+            plugin_name,
+            spec.name,
+            spec.interval_seconds,
+            spec.jitter_seconds,
+            spec.run_immediately,
+            spec.allow_overlap,
+        )
+
+    def list_periodic_tasks(self) -> List[Dict[str, Any]]:
+        """Return managed periodic task metadata in stable name order."""
+        with self._periodic_lock:
+            items = sorted(self._periodic_tasks.items(), key=lambda kv: kv[0])
+            return [
+                {
+                    "name": name,
+                    "plugin": state.plugin_name,
+                    "interval_seconds": state.spec.interval_seconds,
+                    "jitter_seconds": state.spec.jitter_seconds,
+                    "run_immediately": state.spec.run_immediately,
+                    "allow_overlap": state.spec.allow_overlap,
+                    "next_run_at": state.next_run_at,
+                    "in_flight": state.in_flight,
+                    "total_runs": state.total_runs,
+                    "total_failures": state.total_failures,
+                    "last_started_at": state.last_started_at,
+                    "last_finished_at": state.last_finished_at,
+                    "last_error": state.last_error,
+                }
+                for name, state in items
+            ]
+
+    def get_due_periodic_task_names(
+        self,
+        *,
+        now_monotonic: Optional[float] = None,
+        stop_event: Optional[threading.Event] = None,
+    ) -> List[str]:
+        """Return currently due task names that are runnable."""
+        now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        with self._periodic_lock:
+            if not self._periodic_accepting_new_runs:
+                return []
+            if stop_event is not None and stop_event.is_set():
+                return []
+            due: List[str] = []
+            for name, state in self._periodic_tasks.items():
+                if state.next_run_at > now:
+                    continue
+                if not state.spec.allow_overlap and state.in_flight > 0:
+                    continue
+                due.append(name)
+            return sorted(due)
+
+    def run_due_periodic_tasks(
+        self,
+        *,
+        now_monotonic: Optional[float] = None,
+        stop_event: Optional[threading.Event] = None,
+    ) -> List[str]:
+        """Launch all due tasks in background threads and return started names."""
+        now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        due_names = self.get_due_periodic_task_names(
+            now_monotonic=now,
+            stop_event=stop_event,
+        )
+        started: List[str] = []
+        for name in due_names:
+            if self._start_periodic_task_run(
+                name=name,
+                trigger="periodic",
+                now_monotonic=now,
+                run_inline=False,
+                stop_event=stop_event,
+            ).started:
+                started.append(name)
+        return started
+
+    def run_periodic_task_once(
+        self,
+        name: str,
+        *,
+        trigger: str = "manual",
+        now_monotonic: Optional[float] = None,
+        stop_event: Optional[threading.Event] = None,
+    ) -> PeriodicTaskRunResult:
+        """Run a registered task once immediately (synchronous)."""
+        now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        return self._start_periodic_task_run(
+            name=name,
+            trigger=trigger,
+            now_monotonic=now,
+            run_inline=True,
+            stop_event=stop_event,
+        )
+
+    def shutdown_periodic_tasks(self, grace_seconds: float = 3.0) -> Dict[str, int]:
+        """Stop accepting new periodic runs and wait bounded time for workers."""
+        deadline = time.monotonic() + max(0.0, grace_seconds)
+        with self._periodic_lock:
+            self._periodic_accepting_new_runs = False
+            threads = list(self._periodic_threads)
+
+        for thread in threads:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=remaining)
+
+        with self._periodic_lock:
+            alive = sum(1 for t in self._periodic_threads if t.is_alive())
+            total = len(self._periodic_threads)
+            if alive == 0:
+                self._periodic_threads.clear()
+        return {"total_threads": total, "alive_threads": alive}
+
+    def _periodic_jitter(self, spec: PeriodicTaskSpec) -> float:
+        if spec.jitter_seconds <= 0:
+            return 0.0
+        return float(self._periodic_rng.uniform(0.0, float(spec.jitter_seconds)))
+
+    def _start_periodic_task_run(
+        self,
+        *,
+        name: str,
+        trigger: str,
+        now_monotonic: float,
+        run_inline: bool,
+        stop_event: Optional[threading.Event],
+    ) -> PeriodicTaskRunResult:
+        with self._periodic_lock:
+            if not self._periodic_accepting_new_runs:
+                return PeriodicTaskRunResult(
+                    task_name=name,
+                    started=False,
+                    success=False,
+                    skipped_reason="shutdown",
+                )
+            if stop_event is not None and stop_event.is_set():
+                return PeriodicTaskRunResult(
+                    task_name=name,
+                    started=False,
+                    success=False,
+                    skipped_reason="stop_event_set",
+                )
+            state = self._periodic_tasks.get(name)
+            if state is None:
+                return PeriodicTaskRunResult(
+                    task_name=name,
+                    started=False,
+                    success=False,
+                    skipped_reason="unknown_task",
+                )
+            if not run_inline and state.next_run_at > now_monotonic:
+                return PeriodicTaskRunResult(
+                    task_name=name,
+                    started=False,
+                    success=False,
+                    skipped_reason="not_due",
+                )
+            if not state.spec.allow_overlap and state.in_flight > 0:
+                return PeriodicTaskRunResult(
+                    task_name=name,
+                    started=False,
+                    success=False,
+                    skipped_reason="in_flight",
+                )
+
+            state.in_flight += 1
+            state.last_started_at = now_monotonic
+            # Overlap-enabled tasks must advance due-time at launch, otherwise
+            # every ticker pass while a run is active would spawn another run.
+            if state.spec.allow_overlap:
+                state.next_run_at = (
+                    now_monotonic
+                    + state.spec.interval_seconds
+                    + self._periodic_jitter(state.spec)
+                )
+
+        if run_inline:
+            return self._execute_periodic_task(name=name, trigger=trigger)
+
+        thread = threading.Thread(
+            target=self._periodic_worker,
+            kwargs={"name": name, "trigger": trigger},
+            daemon=True,
+            name=f"hermes-plugin-periodic:{name}",
+        )
+        with self._periodic_lock:
+            self._periodic_threads.add(thread)
+        thread.start()
+        return PeriodicTaskRunResult(task_name=name, started=True, success=True)
+
+    def _periodic_worker(self, *, name: str, trigger: str) -> None:
+        try:
+            self._execute_periodic_task(name=name, trigger=trigger)
+        finally:
+            current = threading.current_thread()
+            with self._periodic_lock:
+                self._periodic_threads.discard(current)
+
+    def _execute_periodic_task(self, *, name: str, trigger: str) -> PeriodicTaskRunResult:
+        with self._periodic_lock:
+            state = self._periodic_tasks.get(name)
+            if state is None:
+                return PeriodicTaskRunResult(
+                    task_name=name,
+                    started=False,
+                    success=False,
+                    skipped_reason="unknown_task",
+                )
+            callback = state.callback
+            plugin_name = state.plugin_name
+
+        success = True
+        error_msg: Optional[str] = None
+        try:
+            result = self._call_periodic_callback(
+                callback,
+                {
+                    "task_name": name,
+                    "plugin_name": plugin_name,
+                    "trigger": trigger,
+                },
+            )
+            if inspect.isawaitable(result):
+                result = resolve_plugin_command_result(result)
+        except Exception as exc:
+            success = False
+            error_msg = str(exc)
+            logger.warning(
+                "Periodic task '%s' (plugin=%s) failed: %s",
+                name,
+                plugin_name,
+                exc,
+            )
+
+        finished_at = time.monotonic()
+        with self._periodic_lock:
+            state = self._periodic_tasks.get(name)
+            if state is None:
+                return PeriodicTaskRunResult(
+                    task_name=name,
+                    started=False,
+                    success=False,
+                    skipped_reason="unknown_task",
+                )
+            state.in_flight = max(0, state.in_flight - 1)
+            state.total_runs += 1
+            state.last_finished_at = finished_at
+            if success:
+                state.last_error = None
+            else:
+                state.total_failures += 1
+                state.last_error = error_msg
+            if not state.spec.allow_overlap:
+                state.next_run_at = (
+                    finished_at
+                    + state.spec.interval_seconds
+                    + self._periodic_jitter(state.spec)
+                )
+
+        return PeriodicTaskRunResult(
+            task_name=name,
+            started=True,
+            success=success,
+            error=error_msg,
+        )
+
+    @staticmethod
+    def _call_periodic_callback(callback: Callable[..., Any], context: Dict[str, Any]) -> Any:
+        """Invoke callback with kwargs only if it explicitly accepts them."""
+        try:
+            sig = inspect.signature(callback)
+        except (TypeError, ValueError):
+            return callback()
+
+        accepts_kwargs = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in sig.parameters.values()
+        )
+        if accepts_kwargs:
+            return callback(**context)
+
+        accepted = {
+            key: value
+            for key, value in context.items()
+            if key in sig.parameters
+        }
+        return callback(**accepted)
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton & convenience functions
@@ -1799,6 +2201,56 @@ def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
     """
     manager = _ensure_plugins_discovered()
     return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
+
+
+def get_plugin_periodic_tasks() -> List[Dict[str, Any]]:
+    """Return metadata for all registered managed periodic plugin tasks."""
+    return _ensure_plugins_discovered().list_periodic_tasks()
+
+
+def get_due_plugin_periodic_tasks(
+    *,
+    now_monotonic: Optional[float] = None,
+    stop_event: Optional[threading.Event] = None,
+) -> List[str]:
+    """Return due periodic task names that are currently runnable."""
+    return _ensure_plugins_discovered().get_due_periodic_task_names(
+        now_monotonic=now_monotonic,
+        stop_event=stop_event,
+    )
+
+
+def run_due_plugin_periodic_tasks(
+    *,
+    now_monotonic: Optional[float] = None,
+    stop_event: Optional[threading.Event] = None,
+) -> List[str]:
+    """Launch all due periodic tasks and return started task names."""
+    return _ensure_plugins_discovered().run_due_periodic_tasks(
+        now_monotonic=now_monotonic,
+        stop_event=stop_event,
+    )
+
+
+def run_plugin_periodic_task_once(
+    name: str,
+    *,
+    trigger: str = "manual",
+    now_monotonic: Optional[float] = None,
+    stop_event: Optional[threading.Event] = None,
+) -> PeriodicTaskRunResult:
+    """Run one registered periodic task immediately (sync one-shot path)."""
+    return _ensure_plugins_discovered().run_periodic_task_once(
+        name,
+        trigger=trigger,
+        now_monotonic=now_monotonic,
+        stop_event=stop_event,
+    )
+
+
+def shutdown_plugin_periodic_tasks(grace_seconds: float = 3.0) -> Dict[str, int]:
+    """Stop launching periodic runs and wait bounded time for active workers."""
+    return get_plugin_manager().shutdown_periodic_tasks(grace_seconds=grace_seconds)
 
 
 def get_plugin_toolsets() -> List[tuple]:

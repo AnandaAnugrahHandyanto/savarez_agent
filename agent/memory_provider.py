@@ -28,6 +28,7 @@ Optional hooks (override to opt in):
   on_pre_compress(messages) -> str       — extract before context compression
   on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
+  on_observation(event)                  — best-effort external observation ingest
 """
 
 from __future__ import annotations
@@ -234,6 +235,14 @@ class MemoryProvider(ABC):
         task: the delegation prompt
         result: the subagent's final response
         child_session_id: the subagent's session_id
+        """
+
+    def on_observation(self, event: Dict[str, Any]) -> None:
+        """Called when the host publishes an external observation event.
+
+        This hook is optional and defaults to no-op for provider
+        compatibility. Providers that opt in can map the observation
+        into their own memory backend without fabricating a user turn.
         """
 
     def get_config_schema(self) -> List[Dict[str, Any]]:

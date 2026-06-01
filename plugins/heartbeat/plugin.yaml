@@ -1,0 +1,6 @@
+name: heartbeat
+version: 0.1.0
+description: "Runs bounded proactive background reviews."
+author: "NousResearch"
+hooks:
+  - pre_llm_call

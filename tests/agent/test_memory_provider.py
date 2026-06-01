@@ -27,6 +27,7 @@ class FakeMemoryProvider(MemoryProvider):
         self.session_end_called = False
         self.pre_compress_called = False
         self.memory_writes = []
+        self.observations = []
         self.shutdown_called = False
         self._prefetch_result = ""
         self._prompt_block = ""
@@ -76,6 +77,9 @@ class FakeMemoryProvider(MemoryProvider):
     def on_memory_write(self, action, target, content):
         self.memory_writes.append((action, target, content))
 
+    def on_observation(self, event):
+        self.observations.append(dict(event))
+
 
 class MetadataMemoryProvider(FakeMemoryProvider):
     """Provider that opts into write metadata."""
@@ -116,6 +120,7 @@ class TestMemoryProviderABC:
         p.on_session_end([])
         p.on_pre_compress([])
         p.on_memory_write("add", "memory", "test")
+        p.on_observation({"source": "test"})
         p.queue_prefetch("query")
         p.sync_turn("user", "assistant")
         p.shutdown()
@@ -354,6 +359,56 @@ class TestMemoryManager:
         mgr.add_provider(p)
         mgr.on_pre_compress([{"role": "user", "content": "old"}])
         assert p.pre_compress_called
+
+    def test_on_observation_fans_out(self):
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin")
+        external = FakeMemoryProvider("external")
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        event = {"source": "heartbeat", "finding_id": "f-1"}
+        mgr.on_observation(event)
+
+        assert builtin.observations == [event]
+        assert external.observations == [event]
+
+    def test_on_observation_event_isolation(self):
+        mgr = MemoryManager()
+        mutator = FakeMemoryProvider("builtin")
+        observer = FakeMemoryProvider("external")
+
+        def _mutate(event):
+            event["source"] = "mutated"
+
+        mutator.on_observation = _mutate
+        mgr.add_provider(mutator)
+        mgr.add_provider(observer)
+
+        event = {"source": "heartbeat"}
+        mgr.on_observation(event)
+
+        assert event == {"source": "heartbeat"}
+        assert observer.observations == [{"source": "heartbeat"}]
+
+    def test_on_observation_failure_does_not_block_others(self):
+        mgr = MemoryManager()
+        bad = FakeMemoryProvider("builtin")
+        bad.on_observation = MagicMock(side_effect=RuntimeError("boom"))
+        good = FakeMemoryProvider("external")
+        mgr.add_provider(bad)
+        mgr.add_provider(good)
+
+        mgr.on_observation({"source": "heartbeat", "finding_id": "f-2"})
+
+        assert good.observations == [{"source": "heartbeat", "finding_id": "f-2"}]
+
+    def test_on_observation_ignores_non_dict_event(self):
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("external")
+        mgr.add_provider(p)
+        mgr.on_observation("not-a-dict")
+        assert p.observations == []
 
     def test_shutdown_all_reverse_order(self):
         mgr = MemoryManager()

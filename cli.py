@@ -8938,6 +8938,7 @@ class HermesCLI:
                     verbose_logging=False,
                     session_id=task_id,
                     platform="cli",
+                    execution_context="background",
                     session_db=self._session_db,
                     reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,

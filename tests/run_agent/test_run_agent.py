@@ -3107,6 +3107,32 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
 
+    def test_pre_llm_hook_receives_execution_context(self, agent):
+        self._setup_agent(agent)
+        agent.execution_context = "background"
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Done",
+            finish_reason="stop",
+        )
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("background work")
+
+        assert result["final_response"] == "Done"
+        pre_llm_calls = [kw for name, kw in hook_calls if name == "pre_llm_call"]
+        assert len(pre_llm_calls) == 1
+        assert pre_llm_calls[0]["execution_context"] == "background"
+
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)
         agent.platform = None

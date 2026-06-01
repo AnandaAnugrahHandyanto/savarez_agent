@@ -707,6 +707,7 @@ def run_conversation(
             is_first_turn=(not bool(conversation_history)),
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            execution_context=getattr(agent, "execution_context", "unknown") or "unknown",
             sender_id=getattr(agent, "_user_id", None) or "",
         )
         _ctx_parts: list[str] = []

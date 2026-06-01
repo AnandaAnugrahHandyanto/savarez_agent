@@ -404,6 +404,7 @@ def _run_review_in_thread(
                 max_iterations=16,
                 quiet_mode=True,
                 platform=agent.platform,
+                execution_context="background",
                 provider=agent.provider,
                 api_mode=_parent_api_mode,
                 base_url=_parent_runtime.get("base_url") or None,

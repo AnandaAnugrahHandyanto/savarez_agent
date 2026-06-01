@@ -591,6 +591,50 @@ class TestConcludeToolDispatch:
         assert session.add_message.call_args_list[0].args == ("user", "hello")
         assert session.add_message.call_args_list[1].args == ("assistant", "Visible answer")
 
+    def test_on_observation_maps_to_assistant_peer_message(self):
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._cron_skipped = False
+        provider._recall_mode = "hybrid"
+        provider._config = SimpleNamespace(message_max_chars=25000)
+
+        session = MagicMock()
+        provider._manager.get_or_create.return_value = session
+
+        provider.on_observation(
+            {
+                "source": "heartbeat",
+                "status": "notified",
+                "finding_id": "finding-123",
+                "summary": "Kanban task overdue for 3 days.",
+                "recommended_action": "Review and either complete or re-scope.",
+            }
+        )
+        provider._sync_thread.join(timeout=1.0)
+
+        assert session.add_message.call_count == 1
+        role, content = session.add_message.call_args.args
+        assert role == "assistant"
+        assert "[HEARTBEAT FINDING SURFACED TO USER]" in content
+        assert "Summary: Kanban task overdue for 3 days." in content
+        assert "Recommended action: Review and either complete or re-scope." in content
+        assert "Status: notified" in content
+        assert "Finding ID: finding-123" in content
+
+    def test_on_observation_tools_mode_is_noop(self):
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._cron_skipped = False
+        provider._recall_mode = "tools"
+        provider._config = SimpleNamespace(message_max_chars=25000)
+
+        provider.on_observation({"summary": "test finding", "finding_id": "f-1"})
+
+        provider._manager.get_or_create.assert_not_called()
+        assert provider._sync_thread is None
+
 
 # ---------------------------------------------------------------------------
 # Message chunking

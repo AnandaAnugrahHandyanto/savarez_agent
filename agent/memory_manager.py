@@ -609,6 +609,26 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+    def on_observation(self, event: Dict[str, Any]) -> None:
+        """Publish an external observation event to all providers.
+
+        Best effort: one provider failure must not block others.
+        """
+        if not isinstance(event, dict):
+            logger.debug(
+                "MemoryManager.on_observation ignored non-dict event (%s)",
+                type(event).__name__,
+            )
+            return
+        for provider in self._providers:
+            try:
+                provider.on_observation(dict(event))
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' on_observation failed: %s",
+                    provider.name, e,
+                )
+
     def shutdown_all(self) -> None:
         """Shut down all providers (reverse order for clean teardown)."""
         for provider in reversed(self._providers):

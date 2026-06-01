@@ -8830,6 +8830,7 @@ class GatewayRunner:
                                     max_iterations=4,
                                     quiet_mode=True,
                                     skip_memory=True,
+                                    execution_context="background",
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
                                 )
@@ -12161,6 +12162,7 @@ class GatewayRunner:
                     provider_data_collection=pr.get("data_collection"),
                     session_id=task_id,
                     platform=platform_key,
+                    execution_context="background",
                     user_id=source.user_id,
                     user_id_alt=source.user_id_alt,
                     user_name=source.user_name,
@@ -12649,6 +12651,7 @@ class GatewayRunner:
                 max_iterations=4,
                 quiet_mode=True,
                 skip_memory=True,
+                execution_context="background",
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
             )
@@ -18808,6 +18811,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
     from hermes_cli.debug import _sweep_expired_pastes
+    from hermes_cli.plugins import run_due_plugin_periodic_tasks
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
@@ -18821,6 +18825,10 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
             cron_tick(verbose=False, adapters=adapters, loop=loop)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
+        try:
+            run_due_plugin_periodic_tasks()
+        except Exception as e:
+            logger.debug("Plugin periodic tick error: %s", e)
 
         tick_count += 1
 
@@ -19242,6 +19250,30 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_reason:
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
         return True
+
+    def _resolve_notification_memory_manager(session_id: str):
+        candidates = list(runner._running_agents.values())
+        with runner._agent_cache_lock:
+            candidates.extend(
+                entry[0] if isinstance(entry, tuple) else entry
+                for entry in runner._agent_cache.values()
+            )
+        for agent in candidates:
+            if (
+                agent is not None
+                and agent is not _AGENT_PENDING_SENTINEL
+                and getattr(agent, "session_id", None) == session_id
+            ):
+                return getattr(agent, "_memory_manager", None)
+        return None
+
+    from gateway.notifications import configure_notification_runtime
+    configure_notification_runtime(
+        adapters=runner.adapters,
+        loop=asyncio.get_running_loop(),
+        session_store=runner.session_store,
+        memory_manager_resolver=_resolve_notification_memory_manager,
+    )
     
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
@@ -19258,14 +19290,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
-    if runner.should_exit_with_failure:
-        if runner.exit_reason:
-            logger.error("Gateway exiting with failure: %s", runner.exit_reason)
-        return False
-    
     # Stop cron ticker cleanly
     cron_stop.set()
     cron_thread.join(timeout=5)
+    try:
+        from hermes_cli.plugins import shutdown_plugin_periodic_tasks
+        shutdown_plugin_periodic_tasks(grace_seconds=3.0)
+    except Exception as e:
+        logger.debug("Plugin periodic shutdown error: %s", e)
+    try:
+        from gateway.notifications import clear_notification_runtime
+        clear_notification_runtime()
+    except Exception:
+        pass
 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()
@@ -19277,6 +19314,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         shutdown_mcp_servers()
     except Exception:
         pass
+
+    if runner.should_exit_with_failure:
+        if runner.exit_reason:
+            logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+        return False
 
     if runner.exit_code is not None:
         raise SystemExit(runner.exit_code)

@@ -1118,6 +1118,59 @@ class HonchoMemoryProvider(MemoryProvider):
             ),
         }
 
+    @staticmethod
+    def _normalize_observation_value(value: Any, *, max_chars: int = 1200) -> str:
+        """Normalize a generic observation field to bounded plain text."""
+        if value is None:
+            return ""
+        text = sanitize_context(str(value)).strip()
+        if not text:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 3].rstrip() + "..."
+
+    def _format_observation_message(self, event: Dict[str, Any]) -> str:
+        """Map a generic event to an assistant-peer observation message."""
+        finding = event.get("finding")
+        finding_payload = finding if isinstance(finding, dict) else {}
+
+        source = self._normalize_observation_value(event.get("source") or "heartbeat")
+        summary = self._normalize_observation_value(
+            finding_payload.get("summary") or event.get("summary") or event.get("content")
+        )
+        recommended_action = self._normalize_observation_value(
+            finding_payload.get("recommended_action")
+            or event.get("recommended_action")
+            or event.get("action")
+        )
+        status = self._normalize_observation_value(
+            event.get("status")
+            or event.get("delivery_status")
+            or finding_payload.get("status")
+            or "notified"
+        )
+        finding_id = self._normalize_observation_value(
+            finding_payload.get("id")
+            or event.get("finding_id")
+            or event.get("id")
+        )
+
+        if not any((summary, recommended_action, finding_id)):
+            return ""
+
+        lines = ["[HEARTBEAT FINDING SURFACED TO USER]"]
+        if source:
+            lines.append(f"Source: {source}")
+        if summary:
+            lines.append(f"Summary: {summary}")
+        if recommended_action:
+            lines.append(f"Recommended action: {recommended_action}")
+        lines.append(f"Status: {status or 'notified'}")
+        if finding_id:
+            lines.append(f"Finding ID: {finding_id}")
+        return "\n".join(lines)
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Record the conversation turn in Honcho (non-blocking).
 
@@ -1148,6 +1201,39 @@ class HonchoMemoryProvider(MemoryProvider):
             self._sync_thread.join(timeout=5.0)
         self._sync_thread = threading.Thread(
             target=_sync, daemon=True, name="honcho-sync"
+        )
+        self._sync_thread.start()
+
+    def on_observation(self, event: Dict[str, Any]) -> None:
+        """Ingest host observations as assistant-peer context in Honcho."""
+        if self._cron_skipped:
+            return
+        if self._recall_mode == "tools":
+            return
+        if not self._manager or not self._session_key:
+            return
+        if not isinstance(event, dict):
+            return
+
+        observation_text = self._format_observation_message(event)
+        if not observation_text:
+            return
+
+        msg_limit = self._config.message_max_chars if self._config else 25000
+
+        def _sync():
+            try:
+                session = self._manager.get_or_create(self._session_key)
+                for chunk in self._chunk_message(observation_text, msg_limit):
+                    session.add_message("assistant", chunk)
+                self._manager._flush_session(session)
+            except Exception as e:
+                logger.debug("Honcho observation ingest failed: %s", e)
+
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=5.0)
+        self._sync_thread = threading.Thread(
+            target=_sync, daemon=True, name="honcho-observation-sync"
         )
         self._sync_thread.start()
 
