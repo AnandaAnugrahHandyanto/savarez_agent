@@ -17,7 +17,9 @@
 2. Capturar typed/drawn signature en browser.
 3. Enviar evento `approved` con `signature_text`, `signature_image_sha256`, `approval_context`.
 4. Ingestar evento en Signature Core y crear approval hash.
-5. Mostrar hash de aprobación y respuesta del agente en bitácora.
+5. Generar/reemplazar el PDF descargable con una versión visiblemente firmada: sello en la primera página, signer/date/hash, página de auditoría, preservando el PDF original/hash aprobado.
+6. Registrar el PDF firmado como `signature.attachments.kind='completed_pdf'` con SHA-256 propio.
+7. Mostrar hash de aprobación, hash del PDF firmado y respuesta del agente en bitácora.
 
 ## Sprint 3 — PDF/document signing requests
 1. Generar páginas `/sign/<slug>` para PDFs independientes.
