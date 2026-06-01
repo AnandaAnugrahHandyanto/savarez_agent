@@ -27,6 +27,8 @@ def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None):
     fake = types.ModuleType("ddgs")
 
     class _FakeDDGS:
+        def __init__(self, timeout=None):
+            pass
         def __enter__(self):
             return self
         def __exit__(self, *_a):
@@ -154,6 +156,34 @@ class TestDDGSProviderSearch:
         result = DDGSWebSearchProvider().search("nothing", limit=5)
         assert result["success"] is True
         assert result["data"]["web"] == []
+
+    def test_timeout_returns_failure_when_search_hangs(self, monkeypatch):
+        """When DDGS().text() hangs (e.g. rate-limited backend), the overall
+        timeout should fire and return a clean failure instead of blocking
+        the agent loop indefinitely (#36776)."""
+        import time
+
+        # Make text() sleep longer than the timeout so we can observe the guard.
+        def _slow_text(self, query, max_results=5):
+            time.sleep(60)
+            yield {"title": "X", "href": "https://x.example.com", "body": ""}
+            return
+
+        _install_fake_ddgs(monkeypatch, text_results=[])
+        fake = sys.modules.get("ddgs")
+        # Replace the text method on the FAKE class (not on instances) so
+        # the next ``with DDGS()`` picks up the slow version.
+        fake.DDGS.text = _slow_text
+
+        from plugins.web.ddgs import provider as ddgs_provider
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+
+        # Use a short timeout so the test doesn't actually wait 30 s.
+        monkeypatch.setattr(ddgs_provider, "_DDGS_SEARCH_TIMEOUT", 2)
+
+        result = DDGSWebSearchProvider().search("test-timeout", limit=5)
+        assert result["success"] is False
+        assert "timed out" in result["error"].lower()
 
 
 # ---------------------------------------------------------------------------
