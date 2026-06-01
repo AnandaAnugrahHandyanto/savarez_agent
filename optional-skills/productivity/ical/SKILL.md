@@ -137,7 +137,7 @@ For parsed output: hand the JSON to the user as-is, or pipe into another tool.
 A single command proves the skill is wired up:
 
 ```bash
-python scripts/ical.py quick "smoke test" "2026-06-15T12:00:00" "2026-06-15T13:00:00" | python scripts/ical.py read /dev/stdin
+python scripts/ical.py quick "smoke test" "2026-06-15T12:00:00" "2026-06-15T13:00:00" | python scripts/ical.py read -
 ```
 
 Expected: the second command prints a table with one row whose summary is `smoke test` and times are `2026-06-15 12:00:00` → `2026-06-15 13:00:00`. If either command fails with a traceback, the install is broken — re-check that the script is on the `PATH` (or call it with the explicit `python` prefix).
