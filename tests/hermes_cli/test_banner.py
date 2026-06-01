@@ -70,6 +70,31 @@ def test_build_welcome_banner_uses_normalized_toolset_names():
     assert "web_tools:" not in output
 
 
+def test_build_welcome_banner_can_suppress_update_warning():
+    """display.show_update_banner=false suppresses the update block."""
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=(["web"], [])),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=3) as mock_update,
+        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+        patch("hermes_cli.banner.get_latest_release_tag", return_value=None),
+        patch("hermes_cli.config.load_config", return_value={"display": {"show_update_banner": False}}),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=160)
+        banner.build_welcome_banner(
+            console=console,
+            model="anthropic/test-model",
+            cwd="/tmp/project",
+            tools=[{"function": {"name": "web_search"}}],
+            get_toolset_for_tool=lambda name: "web",
+        )
+
+    output = console.export_text()
+    assert "commit behind" not in output
+    assert "commits behind" not in output
+    mock_update.assert_not_called()
+
+
 def test_build_welcome_banner_title_is_hyperlinked_to_release():
     """Panel title (version label) is wrapped in an OSC-8 hyperlink to the GitHub release."""
     import io

@@ -187,6 +187,24 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestJobCRUD:
+    def test_load_jobs_repairs_top_level_list(self, tmp_cron_dir):
+        jobs_file = tmp_cron_dir / "cron" / "jobs.json"
+        jobs_file.parent.mkdir(parents=True)
+        jobs_file.write_text('[{"id": "legacy", "prompt": "hi"}]', encoding="utf-8")
+
+        jobs = load_jobs()
+
+        assert jobs == [{"id": "legacy", "prompt": "hi"}]
+        assert jobs_file.read_text(encoding="utf-8").lstrip().startswith("{")
+
+    def test_load_jobs_rejects_non_object_top_level(self, tmp_cron_dir):
+        jobs_file = tmp_cron_dir / "cron" / "jobs.json"
+        jobs_file.parent.mkdir(parents=True)
+        jobs_file.write_text('"not a job store"', encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="top-level is str"):
+            load_jobs()
+
     def test_create_and_get(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="30m")
         assert job["id"]

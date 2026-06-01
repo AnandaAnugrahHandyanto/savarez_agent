@@ -1293,6 +1293,7 @@ DEFAULT_CONFIG = {
         # starts delegating, nudging the user toward the live spawn-tree
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
+        "show_update_banner": True,
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,

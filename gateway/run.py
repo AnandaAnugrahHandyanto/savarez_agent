@@ -3974,22 +3974,47 @@ class GatewayRunner:
             )
             return
 
-        cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
-        shell_cmd = (
-            f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
-            f"{cmd} gateway restart"
-        )
+        import textwrap
+
+        cmd_argv = [*hermes_cmd, "gateway", "restart"]
+        watcher = textwrap.dedent(
+            """
+            import os, subprocess, sys, time
+            pid = int(sys.argv[1])
+            cmd = sys.argv[2:]
+            deadline = time.monotonic() + 120
+
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                except PermissionError:
+                    pass
+                except OSError:
+                    break
+                time.sleep(0.2)
+
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            """
+        ).strip()
+        watcher_argv = [sys.executable, "-c", watcher, str(current_pid), *cmd_argv]
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
             subprocess.Popen(
-                [setsid_bin, "bash", "-lc", shell_cmd],
+                [setsid_bin, "--", *watcher_argv],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
         else:
             subprocess.Popen(
-                ["bash", "-lc", shell_cmd],
+                watcher_argv,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
