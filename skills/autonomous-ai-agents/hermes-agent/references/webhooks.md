@@ -30,7 +30,7 @@ platforms:
 ```
 
 ### Option 3: Environment variables
-Add to `${HERMES_HOME:-~/.hermes}/.env`:
+Add to Bitwarden Secrets Manager (preferred) or `${HERMES_HOME:-~/.hermes}/.env`:
 ```bash
 WEBHOOK_ENABLED=true
 WEBHOOK_PORT=8644
