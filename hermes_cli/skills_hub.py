@@ -1678,12 +1678,89 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         repo = args[1] if len(args) > 1 else ""
         do_tap(tap_action, repo=repo, console=c)
 
+    elif action in ("enable", "disable", "list-disabled", "disabled"):
+        _handle_skills_enable_disable(action, args, c)
+
     elif action in {"help", "--help", "-h"}:
         _print_skills_help(c)
 
     else:
         c.print(f"[bold red]Unknown action:[/] {action}")
         _print_skills_help(c)
+
+
+def _handle_skills_enable_disable(action: str, args: list, console: Console) -> None:
+    """Handle /skills enable|disable|disabled|list-disabled subcommands.
+
+    These subcommands let users toggle individual skills on/off from the
+    chat interface without needing the curses-based ``hermes skills config``
+    command.  Changes are written to ``skills.disabled`` in config.yaml.
+    """
+    from hermes_cli.config import load_config, save_config
+    from agent.skill_utils import get_disabled_skill_names
+    from tools.skills_tool import _find_all_skills
+
+    config = load_config()
+    current_disabled = get_disabled_skill_names()
+    all_skills = _find_all_skills(skip_disabled=True)
+
+    # Build a name→display mapping for validation and feedback
+    skill_names = {s["name"] for s in all_skills}
+
+    if action in ("disabled", "list-disabled"):
+        # Show currently disabled skills
+        if not current_disabled:
+            console.print("[dim]No skills are currently disabled.[/]")
+        else:
+            console.print(f"[bold]Disabled skills ({len(current_disabled)}):[/]")
+            for name in sorted(current_disabled):
+                console.print(f"  • {name}")
+        return
+
+    # enable / disable require at least one skill name
+    if not args:
+        console.print(
+            f"[bold red]Usage:[/] /skills {action} <skill-name> [skill-name ...]\\n"
+        )
+        # List available skills to help the user
+        console.print("[bold]Available skills:[/]")
+        for s in sorted(all_skills, key=lambda x: x["name"]):
+            status = "[red]disabled[/]" if s["name"] in current_disabled else "[green]enabled[/]"
+            console.print(f"  {status}  {s['name']}  [dim]({s.get('category', '') or 'uncategorized'})[/]")
+        return
+
+    disabled_set = set(current_disabled)
+    changed = 0
+
+    for name in args:
+        if name not in skill_names:
+            console.print(f"[yellow]Skipping unknown skill:[/] {name}")
+            continue
+        if action == "enable":
+            if name in disabled_set:
+                disabled_set.discard(name)
+                changed += 1
+                console.print(f"[green]Enabled:[/] {name}")
+            else:
+                console.print(f"[dim]Already enabled:[/] {name}")
+        elif action == "disable":
+            if name not in disabled_set:
+                disabled_set.add(name)
+                changed += 1
+                console.print(f"[yellow]Disabled:[/] {name}")
+            else:
+                console.print(f"[dim]Already disabled:[/] {name}")
+
+    if changed:
+        config.setdefault("skills", {})["disabled"] = sorted(disabled_set)
+        save_config(config)
+        console.print(
+            f"\\n[bold green]✓ Saved:[/] {changed} skill(s) updated — "
+            f"{len(all_skills) - len(disabled_set)} enabled, {len(disabled_set)} disabled."
+        )
+        console.print("[dim]Start a new session or /reset for changes to take effect.[/]")
+    elif not changed and args:
+        console.print("[dim]No changes made.[/]")
 
 
 def _print_skills_help(console: Console) -> None:
@@ -1696,6 +1773,9 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
         "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
         "       List installed skills; --enabled-only filters to the active profile's live set\n"
+        "  [cyan]enable[/] <name> [name ...]    Enable one or more disabled skills\n"
+        "  [cyan]disable[/] <name> [name ...]   Disable one or more enabled skills\n"
+        "  [cyan]disabled[/]                    Show currently disabled skills\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
