@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,26 @@ from tools.evidence_gate_tool import evidence_gate, log_evidence_gate_event
 DEFAULT_REPORT = REPO_ROOT / "reports" / "clawpatch" / "weekly" / "REPORT.md"
 DEFAULT_RESULT = REPO_ROOT / "reports" / "clawpatch" / "weekly" / "RESULT.md"
 DEFAULT_MANIFEST = REPO_ROOT / "reports" / "clawpatch" / "weekly" / "evidence_manifest.json"
+
+
+def _resolve_hermes_home() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home()
+    except Exception:
+        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+
+
+def _generate_command_env() -> dict[str, str]:
+    env = os.environ.copy()
+    profile_home = _resolve_hermes_home() / "home"
+    profile_bin = str(profile_home / ".local" / "bin")
+    path_parts = [part for part in env.get("PATH", "").split(os.pathsep) if part]
+    path_parts = [part for part in path_parts if part != profile_bin]
+    env["HOME"] = str(profile_home)
+    env["PATH"] = os.pathsep.join([profile_bin, *path_parts])
+    return env
 
 
 def _parse_args() -> argparse.Namespace:
@@ -67,7 +88,36 @@ def main() -> int:
     manifest = Path(args.manifest).expanduser().resolve()
 
     if not args.verify_only and args.generate_command:
-        proc = subprocess.run(args.generate_command, shell=True, text=True, check=False)
+        generate_env = _generate_command_env()
+        try:
+            preflight = subprocess.run(
+                ["codex", "--version"],
+                env=generate_env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            preflight_ok = preflight.returncode == 0
+        except OSError:
+            preflight_ok = False
+        if not preflight_ok:
+            payload = {
+                "status": "FAILED",
+                "requested_status": "COMPLETED",
+                "reason": "codex_profile_env_unhealthy",
+                "report": str(report),
+            }
+            log_evidence_gate_event("completion_refused", payload, args.log_path)
+            print(json.dumps(payload, sort_keys=True))
+            return 1
+
+        proc = subprocess.run(
+            args.generate_command,
+            shell=True,
+            text=True,
+            check=False,
+            env=generate_env,
+        )
         if proc.returncode != 0:
             payload = {
                 "status": "FAILED",
