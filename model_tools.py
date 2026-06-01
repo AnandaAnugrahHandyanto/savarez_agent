@@ -357,6 +357,22 @@ def _compute_tool_definitions(
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
                 tools_to_include.update(resolved)
+                if not resolved:
+                    # Warn regardless of quiet_mode — an empty resolution for
+                    # an explicitly-listed toolset is always a misconfiguration
+                    # or a registry-timing miss (e.g. MCP server name listed in
+                    # platform_toolsets before the server's tools are registered).
+                    # Without this warning the failure is completely silent in
+                    # gateway quiet_mode and causes the agent to receive no tools
+                    # AND lose tool-use enforcement guidance. (#35703)
+                    logger.warning(
+                        "Toolset '%s' is configured but resolved to zero tools. "
+                        "If this is an MCP server name, ensure the server is "
+                        "connected and its tools are registered before building "
+                        "the agent (check gateway startup logs for "
+                        "'MCP: registered N tool(s)').",
+                        toolset_name,
+                    )
                 if not quiet_mode:
                     print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:
@@ -364,8 +380,12 @@ def _compute_tool_definitions(
                 tools_to_include.update(legacy_tools)
                 if not quiet_mode:
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
+            else:
+                # Unknown toolset — warn regardless of quiet_mode so the
+                # misconfiguration is visible in logs even in production.
+                logger.warning("Unknown toolset '%s' in enabled_toolsets — skipping.", toolset_name)
+                if not quiet_mode:
+                    print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
         # Default: start with everything
         from toolsets import get_all_toolsets

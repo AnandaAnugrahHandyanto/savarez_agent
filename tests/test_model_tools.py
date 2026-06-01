@@ -357,3 +357,108 @@ class TestCoerceNumberInfNan:
         assert _coerce_number("42") == 42
         assert _coerce_number("3.14") == 3.14
         assert _coerce_number("1e3") == 1000
+
+
+# =========================================================================
+# get_tool_definitions — empty-toolset warnings (#35703)
+# =========================================================================
+
+class TestEmptyToolsetWarnings:
+    """Verify that logger.warning fires regardless of quiet_mode when an
+    explicitly-listed toolset resolves to zero tools or is unknown.
+
+    Regression guard for issue #35703: with platform_toolsets.api_server set
+    to MCP server names (e.g. [matzip, vault]), the failure was completely
+    silent in gateway quiet_mode=True — the agent received no tools AND lost
+    tool-use enforcement guidance with no visible log entry.
+    """
+
+    def test_unknown_toolset_warns_in_quiet_mode(self, caplog):
+        """Unknown toolset name emits logger.warning even with quiet_mode=True."""
+        import logging
+        from model_tools import _compute_tool_definitions
+        from unittest.mock import patch
+
+        with (
+            caplog.at_level(logging.WARNING, logger="model_tools"),
+            patch("model_tools.validate_toolset", return_value=False),
+            patch("model_tools._LEGACY_TOOLSET_MAP", {}),
+        ):
+            _compute_tool_definitions(
+                enabled_toolsets=["totally_nonexistent_mcp_srv"],
+                quiet_mode=True,
+            )
+
+        assert any(
+            "totally_nonexistent_mcp_srv" in r.message and r.levelno == logging.WARNING
+            for r in caplog.records
+        ), f"Expected a WARNING mentioning the unknown toolset. Records: {caplog.records}"
+
+    def test_valid_toolset_resolving_to_empty_warns_in_quiet_mode(self, caplog):
+        """A toolset that validates but resolves to zero tools emits logger.warning
+        even with quiet_mode=True.  This is the api_server MCP timing scenario:
+        validate_toolset('matzip') returns True (alias registered) but
+        resolve_toolset('matzip') returns [] because the MCP server's tools
+        haven't been registered yet.
+        """
+        import logging
+        from model_tools import _compute_tool_definitions
+        from unittest.mock import patch
+
+        with (
+            caplog.at_level(logging.WARNING, logger="model_tools"),
+            patch("model_tools.validate_toolset", return_value=True),
+            patch("model_tools.resolve_toolset", return_value=[]),
+        ):
+            _compute_tool_definitions(
+                enabled_toolsets=["matzip"],
+                quiet_mode=True,
+            )
+
+        assert any(
+            "matzip" in r.message and r.levelno == logging.WARNING
+            for r in caplog.records
+        ), f"Expected a WARNING mentioning 'matzip'. Records: {caplog.records}"
+
+    def test_unknown_toolset_warns_in_verbose_mode(self, caplog):
+        """Unknown toolset warning fires in verbose mode too (not only quiet)."""
+        import logging
+        from model_tools import _compute_tool_definitions
+        from unittest.mock import patch
+
+        with (
+            caplog.at_level(logging.WARNING, logger="model_tools"),
+            patch("model_tools.validate_toolset", return_value=False),
+            patch("model_tools._LEGACY_TOOLSET_MAP", {}),
+        ):
+            _compute_tool_definitions(
+                enabled_toolsets=["another_unknown_srv"],
+                quiet_mode=False,
+            )
+
+        assert any(
+            "another_unknown_srv" in r.message and r.levelno == logging.WARNING
+            for r in caplog.records
+        )
+
+    def test_valid_populated_toolset_does_not_warn(self, caplog):
+        """No spurious warning when a valid toolset resolves to actual tools."""
+        import logging
+        from model_tools import _compute_tool_definitions
+        from unittest.mock import patch
+
+        with (
+            caplog.at_level(logging.WARNING, logger="model_tools"),
+            patch("model_tools.validate_toolset", return_value=True),
+            patch("model_tools.resolve_toolset", return_value=["mcp_srv_tool_a"]),
+            patch("model_tools.registry.get_definitions", return_value=[]),
+        ):
+            _compute_tool_definitions(
+                enabled_toolsets=["my_mcp_srv"],
+                quiet_mode=True,
+            )
+
+        warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert not any("my_mcp_srv" in m for m in warning_msgs), (
+            f"Unexpected warning for a populated toolset. Warnings: {warning_msgs}"
+        )
