@@ -1805,16 +1805,27 @@ def add_comment(
         raise ValueError("comment author is required")
     now = int(time.time())
     with write_txn(conn):
-        if not conn.execute(
-            "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
-        ).fetchone():
+        task_row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not task_row:
             raise ValueError(f"unknown task {task_id}")
+        warning = None
+        if task_row["status"] == "blocked" and _BLOCKED_COMMENT_ACTION_RE.search(body):
+            warning = BLOCKED_COMMENT_ACTION_WARNING
         cur = conn.execute(
             "INSERT INTO task_comments (task_id, author, body, created_at) "
             "VALUES (?, ?, ?, ?)",
             (task_id, author.strip(), body.strip(), now),
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
+        if warning:
+            _append_event(
+                conn,
+                task_id,
+                "blocked_comment_action_warning",
+                {"warning": warning},
+            )
         return int(cur.lastrowid or 0)
 
 
@@ -2558,6 +2569,41 @@ def _verify_created_cards(
 # ``_new_task_id`` below. Kept permissive on length for forward compat:
 # accept 8+ hex chars after the ``t_`` prefix.
 _TASK_ID_PROSE_RE = re.compile(r"\bt_[a-f0-9]{8,}\b")
+
+
+_BLOCKED_COMMENT_ACTION_RE = re.compile(
+    r"\b("
+    r"ask|call|contact|dm|email|message|notify|ping|reach\s+out|send|tell|"
+    r"please|must|should|need(?:s)?\s+to|follow\s+up"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+BLOCKED_COMMENT_ACTION_WARNING = (
+    "Comment recorded only: this task is blocked, so no worker will be "
+    "spawned or woken by this comment. To make an assignee act, send the "
+    "message yourself, create a new assigned contact task, or explicitly "
+    "unblock/re-dispatch the blocked task with the instruction."
+)
+
+
+def blocked_comment_action_warning(
+    conn: sqlite3.Connection, task_id: str, body: str
+) -> Optional[str]:
+    """Return deterministic guidance for action-looking comments on blocked tasks.
+
+    Comments are durable context, not executable dispatch requests. A comment
+    added after a task has blocked does not wake the assignee; only a new ready
+    task or an explicit unblock/re-dispatch enters the dispatcher queue. Keep
+    this helper small and heuristic: it is a safety warning, not a policy gate.
+    """
+    if not body or not _BLOCKED_COMMENT_ACTION_RE.search(body):
+        return None
+    row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row and row["status"] == "blocked":
+        return BLOCKED_COMMENT_ACTION_WARNING
+    return None
 
 
 def _scan_prose_for_phantom_ids(
