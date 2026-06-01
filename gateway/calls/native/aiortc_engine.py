@@ -759,7 +759,13 @@ class AiortcAudioPeer:
                     )
                 pcm16 = _audio_frame_to_pcm16(frame)
                 if pcm16 and self._accumulator is not None:
-                    await self._accumulator.accept_pcm16(pcm16)
+                    await self._accumulator.accept_pcm16(
+                        pcm16,
+                        sample_rate=int(
+                            getattr(frame, "sample_rate", 0)
+                            or self.config.sample_rate
+                        ),
+                    )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1756,11 +1762,17 @@ class _DirectFeedAccumulator:
         self._call_id = str(call_id or "")
         self._native_rate = int(native_rate)
 
-    async def accept_pcm16(self, pcm16: bytes, *, now: float | None = None) -> None:
+    async def accept_pcm16(
+        self,
+        pcm16: bytes,
+        *,
+        now: float | None = None,
+        sample_rate: int | None = None,
+    ) -> None:
         await self._pipeline.process_pcm16(
             call_id=self._call_id,
             pcm16=pcm16,
-            sample_rate=self._native_rate,
+            sample_rate=sample_rate or self._native_rate,
         )
 
 
