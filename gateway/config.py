@@ -198,6 +198,75 @@ class Platform(Enum):
 # Used to distinguish real platforms from arbitrary strings.
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
+_HOME_CHANNEL_CONFIG_KEYS: tuple[
+    tuple[Platform, str, str, str, str],
+    ...,
+] = (
+    (Platform.TELEGRAM, "TELEGRAM_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL_NAME", "TELEGRAM_HOME_CHANNEL_THREAD_ID", "Home"),
+    (Platform.DISCORD, "DISCORD_HOME_CHANNEL", "DISCORD_HOME_CHANNEL_NAME", "DISCORD_HOME_CHANNEL_THREAD_ID", "Home"),
+    (Platform.WHATSAPP, "WHATSAPP_HOME_CHANNEL", "WHATSAPP_HOME_CHANNEL_NAME", "WHATSAPP_HOME_CHANNEL_THREAD_ID", "Home"),
+    (Platform.SLACK, "SLACK_HOME_CHANNEL", "SLACK_HOME_CHANNEL_NAME", "SLACK_HOME_CHANNEL_THREAD_ID", ""),
+    (Platform.SIGNAL, "SIGNAL_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL_NAME", "SIGNAL_HOME_CHANNEL_THREAD_ID", "Home"),
+    (Platform.MATTERMOST, "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_HOME_CHANNEL_THREAD_ID", "Home"),
+    (Platform.MATRIX, "MATRIX_HOME_ROOM", "MATRIX_HOME_ROOM_NAME", "MATRIX_HOME_ROOM_THREAD_ID", "Home"),
+    (Platform.EMAIL, "EMAIL_HOME_ADDRESS", "EMAIL_HOME_ADDRESS_NAME", "EMAIL_HOME_ADDRESS_THREAD_ID", "Home"),
+    (Platform.SMS, "SMS_HOME_CHANNEL", "SMS_HOME_CHANNEL_NAME", "SMS_HOME_CHANNEL_THREAD_ID", "Home"),
+    (Platform.DINGTALK, "DINGTALK_HOME_CHANNEL", "DINGTALK_HOME_CHANNEL_NAME", "DINGTALK_HOME_CHANNEL_THREAD_ID", "Home"),
+    (Platform.FEISHU, "FEISHU_HOME_CHANNEL", "FEISHU_HOME_CHANNEL_NAME", "FEISHU_HOME_CHANNEL_THREAD_ID", "Home"),
+    (Platform.WECOM, "WECOM_HOME_CHANNEL", "WECOM_HOME_CHANNEL_NAME", "WECOM_HOME_CHANNEL_THREAD_ID", "Home"),
+    (Platform.WEIXIN, "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_HOME_CHANNEL_THREAD_ID", "Home"),
+    (Platform.BLUEBUBBLES, "BLUEBUBBLES_HOME_CHANNEL", "BLUEBUBBLES_HOME_CHANNEL_NAME", "BLUEBUBBLES_HOME_CHANNEL_THREAD_ID", "Home"),
+    (Platform.QQBOT, "QQBOT_HOME_CHANNEL", "QQBOT_HOME_CHANNEL_NAME", "QQBOT_HOME_CHANNEL_THREAD_ID", "Home"),
+    (Platform.YUANBAO, "YUANBAO_HOME_CHANNEL", "YUANBAO_HOME_CHANNEL_NAME", "YUANBAO_HOME_CHANNEL_THREAD_ID", "Home"),
+)
+
+
+def _merge_top_level_home_channels(
+    yaml_cfg: dict[str, Any],
+    platforms_data: dict[str, Any],
+) -> None:
+    """Map legacy top-level *_HOME_* config keys into platform configs.
+
+    ``gateway.run`` bridges simple top-level config values into env at gateway
+    startup. Direct callers of ``load_gateway_config()`` do not get that
+    gateway-only side effect, so the loader also needs to understand the same
+    home-channel shape.
+    """
+    for platform, chat_key, name_key, thread_key, default_name in _HOME_CHANNEL_CONFIG_KEYS:
+        chat_id = yaml_cfg.get(chat_key)
+        name = yaml_cfg.get(name_key, default_name)
+        thread_id = yaml_cfg.get(thread_key)
+        if platform == Platform.QQBOT and not chat_id:
+            chat_id = yaml_cfg.get("QQ_HOME_CHANNEL")
+            name = (
+                yaml_cfg.get("QQBOT_HOME_CHANNEL_NAME")
+                or yaml_cfg.get("QQ_HOME_CHANNEL_NAME")
+                or default_name
+            )
+            thread_id = (
+                yaml_cfg.get("QQBOT_HOME_CHANNEL_THREAD_ID")
+                or yaml_cfg.get("QQ_HOME_CHANNEL_THREAD_ID")
+            )
+        if chat_id in (None, ""):
+            continue
+
+        platform_key = platform.value
+        plat_data = platforms_data.get(platform_key, {})
+        if not isinstance(plat_data, dict):
+            plat_data = {}
+        existing_home = plat_data.get("home_channel")
+        if isinstance(existing_home, dict) and existing_home.get("chat_id"):
+            continue
+        home_channel: dict[str, str] = {
+            "platform": platform_key,
+            "chat_id": str(chat_id),
+            "name": str(name or default_name),
+        }
+        if thread_id not in (None, ""):
+            home_channel["thread_id"] = str(thread_id)
+        plat_data["home_channel"] = home_channel
+        platforms_data[platform_key] = plat_data
+
 
 @dataclass
 class HomeChannel:
@@ -786,6 +855,7 @@ def load_gateway_config() -> GatewayConfig:
                         merged["extra"] = merged_extra
                     platforms_data[plat_name] = merged
                 gw_data["platforms"] = platforms_data
+            _merge_top_level_home_channels(yaml_cfg, platforms_data)
             # Iterate built-in platforms plus any registered plugin platforms
             # so plugin authors get the same shared-key bridging (#24836).
             try:

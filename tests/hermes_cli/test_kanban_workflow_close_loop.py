@@ -208,6 +208,33 @@ def test_auto_subscribe_home_channel_when_enabled(kb_conn, monkeypatch):
     assert subs[0]["notifier_profile"] == "orchestrator"
 
 
+def test_configured_home_channels_reads_top_level_config_without_gateway_run(
+    tmp_path,
+    monkeypatch,
+):
+    """Kanban tools must not depend on gateway.run's config->env side effect."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "WHATSAPP_HOME_CHANNEL: home-chat\n"
+        "WHATSAPP_HOME_CHANNEL_NAME: Nicholas\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("WHATSAPP_HOME_CHANNEL", raising=False)
+    monkeypatch.delenv("WHATSAPP_HOME_CHANNEL_NAME", raising=False)
+
+    import gateway.config as gateway_config
+    from tools import kanban_tools
+
+    monkeypatch.setattr(gateway_config, "get_hermes_home", lambda: home)
+
+    homes = kanban_tools._configured_home_channels()
+
+    assert homes == [
+        {"platform": "whatsapp", "chat_id": "home-chat", "thread_id": ""}
+    ]
+
+
 def test_auto_subscribe_gateway_source_creates_sub(kb_conn, monkeypatch):
     """With correct env vars, a subscription row is created."""
     monkeypatch.setenv("HERMES_KANBAN_SUB_PLATFORM", "telegram")

@@ -44,3 +44,48 @@ class TestStreamingConfigNested:
         })
         assert cfg.streaming.enabled is True
         assert cfg.streaming.transport == "edit"
+
+
+class TestGatewayHomeChannelConfig:
+    def test_top_level_home_channel_loaded_without_gateway_run_env_bridge(self, monkeypatch):
+        """Direct config loads should see the same home target gateway.run sees."""
+        monkeypatch.delenv("WHATSAPP_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("WHATSAPP_HOME_CHANNEL_NAME", raising=False)
+        monkeypatch.delenv("WHATSAPP_HOME_CHANNEL_THREAD_ID", raising=False)
+
+        cfg = _load_with_yaml_dict({
+            "WHATSAPP_HOME_CHANNEL": "home-chat",
+            "WHATSAPP_HOME_CHANNEL_NAME": "Nicholas",
+            "WHATSAPP_HOME_CHANNEL_THREAD_ID": "topic-1",
+        })
+
+        from gateway.config import Platform
+
+        home = cfg.get_home_channel(Platform.WHATSAPP)
+        assert home is not None
+        assert home.chat_id == "home-chat"
+        assert home.name == "Nicholas"
+        assert home.thread_id == "topic-1"
+
+    def test_platform_home_channel_takes_precedence_over_top_level_legacy_key(self, monkeypatch):
+        monkeypatch.delenv("WHATSAPP_HOME_CHANNEL", raising=False)
+
+        cfg = _load_with_yaml_dict({
+            "WHATSAPP_HOME_CHANNEL": "legacy-chat",
+            "platforms": {
+                "whatsapp": {
+                    "home_channel": {
+                        "platform": "whatsapp",
+                        "chat_id": "platform-chat",
+                        "name": "Platform Home",
+                    },
+                },
+            },
+        })
+
+        from gateway.config import Platform
+
+        home = cfg.get_home_channel(Platform.WHATSAPP)
+        assert home is not None
+        assert home.chat_id == "platform-chat"
+        assert home.name == "Platform Home"
