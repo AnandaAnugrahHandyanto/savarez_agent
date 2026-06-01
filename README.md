@@ -31,7 +31,9 @@ This checkout (`hermes-agent-upstream-sync`) is not generic upstream marketing �
 
 Upstream Hermes still provides the core agent loop, TUI, toolsets, skills hub, memory providers, delegation, and cron. This fork adds the **operations layer** that makes those features survive on native Windows without WSL.
 
-Current baseline: merged `upstream/main` through `1b1e30510` on 2026-05-29, then kept the fork-side Windows reliability and operations layer. This sync includes upstream Docker dashboard hardening, dashboard OAuth/Nous Portal auth surfaces, Krea image generation, security-guidance plugin work, MCP npm/npx path fixes, web/dashboard reload fixes, provider fallback and billing guidance fixes, and the completed-turn memory `messages` API. The fork-side Ebbinghaus idle sleep cycle is preserved and now coexists with that official memory sync API. For future updates, compare against `upstream/main` via `git fetch upstream main` and the Python sync helpers under `scripts/`.
+Current baseline: merged `upstream/main` through `b9646276f` on 2026-06-02, then kept the fork-side Windows reliability and operations layer. This sync includes upstream dashboard system/admin/MCP/pairing/webhook pages, dashboard auth reauth hardening, desktop chat file-drop support, gateway undo rewind, curator skill lifecycle updates, Skills Hub guard/sync improvements, Docker stage2 browser discovery, model catalog refreshes, and Windows-safe `atomic_json_write` fixes. The fork-side Ebbinghaus idle sleep cycle, OpenCode free rotation, llama fallback, VRChat tooling, and native Windows hardening remain preserved. For future updates, compare against `upstream/main` via `git fetch upstream main` and the Python sync helpers under `scripts/`.
+
+Recent upstream contribution slice: [NousResearch/hermes-agent#36921](https://github.com/NousResearch/hermes-agent/pull/36921) extracts the Windows transient `os.replace` / `PermissionError` retry fix without `_docs` or fork-only operational features.
 
 ---
 
@@ -39,11 +41,11 @@ Current baseline: merged `upstream/main` through `1b1e30510` on 2026-05-29, then
 
 | Field | Current public evidence |
 | --- | --- |
-| Agent surface | OpenCode Zen `auto-free` routing, llama.cpp TurboQuant fallback, gateway automation, Skills Hub, cron, delegation, TUI, and WebUI companion paths |
+| Agent surface | OpenCode Zen `auto-free` routing, llama.cpp TurboQuant fallback, gateway automation, Skills Hub, curator, cron, delegation, TUI, dashboard admin pages, and WebUI companion paths |
 | Model/runtime surface | Free cloud model rotation, local GGUF fallback at `http://127.0.0.1:8080/v1`, RTX Windows launch scripts, and provider catalog refresh tooling |
 | Repro command | `pip install -e ".[all,dev]"`, `python -m hermes_cli.main setup`, `py -3 scripts/refresh_opencode_free_catalog.py --force`, and `hermes fallback list` |
-| Operational proof | Windows autostart scripts, gateway hardening, OpenClaw credential bridge, VRChat Quest 2 doctors, and profile-safe config/logging guidance |
-| Metrics to inspect | Test suite results, gateway uptime, fallback switch events, free-model catalog freshness, llama fallback health checks, and VRChat preflight output |
+| Operational proof | Windows autostart scripts, gateway hardening, dashboard auth/admin tests, OpenClaw credential bridge, VRChat Quest 2 doctors, and profile-safe config/logging guidance |
+| Metrics to inspect | Test suite results, gateway uptime, dashboard/admin health, fallback switch events, free-model catalog freshness, llama fallback health checks, and VRChat preflight output |
 | Limitations | This fork is an operations stack for a personal Windows deployment; secrets, local models, and gateway credentials are intentionally external |
 
 ---
@@ -63,10 +65,11 @@ Current baseline: merged `upstream/main` through `1b1e30510` on 2026-05-29, then
 | **Windows logon autostart** | `scripts/windows/register-hermes-autostart.ps1` registers Task Scheduler jobs for llama fallback + gateway (and optional legacy stack). Cleans stale HKCU Run entries. |
 | **Gateway hardening** | Discord stale slash-command cleanup before re-register (100-command limit). `DISCORD_ALLOWED_USERS=*` as explicit allow-all. Telegram 90s connect budget with optional fallback IP disable. |
 | **Windows terminal hardening** | Git Bash preferred over WSL `bash.exe` stubs; UTF-8 terminal output; `search_files` finds `rg` / Git Bash `grep` / `find`. |
-| **Native Windows test/runtime hygiene** | Shared Windows subprocess env backfill prevents `WinError 10106` when tests intentionally strip env vars. Config tests read UTF-8 explicitly; Skills Hub hashes normalize CRLF while preserving path sensitivity; Bitwarden disk cache keeps POSIX `0600` semantics without treating Windows `st_mode` as POSIX ACLs. |
+| **Dashboard operations pages** | Upstream admin/system/MCP/pairing/webhook pages are merged with the fork's auth expectations and Windows gateway workflow. |
+| **Native Windows test/runtime hygiene** | Shared Windows subprocess env backfill prevents `WinError 10106` when tests intentionally strip env vars. Config tests read UTF-8 explicitly; `atomic_json_write` tolerates transient Windows replace locks; Skills Hub hashes normalize CRLF while preserving path sensitivity; Bitwarden disk cache keeps POSIX `0600` semantics without treating Windows `st_mode` as POSIX ACLs. |
 | **Hypura Harness CLI** | `hermes harness status|start|stop|restart` with clear diagnostics when daemon scripts are missing. |
 | **OpenClaw migration** | `hermes claw migrate` plus `scripts/openclaw_ports/` and `tools/openclaw/` for VRChat, VoiceVox, channel readiness. |
-| **Skills Hub path safety** | Uninstall lock validates `install_path` — rejects traversal, absolute paths, and skills-root deletion. |
+| **Skills Hub path safety** | Uninstall lock validates `install_path` — rejects traversal, absolute paths, and skills-root deletion. Guard and sync flows preserve curator metadata across official updates. |
 
 ---
 
