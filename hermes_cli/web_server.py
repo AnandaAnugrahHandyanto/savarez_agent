@@ -2818,6 +2818,127 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 # ---------------------------------------------------------------------------
+# Learning endpoints — topics, lessons, quiz cards, weak spots, progress
+# ---------------------------------------------------------------------------
+
+
+class LearningTopicCreate(BaseModel):
+    title: str
+    goal: Optional[str] = None
+    level: Optional[str] = None
+    cadence: Optional[str] = None
+    schedule: Optional[str] = None
+    mode: Optional[str] = "lesson"
+
+
+class LearningTopicUpdate(BaseModel):
+    status: Optional[str] = None
+    goal: Optional[str] = None
+    level: Optional[str] = None
+    cadence: Optional[str] = None
+
+
+@app.get("/api/learning/topics")
+async def list_learning_topics(include_archived: bool = False):
+    from hermes_cli import learning_db as L
+
+    with L.connect_closing() as conn:
+        topics = L.list_topics(conn, include_archived=include_archived)
+        out = []
+        for t in topics:
+            d = t.to_dict()
+            d["progress"] = L.topic_progress(conn, t.id)
+            out.append(d)
+    return out
+
+
+@app.get("/api/learning/topics/{topic_id}")
+async def get_learning_topic(topic_id: str):
+    from hermes_cli import learning_db as L
+
+    with L.connect_closing() as conn:
+        topic = L.get_topic(conn, topic_id)
+        if topic is None:
+            raise HTTPException(status_code=404, detail="Topic not found")
+        return {
+            "topic": topic.to_dict(),
+            "progress": L.topic_progress(conn, topic_id),
+            "lessons": [ls.to_dict() for ls in L.list_lessons(conn, topic_id)],
+            "weak_spots": [c.to_dict() for c in L.weak_spots(conn, topic_id)],
+        }
+
+
+@app.post("/api/learning/topics")
+async def create_learning_topic(body: LearningTopicCreate):
+    from hermes_cli import learning_db as L
+
+    try:
+        with L.connect_closing() as conn:
+            existing = L.find_topic_by_title(conn, body.title)
+            if existing:
+                topic = existing
+            else:
+                tid = L.create_topic(
+                    conn,
+                    title=body.title,
+                    goal=body.goal,
+                    level=body.level,
+                    cadence=body.cadence,
+                )
+                topic = L.get_topic(conn, tid)
+            if body.schedule:
+                from tools.learning_tools import _schedule_topic_job
+
+                job = _schedule_topic_job(
+                    topic, schedule=body.schedule, mode=(body.mode or "lesson"),
+                    repeat=None,
+                )
+                L.update_topic(
+                    conn, topic.id,
+                    {"cron_job_id": job["id"], "cadence": body.cadence or body.schedule},
+                )
+                topic = L.get_topic(conn, topic.id)
+            return topic.to_dict()
+    except Exception as e:
+        _log.exception("POST /api/learning/topics failed")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/api/learning/topics/{topic_id}")
+async def update_learning_topic(topic_id: str, body: LearningTopicUpdate):
+    from hermes_cli import learning_db as L
+
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    with L.connect_closing() as conn:
+        if L.get_topic(conn, topic_id) is None:
+            raise HTTPException(status_code=404, detail="Topic not found")
+        try:
+            topic = L.update_topic(conn, topic_id, updates)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return topic.to_dict()
+
+
+@app.delete("/api/learning/topics/{topic_id}")
+async def archive_learning_topic(topic_id: str):
+    from hermes_cli import learning_db as L
+
+    with L.connect_closing() as conn:
+        topic = L.get_topic(conn, topic_id)
+        if topic is None:
+            raise HTTPException(status_code=404, detail="Topic not found")
+        if topic.cron_job_id:
+            try:
+                from cron.jobs import remove_job
+
+                remove_job(topic.cron_job_id)
+            except Exception:
+                pass
+        L.update_topic(conn, topic_id, {"status": "archived"})
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 

@@ -6198,6 +6198,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_learning(args):
+    """Personal learning topics, lessons, and spaced-repetition quizzes."""
+    from hermes_cli.learning import learning_command
+
+    return learning_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -12234,6 +12241,14 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # learning command — personal tutoring topics, lessons, quizzes
+    # =========================================================================
+    from hermes_cli.learning import build_parser as _build_learning_parser
+
+    learning_parser = _build_learning_parser(subparsers)
+    learning_parser.set_defaults(func=cmd_learning)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

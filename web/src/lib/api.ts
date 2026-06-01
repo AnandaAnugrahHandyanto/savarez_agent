@@ -318,6 +318,33 @@ export const api = {
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
+  // Learning topics
+  getLearningTopics: (includeArchived = false) =>
+    fetchJSON<LearningTopic[]>(`/api/learning/topics?include_archived=${includeArchived ? "true" : "false"}`),
+  getLearningTopic: (id: string) =>
+    fetchJSON<LearningTopicDetail>(`/api/learning/topics/${encodeURIComponent(id)}`),
+  createLearningTopic: (body: {
+    title: string;
+    goal?: string;
+    level?: string;
+    cadence?: string;
+    schedule?: string;
+    mode?: string;
+  }) =>
+    fetchJSON<LearningTopic>("/api/learning/topics", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  updateLearningTopic: (id: string, updates: { status?: string; goal?: string; level?: string; cadence?: string }) =>
+    fetchJSON<LearningTopic>(`/api/learning/topics/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    }),
+  archiveLearningTopic: (id: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/learning/topics/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
   // Profiles (minimal)
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
@@ -766,6 +793,58 @@ export interface CronJob {
   last_run_at?: string | null;
   next_run_at?: string | null;
   last_error?: string | null;
+}
+
+export interface LearningProgress {
+  topic_id: string;
+  lessons_total: number;
+  lessons_taught: number;
+  cards_total: number;
+  cards_mastered: number;
+  weak_spots: number;
+  attempts_total: number;
+  accuracy: number | null;
+}
+
+export interface LearningTopic {
+  id: string;
+  title: string;
+  goal?: string | null;
+  status: string;
+  level?: string | null;
+  cadence?: string | null;
+  cron_job_id?: string | null;
+  created_at: number;
+  last_taught_at?: number | null;
+  next_due_at?: number | null;
+  progress?: LearningProgress;
+}
+
+export interface LearningLesson {
+  id: string;
+  topic_id: string;
+  seq: number;
+  title?: string | null;
+  summary?: string | null;
+  status: string;
+  taught_at?: number | null;
+}
+
+export interface LearningCard {
+  id: string;
+  topic_id: string;
+  question: string;
+  answer: string;
+  lapses: number;
+  reps: number;
+  due_at: number;
+}
+
+export interface LearningTopicDetail {
+  topic: LearningTopic;
+  progress: LearningProgress;
+  lessons: LearningLesson[];
+  weak_spots: LearningCard[];
 }
 
 export interface SkillInfo {

@@ -7743,6 +7743,9 @@ class GatewayRunner:
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
 
+        if canonical == "learning":
+            return await self._handle_learning_command(event)
+
         if canonical == "retry":
             return await self._handle_retry_command(event)
         
@@ -9800,6 +9803,26 @@ class GatewayRunner:
             f"Slash commands you can run: {runnable_str}"
         )
 
+
+    async def _handle_learning_command(self, event: MessageEvent) -> str:
+        """Handle /learning — delegate to the shared learning CLI.
+
+        Runs the SQLite-backed work in a thread pool so the gateway event
+        loop stays responsive. The learning store is profile-agnostic and
+        does not touch the running agent's state, so it is safe mid-run.
+        """
+        import asyncio
+        from hermes_cli.learning import run_slash
+
+        text = (event.text or "").strip()
+        if text.startswith("/"):
+            text = text.lstrip("/")
+        if text.startswith("learning"):
+            text = text[len("learning"):].lstrip()
+        try:
+            return await asyncio.to_thread(run_slash, text)
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"learning error: {exc}"
 
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.

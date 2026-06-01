@@ -23,6 +23,7 @@ import {
   Clock,
   Code,
   Cpu,
+  GraduationCap,
   Database,
   Download,
   Eye,
@@ -69,6 +70,7 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import ModelsPage from "@/pages/ModelsPage";
 import CronPage from "@/pages/CronPage";
+import LearningPage from "@/pages/LearningPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
@@ -119,6 +121,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/models": ModelsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
+  "/learning": LearningPage,
   "/skills": SkillsPage,
   "/plugins": PluginsPage,
   "/profiles": ProfilesPage,
@@ -156,6 +159,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
+  { path: "/learning", labelKey: "learning", label: "Learning", icon: GraduationCap },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
@@ -175,6 +179,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Clock,
   Cpu,
   FileText,
+  GraduationCap,
   KeyRound,
   MessageSquare,
   Package,
