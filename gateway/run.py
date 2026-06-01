@@ -1685,7 +1685,12 @@ class GatewayRunner:
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
         self.config = config or load_gateway_config()
+        # Primary adapter lookup: Platform -> adapter (backwards compatible).
+        # When multiple adapters serve the same Platform (e.g. multiple Feishu
+        # apps), _multi_adapters holds the full list and adapters still exposes
+        # the last-registered one for code that expects a single adapter.
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        self._multi_adapters: Dict[Platform, List[BasePlatformAdapter]] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -2504,6 +2509,12 @@ class GatewayRunner:
                 await adapter.disconnect()
             finally:
                 self.adapters.pop(adapter.platform, None)
+                # Also remove from _multi_adapters list
+                multi_list = self._multi_adapters.get(adapter.platform, [])
+                if adapter in multi_list:
+                    multi_list.remove(adapter)
+                    if multi_list:
+                        self.adapters[adapter.platform] = multi_list[-1]
                 self.delivery_router.adapters = self.adapters
 
         # Queue retryable failures for background reconnection
@@ -3086,8 +3097,25 @@ class GatewayRunner:
         except Exception:
             return False
 
+    def _resolve_adapter(self, event: MessageEvent) -> Optional[Any]:
+        """Resolve the correct adapter for an event.
+        
+        When multiple adapters serve the same Platform (e.g. multiple Feishu
+        apps), use the event's adapter_instance_id to find the right one.
+        Falls back to self.adapters for backwards compatibility.
+        """
+        if not event.source:
+            return None
+        platform = event.source.platform
+        instance_id = getattr(event, "adapter_instance_id", None) or getattr(event.source, "adapter_instance_id", None)
+        if instance_id and platform in self._multi_adapters:
+            for adapter in self._multi_adapters[platform]:
+                if getattr(adapter, "adapter_instance_id", None) == instance_id:
+                    return adapter
+        return self.adapters.get(platform)
+
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
-        adapter = self.adapters.get(event.source.platform)
+        adapter = self._resolve_adapter(event)
         if not adapter:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
@@ -3111,7 +3139,7 @@ class GatewayRunner:
 
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
-            adapter = self.adapters.get(event.source.platform)
+            adapter = self._resolve_adapter(event)
             if not adapter:
                 return True
 
@@ -3138,7 +3166,7 @@ class GatewayRunner:
             return True
 
         # Normal busy case (agent actively running a task)
-        adapter = self.adapters.get(event.source.platform)
+        adapter = self._resolve_adapter(event)
         if not adapter:
             return False  # let default path handle it
 
@@ -3440,7 +3468,15 @@ class GatewayRunner:
 
             try:
                 platform = Platform(platform_str)
-                adapter = self.adapters.get(platform)
+                # Multi-app support: try to resolve by adapter_instance_id from source
+                adapter = None
+                if source and getattr(source, "adapter_instance_id", None) and platform in self._multi_adapters:
+                    for a in self._multi_adapters[platform]:
+                        if getattr(a, "adapter_instance_id", None) == source.adapter_instance_id:
+                            adapter = a
+                            break
+                if not adapter:
+                    adapter = self.adapters.get(platform)
                 if not adapter:
                     continue
 
@@ -3845,7 +3881,7 @@ class GatewayRunner:
                 continue
 
             source = entry.origin
-            adapter = self.adapters.get(source.platform)
+            adapter = self._resolve_adapter(event)
             if adapter is None:
                 logger.debug(
                     "Skipping auto-resume for %s: adapter not ready for %s",
@@ -4133,121 +4169,124 @@ class GatewayRunner:
         
         # Initialize and connect each configured platform
         for platform, platform_config in self.config.platforms.items():
-            if not platform_config.enabled:
-                continue
-            enabled_platform_count += 1
-            
-            adapter = self._create_adapter(platform, platform_config)
-            if not adapter:
-                # Distinguish between missing builtin deps and missing plugin
-                _pval = platform.value
-                _builtin_names = {m.value for m in Platform.__members__.values()}
-                if _pval not in _builtin_names:
-                    logger.warning(
-                        "No adapter for '%s' — is the plugin installed? "
-                        "(platform is enabled in config.yaml but no plugin registered it)",
-                        _pval,
-                    )
-                else:
-                    logger.warning("No adapter available for %s", _pval)
-                continue
-            
-            # Set up message + fatal error handlers
-            adapter.set_message_handler(self._handle_message)
-            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
-            adapter.set_session_store(self.session_store)
-            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-            adapter._busy_text_mode = self._busy_text_mode
-            
-            # Try to connect
-            logger.info("Connecting to %s...", platform.value)
-            self._update_platform_runtime_status(
-                platform.value,
-                platform_state="connecting",
-                error_code=None,
-                error_message=None,
-            )
-            try:
-                success = await self._connect_adapter_with_timeout(adapter, platform)
-                if success:
-                    self.adapters[platform] = adapter
-                    self._sync_voice_mode_state_to_adapter(adapter)
-                    connected_count += 1
-                    self._update_platform_runtime_status(
-                        platform.value,
-                        platform_state="connected",
-                        error_code=None,
-                        error_message=None,
-                    )
-                    logger.info("✓ %s connected", platform.value)
-                else:
-                    logger.warning("✗ %s failed to connect", platform.value)
-                    # Defensive cleanup: a failed connect() may have
-                    # allocated resources (aiohttp.ClientSession, poll
-                    # tasks, bridge subprocesses) before giving up.
-                    # Without this call, those resources are orphaned
-                    # and Python logs "Unclosed client session" at
-                    # process exit. Adapter disconnect() implementations
-                    # are expected to be idempotent and tolerate
-                    # partial-init state.
-                    await self._safe_adapter_disconnect(adapter, platform)
-                    if adapter.has_fatal_error:
+            configs = platform_config if isinstance(platform_config, list) else [platform_config]
+            for cfg in configs:
+                if not cfg.enabled:
+                    continue
+                enabled_platform_count += 1
+                
+                adapter = self._create_adapter(platform, cfg)
+                if not adapter:
+                    # Distinguish between missing builtin deps and missing plugin
+                    _pval = platform.value
+                    _builtin_names = {m.value for m in Platform.__members__.values()}
+                    if _pval not in _builtin_names:
+                        logger.warning(
+                            "No adapter for '%s' — is the plugin installed? "
+                            "(platform is enabled in config.yaml but no plugin registered it)",
+                            _pval,
+                        )
+                    else:
+                        logger.warning("No adapter available for %s", _pval)
+                    continue
+                
+                # Set up message + fatal error handlers
+                adapter.set_message_handler(self._handle_message)
+                adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+                adapter.set_session_store(self.session_store)
+                adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                adapter._busy_text_mode = self._busy_text_mode
+                
+                # Try to connect
+                logger.info("Connecting to %s (instance=%s)...", platform.value, getattr(adapter, "adapter_instance_id", platform.value))
+                self._update_platform_runtime_status(
+                    getattr(adapter, "adapter_instance_id", platform.value),
+                    platform_state="connecting",
+                    error_code=None,
+                    error_message=None,
+                )
+                try:
+                    success = await self._connect_adapter_with_timeout(adapter, platform)
+                    if success:
+                        self.adapters[platform] = adapter
+                        self._multi_adapters.setdefault(platform, []).append(adapter)
+                        self._sync_voice_mode_state_to_adapter(adapter)
+                        connected_count += 1
                         self._update_platform_runtime_status(
-                            platform.value,
-                            platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
-                            error_code=adapter.fatal_error_code,
-                            error_message=adapter.fatal_error_message,
+                            getattr(adapter, "adapter_instance_id", platform.value),
+                            platform_state="connected",
+                            error_code=None,
+                            error_message=None,
                         )
-                        target = (
-                            startup_retryable_errors
-                            if adapter.fatal_error_retryable
-                            else startup_nonretryable_errors
-                        )
-                        target.append(
-                            f"{platform.value}: {adapter.fatal_error_message}"
-                        )
-                        # Queue for reconnection if the error is retryable
-                        if adapter.fatal_error_retryable:
+                        logger.info("✓ %s connected (instance=%s)", platform.value, getattr(adapter, "adapter_instance_id", platform.value))
+                    else:
+                        logger.warning("✗ %s failed to connect (instance=%s)", platform.value, getattr(adapter, "adapter_instance_id", platform.value))
+                        # Defensive cleanup: a failed connect() may have
+                        # allocated resources (aiohttp.ClientSession, poll
+                        # tasks, bridge subprocesses) before giving up.
+                        # Without this call, those resources are orphaned
+                        # and Python logs "Unclosed client session" at
+                        # process exit. Adapter disconnect() implementations
+                        # are expected to be idempotent and tolerate
+                        # partial-init state.
+                        await self._safe_adapter_disconnect(adapter, platform)
+                        if adapter.has_fatal_error:
+                            self._update_platform_runtime_status(
+                                getattr(adapter, "adapter_instance_id", platform.value),
+                                platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
+                                error_code=adapter.fatal_error_code,
+                                error_message=adapter.fatal_error_message,
+                            )
+                            target = (
+                                startup_retryable_errors
+                                if adapter.fatal_error_retryable
+                                else startup_nonretryable_errors
+                            )
+                            target.append(
+                                f"{platform.value}({getattr(adapter, 'adapter_instance_id', platform.value)}): {adapter.fatal_error_message}"
+                            )
+                            # Queue for reconnection if the error is retryable
+                            if adapter.fatal_error_retryable:
+                                self._failed_platforms[platform] = {
+                                    "config": cfg,
+                                    "attempts": 1,
+                                    "next_retry": time.monotonic() + 30,
+                                }
+                        else:
+                            self._update_platform_runtime_status(
+                                getattr(adapter, "adapter_instance_id", platform.value),
+                                platform_state="retrying",
+                                error_code=None,
+                                error_message="failed to connect",
+                            )
+                            startup_retryable_errors.append(
+                                f"{platform.value}({getattr(adapter, 'adapter_instance_id', platform.value)}): failed to connect"
+                            )
+                            # No fatal error info means likely a transient issue — queue for retry
                             self._failed_platforms[platform] = {
-                                "config": platform_config,
+                                "config": cfg,
                                 "attempts": 1,
                                 "next_retry": time.monotonic() + 30,
                             }
-                    else:
-                        self._update_platform_runtime_status(
-                            platform.value,
-                            platform_state="retrying",
-                            error_code=None,
-                            error_message="failed to connect",
-                        )
-                        startup_retryable_errors.append(
-                            f"{platform.value}: failed to connect"
-                        )
-                        # No fatal error info means likely a transient issue — queue for retry
-                        self._failed_platforms[platform] = {
-                            "config": platform_config,
-                            "attempts": 1,
-                            "next_retry": time.monotonic() + 30,
-                        }
-            except Exception as e:
-                logger.error("✗ %s error: %s", platform.value, e)
-                # Same defensive cleanup path for exceptions — an adapter
-                # that raised mid-connect may still have a live
-                # aiohttp.ClientSession or child subprocess.
-                await self._safe_adapter_disconnect(adapter, platform)
-                self._update_platform_runtime_status(
-                    platform.value,
-                    platform_state="retrying",
-                    error_code=None,
-                    error_message=str(e),
-                )
-                startup_retryable_errors.append(f"{platform.value}: {e}")
-                # Unexpected exceptions are typically transient — queue for retry
-                self._failed_platforms[platform] = {
-                    "config": platform_config,
-                    "attempts": 1,
-                    "next_retry": time.monotonic() + 30,
-                }
+                except Exception as e:
+                    logger.error("✗ %s error (instance=%s): %s", platform.value, getattr(adapter, "adapter_instance_id", platform.value), e)
+                    # Same defensive cleanup path for exceptions — an adapter
+                    # that raised mid-connect may still have a live
+                    # aiohttp.ClientSession or child subprocess.
+                    await self._safe_adapter_disconnect(adapter, platform)
+                    self._update_platform_runtime_status(
+                        getattr(adapter, "adapter_instance_id", platform.value),
+                        platform_state="retrying",
+                        error_code=None,
+                        error_message=str(e),
+                    )
+                    startup_retryable_errors.append(f"{platform.value}({getattr(adapter, 'adapter_instance_id', platform.value)}): {e}")
+                    # Unexpected exceptions are typically transient — queue for retry
+                    self._failed_platforms[platform] = {
+                        "config": cfg,
+                        "attempts": 1,
+                        "next_retry": time.monotonic() + 30,
+                    }
         
         if connected_count == 0:
             if startup_nonretryable_errors:
@@ -6843,7 +6882,7 @@ class GatewayRunner:
                     platform_name, source.user_id, source.user_name or ""
                 )
                 if code:
-                    adapter = self.adapters.get(source.platform)
+                    adapter = self._resolve_adapter(event)
                     if adapter:
                         await adapter.send(
                             source.chat_id,
@@ -6853,7 +6892,7 @@ class GatewayRunner:
                             f"`hermes pairing approve {platform_name} {code}`"
                         )
                 else:
-                    adapter = self.adapters.get(source.platform)
+                    adapter = self._resolve_adapter(event)
                     if adapter:
                         await adapter.send(
                             source.chat_id,
@@ -7150,7 +7189,7 @@ class GatewayRunner:
                 queued_text = event.get_command_args().strip()
                 if not queued_text:
                     return "Usage: /queue <prompt>"
-                adapter = self.adapters.get(source.platform)
+                adapter = self._resolve_adapter(event)
                 if adapter:
                     queued_event = MessageEvent(
                         text=queued_text,
@@ -7160,7 +7199,7 @@ class GatewayRunner:
                         channel_prompt=event.channel_prompt,
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
-                depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
+                depth = self._queue_depth(_quick_key, adapter=self._resolve_adapter(event))
                 if depth <= 1:
                     return "Queued for the next turn."
                 return f"Queued for the next turn. ({depth} queued)"
@@ -7177,7 +7216,7 @@ class GatewayRunner:
                 running_agent = self._running_agents.get(_quick_key)
                 if running_agent is _AGENT_PENDING_SENTINEL:
                     # Agent hasn't started yet — queue as turn-boundary fallback.
-                    adapter = self.adapters.get(source.platform)
+                    adapter = self._resolve_adapter(event)
                     if adapter:
                         queued_event = MessageEvent(
                             text=steer_text,
@@ -7199,7 +7238,7 @@ class GatewayRunner:
                         return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
                     return "Steer rejected (empty payload)."
                 # Running agent is missing or lacks steer() — fall back to queue.
-                adapter = self.adapters.get(source.platform)
+                adapter = self._resolve_adapter(event)
                 if adapter:
                     queued_event = MessageEvent(
                         text=steer_text,
@@ -7311,7 +7350,7 @@ class GatewayRunner:
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
-                adapter = self.adapters.get(source.platform)
+                adapter = self._resolve_adapter(event)
                 if adapter:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
@@ -7332,7 +7371,7 @@ class GatewayRunner:
                     time.time() - _started_at,
                     _quick_key,
                 )
-                adapter = self.adapters.get(source.platform)
+                adapter = self._resolve_adapter(event)
                 if adapter:
                     merge_pending_message_event(
                         adapter._pending_messages,
@@ -7352,7 +7391,7 @@ class GatewayRunner:
                     return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
                 # Queue the message so it will be picked up after the
                 # agent starts.
-                adapter = self.adapters.get(source.platform)
+                adapter = self._resolve_adapter(event)
                 if adapter:
                     merge_pending_message_event(
                         adapter._pending_messages,
@@ -8014,7 +8053,7 @@ class GatewayRunner:
                     "VOICE_TOOLS_OPENAI_KEY",
                 )
                 if any(marker in message_text for marker in _stt_fail_markers):
-                    _stt_adapter = self.adapters.get(source.platform)
+                    _stt_adapter = self._resolve_adapter(event)
                     _stt_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _stt_adapter:
                         try:
@@ -8134,7 +8173,7 @@ class GatewayRunner:
                     allowed_root=_msg_cwd,
                 )
                 if _ctx_result.blocked:
-                    _adapter = self.adapters.get(source.platform)
+                    _adapter = self._resolve_adapter(event)
                     if _adapter:
                         await _adapter.send(
                             source.chat_id,
@@ -8320,7 +8359,7 @@ class GatewayRunner:
                     and platform_name not in policy.notify_exclude_platforms
                 )
                 if should_notify:
-                    adapter = self.adapters.get(source.platform)
+                    adapter = self._resolve_adapter(event)
                     if adapter:
                         if reset_reason == "suspended":
                             reason_text = "previous session was stopped or interrupted"
@@ -8662,7 +8701,7 @@ class GatewayRunner:
                                             "configuration."
                                         )
                                         try:
-                                            _adapter = self.adapters.get(source.platform)
+                                            _adapter = self._resolve_adapter(event)
                                             if _adapter and source.chat_id:
                                                 await _adapter.send(source.chat_id, _warn_msg, metadata=_hyg_meta)
                                         except Exception as _werr:
@@ -8686,7 +8725,7 @@ class GatewayRunner:
                                             "check `auxiliary.compression.model` in config.yaml."
                                         )
                                         try:
-                                            _adapter = self.adapters.get(source.platform)
+                                            _adapter = self._resolve_adapter(event)
                                             if _adapter and source.chat_id:
                                                 await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
                                         except Exception as _werr:
@@ -8774,7 +8813,7 @@ class GatewayRunner:
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
         self._bind_adapter_run_generation(
-            self.adapters.get(source.platform),
+            self._resolve_adapter(event),
             session_key,
             run_generation,
         )
@@ -8805,7 +8844,7 @@ class GatewayRunner:
 
             # Stop persistent typing indicator now that the agent is done
             try:
-                _typing_adapter = self.adapters.get(source.platform)
+                _typing_adapter = self._resolve_adapter(event)
                 if _typing_adapter and hasattr(_typing_adapter, "stop_typing"):
                     await _typing_adapter.stop_typing(source.chat_id)
             except Exception:
@@ -8817,7 +8856,7 @@ class GatewayRunner:
                     _quick_key or "?",
                     run_generation,
                 )
-                _stale_adapter = self.adapters.get(source.platform)
+                _stale_adapter = self._resolve_adapter(event)
                 if getattr(type(_stale_adapter), "pop_post_delivery_callback", None) is not None:
                     _stale_adapter.pop_post_delivery_callback(
                         _quick_key,
@@ -9148,7 +9187,7 @@ class GatewayRunner:
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
                 if response:
-                    _media_adapter = self.adapters.get(source.platform)
+                    _media_adapter = self._resolve_adapter(event)
                     if _media_adapter:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
@@ -9159,7 +9198,7 @@ class GatewayRunner:
                 # still surface the runtime metadata on the final reply.
                 if _footer_line:
                     try:
-                        _foot_adapter = self.adapters.get(source.platform)
+                        _foot_adapter = self._resolve_adapter(event)
                         if _foot_adapter:
                             await _foot_adapter.send(
                                 source.chat_id,
@@ -9175,7 +9214,7 @@ class GatewayRunner:
         except Exception as e:
             # Stop typing indicator on error too
             try:
-                _err_adapter = self.adapters.get(source.platform)
+                _err_adapter = self._resolve_adapter(event)
                 if _err_adapter and hasattr(_err_adapter, "stop_typing"):
                     await _err_adapter.stop_typing(source.chat_id)
             except Exception:
@@ -9723,7 +9762,7 @@ class GatewayRunner:
         is_running = session_key in self._running_agents
 
         # Count pending /queue follow-ups (slot + overflow).
-        adapter = self.adapters.get(source.platform) if source else None
+        adapter = self._resolve_adapter(event) if source else None
         queue_depth = self._queue_depth(session_key, adapter=adapter)
 
         title = None
@@ -10295,7 +10334,7 @@ class GatewayRunner:
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it
-            adapter = self.adapters.get(source.platform)
+            adapter = self._resolve_adapter(event)
             has_picker = (
                 adapter is not None
                 and getattr(type(adapter), "send_model_picker", None) is not None
@@ -10830,7 +10869,7 @@ class GatewayRunner:
             if state is None:
                 return t("gateway.goal.no_goal_set")
             try:
-                adapter = self.adapters.get(event.source.platform) if event.source else None
+                adapter = self._resolve_adapter(event) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
                 if adapter and _quick_key:
                     self._clear_goal_pending_continuations(_quick_key, adapter)
@@ -10848,7 +10887,7 @@ class GatewayRunner:
             had = mgr.has_goal()
             mgr.clear()
             try:
-                adapter = self.adapters.get(event.source.platform) if event.source else None
+                adapter = self._resolve_adapter(event) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
                 if adapter and _quick_key:
                     self._clear_goal_pending_continuations(_quick_key, adapter)
@@ -10864,7 +10903,7 @@ class GatewayRunner:
 
         # Queue the goal text as an immediate first turn so the agent
         # starts making progress. The post-turn hook takes over after.
-        adapter = self.adapters.get(event.source.platform) if event.source else None
+        adapter = self._resolve_adapter(event) if event.source else None
         _quick_key = self._session_key_for_source(event.source) if event.source else None
         if adapter and _quick_key:
             try:
@@ -10934,7 +10973,7 @@ class GatewayRunner:
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
-        adapter = self.adapters.get(source.platform)
+        adapter = self._resolve_adapter(event)
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
             return
@@ -10961,7 +11000,7 @@ class GatewayRunner:
         exactly this boundary; when unavailable, fall back to direct awaited
         delivery rather than silently dropping the notice.
         """
-        adapter = self.adapters.get(source.platform)
+        adapter = self._resolve_adapter(event)
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
             return
@@ -11049,7 +11088,7 @@ class GatewayRunner:
         # Enqueue via the adapter's FIFO so a user message already in
         # flight preempts the continuation naturally.
         try:
-            adapter = self.adapters.get(source.platform)
+            adapter = self._resolve_adapter(event)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
                 cont_event = MessageEvent(
@@ -11146,7 +11185,7 @@ class GatewayRunner:
         platform = event.source.platform
         voice_key = self._voice_key(platform, chat_id)
 
-        adapter = self.adapters.get(platform)
+        adapter = self._resolve_adapter(event)
 
         if args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"
@@ -11178,7 +11217,7 @@ class GatewayRunner:
                 "all": t("gateway.voice.label_all"),
             }
             # Append voice channel info if connected
-            adapter = self.adapters.get(event.source.platform)
+            adapter = self._resolve_adapter(event)
             guild_id = self._get_guild_id(event)
             if guild_id and hasattr(adapter, "get_voice_channel_info"):
                 info = adapter.get_voice_channel_info(guild_id)
@@ -11211,7 +11250,7 @@ class GatewayRunner:
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
-        adapter = self.adapters.get(event.source.platform)
+        adapter = self._resolve_adapter(event)
         if not hasattr(adapter, "join_voice_channel"):
             return "Voice channels are not supported on this platform."
 
@@ -11262,7 +11301,7 @@ class GatewayRunner:
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""
-        adapter = self.adapters.get(event.source.platform)
+        adapter = self._resolve_adapter(event)
         guild_id = self._get_guild_id(event)
 
         if not guild_id or not hasattr(adapter, "leave_voice_channel"):
@@ -11491,7 +11530,7 @@ class GatewayRunner:
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
                 return
 
-            adapter = self.adapters.get(event.source.platform)
+            adapter = self._resolve_adapter(event)
 
             # If connected to a voice channel, play there instead of sending a file
             guild_id = self._get_guild_id(event)
@@ -13775,7 +13814,7 @@ class GatewayRunner:
         # cannot race the send_slash_confirm return.
         _slash_confirm_mod.register(session_key, confirm_id, command, handler)
 
-        adapter = self.adapters.get(source.platform)
+        adapter = self._resolve_adapter(event)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
 
         used_buttons = False
@@ -13904,7 +13943,7 @@ class GatewayRunner:
             return t("gateway.approve.no_pending")
 
         # Resume typing indicator — agent is about to continue processing.
-        _adapter = self.adapters.get(source.platform)
+        _adapter = self._resolve_adapter(event)
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
@@ -13941,7 +13980,7 @@ class GatewayRunner:
             return t("gateway.deny.no_pending")
 
         # Resume typing indicator — agent continues (with BLOCKED result).
-        _adapter = self.adapters.get(source.platform)
+        _adapter = self._resolve_adapter(event)
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
@@ -14205,7 +14244,16 @@ class GatewayRunner:
                     metadata = {"thread_id": thread_id} if thread_id else None
                     if platform_str and chat_id:
                         platform = Platform(platform_str)
-                        adapter = self.adapters.get(platform)
+                        # Multi-app support: try to resolve by adapter_instance_id
+                        adapter = None
+                        instance_id = pending.get("adapter_instance_id")
+                        if instance_id and platform in self._multi_adapters:
+                            for a in self._multi_adapters[platform]:
+                                if getattr(a, "adapter_instance_id", None) == instance_id:
+                                    adapter = a
+                                    break
+                        if not adapter:
+                            adapter = self.adapters.get(platform)
                         # Fallback session key if not stored (old pending files)
                         if not session_key:
                             session_key = f"{platform_str}:{chat_id}"
@@ -14428,7 +14476,16 @@ class GatewayRunner:
 
             # Resolve adapter
             platform = Platform(platform_str)
-            adapter = self.adapters.get(platform)
+            # Multi-app support: try to resolve by adapter_instance_id
+            adapter = None
+            instance_id = pending.get("adapter_instance_id")
+            if instance_id and platform in self._multi_adapters:
+                for a in self._multi_adapters[platform]:
+                    if getattr(a, "adapter_instance_id", None) == instance_id:
+                        adapter = a
+                        break
+            if not adapter:
+                adapter = self.adapters.get(platform)
 
             if adapter and chat_id:
                 metadata = {"thread_id": thread_id} if thread_id else None
@@ -14479,7 +14536,16 @@ class GatewayRunner:
                 return None
 
             platform = Platform(platform_str)
-            adapter = self.adapters.get(platform)
+            # Multi-app support: try to resolve by adapter_instance_id
+            adapter = None
+            instance_id = data.get("adapter_instance_id")
+            if instance_id and platform in self._multi_adapters:
+                for a in self._multi_adapters[platform]:
+                    if getattr(a, "adapter_instance_id", None) == instance_id:
+                        adapter = a
+                        break
+            if not adapter:
+                adapter = self.adapters.get(platform)
             if not adapter:
                 logger.debug(
                     "Restart notification skipped: %s adapter not connected",
@@ -15408,7 +15474,7 @@ class GatewayRunner:
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             running_agent.interrupt(interrupt_reason)
         self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
-        adapter = self.adapters.get(source.platform)
+        adapter = self._resolve_adapter(event)
         if adapter and hasattr(adapter, "interrupt_session_activity"):
             await adapter.interrupt_session_activity(session_key, source.chat_id)
         if adapter and hasattr(adapter, "get_pending_message"):
@@ -15719,7 +15785,7 @@ class GatewayRunner:
         if _streaming_enabled:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-                _adapter = self.adapters.get(source.platform)
+                _adapter = self._resolve_adapter(event)
                 if _adapter:
                     _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
                     _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
@@ -15761,7 +15827,7 @@ class GatewayRunner:
             stream_task = asyncio.create_task(_stream_consumer.run())
 
         # Send typing indicator
-        _adapter = self.adapters.get(source.platform)
+        _adapter = self._resolve_adapter(event)
         if _adapter:
             try:
                 await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
@@ -16023,7 +16089,7 @@ class GatewayRunner:
         _cleanup_progress = bool(
             resolve_display_setting(user_config, platform_key, "cleanup_progress")
         )
-        _cleanup_adapter = self.adapters.get(source.platform) if _cleanup_progress else None
+        _cleanup_adapter = self._resolve_adapter(event) if _cleanup_progress else None
         if _cleanup_adapter is not None and (
             type(_cleanup_adapter).delete_message is BasePlatformAdapter.delete_message
         ):
@@ -16175,7 +16241,7 @@ class GatewayRunner:
             if not progress_queue:
                 return
 
-            adapter = self.adapters.get(source.platform)
+            adapter = self._resolve_adapter(event)
             if not adapter:
                 return
 
@@ -16537,7 +16603,7 @@ class GatewayRunner:
             )
 
         # Bridge sync status_callback → async adapter.send for context pressure
-        _status_adapter = self.adapters.get(source.platform)
+        _status_adapter = self._resolve_adapter(event)
         _status_chat_id = source.chat_id
         if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
             # Feishu topics only keep messages inside the topic when they are
@@ -16671,7 +16737,7 @@ class GatewayRunner:
             if _want_stream_deltas or _want_interim_consumer:
                 try:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-                    _adapter = self.adapters.get(source.platform)
+                    _adapter = self._resolve_adapter(event)
                     if _adapter:
                         # Platforms that don't support editing sent messages
                         # (e.g. QQ, WeChat) should skip streaming entirely —
@@ -17506,7 +17572,7 @@ class GatewayRunner:
                 try:
                     # Re-resolve adapter each iteration so reconnects don't
                     # leave us holding a stale reference.
-                    _adapter = self.adapters.get(source.platform)
+                    _adapter = self._resolve_adapter(event)
                     if not _adapter:
                         continue
                     # Check if adapter has a pending interrupt for this session.
@@ -17558,7 +17624,7 @@ class GatewayRunner:
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
                 return  # Notifications disabled (gateway_notify_interval: 0)
-            _notify_adapter = self.adapters.get(source.platform)
+            _notify_adapter = self._resolve_adapter(event)
             if not _notify_adapter:
                 return
             # Track the heartbeat message id so we can edit-in-place on
@@ -17665,7 +17731,7 @@ class GatewayRunner:
                     # Backup interrupt check: if the monitor task died or
                     # missed the interrupt, catch it here.
                     if not _interrupt_detected.is_set() and session_key:
-                        _backup_adapter = self.adapters.get(source.platform)
+                        _backup_adapter = self._resolve_adapter(event)
                         _backup_agent = agent_holder[0]
                         if (_backup_adapter and _backup_agent
                                 and hasattr(_backup_adapter, 'has_pending_interrupt')
@@ -17705,7 +17771,7 @@ class GatewayRunner:
                     if (not _warning_fired and _agent_warning is not None
                             and _idle_secs >= _agent_warning):
                         _warning_fired = True
-                        _warn_adapter = self.adapters.get(source.platform)
+                        _warn_adapter = self._resolve_adapter(event)
                         if _warn_adapter:
                             _elapsed_warn = int(_agent_warning // 60) or 1
                             _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
@@ -17725,7 +17791,7 @@ class GatewayRunner:
                         break
                     # Backup interrupt check (same as unlimited path).
                     if not _interrupt_detected.is_set() and session_key:
-                        _backup_adapter = self.adapters.get(source.platform)
+                        _backup_adapter = self._resolve_adapter(event)
                         _backup_agent = agent_holder[0]
                         if (_backup_adapter and _backup_agent
                                 and hasattr(_backup_adapter, 'has_pending_interrupt')
@@ -17824,7 +17890,7 @@ class GatewayRunner:
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
-            adapter = self.adapters.get(source.platform)
+            adapter = self._resolve_adapter(event)
             
             # Get pending message from adapter.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
@@ -17911,7 +17977,7 @@ class GatewayRunner:
                         "queueing message instead of recursing.",
                         _interrupt_depth, session_key,
                     )
-                    adapter = self.adapters.get(source.platform)
+                    adapter = self._resolve_adapter(event)
                     if adapter and pending_event:
                         merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
                     elif adapter and hasattr(adapter, 'queue_message'):
@@ -18015,7 +18081,7 @@ class GatewayRunner:
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
                 # typing task is still alive but may be stale.
-                _followup_adapter = self.adapters.get(source.platform)
+                _followup_adapter = self._resolve_adapter(event)
                 if _followup_adapter:
                     try:
                         await _followup_adapter.send_typing(

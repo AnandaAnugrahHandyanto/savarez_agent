@@ -1192,16 +1192,20 @@ class ProcessingOutcome(Enum):
 class MessageEvent:
     """
     Incoming message from a platform.
-    
+
     Normalized representation that all adapters produce.
     """
     # Message content
     text: str
     message_type: MessageType = MessageType.TEXT
-    
+
     # Source information
     source: SessionSource = None
-    
+
+    # Adapter instance that produced this event. Used when multiple adapters
+    # serve the same Platform (e.g. multiple Feishu/Lark apps).
+    adapter_instance_id: Optional[str] = None
+
     # Original platform data
     raw_message: Any = None
     message_id: Optional[str] = None
@@ -1560,6 +1564,11 @@ class BasePlatformAdapter(ABC):
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
+        # Unique identifier for this adapter instance within its platform.
+        # Used when multiple adapters serve the same Platform (e.g. multiple
+        # Feishu/Lark apps). Defaults to the platform value for backwards
+        # compatibility.
+        self.adapter_instance_id: str = platform.value
         self._message_handler: Optional[MessageHandler] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
@@ -1739,7 +1748,10 @@ class BasePlatformAdapter(ABC):
         """
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(platform=self.platform.value, **kwargs)
+            # Use adapter_instance_id when available so distinct Feishu apps
+            # each get their own runtime-status slot.
+            platform_label = getattr(self, "adapter_instance_id", None) or self.platform.value
+            write_runtime_status(platform=platform_label, **kwargs)
         except Exception as exc:
             # Use getattr so object.__new__(...) test harnesses that skip __init__
             # don't blow up on attribute access.
@@ -1750,15 +1762,15 @@ class BasePlatformAdapter(ABC):
                     self._status_write_logged = logged
                 except Exception:
                     pass
-            key = (self.platform.value, context)
+            key = (getattr(self, "adapter_instance_id", None) or self.platform.value, context)
             if key not in logged:
                 logger.warning(
                     "Failed to write runtime status (%s) for %s: %s (further failures at debug level)",
-                    context, self.platform.value, exc,
+                    context, getattr(self, "adapter_instance_id", None) or self.platform.value, exc,
                 )
                 logged.add(key)
             else:
-                logger.debug("Failed to write runtime status (%s) for %s: %s", context, self.platform.value, exc)
+                logger.debug("Failed to write runtime status (%s) for %s: %s", context, getattr(self, "adapter_instance_id", None) or self.platform.value, exc)
 
     async def _notify_fatal_error(self) -> None:
         handler = self._fatal_error_handler

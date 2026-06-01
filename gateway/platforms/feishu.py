@@ -1426,9 +1426,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.FEISHU)
-
-        self._settings = self._load_settings(config.extra or {})
+        # Set instance ID to app_id so multiple Feishu apps are distinguishable.
+        # Must call _load_settings AFTER super().__init__ sets the default.
+        settings = self._load_settings(config.extra or {})
+        self._settings = settings
         self._apply_settings(self._settings)
+        if settings.app_id:
+            self.adapter_instance_id = settings.app_id
         self._client: Optional[Any] = None
         self._ws_client: Optional[Any] = None
         self._ws_future: Optional[asyncio.Future] = None
@@ -2776,6 +2780,7 @@ class FeishuAdapter(BasePlatformAdapter):
             text=synthetic_text,
             message_type=MessageType.TEXT,
             source=source,
+            adapter_instance_id=self.adapter_instance_id,
             raw_message=data,
             message_id=message_id,
             timestamp=datetime.now(),
@@ -2838,6 +2843,7 @@ class FeishuAdapter(BasePlatformAdapter):
             text=synthetic_text,
             message_type=MessageType.COMMAND,
             source=source,
+            adapter_instance_id=self.adapter_instance_id,
             raw_message=data,
             message_id=token or str(uuid.uuid4()),
             timestamp=datetime.now(),
@@ -3096,6 +3102,7 @@ class FeishuAdapter(BasePlatformAdapter):
             text=text,
             message_type=inbound_type,
             source=source,
+            adapter_instance_id=self.adapter_instance_id,
             raw_message=data,
             message_id=message_id,
             media_urls=media_urls,

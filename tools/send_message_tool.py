@@ -135,7 +135,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. For multi-app platforms like Feishu/Lark, use 'platform:app_id:chat_id' to target a specific app instance. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat), 'feishu:cli_aa9693b74f789e15:oc_chat123'"
             },
             "message": {
                 "type": "string",
@@ -173,9 +173,17 @@ def _handle_send(args):
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
-    parts = target.split(":", 1)
+    parts = target.split(":", 2)
     platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
+    # Multi-app support: detect platform:app_id:chat_id format
+    app_id = None
+    if len(parts) == 3:
+        app_id = parts[1].strip()
+        target_ref = parts[2].strip()
+    elif len(parts) == 2:
+        target_ref = parts[1].strip()
+    else:
+        target_ref = None
     chat_id = None
     thread_id = None
 
@@ -220,6 +228,9 @@ def _handle_send(args):
         return tool_error(f"Unknown platform: {platform_name}")
 
     pconfig = config.platforms.get(platform)
+    # Multi-app support: if app_id specified, find matching config from list
+    if app_id and pconfig and isinstance(pconfig, list):
+        pconfig = next((pc for pc in pconfig if getattr(pc, "extra", {}).get("app_id") == app_id), None)
     if not pconfig or not pconfig.enabled:
         # Weixin can be configured purely via .env; synthesize a pconfig so
         # send_message and cron delivery work without a gateway.yaml entry.
@@ -309,6 +320,7 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                app_id=app_id,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -475,6 +487,7 @@ async def _send_via_adapter(
     thread_id=None,
     media_files=None,
     force_document=False,
+    app_id=None,
 ):
     """Send a message via a live gateway adapter, with a standalone fallback
     for out-of-process callers (e.g. cron running separately from the gateway).
@@ -497,6 +510,15 @@ async def _send_via_adapter(
     if runner is not None:
         try:
             adapter = runner.adapters.get(platform)
+            # Multi-app support: if target specifies app_id, resolve to correct instance
+            instance_id = app_id or (getattr(pconfig, "extra", {}).get("app_id") if pconfig else None)
+            if not adapter and instance_id and platform in getattr(runner, "_multi_adapters", {}):
+                for a in runner._multi_adapters[platform]:
+                    if getattr(a, "adapter_instance_id", None) == instance_id:
+                        adapter = a
+                        break
+            if not adapter and getattr(runner, "_multi_adapters", {}).get(platform):
+                adapter = runner._multi_adapters[platform][0]
         except Exception:
             adapter = None
         if adapter is not None:
@@ -555,7 +577,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, app_id=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -788,6 +810,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
+                app_id=app_id,
             )
 
         if isinstance(result, dict) and result.get("error"):

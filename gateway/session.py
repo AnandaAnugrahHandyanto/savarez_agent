@@ -91,6 +91,7 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    adapter_instance_id: Optional[str] = None  # Distinguishes multiple adapters for the same Platform (e.g. Feishu app_id)
     
     @property
     def description(self) -> str:
@@ -134,6 +135,8 @@ class SessionSource:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
             d["message_id"] = self.message_id
+        if self.adapter_instance_id:
+            d["adapter_instance_id"] = self.adapter_instance_id
         return d
 
     @classmethod
@@ -149,11 +152,12 @@ class SessionSource:
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
+            is_bot=data.get("is_bot", False),
             guild_id=data.get("guild_id"),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
+            adapter_instance_id=data.get("adapter_instance_id"),
         )
-    
 
 
 @dataclass
