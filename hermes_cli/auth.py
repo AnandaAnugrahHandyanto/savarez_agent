@@ -717,6 +717,22 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
 # they must be kept distinct from missing/expired-credential errors.
 CODEX_RATE_LIMITED_CODE = "codex_rate_limited"
 
+BILLING_ACCESS_REQUIRED_CODES = frozenset(
+    {
+        "billing_access_required",
+        # Legacy server code retained during NAS/API rollout.
+        "subscription_required",
+    }
+)
+
+BILLING_ACCESS_EXPIRED_CODES = frozenset(
+    {
+        "billing_access_expired",
+        # Legacy server code retained during NAS/API rollout.
+        "subscription_expired",
+    }
+)
+
 
 class AuthError(RuntimeError):
     """Structured auth error with UX mapping hints."""
@@ -784,17 +800,21 @@ def format_auth_error(error: Exception) -> str:
     if error.relogin_required:
         return f"{error} Run `hermes model` to re-authenticate."
 
-    if error.code == "subscription_required":
+    if error.code in BILLING_ACCESS_REQUIRED_CODES:
         if error.provider == "nous":
             return _format_nous_entitlement_auth_error(error)
-        return "No active paid subscription found. Please purchase/activate a subscription, then retry."
+        return "Billing access is required. Select an eligible org, add credits, or activate billing, then retry."
 
     if error.code == "insufficient_credits":
         if error.provider == "nous":
             return _format_nous_entitlement_auth_error(error)
-        return "Subscription credits are exhausted. Top up/renew credits, then retry."
+        return "Available credits are exhausted. Add credits or update billing, then retry."
 
-    if error.code in {"subscription_expired", "no_usable_credits", "account_missing"}:
+    if error.code in {
+        *BILLING_ACCESS_EXPIRED_CODES,
+        "no_usable_credits",
+        "account_missing",
+    }:
         if error.provider == "nous":
             return _format_nous_entitlement_auth_error(error)
 
@@ -7419,7 +7439,7 @@ def _nous_device_code_login(
             force_refresh=False,
         )
     except AuthError as exc:
-        if exc.code == "subscription_required":
+        if exc.code in BILLING_ACCESS_REQUIRED_CODES:
             portal_url = auth_state.get(
                 "portal_base_url", DEFAULT_NOUS_PORTAL_URL
             ).rstrip("/")
