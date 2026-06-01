@@ -24,6 +24,11 @@ import re
 import shutil
 import signal
 import subprocess
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
@@ -265,6 +270,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
         self._mention_patterns = self._compile_mention_patterns()
+        self._last_bot_reply_at_by_chat: Dict[str, float] = {}
+        self._last_bot_reply_text_by_chat: Dict[str, str] = {}
+        self._active_threads_path: Path = self._session_path / "active-threads.json"
+        self._recent_group_messages_by_chat: Dict[str, list[Dict[str, Any]]] = {}
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
         self._bridge_log: Optional[Path] = None
@@ -312,6 +321,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _whatsapp_respond_when_likely_directed(self) -> bool:
+        """Whether group messages may wake the bot via high-confidence intent heuristics."""
+        configured = self.config.extra.get("respond_when_likely_directed")
+        if configured is None:
+            configured = self.config.extra.get("likely_directed_response")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("WHATSAPP_RESPOND_WHEN_LIKELY_DIRECTED", "false").lower() in {"true", "1", "yes", "on"}
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
@@ -440,6 +460,583 @@ class WhatsAppAdapter(BasePlatformAdapter):
         body = str(data.get("body") or "")
         return any(pattern.search(body) for pattern in self._mention_patterns)
 
+    def _message_is_ambiguous_third_party_check(self, body: str) -> bool:
+        """Return True for group-chat "can you check if it/he/she/they..." ambiguity."""
+        normalized = re.sub(r"\s+", " ", str(body or "")).strip().lower()
+        return bool(re.match(
+            r"^(?:can|could|would)\s+you\s+(?:please\s+)?check\s+(?:if|whether)\s+(?:it|it['’]s|he|she|they|that|this|the\b)",
+            normalized,
+        ))
+
+    def _message_likely_directed_at_bot(self, data: Dict[str, Any]) -> bool:
+        """High-confidence wake heuristic for WhatsApp groups.
+
+        This is deliberately conservative. It is not free-response mode: normal
+        group chatter such as "any ideas?" or "can you come over later?" should
+        not wake the bot. It only accepts messages that look like assistant-style
+        requests, or messages addressed to obvious bot/AI names.
+        """
+        if not self._whatsapp_respond_when_likely_directed():
+            return False
+        body = re.sub(r"\s+", " ", str(data.get("body") or "")).strip()
+        if not body or body.startswith("/"):
+            return False
+        if self._message_is_ambiguous_third_party_check(body):
+            return False
+        lower = body.lower()
+
+        # Natural name/wake-word, separate from platform @mention metadata.
+        if re.search(r"\bhermes\b", lower):
+            return True
+
+        # Direct address to the bot as a role: "bot, ...", "AI can you ...".
+        if re.match(r"^(?:hey|hi|yo|ok(?:ay)?|please\s+)?(?:bot|ai|assistant)\b", lower):
+            return True
+
+        assistant_verbs = (
+            "look up", "lookup", "search", "google", "find", "summarize", "summarise", "summary", "recap",
+            "explain", "translate", "draft", "write", "make", "create", "generate",
+            "plan", "calculate", "compare", "recommend", "suggest", "remind", "remember",
+            "forget", "save", "note", "list", "turn this into", "help me", "help us",
+        )
+        verb_pattern = "|".join(re.escape(v) for v in assistant_verbs)
+
+        # "Can you check ..." is common human-to-human group phrasing. Only
+        # wake on it when the object is clearly a bot-owned feature or public
+        # object ID; ambiguous "check if/whether it/he/she/they..." should stay
+        # silent unless WhatBot was named/mentioned or recently replied.
+        check_feature_pattern = (
+            r"(?:reminders?|todo(?:\s+list)?s?|poll(?:\s+results?)?|memory|notes?|images?|media|"
+            r"TL-[A-Z0-9]{4,}|TI-[A-Z0-9]{4,}|N-[A-Z0-9]{4,}|M-[A-Z0-9]{4,}|I-[A-Z0-9]{4,}|gr-[A-Za-z0-9-]+)"
+        )
+        if re.match(rf"^(?:can|could|would)\s+you\s+(?:please\s+)?check\b.*\b{check_feature_pattern}\b", body, re.IGNORECASE):
+            return True
+
+        # High-confidence assistant request forms. Avoid broad "can you ..."
+        # unless the requested action is a typical bot/assistant task.
+        if re.match(rf"^(?:can|could|would)\s+you\s+(?:please\s+)?(?:{verb_pattern})\b", lower):
+            return True
+        if re.match(rf"^please\s+(?:{verb_pattern})\b", lower):
+            return True
+
+        return False
+
+    def _read_active_thread_store(self) -> Dict[str, Any]:
+        try:
+            path = getattr(self, "_active_threads_path", self._session_path / "active-threads.json")
+            if not path.exists():
+                return {"chats": {}}
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return {"chats": {}}
+            data.setdefault("chats", {})
+            return data
+        except (OSError, json.JSONDecodeError, TypeError):
+            return {"chats": {}}
+
+    def _write_active_thread_store(self, store: Dict[str, Any]) -> None:
+        try:
+            path = getattr(self, "_active_threads_path", self._session_path / "active-threads.json")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(store, indent=2, sort_keys=True), encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            logger.debug("whatsapp active-thread store write failed: %s", exc)
+
+    def _record_recent_group_message(self, data: Dict[str, Any]) -> None:
+        chat_id = str(data.get("chatId") or "")
+        body = re.sub(r"\s+", " ", str(data.get("body") or "")).strip()
+        if not chat_id or not chat_id.endswith("@g.us") or not body:
+            return
+        sender = self._safe_whatsapp_display_name(data.get("senderName")) or "someone"
+        entry = {
+            "at": time.time(),
+            "sender": sender,
+            "body": self._sanitize_whatsapp_visible_ids(body)[:1000],
+        }
+        recent = list(getattr(self, "_recent_group_messages_by_chat", {}).get(chat_id, []))
+        recent.append(entry)
+        recent = recent[-20:]
+        self._recent_group_messages_by_chat[chat_id] = recent
+        store = self._read_active_thread_store()
+        chat_state = store.setdefault("chats", {}).setdefault(chat_id, {})
+        chat_state["recent_messages"] = recent
+        self._write_active_thread_store(store)
+
+    def _recent_messages_for_chat(self, chat_id: str) -> list[Dict[str, Any]]:
+        recent = list(getattr(self, "_recent_group_messages_by_chat", {}).get(chat_id, []))
+        if recent:
+            return recent[-20:]
+        store = self._read_active_thread_store()
+        stored = store.get("chats", {}).get(chat_id, {}).get("recent_messages", [])
+        if isinstance(stored, list):
+            self._recent_group_messages_by_chat[chat_id] = stored[-20:]
+            return stored[-20:]
+        return []
+
+    @staticmethod
+    def _message_is_retroactive_bot_addressing_text(text: str) -> bool:
+        """Return True when a user is pointing WhatBot at a recent prior message."""
+        normalized = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+        if not normalized:
+            return False
+        normalized = re.sub(r"^(?:what\s*bot|whatbot|hermes)[\s,.:;!-]*", "", normalized).strip()
+        return bool(re.search(
+            r"\b(?:"
+            r"(?:the\s+)?last\s+message\s+(?:was|is)\s+for\s+you|"
+            r"that\s+(?:was|is)\s+for\s+you|"
+            r"i\s+meant\s+you|"
+            r"forgot\s+to\s+(?:tag|mention)\s+you|"
+            r"forgot\s+to\s+(?:say\s+)?(?:what\s*bot|whatbot|hermes)|"
+            r"answer\s+(?:the\s+)?(?:above|previous\s+message)"
+            r")\b",
+            normalized,
+        ))
+
+    def _retroactive_target_recent_message(self, chat_id: str, current_body: str) -> Optional[Dict[str, Any]]:
+        """Find the nearest prior human-visible group message for retroactive addressing."""
+        current_clean = re.sub(r"\s+", " ", str(current_body or "")).strip()
+        recent = self._recent_messages_for_chat(chat_id)
+        candidates = recent[:-1] if recent and str(recent[-1].get("body") or "").strip() == current_clean else recent
+        for item in reversed(candidates):
+            body = re.sub(r"\s+", " ", str(item.get("body") or "")).strip()
+            if not body:
+                continue
+            if self._message_is_retroactive_bot_addressing_text(body):
+                continue
+            return item
+        return None
+
+    def _rewrite_retroactive_bot_addressing_body(self, chat_id: str, body: str) -> str:
+        """Inject the prior message when user says the previous message was for WhatBot."""
+        if not self._message_is_retroactive_bot_addressing_text(body):
+            return body
+        target = self._retroactive_target_recent_message(chat_id, body)
+        if not target:
+            return body
+        sender = str(target.get("sender") or "someone").strip() or "someone"
+        target_body = str(target.get("body") or "").strip()
+        return (
+            "[Conversational repair]\n"
+            f"The user is now directing this prior group message at WhatBot (from {sender}):\n"
+            f"{target_body}\n\n"
+            "[User repair message]\n"
+            f"{body}"
+        )
+
+    @staticmethod
+    def _infer_active_thread_type(text: str) -> str:
+        lower = str(text or "").lower()
+        if re.search(r"\b(remind|reminder)\b", lower):
+            return "reminder_creation"
+        if re.search(r"\b(plan|trip|event|bbq|party|dinner|lunch|breakfast)\b", lower):
+            return "plan_creation"
+        if re.search(r"\b(poll|vote|options?)\b", lower):
+            return "poll_creation"
+        if re.search(r"\b(todo|to-do|task|list)\b", lower):
+            return "todo_update"
+        if re.search(r"\b(prediction|predict|league|market)\b", lower):
+            return "prediction_game"
+        return "clarification"
+
+    def _record_bot_group_reply(self, chat_id: str, text: str) -> None:
+        chat_id = str(chat_id or "")
+        if not chat_id.endswith("@g.us"):
+            return
+        clean = re.sub(r"\s+", " ", str(text or "")).strip()
+        self._last_bot_reply_at_by_chat[chat_id] = time.monotonic()
+        self._last_bot_reply_text_by_chat[chat_id] = clean
+        if not self._bot_reply_looks_like_clarification(clean):
+            self._close_active_thread(chat_id)
+            return
+        recent = self._recent_messages_for_chat(chat_id)
+        joined_context = "\n".join(str(item.get("body") or "") for item in recent[-6:])
+        now = time.time()
+        thread = {
+            "thread_id": f"T-{uuid.uuid4().hex[:8].upper()}",
+            "thread_type": self._infer_active_thread_type(f"{joined_context}\n{clean}"),
+            "status": "awaiting_user_input",
+            "chat_id": chat_id,
+            "last_bot_reply": clean,
+            "created_at": now,
+            "updated_at": now,
+        }
+        store = self._read_active_thread_store()
+        chat_state = store.setdefault("chats", {}).setdefault(chat_id, {})
+        chat_state["active_thread"] = thread
+        chat_state["recent_messages"] = recent[-20:]
+        self._write_active_thread_store(store)
+
+    def _load_active_thread(self, chat_id: str) -> Optional[Dict[str, Any]]:
+        chat_id = str(chat_id or "")
+        store = self._read_active_thread_store()
+        chat_state = store.get("chats", {}).get(chat_id, {})
+        recent = chat_state.get("recent_messages")
+        if isinstance(recent, list):
+            self._recent_group_messages_by_chat[chat_id] = recent[-20:]
+        thread = chat_state.get("active_thread")
+        if not isinstance(thread, dict) or thread.get("status") != "awaiting_user_input":
+            return None
+        try:
+            window = float(self.config.extra.get("followup_response_window_seconds", 300))
+        except (TypeError, ValueError):
+            window = 300.0
+        updated_at = float(thread.get("updated_at") or thread.get("created_at") or 0)
+        if window <= 0 or not updated_at or (time.time() - updated_at) > window:
+            self._close_active_thread(chat_id)
+            return None
+        return thread
+
+    def _close_active_thread(self, chat_id: str) -> None:
+        chat_id = str(chat_id or "")
+        store = self._read_active_thread_store()
+        chat_state = store.setdefault("chats", {}).setdefault(chat_id, {})
+        if "active_thread" in chat_state:
+            chat_state.pop("active_thread", None)
+            self._write_active_thread_store(store)
+
+    def _message_is_followup_to_recent_bot_reply(self, data: Dict[str, Any]) -> bool:
+        """Wake on a short-window follow-up after the bot just spoke in the group.
+
+        Question-like follow-ups still use the cheap deterministic gate. If the
+        bot's previous message was itself a clarification question, a local
+        classifier may also wake on declarative answer-shaped replies such as
+        "breakfast in 30 days".
+        """
+        if not self._whatsapp_respond_when_likely_directed():
+            return False
+        chat_id = str(data.get("chatId") or "")
+        active_thread = self._load_active_thread(chat_id)
+        last_reply_at = self._last_bot_reply_at_by_chat.get(chat_id)
+        if not last_reply_at and not active_thread:
+            return False
+        try:
+            window = float(self.config.extra.get("followup_response_window_seconds", 300))
+        except (TypeError, ValueError):
+            window = 300.0
+        if last_reply_at and (window <= 0 or (time.monotonic() - last_reply_at) > window) and not active_thread:
+            return False
+
+        body = re.sub(r"\s+", " ", str(data.get("body") or "")).strip()
+        if not body or body.startswith("/"):
+            return False
+        if self._message_is_ambiguous_third_party_check(body):
+            return False
+        lower = body.lower()
+        last_bot_reply = self._last_bot_reply_text_by_chat.get(chat_id, "")
+        if active_thread and not last_bot_reply:
+            last_bot_reply = str(active_thread.get("last_bot_reply") or "")
+        if "?" in body:
+            return bool(active_thread or self._bot_reply_looks_like_clarification(last_bot_reply))
+        if re.match(
+            r"^(?:why|what|how|when|where|who|which|can|could|would|should|is|are|do|does|did|will)\b",
+            lower,
+        ):
+            return bool(active_thread or self._bot_reply_looks_like_clarification(last_bot_reply))
+
+        if last_bot_reply and (active_thread or self._bot_reply_looks_like_clarification(last_bot_reply)):
+            return self._classify_followup_with_local_model(
+                data,
+                last_bot_reply=last_bot_reply,
+                active_thread=active_thread,
+                recent_messages=self._recent_messages_for_chat(chat_id),
+            )
+        return False
+
+    @staticmethod
+    def _bot_reply_looks_like_clarification(text: str) -> bool:
+        clean = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not clean or "?" not in clean:
+            return False
+        lower = clean.lower()
+        return bool(re.search(
+            r"\b(which|what|when|where|who|confirm|clarify|exact|date|time|meal|options?|should i|do you want)\b",
+            lower,
+        ))
+
+    def _classify_followup_with_local_model(
+        self,
+        data: Dict[str, Any],
+        *,
+        last_bot_reply: str,
+        active_thread: Optional[Dict[str, Any]] = None,
+        recent_messages: Optional[list[Dict[str, Any]]] = None,
+    ) -> bool:
+        """Use a local model to decide if a declarative message continues a bot thread.
+
+        This is intentionally scoped to pending bot clarification questions so it
+        does not turn WhatsApp groups into ambient free-response chats.
+        """
+        if not self.config.extra.get("local_followup_classifier", False):
+            return False
+        body = re.sub(r"\s+", " ", str(data.get("body") or "")).strip()
+        if not body:
+            return False
+        model = str(self.config.extra.get("local_followup_classifier_model") or "qwen3.6:35b")
+        base_url = str(self.config.extra.get("local_followup_classifier_base_url") or "http://localhost:11434").rstrip("/")
+        if not self._is_local_model_base_url(base_url) and not self.config.extra.get("allow_remote_followup_classifier", False):
+            logger.warning("whatsapp local followup classifier refused non-local base_url=%s", base_url)
+            return False
+        try:
+            timeout = float(self.config.extra.get("local_followup_classifier_timeout", 45))
+        except (TypeError, ValueError):
+            timeout = 45.0
+        recent_lines = []
+        for item in (recent_messages or [])[-8:]:
+            sender = str(item.get("sender") or "").strip()
+            body_line = str(item.get("body") or "").strip()
+            if body_line:
+                recent_lines.append(f"- {sender + ': ' if sender else ''}{body_line}")
+        thread_context = ""
+        if active_thread:
+            thread_context = (
+                "Active WhatBot thread:\n"
+                f"- id: {active_thread.get('thread_id', '')}\n"
+                f"- type: {active_thread.get('thread_type', 'clarification')}\n"
+                f"- status: {active_thread.get('status', '')}\n"
+            )
+        recent_context = "Recent group messages:\n" + "\n".join(recent_lines) + "\n" if recent_lines else ""
+        prompt = (
+            "You are a WhatsApp group wake-gate classifier for WhatBot. Decide whether the new message should wake WhatBot "
+            "because it answers or directly continues a visible active WhatBot thread. Do not wake for general group chatter, "
+            "topic similarity alone, or human-to-human replies. Return ONLY compact JSON with keys should_wake boolean, confidence number, and reason string.\n\n"
+            f"{thread_context}"
+            f"{recent_context}"
+            f"Previous WhatBot message: {last_bot_reply}\n"
+            f"New group message: {body}\n"
+        )
+        payload = {
+            "model": model,
+            "think": False,
+            "stream": False,
+            "messages": [{"role": "user", "content": prompt}],
+            "options": {"temperature": 0, "num_predict": 160},
+        }
+        req = urllib.request.Request(
+            f"{base_url}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+            outer = json.loads(raw)
+            content = str((outer.get("message") or {}).get("content") or "").strip()
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            decision = json.loads(match.group(0) if match else content)
+            should_wake = bool(decision.get("should_wake"))
+            logger.info(
+                "whatsapp local followup classifier: chat=%s should_wake=%s reason=%s",
+                data.get("chatId"),
+                should_wake,
+                str(decision.get("reason") or "")[:160],
+            )
+            return should_wake
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+            logger.warning("whatsapp local followup classifier failed: %s", exc)
+            return False
+
+    def _local_conversation_router_enabled(self) -> bool:
+        return bool(self.config.extra.get("local_conversation_router", False))
+
+    @staticmethod
+    def _is_local_model_base_url(base_url: str) -> bool:
+        try:
+            host = urllib.parse.urlparse(str(base_url or "")).hostname or ""
+        except ValueError:
+            return False
+        return host.lower() in {"localhost", "127.0.0.1", "::1"}
+
+    def _router_decision_cache_key(
+        self,
+        data: Dict[str, Any],
+        *,
+        recent_messages: list[Dict[str, Any]],
+        active_thread: Optional[Dict[str, Any]],
+        last_bot_reply: str,
+    ) -> str:
+        recent_signature = json.dumps(
+            [
+                {
+                    "sender": str(item.get("sender") or "")[:80],
+                    "body": str(item.get("body") or "")[:200],
+                }
+                for item in recent_messages[-10:]
+            ],
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        thread_signature = json.dumps(
+            {
+                "thread_id": (active_thread or {}).get("thread_id", ""),
+                "status": (active_thread or {}).get("status", ""),
+                "updated_at": (active_thread or {}).get("updated_at", ""),
+                "last_bot_reply": last_bot_reply[:300],
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return "\x1f".join([
+            str(data.get("chatId") or ""),
+            str(data.get("messageId") or ""),
+            re.sub(r"\s+", " ", str(data.get("body") or "")).strip(),
+            recent_signature,
+            thread_signature,
+        ])
+
+    def _conversation_router_decision(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Return a local LLM routing decision for ambiguous WhatsApp group messages."""
+        if not self._local_conversation_router_enabled():
+            return None
+        chat_id = str(data.get("chatId") or "")
+        body = re.sub(r"\s+", " ", str(data.get("body") or "")).strip()
+        if not chat_id.endswith("@g.us") or not body or body.startswith("/"):
+            return None
+        active_thread = self._load_active_thread(chat_id)
+        last_bot_reply = self._last_bot_reply_text_by_chat.get(chat_id, "")
+        if active_thread and not last_bot_reply:
+            last_bot_reply = str(active_thread.get("last_bot_reply") or "")
+        recent_messages = self._recent_messages_for_chat(chat_id)
+        key = self._router_decision_cache_key(
+            data,
+            recent_messages=recent_messages,
+            active_thread=active_thread,
+            last_bot_reply=last_bot_reply,
+        )
+        cache = getattr(self, "_conversation_router_decision_cache", None)
+        if cache is None:
+            cache = {}
+            self._conversation_router_decision_cache = cache
+        if key in cache:
+            return cache[key]
+        decision = self._classify_group_message_with_local_router(
+            data,
+            recent_messages=recent_messages,
+            active_thread=active_thread,
+            last_bot_reply=last_bot_reply,
+        )
+        if isinstance(decision, dict):
+            decision["should_wake"] = bool(decision.get("should_wake"))
+            cache[key] = decision
+            return decision
+        return None
+
+    def _classify_group_message_with_local_router(
+        self,
+        data: Dict[str, Any],
+        *,
+        recent_messages: Optional[list[Dict[str, Any]]] = None,
+        active_thread: Optional[Dict[str, Any]] = None,
+        last_bot_reply: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Use local Ollama as a structured WhatsApp conversation router."""
+        model = str(self.config.extra.get("local_conversation_router_model") or "qwen3.6:35b")
+        base_url = str(self.config.extra.get("local_conversation_router_base_url") or "http://localhost:11434").rstrip("/")
+        if not self._is_local_model_base_url(base_url) and not self.config.extra.get("allow_remote_conversation_router", False):
+            logger.warning("whatsapp local conversation router refused non-local base_url=%s", base_url)
+            return None
+        try:
+            timeout = float(self.config.extra.get("local_conversation_router_timeout", 45))
+        except (TypeError, ValueError):
+            timeout = 45.0
+        body = re.sub(r"\s+", " ", str(data.get("body") or "")).strip()
+        recent_slice = (recent_messages or [])[-10:]
+        recent_lines = []
+        for idx, item in enumerate(recent_slice, start=-len(recent_slice)):
+            sender = str(item.get("sender") or "").strip()
+            line = str(item.get("body") or "").strip()
+            if line:
+                recent_lines.append(f"{idx}: {sender + ': ' if sender else ''}{line}")
+        thread_context = ""
+        if active_thread:
+            thread_context = (
+                "Active WhatBot thread:\n"
+                f"- type: {active_thread.get('thread_type', 'clarification')}\n"
+                f"- status: {active_thread.get('status', '')}\n"
+                f"- last_bot_reply: {active_thread.get('last_bot_reply', '')}\n"
+            )
+        prompt = (
+            "You are WhatBot's WhatsApp group conversation router. Decide whether the new group message should wake WhatBot, "
+            "what conversational role it has, and whether it points at a prior message. Be conservative: do not wake for ordinary "
+            "human-to-human chatter. Wake for clear bot addressing, repair phrases like 'that was for you', direct continuations of "
+            "visible active WhatBot threads, and assistant-style requests. Return ONLY compact JSON with keys: should_wake boolean, "
+            "addressing_type string, confidence number, reason string, optional target_message_index integer where -1 means nearest prior "
+            "recent message, and optional rewritten_user_intent string.\n\n"
+            f"{thread_context}"
+            "Recent group messages:\n" + "\n".join(recent_lines) + "\n"
+            f"Previous WhatBot message: {last_bot_reply}\n"
+            f"New group message: {body}\n"
+        )
+        payload = {
+            "model": model,
+            "think": False,
+            "stream": False,
+            "messages": [{"role": "user", "content": prompt}],
+            "options": {"temperature": 0, "num_predict": 220},
+        }
+        req = urllib.request.Request(
+            f"{base_url}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+            outer = json.loads(raw)
+            content = str((outer.get("message") or {}).get("content") or "").strip()
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            decision = json.loads(match.group(0) if match else content)
+            if not isinstance(decision, dict):
+                return None
+            decision["should_wake"] = bool(decision.get("should_wake"))
+            logger.info(
+                "whatsapp local conversation router: chat=%s should_wake=%s type=%s reason=%s",
+                data.get("chatId"),
+                decision.get("should_wake"),
+                str(decision.get("addressing_type") or "")[:80],
+                str(decision.get("reason") or "")[:160],
+            )
+            return decision
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+            logger.warning("whatsapp local conversation router failed: %s", exc)
+            return None
+
+    def _rewrite_group_message_body_with_router(self, chat_id: str, body: str, data: Dict[str, Any]) -> str:
+        decision = self._conversation_router_decision(data)
+        if not decision or not decision.get("should_wake"):
+            return body
+        addressing_type = str(decision.get("addressing_type") or "")
+        if addressing_type not in {"retroactive_repair", "prior_message_repair", "message_repair"}:
+            return body
+        recent = self._recent_messages_for_chat(chat_id)
+        current_clean = re.sub(r"\s+", " ", str(body or "")).strip()
+        candidates = recent[:-1] if recent and str(recent[-1].get("body") or "").strip() == current_clean else recent
+        target = None
+        target_index = decision.get("target_message_index")
+        if isinstance(target_index, int) and candidates:
+            try:
+                target = candidates[target_index]
+            except IndexError:
+                target = None
+        if target is None:
+            target = candidates[-1] if candidates else None
+        if not target:
+            return body
+        sender = str(target.get("sender") or "someone").strip() or "someone"
+        target_body = str(target.get("body") or "").strip()
+        intent = str(decision.get("rewritten_user_intent") or "Answer the prior group message as if it was addressed to WhatBot.").strip()
+        return (
+            "[Conversation router repair]\n"
+            f"Router decision: {intent}\n"
+            f"Prior group message now being directed at WhatBot (from {sender}):\n"
+            f"{target_body}\n\n"
+            "[User repair message]\n"
+            f"{body}"
+        )
+
     def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
         if not text:
             return text
@@ -450,6 +1047,38 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if bare_id:
                 cleaned = re.sub(rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned)
         return cleaned.strip() or text
+
+    @staticmethod
+    def _safe_whatsapp_display_name(value: Any) -> str:
+        """Return a one-line human display name suitable for agent-visible context."""
+        name = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not name:
+            return ""
+        # Avoid leaking raw WhatsApp JIDs as user-facing names. The bridge only
+        # fills quotedSenderName when it has an observed pushName/contact label.
+        if "@" in name and ("whatsapp" in name.lower() or name.endswith("@lid") or name.endswith("@g.us")):
+            return ""
+        return name[:80]
+
+    @staticmethod
+    def _label_with_sender(label: str, sender_name: Any) -> str:
+        sender = WhatsAppAdapter._safe_whatsapp_display_name(sender_name)
+        if sender:
+            if label.endswith("]"):
+                return f"{label[:-1]} from {sender}]"
+            return f"{label} from {sender}"
+        return label
+
+    @staticmethod
+    def _sanitize_whatsapp_visible_ids(value: str) -> str:
+        """Hide raw WhatsApp/LID mention IDs from agent-visible quoted text."""
+        text = str(value or "")
+        # WhatsApp quoted text can contain bare Linked Identity ids rendered as
+        # @139904986148944. Those are not useful to the group and can prompt the
+        # model to repeat private-looking implementation IDs. If the bridge can
+        # resolve a human name it should already have replaced the mention; this
+        # is the safety fallback.
+        return re.sub(r"@\d{8,}(?=\b)", "@someone", text)
 
     def _should_process_message(self, data: Dict[str, Any]) -> bool:
         chat_id_raw = str(data.get("chatId") or "")
@@ -483,7 +1112,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return True
         if self._message_mentions_bot(data):
             return True
-        return self._message_matches_mention_patterns(data)
+        if self._message_matches_mention_patterns(data):
+            return True
+        router_decision = self._conversation_router_decision(data)
+        if router_decision is not None:
+            return bool(router_decision.get("should_wake"))
+        if self._message_is_retroactive_bot_addressing_text(body) and self._retroactive_target_recent_message(chat_id, body):
+            return True
+        if self._message_is_followup_to_recent_bot_reply(data):
+            return True
+        return self._message_likely_directed_at_bot(data)
     
     async def connect(self) -> bool:
         """
@@ -919,6 +1557,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 if len(chunks) > 1:
                     await asyncio.sleep(0.3)
 
+            if str(chat_id).endswith("@g.us"):
+                self._record_bot_group_reply(str(chat_id), formatted)
             return SendResult(
                 success=True,
                 message_id=last_message_id,
@@ -1155,8 +1795,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
-            if not self._should_process_message(data):
+            if data.get("isGroup") and not self._is_group_allowed(str(data.get("chatId") or "")):
                 return None
+            if data.get("isGroup"):
+                self._record_recent_group_message(data)
+            should_process = self._should_process_message(data)
 
             # Determine message type
             msg_type = MessageType.TEXT
@@ -1241,6 +1884,45 @@ class WhatsAppAdapter(BasePlatformAdapter):
             body = data.get("body", "")
             if data.get("isGroup"):
                 body = self._clean_bot_mention_text(body, data)
+                body = self._rewrite_group_message_body_with_router(str(data.get("chatId") or ""), body, data)
+                body = self._rewrite_retroactive_bot_addressing_body(str(data.get("chatId") or ""), body)
+
+            quoted_body = self._sanitize_whatsapp_visible_ids(str(data.get("quotedBody") or "").strip())
+            if quoted_body:
+                quoted_label = self._label_with_sender("[Quoted message]", data.get("quotedSenderName"))
+                if data.get("quotedHasMedia"):
+                    quoted_type = str(data.get("quotedType") or "media").replace("Message", "").strip() or "media"
+                    quoted_label = self._label_with_sender(f"[Quoted {quoted_type}]", data.get("quotedSenderName"))
+                user_label = self._label_with_sender("[User message]", data.get("senderName"))
+                user_body = body or "[no additional text]"
+                body = f"{quoted_label}\n{quoted_body}\n\n{user_label}\n{user_body}"
+
+            # Let plugins observe allowlisted group messages before the
+            # reply/wake gate drops ordinary chatter. This supports passive
+            # same-group archives while keeping response behavior conservative.
+            observed_event = MessageEvent(
+                text=body,
+                message_type=msg_type,
+                source=source,
+                raw_message=data,
+                message_id=data.get("messageId"),
+                media_urls=list(data.get("mediaUrls", []) or []),
+                media_types=[],
+            )
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "platform_message_observed",
+                    event=observed_event,
+                    will_process=should_process,
+                    adapter=self,
+                )
+            except Exception as hook_exc:
+                logger.debug("[%s] platform_message_observed hook failed: %s", self.name, hook_exc)
+
+            if not should_process:
+                return None
+
             MAX_TEXT_INJECT_BYTES = 100 * 1024
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 for doc_path in cached_urls:
