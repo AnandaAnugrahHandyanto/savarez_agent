@@ -1879,6 +1879,9 @@ def looks_like_codex_intermediate_ack(
     if len(assistant_text) > 1200:
         return False
 
+    if _looks_like_route_decision_that_requires_tools(assistant_text):
+        return True
+
     has_future_ack = bool(
         re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
     )
@@ -1933,6 +1936,51 @@ def looks_like_codex_intermediate_ack(
         marker in assistant_text for marker in workspace_markers
     )
     return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
+
+
+def _looks_like_route_decision_that_requires_tools(assistant_text: str) -> bool:
+    """Treat route-only delegate/Kanban declarations as Codex continuations.
+
+    Codex occasionally emits only the observable ``Routing Decision`` line for a
+    delegated lane and stops. That is an acknowledgement, not a completed turn:
+    the next step must be the actual delegate_task/kanban_create call.
+    """
+    if "routing decision:" not in assistant_text:
+        return False
+
+    route_lines = [
+        line.strip()
+        for line in assistant_text.splitlines()
+        if line.strip().startswith("routing decision:")
+    ]
+    if not route_lines:
+        return False
+
+    route_blob = "\n".join(route_lines)
+    needs_tool = bool(
+        re.search(
+            r"\b(delegate|delegate_task|kanban|kanban_create|architecture_design|"
+            r"security_review|complex_debugging|synthesis_recommendation)\b",
+            route_blob,
+        )
+        or re.search(r"[/@:_-]xhigh\b", route_blob)
+    )
+    if not needs_tool:
+        return False
+
+    non_route_text = "\n".join(
+        line.strip()
+        for line in assistant_text.splitlines()
+        if line.strip() and not line.strip().startswith("routing decision:")
+    ).strip()
+    if not non_route_text:
+        return True
+    if len(non_route_text) <= 280 and re.search(
+        r"\b(i['’]ll|i will|let me|next|then|will|need to|going to)\b",
+        non_route_text,
+    ):
+        return True
+    return False
 
 
 

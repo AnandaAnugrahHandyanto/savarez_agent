@@ -50,6 +50,21 @@ _FRONT_DOOR_LANES = {
     "active_session",
 }
 
+_HYPHEN_PROVIDER_PREFIXES = (
+    # Models sometimes compact an explicit front-door provider and model into
+    # ``openai-codex-gpt-5.5-high``. Only split provider prefixes that are not
+    # also common model-name prefixes; e.g. ``deepseek-v4-pro`` is usually a
+    # model label, not provider=deepseek/model=v4-pro.
+    "openai-codex",
+    "openrouter",
+    "anthropic",
+    "google",
+    "custom",
+    "ollama",
+    "nous",
+    "xai",
+)
+
 
 @dataclass(frozen=True)
 class DeclaredRoute:
@@ -316,12 +331,7 @@ def _parse_lane_label(label: str) -> tuple[str, Optional[str], Optional[str], Op
             effort = _clean_effort(m.group(1))
             tail = tail[: m.start()].rstrip("/@:_- ")
         if tail:
-            if "/" in tail:
-                provider, model = tail.rsplit("/", 1)
-                provider = provider.strip() or None
-                model = model.strip() or None
-            else:
-                model = tail.strip() or None
+            provider, model = _parse_provider_model_tail(tail)
     return lane_name, provider, model, effort
 
 
@@ -337,7 +347,34 @@ def _clean_lane_label(label: str) -> str:
     # Drop a final parenthetical annotation before trimming sentence
     # punctuation. The route contract is the compact label before the note.
     clean = re.sub(r"\s+\([^)]*\)\s*$", "", clean)
+    # Composite route prose is not a single machine-checkable lane. Validate
+    # the first compact label instead of treating the whole sentence as a
+    # front-door model name.
+    clean = re.split(r"\s*(?:;|\bthen\b)\s*", clean, maxsplit=1)[0].strip()
+    m = re.match(
+        r"(?P<label>.*(?:[/@:_-](?:"
+        + "|".join(re.escape(e) for e in EFFORTS)
+        + r")))(?:\s+(?:for|to|while|when|because|using|with)\b.*)?$",
+        clean,
+        re.IGNORECASE,
+    )
+    if m:
+        clean = m.group("label").strip()
     return clean.rstrip("`.,;!?").strip()
+
+
+def _parse_provider_model_tail(tail: str) -> tuple[Optional[str], Optional[str]]:
+    tail = tail.strip()
+    if "/" in tail:
+        provider, model = tail.rsplit("/", 1)
+        return provider.strip() or None, model.strip() or None
+
+    lowered = tail.lower()
+    for prefix in _HYPHEN_PROVIDER_PREFIXES:
+        marker = f"{prefix}-"
+        if lowered.startswith(marker) and len(tail) > len(marker):
+            return prefix, tail[len(marker) :].strip() or None
+    return None, tail or None
 
 
 def _normalize_lane_key(value: Any) -> str:
@@ -553,12 +590,14 @@ def _violation(
         route_hint = (
             f" Use a real route such as delegate_task(provider={provider!r}, "
             f"model={model!r}, reasoning_effort={effort!r}) or "
-            f"kanban_create(model_routing={declared.lane_name!r})."
+            f"kanban_create(model_routing={declared.lane_name!r}) in the same "
+            "assistant turn as the Routing Decision."
         )
     message = f"Route contract violation: {reason}."
     recovery = (
         f"{message}{route_hint} If the work is only inline read-only/advisory, "
         "retry with an honest `front_door/<model>-<effort>` route label instead "
-        "of an xhigh lane."
+        "of an xhigh lane. Do not combine front_door and xhigh lanes in one "
+        "Routing Decision line."
     )
     return RouteContractViolation(code=code, message=message, recovery_prompt=recovery)

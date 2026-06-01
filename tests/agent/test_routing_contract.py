@@ -121,6 +121,26 @@ def test_front_door_label_ignores_parenthetical_note():
     assert check.execution_surface == "active_session"
 
 
+def test_front_door_label_accepts_hyphenated_provider_model_compaction():
+    check = _check(
+        "Routing Decision: quick check -> current profile -> inline(read-only) "
+        "-> front_door/openai-codex-gpt-5.5-high"
+    )
+
+    assert check.violation is None
+    assert check.execution_surface == "active_session"
+
+
+def test_front_door_label_ignores_for_reads_annotation():
+    check = _check(
+        "Routing Decision: quick check -> current profile -> inline(read-only) "
+        "-> front_door/gpt-5.5-high for reads; architecture_design/gpt-5.5-xhigh for synthesis"
+    )
+
+    assert check.violation is None
+    assert check.execution_surface == "active_session"
+
+
 def test_kanban_model_routing_satisfies_architecture_xhigh_lane():
     check = _check(
         "Routing Decision: architecture work -> kanban-orchestrator -> kanban_create "
