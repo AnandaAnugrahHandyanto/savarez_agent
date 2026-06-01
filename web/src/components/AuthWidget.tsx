@@ -26,6 +26,7 @@
 import { useEffect, useState } from "react";
 import { api, type AuthMeResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { dashboardText, useI18n } from "@/i18n";
 import { LogOut } from "lucide-react";
 
 interface AuthWidgetProps {
@@ -41,6 +42,9 @@ function truncateUserId(id: string): string {
 }
 
 export function AuthWidget({ className }: AuthWidgetProps) {
+  const { t } = useI18n();
+  const td = dashboardText(t);
+  const statusUnavailable = td.auth.statusUnavailable;
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [hidden, setHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,12 +69,12 @@ export function AuthWidget({ className }: AuthWidgetProps) {
           setHidden(true);
           return;
         }
-        setError("auth status unavailable");
+        setError(statusUnavailable);
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [statusUnavailable]);
 
   if (hidden) return null;
 
@@ -122,14 +126,14 @@ export function AuthWidget({ className }: AuthWidgetProps) {
         className,
       )}
       role="status"
-      aria-label={`Logged in as ${label}`}
+      aria-label={td.auth.loggedInAs.replace("{label}", label)}
     >
       <div className="flex min-w-0 flex-col">
         <span className="truncate font-mono text-foreground/90" title={me.user_id}>
           {label}
         </span>
         <span className="truncate text-muted-foreground/70">
-          via {me.provider}
+          {td.auth.via.replace("{provider}", me.provider)}
         </span>
       </div>
       <button
@@ -140,8 +144,8 @@ export function AuthWidget({ className }: AuthWidgetProps) {
           "transition-colors hover:bg-current/10 hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current/40",
         )}
-        aria-label="Log out"
-        title="Log out"
+        aria-label={td.auth.logOut}
+        title={td.auth.logOut}
       >
         <LogOut className="h-3.5 w-3.5" />
       </button>
