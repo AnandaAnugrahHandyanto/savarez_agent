@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -77,18 +78,15 @@ def _get(path: str, params: dict | None = None) -> dict:
 
 
 def _print(data: dict) -> None:
-    """Pretty-print JSON to stdout. Swallow BrokenPipeError when piped to head/less."""
-    try:
-        json.dump(data, sys.stdout, indent=2, sort_keys=False)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-    except BrokenPipeError:
-        # Downstream consumer (e.g. ``| head``) closed the pipe; quietly exit.
-        try:
-            sys.stdout.close()
-        except Exception:
-            pass
-        sys.exit(0)
+    """Pretty-print JSON to stdout.
+
+    Lets ``BrokenPipeError`` propagate so the caller (``main``) can map it to
+    a clean exit code. Keeping process termination centralized in ``main``
+    makes this helper safe to reuse from tests and other entry points.
+    """
+    json.dump(data, sys.stdout, indent=2, sort_keys=False)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
 
 
 # ---------- Commands ----------
@@ -144,7 +142,10 @@ def cmd_trades(args: argparse.Namespace) -> None:
 
 def cmd_candles(args: argparse.Namespace) -> None:
     end_ts = int(time.time())
-    start_ts = end_ts - max(60, args.hours * 3600)
+    # Lookback must be at least one candle interval, otherwise the API returns
+    # an empty/invalid window. interval is in minutes; convert to seconds.
+    interval_seconds = args.interval * 60
+    start_ts = end_ts - max(interval_seconds, args.hours * 3600)
     _print(_get(
         f"/series/{args.series_ticker}/markets/{args.market_ticker}/candlesticks",
         {
@@ -175,7 +176,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--status", default="open",
                     choices=["open", "closed", "settled", "unopened"])
     sp.add_argument("--series-ticker", dest="series_ticker", default=None)
-    sp.add_argument("--limit", type=int, default=10)
+    sp.add_argument("--limit", type=int, default=None,
+                    help="Per-page result cap (omit to use API default of 100, max 200)")
     sp.add_argument("--cursor", default=None,
                     help="Pagination cursor from a previous response")
     sp.add_argument("--with-markets", action="store_true",
@@ -194,7 +196,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--series-ticker", dest="series_ticker", default=None)
     sp.add_argument("--tickers", default=None,
                     help="Comma-separated explicit market tickers")
-    sp.add_argument("--limit", type=int, default=10)
+    sp.add_argument("--limit", type=int, default=None,
+                    help="Per-page result cap (omit to use API default of 100, max 200)")
     sp.add_argument("--cursor", default=None,
                     help="Pagination cursor from a previous response")
     sp.set_defaults(func=cmd_markets)
@@ -214,7 +217,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Recent public trades for a market (not user trades)",
     )
     sp.add_argument("market_ticker")
-    sp.add_argument("--limit", type=int, default=10)
+    sp.add_argument("--limit", type=int, default=None,
+                    help="Per-page result cap (omit to use API default of 100)")
     sp.add_argument("--cursor", default=None,
                     help="Pagination cursor from a previous response")
     sp.set_defaults(func=cmd_trades)
@@ -224,9 +228,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("market_ticker")
     sp.add_argument("--hours", type=int, default=1,
                     help="Lookback window in hours (default 1)")
-    sp.add_argument("--interval", type=int, default=60, choices=[60, 1440],
-                    help="Period in minutes: 60 (hourly) or 1440 (daily). "
-                         "1-minute candles work empirically but are undocumented.")
+    sp.add_argument("--interval", type=int, default=60, choices=[1, 60, 1440],
+                    help="Period in minutes: 1 (undocumented but works), "
+                         "60 (hourly), or 1440 (daily).")
     sp.set_defaults(func=cmd_candles)
 
     sp = sub.add_parser("series", help="Get one series")
@@ -243,6 +247,16 @@ def main(argv: list[str] | None = None) -> int:
     except KalshiError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    except BrokenPipeError:
+        # Downstream consumer (e.g. ``| head``) closed the pipe before we
+        # finished writing. Suppress the noisy traceback Python prints at
+        # interpreter shutdown by redirecting stdout to /dev/null.
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except Exception:
+            pass
+        return 0
     return 0
 
 
