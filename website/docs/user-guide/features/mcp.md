@@ -660,7 +660,9 @@ This starts a stdio MCP server. The MCP client (not you) manages the process lif
 
 ### MCP client configuration
 
-Add Hermes to your MCP client config. For example, in Claude Code's `~/.claude/claude_desktop_config.json`:
+Hermes publishes root-level MCP registry metadata in [`server.json`](https://github.com/NousResearch/hermes-agent/blob/main/server.json). The metadata points at the official PyPI package, includes the registry-required `mcp-name` ownership marker in the package README, and fixes the stdio arguments to `mcp serve` so clients launch the MCP server instead of plain `hermes`.
+
+Some clients install the base PyPI distribution from registry metadata but do not request optional extras. If your client does not install the `mcp` extra automatically, configure Hermes manually. For example, in Claude Code's `~/.claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -668,6 +670,19 @@ Add Hermes to your MCP client config. For example, in Claude Code's `~/.claude/c
     "hermes": {
       "command": "hermes",
       "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+If you want the client to run Hermes through `uvx` with the MCP extra instead of relying on an existing install:
+
+```json
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "uvx",
+      "args": ["--from", "hermes-agent[mcp]", "hermes", "mcp", "serve"]
     }
   }
 }
