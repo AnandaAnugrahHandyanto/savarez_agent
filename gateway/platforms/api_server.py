@@ -40,6 +40,7 @@ import os
 import socket as _socket
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -66,9 +67,25 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+MAX_AUDIO_TRANSCRIPTION_BYTES = 25 * 1024 * 1024
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+_AUDIO_MIME_EXTENSIONS = {
+    "audio/aac": ".aac",
+    "audio/flac": ".flac",
+    "audio/m4a": ".m4a",
+    "audio/mp3": ".mp3",
+    "audio/mp4": ".mp4",
+    "audio/mpeg": ".mp3",
+    "audio/mpga": ".mpga",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/webm": ".webm",
+    "audio/x-m4a": ".m4a",
+    "audio/x-wav": ".wav",
+    "video/webm": ".webm",
+}
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -550,7 +567,12 @@ if AIOHTTP_AVAILABLE:
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
+                    limit = (
+                        MAX_AUDIO_TRANSCRIPTION_BYTES
+                        if request.path == "/v1/audio/transcriptions"
+                        else MAX_REQUEST_BYTES
+                    )
+                    if int(cl) > limit:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
@@ -3313,6 +3335,98 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error("Steer rejected"), status=400)
         return web.json_response({"object": "response.steer", "accepted": True, **extra})
 
+    def _audio_extension_for_mime(self, mime_type: str) -> str:
+        normalized = (mime_type or "").split(";", 1)[0].strip().lower()
+        return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
+
+    async def _read_limited_audio_body(self, request: "web.Request") -> bytes:
+        chunks: List[bytes] = []
+        total = 0
+        async for chunk in request.content.iter_chunked(1024 * 1024):
+            total += len(chunk)
+            if total > MAX_AUDIO_TRANSCRIPTION_BYTES:
+                raise ValueError("Audio recording is too large")
+            chunks.append(bytes(chunk))
+        return b"".join(chunks)
+
+    async def _handle_audio_transcriptions(self, request: "web.Request") -> "web.Response":
+        """POST /v1/audio/transcriptions — transcribe an uploaded audio file."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        mime_type = (request.headers.get("Content-Type") or "audio/webm").strip()
+        normalized_mime_type = mime_type.split(";", 1)[0].lower()
+        if not (
+            normalized_mime_type.startswith("audio/")
+            or normalized_mime_type == "video/webm"
+            or normalized_mime_type == "application/octet-stream"
+        ):
+            return web.json_response(
+                _openai_error("Payload must be an audio recording", code="invalid_audio_type"),
+                status=400,
+            )
+
+        try:
+            audio_bytes = await self._read_limited_audio_body(request)
+        except ValueError:
+            return web.json_response(
+                _openai_error("Audio recording is too large", code="body_too_large"),
+                status=413,
+            )
+
+        if not audio_bytes:
+            return web.json_response(
+                _openai_error("Audio recording is empty", code="empty_audio"),
+                status=400,
+            )
+
+        temp_path = ""
+        try:
+            suffix = self._audio_extension_for_mime(mime_type)
+            with tempfile.NamedTemporaryFile(
+                prefix="hermes-api-audio-",
+                suffix=suffix,
+                delete=False,
+            ) as tmp:
+                tmp.write(audio_bytes)
+                temp_path = tmp.name
+
+            from tools.transcription_tools import transcribe_audio
+
+            result = await asyncio.to_thread(transcribe_audio, temp_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Audio transcription failed: %s", exc, exc_info=True)
+            return web.json_response(
+                _openai_error(f"Transcription failed: {exc}", err_type="server_error"),
+                status=500,
+            )
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+        if not result.get("success"):
+            return web.json_response(
+                _openai_error(
+                    str(result.get("error") or "Transcription failed"),
+                    code="transcription_failed",
+                ),
+                status=400,
+            )
+
+        transcript = str(result.get("transcript") or "").strip()
+        return web.json_response(
+            {
+                "object": "audio.transcription",
+                "text": transcript,
+                "transcript": transcript,
+                "provider": result.get("provider"),
+            }
+        )
+
     async def _handle_get_response(self, request: "web.Request") -> "web.Response":
         """GET /v1/responses/{response_id} — retrieve a stored response."""
         auth_err = self._check_auth(request)
@@ -4519,6 +4633,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_post("/v1/responses/{response_id}/steer", self._handle_steer_response)
             self._app.router.add_post("/v1/sessions/{session_id}/steer", self._handle_steer_session)
+            self._app.router.add_post("/v1/audio/transcriptions", self._handle_audio_transcriptions)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
             # Cron jobs management API
