@@ -15,6 +15,7 @@ from .session import (
     SessionStore,
     SessionResetPolicy,
     build_session_context_prompt,
+    render_previous_session_tail,
 )
 from .delivery import DeliveryRouter, DeliveryTarget
 
@@ -29,6 +30,7 @@ __all__ = [
     "SessionStore",
     "SessionResetPolicy",
     "build_session_context_prompt",
+    "render_previous_session_tail",
     # Delivery
     "DeliveryRouter",
     "DeliveryTarget",

@@ -1034,6 +1034,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
+    render_previous_session_tail,
 )
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
@@ -8515,8 +8516,36 @@ class GatewayRunner:
         except Exception:
             pass
 
+        # Resolve previous-session bridge tail (only on the first turn after
+        # an auto-reset, when bridge is enabled and the prior session_id is
+        # known and SessionDB is up). Best-effort — silently no-op on error.
+        _bridge_tail: Optional[str] = None
+        try:
+            _bridge_cfg = getattr(self.config, "previous_session_bridge", None)
+            _prev_id = getattr(session_entry, "previous_session_id", None)
+            if (
+                _bridge_cfg is not None
+                and getattr(_bridge_cfg, "enabled", False)
+                and getattr(session_entry, "was_auto_reset", False)
+                and _prev_id
+                and self._session_db is not None
+            ):
+                _prior_msgs = self._session_db.get_messages(_prev_id)
+                _bridge_tail = render_previous_session_tail(
+                    _prior_msgs,
+                    max_exchanges=int(getattr(_bridge_cfg, "max_exchanges", 3)),
+                    max_chars=int(getattr(_bridge_cfg, "max_chars", 4000)),
+                ) or None
+        except Exception as _bridge_exc:
+            logger.debug("Previous-session bridge failed: %s", _bridge_exc)
+            _bridge_tail = None
+
         # Build the context prompt to inject
-        context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        context_prompt = build_session_context_prompt(
+            context,
+            redact_pii=_redact_pii,
+            previous_session_tail=_bridge_tail,
+        )
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).

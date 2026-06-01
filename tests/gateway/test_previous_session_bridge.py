@@ -204,3 +204,63 @@ def test_render_tail_has_header():
     msgs = [_msg("user", "hi"), _msg("assistant", "hello")]
     out = render_previous_session_tail(msgs, max_exchanges=3, max_chars=4000)
     assert out.startswith("## Previous Session Tail")
+
+
+# ---------------------------------------------------------------------------
+# Task 5: build_session_context_prompt accepts previous_session_tail
+# ---------------------------------------------------------------------------
+
+def test_build_session_context_prompt_includes_tail_when_provided():
+    from gateway.session import (
+        SessionContext, SessionSource, Platform,
+        build_session_context_prompt,
+    )
+    ctx = SessionContext(
+        source=SessionSource(
+            platform=Platform.SIGNAL, chat_id="c1", user_id="u1", chat_type="dm",
+            user_name="Eugene",
+        ),
+        connected_platforms=[Platform.SIGNAL],
+        home_channels={},
+    )
+    out = build_session_context_prompt(
+        ctx, redact_pii=False,
+        previous_session_tail="## Previous Session Tail\n\nintro\n\nUser: hi\n\nAssistant: hello",
+    )
+    assert "## Previous Session Tail" in out
+    assert "User: hi" in out
+    assert "Assistant: hello" in out
+
+
+def test_build_session_context_prompt_works_without_tail():
+    from gateway.session import (
+        SessionContext, SessionSource, Platform,
+        build_session_context_prompt,
+    )
+    ctx = SessionContext(
+        source=SessionSource(
+            platform=Platform.SIGNAL, chat_id="c1", user_id="u1", chat_type="dm",
+            user_name="Eugene",
+        ),
+        connected_platforms=[Platform.SIGNAL],
+        home_channels={},
+    )
+    out = build_session_context_prompt(ctx, redact_pii=False)
+    assert "## Previous Session Tail" not in out
+
+
+def test_build_session_context_prompt_ignores_empty_tail():
+    from gateway.session import (
+        SessionContext, SessionSource, Platform,
+        build_session_context_prompt,
+    )
+    ctx = SessionContext(
+        source=SessionSource(
+            platform=Platform.SIGNAL, chat_id="c1", user_id="u1", chat_type="dm",
+            user_name="Eugene",
+        ),
+        connected_platforms=[Platform.SIGNAL],
+        home_channels={},
+    )
+    out = build_session_context_prompt(ctx, redact_pii=False, previous_session_tail="")
+    assert "## Previous Session Tail" not in out

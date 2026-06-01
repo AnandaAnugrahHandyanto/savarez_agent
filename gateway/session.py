@@ -298,6 +298,7 @@ def build_session_context_prompt(
     context: SessionContext,
     *,
     redact_pii: bool = False,
+    previous_session_tail: Optional[str] = None,
 ) -> str:
     """
     Build the dynamic system prompt section that tells the agent about its context.
@@ -483,6 +484,10 @@ def build_session_context_prompt(
     # Note about explicit targeting
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
+
+    if previous_session_tail:
+        lines.append("")
+        lines.append(previous_session_tail)
 
     return "\n".join(lines)
 
