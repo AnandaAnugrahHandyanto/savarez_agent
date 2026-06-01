@@ -1881,8 +1881,22 @@ def text_to_speech_tool(
     # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
     # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
     # and needs ffmpeg for conversion.
+    #
+    # Resolution order:
+    #   1. gateway.session_context (ContextVar set by the gateway for the
+    #      active turn — survives concurrent gateway messages).
+    #   2. ``os.environ`` — covers the case where a tool worker thread
+    #      spawned for a follow-up turn (e.g. auto-skill review) has lost
+    #      its ContextVar inheritance, or a tool is invoked from a
+    #      non-gateway entry point that still propagates the env.
+    #   3. empty string — neither known, so we assume non-voice and skip
+    #      the ffmpeg conversion. ``want_opus`` stays False in that case
+    #      so CLI / cron / local invocations keep their native MP3/WAV.
     from gateway.session_context import get_session_env
-    platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+    if not platform:
+        import os as _os
+        platform = _os.environ.get("HERMES_SESSION_PLATFORM", "").strip().lower()
     want_opus = (platform == "telegram")
 
     # Determine output path
