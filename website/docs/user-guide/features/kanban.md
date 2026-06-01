@@ -59,7 +59,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   (e.g. one per project, repo, or domain); see [Boards (multi-project)](#boards-multi-project)
   below. Single-project users stay on the `default` board and never see the
   word "board" outside this docs section.
-- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
+- **Task** — a row with title, optional body, one assignee (a profile name), status (`backlog | triage | todo | ready | running | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
 - **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
 - **Workspace** — the directory a worker operates in. Three kinds:
@@ -68,6 +68,26 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Use `worktree:<path>` to pin the exact target path. Worker-side `git worktree add` creates it, using `--branch` when provided. **Preserved on completion.**
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
+
+## Backlog: capture first, triage later
+
+Use backlog when you want to dump tasks or ideas onto the board without Hermes triaging, decomposing, assigning, or dispatching them yet. Backlog tasks live in a dedicated `backlog` status and are ignored by the dispatcher and the auto-decomposer until you explicitly promote them.
+
+```bash
+# Capture a rough task. Quotes are optional for simple titles.
+hermes kanban backlog add Fix confusing checkout copy --tenant ecommerce
+
+# See only staged backlog items.
+hermes kanban backlog list
+
+# When you're ready, add the real description/assignee and promote it.
+hermes kanban backlog promote t_ab12cd34 \
+  --title "Fix checkout copy around taxes" \
+  --body "Clarify tax/shipping wording on the checkout page. Include before/after copy and screenshots." \
+  --assignee vifrontend
+```
+
+`backlog` is also available as `/kanban backlog …` from messaging platforms, and `inbox` is an alias (`/kanban inbox capture …`). Once promoted, a parent-free task usually becomes `ready`; tasks with unfinished parents remain `todo` until dependencies clear.
 
 ## Boards (multi-project)
 
@@ -531,7 +551,7 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 |---|---|---|
 | `GET` | `/board?tenant=<name>&include_archived=…` | Full board grouped by status column, plus tenants + assignees for filter dropdowns |
 | `GET` | `/tasks/:id` | Task + comments + events + links |
-| `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool` and `parents: [id, …]`) |
+| `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `backlog: bool`, `triage: bool`, and `parents: [id, …]`) |
 | `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result |
 | `POST` | `/tasks/bulk` | Apply the same patch (status / archive / assignee / priority) to every id in `ids`. Per-id failures reported without aborting siblings |
 | `POST` | `/tasks/:id/comments` | Append a comment |

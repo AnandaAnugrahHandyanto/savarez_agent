@@ -730,9 +730,12 @@ def _handle_create(args: dict, **kw) -> str:
     if not title or not str(title).strip():
         return tool_error("title is required")
     assignee = args.get("assignee")
-    if not assignee:
+    backlog, bool_error = _parse_bool_arg(args, "backlog")
+    if bool_error:
+        return tool_error(bool_error)
+    if not assignee and not backlog:
         return tool_error(
-            "assignee is required — name the profile that should execute this "
+            "assignee is required unless backlog=true — name the profile that should execute this "
             "task (the dispatcher will only spawn tasks with an assignee)"
         )
     body = args.get("body")
@@ -773,12 +776,13 @@ def _handle_create(args: dict, **kw) -> str:
                 conn,
                 title=str(title).strip(),
                 body=body,
-                assignee=str(assignee),
+                assignee=str(assignee) if assignee else None,
                 parents=tuple(parents),
                 tenant=tenant,
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
                 workspace_path=workspace_path,
+                backlog=backlog,
                 triage=triage,
                 idempotency_key=idempotency_key,
                 max_runtime_seconds=(
@@ -926,8 +930,8 @@ KANBAN_LIST_SCHEMA = {
             "status": {
                 "type": "string",
                 "enum": [
-                    "triage", "todo", "ready", "running",
-                    "blocked", "done", "archived",
+                    "backlog", "triage", "todo", "scheduled", "ready", "running",
+                    "blocked", "review", "done", "archived",
                 ],
                 "description": "Optional task status filter.",
             },
@@ -1135,8 +1139,9 @@ KANBAN_CREATE_SCHEMA = {
         "one (pass the current task id in ``parents``). Used by "
         "orchestrator workers to fan out — decompose work into child "
         "tasks with specific assignees, link them into a pipeline, "
-        "then complete your own task. The dispatcher picks up the new "
-        "tasks on its next tick and spawns the assigned profiles."
+        "then complete your own task. The dispatcher picks up assigned "
+        "ready tasks on its next tick. Pass backlog=true for raw capture "
+        "that must not be triaged, decomposed, or dispatched yet."
     ),
     "parameters": {
         "type": "object",
@@ -1150,8 +1155,8 @@ KANBAN_CREATE_SCHEMA = {
                 "description": (
                     "Profile name that should execute this task "
                     "(e.g. 'researcher-a', 'reviewer', 'writer'). "
-                    "Required — tasks without an assignee are never "
-                    "dispatched."
+                    "Required unless backlog=true — tasks without an "
+                    "assignee are never dispatched."
                 ),
             },
             "body": {
@@ -1201,6 +1206,13 @@ KANBAN_CREATE_SCHEMA = {
                 "description": (
                     "Absolute path for 'dir' or 'worktree' workspace. "
                     "Relative paths are rejected at dispatch."
+                ),
+            },
+            "backlog": {
+                "type": "boolean",
+                "description": (
+                    "If true, task lands in 'backlog' — raw capture that "
+                    "is not dispatched or auto-triaged until a human promotes it."
                 ),
             },
             "triage": {

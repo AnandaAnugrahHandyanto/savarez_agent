@@ -87,25 +87,31 @@
   }
 
   // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  const COLUMN_ORDER = ["backlog", "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
   const FALLBACK_COLUMN_LABEL = {
+    backlog: "Backlog",
     triage: "Triage",
     todo: "Todo",
+    scheduled: "Scheduled",
     ready: "Ready",
     running: "In Progress",
     blocked: "Blocked",
+    review: "Review",
     done: "Done",
     archived: "Archived",
   };
   const FALLBACK_COLUMN_HELP = {
-    triage: "Raw ideas — a specifier will flesh out the spec",
+    backlog: "Raw capture — not dispatched or auto-triaged until promoted",
+    triage: "Ready for a specifier/decomposer to flesh out the spec",
     todo: "Waiting on dependencies or unassigned",
+    scheduled: "Waiting on time or an external event",
     ready: "Dependencies satisfied; assign a profile to dispatch",
     running: "Claimed by a worker — in-flight",
     blocked: "Worker asked for human input",
+    review: "Waiting for review",
     done: "Completed",
     archived: "Archived",
   };
@@ -152,6 +158,7 @@
   }
 
   const COLUMN_DOT = {
+    backlog: "hermes-kanban-dot-backlog",
     triage: "hermes-kanban-dot-triage",
     todo: "hermes-kanban-dot-todo",
     ready: "hermes-kanban-dot-ready",

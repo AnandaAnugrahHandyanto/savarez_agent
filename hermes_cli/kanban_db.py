@@ -96,7 +96,7 @@ _log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+VALID_STATUSES = {"backlog", "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
@@ -1762,6 +1762,7 @@ def create_task(
     priority: int = 0,
     parents: Iterable[str] = (),
     triage: bool = False,
+    backlog: bool = False,
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
@@ -1774,9 +1775,11 @@ def create_task(
 
     Returns the new task id.  Status is ``ready`` when there are no
     parents (or all parents already ``done``), otherwise ``todo``.
-    If ``triage=True``, status is forced to ``triage`` regardless of
-    parents — a specifier/triager is expected to promote the task to
-    ``todo`` once the spec is fleshed out.
+    If ``backlog=True``, status is forced to ``backlog`` regardless of
+    parents — a human must promote it before any specifier/decomposer or
+    dispatcher can touch it. If ``triage=True``, status is forced to
+    ``triage`` regardless of parents — a specifier/triager is expected to
+    promote the task to ``todo`` once the spec is fleshed out.
 
     If ``idempotency_key`` is provided and a non-archived task with the
     same key already exists, returns the existing task's id instead of
@@ -1896,9 +1899,11 @@ def create_task(
         try:
             with write_txn(conn):
                 # Determine task status from parent status, unless the caller
-                # parks it directly in blocked for human-ops review or in
-                # triage for a specifier.
-                if initial_status == "blocked":
+                # parks it directly in blocked for human-ops review, backlog
+                # for raw capture, or triage for a specifier.
+                if backlog:
+                    task_status = "backlog"
+                elif initial_status == "blocked":
                     task_status = "blocked"
                     if parents:
                         missing = _find_missing_parents(conn, parents)
@@ -1920,9 +1925,9 @@ def create_task(
                         ).fetchall()
                         if any(r["status"] != "done" for r in rows):
                             task_status = "todo"
-                # Even in triage mode we still need to validate parent ids
+                # Even in backlog/triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
-                if triage and parents:
+                if (backlog or triage) and parents:
                     missing = _find_missing_parents(conn, parents)
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
@@ -3782,12 +3787,15 @@ def specify_triage_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     author: Optional[str] = None,
+    from_statuses: Iterable[str] = ("triage",),
 ) -> bool:
-    """Flesh out a triage task and promote it to ``todo``.
+    """Flesh out a staged task and promote it to ``todo``.
 
     Atomically updates ``title`` / ``body`` / ``assignee`` (when provided)
-    and transitions ``status: triage -> todo`` in a single write txn. Returns
-    False when the task is missing or not in the ``triage`` column — callers
+    and transitions ``status: <from_statuses> -> todo`` in a single write txn.
+    By default this only accepts ``triage`` tasks; callers that implement a
+    human backlog can pass ``from_statuses=("backlog", "triage")``. Returns
+    False when the task is missing or not in an allowed source column — callers
     should surface that as "nothing to specify" rather than an error.
 
     ``todo`` (not ``ready``) is the correct landing column: ``recompute_ready``
@@ -3802,10 +3810,19 @@ def specify_triage_task(
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
     assignee = _canonical_assignee(assignee)
+    allowed_statuses = tuple(
+        status for status in (str(s).strip() for s in from_statuses) if status
+    )
+    if not allowed_statuses:
+        raise ValueError("from_statuses cannot be empty")
+    invalid_statuses = [s for s in allowed_statuses if s not in VALID_STATUSES]
+    if invalid_statuses:
+        raise ValueError(f"invalid source status(es): {', '.join(invalid_statuses)}")
+    placeholders = ",".join("?" * len(allowed_statuses))
     with write_txn(conn):
         existing = conn.execute(
-            "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
-            (task_id,),
+            f"SELECT title, body, assignee FROM tasks WHERE id = ? AND status IN ({placeholders})",
+            (task_id, *allowed_statuses),
         ).fetchone()
         if existing is None:
             return False
@@ -3827,8 +3844,8 @@ def specify_triage_task(
         params.append(task_id)
         cur = conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "
-            f"WHERE id = ? AND status = 'triage'",
-            tuple(params),
+            f"WHERE id = ? AND status IN ({placeholders})",
+            tuple(params + list(allowed_statuses)),
         )
         if cur.rowcount != 1:
             return False

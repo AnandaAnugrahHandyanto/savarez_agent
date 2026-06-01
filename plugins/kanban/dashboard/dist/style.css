@@ -161,7 +161,8 @@
   border-radius: 999px;
   background: var(--color-muted-foreground);
 }
-.hermes-kanban-dot-triage   { background: #b47dd6; }  /* lilac — fresh/unspecified */
+.hermes-kanban-dot-backlog  { background: #7b8794; }  /* gray — raw capture */
+.hermes-kanban-dot-triage   { background: #b47dd6; }  /* lilac — ready to specify */
 .hermes-kanban-dot-todo     { background: var(--color-muted-foreground); }
 .hermes-kanban-dot-ready    { background: #d4b348; }  /* amber */
 .hermes-kanban-dot-running  { background: #3fb97d; }  /* green */

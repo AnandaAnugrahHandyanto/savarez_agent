@@ -33,11 +33,14 @@ from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_p
 # ---------------------------------------------------------------------------
 
 _STATUS_ICONS = {
+    "backlog":  "□",
+    "triage":   "◇",
     "todo":     "◻",
     "ready":    "▶",
     "running":  "●",
     "scheduled":"⏱",
     "blocked":  "⊘",
+    "review":   "◆",
     "done":     "✓",
     "archived": "—",
 }
@@ -348,6 +351,60 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    # --- backlog / inbox ---
+    p_backlog = sub.add_parser(
+        "backlog",
+        aliases=["inbox"],
+        help="Capture and manage untriaged tasks that must not dispatch yet",
+        description=(
+            "Backlog is a user-facing staging area for raw tasks. "
+            "Use it to capture raw tasks/ideas without assigning, specifying, "
+            "or dispatching them. Promote a task only when you're ready to write "
+            "a proper description and work on it."
+        ),
+    )
+    backlog_sub = p_backlog.add_subparsers(dest="backlog_action")
+
+    b_add = backlog_sub.add_parser(
+        "add",
+        aliases=["capture"],
+        help="Capture a raw task into backlog; it will not dispatch",
+    )
+    b_add.add_argument("title", nargs="+", help="Raw task title / quick note")
+    b_add.add_argument("--body", default=None, help="Optional notes if you already have them")
+    b_add.add_argument("--tenant", default=None, help="Tenant namespace")
+    b_add.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    b_add.add_argument("--created-by", default="user",
+                       help="Author name recorded on the task (default: user)")
+    b_add.add_argument("--idempotency-key", default=None,
+                       help="Dedup key. If a non-archived task with this key exists, "
+                            "its id is returned instead of creating a duplicate.")
+    b_add.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    b_list = backlog_sub.add_parser(
+        "list",
+        aliases=["ls"],
+        help="List backlog tasks",
+    )
+    b_list.add_argument("--tenant", default=None, help="Tenant namespace")
+    b_list.add_argument("--sort", default=None,
+                        choices=sorted(kb.VALID_SORT_ORDERS.keys()),
+                        help="Sort order (default: priority)")
+    b_list.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    b_promote = backlog_sub.add_parser(
+        "promote",
+        aliases=["ready"],
+        help="Flesh out a backlog task and promote it out of backlog",
+    )
+    b_promote.add_argument("task_id")
+    b_promote.add_argument("--title", default=None, help="Replace the raw title")
+    b_promote.add_argument("--body", default=None, help="Proper task description / acceptance notes")
+    b_promote.add_argument("--assignee", default=None, help="Profile name to assign")
+    b_promote.add_argument("--author", default=None,
+                           help="Author for the audit comment (default: active profile/user)")
+    b_promote.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- swarm ---
     p_swarm = sub.add_parser(
@@ -919,6 +976,8 @@ def kanban_command(args: argparse.Namespace) -> int:
     handlers = {
         "init":     _cmd_init,
         "create":   _cmd_create,
+        "backlog":  _cmd_backlog,
+        "inbox":    _cmd_backlog,
         "swarm":    _cmd_swarm,
         "list":     _cmd_list,
         "ls":       _cmd_list,
@@ -1362,6 +1421,97 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+    return 0
+
+
+def _cmd_backlog(args: argparse.Namespace) -> int:
+    """User-facing staging area for raw tasks.
+
+    Backlog intentionally uses a dedicated ``backlog`` status so the
+    dispatcher and auto-decomposer ignore captured items. This wrapper gives
+    users obvious verbs (add/list/promote) without requiring them to know that
+    implementation detail or invoke the auxiliary-LLM specifier.
+    """
+    action = getattr(args, "backlog_action", None) or "list"
+    if action in {"add", "capture"}:
+        return _cmd_backlog_add(args)
+    if action in {"list", "ls"}:
+        return _cmd_backlog_list(args)
+    if action in {"promote", "ready"}:
+        return _cmd_backlog_promote(args)
+    print(f"kanban backlog: unknown action {action!r}", file=sys.stderr)
+    return 2
+
+
+def _cmd_backlog_add(args: argparse.Namespace) -> int:
+    title = " ".join(getattr(args, "title", []) or []).strip()
+    if not title:
+        print("kanban backlog add: title is required", file=sys.stderr)
+        return 2
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(
+            conn,
+            title=title,
+            body=getattr(args, "body", None),
+            assignee=None,
+            created_by=getattr(args, "created_by", None) or _profile_author(),
+            tenant=getattr(args, "tenant", None),
+            priority=getattr(args, "priority", 0),
+            backlog=True,
+            idempotency_key=getattr(args, "idempotency_key", None),
+        )
+        task = kb.get_task(conn, task_id)
+    if getattr(args, "json", False):
+        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+    else:
+        print(f"Backlogged {task_id}  (backlog, not dispatchable)")
+        print(
+            "Promote later with `hermes kanban backlog promote "
+            f"{task_id} --body ... --assignee <profile>`."
+        )
+    return 0
+
+
+def _cmd_backlog_list(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        tasks = kb.list_tasks(
+            conn,
+            status="backlog",
+            tenant=getattr(args, "tenant", None),
+            order_by=getattr(args, "sort", None),
+        )
+    if getattr(args, "json", False):
+        print(json.dumps([_task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))
+        return 0
+    if not tasks:
+        print("(backlog empty)")
+        return 0
+    print("Backlog (not dispatchable):")
+    for t in tasks:
+        print(_fmt_task_line(t))
+    return 0
+
+
+def _cmd_backlog_promote(args: argparse.Namespace) -> int:
+    author = getattr(args, "author", None) or _profile_author()
+    with kb.connect_closing() as conn:
+        ok = kb.specify_triage_task(
+            conn,
+            args.task_id,
+            title=getattr(args, "title", None),
+            body=getattr(args, "body", None),
+            assignee=getattr(args, "assignee", None),
+            author=author,
+            from_statuses=("backlog", "triage"),
+        )
+        if not ok:
+            print(f"no backlog/triage task to promote: {args.task_id}", file=sys.stderr)
+            return 1
+        task = kb.get_task(conn, args.task_id)
+    if getattr(args, "json", False):
+        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+    else:
+        print(f"Promoted {args.task_id}  ({task.status}, assignee={task.assignee or '-'})")
     return 0
 
 
@@ -2401,7 +2551,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return 0
     print("By status:")
-    for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
+    for k in ("backlog", "triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
         print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:
         print("\nBy assignee:")
@@ -2735,6 +2885,8 @@ Common subcommands:
   `show <id>`           Task details + comments + events
   `stats`               Per-status / per-assignee counts
   `create <title>…`     Create a task (auto-subscribes you to events)
+  `backlog add <text>`  Capture raw/untriaged work; not dispatchable until promoted
+  `backlog list`        Show staged backlog tasks
   `comment <id> <msg>`  Append a comment
   `complete <id>…`      Mark task(s) done
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive

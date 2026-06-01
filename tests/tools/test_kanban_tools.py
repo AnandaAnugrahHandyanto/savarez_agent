@@ -848,6 +848,23 @@ def test_create_rejects_no_assignee(worker_env):
     assert json.loads(kt._handle_create({"title": "t"})).get("error")
 
 
+def test_create_allows_backlog_without_assignee(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({"title": "capture raw task", "backlog": True})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["status"] == "backlog"
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task is not None
+        assert task.status == "backlog"
+        assert task.assignee is None
+    finally:
+        conn.close()
+
+
 def test_create_rejects_non_list_parents(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({"title": "t", "assignee": "a", "parents": 42})

@@ -90,6 +90,44 @@ def test_run_slash_create_and_list(kanban_home):
     assert "alice" in out
 
 
+def test_run_slash_backlog_add_list_and_promote(kanban_home):
+    out = kc.run_slash("backlog add rough customer followup")
+    assert "Backlogged" in out
+    assert "not dispatchable" in out
+
+    import re
+    m = re.search(r"(t_[a-f0-9]+)", out)
+    assert m
+    tid = m.group(1)
+
+    backlog = kc.run_slash("backlog list")
+    assert "Backlog (not dispatchable)" in backlog
+    assert "rough customer followup" in backlog
+    assert "backlog" in backlog
+
+    promoted = kc.run_slash(
+        f"backlog promote {tid} --title 'Customer follow-up' "
+        "--body 'Write the proper task description' --assignee alice"
+    )
+    assert f"Promoted {tid}" in promoted
+    assert "ready" in promoted
+    assert "alice" in promoted
+
+    empty = kc.run_slash("backlog list")
+    assert "rough customer followup" not in empty
+
+
+def test_run_slash_backlog_inbox_alias_json(kanban_home):
+    raw = kc.run_slash("inbox capture alias task --tenant ops --json")
+    payload = json.loads(raw)
+    assert payload["title"] == "alias task"
+    assert payload["status"] == "backlog"
+    assert payload["tenant"] == "ops"
+
+    listed = json.loads(kc.run_slash("backlog ls --tenant ops --json"))
+    assert [item["title"] for item in listed] == ["alias task"]
+
+
 def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     target_arg = target.as_posix()

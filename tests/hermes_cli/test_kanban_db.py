@@ -3004,6 +3004,16 @@ def test_review_status_in_valid_statuses():
     assert "review" in kb.VALID_STATUSES
 
 
+def test_create_backlog_status_is_not_dispatchable(kanban_home, all_assignees_spawnable):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="raw inbox item", assignee="alice", backlog=True)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "backlog"
+        res = kb.dispatch_once(conn, dry_run=True)
+    assert tid not in res.spawned
+
+
 def test_dispatch_review_does_not_claim_ready_tasks(
     kanban_home, all_assignees_spawnable,
 ):
