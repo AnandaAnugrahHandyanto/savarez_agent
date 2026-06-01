@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import sys
@@ -1889,6 +1890,665 @@ def test_dispatch_respawn_guard_emits_event_for_skipped_task(
     # Event.payload is already parsed as a dict by list_events.
     assert isinstance(guarded_evt.payload, dict)
     assert guarded_evt.payload.get("reason") == "recent_success"
+
+
+
+# ---------------------------------------------------------------------------
+# ZeroBoot policy guard
+# ---------------------------------------------------------------------------
+
+def test_zeroboot_policy_off_allows_external_code_task(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """Default/off ZeroBoot policy must not change existing dispatch behavior."""
+    from hermes_cli import config as cfg
+    monkeypatch.setattr(cfg, "load_config", lambda: {"kanban": {}})
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="run tests on external repo",
+            body="Clone unknown internet code and run npm install",
+            assignee="alice",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert spawned_ids == [t]
+    assert not res.zeroboot_guarded
+
+
+def test_zeroboot_policy_guard_defers_external_code_task(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """When enabled, untrusted/external code work is not host-spawned."""
+    from hermes_cli import config as cfg
+    monkeypatch.setattr(
+        cfg,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "zeroboot_policy": {
+                    "enabled": True,
+                    "mode": "guard",
+                    "isolated_assignees": ["zeroboot-local"],
+                }
+            }
+        },
+    )
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="evaluate untrusted dependency",
+            body="Download external repo and run tests",
+            assignee="alice",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert spawned_ids == []
+    assert task.status == "ready"
+    assert (t, "external_code") in res.zeroboot_guarded
+    evt = next(e for e in events if e.kind == "zeroboot_policy_guarded")
+    assert evt.payload["reason"] == "external_code"
+    assert evt.payload["mode"] == "guard"
+
+
+def test_zeroboot_policy_route_reroutes_external_code_to_zeroboot_local(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """Route mode sends untrusted/external code work to the Firecracker lane."""
+    from hermes_cli import config as cfg
+    monkeypatch.setattr(
+        cfg,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "zeroboot_policy": {
+                    "enabled": True,
+                    "mode": "route",
+                    "isolated_assignees": ["zeroboot-local"],
+                    "route_assignee": "zeroboot-local",
+                }
+            }
+        },
+    )
+    spawned = []
+
+    def fake_spawn(task, workspace):
+        spawned.append((task.id, task.assignee))
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="evaluate untrusted dependency",
+            body="Download external repo and run tests",
+            assignee="gond",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert spawned == [(t, "zeroboot-local")]
+    assert task is not None
+    assert task.status == "running"
+    assert task.assignee == "zeroboot-local"
+    assert res.zeroboot_routed == [(t, "gond", "zeroboot-local", "external_code")]
+    assert not res.zeroboot_guarded
+    evt = next(e for e in events if e.kind == "zeroboot_policy_routed")
+    assert evt.payload["reason"] == "external_code"
+    assert evt.payload["from_assignee"] == "gond"
+    assert evt.payload["to_assignee"] == "zeroboot-local"
+
+
+def test_zeroboot_policy_route_precedes_nonspawnable_skip(
+    kanban_home, monkeypatch
+):
+    """Dangerous work on a non-profile lane is routed before nonspawnable filtering."""
+    from hermes_cli import config as cfg
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    monkeypatch.setattr(
+        cfg,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "zeroboot_policy": {
+                    "enabled": True,
+                    "mode": "route",
+                    "route_assignee": "zeroboot-local",
+                }
+            }
+        },
+    )
+    spawned = []
+
+    def fake_spawn(task, workspace):
+        spawned.append((task.id, task.assignee))
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="cizí repo smoke",
+            body="git clone unknown repo and run npm install",
+            assignee="orion-cc",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, t)
+
+    assert spawned == [(t, "zeroboot-local")]
+    assert task is not None
+    assert task.assignee == "zeroboot-local"
+    assert res.skipped_nonspawnable == []
+    assert res.zeroboot_routed == [(t, "orion-cc", "zeroboot-local", "external_code")]
+
+
+def test_zeroboot_policy_allows_isolated_assignee(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """A task already routed to a ZeroBoot-capable lane may spawn."""
+    from hermes_cli import config as cfg
+    monkeypatch.setattr(
+        cfg,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "zeroboot_policy": {
+                    "enabled": True,
+                    "mode": "guard",
+                    "isolated_assignees": ["zeroboot-local"],
+                }
+            }
+        },
+    )
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="evaluate untrusted dependency",
+            body="Download external repo and run tests",
+            assignee="zeroboot-local",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert spawned_ids == [t]
+    assert not res.zeroboot_guarded
+
+
+def test_zeroboot_local_dispatch_uses_firecracker_runner_not_host_worker(
+    kanban_home, tmp_path, monkeypatch
+):
+    """Explicit zeroboot-local tasks dispatch through the ZeroBoot runner adapter."""
+    from hermes_cli import profiles
+
+    runner = tmp_path / "zeroboot_local_runner.py"
+    runner.write_text("#!/usr/bin/env python3\n")
+    monkeypatch.setattr(kb, "ZEROBOOT_LOCAL_RUNNER", runner)
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    monkeypatch.setenv("SOME_API_KEY", "must-not-leak")
+    monkeypatch.setenv("SOME_TOKEN", "must-not-leak")
+    calls = []
+
+    class FakeProc:
+        pid = 424242
+
+    def fake_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(kb.subprocess, "Popen", fake_popen)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="evaluate untrusted dependency",
+            body="SECRET-ish task body must not be handed to the proof runner",
+            assignee="zeroboot-local",
+        )
+        res = kb.dispatch_once(conn)
+        task = kb.get_task(conn, t)
+
+    assert task is not None
+    assert res.spawned == [(t, "zeroboot-local", task.workspace_path)]
+    assert task.worker_pid == 424242
+    assert len(calls) == 1
+    argv, kwargs = calls[0]
+    assert argv[0] == str(runner)
+    assert "hermes" not in Path(argv[0]).name
+    assert "--command-file" in argv
+    command_file = Path(argv[argv.index("--command-file") + 1])
+    assert command_file.exists()
+    command = command_file.read_text(encoding="utf-8")
+    assert "zeroboot-local-adapter" in command
+    assert f"kanban_task_id=%s\\n' {t}" in command
+    assert "SECRET-ish task body" not in " ".join(map(str, argv))
+    assert "--network" not in argv
+    assert "--mount" not in argv
+    env = kwargs["env"]
+    assert env["ZEROBOOT_LOCAL_ADAPTER"] == "1"
+    assert env["HERMES_PROFILE"] == "zeroboot-local"
+    assert "SOME_API_KEY" not in env
+    assert "SOME_TOKEN" not in env
+    assert kwargs["stdin"] is kb.subprocess.DEVNULL
+
+
+def test_zeroboot_local_clean_exit_parses_result_and_completes_task(
+    kanban_home, tmp_path, monkeypatch
+):
+    """C2/C3: runner stdout result marker becomes Kanban completion + audit comment."""
+    runner = tmp_path / "zeroboot_local_runner.py"
+    runner.write_text("#!/usr/bin/env python3\n")
+    monkeypatch.setattr(kb, "ZEROBOOT_LOCAL_RUNNER", runner)
+    monkeypatch.setattr(kb, "_resolve_crash_grace_seconds", lambda *_a, **_k: 0)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(kb, "_classify_worker_exit", lambda _pid: ("clean_exit", 0))
+
+    class FakeProc:
+        pid = 515151
+
+    monkeypatch.setattr(kb.subprocess, "Popen", lambda *a, **k: FakeProc())
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="zero result",
+            body="body stays in command file, never argv",
+            assignee="zeroboot-local",
+        )
+        kb.dispatch_once(conn)
+        result_payload = {
+            "schema": "spearhead.zeroboot.result.v1",
+            "status": "completed",
+            "summary": "isolated work completed",
+            "metadata": {"checks": ["smoke"]},
+        }
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        stdout_path = run_dir / "guest_stdout.txt"
+        stdout_path.write_text(
+            "hello\n" + kb._zeroboot_result_marker(result_payload) + "\n",
+            encoding="utf-8",
+        )
+        manifest_path = run_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "network_attached": False,
+                    "host_mounts": [],
+                    "secrets_injected": False,
+                    "outputs": {"guest_stdout": str(stdout_path)},
+                }
+            ),
+            encoding="utf-8",
+        )
+        log_dir = kb.worker_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"{t}.log").write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "guest_exit_code": 0,
+                    "run_dir": str(run_dir),
+                    "manifest": str(manifest_path),
+                    "guest_stdout": "fallback only",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        crashed = kb.detect_crashed_workers(conn)
+        task = kb.get_task(conn, t)
+        comments = kb.list_comments(conn, t)
+
+    assert crashed == []
+    assert task.status == "done"
+    assert task.result == "isolated work completed"
+    assert any("ZeroBoot local evidence" in c.body for c in comments)
+    evidence = next(c.body for c in comments if "ZeroBoot local evidence" in c.body)
+    assert '"network_attached": false' in evidence
+    assert '"host_mounts": []' in evidence
+    assert '"secrets_injected": false' in evidence
+
+
+def test_zeroboot_local_missing_result_marker_blocks_safely(
+    kanban_home, tmp_path, monkeypatch
+):
+    """C2 fail-closed: clean runner exit without a result marker does not loop."""
+    runner = tmp_path / "zeroboot_local_runner.py"
+    runner.write_text("#!/usr/bin/env python3\n")
+    monkeypatch.setattr(kb, "ZEROBOOT_LOCAL_RUNNER", runner)
+    monkeypatch.setattr(kb, "_resolve_crash_grace_seconds", lambda *_a, **_k: 0)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(kb, "_classify_worker_exit", lambda _pid: ("clean_exit", 0))
+
+    class FakeProc:
+        pid = 616161
+
+    monkeypatch.setattr(kb.subprocess, "Popen", lambda *a, **k: FakeProc())
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="zero malformed", assignee="zeroboot-local")
+        kb.dispatch_once(conn)
+        run_dir = tmp_path / "run-missing-marker"
+        run_dir.mkdir()
+        stdout_path = run_dir / "guest_stdout.txt"
+        stdout_path.write_text("no structured result here\n", encoding="utf-8")
+        manifest_path = run_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "network_attached": False,
+                    "host_mounts": [],
+                    "secrets_injected": False,
+                    "outputs": {"guest_stdout": str(stdout_path)},
+                }
+            ),
+            encoding="utf-8",
+        )
+        log_dir = kb.worker_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"{t}.log").write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "guest_exit_code": 0,
+                    "run_dir": str(run_dir),
+                    "manifest": str(manifest_path),
+                    "guest_stdout": "no structured result here\n",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        kb.detect_crashed_workers(conn)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert task.status == "blocked"
+    assert any(e.kind == "blocked" for e in events)
+    assert "no structured result marker" in next(e.payload["reason"] for e in events if e.kind == "blocked")
+
+
+def test_zeroboot_local_spawn_uses_configured_runner_and_image_profile(
+    kanban_home, tmp_path, monkeypatch
+):
+    """Milestone A: runner path/timeouts/image profile come from config, not a Filip-only path."""
+    runner = tmp_path / "zb-runner.py"
+    runner.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    kernel = tmp_path / "vmlinux.bin"
+    rootfs = tmp_path / "rootfs.ext4"
+    runs_dir = tmp_path / "runs"
+    kernel.write_bytes(b"kernel")
+    rootfs.write_bytes(b"rootfs")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "kanban": {
+                "zeroboot_local": {
+                    "runner_path": str(runner),
+                    "timeout_seconds": 42,
+                    "boot_timeout_seconds": 9,
+                    "api_timeout_seconds": 8,
+                    "vcpus": 2,
+                    "mem_mib": 256,
+                    "runs_dir": str(runs_dir),
+                    "image_profile": "zb-python",
+                    "image_profiles": {
+                        "zb-python": {
+                            "kernel": str(kernel),
+                            "rootfs": str(rootfs),
+                        }
+                    },
+                }
+            }
+        },
+    )
+    calls = []
+
+    class FakeProc:
+        pid = 727272
+
+    def fake_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(kb.subprocess, "Popen", fake_popen)
+
+    with kb.connect() as conn:
+        kb.create_task(conn, title="configured zero", assignee="zeroboot-local")
+        kb.dispatch_once(conn)
+
+    assert len(calls) == 1
+    argv, kwargs = calls[0]
+    assert argv[0] == str(runner)
+    assert argv[argv.index("--timeout") + 1] == "42"
+    assert argv[argv.index("--boot-timeout") + 1] == "9"
+    assert argv[argv.index("--api-timeout") + 1] == "8"
+    assert argv[argv.index("--vcpus") + 1] == "2"
+    assert argv[argv.index("--mem-mib") + 1] == "256"
+    assert argv[argv.index("--runs-dir") + 1] == str(runs_dir)
+    assert argv[argv.index("--kernel") + 1] == str(kernel)
+    assert argv[argv.index("--rootfs") + 1] == str(rootfs)
+    assert "--network" not in argv
+    assert "--mount" not in argv
+    command_file = Path(argv[argv.index("--command-file") + 1])
+    command = command_file.read_text(encoding="utf-8")
+    assert "image_profile" in command
+    assert "zb-python" in command
+    assert kwargs["env"]["ZEROBOOT_LOCAL_IMAGE_PROFILE"] == "zb-python"
+
+
+def test_zeroboot_local_manifest_isolation_violation_blocks_safely(
+    kanban_home, tmp_path, monkeypatch
+):
+    """Milestone A safety: manifest must confirm no network, mounts, or secrets."""
+    runner = tmp_path / "zeroboot_local_runner.py"
+    runner.write_text("#!/usr/bin/env python3\n")
+    monkeypatch.setattr(kb, "ZEROBOOT_LOCAL_RUNNER", runner)
+    monkeypatch.setattr(kb, "_resolve_crash_grace_seconds", lambda *_a, **_k: 0)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(kb, "_classify_worker_exit", lambda _pid: ("clean_exit", 0))
+
+    class FakeProc:
+        pid = 737373
+
+    monkeypatch.setattr(kb.subprocess, "Popen", lambda *a, **k: FakeProc())
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="unsafe zero", assignee="zeroboot-local")
+        kb.dispatch_once(conn)
+        run_dir = tmp_path / "unsafe-run"
+        run_dir.mkdir()
+        stdout_path = run_dir / "guest_stdout.txt"
+        stdout_path.write_text(
+            kb._zeroboot_result_marker({"status": "completed", "summary": "should not win"}) + "\n",
+            encoding="utf-8",
+        )
+        manifest_path = run_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "network_attached": True,
+                    "host_mounts": ["/host"],
+                    "secrets_injected": True,
+                    "outputs": {"guest_stdout": str(stdout_path)},
+                }
+            ),
+            encoding="utf-8",
+        )
+        kb.worker_logs_dir().mkdir(parents=True, exist_ok=True)
+        (kb.worker_logs_dir() / f"{t}.log").write_text(
+            json.dumps({"status": "completed", "guest_exit_code": 0, "manifest": str(manifest_path)}),
+            encoding="utf-8",
+        )
+        kb.detect_crashed_workers(conn)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert task.status == "blocked"
+    reason = next(e.payload["reason"] for e in events if e.kind == "blocked")
+    assert "ZeroBoot isolation violation" in reason
+    assert "network_attached" in reason
+
+
+def test_zeroboot_local_artifacts_are_normalized_into_completion_metadata(
+    kanban_home, tmp_path, monkeypatch
+):
+    """Milestone B: guest artifact manifest becomes capped metadata/proofs for Kanban evidence."""
+    runner = tmp_path / "zeroboot_local_runner.py"
+    runner.write_text("#!/usr/bin/env python3\n")
+    monkeypatch.setattr(kb, "ZEROBOOT_LOCAL_RUNNER", runner)
+    monkeypatch.setattr(kb, "_resolve_crash_grace_seconds", lambda *_a, **_k: 0)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(kb, "_classify_worker_exit", lambda _pid: ("clean_exit", 0))
+
+    class FakeProc:
+        pid = 747474
+
+    monkeypatch.setattr(kb.subprocess, "Popen", lambda *a, **k: FakeProc())
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="artifact zero", assignee="zeroboot-local")
+        kb.dispatch_once(conn)
+        run_dir = tmp_path / "artifact-run"
+        artifacts_dir = run_dir / "guest-artifacts"
+        artifacts_dir.mkdir(parents=True)
+        report = artifacts_dir / "report.txt"
+        report.write_text("scan ok", encoding="utf-8")
+        ignored = run_dir / "escape.txt"
+        stdout_path = run_dir / "guest_stdout.txt"
+        stdout_path.write_text(
+            kb._zeroboot_result_marker(
+                {
+                    "status": "completed",
+                    "summary": "artifact work completed",
+                    "artifacts": [
+                        {"name": "report.txt", "path": str(report), "type": "text/plain"},
+                        {"name": "escape.txt", "path": str(ignored)},
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        manifest_path = run_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "network_attached": False,
+                    "host_mounts": [],
+                    "secrets_injected": False,
+                    "outputs": {
+                        "guest_stdout": str(stdout_path),
+                        "guest_artifacts_dir": str(artifacts_dir),
+                    },
+                    "artifacts": {
+                        "guest_artifacts": {
+                            "report.txt": {"path": str(report), "size_bytes": report.stat().st_size}
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        kb.worker_logs_dir().mkdir(parents=True, exist_ok=True)
+        (kb.worker_logs_dir() / f"{t}.log").write_text(
+            json.dumps({"status": "completed", "guest_exit_code": 0, "manifest": str(manifest_path)}),
+            encoding="utf-8",
+        )
+        kb.detect_crashed_workers(conn)
+        task = kb.get_task(conn, t)
+        run = conn.execute(
+            "SELECT metadata FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (t,)
+        ).fetchone()
+
+    assert task.status == "done"
+    assert run is not None
+    metadata = json.loads(run["metadata"])
+    zb_artifacts = metadata["zeroboot"]["artifacts"]
+    assert zb_artifacts == [
+        {
+            "name": "report.txt",
+            "path": str(report),
+            "size_bytes": report.stat().st_size,
+            "sha256": kb.hashlib.sha256(b"scan ok").hexdigest(),
+            "type": "text/plain",
+        }
+    ]
+    assert metadata["artifacts"] == [str(report)]
+    assert any(p["label"] == "ZeroBoot artifact: report.txt" for p in metadata["proofs"])
+
+
+def test_zeroboot_local_defaults_are_declared_in_default_config():
+    """P4: the ZeroBoot lane has an explicit safe config surface, not only code constants."""
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    cfg = DEFAULT_CONFIG["kanban"]["zeroboot_local"]
+    assert cfg["runner_path"] == str(kb.ZEROBOOT_LOCAL_RUNNER)
+    assert cfg["timeout_seconds"] > 0
+    assert cfg["boot_timeout_seconds"] > 0
+    assert cfg["api_timeout_seconds"] > 0
+    assert cfg["vcpus"] >= 1
+    assert cfg["mem_mib"] >= 128
+    assert cfg["image_profile"] == "default"
+    assert cfg["image_profiles"] == {}
+    assert cfg["runs_dir"] == ""
+    assert cfg["network_enabled"] is False
+    assert cfg["host_mounts"] == []
+    assert cfg["secrets_env"] == []
+
+
+def test_zeroboot_local_spawn_rejects_unsafe_capability_config(
+    kanban_home, tmp_path, monkeypatch
+):
+    """P5/P6: future network/mount/secret capability knobs fail closed until reviewed."""
+    runner = tmp_path / "zeroboot_local_runner.py"
+    runner.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "kanban": {
+                "zeroboot_local": {
+                    "runner_path": str(runner),
+                    "network_enabled": True,
+                    "host_mounts": ["/tmp:/host/tmp"],
+                    "secrets_env": ["OPENAI_API_KEY"],
+                }
+            }
+        },
+    )
+    popen_calls = []
+    monkeypatch.setattr(kb.subprocess, "Popen", lambda *a, **k: popen_calls.append((a, k)))
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="unsafe capability ask", assignee="zeroboot-local")
+        res = kb.dispatch_once(conn, failure_limit=1)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert popen_calls == []
+    assert task is not None
+    assert task.status == "blocked"
+    assert res.auto_blocked == [t]
+    reason = next(e.payload["error"] for e in events if e.kind == "gave_up")
+    assert "ZeroBoot local capability expansion requires approval" in reason
+    assert "network_enabled" in reason
+    assert "host_mounts" in reason
+    assert "secrets_env" in reason
 
 
 # ---------------------------------------------------------------------------
@@ -4287,3 +4947,120 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Proof / artifact evidence convention (normalize_evidence + complete_task)
+# ---------------------------------------------------------------------------
+
+def test_normalize_evidence_passthrough_non_dict():
+    """Non-dict metadata (including None) is returned unchanged."""
+    assert kb.normalize_evidence(None) is None
+    assert kb.normalize_evidence("nope") == "nope"
+
+
+def test_normalize_evidence_leaves_unrelated_keys():
+    md = {"changed_files": ["a.py"], "tests_run": 3}
+    out = kb.normalize_evidence(md)
+    assert out == md
+    assert out is not md  # copy, not mutated in place
+
+
+def test_normalize_evidence_artifacts_shape_preserved():
+    """Artifacts stay a list[str]: stripped, deduped, non-strings dropped."""
+    out = kb.normalize_evidence({
+        "artifacts": ["  /tmp/a.png  ", "/tmp/a.png", "", 5, "/tmp/b.pdf"],
+    })
+    assert out["artifacts"] == ["/tmp/a.png", "/tmp/b.pdf"]
+
+
+def test_normalize_evidence_artifacts_capped():
+    paths = [f"/tmp/f{i}.png" for i in range(kb._EVIDENCE_MAX_ARTIFACTS + 10)]
+    out = kb.normalize_evidence({"artifacts": paths})
+    assert len(out["artifacts"]) == kb._EVIDENCE_MAX_ARTIFACTS
+
+
+def test_normalize_evidence_unparseable_artifacts_dropped():
+    out = kb.normalize_evidence({"artifacts": {"not": "a list"}})
+    assert "artifacts" not in out
+
+
+def test_normalize_evidence_proofs_typed_and_aliased():
+    """type allowlist enforced; title→label, detail→value aliases honoured;
+    empty records and bad statuses dropped."""
+    out = kb.normalize_evidence({
+        "proofs": [
+            {"type": "test", "label": "unit", "value": "14 passed", "status": "pass"},
+            {"type": "weird", "title": "aliased", "detail": "via aliases"},
+            {"type": "command", "value": "make", "status": "bogus"},
+            {"type": "note"},          # no content → dropped
+            "not-a-dict",              # dropped
+        ],
+    })
+    assert out["proofs"] == [
+        {"type": "test", "label": "unit", "value": "14 passed", "status": "pass"},
+        {"type": "note", "label": "aliased", "value": "via aliases"},  # weird→note
+        {"type": "command", "value": "make"},  # bogus status dropped
+    ]
+
+
+def test_normalize_evidence_proofs_capped_and_field_length():
+    proofs = [
+        {"type": "note", "label": f"p{i}", "value": "x" * (kb._EVIDENCE_VALUE_CHARS + 50)}
+        for i in range(kb._EVIDENCE_MAX_PROOFS + 5)
+    ]
+    out = kb.normalize_evidence({"proofs": proofs})
+    assert len(out["proofs"]) == kb._EVIDENCE_MAX_PROOFS
+    assert all(len(p["value"]) <= kb._EVIDENCE_VALUE_CHARS for p in out["proofs"])
+
+
+def test_normalize_evidence_empty_proofs_dropped():
+    out = kb.normalize_evidence({"proofs": [{"type": "note"}], "k": 1})
+    assert "proofs" not in out
+    assert out["k"] == 1
+
+
+def test_complete_task_promotes_proofs_to_event(kanban_home):
+    """complete_task validates+promotes proofs onto the completed event and
+    persists them on the run, while artifacts keep their legacy behaviour."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="evidence", assignee="a")
+        kb.claim_task(conn, tid)
+        kb.complete_task(
+            conn, tid,
+            summary="done",
+            metadata={
+                "artifacts": ["/tmp/out.pdf"],
+                "proofs": [
+                    {"type": "test", "label": "suite", "value": "ok", "status": "pass"},
+                    {"type": "junk"},  # empty → dropped by normalizer
+                ],
+            },
+        )
+        run = kb.latest_run(conn, tid)
+        assert run.metadata["artifacts"] == ["/tmp/out.pdf"]
+        assert run.metadata["proofs"] == [
+            {"type": "test", "label": "suite", "value": "ok", "status": "pass"},
+        ]
+        completed = [e for e in kb.list_events(conn, tid) if e.kind == "completed"]
+        assert len(completed) == 1
+        payload = completed[0].payload or {}
+        assert payload["artifacts"] == ["/tmp/out.pdf"]
+        assert payload["proofs"] == [
+            {"type": "test", "label": "suite", "value": "ok", "status": "pass"},
+        ]
+
+
+def test_complete_task_backward_compat_no_evidence(kanban_home):
+    """A completion with no evidence keys behaves exactly as before — no
+    proofs/artifacts keys leak onto the run or event."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="plain", assignee="a")
+        kb.claim_task(conn, tid)
+        kb.complete_task(conn, tid, summary="done", metadata={"tests_run": 2})
+        run = kb.latest_run(conn, tid)
+        assert run.metadata == {"tests_run": 2}
+        completed = [e for e in kb.list_events(conn, tid) if e.kind == "completed"]
+        payload = completed[0].payload or {}
+        assert "proofs" not in payload
+        assert "artifacts" not in payload

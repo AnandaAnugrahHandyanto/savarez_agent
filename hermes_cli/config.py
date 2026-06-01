@@ -1936,6 +1936,50 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Optional ZeroBoot isolation policy for Kanban worker dispatch.
+        # Off by default so upgrades do not silently change existing boards.
+        # Operators can enable guard mode to prevent host-spawning tasks that
+        # look like untrusted/external code, or route mode to send matching
+        # tasks directly to an explicitly ZeroBoot-capable assignee.
+        "zeroboot_policy": {
+            "enabled": False,
+            "mode": "guard",
+            "isolated_assignees": ["zeroboot-local"],
+            "route_assignee": "zeroboot-local",
+            "require_workspace_kinds": ["worktree"],
+            "require_keywords": [
+                "zeroboot: required",
+                "isolation: required",
+                "untrusted",
+                "nedůvěryhod",
+                "external repo",
+                "cizí repo",
+                "unknown repo",
+                "internet code",
+                "git clone",
+                "npm install",
+                "pip install",
+            ],
+        },
+        # Explicit local Firecracker runner lane. This is separate from the
+        # policy above: tasks only use it when assigned to zeroboot-local.
+        # The capability knobs below are intentionally deny-by-default and
+        # currently fail closed if enabled; network, host mounts, and secrets
+        # need a separately reviewed/approved capability path.
+        "zeroboot_local": {
+            "runner_path": "/home/filip/spearhead-execution/20260530-zeroboot-local-lab-spike/zeroboot-runner/zeroboot_local_runner.py",
+            "timeout_seconds": 15,
+            "boot_timeout_seconds": 6,
+            "api_timeout_seconds": 6,
+            "vcpus": 1,
+            "mem_mib": 128,
+            "runs_dir": "",
+            "image_profile": "default",
+            "image_profiles": {},
+            "network_enabled": False,
+            "host_mounts": [],
+            "secrets_env": [],
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

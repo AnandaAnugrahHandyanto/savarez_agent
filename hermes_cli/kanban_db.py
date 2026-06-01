@@ -70,12 +70,14 @@ new locking.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -101,6 +103,14 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+ZEROBOOT_LOCAL_ASSIGNEE = "zeroboot-local"
+ZEROBOOT_LOCAL_DEFAULT_RUNNER = Path(
+    "/home/filip/spearhead-execution/20260530-zeroboot-local-lab-spike/"
+    "zeroboot-runner/zeroboot_local_runner.py"
+)
+ZEROBOOT_LOCAL_RUNNER = ZEROBOOT_LOCAL_DEFAULT_RUNNER
+ZEROBOOT_RESULT_PREFIX = "__ZEROBOOT_RESULT__ base64="
+ZEROBOOT_LOCAL_ARTIFACT_MAX_BYTES = 64 * 1024
 
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
@@ -215,6 +225,144 @@ _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # 4 KB per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # 8 KB per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
+
+# ---------------------------------------------------------------------------
+# Proof / artifact evidence convention
+# ---------------------------------------------------------------------------
+# Pattern-only adaptation of OpenClaw Workboard's typed proof/artifact
+# evidence (no OpenClaw code imported). Completions can attach two evidence
+# channels inside ``metadata``:
+#   * ``artifacts`` — list[str] of deliverable file paths the gateway
+#     notifier uploads as native attachments. Shape preserved exactly for
+#     backward compatibility with ``kanban_complete(artifacts=[...])``.
+#   * ``proofs`` — list of typed evidence records rendered on the dashboard
+#     and surfaced to downstream workers via ``build_worker_context``.
+# Caps keep a single completion from flooding worker context or the
+# dashboard payload; redaction strips secrets before evidence text ever
+# reaches a downstream worker or the browser.
+_EVIDENCE_MAX_PROOFS     = 20        # max proof records kept per completion
+_EVIDENCE_MAX_ARTIFACTS  = 50        # max artifact paths kept per completion
+_EVIDENCE_LABEL_CHARS    = 200       # cap on proof.label / proof.title
+_EVIDENCE_VALUE_CHARS    = 2 * 1024  # cap on proof.value / proof.detail
+_EVIDENCE_PATH_CHARS     = 1024      # cap on a single artifact path
+_EVIDENCE_PROOF_TYPES    = frozenset(
+    {"test", "command", "url", "file", "screenshot", "metric", "note"}
+)
+_EVIDENCE_PROOF_STATUSES = frozenset({"pass", "fail", "info"})
+
+
+def _redact_evidence_text(text: str) -> str:
+    """Force-redact secrets from evidence text bound for dashboard/worker context.
+
+    ``force=True`` so redaction fires regardless of the operator's
+    ``security.redact_secrets`` setting — evidence is a safety boundary that
+    crosses into downstream worker prompts and the browser. Import is local
+    and best-effort: if the redactor is unavailable we fall back to the raw
+    (already length-capped) text rather than failing the completion.
+    """
+    if not text:
+        return text
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(text, force=True)
+    except Exception:
+        return text
+
+
+def _normalize_proof(raw: object) -> Optional[dict]:
+    """Validate/cap/redact a single proof record, or return None to drop it.
+
+    Accepts a dict with ``type`` (coerced to ``note`` when not in the
+    allowlist), ``label`` (alias ``title``), ``value`` (alias ``detail``),
+    and optional ``status``. Label/value are redacted then length-capped.
+    A record with neither a label nor a value carries no evidence and is
+    dropped.
+    """
+    if not isinstance(raw, dict):
+        return None
+    ptype = str(raw.get("type") or "").strip().lower()
+    if ptype not in _EVIDENCE_PROOF_TYPES:
+        ptype = "note"
+    label_src = raw.get("label")
+    if label_src is None:
+        label_src = raw.get("title")
+    label = _redact_evidence_text(str(label_src).strip())[:_EVIDENCE_LABEL_CHARS] if label_src is not None else ""
+    value_src = raw.get("value")
+    if value_src is None:
+        value_src = raw.get("detail")
+    value = _redact_evidence_text(str(value_src).strip())[:_EVIDENCE_VALUE_CHARS] if value_src is not None else ""
+    if not label and not value:
+        return None
+    proof: dict = {"type": ptype}
+    if label:
+        proof["label"] = label
+    if value:
+        proof["value"] = value
+    status = str(raw.get("status") or "").strip().lower()
+    if status in _EVIDENCE_PROOF_STATUSES:
+        proof["status"] = status
+    return proof
+
+
+def normalize_evidence(metadata: Optional[dict]) -> Optional[dict]:
+    """Return a copy of *metadata* with validated/capped/redacted evidence.
+
+    Central enforcement point for the proof/artifact convention so every
+    completion path (the ``kanban_complete`` tool, the CLI ``--metadata``
+    flag, and direct callers) gets the same caps and redaction. The input
+    is never mutated — callers get a shallow copy with only the
+    ``artifacts`` / ``proofs`` keys rewritten. Non-dict metadata (including
+    ``None``) is returned unchanged.
+
+    * ``artifacts`` → list[str]: strings only, stripped, de-duplicated,
+      per-path length-capped, list length-capped. The string-list shape is
+      preserved so the gateway notifier keeps reading
+      ``payload['artifacts']`` unchanged. An unparseable value is dropped.
+    * ``proofs`` → list[dict]: each record normalized via
+      :func:`_normalize_proof`; empties dropped; list length-capped. An
+      empty or unparseable result drops the key entirely.
+    """
+    if not isinstance(metadata, dict):
+        return metadata
+    out = dict(metadata)
+    if "artifacts" in out:
+        raw_artifacts = out.get("artifacts")
+        if isinstance(raw_artifacts, (list, tuple)):
+            cleaned: list[str] = []
+            seen: set[str] = set()
+            for item in raw_artifacts:
+                if not isinstance(item, str):
+                    continue
+                s = item.strip()[:_EVIDENCE_PATH_CHARS]
+                if s and s not in seen:
+                    seen.add(s)
+                    cleaned.append(s)
+                if len(cleaned) >= _EVIDENCE_MAX_ARTIFACTS:
+                    break
+            if cleaned:
+                out["artifacts"] = cleaned
+            else:
+                out.pop("artifacts", None)
+        else:
+            out.pop("artifacts", None)
+    if "proofs" in out:
+        raw_proofs = out.get("proofs")
+        if isinstance(raw_proofs, (list, tuple)):
+            normalized: list[dict] = []
+            for item in raw_proofs:
+                p = _normalize_proof(item)
+                if p is not None:
+                    normalized.append(p)
+                if len(normalized) >= _EVIDENCE_MAX_PROOFS:
+                    break
+            if normalized:
+                out["proofs"] = normalized
+            else:
+                out.pop("proofs", None)
+        else:
+            out.pop("proofs", None)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2723,7 +2871,7 @@ def _end_run(
     if not row or not row["current_run_id"]:
         return None
     run_id = int(row["current_run_id"])
-    conn.execute(
+    cur = conn.execute(
         """
         UPDATE task_runs
            SET status        = ?,
@@ -2751,7 +2899,7 @@ def _end_run(
     conn.execute(
         "UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,),
     )
-    return run_id
+    return run_id if cur.rowcount == 1 else None
 
 
 def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
@@ -3572,8 +3720,18 @@ def complete_task(
     Any suspected phantom references are recorded as a
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
+
+    Any ``proofs`` / ``artifacts`` evidence carried in ``metadata`` is
+    validated, capped, and redacted via :func:`normalize_evidence` before
+    it is persisted on the run or promoted onto the completion event, so a
+    single completion cannot flood downstream worker context or leak
+    secrets into the dashboard.
     """
     now = int(time.time())
+    # Enforce the proof/artifact evidence convention once, centrally, so
+    # the run row, the worker-context render, and the completion event all
+    # see the same capped/redacted evidence regardless of how it arrived.
+    metadata = normalize_evidence(metadata)
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -3679,6 +3837,13 @@ def complete_task(
                 ]
                 if cleaned_artifacts:
                     completed_payload["artifacts"] = cleaned_artifacts
+            # Carry typed proof evidence on the event too (already
+            # validated/capped/redacted by normalize_evidence above) so
+            # WS consumers and the dashboard can render it without a
+            # second fetch of the run row.
+            md_proofs = metadata.get("proofs")
+            if isinstance(md_proofs, list) and md_proofs:
+                completed_payload["proofs"] = md_proofs
         _append_event(
             conn, task_id, "completed",
             completed_payload,
@@ -4411,6 +4576,7 @@ def decompose_triage_task(
             title = child["title"].strip()
             body = child.get("body")
             assignee = _canonical_assignee(child.get("assignee"))
+            child_status = "blocked" if child.get("initial_status") == "blocked" else "todo"
             # Per-child override wins; otherwise inherit the root's
             # workspace. A child that sets workspace_kind without a path
             # falls back to the root path only when kinds match (so a
@@ -4427,12 +4593,13 @@ def decompose_triage_task(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
                 " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    child_status,
                     child_ws_kind,
                     child_ws_path,
                     tenant,
@@ -4442,8 +4609,21 @@ def decompose_triage_task(
             )
             _append_event(
                 conn, new_id, "created",
-                {"by": author or "decomposer", "from_decompose_of": task_id},
+                {"by": author or "decomposer", "from_decompose_of": task_id, "status": child_status},
             )
+            if child_status == "blocked":
+                reason = child.get("block_reason") or "blocked by kanban decomposer approval gate"
+                conn.execute(
+                    "INSERT INTO task_comments (task_id, author, body, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        new_id,
+                        author or "decomposer",
+                        "Blocked by approval gate during decomposition: " + str(reason),
+                        now,
+                    ),
+                )
+                _append_event(conn, new_id, "blocked", {"reason": str(reason)})
             child_ids.append(new_id)
 
         # Link children to their sibling parents (within the decomposed graph).
@@ -4823,6 +5003,14 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    zeroboot_guarded: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks skipped by the ZeroBoot isolation policy, as
+    ``(task_id, reason)`` pairs.  A guarded task remains ``ready`` and is
+    not claimed/spawned on the host until it is rerouted to an explicitly
+    ZeroBoot-capable assignee or the policy is disabled."""
+    zeroboot_routed: list[tuple[str, str, str, str]] = field(default_factory=list)
+    """Tasks automatically rerouted by the ZeroBoot isolation policy, as
+    ``(task_id, from_assignee, to_assignee, reason)`` tuples."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5378,6 +5566,34 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
+
+    # ZeroBoot local workers are runner subprocesses: when they exit cleanly,
+    # the structured result lives in the runner log/manifest rather than being
+    # written by an in-guest Hermes tool call. Finalize those before the
+    # generic clean-exit protocol-violation path sees them.
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    zrows = conn.execute(
+        "SELECT id, assignee, worker_pid, claim_lock, started_at FROM tasks "
+        "WHERE status = 'running' AND worker_pid IS NOT NULL "
+        "AND assignee = ?",
+        (ZEROBOOT_LOCAL_ASSIGNEE,),
+    ).fetchall()
+    for zrow in zrows:
+        lock = zrow["claim_lock"] or ""
+        if not lock.startswith(host_prefix):
+            continue
+        started_at = zrow["started_at"] if "started_at" in zrow.keys() else None
+        if started_at is not None and time.time() - started_at < _resolve_crash_grace_seconds():
+            continue
+        if _pid_alive(zrow["worker_pid"]):
+            continue
+        summary = _zeroboot_local_summary_from_log(zrow["id"])
+        if summary and _zeroboot_local_finalize_completed_run(conn, zrow["id"], summary):
+            continue
+        kind, _code = _classify_worker_exit(int(zrow["worker_pid"]))
+        if kind != "clean_exit":
+            continue
+
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
@@ -5876,6 +6092,174 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     return None
 
 
+def _zeroboot_policy_config() -> dict:
+    """Return the Kanban ZeroBoot policy config, tolerating partial configs."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        kanban_cfg = cfg.get("kanban") or {}
+        policy = kanban_cfg.get("zeroboot_policy") or {}
+        return policy if isinstance(policy, dict) else {}
+    except Exception:
+        return {}
+
+
+def _zeroboot_policy_enabled(policy: dict) -> bool:
+    return bool((policy or {}).get("enabled"))
+
+
+def _zeroboot_policy_mode(policy: dict) -> str:
+    return str((policy or {}).get("mode") or "guard").strip().lower()
+
+
+def _as_lower_list(value: Any, default: list[str]) -> list[str]:
+    if value is None:
+        return [str(v).lower() for v in default]
+    if isinstance(value, str):
+        return [value.lower()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(v).lower() for v in value if str(v).strip()]
+    return [str(v).lower() for v in default]
+
+
+def _zeroboot_policy_route_assignee(policy: dict) -> str:
+    target = str((policy or {}).get("route_assignee") or "").strip()
+    if target:
+        return target
+    isolated = _as_lower_list((policy or {}).get("isolated_assignees"), ["zeroboot-local"])
+    return isolated[0] if isolated else ZEROBOOT_LOCAL_ASSIGNEE
+
+
+def zeroboot_policy_guard_reason(
+    task: Task, policy: Optional[dict] = None
+) -> Optional[str]:
+    """Return why ``task`` must not be host-spawned, or ``None``.
+
+    This is an explicit policy gate, not a runner integration. When enabled,
+    tasks that look like untrusted/external code are deferred unless already
+    routed to a ZeroBoot-capable assignee. Keeping the decision here (the
+    dispatcher routing boundary) prevents accidental host execution while
+    avoiding a surprise global behavior change when the policy is off.
+    """
+    policy = _zeroboot_policy_config() if policy is None else (policy or {})
+    if not _zeroboot_policy_enabled(policy):
+        return None
+
+    assignee = (task.assignee or "").lower()
+    isolated_assignees = set(_as_lower_list(
+        policy.get("isolated_assignees"), ["zeroboot-local"]
+    ))
+    if assignee and assignee in isolated_assignees:
+        return None
+
+    workspace_kinds = set(_as_lower_list(
+        policy.get("require_workspace_kinds"), ["worktree"]
+    ))
+    if (task.workspace_kind or "").lower() in workspace_kinds:
+        return f"workspace_kind:{task.workspace_kind}"
+
+    keywords = _as_lower_list(
+        policy.get("require_keywords"),
+        [
+            "zeroboot: required",
+            "isolation: required",
+            "untrusted",
+            "nedůvěryhod",
+            "external repo",
+            "cizí repo",
+            "unknown repo",
+            "internet code",
+            "git clone",
+            "npm install",
+            "pip install",
+        ],
+    )
+    text = f"{task.title or ''}\n{task.body or ''}".lower()
+    for kw in keywords:
+        if kw and kw in text:
+            if kw in {"zeroboot: required", "isolation: required"}:
+                return "explicit_required"
+            return "external_code"
+    return None
+
+
+def _record_zeroboot_policy_guard(
+    conn: sqlite3.Connection,
+    task: Task,
+    reason: str,
+    policy: Optional[dict] = None,
+) -> None:
+    policy = _zeroboot_policy_config() if policy is None else (policy or {})
+    _append_event(
+        conn,
+        task.id,
+        "zeroboot_policy_guarded",
+        {
+            "reason": reason,
+            "mode": str(policy.get("mode") or "guard"),
+            "assignee": task.assignee,
+            "workspace_kind": task.workspace_kind,
+        },
+    )
+
+
+def _record_zeroboot_policy_route(
+    conn: sqlite3.Connection,
+    task: Task,
+    reason: str,
+    target_assignee: str,
+    policy: Optional[dict] = None,
+) -> None:
+    policy = _zeroboot_policy_config() if policy is None else (policy or {})
+    conn.execute(
+        "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
+        "last_failure_error = NULL WHERE id = ?",
+        (target_assignee, task.id),
+    )
+    _append_event(
+        conn,
+        task.id,
+        "zeroboot_policy_routed",
+        {
+            "reason": reason,
+            "mode": _zeroboot_policy_mode(policy),
+            "from_assignee": task.assignee,
+            "to_assignee": target_assignee,
+            "workspace_kind": task.workspace_kind,
+        },
+    )
+
+
+def _is_zeroboot_local_assignee(assignee: Optional[str]) -> bool:
+    """Return True for the explicit local Firecracker runner lane."""
+    return (assignee or "").strip().casefold() == ZEROBOOT_LOCAL_ASSIGNEE
+
+
+def _assignee_is_spawnable(assignee: Optional[str], profile_exists) -> bool:
+    """Dispatcher spawnability gate including explicit non-profile lanes.
+
+    ``zeroboot-local`` is intentionally not a Hermes profile. It is a reviewed
+    Firecracker-runner adapter lane, so treating it as spawnable here prevents
+    the generic nonspawnable-profile guard from discarding it before the adapter
+    can run. No automatic rerouting is implied: only tasks explicitly assigned
+    to this lane use it.
+    """
+    if not assignee:
+        return False
+    if _is_zeroboot_local_assignee(assignee):
+        return True
+    return True if profile_exists is None else bool(profile_exists(assignee))
+
+
+def _spawn_callable_for_task(task: Task, spawn_fn=None):
+    if spawn_fn is not None:
+        return spawn_fn
+    if _is_zeroboot_local_assignee(task.assignee):
+        return _zeroboot_local_spawn
+    return _default_spawn
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -5903,7 +6287,7 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if _assignee_is_spawnable(row["assignee"], profile_exists):
             return True
     return False
 
@@ -5928,7 +6312,7 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     except Exception:
         return True
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if _assignee_is_spawnable(row["assignee"], profile_exists):
             return True
     return False
 
@@ -6122,6 +6506,35 @@ def dispatch_once(
             else:
                 result.skipped_unassigned.append(row["id"])
                 continue
+        policy = _zeroboot_policy_config()
+        if _zeroboot_policy_enabled(policy):
+            task = get_task(conn, row["id"])
+            if task is not None:
+                zeroboot_reason = zeroboot_policy_guard_reason(task, policy)
+                if zeroboot_reason is not None:
+                    mode = _zeroboot_policy_mode(policy)
+                    if mode in {"route", "auto_route", "autoroute", "reroute"}:
+                        target = _zeroboot_policy_route_assignee(policy)
+                        result.zeroboot_routed.append(
+                            (row["id"], row_assignee, target, zeroboot_reason)
+                        )
+                        if dry_run:
+                            result.spawned.append((row["id"], target, ""))
+                            continue
+                        with write_txn(conn):
+                            _record_zeroboot_policy_route(
+                                conn, task, zeroboot_reason, target, policy
+                            )
+                        row_assignee = target
+                    else:
+                        result.zeroboot_guarded.append((row["id"], zeroboot_reason))
+                        if not dry_run:
+                            with write_txn(conn):
+                                _record_zeroboot_policy_guard(
+                                    conn, task, zeroboot_reason, policy
+                                )
+                        continue
+
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
@@ -6136,7 +6549,7 @@ def dispatch_once(
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row_assignee):
+        if profile_exists is not None and not _assignee_is_spawnable(row_assignee, profile_exists):
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -6158,6 +6571,7 @@ def dispatch_once(
                     (row["id"], row_assignee, current)
                 )
                 continue
+
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -6206,7 +6620,7 @@ def dispatch_once(
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        _spawn = _spawn_callable_for_task(claimed, spawn_fn)
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
@@ -6270,7 +6684,7 @@ def dispatch_once(
             from hermes_cli.profiles import profile_exists
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        if profile_exists is not None and not _assignee_is_spawnable(row["assignee"], profile_exists):
             result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:
@@ -6298,7 +6712,7 @@ def dispatch_once(
         # means the review agent gets both kanban-worker (lifecycle)
         # and sdlc-review (review logic: AC verification, merge, etc.).
         claimed.skills = ["sdlc-review"]
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        _spawn = _spawn_callable_for_task(claimed, spawn_fn)
         try:
             import inspect
             try:
@@ -6586,6 +7000,450 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+def _zeroboot_local_state_dir(board: Optional[str] = None) -> Path:
+    """Host-only scratch area for ZeroBoot input protocol files."""
+    if (_normalize_board_slug(board) or get_current_board()) == DEFAULT_BOARD:
+        return kanban_home() / "kanban" / "zeroboot-local"
+    return board_dir(_normalize_board_slug(board) or get_current_board()) / "zeroboot-local"
+
+
+def _zeroboot_local_config() -> dict:
+    """Return operator config for the explicit local Firecracker lane.
+
+    Config lives under ``kanban.zeroboot_local``.  Defaults intentionally keep
+    the original lab runner safe: no network or mount flags exist here, and
+    callers must opt into kernel/rootfs/runs-dir overrides explicitly.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        kanban_cfg = cfg.get("kanban") or {}
+        raw = kanban_cfg.get("zeroboot_local") or {}
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _zeroboot_local_runner_path(cfg: Optional[dict] = None) -> Path:
+    cfg = _zeroboot_local_config() if cfg is None else (cfg or {})
+    raw = cfg.get("runner_path") or cfg.get("runner")
+    if raw:
+        configured = Path(os.path.expanduser(str(raw))).resolve()
+        if configured != ZEROBOOT_LOCAL_DEFAULT_RUNNER.resolve():
+            return configured
+    return ZEROBOOT_LOCAL_RUNNER
+
+
+def _zeroboot_local_image_profile(cfg: Optional[dict] = None) -> tuple[str, dict]:
+    cfg = _zeroboot_local_config() if cfg is None else (cfg or {})
+    name = str(cfg.get("image_profile") or "default").strip() or "default"
+    profiles = cfg.get("image_profiles")
+    if not isinstance(profiles, dict):
+        return name, {}
+    profile = profiles.get(name)
+    return name, profile if isinstance(profile, dict) else {}
+
+
+def _zeroboot_local_capability_violations(cfg: dict) -> list[str]:
+    """Return unsafe capability requests that the local lane refuses today.
+
+    P4-P6 keeps the Firecracker lane first-class in config, but still blocks
+    any attempt to widen isolation. Network, host mounts, and secrets need a
+    separately reviewed capability design before they can become runner flags.
+    """
+    violations: list[str] = []
+    if bool((cfg or {}).get("network_enabled")):
+        violations.append("network_enabled")
+    host_mounts = (cfg or {}).get("host_mounts")
+    if host_mounts not in (None, [], (), ""):
+        violations.append("host_mounts")
+    secrets_env = (cfg or {}).get("secrets_env")
+    if secrets_env not in (None, [], (), ""):
+        violations.append("secrets_env")
+    return violations
+
+
+def _zeroboot_local_assert_safe_config(cfg: dict) -> None:
+    violations = _zeroboot_local_capability_violations(cfg)
+    if violations:
+        raise RuntimeError(
+            "ZeroBoot local capability expansion requires approval: "
+            + ", ".join(violations)
+        )
+
+
+def _zeroboot_cli_number(value: Any, default: int | float) -> str:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    if parsed <= 0:
+        parsed = float(default)
+    return str(int(parsed)) if parsed.is_integer() else str(parsed)
+
+
+def _zeroboot_local_runner_argv(runner: Path, command_path: Path, cfg: dict) -> list[str]:
+    image_profile, image_cfg = _zeroboot_local_image_profile(cfg)
+    argv = [
+        str(runner),
+        "--command-file", str(command_path),
+        "--timeout", _zeroboot_cli_number(cfg.get("timeout_seconds"), 15),
+        "--boot-timeout", _zeroboot_cli_number(cfg.get("boot_timeout_seconds"), 6),
+        "--api-timeout", _zeroboot_cli_number(cfg.get("api_timeout_seconds"), 6),
+        "--vcpus", _zeroboot_cli_number(cfg.get("vcpus"), 1),
+        "--mem-mib", _zeroboot_cli_number(cfg.get("mem_mib"), 128),
+    ]
+    if cfg.get("runs_dir"):
+        argv.extend(["--runs-dir", str(Path(os.path.expanduser(str(cfg["runs_dir"]))).resolve())])
+    for key, flag in (("firecracker", "--firecracker"), ("kernel", "--kernel"), ("rootfs", "--rootfs")):
+        raw = image_cfg.get(key) or cfg.get(key)
+        if raw:
+            argv.extend([flag, str(Path(os.path.expanduser(str(raw))).resolve())])
+    return argv
+
+
+def _zeroboot_result_marker(payload: dict) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return ZEROBOOT_RESULT_PREFIX + base64.b64encode(raw).decode("ascii")
+
+
+def _zeroboot_local_build_input(task: Task, cfg: Optional[dict] = None) -> dict:
+    """Bounded C2 task envelope intentionally sent via command-file, not argv."""
+    image_profile, _image_cfg = _zeroboot_local_image_profile(cfg)
+    return {
+        "schema": "spearhead.zeroboot.task_input.v1",
+        "task": {
+            "id": task.id,
+            "title": task.title,
+            "body": task.body or "",
+            "assignee": task.assignee,
+            "workspace_kind": task.workspace_kind,
+        },
+        "worker": {
+            "lane": ZEROBOOT_LOCAL_ASSIGNEE,
+            "image_profile": image_profile,
+            "result_schema": "spearhead.zeroboot.result.v1",
+        },
+        "policy": {
+            "lane": ZEROBOOT_LOCAL_ASSIGNEE,
+            "network_allowed": False,
+            "host_mounts_allowed": False,
+            "secrets_allowed": False,
+        },
+    }
+
+
+def _zeroboot_local_build_command(task: Task, input_json: str) -> str:
+    input_sha = hashlib.sha256(input_json.encode("utf-8")).hexdigest()
+    result = {
+        "schema": "spearhead.zeroboot.result.v1",
+        "status": "completed",
+        "summary": f"ZeroBoot local worker accepted task {task.id}",
+        "metadata": {"input_sha256": input_sha},
+    }
+    input_sha_b64 = base64.b64encode(input_sha.encode("ascii")).decode("ascii")
+    return "\n".join([
+        "set -eu",
+        "cat > /tmp/zeroboot-task.json <<'__ZEROBOOT_TASK_JSON__'",
+        input_json,
+        "__ZEROBOOT_TASK_JSON__",
+        "echo zeroboot-local-adapter",
+        f"printf 'kanban_task_id=%s\\n' {shlex.quote(task.id)}",
+        "uname -m",
+        "echo " + shlex.quote(
+            f"__ZEROBOOT_ARTIFACT__ name=kanban-input-sha256.txt base64={input_sha_b64}"
+        ),
+        "echo " + shlex.quote(_zeroboot_result_marker(result)),
+        "",
+    ])
+
+
+def _decode_zeroboot_result_from_stdout(guest_stdout: str) -> Optional[dict]:
+    for line in guest_stdout.splitlines():
+        line = line.strip()
+        if not line.startswith(ZEROBOOT_RESULT_PREFIX):
+            continue
+        encoded = line[len(ZEROBOOT_RESULT_PREFIX):].strip()
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+            if len(raw) > ZEROBOOT_LOCAL_ARTIFACT_MAX_BYTES:
+                return {"status": "blocked", "summary": "ZeroBoot result payload exceeded size limit"}
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception as exc:
+            return {"status": "blocked", "summary": f"Malformed ZeroBoot result marker: {exc}"}
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _json_objects_from_text(text: str) -> Iterable[dict]:
+    decoder = json.JSONDecoder()
+    idx = 0
+    while True:
+        start = text.find("{", idx)
+        if start < 0:
+            return
+        try:
+            obj, end = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            idx = start + 1
+            continue
+        idx = start + max(end, 1)
+        if isinstance(obj, dict):
+            yield obj
+
+
+def _zeroboot_local_summary_from_log(task_id: str, *, board: Optional[str] = None) -> Optional[dict]:
+    log_path = worker_logs_dir(board=board) / f"{task_id}.log"
+    if not log_path.exists():
+        return None
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")[-1_000_000:]
+    except OSError:
+        return None
+    summaries = [obj for obj in _json_objects_from_text(text) if obj.get("manifest")]
+    return summaries[-1] if summaries else None
+
+
+def _zeroboot_manifest_isolation_violations(manifest: dict) -> list[str]:
+    violations: list[str] = []
+    if manifest.get("network_attached") is not False:
+        violations.append("network_attached")
+    if manifest.get("host_mounts") != []:
+        violations.append("host_mounts")
+    if manifest.get("secrets_injected") is not False:
+        violations.append("secrets_injected")
+    return violations
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _zeroboot_normalize_artifacts(result_payload: dict, manifest: dict) -> list[dict]:
+    outputs = manifest.get("outputs") if isinstance(manifest.get("outputs"), dict) else {}
+    artifacts_dir_raw = outputs.get("guest_artifacts_dir")
+    if not artifacts_dir_raw:
+        return []
+    try:
+        artifacts_dir = Path(str(artifacts_dir_raw)).resolve()
+    except OSError:
+        return []
+    if not artifacts_dir.exists() or not artifacts_dir.is_dir():
+        return []
+
+    raw_items: list[Any] = []
+    if isinstance(result_payload.get("artifacts"), list):
+        raw_items.extend(result_payload.get("artifacts") or [])
+    manifest_artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), dict) else {}
+    guest_artifacts = manifest_artifacts.get("guest_artifacts") if isinstance(manifest_artifacts, dict) else None
+    if isinstance(guest_artifacts, dict):
+        for name, info in guest_artifacts.items():
+            item = {"name": name}
+            if isinstance(info, dict):
+                item.update(info)
+            raw_items.append(item)
+    elif isinstance(guest_artifacts, list):
+        raw_items.extend(item for item in guest_artifacts if isinstance(item, dict))
+
+    normalized: list[dict] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        name = Path(str(raw.get("name") or Path(str(raw.get("path") or "")).name)).name
+        if not name or name in {".", ".."}:
+            continue
+        raw_path = raw.get("path")
+        candidate = Path(str(raw_path)).resolve() if raw_path else (artifacts_dir / name).resolve()
+        try:
+            candidate.relative_to(artifacts_dir)
+        except ValueError:
+            continue
+        if str(candidate) in seen or not candidate.is_file() or candidate.is_symlink():
+            continue
+        size = candidate.stat().st_size
+        if size > ZEROBOOT_LOCAL_ARTIFACT_MAX_BYTES:
+            continue
+        seen.add(str(candidate))
+        normalized.append({
+            "name": name,
+            "path": str(candidate),
+            "size_bytes": size,
+            "sha256": _sha256_file(candidate),
+            "type": str(raw.get("type") or raw.get("content_type") or "application/octet-stream"),
+        })
+        if len(normalized) >= 20:
+            break
+    return normalized
+
+
+def _zeroboot_local_finalize_completed_run(
+    conn: sqlite3.Connection,
+    task_id: str,
+    summary: dict,
+    *,
+    board: Optional[str] = None,
+) -> bool:
+    manifest_path = str(summary.get("manifest") or "")
+    guest_stdout = str(summary.get("guest_stdout") or "")
+    manifest: dict = {}
+    if manifest_path:
+        try:
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        except Exception:
+            manifest = {}
+    stdout_path = manifest.get("outputs", {}).get("guest_stdout") if isinstance(manifest, dict) else None
+    if stdout_path:
+        try:
+            guest_stdout = Path(stdout_path).read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    violations = _zeroboot_manifest_isolation_violations(manifest) if manifest else ["manifest"]
+    if violations:
+        result_payload = {
+            "status": "blocked",
+            "summary": "ZeroBoot isolation violation: " + ", ".join(violations),
+        }
+    else:
+        result_payload = _decode_zeroboot_result_from_stdout(guest_stdout)
+        if result_payload is None:
+            result_payload = {
+                "status": "blocked",
+                "summary": "ZeroBoot runner completed but emitted no structured result marker",
+            }
+    status = str(result_payload.get("status") or "blocked").strip().lower()
+    if status not in {"completed", "blocked", "failed"}:
+        status = "blocked"
+        result_payload["summary"] = "Unknown ZeroBoot result status; blocked safely"
+    result_summary = str(result_payload.get("summary") or "ZeroBoot local run finished").strip()[:4000]
+    raw_metadata = result_payload.get("metadata")
+    metadata: dict = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+    artifacts = [] if violations else _zeroboot_normalize_artifacts(result_payload, manifest)
+    audit = {
+        "schema": "spearhead.zeroboot.audit.v1",
+        "runner_status": summary.get("status"),
+        "guest_exit_code": summary.get("guest_exit_code"),
+        "manifest": manifest_path or None,
+        "run_dir": summary.get("run_dir"),
+        "network_attached": manifest.get("network_attached") if isinstance(manifest, dict) else None,
+        "host_mounts": manifest.get("host_mounts") if isinstance(manifest, dict) else None,
+        "secrets_injected": manifest.get("secrets_injected") if isinstance(manifest, dict) else None,
+        "result_status": status,
+    }
+    if artifacts:
+        audit["artifacts"] = artifacts
+        metadata["artifacts"] = [a["path"] for a in artifacts]
+        metadata["proofs"] = [
+            {
+                "type": "file",
+                "status": "pass",
+                "label": f"ZeroBoot artifact: {a['name']}",
+                "value": f"{a['size_bytes']} bytes sha256={a['sha256']}",
+            }
+            for a in artifacts
+        ]
+    metadata = {**metadata, "zeroboot": audit}
+    if status == "completed":
+        ok = complete_task(
+            conn, task_id,
+            result=result_summary,
+            summary=result_summary,
+            metadata=metadata,
+        )
+    else:
+        ok = block_task(conn, task_id, reason=result_summary)
+    if ok:
+        add_comment(
+            conn,
+            task_id,
+            ZEROBOOT_LOCAL_ASSIGNEE,
+            "ZeroBoot local evidence:\n"
+            + json.dumps(audit, ensure_ascii=False, sort_keys=True),
+        )
+    return ok
+
+
+def _zeroboot_local_spawn(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[int]:
+    """Spawn the reviewed local ZeroBoot/Firecracker runner adapter.
+
+    This narrow adapter proves that the explicit ``zeroboot-local`` lane calls
+    the Firecracker runner instead of the normal host Hermes worker. It passes
+    only a smoke/proof command to the guest: no secrets, network setup, or
+    host mounts. Task payload is written to a command-file/state dir rather
+    than process argv.
+    """
+    if not _is_zeroboot_local_assignee(task.assignee):
+        raise ValueError("ZeroBoot adapter only accepts zeroboot-local tasks")
+    cfg = _zeroboot_local_config()
+    _zeroboot_local_assert_safe_config(cfg)
+    runner = _zeroboot_local_runner_path(cfg)
+    if not runner.exists():
+        raise RuntimeError(f"ZeroBoot local runner not found: {runner}")
+
+    input_payload = _zeroboot_local_build_input(task, cfg)
+    input_json = json.dumps(input_payload, ensure_ascii=False, sort_keys=True)
+    command = _zeroboot_local_build_command(task, input_json)
+
+    state_dir = _zeroboot_local_state_dir(board=board) / task.id
+    state_dir.mkdir(parents=True, exist_ok=True)
+    input_path = state_dir / "task-input.json"
+    command_path = state_dir / "guest-command.sh"
+    input_path.write_text(input_json + "\n", encoding="utf-8")
+    command_path.write_text(command, encoding="utf-8")
+
+    image_profile, _image_cfg = _zeroboot_local_image_profile(cfg)
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", str(Path.home())),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+        "HERMES_KANBAN_TASK": task.id,
+        "HERMES_KANBAN_WORKSPACE": workspace,
+        "HERMES_KANBAN_DB": str(kanban_db_path(board=board)),
+        "HERMES_KANBAN_WORKSPACES_ROOT": str(workspaces_root(board=board)),
+        "HERMES_KANBAN_BOARD": _normalize_board_slug(board) or get_current_board(),
+        "HERMES_PROFILE": ZEROBOOT_LOCAL_ASSIGNEE,
+        "ZEROBOOT_LOCAL_ADAPTER": "1",
+        "ZEROBOOT_LOCAL_IMAGE_PROFILE": image_profile,
+    }
+    if task.current_run_id is not None:
+        env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
+    if task.claim_lock:
+        env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+
+    log_dir = worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task.id}.log"
+    rotate_bytes, backup_count = worker_log_rotation_config()
+    _rotate_worker_log(log_path, rotate_bytes, backup_count)
+    log_f = open(log_path, "ab")
+    try:
+        proc = subprocess.Popen(  # noqa: S603 -- fixed runner argv, no shell
+            _zeroboot_local_runner_argv(runner, command_path, cfg),
+            cwd=workspace if os.path.isdir(workspace) else None,
+            stdin=subprocess.DEVNULL,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if _IS_WINDOWS else 0,
+        )
+    except FileNotFoundError as exc:
+        log_f.close()
+        raise RuntimeError(f"ZeroBoot runner executable not found: {runner}") from exc
+    return proc.pid
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -6744,7 +7602,7 @@ def _default_spawn(
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if _IS_WINDOWS else 0,
         )
     except FileNotFoundError:
         log_f.close()
