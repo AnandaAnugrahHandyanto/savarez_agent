@@ -43,9 +43,11 @@ import type { ModelOptionsResponse } from '@/types/hermes'
 import { routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass } from '../shell/titlebar'
 
+import { ChatDropOverlay } from './chat-drop-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
 import type { ChatBarState } from './composer/types'
 import type { DroppedFile } from './hooks/use-composer-actions'
+import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser, threadLoadingState } from './thread-loading'
 
@@ -267,6 +269,14 @@ export function ChatView({
     onReload
   })
 
+  // Drop files anywhere in the conversation area, not just on the composer
+  // input. Drops on the composer keep their own behavior (inline refs at the
+  // caret); drops elsewhere funnel through the same attach handler.
+  const { dragActive, dropHandlers } = useFileDropZone({
+    enabled: showChatBar,
+    onDropFiles: candidates => void onAttachDroppedItems(candidates)
+  })
+
   return (
     <div
       className={cn(
@@ -285,7 +295,10 @@ export function ChatView({
 
       <NotificationStack />
 
-      <div className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]">
+      <div
+        className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
+        {...dropHandlers}
+      >
         <AssistantRuntimeProvider runtime={runtime}>
           <Thread
             clampToComposer={showChatBar}
@@ -326,6 +339,7 @@ export function ChatView({
             </Suspense>
           )}
         </AssistantRuntimeProvider>
+        <ChatDropOverlay active={dragActive} />
       </div>
     </div>
   )
