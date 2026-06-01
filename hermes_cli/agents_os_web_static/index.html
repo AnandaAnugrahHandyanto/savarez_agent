@@ -67,8 +67,13 @@
       </section>
 
       <section id="approvals" class="view">
-        <div class="panel-toolbar"><h3>Approval queue</h3><span class="muted">Human-in-the-loop gate</span></div>
-        <div id="approvalList" class="list"></div>
+        <div class="panel-toolbar"><h3>Approval queue</h3><span class="muted">Human-in-the-loop risk gate</span></div>
+        <div class="approval-layout">
+          <div id="approvalList" class="list panel"></div>
+          <aside class="approval-detail panel" id="approvalDetail">
+            <div class="empty-detail">Select an approval to inspect risk taxonomy, stale state, payload preview and safe actions.</div>
+          </aside>
+        </div>
       </section>
 
       <section id="runs" class="view">

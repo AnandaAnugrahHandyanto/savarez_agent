@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 import mimetypes
 import re
 import sqlite3
@@ -29,6 +30,7 @@ API_ROUTES = [
     "/api/tasks",
     "/api/tasks/{id}",
     "/api/approvals",
+    "/api/approvals/{id}",
     "/api/runs",
     "/api/runs/{id}",
     "/api/events",
@@ -142,6 +144,7 @@ class MissionControlWebApp:
             events = [_row(r) for r in conn.execute("SELECT * FROM events ORDER BY created_at DESC LIMIT 100").fetchall()]
             agents = self._agent_rows(conn)
             workflows = self._workflow_rows(conn)
+        approvals = self._enrich_approvals(approvals)
         queue_summary = self._queue_summary(tasks, approvals, runs)
         next_task = next((t for t in tasks if t["status"] in {"ready", "pending", "routed"} and not t.get("approval_required")), None)
         return {
@@ -488,6 +491,162 @@ class MissionControlWebApp:
             "safe_next_actions": self._safe_next_actions(safe_task, dependency, safe_approvals, safe_artifacts),
         })
 
+
+    def _parse_iso_datetime(self, value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            raw = str(value).strip().replace("Z", "+00:00")
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except (ValueError, TypeError):
+            return None
+
+    def _approval_is_stale(self, approval: dict[str, Any], *, threshold_hours: int = 24) -> dict[str, Any]:
+        if approval.get("status") != "pending":
+            return {"stale": False, "stale_reason": None, "age_hours": None}
+        created = self._parse_iso_datetime(approval.get("created_at"))
+        if created is None:
+            return {"stale": False, "stale_reason": None, "age_hours": None}
+        age = datetime.now(timezone.utc) - created
+        age_hours = int(age.total_seconds() // 3600)
+        if age_hours >= threshold_hours:
+            return {"stale": True, "stale_reason": f"pending_over_{threshold_hours}h", "age_hours": age_hours}
+        return {"stale": False, "stale_reason": None, "age_hours": age_hours}
+
+    def classify_approval_risk(self, approval: dict[str, Any], task: dict[str, Any] | None = None, events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        task = task or {}
+        events = events or []
+        event_text = " ".join(str(e.get("payload") or "") for e in events[:10])
+        text = " ".join(str(x or "") for x in [approval.get("title"), approval.get("risk"), approval.get("payload"), task.get("title"), task.get("workflow"), task.get("notes"), event_text]).lower()
+        flags: set[str] = set()
+        if re.search(r"\b(public|publish|post|send|email|telegram|discord|webhook|external|outbound)\b", text):
+            flags.add("public_side_effect")
+        if re.search(r"\b(network|http|https|api|url|webhook|external|cloud|vps|deploy)\b", text):
+            flags.add("network_side_effect")
+        if re.search(r"(?i)(api[_-]?key|token|secret|password|credential|auth|\.env|bearer|sk-[a-z0-9_-]{8,})", text):
+            flags.add("credential_sensitive")
+        if re.search(r"\b(delete|remove|drop|destroy|wipe|truncate|overwrite|destructive|production database|prod db)\b", text):
+            flags.add("destructive")
+        if re.search(r"\b(payment|pay|invoice|trade|trading|buy|sell|order|broker|exchange|crypto|stock|financial|money|bank)\b", text):
+            flags.add("financial")
+        if re.search(r"\b(security|exploit|payload|scan|pentest|red.?team|offensive|tracking|geolocation|spoof|sms)\b", text):
+            flags.add("security_sensitive")
+        if re.search(r"\b(memory|profile|marija|ero|openclaw|soul|user\.md|memory\.md|auth layer|session layer)\b", text):
+            flags.add("profile_or_memory_mutation")
+        if re.search(r"\b(gateway|restart|runtime|config|provider|cron|watchdog|service|systemd)\b", text):
+            flags.add("gateway_or_runtime_change")
+        workflow = str(task.get("workflow") or approval.get("created_from_workflow") or "")
+        if approval.get("risk") == "external-action" or workflow == "external-action-draft" or "external" in text or "outbound" in text:
+            flags.add("external_action")
+        if len(text.strip()) < 24 or re.search(r"\b(todo|tbd|unknown|unspecified|later|something)\b", text):
+            flags.add("unknown_or_underspecified")
+        if not flags:
+            flags.add("unknown_or_underspecified")
+        category = "external_action" if "external_action" in flags else ("runtime_change" if "gateway_or_runtime_change" in flags else ("credential_sensitive" if "credential_sensitive" in flags else "operator_approval"))
+        if "destructive" in flags or "financial" in flags or ({"credential_sensitive", "external_action"}.issubset(flags) and ({"public_side_effect", "network_side_effect"} & flags)):
+            level = "critical"
+        elif flags & {"credential_sensitive", "public_side_effect", "network_side_effect", "profile_or_memory_mutation", "gateway_or_runtime_change", "security_sensitive"}:
+            level = "high"
+        elif "external_action" in flags or "unknown_or_underspecified" in flags:
+            level = "medium"
+        else:
+            level = "low"
+        min_input = []
+        if "unknown_or_underspecified" in flags:
+            min_input.append("precise payload and intended outcome")
+        if "credential_sensitive" in flags:
+            min_input.append("confirm no raw credential should be exposed")
+        if "public_side_effect" in flags or "network_side_effect" in flags:
+            min_input.append("destination, audience, and exact outbound data")
+        if "destructive" in flags:
+            min_input.append("backup/rollback confirmation")
+        if "financial" in flags:
+            min_input.append("explicit financial approval and limits")
+        if not min_input:
+            min_input.append("approve or deny the pending local action")
+        return {
+            "risk_category": category,
+            "risk_level": level,
+            "risk_flags": sorted(flags),
+            "required_decision": "approve_or_deny_pending_action" if approval.get("status") == "pending" else "read_only_resolved_approval",
+            "minimum_input_needed": "; ".join(min_input),
+            "source": "mission_control_web" if "mission_control_web" in text else "agents_os_runtime",
+            "actor": "operator",
+            "created_from_route": task.get("route") or "approval_gate",
+            "created_from_workflow": task.get("workflow") or workflow or None,
+        }
+
+    def approval_payload(self, approval: dict[str, Any], task: dict[str, Any] | None = None, events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        safe = self._sanitize_row(dict(approval)) or {}
+        task = task or {}
+        taxonomy = self.classify_approval_risk(approval, task, events)
+        stale = self._approval_is_stale(approval)
+        safe["payload_preview"] = self._redact_preview(str(approval.get("payload") or ""), 360)
+        safe["payload"] = safe["payload_preview"]
+        safe.update(taxonomy)
+        safe.update(stale)
+        safe["risk_taxonomy"] = taxonomy
+        return safe
+
+    def _enrich_approvals(self, approvals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not approvals:
+            return []
+        with self._connect() as conn:
+            enriched = []
+            for approval in approvals:
+                task = _row(conn.execute("SELECT * FROM tasks WHERE id=?", (approval.get("task_id"),)).fetchone()) if approval.get("task_id") else None
+                events = [_row(r) for r in conn.execute("SELECT * FROM events WHERE task_id=? ORDER BY created_at ASC", (approval.get("task_id") or "",)).fetchall()]
+                enriched.append(self.approval_payload(approval, task, events))
+            return enriched
+
+    def approvals_payload(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            approvals = [_row(r) for r in conn.execute("SELECT * FROM approvals ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC LIMIT 200").fetchall()]
+        return self._enrich_approvals(approvals)
+
+    def approval_detail_payload(self, approval_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            approval = _row(conn.execute("SELECT * FROM approvals WHERE id=?", (approval_id,)).fetchone())
+            if approval is None:
+                return err("approval_not_found", f"Approval not found: {approval_id}", 404)
+            task = _row(conn.execute("SELECT * FROM tasks WHERE id=?", (approval.get("task_id"),)).fetchone()) if approval.get("task_id") else None
+            events = [_row(r) for r in conn.execute("SELECT * FROM events WHERE task_id=? ORDER BY created_at ASC", (approval.get("task_id") or "",)).fetchall()]
+        enriched = self.approval_payload(approval, task, events)
+        pending = enriched.get("status") == "pending"
+        safe_next_actions = [
+            {"id": "approve", "label": "Approve", "allowed": pending, "reason": "pending" if pending else "resolved"},
+            {"id": "deny", "label": "Deny", "allowed": pending, "reason": "pending" if pending else "resolved"},
+            {"id": "open_task", "label": "Open related task", "allowed": bool(enriched.get("task_id")), "reason": "task_linked" if enriched.get("task_id") else "no_task"},
+            {"id": "refresh", "label": "Refresh detail", "allowed": True, "reason": "read_only_refresh"},
+        ]
+        return ok({
+            "approval": enriched,
+            "task": self._sanitize_row(task),
+            "events": [self._sanitize_row(e) for e in events],
+            "risk_taxonomy": enriched["risk_taxonomy"],
+            "safe_next_actions": safe_next_actions,
+        })
+
+    def _approval_risk_summary(self) -> dict[str, Any]:
+        approvals = self.approvals_payload()
+        pending = [a for a in approvals if a.get("status") == "pending"]
+        with self._connect() as conn:
+            approval_blocked_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE approval_required=1 OR status='needs_approval'").fetchone()[0]
+        high_levels = {"high", "critical"}
+        summary = {
+            "high_risk_pending_approvals": sum(1 for a in pending if a.get("risk_level") in high_levels),
+            "stale_approvals": sum(1 for a in pending if a.get("stale")),
+            "approval_blocked_tasks": approval_blocked_tasks,
+            "credential_sensitive_pending": sum(1 for a in pending if "credential_sensitive" in a.get("risk_flags", [])),
+            "gateway_or_runtime_change_pending": sum(1 for a in pending if "gateway_or_runtime_change" in a.get("risk_flags", [])),
+            "external_action_pending": sum(1 for a in pending if "external_action" in a.get("risk_flags", [])),
+        }
+        summary["status"] = "attention" if any(summary.values()) else "ok"
+        return summary
+
     def safety_payload(self) -> dict[str, Any]:
         doctor = self._doctor_payload()
         mirror_path = self.paths.vault_root / "00-command-center" / "RUNTIME-DASHBOARD.md"
@@ -507,6 +666,7 @@ class MissionControlWebApp:
             "runtime_config_changed": False,
             "gateway_restart": False,
             "credential_scan": {"credential_like_matches": credential_like_matches, "status": "ok" if credential_like_matches == 0 else "attention"},
+            "approval_risk": self._approval_risk_summary(),
         }
 
     # ---------- mutations ----------
@@ -715,7 +875,10 @@ class MissionControlWebApp:
             if method == "GET" and m:
                 return self.task_detail_payload(m.group(1))
             if method == "GET" and route == "/api/approvals":
-                return ok(self.dashboard_payload()["approvals"])
+                return ok(self.approvals_payload())
+            m = re.fullmatch(r"/api/approvals/([^/]+)", route)
+            if method == "GET" and m:
+                return self.approval_detail_payload(m.group(1))
             if method == "GET" and route == "/api/runs":
                 return ok(self.dashboard_payload()["runs"])
             m = re.fullmatch(r"/api/runs/([^/]+)", route)

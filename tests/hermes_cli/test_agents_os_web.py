@@ -264,6 +264,132 @@ def test_web_json_exposes_task_detail_route(tmp_path, monkeypatch, capsys):
     assert "/api/tasks/{id}" in payload["routes"]
 
 
+def _seed_v23_approval(paths, *, approval_id="approval-risk", task_id="task-risk", payload="send public request with API_KEY=raw-secret", risk="external-action", status="pending", created_at=None, workflow="external-action-draft", title="Risk approval"):
+    now = created_at or agents_os.utc_now()
+    with agents_os.connect(paths) as conn:
+        conn.execute("INSERT INTO tasks(id,title,status,workflow,priority,created_at,updated_at,notes,approval_required) VALUES(?,?,?,?,?,?,?,?,?)", (task_id, title, "needs_approval" if status == "pending" else "blocked", workflow, 1, now, now, payload, 1 if status == "pending" else 0))
+        conn.execute("INSERT INTO approvals(id,title,status,risk,task_id,payload,created_at,resolved_at) VALUES(?,?,?,?,?,?,?,?)", (approval_id, title, status, risk, task_id, payload, now, None if status == "pending" else agents_os.utc_now()))
+        agents_os.log_event(conn, "approval_requested", task_id=task_id, payload={"approval_id": approval_id, "source": "test", "payload": payload})
+        conn.commit()
+    return approval_id, task_id
+
+
+def test_approval_list_enriches_risk_taxonomy_and_redacts_payload(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    paths = agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault)))
+    approval_id, task_id = _seed_v23_approval(paths, payload="send to public api with token=raw-token and password=raw-pass")
+    from hermes_cli.agents_os_web import MissionControlWebApp
+
+    approvals = MissionControlWebApp(paths).handle_json("GET", "/api/approvals")
+    row = next(a for a in approvals["data"] if a["id"] == approval_id)
+    dumped = json.dumps(row)
+    assert row["risk_category"] == "external_action"
+    assert row["risk_level"] in {"high", "critical"}
+    assert "public_side_effect" in row["risk_flags"]
+    assert "credential_sensitive" in row["risk_flags"]
+    assert row["required_decision"]
+    assert row["minimum_input_needed"]
+    assert row["source"]
+    assert row["actor"]
+    assert row["created_from_workflow"] == "external-action-draft"
+    assert row["task_id"] == task_id
+    assert "payload_preview" in row
+    assert "raw-token" not in dumped
+    assert "raw-pass" not in dumped
+    assert "[redacted]" in dumped
+
+
+def test_approval_detail_route_returns_task_events_and_safe_actions(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    paths = agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault)))
+    approval_id, task_id = _seed_v23_approval(paths, payload="restart gateway after approval")
+    from hermes_cli.agents_os_web import MissionControlWebApp
+
+    detail = MissionControlWebApp(paths).handle_json("GET", f"/api/approvals/{approval_id}")
+    assert detail["ok"] is True
+    data = detail["data"]
+    assert data["approval"]["id"] == approval_id
+    assert data["task"]["id"] == task_id
+    assert data["events"]
+    assert "risk_taxonomy" in data
+    actions = {a["id"]: a for a in data["safe_next_actions"]}
+    assert actions["approve"]["allowed"] is True
+    assert actions["deny"]["allowed"] is True
+    assert actions["refresh"]["allowed"] is True
+    assert "execute" not in actions
+
+
+def test_approval_risk_flags_detect_sensitive_categories(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    paths = agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault)))
+    cases = [
+        ("approval-public", "send public network webhook to external url", "public_side_effect"),
+        ("approval-cred", "use api_key=abc123 token=raw", "credential_sensitive"),
+        ("approval-destroy", "delete production database destructive action", "destructive"),
+        ("approval-fin", "place live trade payment for crypto", "financial"),
+        ("approval-gw", "restart gateway runtime config", "gateway_or_runtime_change"),
+        ("approval-memory", "modify memory profile for Marija", "profile_or_memory_mutation"),
+        ("approval-sec", "run security scan exploit payload", "security_sensitive"),
+    ]
+    for approval_id, payload, _flag in cases:
+        _seed_v23_approval(paths, approval_id=approval_id, task_id=f"task-{approval_id}", payload=payload, title=approval_id)
+    from hermes_cli.agents_os_web import MissionControlWebApp
+
+    rows = {a["id"]: a for a in MissionControlWebApp(paths).handle_json("GET", "/api/approvals")["data"]}
+    for approval_id, _payload, flag in cases:
+        assert flag in rows[approval_id]["risk_flags"]
+        assert rows[approval_id]["risk_level"] in {"high", "critical"}
+
+
+def test_stale_pending_approval_is_flagged(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    paths = agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault)))
+    _seed_v23_approval(paths, approval_id="approval-stale", task_id="task-stale", created_at="2000-01-01T00:00:00Z", payload="underspecified external action")
+    _seed_v23_approval(paths, approval_id="approval-resolved", task_id="task-resolved", created_at="2000-01-01T00:00:00Z", payload="old but resolved", status="approved")
+    from hermes_cli.agents_os_web import MissionControlWebApp
+
+    rows = {a["id"]: a for a in MissionControlWebApp(paths).handle_json("GET", "/api/approvals")["data"]}
+    assert rows["approval-stale"]["stale"] is True
+    assert rows["approval-stale"]["stale_reason"]
+    assert rows["approval-resolved"]["stale"] is False
+
+
+def test_safety_payload_aggregates_approval_risk_signals(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    paths = agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault)))
+    _seed_v23_approval(paths, approval_id="approval-high", task_id="task-high", payload="send external network token=raw to public api", created_at="2000-01-01T00:00:00Z")
+    from hermes_cli.agents_os_web import MissionControlWebApp
+
+    safety = MissionControlWebApp(paths).handle_json("GET", "/api/safety")
+    agg = safety["data"]["approval_risk"]
+    assert agg["high_risk_pending_approvals"] >= 1
+    assert agg["stale_approvals"] >= 1
+    assert agg["approval_blocked_tasks"] >= 1
+    assert agg["credential_sensitive_pending"] >= 1
+    assert agg["external_action_pending"] >= 1
+    assert agg["status"] == "attention"
+
+
+def test_approval_gated_execute_close_still_blocked_after_risk_taxonomy(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    from hermes_cli.agents_os_web import MissionControlWebApp
+
+    app = MissionControlWebApp(agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault))))
+    created = app.handle_json("POST", "/api/workflows/external-action-draft/run", {"input": "send outbound", "title": "Approval gated V23"})
+    task_id = created["data"]["task_id"]
+    approvals = app.handle_json("GET", "/api/approvals")["data"]
+    assert any(a["task_id"] == task_id and a["risk_flags"] for a in approvals)
+    assert app.handle_json("POST", f"/api/tasks/{task_id}/execute")["error"]["code"] == "approval_required"
+    assert app.handle_json("POST", f"/api/tasks/{task_id}/close", {"evidence": "done"})["error"]["code"] == "approval_required"
+
+
+def test_web_json_exposes_approval_detail_route(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    assert agents_os.main(["--vault-root", str(vault), "web", "--json"]) == 0
+    payload = _json(capsys)
+    assert "/api/approvals/{id}" in payload["routes"]
+
+
 def test_cli_web_json_exposes_v21_routes(tmp_path, monkeypatch, capsys):
     vault = _setup(tmp_path, monkeypatch, capsys)
     assert agents_os.main(["--vault-root", str(vault), "web", "--json"]) == 0
