@@ -55,6 +55,57 @@ delegate_task(
 
 子智能体会收到一个基于你的 goal 和 context 构建的专注系统 prompt（提示词），指示其完成任务并提供结构化摘要，包括所做的事情、发现的内容、修改的文件以及遇到的问题。
 
+## 如何给子智能体下达任务
+
+一次好的委派需要两层内容：
+
+1. **任务指令**——子智能体具体要做什么。
+2. **子智能体描述**——一句短标签，帮助父智能体判断应该派哪种子智能体去做。
+
+编写子智能体任务时，请包含：
+
+- **角色**——子智能体负责什么
+- **范围**——它可以触及哪些文件、系统或数据
+- **约束**——它绝对不能做什么
+- **成功标准**——如何判断任务完成
+- **输出格式**——要 bullet、表格、patch 说明，还是 checklist
+- **证据**——文件路径、命令输出、链接或其他证明
+
+### 任务模板
+
+使用对“全新子智能体”也足够明确的提示：
+
+```python
+delegate_task(
+    goal="Act as an independent verifier for the TA wiring change",
+    context="""Mission:
+- Do not edit files.
+- Inspect the compose wiring, docs, and smoke coverage.
+- Confirm the public endpoint, local port, and service names.
+- Report any mismatch with exact file/line references.
+
+Return:
+1. verdict
+2. evidence
+3. follow-ups""",
+    toolsets=["file", "terminal"]
+)
+```
+
+### 常见子智能体描述
+
+这些是父智能体在拆分任务时可以选择的子智能体原型：
+
+| 子智能体类型 | 描述 | 适合场景 |
+|------------|-------------|----------|
+| **Researcher** | 读取文件、文档或网页来源，并总结事实，不修改任何内容。 | 未知项、审计、来源映射 |
+| **Implementer** | 执行修改、运行针对性测试，并报告具体改动。 | 代码修复、文档更新、小型重构 |
+| **Verifier** | 独立检查主张，并报告证据是否与需求一致。 | 合并前验证、diff 审查、smoke 检查 |
+| **Scribe** | 将证据整理成精炼文档、交接说明、PR 正文或发布说明。 | 文档、摘要、runbook |
+| **Troubleshooter** | 追查日志、配置和运行时状态，直到定位根因。 | 构建失败、运行时 bug、不稳定检查 |
+
+这些不是 `delegate_task` 里的硬编码模式，而是任务风格。父智能体应先选对描述，再写出足够明确的指令，让子智能体的输出容易验证。
+
 ## 实际示例
 
 ### 并行研究

@@ -55,6 +55,57 @@ delegate_task(
 
 The subagent receives a focused system prompt built from your goal and context, instructing it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
 
+## Missioning a Child Agent
+
+A good delegation call has two layers:
+
+1. **Mission instructions** — the exact job the child should do.
+2. **Child description** — a short label for the child's job so the parent picks the right kind of subagent.
+
+When you write the child mission, include:
+
+- **Role** — what the child is responsible for
+- **Scope** — which files, systems, or data it may touch
+- **Constraints** — what it must not do
+- **Success criteria** — how completion will be judged
+- **Output shape** — bullets, table, patch notes, or a checklist
+- **Evidence** — file paths, command output, links, or other proof
+
+### Mission Template
+
+Use a prompt that is explicit enough for a fresh agent with no prior context:
+
+```python
+delegate_task(
+    goal="Act as an independent verifier for the TA wiring change",
+    context="""Mission:
+- Do not edit files.
+- Inspect the compose wiring, docs, and smoke coverage.
+- Confirm the public endpoint, local port, and service names.
+- Report any mismatch with exact file/line references.
+
+Return:
+1. verdict
+2. evidence
+3. follow-ups""",
+    toolsets=["file", "terminal"]
+)
+```
+
+### Common Child Agent Descriptions
+
+These are the child-agent archetypes the parent can choose from when splitting work:
+
+| Child type | Description | Best use |
+|------------|-------------|----------|
+| **Researcher** | Reads files, docs, or web sources and summarizes facts without changing anything. | Unknowns, audits, source mapping |
+| **Implementer** | Makes edits, runs targeted tests, and reports the concrete changes made. | Code fixes, docs updates, small refactors |
+| **Verifier** | Checks claims independently and reports whether the evidence matches the request. | Pre-merge validation, diff review, smoke checks |
+| **Scribe** | Turns evidence into polished docs, handoffs, PR bodies, or release notes. | Documentation, summaries, runbooks |
+| **Troubleshooter** | Chases failures across logs, configs, and runtime state until the root cause is clear. | Build failures, runtime bugs, flaky checks |
+
+These are not hard-coded modes in `delegate_task`; they are mission styles. The parent should pick the description that matches the job, then write instructions that make the child's output easy to validate.
+
 ## Practical Examples
 
 ### Parallel Research
