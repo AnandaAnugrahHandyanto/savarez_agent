@@ -17,10 +17,6 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
-    - agent lifecycle events (run.queued, run.running, run.completed, run.failed)
-    - tool progress events (tool.started, tool.completed, tool.failed)
-    - approval events (approval.request)
-    - background process events (process.completed, process.watch_match)
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
@@ -36,7 +32,6 @@ Requires:
 """
 
 import asyncio
-import contextvars
 import hashlib
 import hmac
 import json
@@ -553,6 +548,7 @@ def _sanitize_error_msg(exc: Exception, max_len: int = 200) -> str:
     Truncates long messages and strips absolute paths to avoid leaking
     internal filesystem layout or stack details to external clients.
     """
+    import re
     msg = str(exc)
     # Strip absolute filesystem paths (Unix and Windows).
     # Only match paths rooted at known system directories to avoid
@@ -740,9 +736,6 @@ class APIServerAdapter(BasePlatformAdapter):
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
-        # Reverse mapping: approval_session_key -> run_id, so that
-        # background process watchers can push events to the right SSE queue.
-        self._session_to_run: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
     @staticmethod
@@ -3476,52 +3469,37 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
 
         def _run():
-            from gateway.session_context import clear_session_vars, set_session_vars
+            agent = self._create_agent(
+                ephemeral_system_prompt=ephemeral_system_prompt,
+                session_id=session_id,
+                stream_delta_callback=stream_delta_callback,
+                tool_progress_callback=tool_progress_callback,
+                tool_start_callback=tool_start_callback,
+                tool_complete_callback=tool_complete_callback,
+                gateway_session_key=gateway_session_key,
+            )
+            if agent_ref is not None:
+                agent_ref[0] = agent
+            effective_task_id = session_id or str(uuid.uuid4())
+            result = agent.run_conversation(
+                user_message=user_message,
+                conversation_history=conversation_history,
+                task_id=effective_task_id,
+            )
+            usage = {
+                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+            }
+            # Include the effective session ID in the result so callers
+            # (e.g. X-Hermes-Session-Id header) can track compression-
+            # triggered session rotations. (#16938)
+            _eff_sid = getattr(agent, "session_id", session_id)
+            if isinstance(_eff_sid, str) and _eff_sid:
+                result["session_id"] = _eff_sid
+            return result, usage
 
-            _session_tokens = []
-            try:
-                _session_tokens = set_session_vars(
-                    platform="api_server",
-                    session_key=gateway_session_key or session_id or "",
-                )
-                agent = self._create_agent(
-                    ephemeral_system_prompt=ephemeral_system_prompt,
-                    session_id=session_id,
-                    stream_delta_callback=stream_delta_callback,
-                    tool_progress_callback=tool_progress_callback,
-                    tool_start_callback=tool_start_callback,
-                    tool_complete_callback=tool_complete_callback,
-                    gateway_session_key=gateway_session_key,
-                )
-                if agent_ref is not None:
-                    agent_ref[0] = agent
-                effective_task_id = session_id or str(uuid.uuid4())
-                result = agent.run_conversation(
-                    user_message=user_message,
-                    conversation_history=conversation_history,
-                    task_id=effective_task_id,
-                )
-                usage = {
-                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                    "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-                }
-                # Include the effective session ID in the result so callers
-                # (e.g. X-Hermes-Session-Id header) can track compression-
-                # triggered session rotations. (#16938)
-                _eff_sid = getattr(agent, "session_id", session_id)
-                if isinstance(_eff_sid, str) and _eff_sid:
-                    result["session_id"] = _eff_sid
-                return result, usage
-            finally:
-                if _session_tokens:
-                    try:
-                        clear_session_vars(_session_tokens)
-                    except Exception:
-                        pass
-
-        _ctx = contextvars.copy_context()
-        return await loop.run_in_executor(None, _ctx.run, _run)
+        return await loop.run_in_executor(None, _run)
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming
@@ -3591,76 +3569,6 @@ class APIServerAdapter(BasePlatformAdapter):
             # _thinking and subagent_progress are intentionally not forwarded
 
         return _callback
-
-    async def _run_api_server_watcher(
-        self,
-        watcher: dict,
-        run_id: str,
-        q: "asyncio.Queue",
-    ) -> None:
-        """Poll a background process and push completion events to the SSE queue.
-
-        This is the api_server equivalent of Gateway._run_process_watcher.
-        Instead of injecting a synthetic message into the gateway adapter,
-        we emit a structured ``process.completed`` event on the run's SSE stream.
-        """
-        from tools.process_registry import process_registry
-        from tools.ansi_strip import strip_ansi
-
-        session_id = watcher["session_id"]
-        interval = watcher["check_interval"]
-        agent_notify = watcher.get("notify_on_complete", False)
-
-        logger.debug(
-            "API server watcher started: %s (every %ss, agent_notify=%s)",
-            session_id, interval, agent_notify,
-        )
-
-        while True:
-            await asyncio.sleep(interval)
-            session = process_registry.get(session_id)
-            if session is None:
-                break
-            if session.exited:
-                from tools.process_registry import process_registry as _pr_check
-                if agent_notify and not _pr_check.is_completion_consumed(session_id):
-                    _out = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
-                    try:
-                        q.put_nowait({
-                            "event": "process.completed",
-                            "run_id": run_id,
-                            "timestamp": time.time(),
-                            "session_id": session_id,
-                            "command": session.command,
-                            "exit_code": session.exit_code,
-                            "output": _out,
-                        })
-                    except Exception:
-                        pass
-                break
-
-    def push_process_event(self, process_event: dict) -> bool:
-        """Push a background process event to the SSE queue for the owning run.
-
-        Called by the gateway's _run_process_watcher when platform is api_server.
-        Uses the session_key from the watcher to look up the active run's SSE queue.
-
-        Returns True if the event was pushed, False if no active run found.
-        """
-        session_key = process_event.get("session_key", "")
-        run_id = self._session_to_run.get(session_key)
-        if not run_id:
-            return False
-        q = self._run_streams.get(run_id)
-        if q is None:
-            # Run may have finished; clean up stale mapping
-            self._session_to_run.pop(session_key, None)
-            return False
-        try:
-            q.put_nowait(process_event)
-            return True
-        except Exception:
-            return False
 
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
@@ -3750,7 +3658,6 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
         self._run_approval_sessions[run_id] = approval_session_key
-        self._session_to_run[approval_session_key] = run_id
 
         event_cb = self._make_run_event_callback(run_id, loop)
 
@@ -3777,7 +3684,6 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
         async def _run_and_close():
-            _watcher_tasks = []
             try:
                 self._set_run_status(run_id, "running")
                 agent = self._create_agent(
@@ -3826,11 +3732,6 @@ class APIServerAdapter(BasePlatformAdapter):
                         approval_token = set_current_session_key(approval_session_key)
                         session_tokens = set_session_vars(
                             platform="api_server",
-                            chat_id=body.get("chat_id", ""),
-                            chat_name=body.get("chat_name", ""),
-                            thread_id=str(body.get("thread_id", "")) if body.get("thread_id") else "",
-                            user_id=str(body.get("user_id", "")) if body.get("user_id") else "",
-                            user_name=str(body.get("user_name", "")) if body.get("user_name") else "",
                             session_key=approval_session_key,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
@@ -3860,55 +3761,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     }
                     return r, u
 
-                result, usage = await asyncio.get_running_loop().run_in_executor(
-                    None, contextvars.copy_context().run, _run_sync
-                )
-
-                # Spawn process watchers for any background processes started during the run.
-                # The gateway path does this in _handle_message_with_agent (run.py:7950).
-                # The api_server must do it here because it does not go through the gateway handler.
-                try:
-                    from tools.process_registry import process_registry
-                    my_watchers = [
-                        w for w in process_registry.pending_watchers
-                        if w.get("session_key") == approval_session_key
-                    ]
-                    for w in my_watchers:
-                        process_registry.pending_watchers.remove(w)
-                        t = asyncio.create_task(self._run_api_server_watcher(w, run_id, q))
-                        _watcher_tasks.append(t)
-                except Exception as e:
-                    logger.error("[api_server] process watcher setup error: %s", e)
-
-                # Drain watch-pattern events that arrived during the agent run.
-                # Completion events are handled by the watcher tasks above;
-                # any orphaned queue events are harmless (skipped on next drain).
-                try:
-                    from tools.process_registry import process_registry as _pr
-                    _watch_events = []
-                    while not _pr.completion_queue.empty():
-                        evt = _pr.completion_queue.get_nowait()
-                        evt_type = evt.get("type", "completion")
-                        if evt_type in {"watch_match", "watch_disabled"}:
-                            _watch_events.append(evt)
-                    for evt in _watch_events:
-                        from gateway.run import _format_gateway_process_notification
-                        synth_text = _format_gateway_process_notification(evt)
-                        if synth_text:
-                            try:
-                                q.put_nowait({
-                                    "event": "process.watch_match",
-                                    "run_id": run_id,
-                                    "timestamp": time.time(),
-                                    "session_id": evt.get("session_id"),
-                                    "pattern": evt.get("pattern"),
-                                    "output": evt.get("output"),
-                                })
-                            except Exception as e2:
-                                logger.error("[api_server] watch event push error: %s", e2)
-                except Exception as e:
-                    logger.error("[api_server] watch event drain error: %s", e)
-
+                result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
                 # Check for structured failure (non-retryable client errors like
                 # 401/400 return failed=True instead of raising, so the except
                 # block below never fires — issue #15561).
@@ -3975,9 +3828,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
             finally:
-                # Cancel any watcher tasks spawned for this run.
-                for wt in _watcher_tasks:
-                    wt.cancel()
                 # If the asyncio wrapper is cancelled (for example via
                 # /stop), the executor thread can still be blocked waiting
                 # on an approval Event.  Unregistering here releases those
@@ -3996,9 +3846,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
-                _ak = self._run_approval_sessions.pop(run_id, None)
-                if _ak:
-                    self._session_to_run.pop(_ak, None)
+                self._run_approval_sessions.pop(run_id, None)
 
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
@@ -4235,9 +4083,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_streams_created.pop(run_id, None)
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
-                _ak = self._run_approval_sessions.pop(run_id, None)
-                if _ak:
-                    self._session_to_run.pop(_ak, None)
+                self._run_approval_sessions.pop(run_id, None)
 
             stale_statuses = [
                 run_id
