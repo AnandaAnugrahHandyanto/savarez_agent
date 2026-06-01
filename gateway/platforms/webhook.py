@@ -394,7 +394,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=403,
             )
         if secret != _INSECURE_NO_AUTH:
-            if not self._validate_signature(request, raw_body, secret):
+            if not self._validate_signature(request, raw_body, secret, route_config):
                 logger.warning(
                     "[webhook] Invalid signature for route %s", route_name
                 )
@@ -429,13 +429,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 )
 
         # Check event type filter
-        event_type = (
-            request.headers.get("X-GitHub-Event", "")
-            or request.headers.get("X-GitLab-Event", "")
-            or payload.get("event_type", "")
-            or payload.get("type", "")
-            or "unknown"
-        )
+        event_type = self._extract_event_type(request, payload, route_config)
         allowed_events = route_config.get("events", [])
         if allowed_events and event_type not in allowed_events:
             logger.debug(
@@ -444,8 +438,12 @@ class WebhookAdapter(BasePlatformAdapter):
                 route_name,
                 allowed_events,
             )
+            status_code = int(route_config.get("event_mismatch_status", 200))
+            if route_config.get("reject_unmatched_events"):
+                status_code = int(route_config.get("event_mismatch_status", 422))
             return web.json_response(
-                {"status": "ignored", "event": event_type}
+                {"status": "ignored", "event": event_type},
+                status=status_code,
             )
 
         # Format prompt from template
@@ -484,13 +482,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
         # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-            ),
-        )
+        delivery_id = self._extract_delivery_id(request, payload, route_config)
 
         # ── Idempotency ─────────────────────────────────────────
         # Skip duplicate deliveries (webhook retries).
@@ -509,8 +501,6 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "duplicate", "delivery_id": delivery_id},
                 status=200,
             )
-        self._seen_deliveries[delivery_id] = now
-
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
         # deliver.  Use case: external services (Supabase, monitoring,
@@ -547,6 +537,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 )
 
             if result.success:
+                self._seen_deliveries[delivery_id] = now
                 return web.json_response(
                     {
                         "status": "delivered",
@@ -568,6 +559,8 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
                 status=502,
             )
+
+        self._seen_deliveries[delivery_id] = now
 
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).
@@ -631,16 +624,84 @@ class WebhookAdapter(BasePlatformAdapter):
     # Signature validation
     # ------------------------------------------------------------------
 
+    def _extract_header(self, request: "web.Request", name: str) -> str:
+        return (
+            request.headers.get(name, "")
+            or request.headers.get(name.lower(), "")
+            or request.headers.get(name.upper(), "")
+        )
+
+    def _extract_event_type(
+        self,
+        request: "web.Request",
+        payload: dict,
+        route_config: dict,
+    ) -> str:
+        """Resolve event type from route-configured or built-in sources."""
+        header_names = route_config.get("event_headers")
+        if header_names is None:
+            configured = route_config.get("event_header")
+            header_names = [configured] if configured else []
+        if isinstance(header_names, str):
+            header_names = [header_names]
+        for header_name in list(header_names or []) + [
+            "X-GitHub-Event",
+            "X-GitLab-Event",
+        ]:
+            if not header_name:
+                continue
+            value = self._extract_header(request, str(header_name))
+            if value:
+                return value
+
+        field_names = route_config.get("event_fields")
+        if field_names is None:
+            configured = route_config.get("event_field")
+            field_names = [configured] if configured else []
+        if isinstance(field_names, str):
+            field_names = [field_names]
+        for field_name in list(field_names or []) + ["event_type", "event", "type"]:
+            if not field_name:
+                continue
+            value = payload.get(str(field_name), "")
+            if value:
+                return str(value)
+        return "unknown"
+
+    def _extract_delivery_id(
+        self,
+        request: "web.Request",
+        payload: dict,
+        route_config: dict,
+    ) -> str:
+        """Resolve delivery id from route-configured or built-in sources."""
+        header_names = route_config.get("delivery_id_headers")
+        if header_names is None:
+            configured = route_config.get("delivery_id_header")
+            header_names = [configured] if configured else []
+        if isinstance(header_names, str):
+            header_names = [header_names]
+        for header_name in list(header_names or []) + [
+            "X-GitHub-Delivery",
+            "svix-id",
+            "X-Request-ID",
+        ]:
+            if not header_name:
+                continue
+            value = self._extract_header(request, str(header_name))
+            if value:
+                return value
+        return str(payload.get("delivery_id", str(int(time.time() * 1000))))
+
     def _validate_signature(
-        self, request: "web.Request", body: bytes, secret: str
+        self,
+        request: "web.Request",
+        body: bytes,
+        secret: str,
+        route_config: Optional[dict] = None,
     ) -> bool:
         """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
-        def _header(name: str) -> str:
-            return (
-                request.headers.get(name, "")
-                or request.headers.get(name.lower(), "")
-                or request.headers.get(name.upper(), "")
-            )
+        route_config = route_config or {}
 
         # Svix / AgentMail:
         #   svix-id: msg_...
@@ -648,9 +709,9 @@ class WebhookAdapter(BasePlatformAdapter):
         #   svix-signature: v1,<base64-hmac> [v1,<base64-hmac> ...]
         # Signed content is: "{id}.{timestamp}.{raw_body}".  Svix secrets
         # usually start with "whsec_" and the remainder is base64-encoded.
-        svix_id = _header("svix-id")
-        svix_timestamp = _header("svix-timestamp")
-        svix_signature = _header("svix-signature")
+        svix_id = self._extract_header(request, "svix-id")
+        svix_timestamp = self._extract_header(request, "svix-timestamp")
+        svix_signature = self._extract_header(request, "svix-signature")
         if svix_id or svix_timestamp or svix_signature:
             return self._validate_svix_signature(
                 body=body,
@@ -672,6 +733,28 @@ class WebhookAdapter(BasePlatformAdapter):
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
+
+        custom_sig_header = route_config.get("signature_header")
+        if custom_sig_header:
+            custom_sig = self._extract_header(request, str(custom_sig_header))
+            if custom_sig:
+                timestamp_header = route_config.get("signature_timestamp_header")
+                timestamp = (
+                    self._extract_header(request, str(timestamp_header))
+                    if timestamp_header else ""
+                )
+                signed_payload = body
+                signed_mode = route_config.get("signature_signed_payload", "raw_body")
+                if signed_mode == "timestamp.raw_body":
+                    if not timestamp:
+                        return False
+                    signed_payload = timestamp.encode() + b"." + body
+                digest = hmac.new(
+                    secret.encode(), signed_payload, hashlib.sha256
+                ).hexdigest()
+                prefix = route_config.get("signature_prefix", "")
+                expected = f"{prefix}{digest}"
+                return hmac.compare_digest(custom_sig, expected)
 
         # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
         generic_sig = request.headers.get("X-Webhook-Signature", "")

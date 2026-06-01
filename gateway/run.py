@@ -4417,6 +4417,18 @@ class GatewayRunner:
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
         })
+
+        try:
+            from hermes_cli.plugins import invoke_hook
+            invoke_hook(
+                "gateway_startup",
+                gateway=self,
+                connected_platforms=[p.value for p in self.adapters.keys()],
+            )
+        except Exception:
+            logger.warning(
+                "plugin gateway_startup hook failed", exc_info=True,
+            )
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)

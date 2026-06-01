@@ -183,6 +183,59 @@ class TestValidateSignature:
         req = _mock_request(headers={"X-Webhook-Signature": sig})
         assert adapter._validate_signature(req, body, secret) is True
 
+    def test_validate_custom_signature_valid(self):
+        """Valid route-configured HMAC header is accepted."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.deliverable"}'
+        secret = "custom-secret"
+        sig = "sha256=" + _generic_signature(body, secret)
+        req = _mock_request(headers={"X-Custom-Signature": sig})
+        assert adapter._validate_signature(
+            req,
+            body,
+            secret,
+            {"signature_header": "X-Custom-Signature", "signature_prefix": "sha256="},
+        ) is True
+
+    def test_validate_custom_timestamp_signature_valid(self):
+        """Route-configured timestamp.raw_body signatures are accepted."""
+        adapter = _make_adapter()
+        body = b'{"event":"custom.event.created"}'
+        secret = "custom-secret"
+        timestamp = "2026-06-01T12:34:56Z"
+        signed_body = timestamp.encode() + b"." + body
+        sig = "sha256=" + _generic_signature(signed_body, secret)
+        req = _mock_request(
+            headers={
+                "X-Hawser-Signature": sig,
+                "X-Hawser-Timestamp": timestamp,
+            }
+        )
+        assert adapter._validate_signature(
+            req,
+            body,
+            secret,
+            {
+                "signature_header": "X-Hawser-Signature",
+                "signature_timestamp_header": "X-Hawser-Timestamp",
+                "signature_signed_payload": "timestamp.raw_body",
+                "signature_prefix": "sha256=",
+            },
+        ) is True
+
+    def test_validate_custom_signature_wrong_body_rejects(self):
+        """Custom signatures are bound to the exact raw request body."""
+        adapter = _make_adapter()
+        secret = "custom-secret"
+        sig = "sha256=" + _generic_signature(b'{"body":"one"}', secret)
+        req = _mock_request(headers={"X-Custom-Signature": sig})
+        assert adapter._validate_signature(
+            req,
+            b'{"body":"two"}',
+            secret,
+            {"signature_header": "X-Custom-Signature", "signature_prefix": "sha256="},
+        ) is False
+
     def test_validate_svix_signature_valid(self):
         """Valid Svix/AgentMail v1 signature headers are accepted."""
         adapter = _make_adapter()
@@ -1031,4 +1084,3 @@ class TestInsecureNoAuthSafetyRail:
             assert result is True
         finally:
             await adapter.disconnect()
-

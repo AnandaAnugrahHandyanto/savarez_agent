@@ -14,6 +14,8 @@ Covers:
 """
 
 import asyncio
+import hashlib
+import hmac
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -120,6 +122,110 @@ class TestDeliverOnlyBypassesAgent:
         assert content_arg == "alice matched with bob!"
 
     @pytest.mark.asyncio
+    async def test_custom_headers_drive_event_delivery_and_idempotency(self):
+        routes = {
+            "custom-notif": {
+                "secret": "custom-secret",
+                "events": ["custom.event.created"],
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "12345"},
+                "prompt": "{message.subject}: {message.body}",
+                "event_header": "X-Custom-Event",
+                "delivery_id_header": "X-Custom-Delivery",
+                "signature_header": "X-Custom-Signature",
+                "signature_timestamp_header": "X-Custom-Timestamp",
+                "signature_signed_payload": "timestamp.raw_body",
+                "signature_prefix": "sha256=",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        body = json.dumps(
+            {
+                "event": "ignored-if-header-present",
+                "message": {
+                    "id": "msg-1",
+                    "subject": "Build finished",
+                    "body": "Tests passed",
+                },
+                "delivery_id": "payload-delivery",
+            }
+        ).encode()
+        timestamp = "2026-06-01T12:34:56Z"
+        signed_body = timestamp.encode() + b"." + body
+        sig = "sha256=" + hmac.new(
+            b"custom-secret", signed_body, hashlib.sha256
+        ).hexdigest()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/custom-notif",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Custom-Event": "custom.event.created",
+                    "X-Custom-Delivery": "delivery-1",
+                    "X-Custom-Signature": sig,
+                    "X-Custom-Timestamp": timestamp,
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["delivery_id"] == "delivery-1"
+
+            duplicate = await cli.post(
+                "/webhooks/custom-notif",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Custom-Event": "custom.event.created",
+                    "X-Custom-Delivery": "delivery-1",
+                    "X-Custom-Signature": sig,
+                    "X-Custom-Timestamp": timestamp,
+                },
+            )
+            assert duplicate.status == 200
+            dup_data = await duplicate.json()
+            assert dup_data["status"] == "duplicate"
+
+        mock_target.send.assert_awaited_once()
+        assert mock_target.send.await_args.args[1] == "Build finished: Tests passed"
+
+    @pytest.mark.asyncio
+    async def test_reject_unmatched_event_returns_non_2xx(self):
+        routes = {
+            "custom-notif": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["custom.event.created"],
+                "event_header": "X-Custom-Event",
+                "reject_unmatched_events": True,
+                "event_mismatch_status": 422,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "12345"},
+                "prompt": "{message.body}",
+            }
+        }
+        adapter = _make_adapter(routes)
+        _wire_mock_target(adapter)
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/custom-notif",
+                json={"message": {"body": "should not deliver"}},
+                headers={
+                    "X-Custom-Event": "message.deleted",
+                    "X-Custom-Delivery": "event-mismatch-1",
+                },
+            )
+            assert resp.status == 422
+            data = await resp.json()
+            assert data["status"] == "ignored"
+
+    @pytest.mark.asyncio
     async def test_template_rendering_works(self):
         """Dot-notation template variables resolve in deliver_only mode."""
         routes = {
@@ -212,6 +318,47 @@ class TestDeliverOnlyStatusCodes:
             # Generic error — no adapter-level detail leaks
             assert data["error"] == "Delivery failed"
             assert "rate limited" not in json.dumps(data)
+
+    @pytest.mark.asyncio
+    async def test_failed_delivery_id_can_be_retried(self):
+        """A failed direct delivery must not poison the idempotency cache."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "retry me",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        mock_target.send = AsyncMock(
+            side_effect=[
+                SendResult(success=False, error="temporary"),
+                SendResult(success=True),
+            ]
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "retry-delivery-1"},
+            )
+            assert first.status == 502
+
+            second = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "retry-delivery-1"},
+            )
+            assert second.status == 200
+            data = await second.json()
+            assert data["status"] == "delivered"
+
+        assert mock_target.send.await_count == 2
 
     @pytest.mark.asyncio
     async def test_delivery_exception_returns_502(self):
