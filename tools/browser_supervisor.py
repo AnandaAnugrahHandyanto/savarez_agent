@@ -28,8 +28,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-import websockets
-from websockets.asyncio.client import ClientConnection
+from tools.websocket_compat import websocket_connect
 
 logger = logging.getLogger(__name__)
 
@@ -309,7 +308,7 @@ class CDPSupervisor:
         # CDP call tracking (runs on supervisor loop only).
         self._next_call_id = 1
         self._pending_calls: Dict[int, asyncio.Future] = {}
-        self._ws: Optional[ClientConnection] = None
+        self._ws: Optional[Any] = None
         self._page_session_id: Optional[str] = None
         self._child_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> info
 
@@ -614,7 +613,7 @@ class CDPSupervisor:
         while not self._stop_requested:
             try:
                 self._ws = await asyncio.wait_for(
-                    websockets.connect(self.cdp_url, max_size=50 * 1024 * 1024),
+                    websocket_connect(self.cdp_url, max_size=50 * 1024 * 1024),
                     timeout=10.0,
                 )
             except Exception as e:

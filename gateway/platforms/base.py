@@ -1185,6 +1185,17 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
 _MEDIA_EXT_ALTERNATION = "|".join(
     sorted((e.lstrip(".") for e in MEDIA_DELIVERY_EXTS), key=len, reverse=True)
 )
+_MEDIA_PATH_PREFIX_RE = r"(?:~/|/|[A-Za-z]:[/\\])"
+_MEDIA_PATH_RE = (
+    r"`" + _MEDIA_PATH_PREFIX_RE + r"[^`\n]*?\.(?:" + _MEDIA_EXT_ALTERNATION + r")`"
+    r'|"' + _MEDIA_PATH_PREFIX_RE + r'[^"\n]*?\.(?:' + _MEDIA_EXT_ALTERNATION + r')"'
+    r"|'"
+    + _MEDIA_PATH_PREFIX_RE
+    + r"[^'\n]*?\.(?:"
+    + _MEDIA_EXT_ALTERNATION
+    + r")'"
+    r"|" + _MEDIA_PATH_PREFIX_RE + r"\S+(?:[^\S\n]+\S+)*?\.(?:" + _MEDIA_EXT_ALTERNATION + r")"
+)
 
 # Anchored ``MEDIA:<path>`` cleanup pattern. Unlike the old loose
 # ``MEDIA:\\s*\\S+``, this only strips a tag whose path ends in a known
@@ -1197,8 +1208,7 @@ _MEDIA_EXT_ALTERNATION = "|".join(
 # ``X:\\`` or ``X:/`` (Windows drive-letter absolute — #34632).
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"']?MEDIA:\s*'''
-    r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
-    r'''(?:~/|/|[A-Za-z]:[/\\])\S+(?:[^\S\n]+\S+)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
+    r'''(?P<path>''' + _MEDIA_PATH_RE + r''')'''
     r'''(?=[\s`"',;:)\]}]|$)[`"']?''',
     re.IGNORECASE,
 )
@@ -2616,14 +2626,14 @@ class BasePlatformAdapter(ABC):
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
-        media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/|[A-Za-z]:[\\/])\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
-        )
+        media_pattern = MEDIA_TAG_CLEANUP_RE
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            if "\x00" in path:
+                continue
             if path:
                 try:
                     media.append((os.path.expanduser(path), has_voice_tag))

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -25,18 +26,46 @@ import time
 import pytest
 
 
+def _find_chromium_browser() -> str | None:
+    """Return a Chrome/Chromium-family executable that supports CDP."""
+    for candidate in (
+        "google-chrome",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+        "chrome.exe",
+        "msedge",
+        "msedge.exe",
+    ):
+        path = shutil.which(candidate)
+        if path:
+            return path
+
+    for raw in (
+        os.path.join(os.environ.get("PROGRAMFILES", ""), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
+    ):
+        if raw and os.path.isfile(raw):
+            return raw
+
+    return None
+
+
 pytestmark = pytest.mark.skipif(
-    not shutil.which("google-chrome") and not shutil.which("chromium"),
-    reason="Chrome/Chromium not installed",
+    _find_chromium_browser() is None,
+    reason="Chrome/Chromium-family browser not installed",
 )
 
 
 def _find_chrome() -> str:
-    for candidate in ("google-chrome", "chromium", "chromium-browser"):
-        path = shutil.which(candidate)
-        if path:
-            return path
-    pytest.skip("no Chrome binary found")
+    path = _find_chromium_browser()
+    if path:
+        return path
+    pytest.skip("no Chrome/Chromium-family browser found")
 
 
 @pytest.fixture
@@ -141,10 +170,10 @@ def _test_page_url() -> str:
 def _fire_on_page(cdp_url: str, expression: str) -> None:
     """Navigate the first page target to a data URL and fire `expression`."""
     import asyncio
-    import websockets as _ws_mod
+    from tools.websocket_compat import websocket_connect
 
     async def run():
-        async with _ws_mod.connect(cdp_url, max_size=50 * 1024 * 1024) as ws:
+        async with websocket_connect(cdp_url, max_size=50 * 1024 * 1024) as ws:
             next_id = [1]
 
             async def call(method, params=None, session_id=None):
@@ -511,10 +540,10 @@ def test_bridge_captures_prompt_and_returns_reply_text(chrome_cdp, supervisor_re
     url = "data:text/html;base64," + _b64.b64encode(html.encode()).decode()
 
     import asyncio as _asyncio
-    import websockets as _ws_mod
+    from tools.websocket_compat import websocket_connect
 
     async def nav_and_read():
-        async with _ws_mod.connect(cdp_url, max_size=50 * 1024 * 1024) as ws:
+        async with websocket_connect(cdp_url, max_size=50 * 1024 * 1024) as ws:
             nid = [1]
             pending: dict = {}
 

@@ -28,18 +28,13 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
-# ``websockets`` is a transitive dependency of hermes-agent (via fal_client
-# and firecrawl-py) and is already imported by gateway/platforms/feishu.py.
-# Wrap the import so a clean error surfaces if the package is ever absent.
-try:
-    import websockets
-    from websockets.exceptions import WebSocketException
+from tools.websocket_compat import (
+    WebSocketException,
+    websocket_connect,
+    websockets_available,
+)
 
-    _WS_AVAILABLE = True
-except ImportError:
-    websockets = None  # type: ignore[assignment]
-    WebSocketException = Exception  # type: ignore[assignment,misc]
-    _WS_AVAILABLE = False
+_WS_AVAILABLE = websockets_available()
 
 
 # ---------------------------------------------------------------------------
@@ -107,9 +102,7 @@ async def _cdp_call(
     works for ``Target.*``, ``Browser.*``, ``Storage.*`` and a few other
     globally-scoped domains.
     """
-    assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
-
-    async with websockets.connect(
+    async with websocket_connect(
         ws_url,
         max_size=None,  # CDP responses (e.g. DOM.getDocument) can be large
         open_timeout=timeout,
