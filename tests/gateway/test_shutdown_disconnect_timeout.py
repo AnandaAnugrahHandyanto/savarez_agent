@@ -105,5 +105,65 @@ async def test_teardown_runs_adapters_concurrently(monkeypatch):
     await asyncio.wait_for(runner._teardown_adapters(), timeout=2.0)
     elapsed = loop.time() - start
 
-    # Concurrent: ~one timeout (0.2s), not the 0.4s a sequential loop would take.
-    assert elapsed < 0.35
+    # Both adapters hang, so each is cut at the 0.2s bound. Run concurrently
+    # the phase is ~one timeout; a sequential loop would take ~0.4s. The lower
+    # bound proves the bound actually fired (not a short-circuit); the upper
+    # bound proves concurrency, with slack for loaded CI.
+    assert 0.18 < elapsed < 0.38
+
+
+class _SlowSend:
+    """send() takes longer than an insta-timeout would allow, then succeeds."""
+
+    platform = _platform()
+
+    async def send(self, *args, **kwargs):
+        await asyncio.sleep(0.05)
+        return "ok"
+
+
+class _SlowTeardown:
+    """disconnect() takes real time; records whether it ran to completion."""
+
+    def __init__(self):
+        self.disconnected = False
+
+    async def cancel_background_tasks(self):
+        return None
+
+    async def disconnect(self):
+        await asyncio.sleep(0.05)
+        self.disconnected = True
+
+
+# A timeout of 0 is the operator opt-out: every bounded site must take a bare
+# ``await`` (truly unbounded), NOT ``wait_for(coro, timeout=0)`` — which would
+# insta-timeout and either return None or abandon a mid-flight op. These three
+# behavioral tests pin that contract for each helper: a 0.05s op set against a
+# "0" timeout must run to completion / return its real result.
+
+
+@pytest.mark.asyncio
+async def test_zero_timeout_opts_out_bounded_send(monkeypatch):
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0")
+    result = await _runner()._bounded_shutdown_send(_SlowSend(), "chat-id", "bye")
+    # Real result passes through — proves no wait_for(..., timeout=0) → None.
+    assert result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_zero_timeout_opts_out_teardown(monkeypatch):
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0")
+    adapter = _SlowTeardown()
+    await _runner()._safe_adapter_teardown(adapter, _platform())
+    # disconnect() ran to completion — a wait_for(timeout=0) would have
+    # cancelled it mid-sleep, leaving this False.
+    assert adapter.disconnected is True
+
+
+@pytest.mark.asyncio
+async def test_zero_timeout_opts_out_safe_disconnect(monkeypatch):
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0")
+    adapter = _SlowTeardown()
+    await _runner()._safe_adapter_disconnect(adapter, _platform())
+    assert adapter.disconnected is True
