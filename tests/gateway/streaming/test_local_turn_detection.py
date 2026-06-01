@@ -36,7 +36,6 @@ def make(vad_states, eot=None, conf=0.9):
     512-byte windows (256 samples * 2 bytes), matching the plan's assertions.
     """
     from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
-    from pipecat.audio.vad.vad_analyzer import VADState  # noqa: F401  (real enum for tests)
 
     vad = Mock()
     vad.num_frames_required = Mock(return_value=256)
@@ -117,6 +116,27 @@ async def test_started_and_stopped_edges_emit_once():
     assert started_conf == pytest.approx(0.77)
 
 
+# ---- Scenario 2b: STARTING->QUIET flap emits nothing -------------------------
+
+
+async def test_starting_then_quiet_flap_emits_no_started():
+    from pipecat.audio.vad.vad_analyzer import VADState
+
+    # Speech that never reaches SPEAKING (QUIET -> STARTING -> QUIET) must not
+    # emit USER_SPEECH_STARTED (or STOPPED).
+    states = [VADState.QUIET, VADState.STARTING, VADState.QUIET]
+    det, vad, st = make(states)
+    kinds: list[TurnEventKind] = []
+    seq = 0
+    while vad.analyze_audio.await_count < 3:
+        evs = await det.observe(frame(seq, seq * 20))
+        kinds.extend(e.kind for e in evs)
+        seq += 1
+
+    assert TurnEventKind.USER_SPEECH_STARTED not in kinds
+    assert TurnEventKind.USER_SPEECH_STOPPED not in kinds
+
+
 # ---- Scenario 3: endpoint detected -------------------------------------------
 
 
@@ -195,6 +215,17 @@ async def test_build_raises_clear_error_without_pipecat(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="simplex-streaming"):
         build_local_turn_detector(M16)
+
+
+async def test_direct_construction_without_pipecat_enums_raises(monkeypatch):
+    # Simulate the extra being absent (guarded enums degrade to None): direct
+    # construction must fail with the clear install message, not an opaque
+    # AttributeError later inside observe().
+    import gateway.calls.native.streaming.local_turn_detection as mod
+
+    monkeypatch.setattr(mod, "VADState", None)
+    with pytest.raises(RuntimeError, match="simplex-streaming"):
+        LocalTurnDetector(media=M16, vad=Mock(), smart_turn=Mock())
 
 
 # ---- Scenario 6: real-onnx contract ------------------------------------------

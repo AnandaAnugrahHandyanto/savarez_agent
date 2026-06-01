@@ -8,9 +8,10 @@ IMPORTANT: this module must stay importable without Pipecat. There is **no
 top-level ``import pipecat``** — the factory imports the Pipecat classes
 lazily. The ``VADState``/``EndOfTurnState`` enums referenced inside
 :meth:`LocalTurnDetector.observe` are imported in a guarded module-level block
-that degrades to ``None`` when Pipecat is absent; a ``LocalTurnDetector`` is
-only ever constructed when Pipecat is present (mocked tests import the real
-enums), so ``observe`` always sees the real enums at runtime.
+that degrades to ``None`` when Pipecat is absent. ``LocalTurnDetector.__init__``
+enforces the "only constructed when Pipecat is present" invariant (raising a
+clear ``RuntimeError`` if the enums are ``None``), so ``observe`` always sees
+the real enums at runtime.
 """
 from __future__ import annotations
 
@@ -61,6 +62,15 @@ class LocalTurnDetector:
         smart_turn,
         call_id: str = "",
     ) -> None:
+        if VADState is None or EndOfTurnState is None:
+            # Enforce (not just assert in a docstring) the invariant that the
+            # detector is only constructed when Pipecat is importable — so a
+            # direct construction without the extra fails with a clear message
+            # instead of an opaque AttributeError inside observe().
+            raise RuntimeError(
+                "LocalTurnDetector requires the optional Pipecat dependency. "
+                "Install: pip install 'hermes-agent[simplex-streaming]'"
+            )
         self._media = media
         self._vad = vad
         self._smart_turn = smart_turn
