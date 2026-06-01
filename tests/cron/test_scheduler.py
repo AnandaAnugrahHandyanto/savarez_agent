@@ -948,6 +948,82 @@ class TestRunJobSessionPersistence:
         assert "RuntimeError: boom" in error
         mock_agent.close.assert_called_once()
 
+    def test_run_job_salvages_benign_hecho_closure(self, tmp_path):
+        # Regression: the daily sweep used to close with a fake RuntimeError("Hecho.")
+        # even after doing useful work. Treat that marker as a clean success.
+        job = {
+            "id": "benign-job",
+            "name": "benign",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "failed": True,
+                "completed": False,
+                "final_response": "Hecho. Quedó bastante trabajo real, no humo de \"ya casi\".",
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response.startswith("Hecho.")
+        assert "benign" in output
+        mock_agent.close.assert_called_once()
+
+    def test_run_job_salvages_benign_runtimeerror_closure(self, tmp_path):
+        # Regression: a controlled RuntimeError can be the job's explicit finish signal.
+        # The scheduler should treat the marker as success rather than a failed run.
+        job = {
+            "id": "benign-runtime-job",
+            "name": "benign-runtime",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.side_effect = RuntimeError("Avancé lo importante; cierro sin humo.")
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response.startswith("Avancé lo importante")
+        assert "benign-runtime" in output
+        mock_agent.close.assert_called_once()
+
     def test_run_job_reaps_stale_auxiliary_clients_per_tick(self, tmp_path):
         # Regression: auxiliary clients bound to the cron worker's dead
         # event loop must be reaped each tick. Without this, ``_client_cache``

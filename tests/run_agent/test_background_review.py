@@ -313,3 +313,59 @@ def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
         "the fork leaks harness prompts into the user's real memory "
         "namespace via on_turn_start / prefetch_all / sync_all."
     )
+
+
+def test_background_review_includes_file_tools_in_whitelist(monkeypatch):
+    """Background review should allow safe file-editing tools for maintenance fixes."""
+    import model_tools
+    import hermes_cli.plugins as plugins
+
+    captured: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            captured["user_message"] = kwargs.get("user_message", "")
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_get_tool_definitions(*, enabled_toolsets, quiet_mode):
+        captured["enabled_toolsets"] = list(enabled_toolsets)
+        return [
+            {"function": {"name": "read_file"}},
+            {"function": {"name": "write_file"}},
+            {"function": {"name": "patch"}},
+            {"function": {"name": "search_files"}},
+            {"function": {"name": "skill_manage"}},
+        ]
+
+    def fake_set_thread_tool_whitelist(whitelist, deny_msg_fmt):
+        captured["whitelist"] = set(whitelist)
+        captured["deny_msg_fmt"] = deny_msg_fmt
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(model_tools, "get_tool_definitions", fake_get_tool_definitions)
+    monkeypatch.setattr(plugins, "set_thread_tool_whitelist", fake_set_thread_tool_whitelist)
+    monkeypatch.setattr(plugins, "clear_thread_tool_whitelist", lambda: None)
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert captured["enabled_toolsets"] == ["memory", "skills", "file"]
+    assert {"read_file", "write_file", "patch", "search_files", "skill_manage"}.issubset(
+        captured["whitelist"]
+    )
+    assert "file-editing tools" in captured["deny_msg_fmt"]
+    assert "file-editing tools" in captured["user_message"]
