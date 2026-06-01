@@ -60,6 +60,7 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
     assert data["platform"] == "telegram"
     assert data["chat_id"] == "42"
     assert data["chat_type"] == "dm"
+    assert data["message_id"] == "m1"
     assert "thread_id" not in data  # no thread → omitted
 
 
@@ -127,6 +128,7 @@ async def test_restart_command_preserves_thread_id(tmp_path, monkeypatch):
     data = json.loads((tmp_path / ".restart_notify.json").read_text())
     assert data["chat_type"] == "dm"
     assert data["thread_id"] == "777"
+    assert data["message_id"] == "m2"
 
 
 @pytest.mark.asyncio
@@ -390,6 +392,7 @@ async def test_send_restart_notification_with_thread(tmp_path, monkeypatch):
         "chat_id": "99",
         "chat_type": "dm",
         "thread_id": "777",
+        "message_id": "m2",
     }))
 
     runner, adapter = make_restart_runner()
@@ -403,6 +406,7 @@ async def test_send_restart_notification_with_thread(tmp_path, monkeypatch):
         "thread_id": "777",
         "telegram_dm_topic_reply_fallback": True,
         "direct_messages_topic_id": "777",
+        "telegram_reply_to_message_id": "m2",
     }
     assert not notify_path.exists()
 

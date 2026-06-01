@@ -10347,6 +10347,8 @@ class GatewayRunner:
             }
             if event.source.thread_id:
                 notify_data["thread_id"] = event.source.thread_id
+            if event.message_id:
+                notify_data["message_id"] = event.message_id
             atomic_json_write(
                 _hermes_home / ".restart_notify.json",
                 notify_data,
@@ -14476,6 +14478,8 @@ class GatewayRunner:
         }
         if event.source.thread_id:
             pending["thread_id"] = event.source.thread_id
+        if event.message_id:
+            pending["message_id"] = event.message_id
         _tmp_pending = pending_path.with_suffix(".tmp")
         _tmp_pending.write_text(json.dumps(pending))
         _tmp_pending.replace(pending_path)
@@ -14623,6 +14627,7 @@ class GatewayRunner:
                     chat_type = pending.get("chat_type")
                     session_key = pending.get("session_key")
                     thread_id = pending.get("thread_id")
+                    message_id = pending.get("message_id")
                     if platform_str and chat_id:
                         platform = Platform(platform_str)
                         adapter = self.adapters.get(platform)
@@ -14631,6 +14636,7 @@ class GatewayRunner:
                             chat_id,
                             thread_id,
                             chat_type=chat_type,
+                            reply_to_message_id=message_id,
                             adapter=adapter,
                         )
                         # Fallback session key if not stored (old pending files)
@@ -14838,6 +14844,7 @@ class GatewayRunner:
             chat_id = pending.get("chat_id")
             chat_type = pending.get("chat_type")
             thread_id = pending.get("thread_id")
+            message_id = pending.get("message_id")
 
             if not exit_code_path.exists():
                 logger.info("Update notification deferred: update still running")
@@ -14864,6 +14871,7 @@ class GatewayRunner:
                     chat_id,
                     thread_id,
                     chat_type=chat_type,
+                    reply_to_message_id=message_id,
                     adapter=adapter,
                 )
                 # Strip ANSI escape codes for clean display
@@ -14909,6 +14917,7 @@ class GatewayRunner:
             chat_id = data.get("chat_id")
             chat_type = data.get("chat_type")
             thread_id = data.get("thread_id")
+            message_id = data.get("message_id")
 
             if not platform_str or not chat_id:
                 return None
@@ -14935,6 +14944,7 @@ class GatewayRunner:
                 chat_id,
                 thread_id,
                 chat_type=chat_type,
+                reply_to_message_id=message_id,
                 adapter=adapter,
             )
             result = await adapter.send(
