@@ -4204,6 +4204,15 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        # Close the ResponseStore sqlite3 connection so the db + WAL file
+        # descriptors are released.  Without this, every disconnect leaks 2
+        # fds, which adds up to gateway exhaustion on long-running deployments.
+        if self._response_store is not None:
+            try:
+                self._response_store.close()
+            except Exception:
+                pass
+            self._response_store = None
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

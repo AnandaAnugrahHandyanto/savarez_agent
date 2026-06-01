@@ -6200,6 +6200,7 @@ class GatewayRunner:
                             "Reconnect %s: non-retryable error (%s), removing from retry queue",
                             platform.value, adapter.fatal_error_message,
                         )
+                        await self._dispose_failed_adapter(adapter, platform)
                         del self._failed_platforms[platform]
                     else:
                         self._update_platform_runtime_status(
@@ -6208,6 +6209,7 @@ class GatewayRunner:
                             error_code=adapter.fatal_error_code,
                             error_message=adapter.fatal_error_message or "failed to reconnect",
                         )
+                        await self._dispose_failed_adapter(adapter, platform)
                         backoff = min(30 * (2 ** (attempt - 1)), _BACKOFF_CAP)
                         info["attempts"] = attempt
                         info["next_retry"] = time.monotonic() + backoff
@@ -6240,6 +6242,9 @@ class GatewayRunner:
                     # A raised exception during reconnect (connect timeout, DNS
                     # resolution failure, etc.) is inherently transient — keep
                     # retrying at the backoff cap rather than auto-pausing.
+                    # Clean up the newly created adapter to release any fds it
+                    # opened (e.g. APIServerAdapter sqlite3 db + WAL).
+                    await self._dispose_failed_adapter(adapter, platform)
 
             # Check every 10 seconds for platforms that need reconnection
             for _ in range(10):
@@ -6605,6 +6610,30 @@ class GatewayRunner:
     async def wait_for_shutdown(self) -> None:
         """Wait for shutdown signal."""
         await self._shutdown_event.wait()
+
+    async def _dispose_failed_adapter(
+        self,
+        adapter: "Optional[BasePlatformAdapter]",
+        platform: "Platform",
+    ) -> None:
+        """Disconnect and clean up a newly created adapter that failed to connect.
+
+        Called in all three reconnect-loop failure paths so that any resources
+        the adapter opened during __init__ (e.g. APIServerAdapter sqlite3
+        ResponseStore connection — 2 fds per instance) are released before the
+        adapter reference is dropped.  Without this, each failed reconnect
+        attempt leaks file descriptors until the process hits the OS fd limit
+        and becomes non-functional (~12-26 hours on a 300s backoff cycle).
+        """
+        if adapter is None:
+            return
+        try:
+            await adapter.disconnect()
+        except Exception as exc:
+            logger.debug(
+                "Ignoring error while disposing failed %s adapter: %s",
+                platform.value, exc,
+            )
 
     def _create_adapter(
         self, 
