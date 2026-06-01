@@ -53,6 +53,17 @@ def _model_short(model: Optional[str]) -> str:
     return model.rsplit("/", 1)[-1]
 
 
+def _ordinal(n: int) -> str:
+    """Return ordinal string: 1→"1st", 2→"2nd", 3→"3rd", etc."""
+    if n == 1:
+        return "1st"
+    if n == 2:
+        return "2nd"
+    if n == 3:
+        return "3rd"
+    return f"{n}th"
+
+
 def resolve_footer_config(
     user_config: dict[str, Any] | None,
     platform_key: str | None = None,
@@ -95,6 +106,8 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    model_position: Optional[int] = None,
+    model_provider: Optional[str] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -115,6 +128,11 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "model_position" and model and model_position:
+            line = f"🤖 {_ordinal(model_position)} Model: `{_model_short(model)}`"
+            if model_provider:
+                line += f"\n🔌 Provider: `{model_provider}`"
+            parts.append(line)
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +148,8 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    model_position: Optional[int] = None,
+    model_provider: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -146,4 +166,6 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        model_position=model_position,
+        model_provider=model_provider,
     )

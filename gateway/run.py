@@ -9099,6 +9099,36 @@ class GatewayRunner:
             _footer_line = ""
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
+                # Determine which model in the priority chain was used (1st=primary, 2nd+=fallback)
+                _model_pos = None
+                _model_provider = None
+                _used_model = agent_result.get("model", "")
+                if _used_model:
+                    # Build the full chain: primary + fallbacks
+                    from hermes_cli.fallback_config import get_fallback_chain
+                    try:
+                        import yaml as _y
+                        from hermes_state import get_hermes_home
+                        _cfg_path = get_hermes_home() / "config.yaml"
+                        if _cfg_path.exists():
+                            with open(_cfg_path, encoding="utf-8") as _cf:
+                                _cfg = _y.safe_load(_cf) or {}
+                            # Primary model is position 1
+                            _primary_model = _cfg.get("model", {}).get("default", "")
+                            _primary_provider = _cfg.get("model", {}).get("provider", "")
+                            if _used_model == _primary_model:
+                                _model_pos = 1
+                                _model_provider = _primary_provider
+                            else:
+                                # Check fallbacks (positions 2+)
+                                _fallbacks = get_fallback_chain(_cfg)
+                                for _idx, _fb in enumerate(_fallbacks, start=2):
+                                    if _fb.get("model") == _used_model:
+                                        _model_pos = _idx
+                                        _model_provider = _fb.get("provider", "")
+                                        break
+                    except Exception:
+                        pass  # Don't fail footer on config errors
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
@@ -9106,6 +9136,8 @@ class GatewayRunner:
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    model_position=_model_pos,
+                    model_provider=_model_provider,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
