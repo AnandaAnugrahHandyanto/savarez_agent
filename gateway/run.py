@@ -3331,6 +3331,36 @@ class GatewayRunner:
             return False  # let default path handle it
 
         running_agent = self._running_agents.get(session_key)
+        if running_agent is None:
+            # Adapter/session-store split-brain: the platform guard still says
+            # this session is busy, but GatewayRunner has no live AIAgent for it.
+            # If we send a normal busy ack here the user gets stuck in the
+            # "Interrupting current task" / typing loop forever.  Clear the
+            # stale adapter guard and immediately start this event as a fresh
+            # turn instead.
+            logger.warning(
+                "Clearing stale active-session guard for %s: adapter reported busy but no running agent exists",
+                session_key,
+            )
+            try:
+                await adapter.cancel_session_processing(
+                    session_key,
+                    release_guard=True,
+                    discard_pending=True,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to clear stale adapter task for %s; falling back to normal busy handling: %s",
+                    session_key,
+                    exc,
+                )
+                return False
+            try:
+                adapter._start_session_processing(event, session_key)
+            except Exception as exc:
+                logger.error("Failed to restart stale session %s: %s", session_key, exc, exc_info=True)
+                return False
+            return True
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "queue")
