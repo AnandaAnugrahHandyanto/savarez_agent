@@ -1924,6 +1924,46 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
+def _daystrom_dml_source_paths() -> list[Path]:
+    """Return local Daystrom DML source paths, if present in this checkout.
+
+    The Daystrom integration is intentionally kept as an integration tree rather
+    than a core Hermes package.  During development and source installs it may
+    not be pip-installed, so the top-level `hermes dml ...` shim adds the raw
+    package roots before delegating to the DML provider CLI.
+    """
+    source_root = PROJECT_ROOT / "integrations" / "daystrom-dml" / "source"
+    return [source_root / "dml_core", source_root]
+
+
+def cmd_dml(args):
+    """Delegate `hermes dml ...` to the bundled Daystrom DML provider CLI."""
+    for path in reversed(_daystrom_dml_source_paths()):
+        if path.exists():
+            path_str = str(path)
+            if path_str not in sys.path:
+                sys.path.insert(0, path_str)
+
+    try:
+        from daystrom_dml.provider_cli import main as dml_main  # type: ignore[import-not-found]
+    except ModuleNotFoundError as exc:
+        if exc.name and not exc.name.startswith("daystrom_dml"):
+            raise
+        print(
+            "Error: Daystrom DML provider CLI is not available.\n"
+            "Install the Daystrom DML integration or ensure "
+            "integrations/daystrom-dml/source exists in this Hermes checkout.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+
+    dml_args = list(getattr(args, "dml_args", []) or [])
+    if getattr(args, "dml_help", False):
+        dml_args.insert(0, "--help")
+    rc = dml_main(dml_args)
+    raise SystemExit(int(rc or 0))
+
+
 def cmd_proxy(args):
     """Local OpenAI-compatible proxy to OAuth providers."""
     # Lazy import — pulls in aiohttp, which is gated behind an extras install
@@ -11459,7 +11499,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "dump", "dml", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
@@ -11531,6 +11571,34 @@ def _first_positional_argv() -> str | None:
             i += 1
             continue
         return tok
+    return None
+
+
+def _split_dml_passthrough_argv(argv: list[str]) -> list[str] | None:
+    """Return tokens after top-level `dml`, or None when not a DML invocation.
+
+    The Daystrom DML provider CLI has its own argparse surface, including
+    provider-level options before its subcommands (for example
+    `hermes dml --base-url ... status`).  Routing it before the Hermes parser
+    avoids the parent parser rejecting unknown DML-specific flags.
+    """
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--":
+            return argv[i + 2 :] if i + 1 < len(argv) and argv[i + 1] == "dml" else None
+        if tok.startswith("-"):
+            if "=" in tok:
+                i += 1
+                continue
+            if tok in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(argv):
+                i += 2
+                continue
+            i += 1
+            continue
+        if tok == "dml":
+            return argv[i + 1 :]
+        return None
     return None
 
 
@@ -11976,6 +12044,22 @@ def main():
     )
     migrate_xai.set_defaults(func=cmd_migrate_xai)
     migrate_parser.set_defaults(func=cmd_migrate)
+
+    # =========================================================================
+    # dml command — Daystrom DML provider CLI passthrough
+    # =========================================================================
+    dml_parser = subparsers.add_parser(
+        "dml",
+        add_help=False,
+        help="Daystrom DML provider CLI",
+        description=(
+            "Pass through to the Daystrom DML provider CLI. Use `hermes dml --help` "
+            "for DML-specific commands and options."
+        ),
+    )
+    dml_parser.add_argument("-h", "--help", dest="dml_help", action="store_true")
+    dml_parser.add_argument("dml_args", nargs=argparse.REMAINDER)
+    dml_parser.set_defaults(func=cmd_dml)
 
     # =========================================================================
     # gateway command
@@ -14874,6 +14958,11 @@ Examples:
         # Unreachable: os.execvp never returns on success (process is replaced)
         # and raises OSError on failure (which propagates as a traceback).
         sys.exit(1)
+
+    _dml_passthrough_argv = _split_dml_passthrough_argv(sys.argv[1:])
+    if _dml_passthrough_argv is not None:
+        cmd_dml(argparse.Namespace(dml_args=_dml_passthrough_argv, dml_help=False))
+        return
 
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
 
