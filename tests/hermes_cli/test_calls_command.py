@@ -264,6 +264,14 @@ def test_call_voice_provider_health_flags_nonlocal_tts(monkeypatch):
     )
     monkeypatch.setattr("hermes_cli.calls._module_available", lambda name: False)
     monkeypatch.setattr("hermes_cli.calls._binary_available", lambda name: name == "whisper")
+    # _call_voice_provider_health resolves the STT provider via
+    # transcription_tools._get_provider, which probes faster-whisper / the
+    # whisper binary through its OWN module-level state (not the helpers
+    # mocked above). Pin the resolved provider so the test is deterministic
+    # across environments (CI lacks both faster-whisper and the binary).
+    monkeypatch.setattr(
+        "tools.transcription_tools._get_provider", lambda cfg: "local_command"
+    )
 
     health = _call_voice_provider_health()
 

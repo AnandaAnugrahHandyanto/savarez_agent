@@ -8,6 +8,13 @@ from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
+
+# aiortc/av live in the optional `simplex-native-calls` extra, which is not
+# part of `[all]` (per the pyproject `[all]` policy), so they are absent in
+# the default CI install. Skip the whole module instead of erroring at
+# collection when they are unavailable.
+pytest.importorskip("av")
+pytest.importorskip("aiortc")
 from av import AudioFrame
 
 from gateway.calls.native.aiortc_engine import (
