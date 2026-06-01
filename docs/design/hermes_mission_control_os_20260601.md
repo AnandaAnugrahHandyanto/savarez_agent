@@ -504,7 +504,17 @@ Phase 7: Local MCP client E2E validation
 
 - Validate the existing local/stdout bridge from a local MCP client.
 - Keep the test local and inert; do not expose remote transport.
+- Exercise `--list-tools`, representative read-only calls, and local
+  packet-write calls inside isolated test state.
+- Keep remote policy disabled and aligned with the local MCP allowlist.
 - Never add autonomous computer-use or real browser/mouse/keyboard control.
+
+Phase 8: Local operator diagnostics or pause
+
+- Prefer a local-only runbook/troubleshooting note and, if needed, an inert
+  read-only diagnostic command.
+- Do not begin remote OAuth, public endpoint, or ChatGPT connector work without
+  a separate implementation plan.
 
 ## Next Implementation Prompt
 

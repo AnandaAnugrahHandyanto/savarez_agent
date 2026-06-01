@@ -313,3 +313,28 @@ aligned with the Phase 4 local MCP allowlist.
 The next safest step is local MCP client E2E validation against the existing
 stdio bridge. Remote OAuth implementation planning should remain separate from
 remote exposure and should not add a public endpoint.
+
+## Phase 7 Implementation Note
+
+Phase 7 adds local MCP bridge E2E validation for the existing local/stdout
+Mission Control bridge. The tests exercise the `--list-tools` subprocess
+entrypoint, representative read-only calls, local packet-write calls under an
+isolated test `HERMES_HOME`, and alignment between the local MCP allowlist and
+the inert remote policy.
+
+Validated read-only calls are `get_project_status`, `get_approval_gates`, and
+`list_mission_packets`. Validated packet-write calls are
+`save_next_codex_prompt`, `import_worker_result`, and
+`save_block_flag_packet`; they create only local test packet/audit artifacts,
+preserve `dry_run=true`, `review_required=true`, and
+`trusted_for_execution=false`, and do not dispatch packets.
+
+Local/stdout remains the default. Remote policy remains disabled. ChatGPT is
+not connected. OAuth, HTTP/SSE transport, public routes, execution tools,
+send/publish/payment/delete paths, Codex/Hermes runs, worker starts, and
+browser/computer-use control remain absent.
+
+The next safest phase is another local-only hardening pass: add a small
+operator-facing troubleshooting/runbook note and optional local `--call-tool`
+dry-run diagnostic for approved read-only tools only, or defer implementation
+until remote OAuth planning resumes.
