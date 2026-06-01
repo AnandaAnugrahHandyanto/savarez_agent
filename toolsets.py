@@ -230,7 +230,16 @@ TOOLSETS = {
         ],
         "includes": []
     },
-    
+
+    "signature": {
+        "description": "Agent-native e-signature core: document requests, signers, signature capture, audit events, and approval hashes",
+        "tools": [
+            "signature_status", "signature_template_upsert", "signature_request_create",
+            "signature_request_get", "signature_event_record", "signature_approval_hash_create",
+        ],
+        "includes": []
+    },
+
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
         "tools": ["send_message"],
