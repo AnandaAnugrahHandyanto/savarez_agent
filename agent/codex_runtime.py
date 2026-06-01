@@ -187,6 +187,33 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     # returns empty output (e.g. chatgpt.com backend-api sends
     # response.incomplete instead of response.completed).
     agent._codex_streamed_text_parts: list = []
+
+    def _response_from_collected(reason: str, output_items: list, text_deltas: list):
+        if output_items:
+            logger.debug(
+                "Codex stream: recovered %d output items after %s",
+                len(output_items),
+                reason,
+            )
+            return SimpleNamespace(output=list(output_items), status="completed")
+        if text_deltas and not has_tool_calls:
+            assembled = "".join(text_deltas)
+            logger.debug(
+                "Codex stream: recovered %d chars from text deltas after %s",
+                len(assembled),
+                reason,
+            )
+            return SimpleNamespace(
+                output=[SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text=assembled)],
+                )],
+                status="completed",
+            )
+        return None
+
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
@@ -281,6 +308,24 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 exc,
             )
             return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+        except TypeError as exc:
+            err_text = str(exc)
+            if "'NoneType' object is not iterable" in err_text:
+                recovered = _response_from_collected(
+                    "Responses SDK empty response.output parser error",
+                    collected_output_items,
+                    agent._codex_streamed_text_parts,
+                )
+                if recovered is not None:
+                    return recovered
+                logger.debug(
+                    "Responses stream parser hit empty response.output; "
+                    "falling back to create(stream=True). %s err=%s",
+                    agent._client_log_context(),
+                    err_text,
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            raise
         except RuntimeError as exc:
             err_text = str(exc)
             missing_completed = "response.completed" in err_text
@@ -349,6 +394,33 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
     terminal_response = None
     collected_output_items: list = []
     collected_text_deltas: list = []
+
+    def _response_from_collected(reason: str):
+        if collected_output_items:
+            logger.debug(
+                "Codex fallback stream: recovered %d output items after %s",
+                len(collected_output_items),
+                reason,
+            )
+            return SimpleNamespace(output=list(collected_output_items), status="completed")
+        if collected_text_deltas:
+            assembled = "".join(collected_text_deltas)
+            logger.debug(
+                "Codex fallback stream: recovered %d chars from text deltas after %s",
+                len(assembled),
+                reason,
+            )
+            return SimpleNamespace(
+                output=[SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text=assembled)],
+                )],
+                status="completed",
+            )
+        return None
+
     try:
         for event in stream_or_response:
             agent._touch_activity("receiving stream response")
@@ -427,6 +499,16 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
                             len(collected_text_deltas), len(assembled),
                         )
                 return terminal_response
+    except TypeError as exc:
+        err_text = str(exc)
+        if "'NoneType' object is not iterable" not in err_text:
+            raise
+        recovered = _response_from_collected(
+            "Responses SDK empty response.output parser error"
+        )
+        if recovered is not None:
+            return recovered
+        raise
     finally:
         close_fn = getattr(stream_or_response, "close", None)
         if callable(close_fn):
