@@ -38,6 +38,30 @@ class TestProviderEnvDetection:
         content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***"
         assert _has_provider_env_config(content)
 
+
+class TestDoctorToolAvailabilitySummary:
+    def test_missing_api_key_summary_ignores_disabled_toolsets(self, monkeypatch):
+        unavailable = [
+            {"name": "rl", "missing_vars": ["TINKER_API_KEY"]},
+            {"name": "web", "missing_vars": ["EXA_API_KEY"]},
+        ]
+        monkeypatch.setattr(doctor, "_enabled_cli_toolsets_for_doctor", lambda: {"web"})
+
+        filtered = doctor._missing_api_key_toolsets_for_summary(unavailable)
+
+        assert [item["name"] for item in filtered] == ["web"]
+
+    def test_missing_api_key_summary_falls_back_when_config_unavailable(self, monkeypatch):
+        unavailable = [
+            {"name": "rl", "missing_vars": ["TINKER_API_KEY"]},
+            {"name": "web", "missing_vars": ["EXA_API_KEY"]},
+        ]
+        monkeypatch.setattr(doctor, "_enabled_cli_toolsets_for_doctor", lambda: None)
+
+        filtered = doctor._missing_api_key_toolsets_for_summary(unavailable)
+
+        assert [item["name"] for item in filtered] == ["rl", "web"]
+
     def test_detects_custom_endpoint_without_openrouter_key(self):
         content = "OPENAI_BASE_URL=http://localhost:8080/v1\n"
         assert _has_provider_env_config(content)

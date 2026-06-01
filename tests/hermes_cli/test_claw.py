@@ -73,6 +73,22 @@ class TestFindOpenclawDirs:
         assert found == []
 
 
+class TestGatewayWarning:
+    def test_warn_if_gateway_running_suggests_gateway_stop(self, capsys):
+        with (
+            patch("gateway.status.get_running_pid", return_value=123),
+            patch(
+                "gateway.status.read_runtime_status",
+                return_value={"platforms": {"telegram": {"state": "connected"}}},
+            ),
+        ):
+            claw_mod._warn_if_gateway_running(auto_yes=True)
+
+        output = capsys.readouterr().out
+        assert "hermes gateway stop" in output
+        assert "'hermes stop'" not in output
+
+
 # ---------------------------------------------------------------------------
 # _scan_workspace_state
 # ---------------------------------------------------------------------------

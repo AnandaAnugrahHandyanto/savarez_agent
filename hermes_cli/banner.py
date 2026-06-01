@@ -683,7 +683,9 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     # Update check — use prefetched result if available
     try:
-        behind = get_update_result(timeout=0.5)
+        from hermes_cli.config import cfg_get, load_config
+        show_update_banner = cfg_get(load_config(), "display", "show_update_banner", default=True)
+        behind = get_update_result(timeout=0.5) if show_update_banner is not False else None
         if behind is not None and behind != 0:
             from hermes_cli.config import get_managed_update_command, recommended_update_command
             if behind > 0:

@@ -1,6 +1,7 @@
 import asyncio
 import shutil
 import subprocess
+import sys
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -196,9 +197,38 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
 
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
-    assert cmd[:2] == ["/usr/bin/setsid", "bash"]
-    assert "gateway restart" in cmd[-1]
-    assert "kill -0 321" in cmd[-1]
+    assert cmd[:3] == ["/usr/bin/setsid", "--", sys.executable]
+    assert "os.kill(pid, 0)" in cmd[4]
+    assert "subprocess.Popen" in cmd[4]
+    assert cmd[-3:] == ["/usr/bin/hermes", "gateway", "restart"]
+    assert kwargs["start_new_session"] is True
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
+
+
+@pytest.mark.asyncio
+async def test_launch_detached_restart_command_without_setsid_avoids_shell(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[:3] == [sys.executable, "-c", cmd[2]]
+    assert "bash" not in cmd
+    assert "os.kill(pid, 0)" in cmd[2]
+    assert cmd[-3:] == ["/usr/bin/hermes", "gateway", "restart"]
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL

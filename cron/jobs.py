@@ -428,17 +428,33 @@ def load_jobs() -> List[Dict[str, Any]]:
     ensure_dirs()
     if not JOBS_FILE.exists():
         return []
-    
+
+    def _extract_jobs(data: Any, *, repair_reason: str | None = None) -> List[Dict[str, Any]]:
+        if isinstance(data, list):
+            save_jobs(data)
+            logger.warning("Auto-repaired jobs.json (%s)", repair_reason or "top-level was a list")
+            return data
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"Cron database corrupted: top-level is {type(data).__name__}, expected object"
+            )
+        jobs = data.get("jobs", [])
+        if not isinstance(jobs, list):
+            raise RuntimeError(
+                f"Cron database corrupted: jobs field is {type(jobs).__name__}, expected list"
+            )
+        return jobs
+
     try:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("jobs", [])
+            return _extract_jobs(data, repair_reason="top-level was a list, expected object")
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
-                jobs = data.get("jobs", [])
+                jobs = _extract_jobs(data, repair_reason="top-level was a list, expected object")
                 if jobs:
                     # Auto-repair: rewrite with proper escaping
                     save_jobs(jobs)
