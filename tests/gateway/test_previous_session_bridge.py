@@ -93,3 +93,44 @@ def test_empty_session_rotation_does_not_set_previous_session_id(tmp_path):
     second = store.get_or_create_session(src)
     assert second.was_auto_reset is True
     assert second.previous_session_id is None
+
+
+# ---------------------------------------------------------------------------
+# Task 3: PreviousSessionBridge config dataclass
+# ---------------------------------------------------------------------------
+
+def test_previous_session_bridge_defaults():
+    from gateway.config import PreviousSessionBridge
+    bridge = PreviousSessionBridge()
+    assert bridge.enabled is True
+    assert bridge.max_exchanges == 3
+    assert bridge.max_chars == 4000
+
+
+def test_gateway_config_has_previous_session_bridge():
+    from gateway.config import GatewayConfig, PreviousSessionBridge
+    cfg = GatewayConfig()
+    assert isinstance(cfg.previous_session_bridge, PreviousSessionBridge)
+    assert cfg.previous_session_bridge.enabled is True
+
+
+def test_previous_session_bridge_round_trip():
+    from gateway.config import PreviousSessionBridge
+    bridge = PreviousSessionBridge(enabled=False, max_exchanges=5, max_chars=2000)
+    restored = PreviousSessionBridge.from_dict(bridge.to_dict())
+    assert restored.enabled is False
+    assert restored.max_exchanges == 5
+    assert restored.max_chars == 2000
+
+
+def test_gateway_config_round_trip_preserves_bridge_settings():
+    from gateway.config import GatewayConfig, PreviousSessionBridge
+    cfg = GatewayConfig()
+    cfg.previous_session_bridge = PreviousSessionBridge(
+        enabled=False, max_exchanges=10, max_chars=8000
+    )
+    data = cfg.to_dict()
+    restored = GatewayConfig.from_dict(data)
+    assert restored.previous_session_bridge.enabled is False
+    assert restored.previous_session_bridge.max_exchanges == 10
+    assert restored.previous_session_bridge.max_chars == 8000
