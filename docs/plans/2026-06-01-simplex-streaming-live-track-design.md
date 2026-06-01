@@ -20,14 +20,18 @@ Make the constructed `StreamingPipeline` actually carry live audio:
 - **`_DirectFeedAccumulator(pipeline)`** (aiortc_engine.py): `async accept_pcm16(self, pcm16, *, now=None)` → `await pipeline.process_pcm16(call_id=…, pcm16=pcm16, sample_rate=<native>)`; **discards the ack** (no `.ok`/`.audio_path`; outbound goes via the sink). Signature matches the relay's `await accumulator.accept_pcm16(pcm16)`.
 - **`AiortcAudioPeer.start()` streaming branch**: when `getattr(pipeline, "is_streaming", False)`:
   - build the streaming output track via `_create_pcm_streaming_track(config.sample_rate)` (instead of `_create_queued_audio_track`);
-  - **attach the track as the pipeline transport's sink**: `pipeline.transport.set_outbound_sink(track.enqueue, drop=track.drop_pending)` (Slice 6's `AiortcStreamingTransport` gains a `set_outbound_sink` setter, since the track is created in `start()` *after* the pipeline is built — the one cross-object seam, A4);
+  - **attach the track as the pipeline transport's sink**: `pipeline.transport.set_outbound_sink(track.enqueue, drop=track.drop_pending)` — requires the **B1** + **B2** + **B3** changes below;
   - use `_DirectFeedAccumulator(pipeline)` for the relay instead of `AudioUtteranceAccumulator`;
-  - on peer close: `await pipeline.aclose()`.
-- **Slice-6 carry-in robustness** (small edits to `streaming/aiortc_transport.py`, still CI-tested there):
+  - **retain the pipeline** on the peer (`self._pipeline = pipeline`) so teardown can close it.
+  - **Teardown wiring (A5 gap):** today `_close_session`/peer `close()` does not touch the pipeline (the session dict holds it separately and never calls it). Fix: the peer stores `self._pipeline` in `start()`, and peer `close()` / `_close_session` calls `await pipeline.aclose()` (guarded `if getattr(pipeline,"is_streaming",False)`), so the session task is drained on call end.
+- **Slice-6 core changes required first (B1/B2/B3 — small edits to `streaming/aiortc_transport.py`, CI-tested there):**
+  - **B1 — expose the transport:** `StreamingPipeline` gains a public `@property def transport(self) -> AiortcStreamingTransport: return self._transport` (currently private/unexposed). `start()`'s `pipeline.transport.set_outbound_sink(...)` depends on this.
+  - **B2 — resolve the drop contract (currently broken-if-used):** Slice-6's `flush_outbound` reads `.drop` as an *attribute on the sink callable*, but a bound method `track.enqueue` has no `.drop`. Decision: `set_outbound_sink(sink, *, drop=None)` stores `self._outbound_sink = sink` **and** `self._outbound_drop = drop` in a **separate field**; `flush_outbound` calls `self._outbound_drop` if set (awaiting if it returns a coroutine), falling back to `getattr(sink, "drop", None)` for the `__init__`-sink case. Without this, barge-in flush silently no-ops. Update the typed `OutboundSink` (M4) so `drop` is an *optional separate hook*, not a required sink attribute.
+  - **B3 — no throwaway sink on the live path:** `build_streaming_pipeline(..., sink=None)` — when `sink is None` (the engine/live path), construct the transport with a **no-op** sink (frames buffer harmlessly until `start()` calls `set_outbound_sink`) OR defer transport construction; the recording sink is used only by the in-CI seam tests that pass an explicit sink. This removes the race where the session emits into a throwaway recording sink before `start()` swaps in the live track.
   - **I1**: comment the no-await invariant on `_ensure_started`.
-  - **I3**: `aclose()` clears `_task` in a `finally` (idempotent) and gains an `abort: bool=False` path that `cancel()`s the session task then awaits-with-suppression (graceful-drain by default; abort for forced teardown).
-  - **M4**: a typed `OutboundSink` Protocol (`async __call__(frame)`, optional `drop`) + the `set_outbound_sink(sink, *, drop=None)` setter; replaces the function-attribute idiom.
-  - **I2** back-pressure decision lives in the track (bounded queue) — the transport's inbound queue note: document that inbound stays unbounded but the relay is paced by RTP arrival (~50 fps), and the session drains per-frame; if Slice 7's real STT/brain can't keep up, revisit.
+  - **I3**: `aclose(self, *, abort: bool=False)` clears `_task` in a `finally` (idempotent); `abort=True` `cancel()`s the session task then awaits-with-suppression (graceful-drain default; abort for forced teardown).
+  - **M4**: a typed `OutboundSink` Protocol (`async __call__(frame)`) + the `set_outbound_sink(sink, *, drop=None)` setter (drop is a separate optional hook per B2).
+  - **I2** back-pressure: the track's outbound queue is bounded (drop-oldest + `log`); the transport's *inbound* queue stays unbounded but is paced by RTP arrival (~50 fps) and drained per-frame — revisit if Slice 7's real STT/brain can't keep up.
 
 ## 3. BDD scenarios (all `importorskip("aiortc","av")` — skip in CI; run locally/at Slice 8)
 
@@ -36,9 +40,9 @@ Make the constructed `StreamingPipeline` actually carry live audio:
 3. **drop_pending flush**: enqueue N, `drop_pending()` → queue empty; reports N.
 4. **Resampler continuity (M1)**: feeding two consecutive 16k frames yields 48k output whose total sample count ≈ 3× input across the pair (state preserved; no per-frame truncation).
 5. **Direct-feed bypass**: `_DirectFeedAccumulator(spy_pipeline).accept_pcm16(pcm)` calls `pipeline.process_pcm16(...)` once and ignores the return.
-6. **start() wiring**: with a fake `is_streaming` pipeline (exposing a `transport` with `set_outbound_sink`), `start()` builds the streaming track, attaches it as the sink, and selects the direct-feed accumulator (assert via injected fakes / spies — may run without a real PeerConnection by stubbing the RTCPeerConnection bits, else importorskip).
+6. **start() wiring** (split for CI coverage, A7): a **CI-runnable** portion drives the streaming branch of `start()` with a **fully faked peer** (no aiortc — stub the RTCPeerConnection/track-add bits) and a real `StreamingPipeline`, asserting `pipeline.transport`'s sink was replaced via `set_outbound_sink` (a spy) and that `_DirectFeedAccumulator` was selected (not `AudioUtteranceAccumulator`); plus an **importorskip** portion exercising the real track. Without the CI-runnable portion, regressions in the `start()` streaming branch wouldn't be caught.
 
-CI-side (in `streaming/aiortc_transport.py`, runs in CI): aclose idempotency + abort-cancel path; `set_outbound_sink` + typed `OutboundSink`; these get unit tests in `test_aiortc_transport.py`.
+CI-side carry-in tests (in `streaming/aiortc_transport.py`, **run in CI** — no aiortc needed): the `transport` property (B1); `set_outbound_sink` + separate `drop` field + `flush_outbound` calling it (B2 — assert barge-in flush actually invokes the drop hook); `build_streaming_pipeline(sink=None)` uses a no-op sink (B3); `aclose` idempotency + abort-cancel path (I3); typed `OutboundSink` (M4). These get unit tests in `test_aiortc_transport.py`.
 
 ## 4. Files
 
