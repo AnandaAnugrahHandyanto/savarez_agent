@@ -204,6 +204,32 @@ class TestDiscoveryShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_current_session_id_passed_to_search_messages(self, db, monkeypatch):
+        _seed_modpack_sessions(db)
+        captured = {}
+        original = db.search_messages
+
+        def spy(*args, **kwargs):
+            captured.update(kwargs)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(db, "search_messages", spy)
+        json.loads(session_search(query="modpack", db=db, current_session_id="s_newest"))
+        assert captured.get("exclude_session_id") == "s_newest"
+
+    def test_no_current_session_id_passes_none(self, db, monkeypatch):
+        _seed_modpack_sessions(db)
+        captured = {}
+        original = db.search_messages
+
+        def spy(*args, **kwargs):
+            captured.update(kwargs)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(db, "search_messages", spy)
+        json.loads(session_search(query="modpack", db=db))
+        assert captured.get("exclude_session_id") is None
+
 
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):

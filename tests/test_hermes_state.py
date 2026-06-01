@@ -2782,6 +2782,46 @@ class TestExcludeSources:
         sources = [r["source"] for r in results]
         assert sources == ["cli"]
 
+    def test_search_messages_exclude_session_id_filters_match(self, db):
+        db.create_session("s_current", "cli")
+        db.append_message("s_current", "user", "uniqueneedle here in current")
+        db.create_session("s_other", "cli")
+        db.append_message("s_other", "user", "uniqueneedle here in other")
+        results = db.search_messages("uniqueneedle", exclude_session_id="s_current")
+        sids = [r["session_id"] for r in results]
+        assert "s_current" not in sids
+        assert "s_other" in sids
+
+    def test_search_messages_without_exclude_session_id_returns_all(self, db):
+        db.create_session("s_a", "cli")
+        db.append_message("s_a", "user", "uniqueneedle in a")
+        db.create_session("s_b", "cli")
+        db.append_message("s_b", "user", "uniqueneedle in b")
+        results = db.search_messages("uniqueneedle")
+        sids = {r["session_id"] for r in results}
+        assert sids == {"s_a", "s_b"}
+
+    def test_search_messages_exclude_session_id_cjk_trigram(self, db):
+        db.create_session("s_current", "cli")
+        db.append_message("s_current", "user", "记忆断裂在当前会话")
+        db.create_session("s_other", "cli")
+        db.append_message("s_other", "user", "记忆断裂在另一会话")
+        results = db.search_messages("记忆断裂", exclude_session_id="s_current")
+        sids = [r["session_id"] for r in results]
+        assert "s_current" not in sids
+        assert "s_other" in sids
+
+    def test_search_messages_exclude_session_id_cjk_like_fallback(self, db):
+        # 2-char CJK token routes to LIKE fallback path
+        db.create_session("s_current", "cli")
+        db.append_message("s_current", "user", "通信在当前")
+        db.create_session("s_other", "cli")
+        db.append_message("s_other", "user", "通信在另一")
+        results = db.search_messages("通信", exclude_session_id="s_current")
+        sids = [r["session_id"] for r in results]
+        assert "s_current" not in sids
+        assert "s_other" in sids
+
 
 class TestResolveSessionByNameOrId:
     """Tests for the main.py helper that resolves names or IDs."""

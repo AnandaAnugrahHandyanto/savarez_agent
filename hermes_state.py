@@ -2464,6 +2464,7 @@ class SessionDB:
         source_filter: List[str] = None,
         exclude_sources: List[str] = None,
         role_filter: List[str] = None,
+        exclude_session_id: str = None,
         limit: int = 20,
         offset: int = 0,
         sort: str = None,
@@ -2488,6 +2489,9 @@ class SessionDB:
         The short-CJK LIKE fallback already orders by timestamp DESC and
         ignores ``sort``. The trigram CJK path honours ``sort`` like the main
         FTS5 path.
+
+        ``exclude_session_id``: when set, messages from this session id are
+        omitted from results across all query paths (FTS5, trigram, LIKE).
         """
         if not self._fts_enabled:
             return []
@@ -2536,6 +2540,10 @@ class SessionDB:
             role_placeholders = ",".join("?" for _ in role_filter)
             where_clauses.append(f"m.role IN ({role_placeholders})")
             params.extend(role_filter)
+
+        if exclude_session_id:
+            where_clauses.append("m.session_id != ?")
+            params.append(exclude_session_id)
 
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
@@ -2609,6 +2617,9 @@ class SessionDB:
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
+                if exclude_session_id:
+                    tri_where.append("m.session_id != ?")
+                    tri_params.append(exclude_session_id)
                 tri_sql = f"""
                     SELECT
                         m.id,
@@ -2664,6 +2675,9 @@ class SessionDB:
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
+                if exclude_session_id:
+                    like_where.append("m.session_id != ?")
+                    like_params.append(exclude_session_id)
                 like_sql = f"""
                     SELECT m.id, m.session_id, m.role,
                            substr(m.content,
