@@ -1,6 +1,9 @@
 """Tests for check_all_command_guards() — combined tirith + dangerous command guard."""
 
 import os
+import subprocess
+import tempfile
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -27,6 +30,36 @@ def _tirith_result(action="allow", findings=None, summary=""):
     return {"action": action, "findings": findings or [], "summary": summary}
 
 
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+
+def _make_pr_repo(changed_files=1, commits=1):
+    tmp = tempfile.TemporaryDirectory()
+    repo = Path(tmp.name)
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "tests@example.com")
+    _git(repo, "config", "user.name", "Hermes Tests")
+    (repo / "base.txt").write_text("base\n")
+    _git(repo, "add", "base.txt")
+    _git(repo, "commit", "-m", "base")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(repo, "checkout", "-b", "feature")
+    for commit_index in range(commits):
+        for file_index in range(changed_files):
+            path = repo / f"change-{commit_index}-{file_index}.txt"
+            path.write_text(f"change {commit_index} {file_index}\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", f"change {commit_index}")
+    return tmp, repo
+
+
 # The lazy import inside check_all_command_guards does:
 #   from tools.tirith_security import check_command_security
 # We need to patch the function on the tirith_security module itself.
@@ -41,7 +74,17 @@ def _clean_state():
     approval_module._permanent_approved.clear()
     approval_module._session_yolo.clear()
     saved = {}
-    for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
+    env_keys = (
+        "HERMES_INTERACTIVE",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_EXEC_ASK",
+        "HERMES_YOLO_MODE",
+        "HERMES_PR_PUBLISH_GUARD",
+        "HERMES_PR_GUARD_MAX_FILES",
+        "HERMES_PR_GUARD_MAX_COMMITS",
+        "HERMES_PR_GUARD_MAX_LINE_DELTA",
+    )
+    for k in env_keys:
         if k in os.environ:
             saved[k] = os.environ.pop(k)
     yield
@@ -51,7 +94,7 @@ def _clean_state():
     approval_module._session_yolo.clear()
     for k, v in saved.items():
         os.environ[k] = v
-    for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
+    for k in env_keys:
         os.environ.pop(k, None)
 
 
@@ -96,53 +139,103 @@ class TestTirithAllowSafeCommand:
 
 
 # ---------------------------------------------------------------------------
-# Raw GitHub PR creation is a hard worker-publish block
+# GitHub PR publish guard
 # ---------------------------------------------------------------------------
 
-class TestRawGhPrCreateGuard:
+class TestGhPrPublishGuard:
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
-    def test_raw_gh_pr_create_blocks_before_tirith_or_auto_allow(self, mock_tirith):
+    def test_default_off_allows_gh_pr_create_without_inspection(self, mock_tirith):
         result = check_all_command_guards(
             "gh pr create --title 'Small fix' --body 'Body' --base main",
             "local",
+            cwd="/path/that/does/not/exist",
         )
 
-        assert result["approved"] is False
-        assert result["raw_pr_create_guard"] is True
-        assert "gh pr create" in result["message"]
+        assert result["approved"] is True
         mock_tirith.assert_not_called()
 
-    def test_raw_gh_pr_create_blocks_legacy_entrypoint_too(self):
-        result = check_dangerous_command(
-            "gh pr create --title 'Small fix' --body 'Body'",
-            "local",
-        )
-
-        assert result["approved"] is False
-        assert result["raw_pr_create_guard"] is True
-
-    def test_raw_gh_pr_create_blocks_even_with_session_yolo(self):
-        token = set_current_session_key("raw-pr-create-yolo")
-        approval_module.enable_session_yolo("raw-pr-create-yolo")
+    def test_warn_mode_noninteractive_requires_approval_for_clean_repo(self):
+        os.environ["HERMES_PR_PUBLISH_GUARD"] = "warn"
+        tmp, repo = _make_pr_repo()
         try:
             result = check_all_command_guards(
-                "bash -lc 'gh pr create --title x --body y'",
+                "gh pr create --title 'Small fix' --body 'Body' --base main",
                 "local",
+                cwd=str(repo),
+            )
+        finally:
+            tmp.cleanup()
+
+        assert result["approved"] is False
+        assert result["pattern_key"] == "GitHub PR publish scope"
+        assert result["pr_publish_guard"]["mode"] == "warn"
+        assert result["pr_publish_guard"]["changed_file_count"] == 1
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_warn_mode_cli_prompts_with_diff_summary(self, mock_tirith):
+        os.environ["HERMES_PR_PUBLISH_GUARD"] = "warn"
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        tmp, repo = _make_pr_repo()
+        cb = MagicMock(return_value="once")
+        try:
+            result = check_all_command_guards(
+                "gh pr create --title 'Small fix' --body 'Body' --base main",
+                "local",
+                approval_callback=cb,
+                cwd=str(repo),
+            )
+        finally:
+            tmp.cleanup()
+
+        assert result["approved"] is True
+        assert result["pr_publish_guard"]["mode"] == "warn"
+        cb.assert_called_once()
+        assert "1 file(s)" in cb.call_args[0][1]
+        assert cb.call_args[1]["allow_permanent"] is False
+        mock_tirith.assert_called_once()
+
+    def test_block_mode_blocks_oversized_even_with_session_yolo(self):
+        os.environ["HERMES_PR_PUBLISH_GUARD"] = "block"
+        os.environ["HERMES_PR_GUARD_MAX_FILES"] = "1"
+        tmp, repo = _make_pr_repo(changed_files=2)
+        token = set_current_session_key("pr-publish-yolo")
+        approval_module.enable_session_yolo("pr-publish-yolo")
+        try:
+            result = check_all_command_guards(
+                "gh pr create --title x --body y --base main",
+                "local",
+                cwd=str(repo),
             )
         finally:
             reset_current_session_key(token)
+            tmp.cleanup()
 
         assert result["approved"] is False
-        assert result["raw_pr_create_guard"] is True
+        assert result["pr_publish_guard"]["mode"] == "block"
+        assert "limit is 1" in result["message"]
+
+    def test_block_mode_blocks_legacy_entrypoint_when_uninspectable(self):
+        os.environ["HERMES_PR_PUBLISH_GUARD"] = "block"
+        result = check_dangerous_command(
+            "gh pr create --title 'Small fix' --body 'Body'",
+            "local",
+            cwd="/path/that/does/not/exist",
+        )
+
+        assert result["approved"] is False
+        assert result["pr_publish_guard"]["mode"] == "block"
+        assert "not a git checkout" in result["message"]
 
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
     def test_other_gh_pr_commands_still_allowed(self, mock_tirith):
+        os.environ["HERMES_PR_PUBLISH_GUARD"] = "block"
         result = check_all_command_guards("gh pr view 123 --json files", "local")
         assert result["approved"] is True
         mock_tirith.assert_not_called()
 
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
     def test_searching_for_command_text_is_allowed(self, mock_tirith):
+        os.environ["HERMES_PR_PUBLISH_GUARD"] = "block"
         result = check_all_command_guards("rg 'gh pr create' tools tests", "local")
         assert result["approved"] is True
         mock_tirith.assert_not_called()
