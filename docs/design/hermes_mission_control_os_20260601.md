@@ -477,10 +477,19 @@ Phase 5 remote OAuth/security review prerequisites:
 
 Phase 5: OAuth-protected remote bridge
 
-- Add strict scopes, token storage, redaction, audit, rate limits, and explicit
-  network binding rules.
-- Keep the dashboard private. The MCP bridge should be the only remote surface,
-  and only for narrow Mission Control tools.
+Phase 5 is a planning/security-review phase only. The remote security review is
+documented in
+`docs/design/hermes_mission_control_mcp_remote_security_review_20260601.md`.
+It defines the threat model, scope matrix, OAuth/token plan,
+audit/rate-limit plan, binding/proxy rules, rollback plan, and Phase 6 test
+plan required before any remote MCP transport, OAuth implementation, public
+endpoint, or ChatGPT connector work begins.
+
+The reviewed initial posture keeps local/stdout as the safe default. Read-only
+Mission Control tools may be eligible first after future controls exist.
+Packet-write tools remain local-only/deferred for remote use until a later
+review. The dashboard stays private and must not become the remote MCP
+surface.
 
 Phase 6: Carefully gated actions
 
