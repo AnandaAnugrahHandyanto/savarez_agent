@@ -966,9 +966,21 @@ class LineAdapter(BasePlatformAdapter):
             chat_name=chat_id,
         )
 
+        # LINE's `audio` message type is a microphone voice note (.m4a sent
+        # via LINE's mic button) — map to VOICE so STT + auto-TTS reply fire.
+        # Audio *files* arrive as `file`, hence DOCUMENT.
+        line_to_message_type = {
+            "text": MessageType.TEXT,
+            "image": MessageType.PHOTO,
+            "video": MessageType.VIDEO,
+            "audio": MessageType.VOICE,
+            "file": MessageType.DOCUMENT,
+            "sticker": MessageType.STICKER,
+            "location": MessageType.LOCATION,
+        }
         event_obj = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT if msg_type == "text" else MessageType.IMAGE,
+            message_type=line_to_message_type.get(msg_type, MessageType.TEXT),
             source=source_obj,
             raw_message=event,
             message_id=message_id,
