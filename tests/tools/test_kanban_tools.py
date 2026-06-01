@@ -117,6 +117,57 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     )
 
 
+def test_kanban_create_swarm_visible_only_for_advisor_orchestrators(monkeypatch, tmp_path):
+    """The swarm creator is a narrow advisor/runtime tool, not a generic
+    worker lifecycle surface.
+
+    A profile with `toolsets: [kanban]` can route normal cards, but only the
+    configured mission-owner advisor lanes should see the higher-level swarm
+    graph helper in their model schema.
+    """
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    def kanban_names_for(profile: str) -> set[str]:
+        monkeypatch.setenv("HERMES_PROFILE", profile)
+        invalidate_check_fn_cache()
+        schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+        names = {s["function"].get("name") for s in schema if "function" in s}
+        return {n for n in names if n and n.startswith("kanban_")}
+
+    assert "kanban_create_swarm" in kanban_names_for("tech-advisor")
+    assert "kanban_create_swarm" in kanban_names_for("social-advisor")
+    assert "kanban_create_swarm" not in kanban_names_for("test-orchestrator")
+
+
+def test_kanban_create_swarm_hidden_from_dispatcher_workers(monkeypatch, tmp_path):
+    """Focused Kanban workers must not see the advisor-level swarm helper,
+    even if their profile name is an advisor and their config contains kanban.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    monkeypatch.setenv("HERMES_PROFILE", "tech-advisor")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    invalidate_check_fn_cache()
+    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    names = {s["function"].get("name") for s in schema if "function" in s}
+    assert "kanban_create_swarm" not in names
+
+
 def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     """Orchestrator profiles with toolsets: [kanban] see all kanban tools."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -836,6 +887,131 @@ def test_create_session_id_absent_when_env_unset(monkeypatch, worker_env):
         assert new_task.session_id is None
     finally:
         conn.close()
+
+
+def test_create_swarm_happy_path_stamps_session_id(monkeypatch, worker_env):
+    """Advisor-level swarm tool creates a full graph and stamps the
+    originating gateway/ACP session id on every card for runtime correlation.
+    """
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "tech-advisor")
+    monkeypatch.setenv("HERMES_SESSION_ID", "sess-swarm-tool")
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_swarm import latest_blackboard
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create_swarm({
+        "goal": "Parallel implementation with verifier gate.",
+        "workers": [
+            {
+                "profile": "backend-engineer",
+                "title": "Implement backend slice",
+                "body": "Do backend work",
+                "skills": ["test-driven-development"],
+                "priority": 4,
+                "max_runtime_seconds": 1800,
+            },
+            {
+                "profile": "frontend-engineer",
+                "title": "Implement frontend slice",
+                "body": "Do frontend work",
+            },
+        ],
+        "verifier_assignee": "independent-reviewer",
+        "synthesizer_assignee": "script-producer",
+        "idempotency_key": "swarm-tool-main",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True, d
+    assert d["task_ids"] == [
+        d["root_id"],
+        *d["worker_ids"],
+        d["verifier_id"],
+        d["synthesizer_id"],
+    ]
+
+    with kb.connect() as conn:
+        root = kb.get_task(conn, d["root_id"])
+        workers = [kb.get_task(conn, tid) for tid in d["worker_ids"]]
+        verifier = kb.get_task(conn, d["verifier_id"])
+        synthesizer = kb.get_task(conn, d["synthesizer_id"])
+        assert root.status == "done"
+        assert [w.status for w in workers] == ["ready", "ready"]
+        assert verifier.status == "todo"
+        assert synthesizer.status == "todo"
+        assert all(
+            kb.get_task(conn, tid).session_id == "sess-swarm-tool"
+            for tid in d["task_ids"]
+        )
+        assert set(kb.parent_ids(conn, d["verifier_id"])) == set(d["worker_ids"])
+        assert kb.parent_ids(conn, d["synthesizer_id"]) == [d["verifier_id"]]
+        board = latest_blackboard(conn, d["root_id"])
+        assert board["topology"]["worker_ids"] == d["worker_ids"]
+
+
+def test_create_swarm_idempotency_reuses_existing_swarm(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "social-advisor")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    args = {
+        "goal": "Research then synthesize.",
+        "workers": [
+            {"profile": "independent-researcher", "title": "Evidence", "body": "Find sources"},
+        ],
+        "verifier_assignee": "independent-reviewer",
+        "synthesizer_assignee": "script-producer",
+        "idempotency_key": "stable-swarm-key",
+    }
+    first = json.loads(kt._handle_create_swarm(args))
+    assert first["ok"] is True, first
+    with kb.connect() as conn:
+        count_after_first = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    second = json.loads(kt._handle_create_swarm(args))
+    assert second["ok"] is True, second
+    assert second["task_ids"] == first["task_ids"]
+    with kb.connect() as conn:
+        count_after_second = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    assert count_after_second == count_after_first
+
+
+def test_create_swarm_idempotency_refuses_non_swarm_collision(monkeypatch, worker_env):
+    """An idempotency hit on a non-swarm card must not be mutated into a
+    swarm root or have children linked under it.
+    """
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "tech-advisor")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        existing = kb.create_task(
+            conn,
+            title="ordinary task",
+            assignee="backend-engineer",
+            idempotency_key="collision-key",
+        )
+
+    out = kt._handle_create_swarm({
+        "goal": "Should not hijack the ordinary task.",
+        "workers": [
+            {"profile": "backend-engineer", "title": "Worker", "body": "Work"},
+        ],
+        "verifier_assignee": "independent-reviewer",
+        "synthesizer_assignee": "script-producer",
+        "idempotency_key": "collision-key",
+    })
+    d = json.loads(out)
+    assert "idempotency_key already belongs to non-swarm task" in d.get("error", "")
+    with kb.connect() as conn:
+        task = kb.get_task(conn, existing)
+        assert task.title == "ordinary task"
+        assert task.status == "ready"
+        assert kb.child_ids(conn, existing) == []
 
 
 def test_create_rejects_no_title(worker_env):
@@ -1710,7 +1886,7 @@ def test_board_param_rejects_invalid_slug(multi_board_env):
 
 
 def test_board_param_in_all_schemas():
-    """All nine kanban_* tool schemas must expose an optional ``board``
+    """All ten kanban_* tool schemas must expose an optional ``board``
     parameter. This pins the contract surfaced to the LLM — adding a
     new kanban tool without ``board`` will fail CI immediately."""
     from tools import kanban_tools as kt
@@ -1723,6 +1899,7 @@ def test_board_param_in_all_schemas():
         kt.KANBAN_HEARTBEAT_SCHEMA,
         kt.KANBAN_COMMENT_SCHEMA,
         kt.KANBAN_CREATE_SCHEMA,
+        kt.KANBAN_CREATE_SWARM_SCHEMA,
         kt.KANBAN_UNBLOCK_SCHEMA,
         kt.KANBAN_LINK_SCHEMA,
     ]

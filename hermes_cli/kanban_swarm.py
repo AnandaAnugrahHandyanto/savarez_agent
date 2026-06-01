@@ -24,6 +24,7 @@ from typing import Any, Iterable, Optional
 from hermes_cli import kanban_db as kb
 
 BLACKBOARD_PREFIX = "[swarm:blackboard] "
+ROOT_BODY_PREFIX = "Kanban Swarm v1 planning/root card."
 
 
 @dataclass(frozen=True)
@@ -47,12 +48,22 @@ class SwarmCreated:
     verifier_id: str
     synthesizer_id: str
 
+    @property
+    def task_ids(self) -> list[str]:
+        return [
+            self.root_id,
+            *list(self.worker_ids),
+            self.verifier_id,
+            self.synthesizer_id,
+        ]
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "root_id": self.root_id,
             "worker_ids": list(self.worker_ids),
             "verifier_id": self.verifier_id,
             "synthesizer_id": self.synthesizer_id,
+            "task_ids": self.task_ids,
         }
 
 
@@ -61,6 +72,55 @@ def _require_text(value: str, field_name: str) -> str:
     if not text:
         raise ValueError(f"{field_name} is required")
     return text
+
+
+def _created_from_topology(root_id: str, topology: Any) -> SwarmCreated | None:
+    """Recover a SwarmCreated handle from root blackboard topology."""
+
+    if not isinstance(topology, dict):
+        return None
+    worker_ids = [str(x) for x in topology.get("worker_ids", []) if x]
+    verifier_id = topology.get("verifier_id")
+    synthesizer_id = topology.get("synthesizer_id")
+    if not (worker_ids and verifier_id and synthesizer_id):
+        return None
+    return SwarmCreated(
+        root_id=root_id,
+        worker_ids=worker_ids,
+        verifier_id=str(verifier_id),
+        synthesizer_id=str(synthesizer_id),
+    )
+
+
+def _idempotency_hit(conn: sqlite3.Connection, idempotency_key: str) -> str | None:
+    row = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? "
+        "AND status != 'archived' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (idempotency_key,),
+    ).fetchone()
+    return str(row["id"]) if row else None
+
+
+def _recover_or_reject_idempotency_hit(
+    conn: sqlite3.Connection,
+    idempotency_key: Optional[str],
+) -> SwarmCreated | None:
+    if not idempotency_key:
+        return None
+    existing_root = _idempotency_hit(conn, idempotency_key)
+    if not existing_root:
+        return None
+    existing = _created_from_topology(
+        existing_root,
+        latest_blackboard(conn, existing_root).get("topology"),
+    )
+    if existing is not None:
+        return existing
+    raise ValueError(
+        "idempotency_key already belongs to non-swarm task "
+        f"{existing_root}; refusing to mutate it into a swarm root"
+    )
 
 
 def _swarm_context(root_id: str, goal: str) -> str:
@@ -90,6 +150,7 @@ def create_swarm(
     workspace_path: Optional[str] = None,
     priority: int = 0,
     idempotency_key: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> SwarmCreated:
     """Create a durable Kanban swarm graph.
 
@@ -108,15 +169,21 @@ def create_swarm(
         _require_text(spec.profile, f"workers[{i}].profile")
         _require_text(spec.title, f"workers[{i}].title")
 
+    existing = _recover_or_reject_idempotency_hit(conn, idempotency_key)
+    if existing is not None:
+        return existing
+
+    root_body = (
+        f"{ROOT_BODY_PREFIX} This card is completed "
+        "immediately so parallel workers can start while it remains the "
+        "shared blackboard and audit anchor.\n\n"
+        f"Goal:\n{goal}"
+    )
+
     root = kb.create_task(
         conn,
         title=root_title or f"Swarm: {goal.splitlines()[0][:80]}",
-        body=(
-            "Kanban Swarm v1 planning/root card. This card is completed "
-            "immediately so parallel workers can start while it remains the "
-            "shared blackboard and audit anchor.\n\n"
-            f"Goal:\n{goal}"
-        ),
+        body=root_body,
         assignee=created_by,
         created_by=created_by,
         tenant=tenant,
@@ -125,23 +192,21 @@ def create_swarm(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["kanban-orchestrator"],
+        session_id=session_id,
     )
 
-    # If idempotency returned an existing non-archived root, do not duplicate the
-    # swarm graph. Recover the topology from the root's latest blackboard, if it
-    # was created by this helper previously.
-    existing = latest_blackboard(conn, root).get("topology")
-    if isinstance(existing, dict):
-        worker_ids = [str(x) for x in existing.get("worker_ids", []) if x]
-        verifier_id = existing.get("verifier_id")
-        synthesizer_id = existing.get("synthesizer_id")
-        if worker_ids and verifier_id and synthesizer_id:
-            return SwarmCreated(
-                root_id=root,
-                worker_ids=worker_ids,
-                verifier_id=str(verifier_id),
-                synthesizer_id=str(synthesizer_id),
-            )
+    # If an idempotency race happened between the preflight lookup and
+    # create_task(), it may have returned an existing non-swarm task. Do not
+    # complete/link under that task. A genuine prior swarm returns from topology.
+    existing = _created_from_topology(root, latest_blackboard(conn, root).get("topology"))
+    if existing is not None:
+        return existing
+    root_task = kb.get_task(conn, root)
+    if idempotency_key and root_task and not (root_task.body or "").startswith(ROOT_BODY_PREFIX):
+        raise ValueError(
+            "idempotency_key already belongs to non-swarm task "
+            f"{root}; refusing to mutate it into a swarm root"
+        )
 
     kb.complete_task(
         conn,
@@ -170,6 +235,7 @@ def create_swarm(
             workspace_path=workspace_path,
             skills=spec.skills or None,
             max_runtime_seconds=spec.max_runtime_seconds,
+            session_id=session_id,
         )
         worker_ids.append(worker_id)
 
@@ -191,6 +257,7 @@ def create_swarm(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["requesting-code-review"],
+        session_id=session_id,
     )
 
     synthesizer_body = (
@@ -210,6 +277,7 @@ def create_swarm(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["humanizer"],
+        session_id=session_id,
     )
 
     created = SwarmCreated(root, worker_ids, verifier, synthesizer)

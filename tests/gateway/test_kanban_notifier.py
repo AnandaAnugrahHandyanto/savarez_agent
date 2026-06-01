@@ -478,6 +478,73 @@ def test_gateway_auto_subscribes_tool_result_board_field(tmp_path, monkeypatch):
     assert subs[0]["thread_id"] == ""
 
 
+def test_gateway_auto_subscribes_all_kanban_create_swarm_task_ids(tmp_path, monkeypatch):
+    """A swarm tool result returns many card ids; the gateway must subscribe
+    the originating chat to all of them so completion/block events close the
+    loop for every worker/verifier/synthesizer lane.
+    """
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    kb._INITIALIZED_PATHS.clear()
+
+    task_ids = []
+    with kb.connect(board="swarm-board") as conn:
+        for title in ["root", "worker-a", "verifier", "synthesizer"]:
+            task_ids.append(kb.create_task(conn, title=title, assignee="worker"))
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "main"
+    source = SimpleNamespace(
+        platform=Platform.DISCORD,
+        chat_id="discord-chat",
+        thread_id="discord-thread",
+        user_id="user-1",
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_swarm",
+                    "type": "function",
+                    "function": {
+                        "name": "kanban_create_swarm",
+                        "arguments": json.dumps({"board": "swarm-board"}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_swarm",
+            "content": json.dumps({
+                "ok": True,
+                "root_id": task_ids[0],
+                "worker_ids": [task_ids[1]],
+                "verifier_id": task_ids[2],
+                "synthesizer_id": task_ids[3],
+                "task_ids": task_ids,
+                "board": "swarm-board",
+            }),
+        },
+    ]
+
+    subscribed = asyncio.run(
+        runner._auto_subscribe_kanban_create_tool_results(source, messages)
+    )
+
+    assert subscribed == task_ids
+    with kb.connect(board="swarm-board") as conn:
+        for task_id in task_ids:
+            subs = kb.list_notify_subs(conn, task_id)
+            assert len(subs) == 1
+            assert subs[0]["platform"] == "discord"
+            assert subs[0]["chat_id"] == "discord-chat"
+            assert subs[0]["thread_id"] == "discord-thread"
+
+
 def test_gateway_ignores_malformed_kanban_create_tool_content(tmp_path, monkeypatch):
     db_path = tmp_path / "tool-create-malformed.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

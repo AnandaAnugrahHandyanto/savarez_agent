@@ -10116,8 +10116,8 @@ class GatewayRunner:
         handler: the model calls `kanban_create`, the worker eventually
         completes, but `kanban_notify_subs` has no row, so the user never hears
         back. This helper scans the completed agent turn for successful
-        `kanban_create` tool calls and adds the same notification subscription
-        using the original gateway source.
+        `kanban_create` / `kanban_create_swarm` tool calls and adds the same
+        notification subscription using the original gateway source.
         """
         platform = getattr(source, "platform", None)
         platform_value = getattr(platform, "value", None)
@@ -10142,7 +10142,7 @@ class GatewayRunner:
                 continue
             for call in msg.get("tool_calls") or []:
                 fn = call.get("function") or {}
-                if fn.get("name") != "kanban_create":
+                if fn.get("name") not in {"kanban_create", "kanban_create_swarm"}:
                     continue
                 call_id = call.get("id")
                 if not call_id:
@@ -10179,20 +10179,29 @@ class GatewayRunner:
                 continue
             if not isinstance(payload, dict):
                 continue
-            # `kanban_create` returns {"ok": true, "task_id": ...}; some
-            # older tool helpers use {"success": true}. Require an explicit
-            # success marker and ignore structured tool errors even if they
-            # happen to contain a task_id-like string.
+            # `kanban_create` returns {"ok": true, "task_id": ...};
+            # `kanban_create_swarm` returns {"ok": true, "task_ids": [...]}
+            # plus root/worker/verifier/synthesizer ids. Some older tool helpers
+            # use {"success": true}. Require an explicit success marker and
+            # ignore structured tool errors even if they contain task-id-like text.
             if payload.get("error") or not (
                 payload.get("ok") is True or payload.get("success") is True
             ):
                 continue
-            task_id = payload.get("task_id") or payload.get("id")
-            if not isinstance(task_id, str) or not task_id.startswith("t_"):
+            raw_task_ids = payload.get("task_ids")
+            task_ids: list[str]
+            if isinstance(raw_task_ids, list):
+                task_ids = [tid for tid in raw_task_ids if isinstance(tid, str)]
+            else:
+                task_id = payload.get("task_id") or payload.get("id")
+                task_ids = [task_id] if isinstance(task_id, str) else []
+            task_ids = [tid for tid in task_ids if tid.startswith("t_")]
+            if not task_ids:
                 continue
             result_board = payload.get("board")
             board = str(result_board) if result_board else kanban_calls[call_id]
-            subscriptions.append((task_id, board))
+            for task_id in task_ids:
+                subscriptions.append((task_id, board))
 
         if not subscriptions:
             return []

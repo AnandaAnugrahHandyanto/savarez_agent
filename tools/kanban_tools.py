@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+KANBAN_SWARM_ADVISOR_PROFILES = {"tech-advisor", "social-advisor"}
 
 
 def _profile_has_kanban_toolset() -> bool:
@@ -90,9 +91,23 @@ def _check_kanban_orchestrator_mode() -> bool:
     return _profile_has_kanban_toolset()
 
 
+def _check_kanban_swarm_advisor_mode() -> bool:
+    """Expose the high-level swarm graph helper only to mission-owner advisors.
+
+    Normal kanban orchestrators can still compose graphs with kanban_create and
+    kanban_link. ``kanban_create_swarm`` is intentionally narrower because it
+    can fan out multiple durable cards in one tool call and should only appear
+    for the advisor lanes that own complex-task dispatch decisions.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return False
+    profile = (os.environ.get("HERMES_PROFILE") or "").strip()
+    return profile in KANBAN_SWARM_ADVISOR_PROFILES and _profile_has_kanban_toolset()
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
 
 def _default_task_id(arg: Optional[str]) -> Optional[str]:
     """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
@@ -302,6 +317,21 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
             "must use kanban_complete, kanban_block, kanban_heartbeat, or "
             "kanban_comment for their assigned task."
+        )
+    return None
+
+
+def _require_swarm_advisor_tool(tool_name: str) -> Optional[str]:
+    guard = _require_orchestrator_tool(tool_name)
+    if guard:
+        return guard
+    profile = (os.environ.get("HERMES_PROFILE") or "").strip()
+    if profile not in KANBAN_SWARM_ADVISOR_PROFILES:
+        allowed = ", ".join(sorted(KANBAN_SWARM_ADVISOR_PROFILES))
+        return tool_error(
+            f"{tool_name} is only available to mission-owner advisor profiles "
+            f"({allowed}). Use kanban_create and kanban_link for generic "
+            "orchestrator routing."
         )
     return None
 
@@ -813,6 +843,90 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(f"kanban_create: {e}")
 
 
+def _parse_swarm_workers(raw_workers: Any):
+    if not isinstance(raw_workers, (list, tuple)) or not raw_workers:
+        raise ValueError("workers must be a non-empty list")
+    from hermes_cli.kanban_swarm import SwarmWorkerSpec
+
+    workers = []
+    for idx, raw in enumerate(raw_workers, start=1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"workers[{idx}] must be an object")
+        profile = str(raw.get("profile") or "").strip()
+        title = str(raw.get("title") or "").strip()
+        if not profile:
+            raise ValueError(f"workers[{idx}].profile is required")
+        if not title:
+            raise ValueError(f"workers[{idx}].title is required")
+        skills = raw.get("skills") or []
+        if isinstance(skills, str):
+            skills = [skills]
+        if not isinstance(skills, (list, tuple)):
+            raise ValueError(f"workers[{idx}].skills must be a list of strings")
+        priority = raw.get("priority")
+        max_runtime_seconds = raw.get("max_runtime_seconds")
+        workers.append(SwarmWorkerSpec(
+            profile=profile,
+            title=title,
+            body=str(raw.get("body") or title),
+            skills=[str(s).strip() for s in skills if str(s).strip()],
+            priority=int(priority) if priority is not None else 0,
+            max_runtime_seconds=(
+                int(max_runtime_seconds) if max_runtime_seconds is not None else None
+            ),
+        ))
+    return workers
+
+
+def _handle_create_swarm(args: dict, **kw) -> str:
+    """Create a complete Kanban Swarm v1 graph in one advisor tool call."""
+    guard = _require_swarm_advisor_tool("kanban_create_swarm")
+    if guard:
+        return guard
+    goal = args.get("goal")
+    if not goal or not str(goal).strip():
+        return tool_error("goal is required")
+    verifier_assignee = args.get("verifier_assignee")
+    if not verifier_assignee or not str(verifier_assignee).strip():
+        return tool_error("verifier_assignee is required")
+    synthesizer_assignee = args.get("synthesizer_assignee")
+    if not synthesizer_assignee or not str(synthesizer_assignee).strip():
+        return tool_error("synthesizer_assignee is required")
+    priority = args.get("priority")
+    board = args.get("board")
+    try:
+        workers = _parse_swarm_workers(args.get("workers"))
+        kb, conn = _connect(board=board)
+        try:
+            from hermes_cli.kanban_swarm import create_swarm
+
+            created = create_swarm(
+                conn,
+                goal=str(goal).strip(),
+                workers=workers,
+                verifier_assignee=str(verifier_assignee).strip(),
+                synthesizer_assignee=str(synthesizer_assignee).strip(),
+                root_title=args.get("root_title"),
+                verifier_title=str(args.get("verifier_title") or "Verify swarm outputs"),
+                synthesizer_title=str(args.get("synthesizer_title") or "Synthesize swarm outputs"),
+                tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
+                created_by=os.environ.get("HERMES_PROFILE") or "swarm-orchestrator",
+                workspace_kind=str(args.get("workspace_kind") or "scratch"),
+                workspace_path=args.get("workspace_path"),
+                priority=int(priority) if priority is not None else 0,
+                idempotency_key=args.get("idempotency_key"),
+                session_id=args.get("session_id") or os.environ.get("HERMES_SESSION_ID"),
+            )
+            return _ok(**created.as_dict(), board=board)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_create_swarm: {e}")
+    except Exception as e:
+        logger.exception("kanban_create_swarm failed")
+        return tool_error(f"kanban_create_swarm: {e}")
+
+
 def _handle_unblock(args: dict, **kw) -> str:
     """Transition a blocked task back to ready."""
     guard = _require_orchestrator_tool("kanban_unblock")
@@ -1288,6 +1402,112 @@ KANBAN_CREATE_SCHEMA = {
     },
 }
 
+KANBAN_CREATE_SWARM_SCHEMA = {
+    "name": "kanban_create_swarm",
+    "description": (
+        "Advisor-only narrow tool: create a Kanban Swarm v1 graph for a "
+        "complex task in one call. It writes a completed root/blackboard card, "
+        "parallel worker cards, a verifier gate, and a synthesizer card. Only "
+        "mission-owner advisor profiles (tech-advisor or social-advisor) should "
+        "use this; generic orchestrators should compose with kanban_create and "
+        "kanban_link."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "goal": {
+                "type": "string",
+                "description": "Overall mission goal for the swarm.",
+            },
+            "workers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "profile": {
+                            "type": "string",
+                            "description": "Assignee profile for this parallel worker card.",
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Worker card title.",
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Worker spec / acceptance criteria.",
+                        },
+                        "skills": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional skills to force-load for this worker.",
+                        },
+                        "priority": {
+                            "type": "integer",
+                            "description": "Optional per-worker dispatcher priority.",
+                        },
+                        "max_runtime_seconds": {
+                            "type": "integer",
+                            "description": "Optional per-worker runtime cap.",
+                        },
+                    },
+                    "required": ["profile", "title"],
+                },
+                "description": "One or more parallel worker card specs.",
+            },
+            "verifier_assignee": {
+                "type": "string",
+                "description": "Profile that gates worker outputs before synthesis.",
+            },
+            "synthesizer_assignee": {
+                "type": "string",
+                "description": "Profile that produces the final deliverable after verification.",
+            },
+            "root_title": {
+                "type": "string",
+                "description": "Optional root/blackboard card title.",
+            },
+            "verifier_title": {
+                "type": "string",
+                "description": "Optional verifier card title.",
+            },
+            "synthesizer_title": {
+                "type": "string",
+                "description": "Optional synthesizer card title.",
+            },
+            "tenant": {
+                "type": "string",
+                "description": "Optional tenant/project namespace.",
+            },
+            "priority": {
+                "type": "integer",
+                "description": "Default dispatcher priority for root/verifier/synthesizer cards.",
+            },
+            "idempotency_key": {
+                "type": "string",
+                "description": (
+                    "Retry-safety key. Reusing a prior swarm key returns the "
+                    "existing graph; a collision with a non-swarm task is refused."
+                ),
+            },
+            "workspace_kind": {
+                "type": "string",
+                "enum": ["scratch", "dir", "worktree"],
+                "description": "Workspace flavor for created cards.",
+            },
+            "workspace_path": {
+                "type": "string",
+                "description": "Absolute shared/worktree path when workspace_kind requires it.",
+            },
+            "session_id": {
+                "type": "string",
+                "description": "Optional explicit session id; defaults to HERMES_SESSION_ID.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["goal", "workers", "verifier_assignee", "synthesizer_assignee"],
+    },
+}
+
 KANBAN_UNBLOCK_SCHEMA = {
     "name": "kanban_unblock",
     "description": (
@@ -1392,6 +1612,15 @@ registry.register(
     handler=_handle_create,
     check_fn=_check_kanban_mode,
     emoji="➕",
+)
+
+registry.register(
+    name="kanban_create_swarm",
+    toolset="kanban",
+    schema=KANBAN_CREATE_SWARM_SCHEMA,
+    handler=_handle_create_swarm,
+    check_fn=_check_kanban_swarm_advisor_mode,
+    emoji="🐝",
 )
 
 registry.register(
