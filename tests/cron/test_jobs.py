@@ -585,6 +585,84 @@ class TestMarkJobRun:
         assert updated["state"] == "completed"
 
 
+class TestLoadJobsShapeGuard:
+    """load_jobs() must handle malformed top-level JSON shapes gracefully."""
+
+    def test_tolerates_bare_list(self, tmp_cron_dir, monkeypatch):
+        """A bare-list jobs.json (valid JSON, wrong shape) should be
+        auto-repaired and the list returned as the jobs array."""
+        import json
+        jobs = [
+            {
+                "id": "bare-list-job",
+                "prompt": "hello",
+                "schedule": {"kind": "once", "run_at": "2020-01-01T00:00:00+00:00", "display": "once"},
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "next_run_at": "2020-01-01T00:00:00+00:00",
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "last_delivery_error": None,
+                "created_at": "2020-01-01T00:00:00+00:00",
+            }
+        ]
+        # Write a bare list — the exact scenario that caused the AttributeError
+        tmp_cron_dir.joinpath("cron").mkdir(parents=True, exist_ok=True)
+        with open(tmp_cron_dir / "cron" / "jobs.json", "w", encoding="utf-8") as f:
+            json.dump(jobs, f)
+
+        result = load_jobs()
+        assert result == jobs, "bare list should be returned as the jobs array"
+
+        # Verify on-disk repair: file now has the object wrapper
+        with open(tmp_cron_dir / "cron" / "jobs.json", "r", encoding="utf-8") as f:
+            repaired = json.load(f)
+        assert isinstance(repaired, dict), "auto-repair should wrap in an object"
+        assert "jobs" in repaired
+        assert repaired["jobs"] == jobs
+
+    def test_bare_list_in_strict_false_path(self, tmp_cron_dir, monkeypatch):
+        """Bare list detected inside the strict=False fallback path also
+        auto-repairs and returns cleanly."""
+        import json
+        jobs = [{"id": "strict-path", "prompt": "test", "enabled": True}]
+        # Embed a raw control character inside the JSON so json.load()
+        # raises JSONDecodeError, triggering the strict=False retry path.
+        payload = json.dumps(jobs)
+        payload = payload.replace('"test"', '"test\x01payload"')
+        tmp_cron_dir.joinpath("cron").mkdir(parents=True, exist_ok=True)
+        with open(tmp_cron_dir / "cron" / "jobs.json", "w", encoding="utf-8") as f:
+            f.write(payload)
+
+        result = load_jobs()
+        # The prompt value changes because strict=False preserves it
+        assert len(result) == 1
+        assert result[0]["id"] == "strict-path"
+
+    def test_raises_on_scalar_top_level(self, tmp_cron_dir):
+        """A non-dict, non-list top-level value (e.g. a plain string)
+        should raise RuntimeError with a descriptive message."""
+        import json
+        tmp_cron_dir.joinpath("cron").mkdir(parents=True, exist_ok=True)
+        with open(tmp_cron_dir / "cron" / "jobs.json", "w", encoding="utf-8") as f:
+            json.dump("just a string", f)
+
+        with pytest.raises(RuntimeError, match="top-level is str"):
+            load_jobs()
+
+    def test_raises_on_number_top_level(self, tmp_cron_dir):
+        """A numeric top-level should also raise RuntimeError."""
+        import json
+        tmp_cron_dir.joinpath("cron").mkdir(parents=True, exist_ok=True)
+        with open(tmp_cron_dir / "cron" / "jobs.json", "w", encoding="utf-8") as f:
+            json.dump(42, f)
+
+        with pytest.raises(RuntimeError, match="top-level is int"):
+            load_jobs()
+
+
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""
 

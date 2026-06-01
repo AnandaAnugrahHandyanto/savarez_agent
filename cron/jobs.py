@@ -423,6 +423,25 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 # Job CRUD Operations
 # =============================================================================
 
+def _extract_jobs(data: Any) -> List[Dict[str, Any]]:
+    """Normalize top-level JSON data into a jobs list.
+
+    Accepts the expected ``{"jobs": [...]}`` dict, a bare ``[...]`` list
+    (auto-repairs by re-wrapping via :func:`save_jobs`), and raises
+    :class:`RuntimeError` for any other top-level shape.
+    """
+    if isinstance(data, list):
+        save_jobs(data)
+        logger.warning("Auto-repaired jobs.json (top-level was a list, expected object)")
+        return data
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"Cron database corrupted: top-level is {type(data).__name__}, "
+            f"expected object"
+        )
+    return data.get("jobs", [])
+
+
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
@@ -432,13 +451,13 @@ def load_jobs() -> List[Dict[str, Any]]:
     try:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("jobs", [])
+            return _extract_jobs(data)
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
-                jobs = data.get("jobs", [])
+                jobs = _extract_jobs(data)
                 if jobs:
                     # Auto-repair: rewrite with proper escaping
                     save_jobs(jobs)
