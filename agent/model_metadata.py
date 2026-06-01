@@ -200,7 +200,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "qwen3-coder-plus": 1000000,  # 1M context
     "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,
-    # MiniMax — official docs: 204,800 context for all models
+    # MiniMax — M3 family: 1M context (launched 2026-06-01)
+    "minimax-m3": 1_000_000,
+    # MiniMax — M2 family: 204,800 context for all M2-series models
     # https://platform.minimax.io/docs/api-reference/text-anthropic-api
     "minimax": 204800,
     # GLM
