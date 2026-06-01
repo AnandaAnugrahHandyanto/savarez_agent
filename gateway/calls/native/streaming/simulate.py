@@ -36,7 +36,11 @@ from .types import (
     TurnEventKind,
 )
 
-__all__ = ["StreamSimulation", "build_stream_simulation"]
+__all__ = [
+    "StreamSimulation",
+    "build_stream_simulation",
+    "build_real_stream_simulation",
+]
 
 _MEDIA = MediaFormat(sample_rate=16000, channels=1, frame_ms=20)
 
@@ -194,4 +198,95 @@ def build_stream_simulation(
         session=session,
         transport=transport,
         clock=clock,
+    )
+
+
+def build_real_stream_simulation(
+    *,
+    call_id: str = "real-stream-sim",
+    contact_id: str = "sim-contact",
+    response_text: str = "It's sunny today.",
+    barge_in: bool = False,
+    turn_detector: Any = None,
+    stt: Any = None,
+    tts: Any = None,
+    clock: Any = None,
+) -> StreamSimulation:
+    """Construct a REAL-port simulation (Silero VAD + Smart Turn, faster-whisper,
+    Piper TTS) with a deterministic stub brain — ready for the caller to drive.
+
+    Mirrors :func:`build_stream_simulation` but swaps the fakes for the real
+    local adapters.  The real builders are imported lazily so this module stays
+    importable without the optional extras; construction is purely synchronous
+    (no sleeps — the caller owns the drive loop in a test outside the streaming
+    package, where real ``asyncio.sleep`` is permitted).
+
+    For the barge-in variant the real whisper STT can't deterministically
+    finalize on a scripted endpoint, so a deterministic ``FakeSTT`` + scripted
+    ``FakeTurnDetection`` are injected while the REAL Piper TTS is kept, so a
+    mid-stream interrupt abandons real synthesized audio.
+    """
+    from .clock import MonotonicClock
+    from .local_tts import build_piper_tts
+    from .local_turn_detection import build_local_turn_detector
+    from .local_whisper_stt import build_local_whisper_stt
+
+    clk = clock or MonotonicClock()
+    media = _MEDIA
+    ctx = StreamingCallContext(
+        call_id=call_id,
+        contact_id=contact_id,
+        session_id="sim-session",
+        media=media,
+        interruption=InterruptionParams(
+            min_speech_ms=40,
+            min_words=2,
+        ),
+    )
+
+    if barge_in:
+        # Real whisper cannot deterministically finalize on a scripted endpoint,
+        # so inject a deterministic STT + scripted turns; keep the REAL Piper TTS.
+        turns = turn_detector or FakeTurnDetection(
+            [
+                (0, _turn(call_id, TurnEventKind.ENDPOINT_DETECTED)),
+                (1, _turn(call_id, TurnEventKind.USER_SPEECH_STARTED)),
+                (2, _turn(call_id, TurnEventKind.USER_SPEECH_STOPPED)),
+            ]
+        )
+        stt_port = stt or FakeSTT(
+            partials=[_partial_transcript(call_id, "hold on")],
+            final=_final_transcript(call_id, "tell me a story"),
+        )
+        tts_port = tts or build_piper_tts(media, clock=clk, call_id=call_id)
+    else:
+        turns = turn_detector or build_local_turn_detector(media, call_id=call_id)
+        stt_port = stt or build_local_whisper_stt(media, call_id=call_id)
+        tts_port = tts or build_piper_tts(media, clock=clk, call_id=call_id)
+
+    transport = FakeAudioTransport(media)
+
+    def brain_factory() -> FakeBrain:
+        return FakeBrain(clk, text=response_text, delay_ms=0)
+
+    session = StreamingCallSession(
+        ctx,
+        transport=transport,
+        stt=stt_port,
+        turns=turns,
+        tts=tts_port,
+        brain_factory=brain_factory,
+        policy=InterruptionPolicy(),
+        tracer=StreamingCallTracer(call_id),
+        clock=clk,
+    )
+
+    return StreamSimulation(
+        call_id=call_id,
+        contact_id=contact_id,
+        media=media,
+        barge_in=barge_in,
+        session=session,
+        transport=transport,
+        clock=clk,
     )
