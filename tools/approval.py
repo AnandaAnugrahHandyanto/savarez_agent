@@ -986,7 +986,7 @@ def _extract_curl_payload(tokens: list[str]) -> str:
     return "\n".join(payloads)
 
 
-_GRANT_REVIEW_MUTATION_PATHS = {"tasks:updateNotes", "tasks:updateStatus", "tasks:markChangesRequired"}
+_GRANT_REVIEW_MUTATION_PATHS = {"tasks:updateNotes"}
 
 
 def _extract_convex_mutation_path(payload: str) -> str:
@@ -998,6 +998,24 @@ def _extract_convex_mutation_path(payload: str) -> str:
     return decoded.get("path", "") if isinstance(decoded, dict) else ""
 
 
+def _is_grant_verdict_update_notes_payload(payload: str) -> bool:
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(decoded, dict) or decoded.get("path") != "tasks:updateNotes":
+        return False
+    args = decoded.get("args")
+    if not isinstance(args, dict):
+        return False
+    task_id = str(args.get("id", ""))
+    notes = args.get("notes")
+    if not task_id.startswith("kn") or not isinstance(notes, str):
+        return False
+    # Only Grant verdict notes may pass from autonomous webhook context.
+    return "<!-- grant-verdict:" in notes
+
+
 def _is_grant_review_mutation_curl(method: str, url: str, tokens: list[str]) -> bool:
     if method != "POST" or url != "https://mellow-mule-232.convex.cloud/api/mutation":
         return False
@@ -1006,7 +1024,7 @@ def _is_grant_review_mutation_curl(method: str, url: str, tokens: list[str]) -> 
     if path not in _GRANT_REVIEW_MUTATION_PATHS:
         return False
     if path == "tasks:updateNotes":
-        return "<!-- grant-verdict:" in payload
+        return _is_grant_verdict_update_notes_payload(payload)
     return True
 
 
@@ -1077,9 +1095,11 @@ def _is_webhook_blocked_terminal_write(command: str) -> bool:
     if not tokens or os.path.basename(tokens[0]) != "curl":
         return False
     method, url = _extract_curl_method_and_url(tokens)
-    if method == "POST" and url == "https://mellow-mule-232.convex.cloud/api/mutation":
+    if method != "POST":
+        return False
+    if url == "https://mellow-mule-232.convex.cloud/api/mutation":
         return not _is_grant_review_mutation_curl(method, url, tokens)
-    return False
+    return True
 
 
 def _smart_approve(command: str, description: str) -> str:
