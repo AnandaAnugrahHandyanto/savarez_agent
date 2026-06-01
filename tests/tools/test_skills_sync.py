@@ -927,3 +927,58 @@ class TestResetBundledSkill:
         assert "google-workspace" in manifest_after
         # User copy is still on disk (we changed nothing).
         assert (dest / "SKILL.md").exists()
+
+
+class TestNoBundledSkillsOptOut:
+    """The .no-bundled-skills marker makes sync_skills() a no-op.
+
+    This is what `hermes profile create --no-skills` (named profiles) and the
+    installer's `--no-skills` flag (default ~/.hermes) rely on so bundled
+    skills are never seeded at install time NOR re-injected by `hermes update`.
+    """
+
+    def _setup_bundled(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        skill = bundled / "category" / "new-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: new-skill\n---\nbody\n")
+        return bundled
+
+    def test_marker_skips_sync(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        hermes_home = tmp_path / "home"
+        hermes_home.mkdir()
+        (hermes_home / ".no-bundled-skills").write_text("opted out\n")
+
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("tools.skills_sync.HERMES_HOME", hermes_home):
+            result = sync_skills(quiet=True)
+
+        # Opt-out signalled, nothing copied, nothing written to disk.
+        assert result["skipped_opt_out"] is True
+        assert result["copied"] == []
+        assert result["total_bundled"] == 0
+        assert not (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
+
+    def test_no_marker_seeds_normally(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        hermes_home = tmp_path / "home"
+        hermes_home.mkdir()
+        # No marker written.
+
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("tools.skills_sync.HERMES_HOME", hermes_home):
+            result = sync_skills(quiet=True)
+
+        assert result.get("skipped_opt_out") is not True
+        assert "new-skill" in result["copied"]
+        assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()

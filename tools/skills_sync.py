@@ -40,6 +40,15 @@ HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
 
+# Marker file written by `hermes profile create --no-skills` (named profiles)
+# and by the installer's `--no-skills` flag (the default ~/.hermes profile).
+# When present in HERMES_HOME, sync_skills() is a no-op so neither the
+# installer, `hermes update`, nor a direct sync re-injects bundled skills.
+# Delete the file to opt back in. Mirrors
+# hermes_cli.profiles.NO_BUNDLED_SKILLS_MARKER (kept as a literal here to
+# avoid importing the CLI layer into this low-level sync module).
+NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
+
 
 def _get_bundled_dir() -> Path:
     """Locate the bundled skills/ directory.
@@ -424,6 +433,20 @@ def sync_skills(quiet: bool = False) -> dict:
         dict with keys: copied (list), updated (list), skipped (int),
                         user_modified (list), cleaned (list), total_bundled (int)
     """
+    # Opt-out: a profile (named or the default ~/.hermes) that wrote the
+    # .no-bundled-skills marker gets zero bundled-skill seeding. Returning the
+    # empty-result shape with skipped_opt_out lets callers report "opted out"
+    # instead of "synced 0 / failed". This is the default-profile counterpart
+    # to seed_profile_skills()'s marker check for named profiles.
+    if (HERMES_HOME / NO_BUNDLED_SKILLS_MARKER).exists():
+        if not quiet:
+            print("  (skipped — profile opted out of bundled skills via .no-bundled-skills)")
+        return {
+            "copied": [], "updated": [], "skipped": 0,
+            "user_modified": [], "cleaned": [], "total_bundled": 0,
+            "optional_provenance_backfilled": [], "skipped_opt_out": True,
+        }
+
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {
