@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -73,10 +74,11 @@ DEFAULT_CASES: tuple[CanaryCase, ...] = (
         name="short-fragment-detector",
         marker="CANARY_FRAGMENT_OK",
         prompt=(
-            "Run a Python check in the current Hermes checkout that imports "
+            "Run a Python check from the Hermes checkout at `{source_root}` that imports "
             "`looks_like_incomplete_final_fragment` from `agent.stall_retry` and "
-            "verifies it returns true for exactly this string: "
-            "`I see a lot of discord-res tasks (digest Discord content) and some`. "
+            "verifies `looks_like_incomplete_final_fragment("
+            "\"I see a lot of discord-res tasks (digest Discord content) and some\", "
+            "\"stop\", False, 400)` returns true. "
             "If the check passes, reply exactly CANARY_FRAGMENT_OK and nothing "
             "else. If it fails, do not use the marker; summarize the failure."
         ),
@@ -149,30 +151,77 @@ def build_command(
     return cmd
 
 
+def marker_suffix(*parts: object) -> str:
+    raw = "_".join(str(part) for part in parts if str(part or "").strip())
+    return re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_")
+
+
+def materialize_case_marker(
+    case: CanaryCase,
+    suffix: str = "",
+    *,
+    source_root: Path | None = None,
+) -> CanaryCase:
+    suffix = marker_suffix(suffix)
+    prompt = case.prompt
+    if source_root is not None:
+        prompt = prompt.replace("{source_root}", str(source_root))
+    if not suffix:
+        return CanaryCase(name=case.name, marker=case.marker, prompt=prompt)
+
+    marker = f"{case.marker}_{suffix}"
+    return CanaryCase(
+        name=case.name,
+        marker=marker,
+        prompt=prompt.replace(case.marker, marker),
+    )
+
+
 def run_subprocess(cmd: Sequence[str], *, cwd: Path, timeout_s: float) -> CommandResult:
     started = time.monotonic()
 
+    env = os.environ.copy()
+    env.setdefault("PYTHONFAULTHANDLER", "1")
+    env.setdefault("HERMES_ONESHOT_FAULTHANDLER", "1")
+    start_new_session = os.name != "nt"
+    proc = subprocess.Popen(
+        list(cmd),
+        cwd=str(cwd),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=start_new_session,
+    )
+
     try:
-        completed = subprocess.run(
-            list(cmd),
-            cwd=str(cwd),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout_s,
-            check=False,
-        )
+        stdout, stderr = proc.communicate(timeout=timeout_s)
         elapsed_s = time.monotonic() - started
         return CommandResult(
-            returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            returncode=proc.returncode,
+            stdout=stdout,
+            stderr=stderr,
             elapsed_s=elapsed_s,
         )
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
+        sigusr1 = getattr(signal, "SIGUSR1", None)
+        killpg = getattr(os, "killpg", None)
+        if start_new_session and sigusr1 is not None and killpg is not None:
+            try:
+                killpg(proc.pid, sigusr1)
+                time.sleep(1.0)
+            except Exception:
+                pass
+        try:
+            proc.terminate()
+            stdout, stderr = proc.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            stdout, stderr = proc.communicate()
         elapsed_s = time.monotonic() - started
-        stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode(errors="replace")
-        stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode(errors="replace")
         return CommandResult(returncode=124, stdout=stdout, stderr=stderr, elapsed_s=elapsed_s, timed_out=True)
 
 
@@ -237,16 +286,23 @@ def run_case(
     toolsets: str,
     timeout_s: float,
     strict_marker: bool,
+    marker_nonce: str = "",
+    source_root: Path | None = None,
     runner: Callable[[Sequence[str], Path, float], CommandResult] | None = None,
 ) -> dict:
-    cmd = build_command(hermes_bin, case, model=model, provider=provider, toolsets=toolsets)
+    active_case = materialize_case_marker(
+        case,
+        marker_nonce,
+        source_root=source_root or Path(__file__).resolve().parents[1],
+    )
+    cmd = build_command(hermes_bin, active_case, model=model, provider=provider, toolsets=toolsets)
 
     if runner is None:
         result = run_subprocess(cmd, cwd=cwd, timeout_s=timeout_s)
     else:
         result = runner(cmd, cwd, timeout_s)
 
-    failure = classify_result(result, case.marker, strict_marker=strict_marker)
+    failure = classify_result(result, active_case.marker, strict_marker=strict_marker)
 
     return {
         "case": case.name,
@@ -254,7 +310,8 @@ def run_case(
         "cwd": str(cwd),
         "elapsed_s": round(result.elapsed_s, 3),
         "failure": failure,
-        "marker": case.marker,
+        "marker": active_case.marker,
+        "marker_base": case.marker,
         "ok": failure is None,
         "returncode": result.returncode,
         "stderr": truncate(result.stderr),
@@ -297,6 +354,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     log_path = record_path(args.log_dir)
     strict_marker = not args.allow_extra_output
+    run_stamp = log_path.stem
 
     if args.dry_run:
         plan = {
@@ -325,6 +383,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 toolsets=args.toolsets,
                 timeout_s=args.timeout,
                 strict_marker=strict_marker,
+                marker_nonce=marker_suffix(run_stamp, f"r{round_index + 1}", case.name),
             )
             record["round"] = round_index + 1
             write_record(log_path, record)
