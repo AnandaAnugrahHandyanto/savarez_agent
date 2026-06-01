@@ -66,3 +66,20 @@ Committed: `24356edcd` | Tests: 80 passed
 - No dashboard, React UI, auto-injection, SQLite, CLI command, tree-sitter/WASM, new runtime deps
 - Coder subagents have no commit/push authority
 - Forbidden files (skills_sync.py, test_skills_sync.py) must remain untouched
+
+## UA Phase 1 Hardening — UA-P1-001 Baseline Checkpoint
+- Timestamp: 2026-06-01T22:08:35Z.
+- Source plan package: `/home/jarrad/work/plans/ua-phase1-execution`.
+- Executed bead: `UA-P1-001 - Baseline Preflight and Scope Guard`.
+- Live branch: `feat/ua-001-run-bundle` tracking `jc-fork/feat/ua-001-run-bundle`.
+- Baseline dirty files are exactly the known out-of-scope files:
+  - `tests/tools/test_skills_sync.py`
+  - `tools/skills_sync.py`
+- Focused baseline verification: `python -m pytest tests/code_scan/test_run_bundle.py tests/code_scan/test_run_ua.py tests/code_scan/test_project_state_append.py -q` — PASS, `79 passed in 15.21s`.
+- Post-test status remained scoped to the same two out-of-scope dirty files.
+- Handoff: `.hermes/handoffs/2026-06-01-2208-ua-p1-001-baseline-preflight.md`.
+- RED: N/A — baseline/documentation bead only.
+- GREEN: PASS — focused UA tests passed.
+- FULL: N/A — full code-scan suite reserved for implementation beads.
+- Reviewer: N/A for T1; no unexpected dirty scope or test failure.
+- Approval gate: JC approved committing/pushing UA-P1-001 baseline preflight only on branch `feat/ua-001-run-bundle`, staging only `.hermes/PROJECT_STATE.md` and `.hermes/handoffs/2026-06-01-2208-ua-p1-001-baseline-preflight.md`, preserving/excluding `tests/tools/test_skills_sync.py` and `tools/skills_sync.py`, pushing only to the existing upstream branch, and not merging or deploying.
