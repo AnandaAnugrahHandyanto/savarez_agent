@@ -389,3 +389,151 @@ class TestNonGitTarget:
         data = json.loads((bundle_dir / "manifest.json").read_text())
         # git_head should be None for non-git targets
         assert data["target_git_head"] is None
+
+
+# ── UA-P1-002: Target Cleanliness Hardening ───────────────────────────
+
+CLEANLINESS_FIELDS = [
+    "target_dirty_before",
+    "target_dirty_after",
+    "target_dirty_files_before",
+    "target_dirty_files_after",
+    "unexpected_target_changes",
+    "target_cleanliness_status",
+]
+
+
+class TestManifestCleanlinessFields:
+    """UA-P1-002: Manifest must include target cleanliness fields."""
+
+    def _load_manifest(self, tmp_path: Path, extra_args=None) -> dict:
+        target = _make_temp_target(tmp_path)
+        bundle_dir = tmp_path / "bundle"
+        rc, stdout, stderr = run_bundle(target, bundle_dir, extra_args=extra_args)
+        assert rc == 0, f"bundle exited {rc}: {stderr}"
+        return json.loads((bundle_dir / "manifest.json").read_text())
+
+    @pytest.mark.parametrize("field", CLEANLINESS_FIELDS)
+    def test_manifest_has_cleanliness_field(self, tmp_path: Path, field: str):
+        """Manifest must include each required cleanliness field."""
+        data = self._load_manifest(tmp_path)
+        assert field in data, f"Missing required cleanliness field: {field}"
+
+    def test_clean_target_status(self, tmp_path: Path):
+        """A clean target (all committed) should report 'clean' status."""
+        data = self._load_manifest(tmp_path)
+        assert data["target_dirty_before"] is False
+        assert data["target_dirty_after"] is False
+        assert data["target_dirty_files_before"] == []
+        assert data["target_dirty_files_after"] == []
+        assert data["target_cleanliness_status"] == "clean"
+        assert data["unexpected_target_changes"] == []
+
+    def test_dirty_target_status(self, tmp_path: Path):
+        """A target with uncommitted changes should report 'preexisting_dirty'."""
+        target = _make_temp_target(tmp_path)
+        # Introduce a dirty change
+        (target / "main.py").write_text("import os\nprint('dirty')\n")
+        bundle_dir = tmp_path / "bundle"
+        rc, _, stderr = run_bundle(target, bundle_dir)
+        assert rc == 0, f"bundle exited {rc}: {stderr}"
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        assert data["target_dirty_before"] is True, "Should detect pre-existing dirty files"
+        assert data["target_dirty_files_before"] != [], "Should list dirty files"
+        assert data["target_cleanliness_status"] == "preexisting_dirty"
+
+    def test_dirty_files_are_strings(self, tmp_path: Path):
+        """Dirty file lists should contain strings."""
+        target = _make_temp_target(tmp_path)
+        (target / "main.py").write_text("import os\nprint('dirty')\n")
+        bundle_dir = tmp_path / "bundle"
+        rc, _, stderr = run_bundle(target, bundle_dir)
+        assert rc == 0, f"bundle exited {rc}: {stderr}"
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        for f in data["target_dirty_files_before"]:
+            assert isinstance(f, str), f"Dirty file entry must be string: {f}"
+
+
+class TestSuccessfulManifestStatus:
+    """UA-P1-002: Successful runs must include status: complete."""
+
+    def test_successful_run_has_status_complete(self, tmp_path: Path):
+        """A successful run bundle must have status=complete in manifest."""
+        target = _make_temp_target(tmp_path)
+        bundle_dir = tmp_path / "bundle"
+        rc, _, stderr = run_bundle(target, bundle_dir)
+        assert rc == 0, f"bundle exited {rc}: {stderr}"
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        assert "status" in data, "Manifest must include 'status' field"
+        assert data["status"] == "complete"
+
+
+class TestNoTargetLocalCacheDirs:
+    """UA-P1-002: Default external-cache scans must not create target-local dirs."""
+
+    def test_no_hermes_code_state_in_target(self, tmp_path: Path):
+        """Default run must NOT create .hermes/code-state in target."""
+        target = _make_temp_target(tmp_path)
+        bundle_dir = tmp_path / "bundle"
+        rc, _, stderr = run_bundle(target, bundle_dir)
+        assert rc == 0, f"bundle exited {rc}: {stderr}"
+        assert not (target / ".hermes" / "code-state").exists(), (
+            "Default run created .hermes/code-state in target"
+        )
+
+    def test_no_hermes_code_scan_cache_in_target(self, tmp_path: Path):
+        """Default run must NOT create .hermes/code-scan-cache in target."""
+        target = _make_temp_target(tmp_path)
+        bundle_dir = tmp_path / "bundle"
+        rc, _, stderr = run_bundle(target, bundle_dir)
+        assert rc == 0, f"bundle exited {rc}: {stderr}"
+        assert not (target / ".hermes" / "code-scan-cache").exists(), (
+            "Default run created .hermes/code-scan-cache in target"
+        )
+
+    def test_no_ua_dir_in_target(self, tmp_path: Path):
+        """Default run must NOT create .ua in target."""
+        target = _make_temp_target(tmp_path)
+        bundle_dir = tmp_path / "bundle"
+        rc, _, stderr = run_bundle(target, bundle_dir)
+        assert rc == 0, f"bundle exited {rc}: {stderr}"
+        assert not (target / ".ua").exists(), (
+            "Default run created .ua in target"
+        )
+
+
+class TestPartialFailureManifest:
+    """UA-P1-002: Partial pipeline failures must still write a useful manifest."""
+
+    def test_failure_manifest_has_status_failed(self, tmp_path: Path):
+        """When a pipeline stage fails, manifest must include status: failed."""
+        project_root = Path(__file__).resolve().parent.parent.parent
+        sys.path.insert(0, str(project_root / "scripts" / "code-scan"))
+        from run_bundle import RunBundle
+
+        target = _make_temp_target(tmp_path)
+        bundle_dir = tmp_path / "bundle"
+
+        bundle = RunBundle(
+            str(target), str(bundle_dir),
+            no_graph=False, in_repo_cache=False,
+        )
+
+        # Simulate a scan failure by patching _scan
+        def _failing_scan():
+            raise RuntimeError("simulated scan failure")
+        bundle._scan = _failing_scan
+
+        with pytest.raises(RuntimeError, match="simulated scan failure"):
+            bundle.run()
+
+        manifest_path = bundle_dir / "manifest.json"
+        assert manifest_path.exists(), "Failure manifest was not written"
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert data["status"] == "failed"
+        assert data["failure_stage"] == "scan"
+        assert "simulated scan failure" in data["error_message"]
+        # Cleanliness fields should still be present
+        assert "target_dirty_before" in data
+        assert "target_dirty_after" in data
+        assert "target_cleanliness_status" in data

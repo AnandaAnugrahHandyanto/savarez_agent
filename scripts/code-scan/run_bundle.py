@@ -66,6 +66,41 @@ def _get_git_head(target_dir: str) -> Optional[str]:
     return None
 
 
+# ── Helper: target cleanliness ───────────────────────────────────────────────
+
+def _get_git_dirty_files(target_dir: str) -> list[str]:
+    """Return list of dirty file paths via `git status --porcelain=v1`.
+
+    Returns an empty list if the target is not a git repo or any error
+    occurs during the call.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain=v1"],
+            cwd=target_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            # Each line: "XY filename" or "XY \"filename\""
+            lines = result.stdout.strip().splitlines()
+            dirty = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                # porcelains v1 format: first two chars are index+worktree status
+                # then two spaces, then the path
+                parts = line.split(None, 1)
+                if len(parts) >= 2:
+                    dirty.append(parts[1].strip('"'))
+            return dirty
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return []
+
+
 # ── RunBundle class ──────────────────────────────────────────────────────────
 
 class RunBundle:
@@ -92,6 +127,14 @@ class RunBundle:
         self.graph_data: Optional[dict] = None
         self.validation_data: Optional[dict] = None
         self.summary_data: Optional[dict] = None
+
+        # Target cleanliness tracking (UA-P1-002)
+        self._target_dirty_before: Optional[bool] = None
+        self._target_dirty_after: Optional[bool] = None
+        self._target_dirty_files_before: list[str] = []
+        self._target_dirty_files_after: list[str] = []
+        self._unexpected_target_changes: list[str] = []
+        self._run_id: Optional[str] = None
 
     # ── pipeline stages ────────────────────────────────────────
 
@@ -250,10 +293,34 @@ class RunBundle:
 
     # ── manifest ────────────────────────────────────────────
 
-    def _build_manifest(self, run_id: str) -> dict:
-        """Build manifest.json with all required metadata."""
-        return {
+    def _build_manifest(self, run_id: str, *, status: str = "complete",
+                        failure_stage: Optional[str] = None,
+                        error_message: Optional[str] = None) -> dict:
+        """Build manifest.json with all required metadata.
+
+        *status* is "complete" for successful runs or "failed" for partial
+        failures.  When status is "failed", *failure_stage* and *error_message*
+        should also be provided.
+        """
+        # Determine cleanliness status
+        if self._target_dirty_before is None or self._target_dirty_after is None:
+            cleanliness_status = "unknown"
+        elif self._target_dirty_files_after != self._target_dirty_files_before:
+            cleanliness_status = "mutated"
+        elif self._target_dirty_before:
+            cleanliness_status = "preexisting_dirty"
+        else:
+            cleanliness_status = "clean"
+
+        # Compute unexpected changes (files that became dirty post-scan that
+        # were not dirty pre-scan)
+        before_set = set(self._target_dirty_files_before)
+        after_set = set(self._target_dirty_files_after)
+        unexpected = sorted(after_set - before_set)
+
+        manifest = {
             "run_id": run_id,
+            "status": status,
             "timestamp": datetime.now(timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
             ),
@@ -284,7 +351,31 @@ class RunBundle:
                 ),
             },
             "target_mutation_allowed": self.in_repo_cache,
+            "target_dirty_before": self._target_dirty_before if self._target_dirty_before is not None else False,
+            "target_dirty_after": self._target_dirty_after if self._target_dirty_after is not None else False,
+            "target_dirty_files_before": list(self._target_dirty_files_before),
+            "target_dirty_files_after": list(self._target_dirty_files_after),
+            "unexpected_target_changes": unexpected,
+            "target_cleanliness_status": cleanliness_status,
         }
+        if status == "failed":
+            manifest["failure_stage"] = failure_stage or "unknown"
+            manifest["error_message"] = error_message or ""
+        return manifest
+
+    def _write_failure_manifest(self, failure_stage: str,
+                                error_message: str) -> None:
+        """Write a partial-failure manifest when a pipeline stage fails."""
+        manifest_path = os.path.join(self.bundle_dir, "manifest.json")
+        manifest = self._build_manifest(
+            self._run_id or "unknown",
+            status="failed",
+            failure_stage=failure_stage,
+            error_message=error_message,
+        )
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+            f.write("\n")
 
     # ── public API ─────────────────────────────────────────
 
@@ -298,51 +389,67 @@ class RunBundle:
         os.makedirs(self.bundle_dir, exist_ok=True)
 
         # Generate a unique run ID
-        run_id = uuid.uuid4().hex
+        self._run_id = uuid.uuid4().hex
 
-        # Stage 1: Scan
-        self.scan_data = self._scan()
-        scan_path = os.path.join(self.bundle_dir, "scan.json")
-        with open(scan_path, "w", encoding="utf-8") as f:
-            json.dump(self.scan_data, f, indent=2)
-            f.write("\n")
-        self.artifact_paths["scan.json"] = scan_path
+        # ── Pre-scan cleanliness snapshot ────────────────────────
+        self._target_dirty_files_before = _get_git_dirty_files(self.target_dir)
+        self._target_dirty_before = len(self._target_dirty_files_before) > 0
 
-        # Stage 2: Extract imports
-        self.imports_data = self._extract_imports()
-        imports_path = os.path.join(self.bundle_dir, "imports.json")
-        with open(imports_path, "w", encoding="utf-8") as f:
-            json.dump(self.imports_data, f, indent=2)
-            f.write("\n")
-        self.artifact_paths["imports.json"] = imports_path
-
-        # Stage 3: Graph + validation (optional)
-        if not self.no_graph:
-            self.graph_data, self.validation_data = self._assemble_graph()
-
-            graph_path = os.path.join(self.bundle_dir, "graph.json")
-            with open(graph_path, "w", encoding="utf-8") as f:
-                json.dump(self.graph_data, f, indent=2)
+        try:
+            # Stage 1: Scan
+            self.scan_data = self._scan()
+            scan_path = os.path.join(self.bundle_dir, "scan.json")
+            with open(scan_path, "w", encoding="utf-8") as f:
+                json.dump(self.scan_data, f, indent=2)
                 f.write("\n")
-            self.artifact_paths["graph.json"] = graph_path
+            self.artifact_paths["scan.json"] = scan_path
 
-            validation_path = os.path.join(self.bundle_dir, "validation.json")
-            with open(validation_path, "w", encoding="utf-8") as f:
-                json.dump(self.validation_data, f, indent=2)
+            # Stage 2: Extract imports
+            self.imports_data = self._extract_imports()
+            imports_path = os.path.join(self.bundle_dir, "imports.json")
+            with open(imports_path, "w", encoding="utf-8") as f:
+                json.dump(self.imports_data, f, indent=2)
                 f.write("\n")
-            self.artifact_paths["validation.json"] = validation_path
-        else:
-            # No graph mode: still write an empty validation to keep shape
-            self.graph_data = None
-            self.validation_data = {"issues": [], "warnings": []}
+            self.artifact_paths["imports.json"] = imports_path
 
-        # Stage 4: Summary
-        self.summary_data = self._build_summary()
-        summary_path = os.path.join(self.bundle_dir, "summary.json")
-        with open(summary_path, "w", encoding="utf-8") as f:
-            json.dump(self.summary_data, f, indent=2)
-            f.write("\n")
-        self.artifact_paths["summary.json"] = summary_path
+            # Stage 3: Graph + validation (optional)
+            if not self.no_graph:
+                self.graph_data, self.validation_data = self._assemble_graph()
+
+                graph_path = os.path.join(self.bundle_dir, "graph.json")
+                with open(graph_path, "w", encoding="utf-8") as f:
+                    json.dump(self.graph_data, f, indent=2)
+                    f.write("\n")
+                self.artifact_paths["graph.json"] = graph_path
+
+                validation_path = os.path.join(self.bundle_dir, "validation.json")
+                with open(validation_path, "w", encoding="utf-8") as f:
+                    json.dump(self.validation_data, f, indent=2)
+                    f.write("\n")
+                self.artifact_paths["validation.json"] = validation_path
+            else:
+                # No graph mode: still write an empty validation to keep shape
+                self.graph_data = None
+                self.validation_data = {"issues": [], "warnings": []}
+
+            # Stage 4: Summary
+            self.summary_data = self._build_summary()
+            summary_path = os.path.join(self.bundle_dir, "summary.json")
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump(self.summary_data, f, indent=2)
+                f.write("\n")
+            self.artifact_paths["summary.json"] = summary_path
+        except Exception as exc:  # noqa: BLE001
+            # Partial failure: write manifest with failure info
+            self._record_post_cleanliness()
+            self._write_failure_manifest(
+                failure_stage=self._current_stage,
+                error_message=str(exc),
+            )
+            raise
+
+        # ── Post-scan cleanliness snapshot ───────────────────────
+        self._record_post_cleanliness()
 
         # Stage 5: Manifest
         # Pre-register artifact paths so the manifest includes itself and REPORT.md
@@ -352,7 +459,7 @@ class RunBundle:
         report_path = os.path.join(self.bundle_dir, "REPORT.md")
         self.artifact_paths["REPORT.md"] = report_path
 
-        manifest = self._build_manifest(run_id)
+        manifest = self._build_manifest(self._run_id)
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
             f.write("\n")
@@ -362,6 +469,24 @@ class RunBundle:
             f.write(self._build_report())
 
         return manifest
+
+    @property
+    def _current_stage(self) -> str:
+        """Return the current pipeline stage name for failure reporting."""
+        if self.scan_data is None:
+            return "scan"
+        if self.imports_data is None:
+            return "extract_imports"
+        if self.graph_data is None and not self.no_graph:
+            return "graph_assembly"
+        if self.summary_data is None:
+            return "summary"
+        return "manifest"
+
+    def _record_post_cleanliness(self) -> None:
+        """Snapshot post-pipeline target cleanliness."""
+        self._target_dirty_files_after = _get_git_dirty_files(self.target_dir)
+        self._target_dirty_after = len(self._target_dirty_files_after) > 0
 
 
 # ── Module-level convenience function ────────────────────────────────────

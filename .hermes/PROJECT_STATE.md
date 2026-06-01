@@ -83,3 +83,27 @@ Committed: `24356edcd` | Tests: 80 passed
 - FULL: N/A — full code-scan suite reserved for implementation beads.
 - Reviewer: N/A for T1; no unexpected dirty scope or test failure.
 - Approval gate: JC approved committing/pushing UA-P1-001 baseline preflight only on branch `feat/ua-001-run-bundle`, staging only `.hermes/PROJECT_STATE.md` and `.hermes/handoffs/2026-06-01-2208-ua-p1-001-baseline-preflight.md`, preserving/excluding `tests/tools/test_skills_sync.py` and `tools/skills_sync.py`, pushing only to the existing upstream branch, and not merging or deploying.
+
+## UA Phase 1 Hardening — UA-P1-002 Completion Checkpoint
+- Timestamp: 2026-06-01T22:41:34Z.
+- Source plan package: `/home/jarrad/work/plans/ua-phase1-execution`.
+- Executed bead: `UA-P1-002 - Bundle Manifest and Target Cleanliness Hardening`.
+- Live branch: `feat/ua-001-run-bundle` tracking `jc-fork/feat/ua-001-run-bundle`.
+- Changed in-scope files:
+  - `scripts/code-scan/run_bundle.py`
+  - `scripts/code-scan/run_ua.py`
+  - `tests/code_scan/test_run_bundle.py`
+  - `tests/code_scan/test_run_ua.py`
+- Known out-of-scope dirty files preserved/excluded:
+  - `tests/tools/test_skills_sync.py`
+  - `tools/skills_sync.py`
+- Coder RED evidence: focused new tests failed before implementation with 14 expected failures for missing manifest cleanliness/status behavior.
+- Hermes focused verification: `python -m pytest tests/code_scan/test_run_bundle.py tests/code_scan/test_run_ua.py -q` — PASS, `80 passed in 24.17s`.
+- Hermes full code-scan verification: `python -m pytest tests/code_scan -q` — PASS, `480 passed in 83.50s (0:01:23)`.
+- Diff hygiene: scoped `git diff --check` — PASS.
+- Script compile check: `python -m py_compile scripts/code-scan/run_bundle.py scripts/code-scan/run_ua.py` — PASS.
+- Diff artifact: `/tmp/ua-p1-002-diff.patch` — 769 lines / 34690 bytes.
+- Scope check: only the two known pre-existing dirty files appeared outside the four in-scope UA files.
+- Reviewer verdict: PASS; non-blocking notes only.
+- Handoff: `.hermes/handoffs/2026-06-01-2241-ua-p1-002-complete.md`.
+- Approval gate: no commit, push, merge, deploy, or production mutation performed. Further commit/push requires explicit JC approval.

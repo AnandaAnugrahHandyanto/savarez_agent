@@ -116,6 +116,39 @@ def _get_git_head(target_dir: str) -> Optional[str]:
     return None
 
 
+# ── Helper: target cleanliness (UA-P1-002) ───────────────────────────────────
+
+def _get_git_dirty_files(target_dir: str) -> list[str]:
+    """Return list of dirty file paths via `git status --porcelain=v1`.
+
+    Returns an empty list if the target is not a git repo or any error
+    occurs during the call.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain=v1"],
+            cwd=target_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().splitlines()
+            dirty = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) >= 2:
+                    dirty.append(parts[1].strip('"'))
+            return dirty
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return []
+
+
 # ── RunUA class ──────────────────────────────────────────────────────────────
 
 class RunUA:
@@ -158,6 +191,13 @@ class RunUA:
             "project_state_recorded": False,
             "ledger_path": None,
         }
+        # Target cleanliness tracking (UA-P1-002)
+        self._target_dirty_before: Optional[bool] = None
+        self._target_dirty_after: Optional[bool] = None
+        self._target_dirty_files_before: list[str] = []
+        self._target_dirty_files_after: list[str] = []
+        self._unexpected_target_changes: list[str] = []
+        self._run_id: Optional[str] = None
 
     # ── pipeline stages ────────────────────────────────────────
 
@@ -368,10 +408,32 @@ class RunUA:
                 "ledger_path": None,
             }
 
-    def _build_manifest(self, run_id: str) -> dict:
+    def _build_manifest(self, run_id: str, *, status: str = "complete",
+                        failure_stage: Optional[str] = None,
+                        error_message: Optional[str] = None) -> dict:
         """Build manifest.json with all required metadata."""
+        # Capture post-cleanliness on the first call during a successful run
+        if status == "complete":
+            self._record_post_cleanliness()
+
+        # Determine cleanliness status
+        if self._target_dirty_before is None or self._target_dirty_after is None:
+            cleanliness_status = "unknown"
+        elif self._target_dirty_files_after != self._target_dirty_files_before:
+            cleanliness_status = "mutated"
+        elif self._target_dirty_before:
+            cleanliness_status = "preexisting_dirty"
+        else:
+            cleanliness_status = "clean"
+
+        # Compute unexpected changes
+        before_set = set(self._target_dirty_files_before)
+        after_set = set(self._target_dirty_files_after)
+        unexpected = sorted(after_set - before_set)
+
         manifest = {
             "run_id": run_id,
+            "status": status,
             "mode": self.mode,
             "timestamp": datetime.now(timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
@@ -387,6 +449,12 @@ class RunUA:
             "artifact_paths": dict(self.artifact_paths),
             "script_versions": _get_script_versions(),
             "target_mutation_allowed": self.in_repo_cache,
+            "target_dirty_before": self._target_dirty_before if self._target_dirty_before is not None else False,
+            "target_dirty_after": self._target_dirty_after if self._target_dirty_after is not None else False,
+            "target_dirty_files_before": list(self._target_dirty_files_before),
+            "target_dirty_files_after": list(self._target_dirty_files_after),
+            "unexpected_target_changes": unexpected,
+            "target_cleanliness_status": cleanliness_status,
         }
         if self.delta_data:
             manifest["delta_summary"] = self.delta_data
@@ -394,7 +462,24 @@ class RunUA:
         # Project-state integration (UA-006) — always present, default false
         manifest["project_state_recorded"] = self._project_state_status["project_state_recorded"]
         manifest["ledger_path"] = self._project_state_status["ledger_path"]
+        if status == "failed":
+            manifest["failure_stage"] = failure_stage or "unknown"
+            manifest["error_message"] = error_message or ""
         return manifest
+
+    def _write_failure_manifest(self, failure_stage: str,
+                                error_message: str) -> None:
+        """Write a partial-failure manifest when a pipeline stage fails."""
+        path = os.path.join(self.out_dir, "manifest.json")
+        manifest = self._build_manifest(
+            self._run_id or "unknown",
+            status="failed",
+            failure_stage=failure_stage,
+            error_message=error_message,
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+            f.write("\n")
 
     def _build_manifest_into_existing(self, manifest: dict) -> str:
         """Re-write manifest.json with updated project-state fields.
@@ -433,23 +518,36 @@ class RunUA:
 
         Returns the manifest dict.
         """
-        run_id = uuid.uuid4().hex
         os.makedirs(self.out_dir, exist_ok=True)
 
-        if self.mode == "inventory":
-            manifest = self._mode_inventory(run_id)
-        elif self.mode == "structure":
-            manifest = self._mode_structure(run_id)
-        elif self.mode == "review":
-            manifest = self._mode_review(run_id)
-        elif self.mode == "delta":
-            manifest = self._mode_delta(run_id)
-        elif self.mode == "preflight":
-            manifest = self._mode_preflight(run_id)
-        elif self.mode == "full":
-            manifest = self._mode_full(run_id)
-        else:
-            raise ValueError(f"Unknown mode: {self.mode}")
+        # ── Pre-scan cleanliness snapshot ────────────────────────
+        self._run_id = uuid.uuid4().hex
+        self._target_dirty_files_before = _get_git_dirty_files(self.target_dir)
+        self._target_dirty_before = len(self._target_dirty_files_before) > 0
+
+        try:
+            if self.mode == "inventory":
+                manifest = self._mode_inventory(self._run_id)
+            elif self.mode == "structure":
+                manifest = self._mode_structure(self._run_id)
+            elif self.mode == "review":
+                manifest = self._mode_review(self._run_id)
+            elif self.mode == "delta":
+                manifest = self._mode_delta(self._run_id)
+            elif self.mode == "preflight":
+                manifest = self._mode_preflight(self._run_id)
+            elif self.mode == "full":
+                manifest = self._mode_full(self._run_id)
+            else:
+                raise ValueError(f"Unknown mode: {self.mode}")
+        except Exception as exc:  # noqa: BLE001
+            # Partial failure: record post-cleanliness and write failure manifest
+            self._record_post_cleanliness()
+            self._write_failure_manifest(
+                failure_stage=self._current_stage,
+                error_message=str(exc),
+            )
+            raise
 
         # Opt-in project-state recording (UA-006) — after all artifacts exist
         self._try_record_project_state(manifest)
@@ -621,6 +719,28 @@ class RunUA:
         self._write_json("manifest.json", manifest)
 
         return manifest
+
+    # ── cleanliness helpers (UA-P1-002) ────────────────────────────
+
+    @property
+    def _current_stage(self) -> str:
+        """Return the current pipeline stage name for failure reporting."""
+        if self.scan_data is None:
+            return "scan"
+        if self.imports_data is None:
+            return "extract_imports"
+        if self.graph_data is None and self.mode in ("structure", "review", "preflight", "full"):
+            return "graph_assembly"
+        if self.summary_data is None:
+            return "summary"
+        return self.mode
+
+    def _record_post_cleanliness(self) -> None:
+        """Snapshot post-pipeline target cleanliness."""
+        if self._target_dirty_after is not None:
+            return  # Already recorded
+        self._target_dirty_files_after = _get_git_dirty_files(self.target_dir)
+        self._target_dirty_after = len(self._target_dirty_files_after) > 0
 
 
 # ── Module-level convenience function ────────────────────────────────────
