@@ -24,6 +24,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -48,6 +49,19 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_kanban_guidance_requires_block_immediate_after_handoff(self):
+        assert "auth boundary" in KANBAN_GUIDANCE
+        assert "push/open-PR failure" in KANBAN_GUIDANCE
+        assert "external side-effect failure" in KANBAN_GUIDANCE
+        assert "kanban_comment" in KANBAN_GUIDANCE
+        assert "commit SHA/verification/failure output" in KANBAN_GUIDANCE
+        assert "≤160-char signal" in KANBAN_GUIDANCE
+        assert "do not burn iterations" in KANBAN_GUIDANCE
+        assert "retry until max iterations" not in KANBAN_GUIDANCE.lower()
+
+    def test_kanban_guidance_prompt_size_stays_bounded(self):
+        assert 1_500 < len(KANBAN_GUIDANCE) < 4_096
 
 
 # =========================================================================

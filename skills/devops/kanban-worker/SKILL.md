@@ -1,7 +1,7 @@
 ---
 name: kanban-worker
 description: Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper detail on specific scenarios.
-version: 2.0.0
+version: 2.1.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -69,6 +69,12 @@ kanban_block(
 ```
 
 Use `kanban_complete` only when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, or a research task where the artifact IS the writeup itself.
+
+**Blocked side-effect or auth boundary after handoff:**
+
+If you have produced a usable handoff (local diff, commit, tests, artifacts, or verification) but cannot perform the final side effect — GitHub push/open-PR, auth-gated publish, deploy, release, external write, missing credential, rejected permission, or final publish failure — do not burn iterations trying variations. First write a durable `kanban_comment` with structured handoff metadata: changed files, artifact paths, commit SHA if one exists, verification commands/results, and exact failure output. Then immediately call `kanban_block(reason="publish-blocked: <≤160-char signal>")` (or another concise `*-blocked` reason) and stop. This is not giving up; it leaves an actionable handoff for the next auth-capable/profile stage.
+
+For GitHub workflows, implementation cards should not own branch push or PR creation when their profile lacks GitHub auth. Stop at the local implementation/verification handoff and let a separate publisher/finalizer card with `parents=[implementation_task_id]` own branch push, PR open/update, and CI readback. Assign that card to an auth-verified publisher profile from the live roster; do not invent a GitHub-only assignee name just because the workflow needs one.
 
 **Research task:**
 ```python

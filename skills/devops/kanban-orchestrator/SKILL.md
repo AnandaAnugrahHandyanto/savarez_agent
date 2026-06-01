@@ -1,7 +1,7 @@
 ---
 name: kanban-orchestrator
 description: Decomposition playbook + anti-temptation rules for an orchestrator profile routing work through Kanban. The "don't do the work yourself" rule and the basic lifecycle are auto-injected into every kanban worker's system prompt; this skill is the deeper playbook when you're specifically playing the orchestrator role.
-version: 3.0.0
+version: 3.1.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -153,6 +153,8 @@ Tell them what you created in plain prose, naming the actual profiles you used:
 **Fan-out + fan-in (research → synthesize):** N research-style cards with no parents, one synthesis card with all of them as parents.
 
 **Parallel implementation + validation:** one implementer card makes the change while one explorer/researcher card verifies config, docs, or source mapping. A reviewer card can depend on both. Do not make the implementer own unrelated verification just because the user mentioned both in one sentence.
+
+**Implementation/verification -> GitHub publisher/finalizer:** when the implementation/verifier profile differs from the GitHub-auth profile, split repo mutation stages. Implementers and verifiers produce local diff/commit/test handoffs; they must not own branch push or PR creation if their profile lacks GitHub auth. Create a separate terminal publisher/finalizer card with `parents=[implementation_or_verification_task_ids]`, load `github-pr-workflow`, and allow only branch push/open-update PR/read CI. The publisher is the credentialed side-effect boundary: on auth, push, branch-policy, or permission failure it must write a structured `kanban_comment`, immediately `kanban_block(reason="publish-blocked: ...")`, and stop. Assign this card to an auth-verified profile discovered in Step 0; do not invent a GitHub-only profile name.
 
 **Pipeline with gates:** `planner → implementer → reviewer`. Each stage's `parents=[previous_task]`. Reviewer blocks or completes; if reviewer blocks, the operator unblocks with feedback and respawns.
 
