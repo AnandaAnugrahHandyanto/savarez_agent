@@ -41,7 +41,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Tuple, Union, overload
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 try:
@@ -73,6 +73,7 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import strip_markdown
 
 logger = logging.getLogger(__name__)
+_QQ_MEDIA_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
 
 
 class QQCloseError(Exception):
@@ -115,10 +116,6 @@ from gateway.platforms.qqbot.constants import (
     MEDIA_TYPE_VOICE,
     MEDIA_TYPE_FILE,
 )
-
-MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
-QQ_TRUSTED_MEDIA_HOST = "multimedia.nt.qq.com.cn"
-
 from gateway.platforms.qqbot.utils import (
     coerce_list as _coerce_list_impl,
     build_user_agent,
@@ -243,6 +240,7 @@ class QQAdapter(BasePlatformAdapter):
         # box; callers can override with set_interaction_callback(None) or
         # register a custom handler.
         self._interaction_callback = self._default_interaction_dispatch
+        self._interaction_authorizer: Optional[Callable[[Any], bool]] = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -887,6 +885,10 @@ class QQAdapter(BasePlatformAdapter):
         """
         self._interaction_callback = callback
 
+    def set_interaction_authorizer(self, authorizer: Optional[Callable[[Any], bool]]) -> None:
+        """Register an optional authorization callback for button interactions."""
+        self._interaction_authorizer = authorizer
+
     async def _on_interaction(self, d: Any) -> None:
         """Handle an ``INTERACTION_CREATE`` event.
 
@@ -1008,6 +1010,14 @@ class QQAdapter(BasePlatformAdapter):
         button_data = event.button_data
         if not button_data:
             return
+        if not self._is_interaction_authorized(event):
+            logger.warning(
+                "[%s] Dropping unauthorized interaction %s from %s",
+                self._log_tag,
+                event.id,
+                event.operator_openid or "(unknown)",
+            )
+            return
 
         approval = parse_approval_button_data(button_data)
         if approval is not None:
@@ -1046,6 +1056,41 @@ class QQAdapter(BasePlatformAdapter):
             "[%s] Unrecognised button_data %r from interaction %s",
             self._log_tag, button_data, event.id,
         )
+
+    def _is_interaction_authorized(self, event: InteractionEvent) -> bool:
+        """Check whether an interaction click should be processed."""
+        chat_type = "group" if event.scene in {"group", "guild"} else "dm"
+        chat_id = event.group_openid or event.channel_id or event.guild_id or event.user_openid
+        user_id = event.operator_openid
+        source = self.build_source(chat_id=chat_id, user_id=user_id, chat_type=chat_type)
+
+        if callable(self._interaction_authorizer):
+            try:
+                return bool(self._interaction_authorizer(source))
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Interaction authorizer failed; denying click: %s",
+                    self._log_tag,
+                    exc,
+                )
+                return False
+
+        allowed_users_raw = os.getenv("QQ_ALLOWED_USERS", "").strip()
+        if allowed_users_raw:
+            allowed_users = [
+                entry.strip().lower()
+                for entry in allowed_users_raw.split(",")
+                if entry.strip()
+            ]
+            operator = (user_id or "").strip().lower()
+            if "*" not in allowed_users and operator not in allowed_users:
+                return False
+
+        if event.scene in {"group", "guild"}:
+            return self._is_group_allowed(chat_id, user_id)
+        if event.scene == "c2c":
+            return self._is_dm_allowed(user_id)
+        return False
 
     @staticmethod
     def _write_update_response(answer: str, operator: str = "") -> None:
@@ -1615,7 +1660,7 @@ class QQAdapter(BasePlatformAdapter):
             "attachment_info": attachment_info,
         }
 
-    async def _download_and_cache(self, url: str, media_type_or_hint: str) -> Optional[str]:
+    async def _download_and_cache(self, url: str, content_type: str) -> Optional[str]:
         """Download a URL and cache it locally."""
         from tools.url_safety import is_safe_url
 
@@ -1629,20 +1674,17 @@ class QQAdapter(BasePlatformAdapter):
             data = await self._download_limited_bytes(
                 url,
                 headers=self._qq_media_headers(url),
-                context=media_type_or_hint or "media",
+                context="attachment",
             )
-            if data is None:
-                return None
-        except Exception as exc:
-            logger.debug(
-                "[%s] Download failed for %s: %s", self._log_tag, url[:80], exc
-            )
+        except Exception:
+            data = None
+        if data is None:
             return None
 
-        if media_type_or_hint.startswith("image/"):
-            ext = mimetypes.guess_extension(media_type_or_hint) or ".jpg"
+        if content_type.startswith("image/"):
+            ext = mimetypes.guess_extension(content_type) or ".jpg"
             return cache_image_from_bytes(data, ext)
-        elif media_type_or_hint == "voice" or media_type_or_hint.startswith("audio/"):
+        elif content_type == "voice" or content_type.startswith("audio/"):
             # QQ voice messages are typically .amr or .silk format.
             # Convert to .wav using ffmpeg so STT engines can process it.
             return await self._convert_audio_to_wav(data, url)
@@ -1672,101 +1714,84 @@ class QQAdapter(BasePlatformAdapter):
             return True
         return False
 
+    _TRUSTED_QQ_MEDIA_HOST = "multimedia.nt.qq.com.cn"
+
     def _qq_media_headers(self, url: str) -> Dict[str, str]:
-        """Return Authorization headers for trusted QQ multimedia downloads."""
-        if self._access_token and urlparse(url).hostname == QQ_TRUSTED_MEDIA_HOST:
+        """Return Authorization headers for trusted QQ multimedia CDN URLs only.
+
+        Auth tokens are only sent to multimedia.nt.qq.com.cn to prevent
+        accidental credential leakage to arbitrary redirect targets.
+        """
+        if not self._access_token:
+            return {}
+        try:
+            hostname = urlparse(url).hostname
+        except Exception:
+            return {}
+        if hostname and hostname.lower() == self._TRUSTED_QQ_MEDIA_HOST:
             return {"Authorization": f"QQBot {self._access_token}"}
         return {}
 
-    @overload
     async def _download_limited_bytes(
         self,
         url: str,
+        *,
         headers: Optional[Dict[str, str]] = None,
         context: str = "attachment",
-        return_content_type: Literal[False] = False,
-    ) -> Optional[bytes]: ...
-
-    @overload
-    async def _download_limited_bytes(
-        self,
-        url: str,
-        headers: Optional[Dict[str, str]] = None,
-        context: str = "attachment",
-        return_content_type: Literal[True] = True,
-    ) -> Optional[Tuple[bytes, str]]: ...
-
-    async def _download_limited_bytes(
-        self,
-        url: str,
-        headers: Optional[Dict[str, str]] = None,
-        context: str = "attachment",
-        return_content_type: bool = False,
-    ) -> Optional[Union[bytes, Tuple[bytes, str]]]:
-        """Download bytes while rejecting oversized responses."""
+        max_bytes: int = _QQ_MEDIA_DOWNLOAD_MAX_BYTES,
+    ) -> Optional[bytes]:
+        """Download bytes with an explicit maximum size cap."""
         if not self._http_client:
-            logger.debug(
-                "[%s] Skipping %s download because HTTP client is unavailable",
-                self._log_tag,
-                context,
-            )
             return None
-
+        request_headers = headers or {}
         try:
             async with self._http_client.stream(
                 "GET",
                 url,
-                headers=headers or {},
-                follow_redirects=True,
+                headers=request_headers,
                 timeout=30.0,
+                follow_redirects=True,
             ) as resp:
                 resp.raise_for_status()
-                content_type = resp.headers.get("content-type", "unknown")
                 content_length = resp.headers.get("content-length")
-                if content_length is not None:
+                if content_length:
                     try:
-                        if int(content_length) > MAX_DOWNLOAD_BYTES:
+                        if int(content_length) > max_bytes:
                             logger.warning(
-                                "[%s] %s too large (%s bytes): %s",
+                                "[%s] %s too large from %s (content-length=%s > %s)",
                                 self._log_tag,
                                 context,
+                                url[:120],
                                 content_length,
-                                url[:80],
+                                max_bytes,
                             )
                             return None
                     except ValueError:
-                        logger.debug(
-                            "[%s] Ignoring invalid content-length header for %s: %r",
-                            self._log_tag,
-                            context,
-                            content_length,
-                        )
-
-                chunks = bytearray()
+                        pass
+                chunks: list[bytes] = []
+                total = 0
                 async for chunk in resp.aiter_bytes():
-                    chunks.extend(chunk)
-                    if len(chunks) > MAX_DOWNLOAD_BYTES:
+                    total += len(chunk)
+                    if total > max_bytes:
                         logger.warning(
-                            "[%s] %s exceeded size limit while downloading: %s",
+                            "[%s] %s stream exceeded limit from %s (%d > %d)",
                             self._log_tag,
                             context,
-                            url[:80],
+                            url[:120],
+                            total,
+                            max_bytes,
                         )
                         return None
-                data = bytes(chunks)
-                if return_content_type:
-                    return data, content_type
-                return data
-        except httpx.HTTPError as exc:
+                    chunks.append(chunk)
+                return b"".join(chunks)
+        except Exception as exc:
             logger.debug(
-                "[%s] %s download failed for %s: %s",
+                "[%s] Download failed for %s: %s",
                 self._log_tag,
-                context,
-                url[:80],
+                url[:120],
                 exc,
             )
             return None
-
     async def _stt_voice_attachment(
             self,
             url: str,
@@ -1821,25 +1846,18 @@ class QQAdapter(BasePlatformAdapter):
                 is_pre_wav,
                 bool(download_headers),
             )
-            download_result = await self._download_limited_bytes(
+            audio_data = await self._download_limited_bytes(
                 download_url,
                 headers=download_headers,
-                context="voice",
-                return_content_type=True,
+                context="voice attachment",
             )
-            if download_result is None:
-                logger.warning(
-                    "[%s] STT: download failed or exceeded size limit for %s",
-                    self._log_tag,
-                    download_url[:80],
-                )
+            if audio_data is None:
                 return None
-            audio_data, content_type = download_result
             logger.debug(
                 "[%s] STT: downloaded %d bytes, content_type=%s",
                 self._log_tag,
                 len(audio_data),
-                content_type,
+                content_type or "unknown",
             )
 
             if len(audio_data) < 10:
