@@ -32,11 +32,29 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 STAGE2_HOOK = REPO_ROOT / "docker" / "stage2-hook.sh"
 
 
+def _path_for_bash(path: Path, bash: str) -> str:
+    resolved = path.resolve()
+    if os.name != "nt":
+        return str(resolved)
+
+    drive = resolved.drive.rstrip(":").lower()
+    if not drive:
+        return str(resolved)
+
+    tail = resolved.as_posix()[2:]
+    bash_path = bash.replace("/", "\\").lower()
+    if bash_path.endswith("\\system32\\bash.exe") or bash_path.endswith("\\wsl.exe"):
+        return f"/mnt/{drive}{tail}"
+    if "\\git\\bin\\bash.exe" in bash_path or "\\git\\usr\\bin\\bash.exe" in bash_path:
+        return f"/{drive}{tail}"
+    return resolved.as_posix()
+
+
 @pytest.fixture(scope="module")
 def stage2_text() -> str:
     if not STAGE2_HOOK.exists():
         pytest.skip("docker/stage2-hook.sh not present in this checkout")
-    return STAGE2_HOOK.read_text()
+    return STAGE2_HOOK.read_text(encoding="utf-8")
 
 
 def _toplevel_chown_loop(text: str) -> str:
@@ -97,22 +115,27 @@ def _run_loop(text: str, present_files: list[str]) -> list[str]:
         # Stub chown to record the basename of its last argument (the path),
         # so we observe exactly which files the allowlist loop selected
         # without needing real root privileges.
+        home_for_bash = _path_for_bash(home, bash)
+        chown_log_for_bash = _path_for_bash(dpath / "chown.log", bash)
         script = (
             "set -e\n"
-            f'HERMES_HOME="{home}"\n'
-            f'chown() {{ for a in "$@"; do :; done; echo "${{a##*/}}" >> "{dpath}/chown.log"; }}\n'
+            f'HERMES_HOME="{home_for_bash}"\n'
+            'chown() { for a in "$@"; do :; done; '
+            f'echo "${{a##*/}}" >> "{chown_log_for_bash}"; }}\n'
             + block
         )
         script_path = dpath / "harness.sh"
-        script_path.write_text(script)
+        script_path.write_text(script, encoding="utf-8", newline="\n")
 
-        proc = subprocess.run([bash, str(script_path)], capture_output=True, text=True)
+        proc = subprocess.run(
+            [bash, _path_for_bash(script_path, bash)], capture_output=True, text=True
+        )
         assert proc.returncode == 0, proc.stderr
 
         log = dpath / "chown.log"
         if not log.exists():
             return []
-        return [ln for ln in log.read_text().splitlines() if ln]
+        return [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln]
 
 
 def test_loop_chowns_present_allowlisted_files(stage2_text: str) -> None:
