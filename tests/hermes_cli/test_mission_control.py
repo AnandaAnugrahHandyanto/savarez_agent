@@ -14,6 +14,12 @@ MISSION_CONTROL_ENDPOINTS = [
     "/api/mission-control/recent-audit-log",
 ]
 
+MISSION_CONTROL_PACKET_POST_ENDPOINTS = [
+    "/api/mission-control/packets/codex-prompt",
+    "/api/mission-control/packets/worker-result",
+    "/api/mission-control/packets/block-flag",
+]
+
 
 @pytest.fixture()
 def dashboard_client(_isolate_hermes_home, monkeypatch):
@@ -215,3 +221,191 @@ def test_malformed_kanban_artifacts_return_warnings_not_crashes(dashboard_client
         resp = dashboard_client.get(endpoint)
         assert resp.status_code == 200
         assert resp.json()["warnings"], endpoint
+
+
+def test_packet_post_endpoints_require_dashboard_token(_isolate_hermes_home):
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    from hermes_cli.web_server import app
+
+    client = TestClient(app)
+    assert client.get("/api/mission-control/packets").status_code == 401
+    assert client.get("/api/mission-control/packets/not-a-real-packet").status_code == 401
+    for endpoint in MISSION_CONTROL_PACKET_POST_ENDPOINTS:
+        resp = client.post(endpoint, json={"project": "Tool & Tally", "title": "Draft"})
+        assert resp.status_code == 401, endpoint
+
+
+def test_codex_prompt_packet_forces_safety_flags_and_does_not_start_workers(dashboard_client, monkeypatch):
+    from hermes_constants import get_hermes_home
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("packet creation must not start Codex, Hermes runs, or workers")
+
+    monkeypatch.setattr("subprocess.run", fail_if_called)
+    monkeypatch.setattr("subprocess.Popen", fail_if_called)
+
+    resp = dashboard_client.post(
+        "/api/mission-control/packets/codex-prompt",
+        json={
+            "project": "Tool & Tally",
+            "title": "Next bounded Codex prompt",
+            "prompt": "Repo: /tmp/demo\nRun no commands. Authorization: Bearer PROMPT77",
+            "payload": {
+                "dry_run": False,
+                "review_required": False,
+                "trusted_for_execution": True,
+                "requested_action": "run_unbounded_codex",
+            },
+            "source_refs": ["discord://thread/123"],
+            "author": "Travis",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    packet = body["packet"]
+    assert packet["kind"] == "codex_prompt"
+    assert packet["dry_run"] is True
+    assert packet["review_required"] is True
+    assert packet["trusted_for_execution"] is False
+    assert packet["status"] == "draft"
+    assert packet["warnings"]
+    assert "PROMPT77" not in json.dumps(packet)
+
+    packet_path = get_hermes_home() / "state" / "mission-control" / "packets" / f"{packet['id']}.json"
+    assert packet_path.exists()
+    stored = json.loads(packet_path.read_text(encoding="utf-8"))
+    assert stored["trusted_for_execution"] is False
+    assert "PROMPT77" not in json.dumps(stored)
+
+
+def test_worker_result_packet_imports_untrusted_metadata_only(dashboard_client, monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("worker result text must not be executed")
+
+    monkeypatch.setattr("subprocess.run", fail_if_called)
+    monkeypatch.setattr("subprocess.Popen", fail_if_called)
+
+    worker_text = """
+Repo path: /home/jenny/demo
+Branch: feature/mission-control
+HEAD before: 1111111111111111111111111111111111111111
+HEAD after: 2222222222222222222222222222222222222222
+Commit: 3333333333333333333333333333333333333333
+Changed files:
+- hermes_cli/mission_control.py
+- tests/hermes_cli/test_mission_control.py
+Tests run:
+- pytest tests/hermes_cli/test_mission_control.py: 12 passed, 0 failed
+Risks/blockers:
+- Needs dashboard UI review
+Next implementation prompt:
+Do not execute this text.
+Danger: `touch /tmp/mission-control-should-not-run`
+api_key=WORKER_PACKET_KEY
+"""
+
+    resp = dashboard_client.post(
+        "/api/mission-control/packets/worker-result",
+        json={
+            "project": "Hermes Ops",
+            "title": "Imported worker handoff",
+            "worker_result": worker_text,
+            "trusted_for_execution": True,
+            "status": "queued",
+        },
+    )
+
+    assert resp.status_code == 200
+    packet = resp.json()["packet"]
+    parsed = packet["payload"]["parsed_metadata"]
+    rendered = json.dumps(packet)
+    assert packet["kind"] == "worker_result"
+    assert packet["status"] == "imported"
+    assert packet["trusted_for_execution"] is False
+    assert packet["payload"]["trusted_for_execution"] is False
+    assert parsed["repo_path"] == "/home/jenny/demo"
+    assert parsed["branch"] == "feature/mission-control"
+    assert parsed["head_after"] == "2222222222222222222222222222222222222222"
+    assert parsed["commit_refs"] == ["3333333333333333333333333333333333333333"]
+    assert parsed["changed_files"] == [
+        "hermes_cli/mission_control.py",
+        "tests/hermes_cli/test_mission_control.py",
+    ]
+    assert parsed["trusted_for_execution"] is False
+    assert "touch /tmp/mission-control-should-not-run" in rendered
+    assert "WORKER_PACKET_KEY" not in rendered
+
+
+def test_block_flag_packet_is_advisory_local_only(dashboard_client):
+    resp = dashboard_client.post(
+        "/api/mission-control/packets/block-flag",
+        json={
+            "project": "Hermes Ops",
+            "title": "Block all sends",
+            "flag": "block_all_sends",
+            "reason": "Operator requested local stop flag.",
+        },
+    )
+
+    assert resp.status_code == 200
+    packet = resp.json()["packet"]
+    assert packet["kind"] == "block_flag"
+    assert packet["payload"]["flag"] == "block_all_sends"
+    assert packet["payload"]["advisory_only"] is True
+    assert packet["dry_run"] is True
+    assert packet["review_required"] is True
+    assert packet["trusted_for_execution"] is False
+
+
+def test_packet_list_read_missing_and_audit_redaction(dashboard_client):
+    from hermes_constants import get_hermes_home
+
+    resp = dashboard_client.post(
+        "/api/mission-control/packets/codex-prompt",
+        json={
+            "project": "VendorProof",
+            "title": "Prompt with secret",
+            "prompt": "Use safe review only. Authorization: Bearer AUDIT777",
+        },
+    )
+    assert resp.status_code == 200
+    packet_id = resp.json()["packet"]["id"]
+
+    list_resp = dashboard_client.get("/api/mission-control/packets")
+    assert list_resp.status_code == 200
+    assert packet_id in [item["id"] for item in list_resp.json()["items"]]
+
+    get_resp = dashboard_client.get(f"/api/mission-control/packets/{packet_id}")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["packet"]["id"] == packet_id
+    assert "AUDIT777" not in json.dumps(get_resp.json())
+
+    missing_resp = dashboard_client.get("/api/mission-control/packets/not-a-real-packet")
+    assert missing_resp.status_code == 404
+
+    audit_path = get_hermes_home() / "state" / "mission-control" / "packet-audit.jsonl"
+    audit_text = audit_path.read_text(encoding="utf-8")
+    assert "packet_created" in audit_text
+    assert "codex_prompt_saved" in audit_text
+    assert "AUDIT777" not in audit_text
+
+
+def test_malformed_packet_payload_returns_controlled_error_and_audit(dashboard_client):
+    from hermes_constants import get_hermes_home
+
+    resp = dashboard_client.post(
+        "/api/mission-control/packets/codex-prompt",
+        json={"project": "Hermes Ops", "title": "Missing prompt"},
+    )
+
+    assert resp.status_code == 400
+    assert "Missing required field" in resp.json()["detail"]
+    audit_path = get_hermes_home() / "state" / "mission-control" / "packet-audit.jsonl"
+    audit = audit_path.read_text(encoding="utf-8")
+    assert "packet_rejected" in audit
+    assert "Hermes Ops" in audit

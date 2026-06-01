@@ -2840,6 +2840,80 @@ async def get_mission_control_recent_audit_log():
     return recent_audit_log()
 
 
+def _mission_control_packet_error(exc: Exception) -> HTTPException:
+    from hermes_cli.mission_control import MissionControlPacketError
+
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail="Packet not found")
+    if isinstance(exc, MissionControlPacketError):
+        if str(exc) == "Invalid packet id":
+            return HTTPException(status_code=404, detail="Packet not found")
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail="Mission Control packet error")
+
+
+@app.get("/api/mission-control/packets")
+async def get_mission_control_packets():
+    from hermes_cli.mission_control import list_packets
+
+    return list_packets()
+
+
+@app.get("/api/mission-control/packets/{packet_id}")
+async def get_mission_control_packet(packet_id: str):
+    from hermes_cli.mission_control import get_packet
+
+    try:
+        return get_packet(packet_id)
+    except Exception as exc:
+        raise _mission_control_packet_error(exc) from exc
+
+
+@app.post("/api/mission-control/packets/codex-prompt")
+async def post_mission_control_codex_prompt_packet(body: Dict[str, Any]):
+    from hermes_cli.mission_control import (
+        create_rejection_audit,
+        save_next_codex_prompt,
+    )
+
+    try:
+        packet = save_next_codex_prompt(dict(body))
+        return {"packet": packet}
+    except Exception as exc:
+        create_rejection_audit(dict(body), str(exc), packet_kind="codex_prompt")
+        raise _mission_control_packet_error(exc) from exc
+
+
+@app.post("/api/mission-control/packets/worker-result")
+async def post_mission_control_worker_result_packet(body: Dict[str, Any]):
+    from hermes_cli.mission_control import (
+        create_rejection_audit,
+        import_worker_result,
+    )
+
+    try:
+        packet = import_worker_result(dict(body))
+        return {"packet": packet}
+    except Exception as exc:
+        create_rejection_audit(dict(body), str(exc), packet_kind="worker_result")
+        raise _mission_control_packet_error(exc) from exc
+
+
+@app.post("/api/mission-control/packets/block-flag")
+async def post_mission_control_block_flag_packet(body: Dict[str, Any]):
+    from hermes_cli.mission_control import (
+        create_rejection_audit,
+        set_block_flag,
+    )
+
+    try:
+        packet = set_block_flag(dict(body))
+        return {"packet": packet}
+    except Exception as exc:
+        create_rejection_audit(dict(body), str(exc), packet_kind="block_flag")
+        raise _mission_control_packet_error(exc) from exc
+
+
 _CRON_PROFILE_LOCK = threading.RLock()
 
 

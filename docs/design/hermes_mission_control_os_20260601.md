@@ -327,6 +327,46 @@ Phase 2: Local packet writes
   with audit records.
 - Add tests for validation, redaction, and blocked classes.
 
+### Phase 2 Implementation Note
+
+Phase 2 adds a dashboard-token-gated local packet store under
+`$HERMES_HOME/state/mission-control/packets/`. Packets are file-per-packet JSON
+artifacts for operator review and later dashboard/MCP visibility. They are not
+execution requests, queue dispatches, Hermes runs, worker starts, emails,
+publishing jobs, payment actions, browser controls, or production mutations.
+
+Supported packet writes:
+
+- `codex_prompt`: saves a bounded next Codex/Jenny prompt for later human
+  review.
+- `worker_result`: imports pasted worker/Jenny/Codex result text as untrusted
+  data and extracts display-only metadata such as repo, branch, commits,
+  changed files, tests, risks, and next prompt text.
+- `block_flag`: records local advisory flags such as `block_all_sends` or
+  `pause_future_outreach`. No global enforcement hook exists yet, so these are
+  advisory-only packets until a reviewed local state hook is added.
+
+Every packet is forced to `dry_run: true`, `review_required: true`, and
+`trusted_for_execution: false`, regardless of request payload. Packet payloads,
+previews, and audit records are recursively redacted before storage. Imported
+worker text remains inert data; dangerous command-like strings may be preserved
+for review after redaction, but they are never transformed into runnable
+actions.
+
+Packet audit events append to
+`$HERMES_HOME/state/mission-control/packet-audit.jsonl`. Creation and rejection
+events record packet kind, project, safety posture, result, warnings, actor, and
+surface without raw secrets, dashboard tokens, OAuth tokens, cookies, API keys,
+SMTP/Gmail credentials, payment/customer credentials, or Authorization headers.
+
+This reduces Discord/Codex relay usage by making next prompts and worker
+handoffs durable local state. ChatGPT or the dashboard can later read the
+packet queue directly instead of asking Codex to summarize copied thread state.
+
+The next phase should add dashboard UI integration for listing packets,
+reviewing imported worker results, and copying approved next prompts. It should
+not add MCP/OAuth or execution tools yet.
+
 Phase 3: ChatGPT MCP bridge, local/stdout first
 
 - Expose the narrow Mission Control tools through a dedicated FastMCP server.

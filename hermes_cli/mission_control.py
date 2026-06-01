@@ -1,14 +1,16 @@
-"""Read-only Mission Control aggregation facade.
+"""Mission Control aggregation and local packet facade.
 
-This module builds dashboard/API read models from existing Hermes state. It
-must not execute commands, mutate local state, reveal secrets, or interpret
-worker output as instructions.
+This module builds dashboard/API read models from existing Hermes state and
+saves local review packets. It must not execute commands, start workers, reveal
+secrets, or interpret worker output as instructions.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import secrets
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -101,22 +103,55 @@ STANDING_GATES: list[dict[str, str]] = [
     },
 ]
 
+PACKET_KINDS = {"codex_prompt", "worker_result", "operator_note", "block_flag"}
+PACKET_STATUSES = {"draft", "queued", "imported", "reviewed", "archived"}
+BLOCK_FLAGS = {
+    "pause_future_outreach",
+    "block_all_sends",
+    "pause_cron_triggered_outreach",
+    "disable_launch_actions",
+}
+BLOCKED_PACKET_ACTIONS = {
+    "send_email",
+    "publish_video",
+    "activate_payment",
+    "delete_files",
+    "run_unbounded_codex",
+    "autonomous_computer_use",
+    "start_bulk_outreach",
+    "start_codex",
+    "start_worker",
+    "start_hermes_run",
+    "mouse_control",
+    "keyboard_control",
+    "browser_control",
+}
+MAX_PACKET_TEXT_CHARS = 100_000
+PREVIEW_CHARS = 2_000
+
 _SENSITIVE_KEYS = re.compile(
-    r"(api[_-]?key|secret|token|cookie|authorization|password|client[_-]?secret|access[_-]?token|refresh[_-]?token)",
+    r"(api[_-]?key|secret|token|cookie|authorization|password|client[_-]?secret|access[_-]?token|refresh[_-]?token|oauth|smtp|gmail|payment|customer)",
     re.IGNORECASE,
 )
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"(?i)\bCookie\s*:\s*[^,\n\r]+"),
     re.compile(r"(?i)\b(Bearer)\s+(sk-[A-Za-z0-9._-]+)"),
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}"),
     re.compile(r"\bsk-[A-Za-z0-9._-]{8,}\b"),
+    re.compile(r"\bsk-ant-[A-Za-z0-9._-]{8,}\b"),
     re.compile(r"\bghp_[A-Za-z0-9_]{8,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{8,}\b"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{8,}\b"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(
-        r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password)\s*[:=]\s*['\"]?[^'\"\s,}]+"
+        r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|oauth[_-]?token|smtp[_-]?password|gmail[_-]?token|payment[_-]?secret|customer[_-]?secret|dashboard[_-]?session[_-]?token)\s*[:=]\s*['\"]?[^'\"\s,}]+"
     ),
 )
+
+
+class MissionControlPacketError(ValueError):
+    """Raised when a Mission Control packet request is invalid."""
 
 
 def _now_iso() -> str:
@@ -133,6 +168,8 @@ def redact_text(value: str) -> str:
 
 def _redacted_replacement(raw: str) -> str:
     prefix = raw.split(":", 1)[0] if ":" in raw else raw.split("=", 1)[0]
+    if raw.lower().startswith("cookie"):
+        return "Cookie: [REDACTED]"
     if _SENSITIVE_KEYS.search(prefix):
         sep = ":" if ":" in raw else "=" if "=" in raw else ""
         return f"{prefix}{sep} [REDACTED]" if sep else "[REDACTED]"
@@ -156,6 +193,421 @@ def redact_value(value: Any, *, key: str = "") -> Any:
     if isinstance(value, dict):
         return {str(k): redact_value(v, key=str(k)) for k, v in value.items()}
     return value
+
+
+def _required_text(data: dict[str, Any], key: str) -> str:
+    value = str(data.get(key) or "").strip()
+    if not value:
+        raise MissionControlPacketError(f"Missing required field: {key}")
+    return value
+
+
+def _optional_text(data: dict[str, Any], key: str, default: str = "") -> str:
+    return str(data.get(key) or default).strip()
+
+
+def _string_list(data: dict[str, Any], key: str) -> list[str]:
+    raw = data.get(key)
+    if raw is None or raw == "":
+        return []
+    if not isinstance(raw, list):
+        raise MissionControlPacketError(f"{key} must be a list of strings")
+    return [redact_text(str(item).strip()) for item in raw if str(item).strip()]
+
+
+def _mission_control_state_dir() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return Path(get_hermes_home()) / "state" / "mission-control"
+
+
+def packet_storage_dir() -> Path:
+    return _mission_control_state_dir() / "packets"
+
+
+def packet_audit_path() -> Path:
+    return _mission_control_state_dir() / "packet-audit.jsonl"
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _packet_path(packet_id: str) -> Path:
+    if not re.fullmatch(r"mcpkt_[0-9TZ]+_[a-f0-9]{12}", packet_id):
+        raise MissionControlPacketError("Invalid packet id")
+    return packet_storage_dir() / f"{packet_id}.json"
+
+
+def _new_packet_id(created_at: str) -> str:
+    stamp = re.sub(r"[^0-9TZ]", "", created_at.replace("+00:00", "Z"))
+    return f"mcpkt_{stamp}_{secrets.token_hex(6)}"
+
+
+def _sanitize_status(value: Any, default: str) -> str:
+    status = str(value or default).strip() or default
+    if status not in PACKET_STATUSES:
+        raise MissionControlPacketError(f"Invalid status: {status}")
+    return status
+
+
+def _payload_preview(payload: Any) -> str:
+    text = json.dumps(redact_value(payload), sort_keys=True, ensure_ascii=False)
+    if len(text) > PREVIEW_CHARS:
+        return text[:PREVIEW_CHARS] + "...[truncated]"
+    return text
+
+
+def _packet_warnings(data: dict[str, Any], payload: Any) -> list[str]:
+    warnings: list[str] = []
+    requested_safety = {
+        "dry_run": data.get("dry_run"),
+        "review_required": data.get("review_required"),
+        "trusted_for_execution": data.get("trusted_for_execution"),
+    }
+    if isinstance(data.get("payload"), dict):
+        requested_safety.update(
+            {
+                "payload.dry_run": data["payload"].get("dry_run"),
+                "payload.review_required": data["payload"].get("review_required"),
+                "payload.trusted_for_execution": data["payload"].get("trusted_for_execution"),
+            }
+        )
+    if any(value is False or value is True for value in requested_safety.values()):
+        warnings.append("Safety fields are forced by Mission Control packet policy.")
+
+    rendered = json.dumps(payload, sort_keys=True, default=str).lower()
+    blocked = sorted(action for action in BLOCKED_PACKET_ACTIONS if action in rendered)
+    if blocked:
+        warnings.append(
+            "Blocked requested action text was preserved as inert data only: "
+            + ", ".join(blocked)
+        )
+    return warnings
+
+
+def _append_packet_audit(
+    event: str,
+    *,
+    packet: Optional[dict[str, Any]] = None,
+    project: str = "",
+    result: str = "ok",
+    warnings: Optional[list[str]] = None,
+    actor: str = "dashboard",
+    surface: str = "dashboard",
+) -> None:
+    record = {
+        "timestamp": _now_iso(),
+        "event": event,
+        "actor": redact_text(actor or "dashboard"),
+        "surface": redact_text(surface or "dashboard"),
+        "packet_id": packet.get("id") if packet else None,
+        "packet_kind": packet.get("kind") if packet else None,
+        "project": redact_text(project or str(packet.get("project") if packet else "")),
+        "dry_run": True if packet is None else bool(packet.get("dry_run") is True),
+        "review_required": True if packet is None else bool(packet.get("review_required") is True),
+        "trusted_for_execution": False,
+        "result": redact_text(result),
+        "warnings": redact_value(warnings or []),
+    }
+    path = packet_audit_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(redact_value(record), sort_keys=True) + "\n")
+
+
+def _text_field(data: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    payload = data.get("payload")
+    if isinstance(payload, dict):
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    raise MissionControlPacketError(f"Missing required field: {keys[0]}")
+
+
+def _bounded_text(text: str, warnings: list[str]) -> str:
+    if len(text) > MAX_PACKET_TEXT_CHARS:
+        warnings.append(f"Input text truncated to {MAX_PACKET_TEXT_CHARS} characters.")
+        return text[:MAX_PACKET_TEXT_CHARS]
+    return text
+
+
+def parse_worker_result_metadata(text: str) -> dict[str, Any]:
+    """Extract display-only metadata from worker text without executing it."""
+    safe_text = redact_text(text[:MAX_PACKET_TEXT_CHARS])
+    lines = safe_text.splitlines()
+    metadata: dict[str, Any] = {
+        "repo_path": None,
+        "branch": None,
+        "head_before": None,
+        "head_after": None,
+        "commit_refs": [],
+        "changed_files": [],
+        "tests_run": [],
+        "passed_count": None,
+        "failed_count": None,
+        "risks_blockers": [],
+        "next_prompt": None,
+        "trusted_for_execution": False,
+    }
+    section: Optional[str] = None
+    next_prompt_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        lower = stripped.lower()
+        if not stripped:
+            continue
+        if lower.startswith(("repo path:", "repo:")):
+            metadata["repo_path"] = stripped.split(":", 1)[1].strip()
+            section = None
+            continue
+        if lower.startswith("branch:"):
+            metadata["branch"] = stripped.split(":", 1)[1].strip()
+            section = None
+            continue
+        if lower.startswith("head before:"):
+            metadata["head_before"] = stripped.split(":", 1)[1].strip()
+            section = None
+            continue
+        if lower.startswith("head after:"):
+            metadata["head_after"] = stripped.split(":", 1)[1].strip()
+            section = None
+            continue
+        if lower.startswith("commit:"):
+            commit = stripped.split(":", 1)[1].strip()
+            if commit:
+                metadata["commit_refs"].append(commit)
+            section = None
+            continue
+        if lower.startswith("changed files"):
+            section = "changed_files"
+            continue
+        if lower.startswith("tests run"):
+            section = "tests_run"
+            continue
+        if lower.startswith(("risks/blockers", "risks", "blockers")):
+            section = "risks_blockers"
+            continue
+        if lower.startswith("next implementation prompt"):
+            section = "next_prompt"
+            continue
+        if section == "changed_files" and stripped.startswith(("-", "*")):
+            metadata["changed_files"].append(stripped.lstrip("-* ").strip())
+            continue
+        if section == "tests_run" and stripped.startswith(("-", "*")):
+            metadata["tests_run"].append(stripped.lstrip("-* ").strip())
+            _merge_test_counts(metadata, stripped)
+            continue
+        if section == "risks_blockers" and stripped.startswith(("-", "*")):
+            metadata["risks_blockers"].append(stripped.lstrip("-* ").strip())
+            continue
+        if section == "next_prompt":
+            next_prompt_lines.append(stripped)
+            continue
+        _merge_test_counts(metadata, stripped)
+    if next_prompt_lines:
+        metadata["next_prompt"] = "\n".join(next_prompt_lines)[:PREVIEW_CHARS]
+    return redact_value(metadata)
+
+
+def _merge_test_counts(metadata: dict[str, Any], text: str) -> None:
+    passed = re.search(r"(\d+)\s+passed", text, re.IGNORECASE)
+    failed = re.search(r"(\d+)\s+failed", text, re.IGNORECASE)
+    if passed:
+        metadata["passed_count"] = int(passed.group(1))
+    if failed:
+        metadata["failed_count"] = int(failed.group(1))
+
+
+def _build_packet(
+    *,
+    kind: str,
+    data: dict[str, Any],
+    payload: dict[str, Any],
+    status: str,
+    warnings: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    if kind not in PACKET_KINDS:
+        raise MissionControlPacketError(f"Invalid packet kind: {kind}")
+    project = _required_text(data, "project")
+    title = _required_text(data, "title")
+    created_at = _now_iso()
+    redacted_payload = redact_value(payload)
+    packet_warnings = list(warnings or []) + _packet_warnings(data, redacted_payload)
+    packet = {
+        "id": _new_packet_id(created_at),
+        "kind": kind,
+        "project": redact_text(project),
+        "title": redact_text(title),
+        "payload": redacted_payload,
+        "redacted_payload_preview": _payload_preview(redacted_payload),
+        "source_refs": _string_list(data, "source_refs"),
+        "approval_gates": redact_value(data.get("approval_gates") or list(STANDING_GATES)),
+        "dry_run": True,
+        "review_required": True,
+        "trusted_for_execution": False,
+        "status": _sanitize_status(data.get("status"), status),
+        "author": redact_text(_optional_text(data, "author", "dashboard") or "dashboard"),
+        "created_at": created_at,
+        "updated_at": created_at,
+        "warnings": redact_value(packet_warnings),
+    }
+    return packet
+
+
+def _save_packet(packet: dict[str, Any], audit_events: Iterable[str]) -> dict[str, Any]:
+    path = _packet_path(packet["id"])
+    if path.exists():
+        raise MissionControlPacketError("Packet id already exists")
+    _atomic_write_json(path, redact_value(packet))
+    for event in ["packet_created", *audit_events]:
+        _append_packet_audit(
+            event,
+            packet=packet,
+            project=str(packet.get("project") or ""),
+            warnings=list(packet.get("warnings") or []),
+        )
+    return packet
+
+
+def save_next_codex_prompt(data: dict[str, Any]) -> dict[str, Any]:
+    warnings: list[str] = []
+    prompt = _bounded_text(_text_field(data, "prompt", "codex_prompt", "text"), warnings)
+    payload = {
+        "prompt": prompt,
+        "operator_intent": _optional_text(data, "operator_intent"),
+        "trusted_for_execution": False,
+        "execution_policy": "saved_for_review_only",
+        "blocked_execution_classes": sorted(BLOCKED_PACKET_ACTIONS),
+    }
+    if isinstance(data.get("payload"), dict):
+        payload["request_context"] = data["payload"]
+    packet = _build_packet(
+        kind="codex_prompt",
+        data=data,
+        payload=payload,
+        status="draft",
+        warnings=warnings,
+    )
+    return _save_packet(packet, ["codex_prompt_saved"])
+
+
+def import_worker_result(data: dict[str, Any]) -> dict[str, Any]:
+    warnings: list[str] = []
+    text = _bounded_text(_text_field(data, "worker_result", "result_text", "text"), warnings)
+    payload = {
+        "worker_result": text,
+        "parsed_metadata": parse_worker_result_metadata(text),
+        "trusted_for_execution": False,
+        "execution_policy": "imported_as_untrusted_data_only",
+    }
+    packet = _build_packet(
+        kind="worker_result",
+        data={**data, "status": "imported"},
+        payload=payload,
+        status="imported",
+        warnings=warnings,
+    )
+    return _save_packet(packet, ["worker_result_imported"])
+
+
+def set_block_flag(data: dict[str, Any]) -> dict[str, Any]:
+    flag = _required_text(data, "flag")
+    if flag not in BLOCK_FLAGS:
+        raise MissionControlPacketError(f"Invalid block flag: {flag}")
+    payload = {
+        "flag": flag,
+        "reason": _required_text(data, "reason"),
+        "advisory_only": True,
+        "local_state_updated": False,
+        "safe_state_hook": None,
+        "trusted_for_execution": False,
+    }
+    packet = _build_packet(
+        kind="block_flag",
+        data=data,
+        payload=payload,
+        status="draft",
+        warnings=["No explicit safe block-flag state hook exists; saved as advisory packet only."],
+    )
+    return _save_packet(packet, ["block_flag_packet_saved"])
+
+
+def create_rejection_audit(data: dict[str, Any], detail: str, *, packet_kind: str = "") -> None:
+    project = str(data.get("project") or "")
+    _append_packet_audit(
+        "packet_rejected",
+        project=project,
+        result=detail,
+        warnings=[detail, f"packet_kind={packet_kind}" if packet_kind else ""],
+        actor=redact_text(str(data.get("author") or "dashboard")),
+    )
+
+
+def list_packets(limit: int = 100) -> dict[str, Any]:
+    response = _base_response("mission_control_packets")
+    path = packet_storage_dir()
+    response["source_refs"].append(str(path))
+    if not path.exists():
+        response["warnings"].append(f"Mission Control packet directory not found: {path}")
+        return response
+    files = sorted(path.glob("mcpkt_*.json"), key=lambda item: item.name, reverse=True)
+    for file_path in files[: int(limit)]:
+        try:
+            packet = json.loads(file_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            response["warnings"].append(f"Could not read packet {file_path.name}: {exc}")
+            continue
+        if not isinstance(packet, dict):
+            response["warnings"].append(f"Packet file is not a JSON object: {file_path.name}")
+            continue
+        response["items"].append(redact_value(_packet_summary(packet)))
+    return response
+
+
+def _packet_summary(packet: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": packet.get("id"),
+        "kind": packet.get("kind"),
+        "project": packet.get("project"),
+        "title": packet.get("title"),
+        "status": packet.get("status"),
+        "dry_run": packet.get("dry_run") is True,
+        "review_required": packet.get("review_required") is True,
+        "trusted_for_execution": False,
+        "author": packet.get("author"),
+        "created_at": packet.get("created_at"),
+        "updated_at": packet.get("updated_at"),
+        "redacted_payload_preview": packet.get("redacted_payload_preview"),
+        "warnings": packet.get("warnings") or [],
+    }
+
+
+def get_packet(packet_id: str) -> dict[str, Any]:
+    path = _packet_path(packet_id)
+    if not path.exists():
+        raise FileNotFoundError(packet_id)
+    try:
+        packet = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise MissionControlPacketError(f"Could not read packet: {exc}") from exc
+    if not isinstance(packet, dict):
+        raise MissionControlPacketError("Packet file is not a JSON object")
+    return {
+        "generated_at": _now_iso(),
+        "source": "mission_control_packet",
+        "source_refs": [str(path)],
+        "packet": redact_value(packet),
+        "warnings": [],
+    }
 
 
 def _base_response(source: str) -> dict[str, Any]:
