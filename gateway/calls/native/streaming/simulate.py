@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .clock import VirtualClock
+from .clock import Clock, VirtualClock
 from .fakes import (
     FakeAudioTransport,
     FakeBrain,
@@ -90,7 +90,7 @@ class StreamSimulation:
     barge_in: bool
     session: StreamingCallSession
     transport: FakeAudioTransport
-    clock: VirtualClock
+    clock: Clock
 
     def make_frame(self, seq: int) -> AudioFrame:
         return _make_frame(seq, self.media)

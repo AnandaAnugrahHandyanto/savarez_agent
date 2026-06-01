@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import wave
+from contextlib import suppress
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -87,14 +88,18 @@ async def test_real_e2e_normal_turn() -> None:
     assert rec is not None, "expected a COMPLETED turn"
     assert rec.interrupted is False
     assert len(rec.assistant_heard_text) > 0
-    # Whisper produced a non-empty user transcript from the fixture.
-    assert rec.user_transcript.strip() != ""
+    # Whisper transcribed the fixture ("...the weather forecast for today?").
+    assert "weather" in rec.user_transcript.lower()
 
 
 async def test_real_e2e_barge_in() -> None:
-    # A long utterance keeps real Piper emitting (the session drains ~1.5k 20ms
-    # frames through the event loop) for several hundred ms, giving a wide,
-    # deterministic window for the scripted barge-in to land mid-speech.
+    # A long ``response_text`` makes Piper's up-front synthesis (run via
+    # ``await asyncio.to_thread(self._synthesize_pcm, text)`` in ``local_tts._gen``)
+    # take long enough — on the order of hundreds of ms of CPU work — that the
+    # scripted USER_SPEECH_STARTED reliably lands while ``_speaking`` is True.
+    # The ``_speaking`` window is dominated by that to_thread synthesis
+    # suspension, not by draining frames (they are emitted in a tight, await-free
+    # loop once synthesis completes).
     sim = build_real_stream_simulation(
         barge_in=True,
         response_text=(
@@ -105,26 +110,32 @@ async def test_real_e2e_barge_in() -> None:
 
     run_task = asyncio.create_task(sim.session.run())
 
-    # The scripted turns fire by ``frame.seq`` (FakeTurnDetection):
-    #   seq 0 -> ENDPOINT_DETECTED  (launch assistant turn; real Piper starts)
-    #   seq 1 -> USER_SPEECH_STARTED (vad_trigger flush; partial gives min_words)
-    #   seq 2 -> USER_SPEECH_STOPPED (escalating -> INTERRUPT once min_speech_ms)
-    await _push(sim, 0, _SILENCE)  # ENDPOINT_DETECTED -> launch assistant turn
+    try:
+        # The scripted turns fire by ``frame.seq`` (FakeTurnDetection):
+        #   seq 0 -> ENDPOINT_DETECTED  (launch assistant turn; real Piper starts)
+        #   seq 1 -> USER_SPEECH_STARTED (vad_trigger flush; partial gives min_words)
+        #   seq 2 -> USER_SPEECH_STOPPED (escalating -> INTERRUPT once min_speech_ms)
+        await _push(sim, 0, _SILENCE)  # ENDPOINT_DETECTED -> launch assistant turn
 
-    # Wait for real Piper to begin emitting audio (TTS mid-stream).
-    for _ in range(500):
-        if sim.session._speaking:
-            break
-        await asyncio.sleep(0.005)
-    assert sim.session._speaking, "Piper TTS never started speaking"
+        # Wait for real Piper to begin emitting audio (TTS mid-stream).
+        for _ in range(500):
+            if sim.session._speaking:
+                break
+            await asyncio.sleep(0.005)
+        assert sim.session._speaking, "Piper TTS never started speaking"
 
-    await _push(sim, 1, _SILENCE)  # USER_SPEECH_STARTED -> vad_trigger flush
-    for _ in range(3):  # advance past min_speech_ms (40ms) in real time
-        await asyncio.sleep(0.02)
-    await _push(sim, 2, _SILENCE)  # USER_SPEECH_STOPPED -> INTERRUPT
+        await _push(sim, 1, _SILENCE)  # USER_SPEECH_STARTED -> vad_trigger flush
+        for _ in range(3):  # advance past min_speech_ms (40ms) in real time
+            await asyncio.sleep(0.02)
+        await _push(sim, 2, _SILENCE)  # USER_SPEECH_STOPPED -> INTERRUPT
 
-    await sim.transport.end_inbound()
-    await asyncio.wait_for(run_task, timeout=60)
+        await sim.transport.end_inbound()
+        await asyncio.wait_for(run_task, timeout=60)
+    finally:
+        if not run_task.done():
+            run_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await run_task
 
     summary = sim.summary()
     assert summary["flushes"], "expected at least one flush from barge-in"
