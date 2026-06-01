@@ -477,6 +477,13 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
 
     For unknown / legacy providers we conservatively return False — the
     caller falls back to the legacy aux-LLM text path.
+
+    Custom proxy providers (Palantir Foundry, self-hosted vLLM behind a
+    branded key, etc.) are recognised by their wire-protocol mode
+    (``api_mode`` in config.yaml) rather than by provider id, since the
+    id is user-controlled and may be anything (``palantir-claude47``,
+    ``corp-llm-prod-3``). The wire decides whether tool-result image
+    blocks are accepted, not the brand label on top.
     """
     if not isinstance(provider, str):
         return False
@@ -512,6 +519,28 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         if "gemini-3" in m or "gemini-pro-3" in m or "gemini-flash-3" in m:
             return True
         return False
+
+    # Custom / proxy providers: trust the wire-protocol mode declared in
+    # config.yaml. The ``api_mode`` is what determines whether tool-result
+    # image blocks are syntactically accepted, regardless of how the
+    # caller branded the provider slug. A Palantir Foundry entry with
+    # ``api_mode: anthropic_messages`` is wire-identical to native
+    # Anthropic; OpenAI-compat proxies declare ``chat_completions`` and
+    # accept ``image_url`` parts in tool messages.
+    try:
+        from agent.auxiliary_client import _read_main_api_mode
+        api_mode = _read_main_api_mode()
+    except Exception:
+        api_mode = ""
+    if api_mode in {
+        "anthropic_messages",
+        "anthropic",
+        "chat_completions",
+        "openai",
+        "responses",
+        "openai_responses",
+    }:
+        return True
 
     # Other vision-capable provider stacks. Conservative default: False.
     # Add explicit entries here as we verify each provider's tool-result
