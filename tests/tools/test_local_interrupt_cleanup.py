@@ -96,6 +96,16 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
+# Bump pytest-timeout for this test: it spawns a real subprocess, injects
+# KeyboardInterrupt via ctypes.PyThreadState_SetAsyncExc, then waits for the
+# worker thread to drain (up to 15s) and the process group to disappear
+# (up to 30s) = 45s worst case.  Under heavy xdist load the cleanup chain
+# (SIGTERM → 3s TimeoutStopSec → SIGKILL → reap) can take the full budget.
+# The default 30s pytest-timeout (set globally in pyproject.toml) is too
+# tight, so we override per-test.  See issue: "sleep-300-survives-SIGTERM
+# regression — flaky on CI shard 2/6" and the prior fix that raised the
+# internal timeouts (commit 889903f0f).
+@pytest.mark.timeout(60)
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""
