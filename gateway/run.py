@@ -3548,6 +3548,7 @@ class GatewayRunner:
                     chat_id,
                     thread_id,
                     chat_type=getattr(source, "chat_type", None) if source is not None else None,
+                    reply_to_message_id=getattr(source, "message_id", None) if source is not None else None,
                     adapter=adapter,
                 )
 
