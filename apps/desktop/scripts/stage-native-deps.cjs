@@ -116,11 +116,27 @@ function matchGlob(rel, pattern) {
 }
 
 function stageOne(spec) {
+  // pnpm doesn't reliably hoist native deps to the workspace root.
+  // Fallback to checking within .pnpm hidden directory.
   if (!fs.existsSync(spec.from)) {
-    throw new Error(
-      `stage-native-deps: source missing at ${spec.from}.  Run \`npm install\` ` +
-        `at the workspace root first.`
-    )
+    const pkgName = path.basename(spec.from);
+    let pnpmSearchPath = null;
+    const pnpmDir = path.join(path.resolve(__dirname, "..", "..", ".."), "node_modules", ".pnpm");
+    if (fs.existsSync(pnpmDir)) {
+      const folders = fs.readdirSync(pnpmDir);
+      const pkgFolder = folders.find(f => f.startsWith(pkgName + "@") || f.startsWith(pkgName.replace('/', '+') + "@"));
+      if (pkgFolder) {
+        pnpmSearchPath = path.join(pnpmDir, pkgFolder, "node_modules", pkgName);
+      }
+    }
+    if (pnpmSearchPath && fs.existsSync(pnpmSearchPath)) {
+        spec.from = pnpmSearchPath;
+    } else {
+        throw new Error(
+          `stage-native-deps: source missing at ${spec.from}.  Run \`npm install\` ` +
+            `at the workspace root first.`
+        )
+    }
   }
   rmrf(spec.to)
   ensureDir(spec.to)

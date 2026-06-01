@@ -373,7 +373,7 @@ def extract_unified_index_skills():
             "tags": tags,
             "platforms": [],
             "author": author,
-            "version": "",
+            "version": "1.0.0",
             "license": "",
             "envVars": [],
             "commands": [],
@@ -423,7 +423,7 @@ def extract_legacy_cache_skills():
                     "tags": agent.get("meta", {}).get("tags", []),
                     "platforms": [],
                     "author": agent.get("author", ""),
-                    "version": "",
+                    "version": "1.0.0",
                 })
             continue
 
@@ -442,7 +442,7 @@ def extract_legacy_cache_skills():
                     "tags": entry.get("tags", []),
                     "platforms": [],
                     "author": "",
-                    "version": "",
+                    "version": "1.0.0",
                 })
 
     for s in skills:

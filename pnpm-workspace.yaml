@@ -1,0 +1,17 @@
+packages:
+  - "apps/*"
+  - "ui-tui"
+  - "ui-tui/packages/*"
+  - "web"
+  - "website"
+
+onlyBuiltDependencies:
+  - esbuild
+  - node-pty
+  - baileys
+  - electron
+  - electron-winstaller
+  - core-js
+  - core-js-pure
+  - unicode-animations
+  - agent-browser
