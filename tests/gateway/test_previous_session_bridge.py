@@ -136,6 +136,29 @@ def test_gateway_config_round_trip_preserves_bridge_settings():
     assert restored.previous_session_bridge.max_chars == 8000
 
 
+def test_config_yaml_previous_session_bridge_mapping(tmp_path, monkeypatch):
+    """config.yaml -> GatewayConfig.previous_session_bridge round-trips."""
+    import yaml
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    config_yaml = hermes_home / "config.yaml"
+    config_yaml.write_text(yaml.safe_dump({
+        "previous_session_bridge": {
+            "enabled": False,
+            "max_exchanges": 7,
+            "max_chars": 1234,
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    cfg = load_gateway_config()
+    assert cfg.previous_session_bridge.enabled is False
+    assert cfg.previous_session_bridge.max_exchanges == 7
+    assert cfg.previous_session_bridge.max_chars == 1234
+
+
 # ---------------------------------------------------------------------------
 # Task 4: render_previous_session_tail
 # ---------------------------------------------------------------------------

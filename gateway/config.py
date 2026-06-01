@@ -784,6 +784,10 @@ def load_gateway_config() -> GatewayConfig:
             if sr and isinstance(sr, dict):
                 gw_data["default_reset_policy"] = sr
 
+            psb = yaml_cfg.get("previous_session_bridge")
+            if isinstance(psb, dict):
+                gw_data["previous_session_bridge"] = psb
+
             qc = yaml_cfg.get("quick_commands")
             if qc is not None:
                 if isinstance(qc, dict):
