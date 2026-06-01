@@ -99,6 +99,22 @@ class TestSlashCommands:
         runner.request_restart.assert_called_once_with(detached=False, via_service=True)
 
     @pytest.mark.asyncio
+    async def test_plaintext_restart_gateway_routes_to_launchd_service_restart(self, adapter, runner, platform, monkeypatch):
+        if platform != Platform.TELEGRAM:
+            pytest.skip("Plaintext restart shortcut is intentionally DM/Telegram-focused")
+
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+        runner.request_restart = MagicMock(return_value=True)
+
+        send = await send_and_capture(adapter, "restart gateway", platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert "restart" in response_text.lower() or "draining" in response_text.lower()
+        runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+    @pytest.mark.asyncio
     async def test_plaintext_restart_gateway_in_group_stays_plain_text(self, adapter, runner, platform, monkeypatch):
         if platform != Platform.TELEGRAM:
             pytest.skip("Shortcut scope is only verified for Telegram here")

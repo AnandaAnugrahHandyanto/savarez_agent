@@ -10620,11 +10620,13 @@ class GatewayRunner:
         # Docker/Podman container, use the service restart path: exit with
         # code 75 so the service manager / container restart policy restarts
         # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
+        # under systemd (KillMode=mixed kills the cgroup), launchd (the job is
+        # already supervised; a clean exit is not a restart signal), or Docker
+        # (tini exits when the gateway dies, taking the detached helper with it).
         _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        _launchd_service = os.environ.get("XPC_SERVICE_NAME", "").startswith("ai.hermes.gateway")
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        if _under_service or _launchd_service or _in_container:
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)
