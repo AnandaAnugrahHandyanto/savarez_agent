@@ -1,5 +1,7 @@
 from pathlib import Path
+import importlib.util
 import tomllib
+from unittest.mock import patch
 
 import pytest
 
@@ -12,6 +14,16 @@ find_packages = pytest.importorskip("setuptools", exc_type=ImportError).find_pac
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_setup_module():
+    spec = importlib.util.spec_from_file_location(
+        "hermes_setup_for_tests", REPO_ROOT / "setup.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    with patch("setuptools.setup"):
+        spec.loader.exec_module(module)
+    return module
 
 
 def _packages_find_include():
@@ -76,6 +88,13 @@ def test_manifest_includes_bundled_skills():
 
     assert "graft skills" in manifest
     assert "graft optional-skills" in manifest
+
+
+def test_setup_data_file_tree_tolerates_missing_roots(tmp_path, monkeypatch):
+    setup_module = _load_setup_module()
+    monkeypatch.setattr(setup_module, "REPO_ROOT", tmp_path)
+
+    assert setup_module._data_file_tree("optional-skills") == []
 
 
 def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
