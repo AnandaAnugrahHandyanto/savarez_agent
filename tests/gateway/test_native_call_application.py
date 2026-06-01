@@ -8,6 +8,7 @@ import pytest
 from gateway.calls.native.application import NativeCallApplication
 from gateway.calls.native.ports import (
     NativeCallInvitation,
+    NativeMediaAnswer,
     NativeMediaOffer,
     NativeMediaStartRequest,
     NativeMediaStartResult,
@@ -25,18 +26,38 @@ def _source(chat_type="dm"):
 
 @dataclass
 class FakeSignaling:
+    invitations: list[tuple[str, str, bool]] = field(default_factory=list)
     offers: list[tuple[str, NativeMediaOffer]] = field(default_factory=list)
+    answers: list[tuple[str, NativeMediaAnswer]] = field(default_factory=list)
     statuses: list[tuple[str, str]] = field(default_factory=list)
     rejected: list[str] = field(default_factory=list)
     ended: list[str] = field(default_factory=list)
+    fail_invitation: bool = False
     fail_offer: bool = False
+    fail_answer: bool = False
     fail_status: bool = False
     fail_reject: bool = False
+
+    async def send_invitation(
+        self,
+        contact_id: str,
+        *,
+        media: str = "audio",
+        encrypted: bool = True,
+    ) -> None:
+        if self.fail_invitation:
+            raise RuntimeError("invitation transport failed")
+        self.invitations.append((contact_id, media, encrypted))
 
     async def send_offer(self, contact_id: str, offer: NativeMediaOffer) -> None:
         if self.fail_offer:
             raise RuntimeError("offer transport failed")
         self.offers.append((contact_id, offer))
+
+    async def send_answer(self, contact_id: str, answer: NativeMediaAnswer) -> None:
+        if self.fail_answer:
+            raise RuntimeError("answer transport failed")
+        self.answers.append((contact_id, answer))
 
     async def send_status(self, contact_id: str, status: str) -> None:
         if self.fail_status:
@@ -184,6 +205,29 @@ async def test_incoming_native_call_sends_offer_and_connecting_status():
     assert media.requests[0].contact_id == "42"
     assert signaling.offers == [("42", offer)]
     assert signaling.statuses == [("42", "connecting")]
+
+
+@pytest.mark.asyncio
+async def test_outbound_native_call_sends_invitation_without_starting_media():
+    offer = NativeMediaOffer(
+        rtc_session="compressed-offer",
+        rtc_ice_candidates="compressed-ice",
+        capabilities={"encryption": False},
+    )
+    signaling = FakeSignaling()
+    media = FakeMedia(NativeMediaStartResult(ok=True, offer=offer))
+    app = NativeCallApplication(signaling=signaling, media=media, is_authorized=lambda _s: True)
+
+    result = await app.start_outbound_call(_source(), contact_id="42")
+
+    assert result.ok is True
+    assert result.code == "call_simplex_native_outbound_invited"
+    assert result.call_id.startswith("call_")
+    assert media.requests == []
+    assert signaling.invitations == [("42", "audio", True)]
+    assert signaling.offers == []
+    assert signaling.statuses == []
+    assert signaling.rejected == []
 
 
 @pytest.mark.asyncio
