@@ -11661,10 +11661,29 @@ class GatewayRunner:
 
         # Reset stored token count — transcript was truncated.
         session_entry.last_prompt_tokens = 0
-        # Evict the cached agent so the next turn rebuilds from the active-only
-        # transcript and memory providers refresh their per-session caches.
+        # Notify memory providers before evicting so their per-turn document
+        # caches invalidate — mirrors CLI /undo (cli.py). Same
+        # on_session_switch hook /branch uses, with rewound=True (#6672/#21910).
         try:
             session_key = build_session_key(source)
+            _old_agent = None
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            if _cache_lock is not None:
+                with _cache_lock:
+                    _cached = self._agent_cache.get(session_key)
+                    _old_agent = _cached[0] if isinstance(_cached, tuple) else (_cached or None)
+            if _old_agent is not None:
+                _mm = getattr(_old_agent, "_memory_manager", None)
+                if _mm is not None:
+                    try:
+                        _mm.on_session_switch(
+                            session_entry.session_id,
+                            parent_session_id="",
+                            reset=False,
+                            rewound=True,
+                        )
+                    except Exception:
+                        pass
             self._evict_cached_agent(session_key)
         except Exception as e:
             logger.debug("undo: cached-agent eviction skipped: %s", e)
