@@ -22,7 +22,7 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-POSTHOG_API_KEY = "phc_hgJkUVJFYtmaJqrvf6CYN67TIQ8yhXAkWzUn9AMU4yX"
+POSTHOG_API_KEY = os.environ.get("MEM0_POSTHOG_KEY", "phc_hgJkUVJFYtmaJqrvf6CYN67TIQ8yhXAkWzUn9AMU4yX")
 POSTHOG_HOST = "https://us.i.posthog.com/i/v0/e/"
 
 FLUSH_INTERVAL_SECS = 5.0
@@ -45,6 +45,11 @@ def _is_telemetry_enabled() -> bool:
     val = os.environ.get("MEM0_TELEMETRY", "true").lower()
     _telemetry_enabled = val not in ("false", "0", "no")
     return _telemetry_enabled
+
+
+def _is_oss_mode(mode: str) -> bool:
+    """True when the underlying mem0 SDK already reports its own PostHog events."""
+    return mode == "oss"
 
 
 def _get_sample_rate() -> float:
@@ -107,12 +112,18 @@ def _schedule_flush() -> None:
     _flush_timer.start()
 
 
+def _flush_async() -> None:
+    """Best-effort flush in a daemon thread — never blocks process exit."""
+    t = threading.Thread(target=_flush, daemon=True)
+    t.start()
+
+
 def _ensure_exit_handler() -> None:
     global _exit_handler_installed
     if _exit_handler_installed:
         return
     _exit_handler_installed = True
-    atexit.register(_flush)
+    atexit.register(_flush_async)
 
 
 def capture_event(
@@ -126,6 +137,8 @@ def capture_event(
 
     try:
         is_lifecycle = event_name in _LIFECYCLE_EVENTS
+        if not is_lifecycle and _is_oss_mode(mode):
+            return
         sample_rate = _get_sample_rate()
 
         if not is_lifecycle and random.random() >= sample_rate:
