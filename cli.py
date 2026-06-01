@@ -4919,8 +4919,8 @@ class HermesCLI:
                         file=sys.stderr,
                     )
                 else:
-                    _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
-                    _cprint(f"{_DIM}Use a session ID from a previous CLI run (hermes sessions list).{_RST}")
+                    print(f"Session not found: {self.session_id}")
+                    print("Use a session ID from a previous CLI run (hermes sessions list).")
                 return False
             # If the requested session is the (empty) head of a compression
             # chain, walk to the descendant that actually holds the messages.

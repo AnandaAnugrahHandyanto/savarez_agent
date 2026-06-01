@@ -38,6 +38,30 @@ def test_find_git_worktree_finds_dotgit(tmp_path: Path):
     assert find_git_worktree(str(sub)) == str(repo)
 
 
+def test_find_git_worktree_ignores_broad_temp_root_but_allows_nested_repo(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """A broad temp root must not make every scratch file LSP-owned."""
+    monkeypatch.setattr(
+        "agent.lsp.workspace._IGNORED_WORKSPACE_ROOTS",
+        {str(tmp_path)},
+    )
+    (tmp_path / ".git").mkdir()
+
+    scratch = tmp_path / "scratch" / "file.py"
+    scratch.parent.mkdir()
+    scratch.write_text("")
+    assert find_git_worktree(str(scratch)) is None
+
+    repo = tmp_path / "repo"
+    nested = repo / "pkg" / "file.py"
+    (repo / ".git").mkdir(parents=True)
+    nested.parent.mkdir(parents=True)
+    nested.write_text("")
+    assert find_git_worktree(str(nested)) == str(repo)
+
+
 def test_find_git_worktree_handles_dotgit_file(tmp_path: Path):
     """``.git`` can also be a file (gitfile pointing into a worktree)."""
     repo = tmp_path / "repo"

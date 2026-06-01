@@ -62,10 +62,14 @@ def _write_config(home: str, text: str) -> None:
 
 def _fresh_modules():
     """Drop cached hermes modules so each test reloads against current env."""
+    aux = sys.modules.get("agent.auxiliary_client")
+    if aux is not None and hasattr(aux, "_reset_aux_unhealthy_cache"):
+        aux._reset_aux_unhealthy_cache()
     for mod in list(sys.modules.keys()):
-        if mod.startswith(("agent.auxiliary_client", "agent.image_routing",
+        if mod.startswith(("agent.auxiliary_client", "agent.anthropic_adapter",
+                           "agent.image_routing", "agent.models_dev",
                            "tools.vision_tools", "tools.browser_tool",
-                           "hermes_cli.config")):
+                           "hermes_cli.auth", "hermes_cli.config")):
             del sys.modules[mod]
 
 

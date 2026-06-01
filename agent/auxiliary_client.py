@@ -295,11 +295,16 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
 # it must skip straight to the aggregator chain instead of returning a client
 # that will 404 on every vision request.
 #
+# deepseek: the direct DeepSeek API is text-only for chat/reasoning models.
+# Users can still opt into a separate multimodal backend via
+# ``auxiliary.vision``.
+#
 # kimi-coding / kimi-coding-cn: the Kimi Coding Plan routes through
 # api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
 # describe as having no image_in capability. Vision lives on the separate
 # Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
+    "deepseek",
     "kimi-coding",
     "kimi-coding-cn",
 })
@@ -1505,8 +1510,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     pool_present, entry = _select_pool_entry("openrouter")
+    env_key = os.getenv("OPENROUTER_API_KEY")
     if pool_present:
-        or_key = explicit_api_key or _pool_runtime_api_key(entry)
+        or_key = explicit_api_key or _pool_runtime_api_key(entry) or env_key
         if not or_key:
             _mark_provider_unhealthy("openrouter", ttl=60)
             return None, None
@@ -1515,7 +1521,7 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
         return OpenAI(api_key=or_key, base_url=base_url,
                        default_headers=build_or_headers()), model or _OPENROUTER_MODEL
 
-    or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
+    or_key = explicit_api_key or env_key
     if not or_key:
         _mark_provider_unhealthy("openrouter", ttl=60)
         return None, None

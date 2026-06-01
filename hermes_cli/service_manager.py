@@ -416,13 +416,10 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     EEXIST handling in s6-supervise has been stable since 2015 — it's
     the same pattern ``s6-svperms`` and ``fix-attrs.d`` rely on.
     """
+    import errno
     import os
 
-    def _mkdir_owned(path: Path, mode: int) -> None:
-        if path.exists():
-            return
-        path.mkdir(parents=False, exist_ok=False)
-        path.chmod(mode)
+    def _chown_hermes(path: Path) -> None:
         try:
             os.chown(path, _HERMES_UID, _HERMES_GID)
         except PermissionError:
@@ -431,6 +428,21 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
             # swallowing this keeps both root and unprivileged callers
             # on one code path.
             pass
+        except OSError as exc:
+            if exc.errno != errno.EINVAL:
+                raise
+            # Some restricted test sandboxes reject chown to an arbitrary
+            # numeric uid/gid with EINVAL instead of EPERM. Treat that like
+            # the unprivileged local-dev path; root/container paths still
+            # chown successfully.
+            pass
+
+    def _mkdir_owned(path: Path, mode: int) -> None:
+        if path.exists():
+            return
+        path.mkdir(parents=False, exist_ok=False)
+        path.chmod(mode)
+        _chown_hermes(path)
 
     # Top-level event/ dir (this is the s6-svlisten1 event-subscription
     # dir at the service root, distinct from supervise/event/).
@@ -453,10 +465,7 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     if not control.exists():
         os.mkfifo(control, 0o660)
         control.chmod(0o660)
-        try:
-            os.chown(control, _HERMES_UID, _HERMES_GID)
-        except PermissionError:
-            pass
+        _chown_hermes(control)
 
     # If a log/ subdir is present (the canonical s6 logger pattern —
     # see servicedir(7)), it gets its own s6-supervise instance and
@@ -473,10 +482,7 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
         if not log_control.exists():
             os.mkfifo(log_control, 0o660)
             log_control.chmod(0o660)
-            try:
-                os.chown(log_control, _HERMES_UID, _HERMES_GID)
-            except PermissionError:
-                pass
+            _chown_hermes(log_control)
 
 
 class S6Error(RuntimeError):

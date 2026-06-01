@@ -233,25 +233,43 @@ class TestWebSearchUsesSearchBackend:
 
     def test_search_tool_calls_search_backend(self, monkeypatch):
         from tools import web_tools
+        from agent import web_search_registry
 
         called_with = []
         original_get_search = web_tools._get_search_backend
+
+        class FakeSearchProvider:
+            name = "firecrawl"
+
+            def supports_search(self):
+                return True
+
+            def search(self, query, limit):
+                return {
+                    "success": True,
+                    "data": {
+                        "web": [{
+                            "title": query,
+                            "url": "https://example.test/",
+                            "description": "fake",
+                            "position": 1,
+                        }],
+                    },
+                }
 
         def tracking_get_search():
             result = original_get_search()
             called_with.append(("search", result))
             return result
 
+        fake_provider = FakeSearchProvider()
         monkeypatch.setattr(web_tools, "_get_search_backend", tracking_get_search)
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_search_registry, "get_provider", lambda name: fake_provider)
+        monkeypatch.setattr(web_search_registry, "get_active_search_provider", lambda: fake_provider)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
-        monkeypatch.setenv("FIRECRAWL_API_KEY", "fake")
 
-        # The function will fail at Firecrawl client level but we just
-        # need to verify _get_search_backend was called
-        try:
-            web_tools.web_search_tool("test", 1)
-        except Exception:
-            pass
+        web_tools.web_search_tool("test", 1)
 
         assert len(called_with) > 0
         assert called_with[0][0] == "search"
@@ -491,4 +509,3 @@ class TestDispatchersTriggerPluginDiscovery:
             assert web_search_registry.get_provider("brave-free") is not None
         finally:
             restore()
-

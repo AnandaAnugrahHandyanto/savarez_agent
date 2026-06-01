@@ -993,11 +993,17 @@ def check_vision_requirements() -> bool:
         _provider, client, _model = resolve_vision_provider_client()
         if client is not None:
             return True
-        # Same fallback to "auto" that call_llm performs when the configured
-        # provider can't be resolved.
+    except Exception:
+        logger.debug("vision requirements: configured provider check failed", exc_info=True)
+
+    # Same fallback to "auto" that call_llm performs when the configured
+    # provider can't be resolved. Keep it isolated from the configured-provider
+    # attempt so a bad explicit override cannot hide an available auto backend.
+    try:
         _provider, client, _model = resolve_vision_provider_client(provider="auto")
         return client is not None
     except Exception:
+        logger.debug("vision requirements: auto provider check failed", exc_info=True)
         return False
 
 

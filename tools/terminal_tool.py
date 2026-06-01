@@ -203,12 +203,15 @@ def set_approval_callback(cb):
 
 def _get_sudo_password_cache_scope() -> str:
     """Return the cache scope for interactive sudo passwords."""
+    env_session_key = os.getenv("HERMES_SESSION_KEY", "")
     try:
         from gateway.session_context import get_session_env
 
         session_key = get_session_env("HERMES_SESSION_KEY", "")
     except Exception:
-        session_key = os.getenv("HERMES_SESSION_KEY", "")
+        session_key = env_session_key
+    if env_session_key and env_session_key != session_key:
+        session_key = env_session_key
     if session_key:
         return f"session:{session_key}"
 

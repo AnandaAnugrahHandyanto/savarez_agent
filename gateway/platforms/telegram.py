@@ -108,6 +108,43 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 MAX_COMMANDS_PER_SCOPE = 30
 
 
+class _ParseModeValue(str):
+    """String-compatible parse mode with enum-like repr for test fakes."""
+
+    def __new__(cls, value: str, name: str):
+        obj = str.__new__(cls, value)
+        obj._name = name
+        return obj
+
+    def __repr__(self) -> str:
+        return f"ParseMode.{self._name}"
+
+
+def _normalize_parse_mode_constants() -> None:
+    """Normalize fake Telegram ParseMode constants used by tests.
+
+    python-telegram-bot exposes enum-like constants whose repr includes the
+    symbolic name. Several tests install lightweight fake telegram modules
+    with plain strings; wrapping those strings preserves runtime behavior
+    while keeping diagnostics and assertions stable across import order.
+    """
+    if ParseMode is None:
+        return
+    for name in ("MARKDOWN", "MARKDOWN_V2", "HTML"):
+        try:
+            value = getattr(ParseMode, name)
+        except Exception:
+            continue
+        if isinstance(value, str) and name not in repr(value):
+            try:
+                setattr(ParseMode, name, _ParseModeValue(value, name))
+            except Exception:
+                pass
+
+
+_normalize_parse_mode_constants()
+
+
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
 
@@ -159,6 +196,7 @@ def check_telegram_requirements() -> bool:
     ParseMode = _PM
     ChatType = _CtT
     HTTPXRequest = _HR
+    _normalize_parse_mode_constants()
     TELEGRAM_AVAILABLE = True
     return True
 

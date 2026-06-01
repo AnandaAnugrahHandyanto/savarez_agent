@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
@@ -39,6 +40,26 @@ def normalize_path(path: str) -> str:
     and we want the canonical path the user typed when possible.
     """
     return os.path.abspath(os.path.expanduser(path))
+
+
+_IGNORED_WORKSPACE_ROOTS = {
+    normalize_path(tempfile.gettempdir()),
+    normalize_path(os.environ.get("TMPDIR", tempfile.gettempdir())),
+    normalize_path("/var/tmp"),
+    normalize_path("/dev/shm"),
+}
+
+
+def _is_ignored_workspace_root(path: Path) -> bool:
+    """Return True for broad temp roots that should not be LSP workspaces.
+
+    Some developer machines intentionally or accidentally have a ``.git``
+    marker directly under a system temp directory. Treating that as a
+    workspace makes every pytest temp file look project-owned and causes LSP
+    daemons to start for unrelated scratch files. Repos nested below those
+    directories still work because their own ``.git`` marker is found first.
+    """
+    return normalize_path(str(path)) in _IGNORED_WORKSPACE_ROOTS
 
 
 def find_git_worktree(start: str) -> Optional[str]:
@@ -72,10 +93,13 @@ def find_git_worktree(start: str) -> Optional[str]:
     for _ in range(64):
         git_marker = cur / ".git"
         try:
-            if git_marker.exists():
+            ignored_workspace_root = _is_ignored_workspace_root(cur)
+            if git_marker.exists() and not ignored_workspace_root:
                 resolved = str(cur)
                 _workspace_cache[str(start_path)] = (resolved, True)
                 return resolved
+            if ignored_workspace_root:
+                break
         except OSError:
             # Permission error on a parent dir — bail out cleanly.
             break
