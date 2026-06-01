@@ -70,6 +70,7 @@ DETECTED_BROWSER_EXECUTABLE=""
 USE_VENV=true
 RUN_SETUP=true
 SKIP_BROWSER=false
+NO_SKILLS=false
 BRANCH="main"
 INSTALL_COMMIT=""
 ENSURE_DEPS=""
@@ -102,6 +103,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-browser|--no-playwright)
             SKIP_BROWSER=true
+            shift
+            ;;
+        --no-skills)
+            NO_SKILLS=true
             shift
             ;;
         --branch|-Branch)
@@ -158,6 +163,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --skip-browser Skip Playwright/Chromium install (browser tools won't work)"
+            echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
+            echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
+            echo "                   'hermes update' runs never inject bundled skills either"
             echo "  --branch NAME  Git branch to install (default: main)"
             echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
             echo "  --manifest     Print desktop bootstrap stage manifest as JSON"
@@ -1767,14 +1775,26 @@ SOUL_EOF
     log_success "Configuration directory ready: ~/.hermes/"
 
     # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
-    log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
-        log_success "Skills synced to ~/.hermes/skills/"
+    if [ "$NO_SKILLS" = true ]; then
+        # Blank-slate install: write the opt-out marker and skip seeding.
+        # skills_sync.py and `hermes update` both honor this marker, so the
+        # default profile stays empty across future updates too.
+        printf '%s\n' \
+            "This profile opted out of bundled-skill seeding (installed with --no-skills)." \
+            "Delete this file to re-enable sync on the next 'hermes update'." \
+            > "$HERMES_HOME/.no-bundled-skills" 2>/dev/null || true
+        log_info "Skipping bundled skills (--no-skills). Wrote $HERMES_HOME/.no-bundled-skills"
+        log_info "  Future 'hermes update' runs will not inject bundled skills. Delete the marker to opt back in."
     else
-        # Fallback: simple directory copy if Python sync fails
-        if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
-            cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
-            log_success "Skills copied to ~/.hermes/skills/"
+        log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
+        if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
+            log_success "Skills synced to ~/.hermes/skills/"
+        else
+            # Fallback: simple directory copy if Python sync fails
+            if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
+                cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
+                log_success "Skills copied to ~/.hermes/skills/"
+            fi
         fi
     fi
 }
@@ -2332,9 +2352,19 @@ postinstall_mode() {
 install_desktop() {
     local desktop_dir="$INSTALL_DIR/apps/desktop"
 
+    # The desktop stage only runs when a build is explicitly requested
+    # (--include-desktop / 'desktop' stage), so a missing toolchain is a hard
+    # failure, not a silent skip — a silent skip yields a "complete" install
+    # with no app and a confusing "couldn't find a built desktop" at launch.
+    # Try the Hermes-managed Node first (check_node adds $HERMES_HOME/node/bin
+    # to PATH or installs it) before giving up.
     if ! command -v npm >/dev/null 2>&1; then
-        log_warn "Skipping desktop build (Node.js / npm not on PATH)"
-        return 0
+        check_node
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+        log_error "Cannot build desktop app: Node.js / npm unavailable"
+        log_info "Install Node.js and retry: cd $desktop_dir && npm run pack"
+        return 1
     fi
     if [ ! -f "$desktop_dir/package.json" ]; then
         log_warn "Skipping desktop build (apps/desktop not present in checkout)"
@@ -2379,6 +2409,18 @@ install_desktop() {
         return 1
     fi
     log_success "Desktop app built: $app"
+
+    # macOS: make the locally-built (ad-hoc) app relaunchable after an in-place
+    # self-update. An ad-hoc bundle has no stable Designated Requirement, so a
+    # later in-place rebuild (new cdhash) plus the inherited quarantine flag
+    # trips Gatekeeper's tamper check ("Hermes is damaged and can't be opened").
+    # Strip quarantine + re-apply a clean deep ad-hoc signature (no
+    # hardened-runtime flag, which an ad-hoc build can't satisfy). Skipped when a
+    # real signing identity is configured so a signed build isn't clobbered.
+    if [ "$OS" = "macos" ] && [ -z "${CSC_LINK:-}" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && command -v codesign >/dev/null 2>&1; then
+        xattr -cr "$app" 2>/dev/null || true
+        codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+    fi
 
     # `npm install` + `npm run pack` rewrite lockfiles; restore them so the
     # checkout stays clean for the next `hermes update`.
@@ -2472,6 +2514,11 @@ run_stage_body() {
             detect_os
             resolve_install_layout
             require_install_dir
+            # Each stage runs in its own process, so the Hermes-managed Node
+            # provisioned during prerequisites/node-deps (at $HERMES_HOME/node/bin)
+            # isn't on PATH here. check_node re-adds it (or installs if missing)
+            # so install_desktop can find npm instead of silently skipping.
+            check_node
             install_desktop
             ;;
         complete)
