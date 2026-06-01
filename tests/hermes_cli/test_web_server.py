@@ -2885,59 +2885,61 @@ class TestPtyWebSocket:
         from urllib.parse import urlencode
         from hermes_cli import web_server as ws_mod
 
-        qs = urlencode({"token": self.token, "channel": "broadcast-test"})
-        pub_path = f"/api/pub?{qs}"
-        sub_path = f"/api/events?{qs}"
+        # Enter the TestClient so every websocket_connect below shares ONE
+        # portal/event-loop (matching the single-loop server). Without this,
+        # each websocket_connect spins its own loop, so _broadcast_event awaits
+        # the subscriber's send_text() across loops; under load that cross-loop
+        # send raises, is swallowed by _broadcast_event's except, and the frame
+        # is dropped — the source of this test's intermittent 10s timeout.
+        with self.client:
+            qs = urlencode({"token": self.token, "channel": "broadcast-test"})
+            pub_path = f"/api/pub?{qs}"
+            sub_path = f"/api/events?{qs}"
 
-        with self.client.websocket_connect(sub_path) as sub:
-            # Wait for the subscriber to be registered on the server side.
-            # websocket_connect returns when ws.accept() completes, but the
-            # server adds us to ``_event_channels`` in a follow-up await,
-            # so a publish immediately after connect can race ahead of the
-            # subscriber registration and the message is dropped.
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline:
-                if ws_mod._event_channels.get("broadcast-test"):
-                    break
-                time.sleep(0.01)
-            else:
-                raise AssertionError(
-                    "subscriber did not register on channel within 5s"
-                )
-
-            with self.client.websocket_connect(pub_path) as pub:
-                pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
-                # Yield control so the server-side broadcast handler can
-                # process the frame.  TestClient runs the ASGI app in a
-                # background thread; a small sleep gives that thread time
-                # to call _broadcast_event before we start blocking on
-                # receive_text().  Without this, under heavy CI load the
-                # receive can race the broadcast and hang until
-                # pytest-timeout kills us.
-                import queue, threading
-                recv_q: queue.Queue = queue.Queue()
-
-                def _recv():
-                    try:
-                        recv_q.put(sub.receive_text())
-                    except Exception as exc:
-                        recv_q.put(exc)
-
-                t = threading.Thread(target=_recv, daemon=True)
-                t.start()
-                try:
-                    received = recv_q.get(timeout=10.0)
-                except queue.Empty:
+            with self.client.websocket_connect(sub_path) as sub:
+                # Wait for the subscriber to be registered on the server side.
+                # websocket_connect returns when ws.accept() completes, but the
+                # server adds us to ``_event_channels`` in a follow-up await,
+                # so a publish immediately after connect can race ahead of the
+                # subscriber registration and the message is dropped.
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline:
+                    if ws_mod._event_channels.get("broadcast-test"):
+                        break
+                    time.sleep(0.01)
+                else:
                     raise AssertionError(
-                        "broadcast not received within 10s — server likely "
-                        "dropped the frame silently (see _broadcast_event "
-                        "except Exception: pass)"
+                        "subscriber did not register on channel within 5s"
                     )
-                if isinstance(received, Exception):
-                    raise received
 
-        assert "tool.start" in received
-        assert '"tool_id":"t1"' in received
+                with self.client.websocket_connect(pub_path) as pub:
+                    pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
+                    # Read the broadcast on a background thread so an ordering
+                    # race can't deadlock the portal: the publish frame may be
+                    # fanned out before this thread blocks on receive_text().
+                    import queue, threading
+                    recv_q: queue.Queue = queue.Queue()
+
+                    def _recv():
+                        try:
+                            recv_q.put(sub.receive_text())
+                        except Exception as exc:
+                            recv_q.put(exc)
+
+                    t = threading.Thread(target=_recv, daemon=True)
+                    t.start()
+                    try:
+                        received = recv_q.get(timeout=10.0)
+                    except queue.Empty:
+                        raise AssertionError(
+                            "broadcast not received within 10s on the shared "
+                            "event loop (see _broadcast_event)"
+                        )
+                    if isinstance(received, Exception):
+                        raise received
+
+            assert "tool.start" in received
+            assert '"tool_id":"t1"' in received
 
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect
