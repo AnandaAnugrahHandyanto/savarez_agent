@@ -432,12 +432,28 @@ def load_jobs() -> List[Dict[str, Any]]:
     try:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
+            if isinstance(data, list):
+                save_jobs(data)
+                logger.warning("Auto-repaired jobs.json (top-level was a list)")
+                return data
+            if not isinstance(data, dict):
+                raise RuntimeError(
+                    f"Cron database corrupted: top-level is {type(data).__name__}, expected object"
+                )
             return data.get("jobs", [])
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
+                if isinstance(data, list):
+                    save_jobs(data)
+                    logger.warning("Auto-repaired jobs.json (top-level was a list)")
+                    return data
+                if not isinstance(data, dict):
+                    raise RuntimeError(
+                        f"Cron database corrupted: top-level is {type(data).__name__}, expected object"
+                    )
                 jobs = data.get("jobs", [])
                 if jobs:
                     # Auto-repair: rewrite with proper escaping
