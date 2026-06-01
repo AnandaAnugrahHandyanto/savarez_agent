@@ -123,6 +123,26 @@ class TestSanitizeId:
         assert mgr._sanitize_id("abc123_XYZ-789") == "abc123_XYZ-789"
 
 
+class TestDialecticQueryErrors:
+    def test_exception_returns_honcho_error_marker(self):
+        mgr = HonchoSessionManager()
+        session = HonchoSession(
+            key="test",
+            user_peer_id="user",
+            assistant_peer_id="ai",
+            honcho_session_id="sess-1",
+        )
+        mgr._cache["test"] = session
+
+        mock_peer = MagicMock()
+        mock_peer.chat.side_effect = TimeoutError("Request timed out after 30.0s")
+        mgr._get_or_create_peer = MagicMock(return_value=mock_peer)
+        mgr._resolve_peer_id = MagicMock(return_value="user")
+
+        result = mgr.dialectic_query("test", "what do you know?")
+        assert result == "[honcho_error: TimeoutError]"
+
+
 # ---------------------------------------------------------------------------
 # HonchoSessionManager._format_migration_transcript
 # ---------------------------------------------------------------------------
