@@ -24,6 +24,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -160,16 +161,165 @@ class VoiceToolRequest(BaseModel):
     arguments: Dict[str, Any] = {}
 
 
-def _create_openai_realtime_session(user: str | None = None) -> Dict[str, Any]:
-    """Create an ephemeral OpenAI Realtime session for the dashboard voice UI."""
+class VoiceTranscriptEvent(BaseModel):
+    call_id: str
+    role: str
+    text: str
+    event_type: str = "transcript"
+    user: Optional[str] = None
+    timestamp: Optional[str] = None
+
+
+def _voice_api_key() -> str:
     api_key = os.getenv("OPENAI_API_KEY") or os.getenv("VOICE_TOOLS_OPENAI_KEY")
     if not api_key:
         raise HTTPException(status_code=503, detail="OpenAI voice credentials are not configured")
-    model = os.getenv("HERMES_VOICE_REALTIME_MODEL", "gpt-realtime")
-    voice = os.getenv("HERMES_VOICE_REALTIME_VOICE", "alloy")
-    body = json.dumps({"model": model, "voice": voice}).encode()
+    return api_key
+
+
+def _voice_speaker_label(user: str | None = None) -> str:
+    value = (user or "").strip()
+    return value or "unknown dashboard user"
+
+
+def _voice_user_from_request(request: Request) -> str | None:
+    sess = getattr(request.state, "session", None)
+    if sess is not None:
+        return getattr(sess, "display_name", None) or getattr(sess, "email", None) or getattr(sess, "user_id", None)
+    return request.headers.get("X-Rolly-User") or request.headers.get("X-Hermes-User")
+
+
+def _voice_auth_context(request: Request) -> str | None:
+    """Return authenticated/claimed dashboard user for voice attribution.
+
+    Gated dashboard sessions attach ``request.state.session``. Loopback / Tailscale
+    dashboard pages are honor-system and pass ``X-Rolly-User`` from the SPA.
+    """
+    return _voice_user_from_request(request)
+
+
+def _voice_transcript_path(call_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", call_id).strip("._") or "unknown-call"
+    root = Path(get_hermes_home()) / "voice-transcripts"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{safe}.jsonl"
+
+
+def _save_voice_transcript_event(event: VoiceTranscriptEvent, request: Request) -> Path:
+    user = event.user or _voice_auth_context(request) or "unknown dashboard user"
+    record = {
+        "timestamp": event.timestamp or datetime.now(timezone.utc).isoformat(),
+        "call_id": event.call_id,
+        "user": user,
+        "role": event.role,
+        "event_type": event.event_type,
+        "text": event.text,
+    }
+    path = _voice_transcript_path(event.call_id)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return path
+
+
+def _voice_session_config(user: str | None = None) -> Dict[str, Any]:
+    model = os.getenv("HERMES_VOICE_REALTIME_MODEL", "gpt-realtime-2")
+    voice = os.getenv("HERMES_VOICE_REALTIME_VOICE", "cedar")
+    speaker = _voice_speaker_label(user)
+    return {
+        "type": "realtime",
+        "model": model,
+        "instructions": (
+            "You are Rolly, the concise AI ops and dev colleague for MIX/Suelio. "
+            f"You are speaking with dashboard user: {speaker}. Use that identity for context and attribution. "
+            "This is a live phone-call style conversation: speak naturally, briefly, and do not mention implementation details. "
+            "You have no useful long-term/project context inside the realtime model itself. "
+            "When the user asks about Rolly state, past work, files, code, web/current facts, or wants an action, call the rolly tool with a short exact request. "
+            "Summarize tool results conversationally and ask at most one brief follow-up."
+        ),
+        "tools": [
+            {
+                "type": "function",
+                "name": "rolly",
+                "description": "Ask full Rolly/Hermes to use its normal context and tools for research, memory/session lookup, files, code, or actions. Use this whenever local realtime context is insufficient.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "request": {
+                            "type": "string",
+                            "description": "The concise task or question for full Rolly, preserving user wording when important.",
+                        }
+                    },
+                    "required": ["request"],
+                    "additionalProperties": False,
+                },
+            }
+        ],
+        "tool_choice": "auto",
+        "audio": {
+            "input": {
+                "transcription": {"model": "gpt-4o-mini-transcribe"},
+                "noise_reduction": {"type": "near_field"},
+                "turn_detection": {
+                    # Phone-call behavior: let the Realtime API decide when the
+                    # user has semantically finished speaking, then immediately
+                    # generate a spoken response and allow barge-in interrupts.
+                    "type": "semantic_vad",
+                    "create_response": True,
+                    "interrupt_response": True,
+                },
+            },
+            "output": {"voice": voice},
+        },
+    }
+
+
+def _create_openai_realtime_call(sdp: str, user: str | None = None) -> str:
+    """Create an OpenAI Realtime WebRTC call and return answer SDP."""
+    api_key = _voice_api_key()
+    boundary = f"----hermes-realtime-{uuid.uuid4().hex}"
+
+    def part(name: str, value: str, content_type: str | None = None) -> bytes:
+        headers = [f'--{boundary}', f'Content-Disposition: form-data; name="{name}"']
+        if content_type:
+            headers.append(f"Content-Type: {content_type}")
+        return ("\r\n".join(headers) + "\r\n\r\n" + value + "\r\n").encode("utf-8")
+
+    body = b"".join(
+        [
+            part("sdp", sdp, "application/sdp"),
+            part("session", json.dumps(_voice_session_config(user=user)), "application/json"),
+            f"--{boundary}--\r\n".encode("utf-8"),
+        ]
+    )
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+    }
+    if user:
+        headers["OpenAI-Safety-Identifier"] = user
     req = urllib.request.Request(
-        "https://api.openai.com/v1/realtime/sessions",
+        "https://api.openai.com/v1/realtime/calls",
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "ignore")[:800]
+        raise HTTPException(status_code=502, detail=f"Failed to create voice call: {exc.code} {detail}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to create voice call: {exc}") from exc
+
+
+def _create_openai_realtime_session(user: str | None = None) -> Dict[str, Any]:
+    """Create an ephemeral OpenAI Realtime session for legacy dashboard voice UI."""
+    api_key = _voice_api_key()
+    session = _voice_session_config(user=user)
+    body = json.dumps({"session": session}).encode()
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/realtime/client_secrets",
         data=body,
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -186,29 +336,62 @@ def _create_openai_realtime_session(user: str | None = None) -> Dict[str, Any]:
 
 
 def _run_voice_research(question: str, user: str | None = None) -> str:
-    """Bridge a constrained voice tool call into the existing agent runtime."""
-    from run_agent import AIAgent
-
-    agent = AIAgent(platform="dashboard", enabled_toolsets=["web", "session_search"])
-    return agent.chat(question)
+    """Bridge a voice tool call into the CLI-first Rolly runtime."""
+    speaker = _voice_speaker_label(user)
+    prompt = (
+        f"Dashboard voice user: {speaker}\n\n"
+        "You are answering a live voice call through Rolly Voice. Use normal Rolly context/tools. "
+        "Keep the final answer brief and spoken-conversation friendly.\n\n"
+        f"User request: {question}"
+    )
+    env = os.environ.copy()
+    env.setdefault("HERMES_HOME", str(get_hermes_home()))
+    proc = subprocess.run(
+        ["hermes", "chat", "-q", prompt, "--source", "dashboard-voice", "-Q"],
+        cwd=str(PROJECT_ROOT),
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=int(os.getenv("HERMES_VOICE_TOOL_TIMEOUT", "90")),
+    )
+    output = (proc.stdout or "").strip()
+    if proc.returncode != 0:
+        detail = (proc.stderr or output or f"exit {proc.returncode}").strip()
+        raise RuntimeError(f"Rolly CLI tool failed: {detail[:700]}")
+    # ``hermes chat -q`` prints a session_id line before the final answer.
+    lines = [line for line in output.splitlines() if not line.startswith("session_id:")]
+    return "\n".join(lines).strip() or output
 
 
 @app.post("/api/voice/session")
 async def create_voice_session(request: Request):
-    _require_token(request)
-    return _create_openai_realtime_session(user=request.headers.get("X-Hermes-User"))
+    return _create_openai_realtime_session(user=_voice_auth_context(request))
+
+
+@app.post("/api/voice/call")
+async def create_voice_call(request: Request):
+    sdp = (await request.body()).decode("utf-8", "ignore")
+    if not sdp.strip():
+        raise HTTPException(status_code=400, detail="Missing SDP offer")
+    answer = _create_openai_realtime_call(sdp, user=_voice_auth_context(request))
+    return Response(content=answer, media_type="application/sdp")
 
 
 @app.post("/api/voice/tool")
 async def run_voice_tool(payload: VoiceToolRequest, request: Request):
-    _require_token(request)
-    if payload.name != "research":
+    if payload.name not in {"research", "rolly"}:
         raise HTTPException(status_code=400, detail="Unsupported voice tool")
-    question = str(payload.arguments.get("question") or "").strip()
+    question = str(payload.arguments.get("request") or payload.arguments.get("question") or "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="Missing question")
-    result = _run_voice_research(question, user=request.headers.get("X-Hermes-User"))
+    result = _run_voice_research(question, user=_voice_auth_context(request))
     return {"ok": True, "result": result, "error": None}
+
+
+@app.post("/api/voice/transcript")
+async def save_voice_transcript(payload: VoiceTranscriptEvent, request: Request):
+    path = _save_voice_transcript_event(payload, request)
+    return {"ok": True, "path": str(path)}
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks
@@ -238,12 +421,29 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
     return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
 
 
+def _host_header_name(host_header: str) -> str:
+    """Normalize a Host/Origin netloc to a bare lowercase host name."""
+    h = host_header.strip()
+    if h.startswith("["):
+        close = h.find("]")
+        if close != -1:
+            return h[1:close].lower()
+        return h.strip("[]").lower()
+    return (h.rsplit(":", 1)[0] if ":" in h else h).lower()
+
+
+def _dashboard_allowed_hosts() -> set[str]:
+    raw = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    return {_host_header_name(item) for item in raw.split(",") if item.strip()}
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
     - Exact bound host (with or without port suffix)
     - Loopback aliases when bound to loopback
+    - Explicit reverse-proxy hostnames listed in HERMES_DASHBOARD_ALLOWED_HOSTS
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
     """
@@ -255,17 +455,10 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # Plain hosts/v4:
     #   localhost:9119
     #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    host_only = _host_header_name(host_header)
+
+    if host_only in _dashboard_allowed_hosts():
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -3854,6 +4047,8 @@ _event_lock = asyncio.Lock()
 def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
+    pty_mode: Optional[str] = None,
+    tmux_session: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -3871,6 +4066,11 @@ def _resolve_chat_argv(
     dashboard's ``/api/pub`` endpoint (see :func:`pub_ws`).
     """
     from hermes_cli.main import PROJECT_ROOT, _make_tui_argv
+
+    if pty_mode == "tmux":
+        if not tmux_session or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", tmux_session):
+            raise SystemExit("Invalid tmux session")
+        return ["tmux", "attach-session", "-t", tmux_session], None, os.environ.copy()
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
@@ -3988,7 +4188,12 @@ async def pty_ws(ws: WebSocket) -> None:
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
     try:
-        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
+        resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url}
+        pty_mode = ws.query_params.get("pty_mode") or None
+        tmux_session = ws.query_params.get("tmux_session") or None
+        if pty_mode or tmux_session:
+            resolve_kwargs.update({"pty_mode": pty_mode, "tmux_session": tmux_session})
+        argv, cwd, env = _resolve_chat_argv(**resolve_kwargs)
     except SystemExit as exc:
         # _make_tui_argv calls sys.exit(1) when node/npm is missing.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")

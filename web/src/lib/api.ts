@@ -273,11 +273,37 @@ export const api = {
         body: JSON.stringify({ speakers }),
       },
     ),
-  createVoiceSession: () => fetchJSON<VoiceSessionResponse>("/api/voice/session", { method: "POST" }),
-  runVoiceTool: (body: VoiceToolRequest) =>
+  createVoiceSession: (user?: string) =>
+    fetchJSON<VoiceSessionResponse>("/api/voice/session", {
+      method: "POST",
+      headers: user ? { "X-Rolly-User": user } : undefined,
+    }),
+  createVoiceCall: async (sdp: string, user?: string) => {
+    const headers = new Headers({ "Content-Type": "application/sdp" });
+    const token = window.__HERMES_SESSION_TOKEN__;
+    if (token) setSessionHeader(headers, token);
+    if (user) headers.set("X-Rolly-User", user);
+    const res = await fetch(`${BASE}/api/voice/call`, {
+      method: "POST",
+      headers,
+      body: sdp,
+      credentials: "include",
+    });
+    if (!res.ok) {
+      throw new Error(`${res.status}: ${await res.text()}`);
+    }
+    return res.text();
+  },
+  runVoiceTool: (body: VoiceToolRequest, user?: string) =>
     fetchJSON<VoiceToolResponse>("/api/voice/tool", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: user ? { "Content-Type": "application/json", "X-Rolly-User": user } : { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  saveVoiceTranscript: (body: VoiceTranscriptEvent, user?: string) =>
+    fetchJSON<{ ok: boolean; path: string }>("/api/voice/transcript", {
+      method: "POST",
+      headers: user ? { "Content-Type": "application/json", "X-Rolly-User": user } : { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
   getAnalytics: (days: number) =>
@@ -712,6 +738,15 @@ export interface AudioAnalysisResponse {
 export interface VoiceToolRequest {
   name: string;
   arguments: Record<string, unknown>;
+}
+
+export interface VoiceTranscriptEvent {
+  call_id: string;
+  role: string;
+  text: string;
+  event_type?: string;
+  user?: string;
+  timestamp?: string;
 }
 
 export interface VoiceToolResponse {

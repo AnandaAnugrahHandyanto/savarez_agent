@@ -27,6 +27,11 @@ function eventText(event: unknown): string | null {
 export default function VoiceCallPage() {
   const [status, setStatus] = useState<CallStatus>("idle");
   const [muted, setMuted] = useState(false);
+  const [micInfo, setMicInfo] = useState("Mic: not connected");
+  const [micLevel, setMicLevel] = useState(0);
+  const [inputDevices, setInputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedInputId, setSelectedInputId] = useState("");
+  const [speaker, setSpeaker] = useState(() => window.localStorage.getItem("rolly.voice.user") || "deniz");
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([
     {
@@ -39,11 +44,106 @@ export default function VoiceCallPage() {
   const dataRef = useRef<RTCDataChannel | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const micMonitorRafRef = useRef<number | null>(null);
+  const callIdRef = useRef(`voice-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const callSeqRef = useRef(0);
 
   const addLog = useCallback((kind: LogKind, text: string) => {
     setLogs((prev) => [...prev.slice(-80), { id: logId(), kind, text }]);
   }, []);
+
+  const persistTranscript = useCallback(
+    (role: string, text: string, eventType = "transcript") => {
+      void api.saveVoiceTranscript(
+        {
+          call_id: callIdRef.current,
+          role,
+          text,
+          event_type: eventType,
+          user: speaker,
+          timestamp: new Date().toISOString(),
+        },
+        speaker,
+      ).catch((exc) => {
+        const message = exc instanceof Error ? exc.message : String(exc);
+        addLog("error", `Transcript save failed: ${message}`);
+      });
+    },
+    [addLog, speaker],
+  );
+
+  const refreshInputDevices = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter((device) => device.kind === "audioinput");
+    setInputDevices(inputs);
+    if (!selectedInputId && inputs.some((device) => device.deviceId === "default")) {
+      setSelectedInputId("default");
+    }
+  }, [selectedInputId]);
+
+  const stopMicMonitor = useCallback(() => {
+    if (micMonitorRafRef.current !== null) {
+      window.cancelAnimationFrame(micMonitorRafRef.current);
+    }
+    micMonitorRafRef.current = null;
+    void audioContextRef.current?.close().catch(() => undefined);
+    audioContextRef.current = null;
+    setMicLevel(0);
+    setMicInfo("Mic: not connected");
+  }, []);
+
+  const startMicMonitor = useCallback((stream: MediaStream) => {
+    stopMicMonitor();
+    const track = stream.getAudioTracks()[0];
+    const settings = track?.getSettings?.() ?? {};
+    setMicInfo(`Mic: ${track?.label || "unknown"} (${settings.sampleRate ?? "?"} Hz)`);
+
+    const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) {
+      addLog("error", "Browser does not expose AudioContext; cannot meter microphone input.");
+      return;
+    }
+
+    const context = new AudioContextCtor();
+    audioContextRef.current = context;
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 1024;
+    context.createMediaStreamSource(stream).connect(analyser);
+    const samples = new Uint8Array(analyser.fftSize);
+
+    const tick = () => {
+      analyser.getByteTimeDomainData(samples);
+      let sum = 0;
+      for (const sample of samples) {
+        const centered = sample - 128;
+        sum += centered * centered;
+      }
+      setMicLevel(Math.min(100, Math.round((Math.sqrt(sum / samples.length) / 128) * 160)));
+      micMonitorRafRef.current = window.requestAnimationFrame(tick);
+    };
+    tick();
+  }, [addLog, stopMicMonitor]);
+
+  const enableMicList = useCallback(async () => {
+    setError(null);
+    try {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        throw new Error(
+          "Microphone access requires HTTPS. Open https://denizs-mac-mini.taildfdcc0.ts.net:9119/voice instead of the raw http:// Tailscale IP.",
+        );
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+      await refreshInputDevices();
+      addLog("system", "Microphone permission granted; input list refreshed.");
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : String(exc);
+      setError(message);
+      addLog("error", message);
+    }
+  }, [addLog, refreshInputDevices]);
 
   const stopCall = useCallback(() => {
     callSeqRef.current += 1;
@@ -56,6 +156,7 @@ export default function VoiceCallPage() {
     dataRef.current?.close();
     peerRef.current?.close();
     streamRef.current?.getTracks().forEach((track) => track.stop());
+    stopMicMonitor();
     if (audioRef.current?.srcObject instanceof MediaStream) {
       audioRef.current.srcObject.getTracks().forEach((track) => track.stop());
       audioRef.current.srcObject = null;
@@ -66,7 +167,7 @@ export default function VoiceCallPage() {
     setMuted(false);
     setStatus("idle");
     addLog("system", "Call ended; microphone released.");
-  }, [addLog]);
+  }, [addLog, stopMicMonitor]);
 
   const sendRealtimeEvent = useCallback((payload: Record<string, unknown>) => {
     const channel = dataRef.current;
@@ -79,7 +180,10 @@ export default function VoiceCallPage() {
       const name = typeof event.name === "string" ? event.name : "";
       const callId = typeof event.call_id === "string" ? event.call_id : "";
       const rawArgs = typeof event.arguments === "string" ? event.arguments : "{}";
-      if (!name || !callId) return;
+      if (!name || !callId) {
+        addLog("error", `Malformed Realtime tool call: ${JSON.stringify(event).slice(0, 500)}`);
+        return;
+      }
 
       let args: Record<string, unknown> = {};
       try {
@@ -89,10 +193,12 @@ export default function VoiceCallPage() {
       }
 
       addLog("tool", `Running ${name}…`);
+      persistTranscript("tool", `Running ${name}: ${JSON.stringify(args)}`, "tool_call");
       try {
-        const result = await api.runVoiceTool({ name, arguments: args } satisfies VoiceToolRequest);
+        const result = await api.runVoiceTool({ name, arguments: args } satisfies VoiceToolRequest, speaker);
         const output = result.ok ? result.result : `Tool failed: ${result.error ?? "unknown error"}`;
         addLog(result.ok ? "tool" : "error", output.slice(0, 700));
+        persistTranscript("tool", output, result.ok ? "tool_result" : "tool_error");
         sendRealtimeEvent({
           type: "conversation.item.create",
           item: {
@@ -105,6 +211,7 @@ export default function VoiceCallPage() {
       } catch (exc) {
         const message = exc instanceof Error ? exc.message : String(exc);
         addLog("error", message);
+        persistTranscript("tool", message, "tool_error");
         sendRealtimeEvent({
           type: "conversation.item.create",
           item: {
@@ -116,7 +223,7 @@ export default function VoiceCallPage() {
         sendRealtimeEvent({ type: "response.create" });
       }
     },
-    [addLog, sendRealtimeEvent],
+    [addLog, persistTranscript, sendRealtimeEvent, speaker],
   );
 
   const handleRealtimeEvent = useCallback(
@@ -133,14 +240,39 @@ export default function VoiceCallPage() {
         void handleToolCall(event);
         return;
       }
-      if (type === "conversation.item.input_audio_transcription.completed") {
-        const text = eventText(event);
-        if (text) addLog("user", text);
+      if (type === "response.output_item.done") {
+        const item = event.item;
+        if (item && typeof item === "object" && (item as Record<string, unknown>).type === "function_call") {
+          void handleToolCall(item as Record<string, unknown>);
+        }
         return;
       }
-      if (type === "response.audio_transcript.done" || type === "response.output_text.done") {
+      if (type === "conversation.item.input_audio_transcription.completed") {
         const text = eventText(event);
-        if (text) addLog("rolly", text);
+        if (text) {
+          addLog("user", text);
+          persistTranscript("user", text);
+        }
+        return;
+      }
+      if (type === "input_audio_buffer.speech_started") {
+        addLog("system", "Realtime API heard speech start.");
+        return;
+      }
+      if (type === "input_audio_buffer.speech_stopped") {
+        addLog("system", "Realtime API heard speech stop.");
+        return;
+      }
+      if (type === "input_audio_buffer.committed") {
+        addLog("system", "Realtime API committed mic audio.");
+        return;
+      }
+      if (type === "response.output_audio_transcript.done" || type === "response.audio_transcript.done" || type === "response.output_text.done") {
+        const text = eventText(event);
+        if (text) {
+          addLog("rolly", text);
+          persistTranscript("rolly", text);
+        }
         return;
       }
       if (type === "error") {
@@ -148,26 +280,39 @@ export default function VoiceCallPage() {
         addLog("error", messageText);
       }
     },
-    [addLog, handleToolCall],
+    [addLog, handleToolCall, persistTranscript],
   );
 
   const startCall = useCallback(async () => {
     const callSeq = callSeqRef.current + 1;
     callSeqRef.current = callSeq;
+    callIdRef.current = `voice-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    window.localStorage.setItem("rolly.voice.user", speaker);
     const isCurrentCall = () => callSeqRef.current === callSeq;
     setError(null);
     setStatus("requesting");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        throw new Error(
+          "Microphone access requires HTTPS. Open https://denizs-mac-mini.taildfdcc0.ts.net:9119/voice instead of the raw http:// Tailscale IP.",
+        );
+      }
+      await refreshInputDevices();
+      const audio: boolean | MediaTrackConstraints = selectedInputId
+        ? { deviceId: { exact: selectedInputId } }
+        : true;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio });
       if (!isCurrentCall()) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
+      await refreshInputDevices();
       streamRef.current = stream;
+      startMicMonitor(stream);
+      const track = stream.getAudioTracks()[0];
+      addLog("system", `Browser mic opened: ${track?.label || "unknown device"}. Watch the mic level; it should move when you talk.`);
       setStatus("connecting");
 
-      const session = await api.createVoiceSession();
-      if (!isCurrentCall()) return;
       const peer = new RTCPeerConnection();
       peerRef.current = peer;
       peer.onconnectionstatechange = () => {
@@ -194,20 +339,9 @@ export default function VoiceCallPage() {
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
 
-      const realtimeUrl = `${session.endpoint}?model=${encodeURIComponent(session.model)}`;
-      const sdpResponse = await fetch(realtimeUrl, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${session.client_secret}`,
-          "Content-Type": "application/sdp",
-        },
-        body: offer.sdp,
-      });
-      if (!sdpResponse.ok) {
-        throw new Error(`${sdpResponse.status}: ${await sdpResponse.text()}`);
-      }
+      const answerSdp = await api.createVoiceCall(offer.sdp || "", speaker);
       if (!isCurrentCall()) return;
-      await peer.setRemoteDescription({ type: "answer", sdp: await sdpResponse.text() });
+      await peer.setRemoteDescription({ type: "answer", sdp: answerSdp });
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
@@ -215,7 +349,7 @@ export default function VoiceCallPage() {
       addLog("error", message);
       stopCall();
     }
-  }, [addLog, handleRealtimeEvent, stopCall]);
+  }, [addLog, handleRealtimeEvent, refreshInputDevices, selectedInputId, speaker, startMicMonitor, stopCall]);
 
   const toggleMute = useCallback(() => {
     const next = !muted;
@@ -226,6 +360,11 @@ export default function VoiceCallPage() {
   }, [muted]);
 
   useEffect(() => stopCall, [stopCall]);
+  useEffect(() => {
+    void refreshInputDevices().catch(() => undefined);
+    navigator.mediaDevices?.addEventListener?.("devicechange", refreshInputDevices);
+    return () => navigator.mediaDevices?.removeEventListener?.("devicechange", refreshInputDevices);
+  }, [refreshInputDevices]);
 
   const live = status === "live";
   const busy = status === "requesting" || status === "connecting" || status === "ending";
@@ -244,6 +383,7 @@ export default function VoiceCallPage() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            {!live && !busy ? <Button onClick={enableMicList}>Enable mic list</Button> : null}
             {!live && !busy ? <Button onClick={startCall}>Start call</Button> : null}
             {live ? <Button onClick={toggleMute}>{muted ? "Unmute" : "Mute"}</Button> : null}
             {live || busy ? <Button onClick={stopCall}>End call</Button> : null}
@@ -252,7 +392,45 @@ export default function VoiceCallPage() {
         <div className="mt-4 flex flex-wrap gap-2 text-xs uppercase tracking-[0.12em] text-text-secondary">
           <span className="border border-current/20 px-2 py-1">Status: {status}</span>
           <span className="border border-current/20 px-2 py-1">Provider: OpenAI Realtime WebRTC</span>
-          <span className="border border-current/20 px-2 py-1">Tools: research</span>
+          <span className="border border-current/20 px-2 py-1">Tools: full Rolly</span>
+        </div>
+        <div className="mt-3 text-xs uppercase tracking-[0.12em] text-text-secondary">
+          <label className="mb-3 block">
+            SPEAKER
+            <select
+              className="mt-1 w-full border border-current/20 bg-black/40 p-2 text-midground"
+              value={speaker}
+              onChange={(event) => setSpeaker(event.target.value)}
+              disabled={live || busy}
+            >
+              <option value="deniz">Deniz</option>
+              <option value="arman">Arman</option>
+              <option value="buket">Buket</option>
+              <option value="metin">Metin</option>
+              <option value="guest">Guest</option>
+            </select>
+          </label>
+          <label className="block">
+            MIC INPUT
+            <select
+              className="mt-1 w-full border border-current/20 bg-black/40 p-2 text-midground"
+              value={selectedInputId}
+              onChange={(event) => setSelectedInputId(event.target.value)}
+              disabled={live || busy}
+            >
+              <option value="">Browser default</option>
+              {inputDevices.map((device, index) => (
+                <option key={device.deviceId || index} value={device.deviceId}>
+                  {device.label || `Microphone ${index + 1}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div>{micInfo}</div>
+          <div className="mt-1 h-2 overflow-hidden border border-current/20 bg-black/40">
+            <div className="h-full bg-current transition-[width]" style={{ width: `${micLevel}%` }} />
+          </div>
+          <div className="mt-1">Mic level: {micLevel}%</div>
         </div>
         {error ? <p className="mt-3 text-sm text-red-300">{error}</p> : null}
       </section>
@@ -278,12 +456,12 @@ export default function VoiceCallPage() {
             Try saying
           </Typography>
           <ul className="mt-3 list-disc space-y-2 pl-4">
-            <li>“Rolly, research the best way to test this voice prototype.”</li>
-            <li>“Summarize what we’ve decided so far.”</li>
-            <li>“Use your research tool and keep the answer brief.”</li>
+            <li>“Rolly, what were we trying to finish tonight?”</li>
+            <li>“Check current MIX review blockers and keep it brief.”</li>
+            <li>“Use your tools and tell me what to do next.”</li>
           </ul>
           <p className="mt-4">
-            V1 intentionally avoids Meet/Telegram call plumbing. If this feels good, the production upgrade path is LiveKit.
+            Realtime voice can call full Rolly when it needs project context, files, web, or actions.
           </p>
         </aside>
       </section>
