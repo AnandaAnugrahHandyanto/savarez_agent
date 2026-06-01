@@ -338,3 +338,15 @@ The next safest phase is another local-only hardening pass: add a small
 operator-facing troubleshooting/runbook note and optional local `--call-tool`
 dry-run diagnostic for approved read-only tools only, or defer implementation
 until remote OAuth planning resumes.
+
+## Phase 8 Implementation Note
+
+Phase 8 adds a local-only operator diagnostics runbook at
+`docs/design/hermes_mission_control_mcp_local_diagnostics_runbook_20260601.md`.
+No diagnostic command, remote connection, OAuth flow, HTTP/SSE transport,
+public endpoint, ChatGPT connector, or execution path is added.
+
+The runbook documents `python -m hermes_cli.mission_control_mcp --list-tools`,
+the expected local/stdout safety fields, approved tools, forbidden
+tools/classes, local packet/audit artifact locations, remote-disabled policy
+checks, and when to stop and request review. Remote policy remains disabled.

@@ -513,6 +513,9 @@ Phase 8: Local operator diagnostics or pause
 
 - Prefer a local-only runbook/troubleshooting note and, if needed, an inert
   read-only diagnostic command.
+- Phase 8 runbook:
+  `docs/design/hermes_mission_control_mcp_local_diagnostics_runbook_20260601.md`.
+- Keep local/stdout as the only bridge surface and keep remote policy disabled.
 - Do not begin remote OAuth, public endpoint, or ChatGPT connector work without
   a separate implementation plan.
 
