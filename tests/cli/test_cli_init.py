@@ -115,6 +115,55 @@ class TestFallbackChainInit:
             {"provider": "nous", "model": "Hermes-4"},
         ]
 
+    def test_auth_fallback_passes_custom_endpoint_hints(self, monkeypatch):
+        """CLI auth fallback must honor base_url/key_env on fallback entries."""
+        cli = _make_cli(config_overrides={
+            "model": {"default": "primary-model", "provider": "openai-codex"},
+            "fallback_providers": [{
+                "provider": "custom:cfai",
+                "model": "@cf/google/gemma-3-12b-it",
+                "base_url": "https://vault.useyouragents.com/ai-proxy/v1",
+                "key_env": "HERMES_CF_AI_PROXY_KEY",
+            }],
+        })
+        monkeypatch.setenv("HERMES_CF_AI_PROXY_KEY", "proxy-secret")
+
+        from hermes_cli.auth import AuthError
+        import hermes_cli.runtime_provider as runtime_provider
+
+        calls = []
+
+        def fake_resolve_runtime_provider(*, requested=None, explicit_api_key=None, explicit_base_url=None):
+            calls.append({
+                "requested": requested,
+                "explicit_api_key": explicit_api_key,
+                "explicit_base_url": explicit_base_url,
+            })
+            if requested == "openai-codex":
+                raise AuthError("forced primary failure")
+            return {
+                "api_key": explicit_api_key,
+                "base_url": explicit_base_url,
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            }
+
+        monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", fake_resolve_runtime_provider)
+
+        assert cli._ensure_runtime_credentials() is True
+        assert calls[1] == {
+            "requested": "custom:cfai",
+            "explicit_api_key": "proxy-secret",
+            "explicit_base_url": "https://vault.useyouragents.com/ai-proxy/v1",
+        }
+        assert cli.requested_provider == "custom:cfai"
+        assert cli.model == "@cf/google/gemma-3-12b-it"
+        assert cli.api_key == "proxy-secret"
+        assert cli.base_url == "https://vault.useyouragents.com/ai-proxy/v1"
+
 
 class TestBusyInputMode:
     def test_default_busy_input_mode_is_interrupt(self):
