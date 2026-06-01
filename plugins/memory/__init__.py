@@ -194,6 +194,14 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
     # collide with bundled providers in sys.modules.
     _is_bundled = _MEMORY_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _MEMORY_PLUGINS_DIR
     module_name = f"plugins.memory.{name}" if _is_bundled else f"_hermes_user_memory.{name}"
+    if not _is_bundled and "_hermes_user_memory" not in sys.modules:
+        # Register the _hermes_user_memory namespace package so that
+        # relative imports in user-installed plugins resolve correctly.
+        import types
+        ns_pkg = types.ModuleType("_hermes_user_memory")
+        ns_pkg.__path__ = []
+        ns_pkg.__package__ = "_hermes_user_memory"
+        sys.modules["_hermes_user_memory"] = ns_pkg
     init_file = provider_dir / "__init__.py"
 
     if not init_file.exists():
