@@ -41,6 +41,7 @@ def _patch_agent_bootstrap(monkeypatch):
 
 def _build_agent(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_DISABLE_RAW_HTTPX", "1")
 
     agent = run_agent.AIAgent(
         model="gpt-5-codex",
@@ -55,6 +56,51 @@ def _build_agent(monkeypatch):
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
     return agent
+
+
+def test_codex_raw_httpx_bypass_only_targets_chatgpt_codex_backend(monkeypatch):
+    from agent.codex_runtime import _should_use_raw_codex_httpx
+
+    agent = SimpleNamespace(
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+    assert _should_use_raw_codex_httpx(agent) is True
+
+    monkeypatch.setenv("HERMES_CODEX_DISABLE_RAW_HTTPX", "1")
+    assert _should_use_raw_codex_httpx(agent) is False
+
+    monkeypatch.delenv("HERMES_CODEX_DISABLE_RAW_HTTPX")
+    assert _should_use_raw_codex_httpx(
+        SimpleNamespace(provider="openrouter", base_url="https://chatgpt.com/backend-api/codex")
+    ) is False
+    assert _should_use_raw_codex_httpx(
+        SimpleNamespace(provider="openai-codex", base_url="https://api.openai.com/v1")
+    ) is False
+
+
+def test_iter_httpx_sse_events_parses_data_frames():
+    from agent.codex_runtime import _iter_httpx_sse_events
+
+    response = SimpleNamespace(
+        iter_lines=lambda: iter(
+            [
+                "event: response.created",
+                'data: {"type":"response.created"}',
+                "",
+                "event: response.output_text.delta",
+                'data: {"type":"response.output_text.delta","delta":"ok"}',
+                "",
+                "data: [DONE]",
+                "",
+            ]
+        )
+    )
+
+    assert list(_iter_httpx_sse_events(response)) == [
+        {"type": "response.created"},
+        {"type": "response.output_text.delta", "delta": "ok"},
+    ]
 
 
 def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):

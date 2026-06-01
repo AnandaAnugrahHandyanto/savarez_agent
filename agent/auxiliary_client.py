@@ -464,7 +464,7 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
         claims = json.loads(base64.urlsafe_b64decode(payload_b64))
         acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
         if isinstance(acct_id, str) and acct_id:
-            headers["ChatGPT-Account-ID"] = acct_id
+            headers["ChatGPT-Account-Id"] = acct_id
     except Exception:
         pass
     return headers
