@@ -700,8 +700,7 @@ class HindsightMemoryProvider(MemoryProvider):
         env_writes: dict = {}
 
         # Step 2: Install/upgrade deps for selected mode
-        _MIN_CLIENT_VERSION = "0.6.0"
-        cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION},<0.8"
+        cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION}"
         local_dep = "hindsight-all"
         if mode == "local_embedded":
             deps_to_install = [local_dep]
@@ -1808,14 +1807,20 @@ class HindsightMemoryProvider(MemoryProvider):
         parts = []
 
         agent_content = self.get_agent_model_content()
-        if agent_content and agent_content != self._baked_agent_model_content:
-            clean_context = agent_content.replace("</agent-context>", "")
-            parts.append(f"<agent-context>\n{clean_context}\n</agent-context>")
+        if agent_content:
+            if self._baked_agent_model_content is None:
+                self._baked_agent_model_content = agent_content
+            elif agent_content != self._baked_agent_model_content:
+                clean_context = agent_content.replace("</agent-context>", "")
+                parts.append(f"<agent-context>\n{clean_context}\n</agent-context>")
 
         user_content = self.get_user_model_content()
-        if user_content and user_content != self._baked_user_model_content:
-            clean_context = user_content.replace("</user-context>", "")
-            parts.append(f"<user-context>\n{clean_context}\n</user-context>")
+        if user_content:
+            if self._baked_user_model_content is None:
+                self._baked_user_model_content = user_content
+            elif user_content != self._baked_user_model_content:
+                clean_context = user_content.replace("</user-context>", "")
+                parts.append(f"<user-context>\n{clean_context}\n</user-context>")
 
         return "\n\n".join(parts) if parts else ""
 
