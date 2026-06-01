@@ -8973,7 +8973,32 @@ class HermesCLI:
                 )
                 if msg:
                     skill_name = skill_commands[base_cmd]["name"]
-                    print(f"\n⚡ Loading skill: {skill_name}")
+                    # ── Per-skill model override ──
+                    _model_override = None
+                    try:
+                        from agent.skill_commands import resolve_skill_model_override
+                        _model_override = resolve_skill_model_override(skill_name)
+                    except Exception:
+                        pass
+                    if _model_override:
+                        from agent.agent_runtime_helpers import switch_model as _sm
+                        self._skill_model_stash = {
+                            "model": self.agent.model,
+                            "provider": self.agent.provider,
+                            "api_key": getattr(self.agent, "api_key", ""),
+                            "base_url": getattr(self.agent, "base_url", ""),
+                            "api_mode": getattr(self.agent, "api_mode", ""),
+                        }
+                        _sm(
+                            self.agent,
+                            _model_override["model"],
+                            _model_override.get("provider", ""),
+                            api_key=_model_override.get("api_key", ""),
+                            base_url=_model_override.get("base_url", ""),
+                        )
+                        print(f"\n⚡ Loading skill: {skill_name} (using {_model_override['model']})")
+                    else:
+                        print(f"\n⚡ Loading skill: {skill_name}")
                     if hasattr(self, '_pending_input'):
                         self._pending_input.put(msg)
                 else:
@@ -11864,6 +11889,25 @@ class HermesCLI:
             buf.cursor_position = min(snapshot.get("cursor_position", 0), len(buf.text))
         except Exception:
             pass
+
+    def _restore_skill_model(self) -> None:
+        """Restore the agent's model after a skill turn that switched models."""
+        stash = getattr(self, "_skill_model_stash", None)
+        if not stash:
+            return
+        try:
+            from agent.agent_runtime_helpers import switch_model as _sm
+            _sm(
+                self.agent,
+                stash["model"],
+                stash["provider"],
+                api_key=stash.get("api_key", ""),
+                base_url=stash.get("base_url", ""),
+                api_mode=stash.get("api_mode", ""),
+            )
+        except Exception as _exc:
+            logging.warning("Failed to restore model after skill: %s", _exc)
+        self._skill_model_stash = None
 
     def _submit_secret_response(self, value: str) -> None:
         if not self._secret_state:
@@ -14880,6 +14924,9 @@ class HermesCLI:
                             self._maybe_continue_goal_after_turn()
                         except Exception as _goal_exc:
                             logging.debug("goal continuation hook failed: %s", _goal_exc)
+
+                        # Restore model after skill turn if we switched for it
+                        self._restore_skill_model()
 
                         # Continuous voice: auto-restart recording after agent responds.
                         # Dispatch to a daemon thread so play_beep (sd.wait) and

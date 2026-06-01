@@ -176,6 +176,7 @@ TIPS = [
     "skills.external_dirs in config.yaml lets you load skills from custom directories.",
     "The agent can create its own skills as procedural memory using skill_manage.",
     "The plan skill saves markdown plans under .hermes/plans/ in the active workspace.",
+    "skills.model_overrides in config.yaml lets you route specific skills to cheaper/faster models — or escalate to stronger ones.",
 
     # --- Cron & Scheduling ---
     "Cron jobs can attach skills: hermes cron add --skill blogwatcher \"Check for new posts\".",

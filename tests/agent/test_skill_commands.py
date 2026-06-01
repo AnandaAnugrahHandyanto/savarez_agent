@@ -803,3 +803,102 @@ class TestInlineShellExpansion:
         # The command's intended stdout never made it through — only the
         # timeout marker (which echoes the command text) survives.
         assert "DYN_MARKER" not in msg.replace("sleep 5 && printf DYN_MARKER", "")
+
+
+class TestResolveSkillModelOverride:
+    """Tests for resolve_skill_model_override()."""
+
+    def test_returns_none_when_no_override(self, tmp_path):
+        """No model override configured — returns None."""
+        from agent.skill_commands import resolve_skill_model_override
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_constants.get_config_path", return_value=tmp_path / "config.yaml"),
+        ):
+            _make_skill(tmp_path, "no-model-skill", body="Just a skill.")
+            scan_skill_commands()
+            result = resolve_skill_model_override("no-model-skill")
+        assert result is None
+
+    def test_uses_frontmatter_override(self, tmp_path):
+        """Skill declares metadata.hermes.model in SKILL.md."""
+        from agent.skill_commands import resolve_skill_model_override
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_constants.get_config_path", return_value=tmp_path / "config.yaml"),
+        ):
+            _make_skill(
+                tmp_path, "gif-search",
+                frontmatter_extra="""metadata:
+  hermes:
+    model:
+      provider: openrouter
+      model: google/gemini-2.5-flash
+""",
+            )
+            scan_skill_commands()
+            result = resolve_skill_model_override("gif-search")
+        assert result == {"model": "google/gemini-2.5-flash", "provider": "openrouter"}
+
+    def test_skips_override_when_missing_model_key(self, tmp_path):
+        """metadata.hermes.model exists but has no model key — returns None."""
+        from agent.skill_commands import resolve_skill_model_override
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_constants.get_config_path", return_value=tmp_path / "config.yaml"),
+        ):
+            _make_skill(
+                tmp_path, "partial-model",
+                frontmatter_extra="""metadata:
+  hermes:
+    model:
+      provider: openrouter
+""",
+            )
+            scan_skill_commands()
+            result = resolve_skill_model_override("partial-model")
+        assert result is None
+
+    def test_config_override_takes_precedence_over_frontmatter(self, tmp_path):
+        """Config.yaml skills.model_overrides wins over SKILL.md."""
+        from agent.skill_commands import resolve_skill_model_override
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "skills:\n  model_overrides:\n    gif-search:\n      model: deepseek-chat\n      provider: deepseek\n",
+            encoding="utf-8",
+        )
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_constants.get_config_path", return_value=config_path),
+        ):
+            _make_skill(
+                tmp_path, "gif-search",
+                frontmatter_extra="""metadata:
+  hermes:
+    model:
+      provider: openrouter
+      model: google/gemini-2.5-flash
+""",
+            )
+            scan_skill_commands()
+            result = resolve_skill_model_override("gif-search")
+        assert result == {"model": "deepseek-chat", "provider": "deepseek"}
+
+    def test_handles_nonexistent_skill_gracefully(self):
+        """Non-existent skill returns None without error."""
+        from agent.skill_commands import resolve_skill_model_override
+        result = resolve_skill_model_override("this-skill-does-not-exist")
+        assert result is None
+
+    def test_handles_missing_config_gracefully(self, tmp_path):
+        """No config.yaml exists — falls back to frontmatter or None."""
+        from agent.skill_commands import resolve_skill_model_override
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_constants.get_config_path", return_value=tmp_path / "config.yaml"),
+        ):
+            # No config file written — should not crash
+            _make_skill(tmp_path, "simple-skill", body="Do stuff.")
+            scan_skill_commands()
+            result = resolve_skill_model_override("simple-skill")
+        assert result is None

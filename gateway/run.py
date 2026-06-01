@@ -1873,6 +1873,9 @@ class GatewayRunner:
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Stash for per-skill model overrides — holds the session's previous
+        # override so it can be restored after the skill turn completes.
+        self._skill_model_restore: Dict[str, Dict[str, str]] = {}
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -8247,6 +8250,22 @@ class GatewayRunner:
                     )
                     if msg:
                         event.text = msg
+                        # ── Per-skill model override (one-shot) ──
+                        if _quick_key and _skill_name:
+                            try:
+                                from agent.skill_commands import resolve_skill_model_override as _resolve_skill_model
+                                _skill_model_ov = _resolve_skill_model(_skill_name)
+                            except Exception:
+                                _skill_model_ov = None
+                            if _skill_model_ov:
+                                # Stash the current override so we can restore after
+                                self._skill_model_restore[_quick_key] = dict(
+                                    self._session_model_overrides.get(_quick_key, {})
+                                )
+                                self._session_model_overrides[_quick_key] = {
+                                    "model": _skill_model_ov["model"],
+                                    "provider": _skill_model_ov.get("provider", ""),
+                                }
                         # Fall through to normal message processing with skill content
                 else:
                     # Not an active skill — check if it's a known-but-disabled or
@@ -8301,7 +8320,20 @@ class GatewayRunner:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            try:
+                _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            finally:
+                # Restore session model after one-shot skill model override
+                _restore = self._skill_model_restore.pop(_quick_key, None) if _quick_key else None
+                if _restore is not None:
+                    if _restore:
+                        self._session_model_overrides[_quick_key] = _restore
+                    else:
+                        self._session_model_overrides.pop(_quick_key, None)
+                    logger.debug(
+                        "Restored session model after skill: session=%s restore=%s",
+                        _quick_key, bool(_restore),
+                    )
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
