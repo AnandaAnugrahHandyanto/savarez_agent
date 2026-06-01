@@ -1320,6 +1320,10 @@ DEFAULT_CONFIG = {
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
+        "account_usage_statusbar": {
+            "enabled": False,      # Append account quota windows (for example: 5h 93% · Week 87%) to the CLI status bar
+            "refresh_seconds": 300, # Cache provider quota lookups so status rendering never blocks
+        },
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent

@@ -2999,6 +2999,21 @@ class HermesCLI:
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
+        # Optional account/quota badge in the TUI status bar.  This is fetched
+        # asynchronously and cached so rendering never blocks on provider APIs.
+        _account_status_cfg = CLI_CONFIG["display"].get("account_usage_statusbar", {})
+        if not isinstance(_account_status_cfg, dict):
+            _account_status_cfg = {}
+        self._account_usage_statusbar_enabled = bool(_account_status_cfg.get("enabled", False))
+        try:
+            self._account_usage_statusbar_refresh_seconds = max(60, int(_account_status_cfg.get("refresh_seconds", 300)))
+        except (TypeError, ValueError):
+            self._account_usage_statusbar_refresh_seconds = 300
+        self._account_usage_statusbar_label: Optional[str] = None
+        self._account_usage_statusbar_next_refresh = 0.0
+        self._account_usage_statusbar_fetching = False
+        self._account_usage_statusbar_lock = threading.Lock()
+
         # Submitted multiline user-message preview (display.user_message_preview in config.yaml)
         _ump = CLI_CONFIG["display"].get("user_message_preview", {})
         if not isinstance(_ump, dict):
@@ -3506,6 +3521,120 @@ class HermesCLI:
         emoji = "⏱" if live else "⏲"
         return f"{emoji} {time_str}"
 
+    @staticmethod
+    def _format_account_usage_statusbar_label(snapshot: Any) -> Optional[str]:
+        """Return a compact quota label such as ``5h 93% · Week 87%``."""
+        if not snapshot or getattr(snapshot, "unavailable_reason", None):
+            return None
+        parts: list[str] = []
+        label_map = {
+            "session": "5h",
+            "primary": "5h",
+            "primary window": "5h",
+            "current session": "5h",
+            "five hour": "5h",
+            "5 hour": "5h",
+            "5h": "5h",
+            "weekly": "Week",
+            "week": "Week",
+            "current week": "Week",
+            "secondary": "Week",
+            "secondary window": "Week",
+            "seven day": "Week",
+            "7 day": "Week",
+            "7d": "Week",
+            "seven day opus": "Opus",
+            "opus week": "Opus",
+            "current opus week": "Opus",
+            "seven day sonnet": "Sonnet",
+            "sonnet week": "Sonnet",
+            "current sonnet week": "Sonnet",
+            "api key quota": "API quota",
+            "key quota": "API quota",
+            "quota": "Quota",
+        }
+        for window in getattr(snapshot, "windows", ()) or ():
+            used = getattr(window, "used_percent", None)
+            if used is None:
+                continue
+            raw_label = str(getattr(window, "label", "") or "").strip()
+            normalized = raw_label.lower().replace("_", " ").replace("-", " ")
+            short_label = label_map.get(normalized, raw_label or "Quota")
+            try:
+                remaining = max(0, min(100, round(100 - float(used))))
+            except (TypeError, ValueError):
+                continue
+            parts.append(f"{short_label} {remaining}%")
+        if not parts:
+            return None
+        # Keep the badge compact; detailed quota/reset info remains in /usage.
+        return " · ".join(parts[:3])
+
+    def _refresh_account_usage_statusbar(self) -> None:
+        try:
+            agent = getattr(self, "agent", None)
+            provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
+            base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
+            api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
+            label = None
+            if provider:
+                # Lazy import — pulls provider/auth dependencies only when the
+                # status-bar quota badge is enabled.
+                from agent.account_usage import fetch_account_usage
+                label = self._format_account_usage_statusbar_label(
+                    fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+                )
+            with self._account_usage_statusbar_lock:
+                self._account_usage_statusbar_label = label
+                # At startup the CLI may render before the agent resolves the
+                # real provider (self.provider can still be ``auto``).  If no
+                # label was produced, retry soon instead of caching the miss for
+                # the full refresh interval.
+                refresh_delay = (
+                    self._account_usage_statusbar_refresh_seconds
+                    if label
+                    else min(10, self._account_usage_statusbar_refresh_seconds)
+                )
+                self._account_usage_statusbar_next_refresh = time.monotonic() + refresh_delay
+        except Exception:
+            with self._account_usage_statusbar_lock:
+                # Retry sooner after transient provider/auth failures, but keep
+                # rendering non-blocking and quiet.
+                self._account_usage_statusbar_next_refresh = time.monotonic() + min(
+                    60, self._account_usage_statusbar_refresh_seconds
+                )
+        finally:
+            with self._account_usage_statusbar_lock:
+                self._account_usage_statusbar_fetching = False
+            try:
+                from prompt_toolkit.application import get_app
+                get_app().invalidate()
+            except Exception:
+                pass
+
+    def _get_account_usage_statusbar_label(self) -> Optional[str]:
+        if not getattr(self, "_account_usage_statusbar_enabled", False):
+            return None
+        try:
+            now = time.monotonic()
+            with self._account_usage_statusbar_lock:
+                label = self._account_usage_statusbar_label
+                should_refresh = (
+                    not self._account_usage_statusbar_fetching
+                    and now >= self._account_usage_statusbar_next_refresh
+                )
+                if should_refresh:
+                    self._account_usage_statusbar_fetching = True
+            if should_refresh:
+                threading.Thread(
+                    target=self._refresh_account_usage_statusbar,
+                    name="hermes-account-usage-statusbar",
+                    daemon=True,
+                ).start()
+            return label
+        except Exception:
+            return None
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -3543,6 +3672,7 @@ class HermesCLI:
             "compressions": 0,
             "active_background_tasks": 0,
             "active_background_processes": 0,
+            "account_usage_label": self._get_account_usage_statusbar_label(),
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -3805,6 +3935,9 @@ class HermesCLI:
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                account_usage_label = snapshot.get("account_usage_label")
+                if account_usage_label:
+                    parts.append(account_usage_label)
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -3828,6 +3961,9 @@ class HermesCLI:
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            account_usage_label = snapshot.get("account_usage_label")
+            if account_usage_label:
+                parts.append(account_usage_label)
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -3876,6 +4012,7 @@ class HermesCLI:
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
                     compressions = snapshot.get("compressions", 0)
+                    account_usage_label = snapshot.get("account_usage_label")
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     frags = [
@@ -3884,6 +4021,9 @@ class HermesCLI:
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
+                    if account_usage_label:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-strong", account_usage_label))
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -3911,6 +4051,7 @@ class HermesCLI:
 
                     bar_style = self._status_bar_context_style(percent)
                     compressions = snapshot.get("compressions", 0)
+                    account_usage_label = snapshot.get("account_usage_label")
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     frags = [
@@ -3923,6 +4064,9 @@ class HermesCLI:
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    if account_usage_label:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", account_usage_label))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
