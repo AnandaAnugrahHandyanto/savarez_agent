@@ -959,16 +959,22 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
             results.append(entry)
 
         if payload.priority is not None and priority_updates:
-            with kanban_db.write_txn(conn):
-                conn.executemany(
-                    "UPDATE tasks SET priority = ? WHERE id = ?",
-                    priority_updates,
-                )
-                conn.executemany(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'reprioritized', ?, ?)",
-                    priority_events,
-                )
+            try:
+                with kanban_db.write_txn(conn):
+                    conn.executemany(
+                        "UPDATE tasks SET priority = ? WHERE id = ?",
+                        priority_updates,
+                    )
+                    conn.executemany(
+                        "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                        "VALUES (?, 'reprioritized', ?, ?)",
+                        priority_events,
+                    )
+            except Exception as e:
+                failed_ids = {tid for _, tid in priority_updates}
+                for entry in results:
+                    if entry["id"] in failed_ids and entry.get("ok", False):
+                        entry.update(ok=False, error=str(e))
 
         return {"results": results}
     finally:
