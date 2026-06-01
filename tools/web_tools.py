@@ -218,6 +218,21 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    try:
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        from agent.web_search_registry import get_provider
+
+        provider = get_provider(backend)
+        if provider is not None and provider.supports_search():
+            return provider.is_available()
+    except Exception:
+        logger.debug(
+            "Registry availability check failed for backend %r",
+            backend,
+            exc_info=True,
+        )
     return False
 
 
@@ -267,6 +282,8 @@ def _web_requires_env() -> list[str]:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "YANDEX_CLOUD_API_KEY",
+        "YANDEX_CLOUD_FOLDER_ID",
     ]
 
 
@@ -1154,13 +1171,30 @@ async def web_extract_tool(
 # Convenience function to check Firecrawl credentials
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
-    configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
-        return _is_backend_available(configured)
-    return any(
+    cfg = _load_web_config()
+    configured = (cfg.get("backend") or "").lower().strip()
+    search_configured = (cfg.get("search_backend") or "").lower().strip()
+    for backend in (search_configured, configured):
+        if backend and _is_backend_available(backend):
+            return True
+    if any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
-    )
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
+    ):
+        return True
+    try:
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        from agent.web_search_registry import list_providers
+
+        return any(
+            provider.supports_search() and provider.is_available()
+            for provider in list_providers()
+        )
+    except Exception:
+        logger.debug("Plugin web backend availability scan failed", exc_info=True)
+        return False
 
 
 def check_auxiliary_model() -> bool:
