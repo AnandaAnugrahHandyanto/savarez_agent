@@ -16,6 +16,7 @@ import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 import type { Msg } from '../types.js'
 
 import type { ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
+import { getActiveMode } from './modeStore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -23,6 +24,20 @@ const DOUBLE_ENTER_MS = 450
 const SESSION_BUSY_RE = /session busy|waiting for model response/i
 
 const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
+
+const escapeModeName = (value: string) =>
+  value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+export const applyModePrompt = (text: string): string => {
+  const mode = getActiveMode()
+  const prompt = mode.prompt?.trim()
+
+  if (mode.hidden || !prompt) {
+    return text
+  }
+
+  return `<mode_instructions name="${escapeModeName(mode.label)}">\n${prompt}\n</mode_instructions>\n\n${text}`
+}
 
 const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
@@ -109,10 +124,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
         gw.request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
           if (isSessionBusyError(e)) {
-            composerActions.enqueue(submitText)
+            composerActions.enqueue(displayText)
             patchUiState({ busy: true, status: 'queued for next turn' })
 
-            return sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
+            return sys(`queued: "${displayText.slice(0, 50)}${displayText.length > 50 ? '…' : ''}"`)
           }
 
           sys(`error: ${e.message}`)
@@ -132,7 +147,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
         .then(r => {
           if (!r?.matched) {
-            return startSubmit(text, expand(text), showUserMessage)
+            return startSubmit(text, applyModePrompt(expand(text)), showUserMessage)
           }
 
           if (r.is_image) {
@@ -141,9 +156,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
             turnController.pushActivity(`detected file: ${r.name}`)
           }
 
-          startSubmit(r.text || text, expand(r.text || text), showUserMessage)
+          startSubmit(r.text || text, applyModePrompt(expand(r.text || text)), showUserMessage)
         })
-        .catch(() => startSubmit(text, expand(text), showUserMessage))
+        .catch(() => startSubmit(text, applyModePrompt(expand(text)), showUserMessage))
     },
     [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
   )

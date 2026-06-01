@@ -1,15 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { NO_MODE_ID } from '../app/modeStore.js'
 import { $uiState, resetUiState } from '../app/uiStore.js'
 import {
   applyDisplay,
   hydrateFullConfig,
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
+  normalizeModes,
   normalizeMouseTracking,
   normalizeStatusBar
 } from '../app/useConfigSync.js'
-import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
@@ -268,6 +269,42 @@ describe('normalizeIndicatorStyle', () => {
     expect(normalizeIndicatorStyle('')).toBe('kaomoji')
     expect(normalizeIndicatorStyle('sparkle')).toBe('kaomoji')
     expect(normalizeIndicatorStyle(42)).toBe('kaomoji')
+  })
+})
+
+describe('normalizeModes', () => {
+  it('strips prompts from hidden and no-mode entries', () => {
+    const modes = normalizeModes([
+      {
+        color: '#D7D7D7',
+        hidden: true,
+        id: NO_MODE_ID,
+        label: 'No Mode',
+        prompt: 'should not inject'
+      },
+      {
+        color: '#111111',
+        hidden: true,
+        id: 'quiet',
+        label: 'Quiet',
+        prompt: 'should not inject either'
+      }
+    ])
+
+    expect(modes).toEqual([
+      expect.objectContaining({ hidden: true, id: NO_MODE_ID, prompt: undefined }),
+      expect.objectContaining({ hidden: true, id: 'quiet', prompt: undefined })
+    ])
+  })
+
+  it('drops duplicate IDs so mode cycling is deterministic', () => {
+    const modes = normalizeModes([
+      { color: '#111111', id: 'review', label: 'Review', prompt: 'first' },
+      { color: '#222222', id: 'review', label: 'Duplicate', prompt: 'second' }
+    ])
+
+    expect(modes.map(mode => mode.id)).toEqual([NO_MODE_ID, 'review'])
+    expect(modes.find(mode => mode.id === 'review')?.label).toBe('Review')
   })
 })
 

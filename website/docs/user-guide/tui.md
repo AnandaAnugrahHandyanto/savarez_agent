@@ -90,6 +90,7 @@ Keybindings match the [Classic CLI](cli.md#keybindings) exactly. The only behavi
 - **`/terminal-setup`** installs local VS Code / Cursor / Windsurf terminal bindings for better `Cmd+Enter` and undo/redo parity on macOS.
 - **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown.
 - **`Ctrl+X`** opens the live session switcher. When a queued message is highlighted (sent while the agent was still running), it still deletes that queued message instead. **`Esc`** cancels editing and unhighlights without deleting.
+- **`Shift+Tab`** cycles prompt modes. No Mode is blank; active modes appear as a colored chip like `Plan (shift+tab to cycle)` and can add mode-specific instructions to the next agent turn.
 - **`Ctrl+G` / `Ctrl+X Ctrl+E`** — open the current input buffer in `$EDITOR` for multi-line / long-prompt composition; save-and-exit sends the contents back as the prompt.
 
 ## Slash commands
@@ -222,6 +223,32 @@ display:
                              #   buttons — adds 1002 for terminal-side drag selection
                              #   all     — adds 1003 for hover (scrollbar paginate-on-hover,
                              #             link mouseenter, etc.)
+  modes:                     # optional: custom TUI mode chips shown in the prompt area
+    - id: none
+      label: No Mode
+      color: "#D7D7D7"
+      hidden: true           # shows nothing and injects no prompt
+      description: No extra mode instructions
+    - id: multitask
+      label: Multi-Task
+      color: "#9A7BC8"
+      description: Preserves parent context by delegating separable workstreams
+      prompt: "Hard requirement: preserve the main context window by making delegate_task the first tool call for any non-trivial codebase/research task. Use the parent as orchestrator, delegate bulky independent repo inspection/research/implementation/review to self-contained subagent tasks, synthesize concise results, and verify important claims in the parent before reporting success. If delegation is unavailable or the task is truly tiny, briefly say why."
+    - id: plan
+      label: Plan
+      color: "#D6B56D"
+      description: Research and propose an approach before building
+      prompt: "Design the approach before coding or changing state. Ask concise clarifying questions when requirements are ambiguous."
+    - id: ask
+      label: Ask
+      color: "#7FAF8A"
+      description: Read-only explanation and exploration
+      prompt: "Answer and explore without making edits or external changes unless explicitly asked to switch into execution."
+    - id: debug
+      label: Debug
+      color: "#B86B6B"
+      description: Runtime evidence, root cause, fix, verify
+      prompt: "Reproduce or inspect the failure, isolate root cause, make the smallest safe fix, and verify."
 ```
 
 Runtime toggles:

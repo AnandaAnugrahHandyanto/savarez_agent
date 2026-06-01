@@ -22,6 +22,7 @@ import {
   type IndicatorStyle,
   type StatusBarMode
 } from './interfaces.js'
+import { $agentModes, type AgentMode, DEFAULT_AGENT_MODES, NO_MODE, NO_MODE_ID } from './modeStore.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
 
@@ -66,6 +67,48 @@ export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
   const v = raw.trim().toLowerCase() as IndicatorStyle
 
   return INDICATOR_STYLE_SET.has(v) ? v : DEFAULT_INDICATOR_STYLE
+}
+
+const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i
+
+export const normalizeModes = (raw: unknown): AgentMode[] => {
+  if (!Array.isArray(raw)) {
+    return DEFAULT_AGENT_MODES
+  }
+
+  const seen = new Set<string>()
+
+  const modes = raw.flatMap((item): AgentMode[] => {
+    if (!item || typeof item !== 'object') {
+      return []
+    }
+
+    const rec = item as Record<string, unknown>
+    const id = typeof rec.id === 'string' ? rec.id.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-') : ''
+    const label = typeof rec.label === 'string' ? rec.label.trim() : id
+    const color = typeof rec.color === 'string' && HEX_COLOR_RE.test(rec.color.trim()) ? rec.color.trim() : ''
+    const description = typeof rec.description === 'string' ? rec.description.trim() : ''
+    const promptText = typeof rec.prompt === 'string' ? rec.prompt.trim() : undefined
+    const hidden = rec.hidden === true || id === NO_MODE_ID
+
+    if (!id || !label || !color || seen.has(id)) {
+      return []
+    }
+
+    seen.add(id)
+
+    return [{ color, description, hidden, id, label, prompt: hidden ? undefined : promptText }]
+  })
+
+  if (!modes.length) {
+    return DEFAULT_AGENT_MODES
+  }
+
+  if (modes.some(mode => mode.id === NO_MODE_ID)) {
+    return modes
+  }
+
+  return [NO_MODE, ...modes]
 }
 
 const FALSEY_MOUSE = new Set(['0', 'false', 'no', 'off'])
@@ -143,24 +186,46 @@ const _voiceRecordKeyFromConfig = (cfg: ConfigFullResponse | null): ParsedVoiceR
 }
 
 const _pasteCollapseLinesFromConfig = (cfg: ConfigFullResponse | null): number => {
-  if (!cfg?.config) return 5
+  if (!cfg?.config) {
+    return 5
+  }
+
   const raw = cfg.config.paste_collapse_threshold
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return Math.round(raw)
+
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+    return Math.round(raw)
+  }
+
   if (typeof raw === 'string') {
     const n = parseInt(raw, 10)
-    if (Number.isFinite(n) && n >= 0) return n
+
+    if (Number.isFinite(n) && n >= 0) {
+      return n
+    }
   }
+
   return 5
 }
 
 const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number => {
-  if (!cfg?.config) return 2000
+  if (!cfg?.config) {
+    return 2000
+  }
+
   const raw = cfg.config.paste_collapse_char_threshold
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return Math.round(raw)
+
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+    return Math.round(raw)
+  }
+
   if (typeof raw === 'string') {
     const n = parseInt(raw, 10)
-    if (Number.isFinite(n) && n >= 0) return n
+
+    if (Number.isFinite(n) && n >= 0) {
+      return n
+    }
   }
+
   return 2000
 }
 
@@ -190,6 +255,7 @@ export const applyDisplay = (
   const d = cfg?.config?.display ?? {}
 
   setBell(!!d.bell_on_complete)
+  $agentModes.set(normalizeModes(d.modes))
 
   // Only push the voice record key when the RPC actually returned a
   // config payload. ``quietRpc()`` collapses failures to ``null``; if we

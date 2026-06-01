@@ -5,7 +5,6 @@ import { useEffect, useRef } from 'react'
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import type {
   ApprovalRespondResponse,
-  ConfigSetResponse,
   SecretRespondResponse,
   SudoRespondResponse,
   VoiceRecordResponse
@@ -16,6 +15,7 @@ import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
+import { cycleActiveMode } from './modeStore.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -524,27 +524,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
     }
 
-    // shift-tab flips yolo without spending a turn (claude-code parity)
+    // Shift+Tab cycles prompt modes without spending a turn.
     if (key.shift && key.tab && !cState.completions.length) {
-      if (!live.sid) {
-        return void actions.sys('yolo needs an active session')
-      }
+      cycleActiveMode()
 
-      // gateway.rpc swallows errors with its own sys() message and resolves to null,
-      // so we only speak when it came back with a real shape. null = rpc already spoke.
-      return void gateway.rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid }).then(r => {
-        if (r?.value === '1') {
-          return actions.sys('yolo on')
-        }
-
-        if (r?.value === '0') {
-          return actions.sys('yolo off')
-        }
-
-        if (r) {
-          actions.sys('failed to toggle yolo')
-        }
-      })
+      return
     }
 
     if (key.tab && cState.completions.length) {

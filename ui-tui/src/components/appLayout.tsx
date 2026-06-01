@@ -4,6 +4,7 @@ import { Fragment, memo, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
+import { $activeModeId, $agentModes } from '../app/modeStore.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
@@ -167,6 +168,9 @@ const ComposerPane = memo(function ComposerPane({
   status
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
   const ui = useStore($uiState)
+  const modeId = useStore($activeModeId)
+  const modes = useStore($agentModes)
+  const mode = modes.find(item => item.id === modeId) ?? modes[0]
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
   const promptText = composerPromptText(ui.theme.brand.prompt, ui.info?.profile_name, sh, TERMUX_TUI_MODE, composer.cols)
@@ -252,8 +256,8 @@ const ComposerPane = memo(function ComposerPane({
           cols={composer.cols}
           compIdx={composer.compIdx}
           completions={composer.completions}
-          onActiveSessionSelect={actions.activateLiveSession}
           onActiveSessionClose={actions.closeLiveSession}
+          onActiveSessionSelect={actions.activateLiveSession}
           onModelSelect={actions.onModelSelect}
           onNewLiveSession={actions.newLiveSession}
           onNewPromptSession={actions.newPromptSession}
@@ -317,6 +321,14 @@ const ComposerPane = memo(function ComposerPane({
           </>
         )}
       </Box>
+
+      {mode && !mode.hidden ? (
+        <Text color={mode.color} wrap="truncate-end">
+          {mode.label} (shift+tab to cycle)
+        </Text>
+      ) : (
+        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
+      )}
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}
 
