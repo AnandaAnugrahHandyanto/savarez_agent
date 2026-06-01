@@ -69,6 +69,15 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+# Defensive cap on a single reasoning chunk emitted on the chat
+# completions SSE stream.  The agent already truncates the first
+# 500 chars of ``reasoning.available`` events (see
+# agent/conversation_loop._run_turn emit), but a malicious or buggy
+# provider could bypass that and pump arbitrarily large ``preview``
+# strings through the tool_progress_callback.  A 256 KB cap keeps
+# memory + bandwidth bounded while still letting real long-form
+# reasoning flow through uncut (#37044).
+MAX_REASONING_CHUNK_BYTES = 262_144
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -931,6 +940,28 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return raw, None
 
+    def _parse_expose_reasoning_header(self, request: "web.Request") -> bool:
+        """Return whether the caller asked the API server to expose
+        model reasoning/thinking blocks in chat completions responses.
+
+        Opt-in via ``X-Hermes-Expose-Reasoning: true|false|1|0|yes|no|on|off``.
+        Defaults to ``False`` so the wire format remains backward-compatible
+        with clients that don't know about the extension — adding
+        ``reasoning_content`` / ``reasoning`` fields to the OpenAI-shaped
+        message is technically a schema-extension, and dropping
+        ``delta.reasoning_content`` chunks into a stream that doesn't
+        declare them can break strict OpenAI parsers.  Clients that want
+        the model's chain-of-thought rendered (e.g. Open WebUI, LobeChat)
+        must explicitly opt in.
+
+        Boolean parsing mirrors ``_coerce_request_bool`` so the same
+        truthy/falsy spellings accepted elsewhere in the API work here.
+        """
+        raw = request.headers.get("X-Hermes-Expose-Reasoning", "")
+        if not raw:
+            return False
+        return _coerce_request_bool(raw, default=False)
+
     # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
@@ -1733,6 +1764,12 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        # Allow caller to opt in to receiving the model's
+        # reasoning/thinking blocks in the response.  Off by default
+        # for wire-format compatibility with strict OpenAI parsers.
+        # See #37044.
+        expose_reasoning = self._parse_expose_reasoning_header(request)
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         #
@@ -1849,14 +1886,39 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                 }))
 
+            def _on_tool_progress(event_type, tool_name=None, preview=None, args=None, **kwargs):
+                """Forward ``reasoning.available`` events to the SSE stream.
+
+                The agent's ``tool_progress_callback`` is *not* wired for
+                tool-lifecycle events (those flow through the structured
+                ``tool_start_callback``/``tool_complete_callback`` above and
+                are strictly richer — they carry the tool_call id).  We
+                only use this hook for ``reasoning.available`` because
+                that channel has no structured-callback equivalent.
+
+                Off by default for wire-format compatibility (#37044) —
+                only fires when the caller opted in via
+                ``X-Hermes-Expose-Reasoning``.  Other event types are
+                silently dropped to keep the SSE surface narrow.
+                """
+                if not expose_reasoning:
+                    return
+                if event_type != "reasoning.available":
+                    return
+                text = preview or ""
+                if not isinstance(text, str) or not text:
+                    return
+                _stream_q.put(("__reasoning__", text))
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             #
-            # ``tool_progress_callback`` is intentionally not wired here:
-            # it would duplicate every emit because ``run_agent`` fires it
-            # side-by-side with ``tool_start_callback``/``tool_complete_callback``.
-            # The structured callbacks are strictly richer (they carry the
-            # tool_call id), so they own the chat-completions SSE channel.
+            # ``tool_progress_callback`` is wired *only* to surface
+            # ``reasoning.available`` events for the streaming reasoning
+            # channel (#37044).  Tool-lifecycle events still flow through
+            # the structured ``tool_start_callback``/``tool_complete_callback``
+            # above, which carry the tool_call id and would otherwise
+            # duplicate every emit.
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -1866,6 +1928,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))
@@ -1953,6 +2016,24 @@ class APIServerAdapter(BasePlatformAdapter):
         # Soft-partial path: we have *some* text but the run did not complete
         # (e.g. truncation with partial buffered output). Still 200 but signal
         # truncation via finish_reason="length" + Hermes-specific extras.
+        #
+        # When the caller opted in to reasoning exposure (X-Hermes-Expose-Reasoning),
+        # surface the model's chain-of-thought under both ``reasoning_content``
+        # (the de facto standard for DeepSeek / OpenRouter / Nous Portal /
+        # Open WebUI) and ``reasoning`` (the OpenAI-native field name).
+        # Without this, downstream OpenAI-compatible UIs render the answer
+        # but not the thinking block, even when the model produced a visible
+        # reasoning trace (#37044).
+        message_payload: Dict[str, Any] = {
+            "role": "assistant",
+            "content": final_response,
+        }
+        if expose_reasoning:
+            last_reasoning = result.get("last_reasoning") if isinstance(result, dict) else None
+            if isinstance(last_reasoning, str) and last_reasoning:
+                message_payload["reasoning_content"] = last_reasoning
+                message_payload["reasoning"] = last_reasoning
+
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
@@ -1961,10 +2042,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "choices": [
                 {
                     "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": final_response,
-                    },
+                    "message": message_payload,
                     "finish_reason": finish_reason,
                 }
             ],
@@ -2042,11 +2120,50 @@ class APIServerAdapter(BasePlatformAdapter):
                 frontends can display them without storing the markers in
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
+
+                Tagged tuples ``("__reasoning__", text)`` carry a slice
+                of the model's chain-of-thought and are emitted as
+                ``delta.reasoning_content`` chunks so Open WebUI and
+                other OpenAI-compatible UIs can render the model's
+                thinking live as it streams (#37044).  Mirrors the
+                ``reasoning_content`` field added to the non-streaming
+                response.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning__":
+                    # Reasoning chunk — same shape as a content chunk but
+                    # with ``reasoning_content`` instead of ``content``.
+                    # Open WebUI consumes ``delta.reasoning_content``; we
+                    # also include the OpenAI-native ``delta.reasoning``
+                    # for clients that only know the older schema.
+                    text = item[1] if isinstance(item[1], str) else ""
+                    if not text:
+                        return time.monotonic()
+                    # Defensive cap so a malicious or buggy provider
+                    # can't pump arbitrarily large reasoning strings
+                    # through the tool_progress_callback.  Real reasoning
+                    # fits comfortably under 256 KB; anything larger is
+                    # almost certainly an attack or runaway loop (#37044).
+                    if len(text) > MAX_REASONING_CHUNK_BYTES:
+                        text = text[:MAX_REASONING_CHUNK_BYTES]
+                    reasoning_chunk = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {
+                                "reasoning_content": text,
+                                "reasoning": text,
+                            },
+                            "finish_reason": None,
+                        }],
+                    }
+                    await response.write(
+                        f"data: {json.dumps(reasoning_chunk)}\n\n".encode()
                     )
                 else:
                     content_chunk = {

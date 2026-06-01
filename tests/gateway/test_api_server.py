@@ -1473,6 +1473,263 @@ class TestChatCompletionsEndpoint:
 
         assert session_ids[0] != session_ids[1]
 
+    @pytest.mark.asyncio
+    async def test_non_streaming_omits_reasoning_by_default(self, adapter):
+        """Backward-compat: reasoning is not exposed unless client opts in.
+
+        Regression guard for #37044: prior to the fix, the API server
+        silently dropped ``last_reasoning`` from the agent result, so
+        downstream clients (Open WebUI, etc.) never saw the model's
+        thinking.  This test pins the *default* behaviour — no
+        reasoning fields in the message unless the client opts in via
+        the X-Hermes-Expose-Reasoning header.  Including
+        reasoning_content by default would change the wire format for
+        every existing client, so the opt-in must remain explicit.
+        """
+        mock_result = {
+            "final_response": "The answer is 42.",
+            "last_reasoning": "I need to think about the meaning of life.",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "What is the answer?"}],
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            message = data["choices"][0]["message"]
+            assert message["content"] == "The answer is 42."
+            # No reasoning fields in the default response.
+            assert "reasoning_content" not in message
+            assert "reasoning" not in message
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_exposes_reasoning_when_header_set(self, adapter):
+        """When the X-Hermes-Expose-Reasoning header is true, the response
+        surfaces the model's reasoning/thinking block so Open WebUI and
+        other OpenAI-compatible UIs can render it.
+
+        Regression guard for #37044: prior to the fix the API server
+        adapter silently dropped ``last_reasoning`` from the agent
+        result, leaving downstream consumers blind to the model's
+        chain-of-thought even when the model produced a visible
+        reasoning block in the TUI / CLI.
+        """
+        mock_result = {
+            "final_response": "The answer is 42.",
+            "last_reasoning": "I need to think about the meaning of life.",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "What is the answer?"}],
+                    },
+                    headers={"X-Hermes-Expose-Reasoning": "true"},
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            message = data["choices"][0]["message"]
+            assert message["content"] == "The answer is 42."
+            # OpenAI-compatible reasoning fields: reasoning_content is the
+            # de facto standard used by DeepSeek / OpenRouter / Nous Portal;
+            # ``reasoning`` is the OpenAI-native field name.
+            assert message.get("reasoning_content") == (
+                "I need to think about the meaning of life."
+            )
+            assert message.get("reasoning") == (
+                "I need to think about the meaning of life."
+            )
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_expose_reasoning_header_false_omits(self, adapter):
+        """Explicit ``X-Hermes-Expose-Reasoning: false`` must behave like
+        the default (no reasoning fields in the response).  This guards
+        against accidentally flipping the default to opt-out and lets
+        clients explicitly disable reasoning for one request even if a
+        future config defaults to true.
+        """
+        mock_result = {
+            "final_response": "Hello",
+            "last_reasoning": "thinking...",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                    headers={"X-Hermes-Expose-Reasoning": "false"},
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            message = data["choices"][0]["message"]
+            assert "reasoning_content" not in message
+            assert "reasoning" not in message
+
+    @pytest.mark.asyncio
+    async def test_streaming_omits_reasoning_chunks_by_default(self, adapter):
+        """Backward-compat: streaming SSE responses must not carry
+        ``delta.reasoning_content`` chunks unless the client opts in
+        via the X-Hermes-Expose-Reasoning header.  Sending unexpected
+        delta fields to existing clients can break parsers that
+        strictly validate the OpenAI schema.
+        """
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                tp_cb = kwargs.get("tool_progress_callback")
+                if tp_cb:
+                    tp_cb("reasoning.available", "_thinking", "I think therefore I am.")
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Answer: 42.")
+                return (
+                    {"final_response": "Answer: 42.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "[DONE]" in body
+                # No reasoning_content delta should appear in the stream
+                assert "reasoning_content" not in body
+                # The text content must still be present
+                assert "Answer: 42." in body
+
+    @pytest.mark.asyncio
+    async def test_streaming_exposes_reasoning_chunks_when_header_set(self, adapter):
+        """When the X-Hermes-Expose-Reasoning header is true, the SSE
+        stream must emit ``delta.reasoning_content`` chunks so Open WebUI
+        and other downstream consumers can render the model's thinking.
+
+        Regression guard for #37044.
+        """
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                tp_cb = kwargs.get("tool_progress_callback")
+                if tp_cb:
+                    tp_cb("reasoning.available", "_thinking", "I think therefore I am.")
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Answer: 42.")
+                return (
+                    {"final_response": "Answer: 42.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                    headers={"X-Hermes-Expose-Reasoning": "true"},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "[DONE]" in body
+                # The reasoning text must be present in the stream as a
+                # delta.reasoning_content chunk.
+                assert "reasoning_content" in body
+                assert "I think therefore I am." in body
+                # The final answer must still be present.
+                assert "Answer: 42." in body
+
+    @pytest.mark.asyncio
+    async def test_streaming_reasoning_chunk_capped_at_max_size(self, adapter):
+        """Defensive cap on per-chunk reasoning payload to prevent
+        memory/bandwidth abuse from a malicious or buggy provider
+        (#37044).  Real reasoning fits comfortably under the cap; we
+        just want the gateway to refuse to stream arbitrarily large
+        ``reasoning.available`` events.
+        """
+        from gateway.platforms.api_server import MAX_REASONING_CHUNK_BYTES
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            huge = "x" * (MAX_REASONING_CHUNK_BYTES + 10_000)
+
+            async def _mock_run_agent(**kwargs):
+                tp_cb = kwargs.get("tool_progress_callback")
+                if tp_cb:
+                    tp_cb("reasoning.available", "_thinking", huge)
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("ok")
+                return (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                    headers={"X-Hermes-Expose-Reasoning": "true"},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                # The reasoning payload is truncated at the cap, so the
+                # body should NOT contain the untruncated string of x's
+                # (the cap is far smaller than 10_000 extra characters).
+                assert "x" * (MAX_REASONING_CHUNK_BYTES + 1_000) not in body
+
 
 # ---------------------------------------------------------------------------
 # _derive_chat_session_id unit tests
