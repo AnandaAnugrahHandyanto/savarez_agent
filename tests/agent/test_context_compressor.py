@@ -1234,6 +1234,7 @@ class TestCompressWithClient:
             {"role": "assistant", "content": "msg 5"},
             {"role": "user", "content": "msg 6"},
             {"role": "assistant", "content": "msg 7"},
+            {"role": "user", "content": "msg 8"},
         ]
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
@@ -1363,7 +1364,7 @@ class TestCompressWithClient:
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=3)
 
         # Head: [system, user, assistant]  →  last head = assistant
-        # Tail: [user, assistant, user]    →  first tail = user
+        # Tail: [user, assistant]          →  first tail = user
         # summary_role="user" collides with tail, "assistant" collides with head → merge
         # NOTE: protect_first_n=2 preserves 2 non-system messages in addition to
         # the system prompt (always implicitly protected).
@@ -1377,6 +1378,7 @@ class TestCompressWithClient:
             {"role": "user", "content": "msg 6"},       # tail start
             {"role": "assistant", "content": "msg 7"},
             {"role": "user", "content": "msg 8"},
+            {"role": "assistant", "content": "msg 9"},
         ]
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
@@ -1388,8 +1390,8 @@ class TestCompressWithClient:
             if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
-        # The summary text should be merged into the first tail message
-        first_tail = [m for m in result if "msg 6" in (m.get("content") or "")]
+        # The summary text should be merged into the first active-tail message.
+        first_tail = [m for m in result if "msg 8" in (m.get("content") or "")]
         assert len(first_tail) == 1
         assert "summary text" in first_tail[0]["content"]
 
@@ -1411,7 +1413,6 @@ class TestCompressWithClient:
             {"role": "user", "content": "msg 5"},
             {"role": "user", "content": [{"type": "text", "text": "msg 6"}]},
             {"role": "assistant", "content": "msg 7"},
-            {"role": "user", "content": "msg 8"},
         ]
 
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
@@ -1454,6 +1455,7 @@ class TestCompressWithClient:
             {"role": "assistant", "content": "msg 5"},   # tail start
             {"role": "user", "content": "msg 6"},
             {"role": "assistant", "content": "msg 7"},
+            {"role": "user", "content": "msg 8"},
         ]
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
@@ -1465,8 +1467,8 @@ class TestCompressWithClient:
             if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
-        # The summary should be merged into the first tail message (assistant at index 5)
-        first_tail = [m for m in result if "msg 5" in (m.get("content") or "")]
+        # The summary should be merged into the first tail message (assistant at index 7)
+        first_tail = [m for m in result if "msg 7" in (m.get("content") or "")]
         assert len(first_tail) == 1
         assert "summary text" in first_tail[0]["content"]
 
@@ -1956,6 +1958,87 @@ class TestTokenBudgetTailProtection:
         cut = c._find_tail_cut_by_tokens(messages, head_end)
         assert isinstance(cut, int)
         assert 0 <= cut <= len(messages)
+
+    def test_latest_assistant_question_stays_adjacent_to_short_user_reply(self):
+        """Compression must not leave stale raw history between a question and
+        the user's terse answer to that question.
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=20,
+            )
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "start the session"},
+            {"role": "assistant", "content": "ready"},
+        ]
+        for i in range(30):
+            msgs.append({"role": "user", "content": f"old proxy debugging turn {i}"})
+            msgs.append({"role": "assistant", "content": f"old proxy response {i}"})
+        msgs.extend([
+            {
+                "role": "assistant",
+                "content": "Should I add Sina K-line and emweb financial APIs to the data-source config?",
+            },
+            {"role": "user", "content": "add them all"},
+        ])
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        contents = [m.get("content") for m in result]
+        question_idx = contents.index(
+            "Should I add Sina K-line and emweb financial APIs to the data-source config?"
+        )
+        reply_idx = contents.index("add them all")
+        assert reply_idx == question_idx + 1
+        assert not any(
+            isinstance(content, str) and content.startswith("old proxy")
+            for content in contents
+        )
+
+    def test_manual_preflight_uses_same_active_tail_boundary_as_compress(self):
+        """A huge token budget should not make /compress skip a transcript that
+        active-tail compression can still compact safely.
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=20,
+            )
+        c.tail_token_budget = 1_000_000
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "ready"},
+        ]
+        for i in range(12):
+            msgs.append({"role": "user", "content": f"middle user {i}"})
+            msgs.append({"role": "assistant", "content": f"middle assistant {i}"})
+        msgs.extend([
+            {"role": "assistant", "content": "latest clarifying question"},
+            {"role": "user", "content": "yes"},
+        ])
+
+        assert c.has_content_to_compress(msgs) is True
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+        assert len(result) < len(msgs)
 
     def test_generous_budget_protects_everything_floor_does_not_override(
         self, budget_compressor
