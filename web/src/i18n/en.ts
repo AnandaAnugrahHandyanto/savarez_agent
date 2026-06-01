@@ -121,8 +121,16 @@ export const en: Translations = {
     startedInBackground: "Started in background — check logs for progress",
     stopped: "Stopped",
     updateHermes: "Update Hermes",
-    updatingHermes: "Updating Hermes…",
-    waitingForOutput: "Waiting for output…",
+    updatingHermes: "Updating Hermes\u2026",
+    upToDate: "Hermes is already up to date",
+    updateAvailable: "Update available",
+    updatePreviewTitle: "Hermes Update Preview",
+    updatePreviewCurrent: "Current",
+    updatePreviewTarget: "Target",
+    updatePreviewCommits: "Changes to be applied",
+    updatePreviewConfirm: "Update Now",
+    updatePreviewCancel: "Cancel",
+    waitingForOutput: "Waiting for output\u2026",
   },
 
   sessions: {

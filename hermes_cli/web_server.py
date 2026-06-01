@@ -776,6 +776,109 @@ async def restart_gateway():
     }
 
 
+def _get_update_branch() -> str:
+    """Determine the upstream tracking branch for the update preview."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "origin/main"
+
+
+def _get_update_preview() -> dict:
+    """Fetch the upstream branch and return a changelog preview.
+
+    Does NOT apply any changes — just fetches the remote and reports what
+    commits would be pulled.  Returns a dict with ``current_sha``,
+    ``target_sha``, ``current_version``, ``branch``, ``commits`` (list of
+    {sha, message}), and ``up_to_date``.
+    """
+    branch = _get_update_branch()
+
+    # Fetch silently to get the latest remote state without applying
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to fetch from remote")
+
+    # Current HEAD
+    current_sha = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    ).stdout.strip()
+
+    # Target SHA on the remote branch
+    target_sha = subprocess.run(
+        ["git", "rev-parse", "--short", branch],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    ).stdout.strip()
+
+    # Current version (from hermes package)
+    current_version = __version__
+
+    # Commits between HEAD and target
+    log_result = subprocess.run(
+        ["git", "log", "--oneline", f"HEAD..{branch}"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    commits: list[dict] = []
+    if log_result.returncode == 0 and log_result.stdout.strip():
+        for line in log_result.stdout.strip().splitlines():
+            parts = line.split(" ", 1)
+            if len(parts) == 2:
+                commits.append({"sha": parts[0], "message": parts[1]})
+            else:
+                commits.append({"sha": line, "message": ""})
+
+    up_to_date = len(commits) == 0 and current_sha == target_sha
+
+    return {
+        "current_sha": current_sha,
+        "target_sha": target_sha,
+        "current_version": current_version,
+        "branch": branch,
+        "commits": commits,
+        "up_to_date": up_to_date,
+    }
+
+
+@app.get("/api/hermes/update/preview")
+async def preview_update():
+    """Return a changelog preview of available updates without applying them."""
+    try:
+        preview = _get_update_preview()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to generate update preview")
+        raise HTTPException(status_code=500, detail=f"Failed to preview update: {exc}")
+    return {"ok": True, **preview}
+
+
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
@@ -789,6 +892,25 @@ async def update_hermes():
         "pid": proc.pid,
         "name": "hermes-update",
     }
+
+
+@app.post("/api/dashboard/restart")
+async def restart_dashboard():
+    """Schedule a dashboard restart after a brief delay.
+
+    The response is sent first, then after 1 second the dashboard process
+    restarts itself (using the updated code on disk).
+    """
+    import asyncio as _asyncio
+
+    async def _restart():
+        await _asyncio.sleep(1)
+        # Replace the current process with a fresh hermess dashboard
+        os.execv(sys.executable, [sys.executable, "-m", "hermes_cli.main", "web",
+                                  "--port", str(os.environ.get("HERMES_DASHBOARD_PORT", "9119"))])
+
+    _asyncio.create_task(_restart())
+    return {"ok": True, "message": "Dashboard restart scheduled"}
 
 
 @app.get("/api/actions/{name}/status")

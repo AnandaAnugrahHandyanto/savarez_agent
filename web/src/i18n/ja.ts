@@ -123,6 +123,14 @@ export const ja: Translations = {
     updateHermes: "Hermes を更新",
     updatingHermes: "Hermes を更新しています…",
     waitingForOutput: "出力を待機しています…",
+    upToDate: "Hermes is already up to date",
+    updateAvailable: "Update available",
+    updatePreviewTitle: "Hermes Update Preview",
+    updatePreviewCurrent: "Current",
+    updatePreviewTarget: "Target",
+    updatePreviewCommits: "Changes to be applied",
+    updatePreviewConfirm: "Update Now",
+    updatePreviewCancel: "Cancel",
   },
 
   sessions: {

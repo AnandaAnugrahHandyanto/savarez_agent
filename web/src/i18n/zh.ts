@@ -122,6 +122,14 @@ export const zh: Translations = {
     updateHermes: "更新 Hermes",
     updatingHermes: "正在更新 Hermes…",
     waitingForOutput: "等待输出…",
+    upToDate: "Hermes is already up to date",
+    updateAvailable: "Update available",
+    updatePreviewTitle: "Hermes Update Preview",
+    updatePreviewCurrent: "Current",
+    updatePreviewTarget: "Target",
+    updatePreviewCommits: "Changes to be applied",
+    updatePreviewConfirm: "Update Now",
+    updatePreviewCancel: "Cancel",
   },
 
   sessions: {

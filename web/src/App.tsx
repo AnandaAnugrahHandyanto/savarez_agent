@@ -44,6 +44,8 @@ import {
   Terminal,
   Users,
   Wrench,
+  ChevronDown,
+  ChevronUp,
   X,
   Zap,
 } from "lucide-react";
@@ -840,8 +842,17 @@ function SidebarSystemActions({
 }: SidebarSystemActionsProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
-  const { activeAction, isBusy, isRunning, pendingAction, runAction } =
-    useSystemActions();
+  const {
+    activeAction,
+    confirmUpdate,
+    dismissPreview,
+    isBusy,
+    isRunning,
+    pendingAction,
+    previewLoading,
+    runAction,
+    updatePreview,
+  } = useSystemActions();
 
   const items: SystemActionItem[] = [
     {
@@ -898,14 +909,108 @@ function SidebarSystemActions({
             collapsed={collapsed}
             disabled={isBusy && !(pendingAction === item.action || (activeAction === item.action && isRunning))}
             tooltipWarmRef={tooltipWarmRef}
-            isPending={pendingAction === item.action}
+            isPending={pendingAction === item.action || (item.action === "update" && previewLoading)}
             isRunning={activeAction === item.action && isRunning && pendingAction !== item.action}
             item={item}
             onClick={() => handleClick(item.action)}
           />
         ))}
       </ul>
+
+      {/* Update preview changelog dialog */}
+      {updatePreview && !updatePreview.up_to_date && (
+        <UpdatePreviewDialog
+          preview={updatePreview}
+          onConfirm={() => { void confirmUpdate(); navigate("/sessions"); onNavigate(); }}
+          onCancel={dismissPreview}
+          t={t}
+        />
+      )}
     </div>
+  );
+}
+
+function UpdatePreviewDialog({
+  preview,
+  onConfirm,
+  onCancel,
+  t,
+}: {
+  preview: { current_sha: string; target_sha: string; current_version: string; branch: string; commits: { sha: string; message: string }[] };
+  onConfirm: () => void;
+  onCancel: () => void;
+  t: ReturnType<typeof useI18n>["t"];
+}) {
+  const [showFullMessages, setShowFullMessages] = useState(false);
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+    >
+      <div className="w-full max-w-lg mx-4 bg-bg-primary border border-border-primary rounded-lg shadow-xl p-6 max-h-[80vh] flex flex-col">
+        <h2 className="text-lg font-semibold text-text-primary mb-2">
+          {t.status.updatePreviewTitle}
+        </h2>
+
+        <div className="flex gap-6 mb-4 text-sm">
+          <div>
+            <span className="text-text-tertiary">{t.status.updatePreviewCurrent}:</span>{" "}
+            <code className="text-text-secondary bg-bg-tertiary px-1.5 py-0.5 rounded text-xs">
+              {preview.current_sha}
+            </code>
+          </div>
+          <div>
+            <span className="text-text-tertiary">{t.status.updatePreviewTarget}:</span>{" "}
+            <code className="text-text-secondary bg-bg-tertiary px-1.5 py-0.5 rounded text-xs">
+              {preview.target_sha}
+            </code>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm text-text-secondary">
+            {t.status.updateAvailable} ({preview.commits.length} commit{preview.commits.length !== 1 ? "s" : ""})
+          </p>
+          <button
+            onClick={() => setShowFullMessages(!showFullMessages)}
+            className="flex items-center gap-1 text-xs text-text-tertiary hover:text-text-secondary transition-colors"
+          >
+            {showFullMessages ? (
+              <><ChevronUp className="w-3.5 h-3.5" /> Hide details</>
+            ) : (
+              <><ChevronDown className="w-3.5 h-3.5" /> Show details</>
+            )}
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto mb-4 border border-border-secondary rounded-md bg-bg-tertiary">
+          <div className="p-3 font-mono text-xs text-text-secondary space-y-0.5">
+            {preview.commits.map((c) => (
+              <div key={c.sha} className="flex gap-2">
+                <code className="text-accent-primary shrink-0">{c.sha}</code>
+                <span className={showFullMessages ? "break-all" : "truncate"}>{c.message}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex gap-3 justify-end">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary bg-bg-tertiary hover:bg-bg-secondary rounded-md transition-colors"
+          >
+            {t.status.updatePreviewCancel}
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 text-sm text-accent-foreground bg-accent-primary hover:bg-accent-primary/80 rounded-md transition-colors font-medium"
+          >
+            {t.status.updatePreviewConfirm}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 

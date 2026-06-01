@@ -123,6 +123,14 @@ export const es: Translations = {
     updateHermes: "Actualizar Hermes",
     updatingHermes: "Actualizando Hermes…",
     waitingForOutput: "Esperando salida…",
+    upToDate: "Hermes is already up to date",
+    updateAvailable: "Update available",
+    updatePreviewTitle: "Hermes Update Preview",
+    updatePreviewCurrent: "Current",
+    updatePreviewTarget: "Target",
+    updatePreviewCommits: "Changes to be applied",
+    updatePreviewConfirm: "Update Now",
+    updatePreviewCancel: "Cancel",
   },
 
   sessions: {

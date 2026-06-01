@@ -123,6 +123,14 @@ export const af: Translations = {
     updateHermes: "Werk Hermes op",
     updatingHermes: "Besig om Hermes op te werk…",
     waitingForOutput: "Wag vir uitset…",
+    upToDate: "Hermes is already up to date",
+    updateAvailable: "Update available",
+    updatePreviewTitle: "Hermes Update Preview",
+    updatePreviewCurrent: "Current",
+    updatePreviewTarget: "Target",
+    updatePreviewCommits: "Changes to be applied",
+    updatePreviewConfirm: "Update Now",
+    updatePreviewCancel: "Cancel",
   },
 
   sessions: {

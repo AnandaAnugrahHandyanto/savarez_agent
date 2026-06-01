@@ -123,6 +123,14 @@ export const ko: Translations = {
     updateHermes: "Hermes 업데이트",
     updatingHermes: "Hermes 업데이트 중…",
     waitingForOutput: "출력 대기 중…",
+    upToDate: "Hermes is already up to date",
+    updateAvailable: "Update available",
+    updatePreviewTitle: "Hermes Update Preview",
+    updatePreviewCurrent: "Current",
+    updatePreviewTarget: "Target",
+    updatePreviewCommits: "Changes to be applied",
+    updatePreviewConfirm: "Update Now",
+    updatePreviewCancel: "Cancel",
   },
 
   sessions: {

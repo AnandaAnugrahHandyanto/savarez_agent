@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { ActionStatusResponse } from "@/lib/api";
+import type { ActionStatusResponse, UpdatePreviewResponse } from "@/lib/api";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useI18n } from "@/i18n";
 import {
@@ -24,6 +24,9 @@ export function SystemActionsProvider({
     null,
   );
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [updatePreview, setUpdatePreview] =
+    useState<UpdatePreviewResponse | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const { t } = useI18n();
 
   useEffect(() => {
@@ -32,6 +35,7 @@ export function SystemActionsProvider({
     return () => clearTimeout(timer);
   }, [toast]);
 
+  // Poll action status while an action is active
   useEffect(() => {
     if (!activeAction) return;
     const name = ACTION_NAMES[activeAction];
@@ -50,6 +54,13 @@ export function SystemActionsProvider({
               ? t.status.actionFinished
               : `${t.status.actionFailed} (exit ${resp.exit_code ?? "?"})`,
           });
+
+          // If update completed successfully, restart the dashboard
+          if (activeAction === "update" && ok) {
+            setTimeout(() => {
+              api.restartDashboard().catch(() => {});
+            }, 500);
+          }
           return;
         }
       } catch {
@@ -66,14 +77,36 @@ export function SystemActionsProvider({
 
   const runAction = useCallback(
     async (action: SystemAction) => {
+      // For update: show preview first, don't start immediately
+      if (action === "update") {
+        setPreviewLoading(true);
+        try {
+          const preview = await api.previewUpdate();
+          setUpdatePreview(preview);
+          if (preview.up_to_date) {
+            setToast({
+              type: "success",
+              message: t.status.upToDate ?? "Hermes is already up to date",
+            });
+            setUpdatePreview(null); // dismiss preview if up to date
+          }
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          setToast({
+            type: "error",
+            message: `${t.status.actionFailed}: ${detail}`,
+          });
+        } finally {
+          setPreviewLoading(false);
+        }
+        return;
+      }
+
+      // Restart: execute immediately (no preview needed)
       setPendingAction(action);
       setActionStatus(null);
       try {
-        if (action === "restart") {
-          await api.restartGateway();
-        } else {
-          await api.updateHermes();
-        }
+        await api.restartGateway();
         setActiveAction(action);
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
@@ -85,16 +118,39 @@ export function SystemActionsProvider({
         setPendingAction(null);
       }
     },
-    [t.status.actionFailed],
+    [t.status.actionFailed, t.status.upToDate],
   );
+
+  const confirmUpdate = useCallback(async () => {
+    setUpdatePreview(null);
+    setPendingAction("update");
+    setActionStatus(null);
+    try {
+      await api.updateHermes();
+      setActiveAction("update");
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setToast({
+        type: "error",
+        message: `${t.status.actionFailed}: ${detail}`,
+      });
+    } finally {
+      setPendingAction(null);
+    }
+  }, [t.status.actionFailed]);
 
   const dismissLog = useCallback(() => {
     setActiveAction(null);
     setActionStatus(null);
   }, []);
 
-  const isRunning = activeAction !== null && actionStatus?.running !== false;
-  const isBusy = pendingAction !== null || isRunning;
+  const dismissPreview = useCallback(() => {
+    setUpdatePreview(null);
+  }, []);
+
+  const isRunning =
+    activeAction !== null && actionStatus?.running !== false;
+  const isBusy = pendingAction !== null || isRunning || previewLoading;
 
   return (
     <SystemActionsContext.Provider
@@ -106,6 +162,10 @@ export function SystemActionsProvider({
         isRunning,
         pendingAction,
         runAction,
+        updatePreview,
+        previewLoading,
+        dismissPreview,
+        confirmUpdate,
       }}
     >
       {children}

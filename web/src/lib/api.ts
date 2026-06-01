@@ -432,12 +432,16 @@ export const api = {
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  previewUpdate: () =>
+    fetchJSON<UpdatePreviewResponse>("/api/hermes/update/preview"),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
   getActionStatus: (name: string, lines = 200) =>
     fetchJSON<ActionStatusResponse>(
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
     ),
+  restartDashboard: () =>
+    fetchJSON<{ ok: boolean; message: string }>("/api/dashboard/restart", { method: "POST" }),
 
   // Dashboard plugins
   getPlugins: () =>
@@ -527,6 +531,21 @@ export interface ActionResponse {
   name: string;
   ok: boolean;
   pid: number;
+}
+
+export interface UpdatePreviewCommit {
+  sha: string;
+  message: string;
+}
+
+export interface UpdatePreviewResponse {
+  ok: boolean;
+  current_sha: string;
+  target_sha: string;
+  current_version: string;
+  branch: string;
+  commits: UpdatePreviewCommit[];
+  up_to_date: boolean;
 }
 
 /** Per-call overrides for {@link fetchJSON}. */

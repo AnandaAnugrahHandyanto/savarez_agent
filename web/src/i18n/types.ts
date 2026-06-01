@@ -139,6 +139,14 @@ export interface Translations {
     stopped: string;
     updateHermes: string;
     updatingHermes: string;
+    upToDate: string;
+    updateAvailable: string;
+    updatePreviewTitle: string;
+    updatePreviewCurrent: string;
+    updatePreviewTarget: string;
+    updatePreviewCommits: string;
+    updatePreviewConfirm: string;
+    updatePreviewCancel: string;
     waitingForOutput: string;
   };
 

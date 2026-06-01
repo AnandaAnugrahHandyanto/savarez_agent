@@ -123,6 +123,14 @@ export const ga: Translations = {
     updateHermes: "Nuashonraigh Hermes",
     updatingHermes: "Ag nuashonrú Hermes…",
     waitingForOutput: "Ag fanacht le haschur…",
+    upToDate: "Hermes is already up to date",
+    updateAvailable: "Update available",
+    updatePreviewTitle: "Hermes Update Preview",
+    updatePreviewCurrent: "Current",
+    updatePreviewTarget: "Target",
+    updatePreviewCommits: "Changes to be applied",
+    updatePreviewConfirm: "Update Now",
+    updatePreviewCancel: "Cancel",
   },
 
   sessions: {
