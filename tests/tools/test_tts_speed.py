@@ -113,6 +113,12 @@ class TestOpenaiTtsSpeed:
         kwargs = create.call_args[1]
         assert kwargs["speed"] == 4.0
 
+    def test_provider_instructions_are_passed(self, tmp_path, monkeypatch):
+        """tts.openai.instructions/default_instructions controls expressive voice style."""
+        create = self._run({"openai": {"instructions": "Brazilian Portuguese, warm and concise"}}, tmp_path, monkeypatch)
+        kwargs = create.call_args[1]
+        assert kwargs["instructions"] == "Brazilian Portuguese, warm and concise"
+
 
 # ---------------------------------------------------------------------------
 # MiniMax TTS (t2a_v2 endpoint: nested voice_setting/audio_setting,

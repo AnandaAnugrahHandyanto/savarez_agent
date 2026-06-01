@@ -86,7 +86,7 @@ _HAS_MISTRAL = _safe_find_spec("mistralai")
 DEFAULT_PROVIDER = "local"
 DEFAULT_LOCAL_MODEL = "base"
 DEFAULT_LOCAL_STT_LANGUAGE = "en"
-DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
+DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "gpt-audio-mini")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
@@ -104,7 +104,7 @@ LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 # Known model sets for auto-correction
-OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
+OPENAI_MODELS = {"whisper-1", "gpt-audio-mini", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
 
 # Singleton for the local model — loaded once, reused across calls
@@ -124,6 +124,44 @@ def _load_stt_config() -> dict:
         return load_config().get("stt", {})
     except Exception:
         return {}
+
+
+def _load_full_config() -> dict:
+    """Load full Hermes config for cross-cutting audio prompt controls."""
+    try:
+        from hermes_cli.config import load_config
+        return load_config()
+    except Exception:
+        return {}
+
+
+def _resolve_audio_transcription_prompt(stt_config: Optional[dict] = None) -> Optional[str]:
+    """Return the configured OpenAI STT prompt/style hint, if any.
+
+    Supports both the Omni-compatible global shape:
+
+        prompt.audio_transcription: "..."
+
+    and provider-local overrides:
+
+        stt.openai.prompt: "..."
+        stt.openai.audio_transcription_prompt: "..."
+    """
+    stt = stt_config if stt_config is not None else _load_stt_config()
+    openai_cfg = stt.get("openai", {}) if isinstance(stt.get("openai"), dict) else {}
+    for value in (
+        openai_cfg.get("prompt"),
+        openai_cfg.get("audio_transcription_prompt"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    full = _load_full_config()
+    prompt_cfg = full.get("prompt", {}) if isinstance(full.get("prompt"), dict) else {}
+    value = prompt_cfg.get("audio_transcription")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
@@ -1342,11 +1380,15 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
         try:
             with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model=model_name,
-                    file=audio_file,
-                    response_format="text" if model_name == "whisper-1" else "json",
-                )
+                create_kwargs = {
+                    "model": model_name,
+                    "file": audio_file,
+                    "response_format": "text" if model_name == "whisper-1" else "json",
+                }
+                prompt = _resolve_audio_transcription_prompt()
+                if prompt:
+                    create_kwargs["prompt"] = prompt
+                transcription = client.audio.transcriptions.create(**create_kwargs)
 
             transcript_text = _extract_transcript_text(transcription)
             logger.info("Transcribed %s via OpenAI API (%s, %d chars)",

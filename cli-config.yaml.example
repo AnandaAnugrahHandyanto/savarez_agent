@@ -816,7 +816,7 @@ platform_toolsets:
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
-# Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe)
+# Providers: local (free, faster-whisper) | groq (free tier) | openai (quality/cheap audio models) | mistral (Voxtral Transcribe)
 # Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
 stt:
   enabled: true
@@ -825,7 +825,8 @@ stt:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
   openai:
-    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+    model: "gpt-audio-mini"     # gpt-audio-mini | whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+    # prompt: ""                # optional transcription style/context hint
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
 

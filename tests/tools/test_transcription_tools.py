@@ -368,6 +368,26 @@ class TestTranscribeOpenAIExtended:
         assert "Permission denied" in result["error"]
         mock_client.close.assert_called_once()
 
+    def test_gpt_audio_mini_uses_json_response_and_prompt(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = {"text": "olá"}
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._resolve_audio_transcription_prompt", return_value="pt-BR, preserve names"), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(sample_wav, "gpt-audio-mini")
+
+        assert result["success"] is True
+        assert result["transcript"] == "olá"
+        kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert kwargs["model"] == "gpt-audio-mini"
+        assert kwargs["response_format"] == "json"
+        assert kwargs["prompt"] == "pt-BR, preserve names"
+        mock_client.close.assert_called_once()
+
 
 class TestTranscribeLocalCommand:
     def test_auto_detects_local_whisper_binary(self, monkeypatch):

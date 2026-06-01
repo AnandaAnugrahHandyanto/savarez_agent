@@ -1438,7 +1438,8 @@ DEFAULT_CONFIG = {
         "openai": {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
-            # Voices: alloy, echo, fable, onyx, nova, shimmer
+            "instructions": "",  # Optional speaking style prompt passed to OpenAI TTS
+            # Voices: alloy, echo, fable, onyx, nova, shimmer, ash, ballad, coral, sage, verse, cedar
         },
         "xai": {
             "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
@@ -1449,6 +1450,11 @@ DEFAULT_CONFIG = {
         "mistral": {
             "model": "voxtral-mini-tts-2603",
             "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
+        },
+        "gemini": {
+            "model": "gemini-3.1-flash-tts-preview",
+            "voice": "Kore",
+            "style": "",  # Optional style prompt prepended to Gemini TTS input
         },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
@@ -1479,7 +1485,8 @@ DEFAULT_CONFIG = {
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "openai": {
-            "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+            "model": "gpt-audio-mini",  # gpt-audio-mini, whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+            "prompt": "",  # Optional transcription style/context hint (OpenAI only)
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
@@ -1490,6 +1497,11 @@ DEFAULT_CONFIG = {
             "tag_audio_events": False,
             "diarize": False,
         },
+    },
+
+    # Cross-provider prompt overrides for media helpers.
+    "prompt": {
+        "audio_transcription": "",  # Optional STT style/context hint; provider-specific settings may override
     },
 
     "voice": {

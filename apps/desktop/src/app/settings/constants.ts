@@ -71,9 +71,11 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'context.engine': ['compressor', 'default', 'custom'],
   'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh'],
   'memory.provider': ['', 'builtin', 'honcho'],
+  'stt.openai.model': ['gpt-audio-mini', 'whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
-  'tts.openai.voice': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']
+  'tts.openai.voice': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer', 'ash', 'ballad', 'coral', 'sage', 'verse', 'cedar'],
+  'tts.gemini.voice': ['Kore', 'Puck', 'Charon', 'Fenrir', 'Aoede', 'Leda', 'Orus', 'Zephyr']
 }
 
 export const FIELD_LABELS: Record<string, string> = {
@@ -113,6 +115,8 @@ export const FIELD_LABELS: Record<string, string> = {
   'stt.provider': 'Speech-To-Text Provider',
   'stt.local.model': 'Local Transcription Model',
   'stt.local.language': 'Transcription Language',
+  'stt.openai.model': 'OpenAI STT Model',
+  'stt.openai.prompt': 'OpenAI STT Prompt',
   'stt.elevenlabs.model_id': 'ElevenLabs STT Model',
   'stt.elevenlabs.language_code': 'ElevenLabs Language',
   'stt.elevenlabs.tag_audio_events': 'Tag Audio Events',
@@ -121,6 +125,10 @@ export const FIELD_LABELS: Record<string, string> = {
   'tts.edge.voice': 'Edge Voice',
   'tts.openai.model': 'OpenAI TTS Model',
   'tts.openai.voice': 'OpenAI Voice',
+  'tts.openai.instructions': 'OpenAI Voice Instructions',
+  'tts.gemini.model': 'Gemini TTS Model',
+  'tts.gemini.voice': 'Gemini Voice',
+  'tts.gemini.style': 'Gemini Voice Style',
   'tts.elevenlabs.voice_id': 'ElevenLabs Voice',
   'tts.elevenlabs.model_id': 'ElevenLabs Model',
   'memory.memory_enabled': 'Persistent Memory',
