@@ -336,13 +336,15 @@ class TestSlackNativeSlashes:
             )
 
     def test_includes_aliases_as_first_class_slashes(self):
-        """Aliases (/btw, /bg, /reset, /q) must be registered as standalone
-        slashes — this is the whole point of native-slashes parity."""
+        """Aliases (/btw, /bg, /reset, /moac) must be registered as standalone
+        slashes — this is the whole point of native-slashes parity.
+        Note: Slack's 50-slash cap means earlier entries can bump later ones;
+        /moac replaces /q (alias for /quit) which is still reachable via /hermes q."""
         names = {n for n, _d, _h in slack_native_slashes()}
         assert "btw" in names
         assert "bg" in names
         assert "reset" in names
-        assert "q" in names
+        assert "moac" in names
 
     def test_telegram_parity(self):
         """Every Telegram bot command must be registerable on Slack too.
