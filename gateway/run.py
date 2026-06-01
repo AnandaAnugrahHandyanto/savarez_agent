@@ -8051,6 +8051,9 @@ class GatewayRunner:
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
+        if canonical == "copilot-quota":
+            return await self._handle_copilot_quota_command(event)
+
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
@@ -13909,6 +13912,17 @@ class GatewayRunner:
         if account_lines:
             return "\n".join(account_lines)
         return t("gateway.usage.no_data")
+
+    async def _handle_copilot_quota_command(self, event: MessageEvent) -> str:
+        """Handle /copilot-quota command -- show Copilot account quota when available."""
+        result = await self._handle_usage_command(event)
+        if not result:
+            return "No Copilot quota data available."
+        lines = [line for line in str(result).splitlines() if line.strip()]
+        account_start = next((i for i, line in enumerate(lines) if "Account limits" in line), None)
+        if account_start is None:
+            return "No Copilot quota data available."
+        return "\n".join(lines[account_start:])
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""

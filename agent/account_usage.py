@@ -33,6 +33,10 @@ class AccountUsageSnapshot:
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
     unavailable_reason: Optional[str] = None
+    compact_label: Optional[str] = None
+    compact_short_label: Optional[str] = None
+    compact_tiny_label: Optional[str] = None
+    compact_level: Optional[str] = None  # ok / warn / error
 
     @property
     def available(self) -> bool:
@@ -321,6 +325,138 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "copilot":
+            return _fetch_copilot_account_usage()
     except Exception:
         return None
     return None
+
+
+# --- Copilot ---------------------------------------------------------------
+
+_COPILOT_USAGE_CACHE: dict[str, Any] = {"snap": None, "fetched_at": 0.0}
+_COPILOT_USAGE_TTL_SECONDS = 300.0
+
+
+def _fetch_copilot_account_usage() -> Optional[AccountUsageSnapshot]:
+    """Fetch GitHub Copilot quota from ``api.github.com/copilot_internal/user``.
+
+    Result is cached in-process for 5 minutes to avoid hammering the endpoint
+    on every status-bar render.
+    """
+    import time as _time
+
+    now = _time.time()
+    cached = _COPILOT_USAGE_CACHE.get("snap")
+    cached_at = float(_COPILOT_USAGE_CACHE.get("fetched_at") or 0.0)
+    if cached is not None and (now - cached_at) < _COPILOT_USAGE_TTL_SECONDS:
+        return cached
+
+    try:
+        from hermes_cli.copilot_auth import resolve_copilot_token
+    except Exception:
+        return None
+    try:
+        raw_token, _src = resolve_copilot_token()
+    except Exception:
+        return None
+    if not raw_token:
+        return None
+
+    headers = {
+        "Authorization": f"token {raw_token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "hermes-agent",
+    }
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            resp = client.get("https://api.github.com/copilot_internal/user", headers=headers)
+        if resp.status_code != 200:
+            return None
+        data = resp.json() or {}
+    except Exception:
+        return None
+
+    plan = data.get("access_type_sku") or data.get("chat_enabled_plan") or None
+    windows: list[AccountUsageWindow] = []
+    compact_label: Optional[str] = None
+    compact_short: Optional[str] = None
+    compact_tiny: Optional[str] = None
+    level = "ok"
+    reset_at: Optional[datetime] = None
+
+    quota_reset_raw = data.get("quota_reset_date")
+    reset_at = _parse_dt(quota_reset_raw)
+
+    # Premium interactions are the visible quota. GitHub exposes them through
+    # ``chat_enabled_quota_remaining`` and ``chat_enabled_quota`` (or
+    # ``monthly_quota`` style fields depending on plan).
+    candidates = [
+        ("chat_enabled_quota_remaining", "chat_enabled_quota"),
+        ("premium_interactions_remaining", "premium_interactions_quota"),
+        ("monthly_quota_remaining", "monthly_quota"),
+    ]
+    remaining = quota = None
+    for r_key, q_key in candidates:
+        if r_key in data and q_key in data:
+            try:
+                remaining = int(data[r_key])
+                quota = int(data[q_key])
+                break
+            except (TypeError, ValueError):
+                continue
+
+    # Fallback: nested "quota_snapshots" → "premium_interactions"
+    if remaining is None or quota is None:
+        snaps = data.get("quota_snapshots") or {}
+        pi = snaps.get("premium_interactions") if isinstance(snaps, dict) else None
+        if isinstance(pi, dict):
+            try:
+                remaining = int(pi.get("remaining"))
+                quota = int(pi.get("entitlement"))
+            except (TypeError, ValueError):
+                pass
+
+    if remaining is not None and quota and quota > 0:
+        used_pct = max(0.0, min(100.0, (1.0 - remaining / quota) * 100.0))
+        windows.append(
+            AccountUsageWindow(
+                label="Premium interactions",
+                used_percent=used_pct,
+                reset_at=reset_at,
+                detail=f"{remaining}/{quota} remaining",
+            )
+        )
+        # Compact labels for the status bar
+        reset_short = reset_at.astimezone().strftime("%b %-d") if reset_at else None
+        full = f"quota {remaining}/{quota} left"
+        if reset_short:
+            full += f" · resets {reset_short}"
+        short = f"q {remaining}/{quota}"
+        if reset_short:
+            short += f" · {reset_short}"
+        tiny = f"q {remaining}"
+        compact_label = full
+        compact_short = short
+        compact_tiny = tiny
+        # Level thresholds: warn <25%, error <10%
+        remaining_pct = (remaining / quota) * 100.0
+        if remaining_pct < 10:
+            level = "error"
+        elif remaining_pct < 25:
+            level = "warn"
+
+    snapshot = AccountUsageSnapshot(
+        provider="copilot",
+        source="copilot_internal_user",
+        fetched_at=_utc_now(),
+        plan=_title_case_slug(plan),
+        windows=tuple(windows),
+        compact_label=compact_label,
+        compact_short_label=compact_short,
+        compact_tiny_label=compact_tiny,
+        compact_level=level if compact_label else None,
+    )
+    _COPILOT_USAGE_CACHE["snap"] = snapshot
+    _COPILOT_USAGE_CACHE["fetched_at"] = now
+    return snapshot

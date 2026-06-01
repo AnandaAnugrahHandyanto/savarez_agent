@@ -130,6 +130,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[auto|codex_app_server]"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
+    CommandDef("copilot-quota", "Show GitHub Copilot quota usage", "Info",
+               aliases=("cquota",)),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),

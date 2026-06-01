@@ -2403,6 +2403,9 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
 
     assert "/status" in pairs
     assert canon["/status"] == "/status"
+    assert "/copilot-quota" in pairs
+    assert canon["/copilot-quota"] == "/copilot-quota"
+    assert canon["/cquota"] == "/copilot-quota"
 
     assert "/topic" not in pairs
     assert "/approve" not in pairs

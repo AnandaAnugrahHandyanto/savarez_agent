@@ -205,6 +205,10 @@ export interface SessionUndoResponse {
 }
 
 export interface SessionUsageResponse {
+  account_label?: string
+  account_label_short?: string
+  account_label_tiny?: string
+  account_level?: 'error' | 'muted' | 'warn'
   cache_read?: number
   cache_write?: number
   calls?: number

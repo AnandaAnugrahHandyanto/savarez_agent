@@ -1,6 +1,13 @@
 from unittest.mock import MagicMock, patch
 
 
+def test_copilot_quota_registered():
+    from hermes_cli.commands import COMMANDS
+
+    assert "/copilot-quota" in COMMANDS
+    assert "/cquota" in COMMANDS
+
+
 def test_gquota_uses_chat_console_when_tui_is_live():
     from agent.google_oauth import GoogleOAuthError
     from cli import HermesCLI

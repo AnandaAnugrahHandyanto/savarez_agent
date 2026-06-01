@@ -337,6 +337,15 @@ export function StatusRule({
     )
   ) : null
 
+  const accountLevelColor =
+    usage.account_level === 'error' ? t.color.error : usage.account_level === 'warn' ? t.color.warn : t.color.muted
+  const accountLabel =
+    cols < 90
+      ? usage.account_label_tiny ?? usage.account_label_short ?? usage.account_label
+      : cols < 120
+        ? usage.account_label_short ?? usage.account_label
+        : usage.account_label
+
   return (
     <Box height={1}>
       <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
@@ -395,6 +404,12 @@ export function StatusRule({
           </Text>
         ) : null}
         {sessionCountNode}
+        {accountLabel ? (
+          <Text color={accountLevelColor} wrap="truncate-end">
+            {' │ '}
+            {accountLabel}
+          </Text>
+        ) : null}
         {bgCount > 0 ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}

@@ -1202,6 +1202,8 @@ class TestGquotaCommand:
         from hermes_cli.commands import COMMANDS
 
         assert "/gquota" in COMMANDS
+        assert "/copilot-quota" in COMMANDS
+        assert "/cquota" in COMMANDS
 
 
 class TestRunGeminiOauthLoginPure:

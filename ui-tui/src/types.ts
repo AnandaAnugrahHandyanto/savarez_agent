@@ -163,6 +163,10 @@ export interface SessionInfo {
 }
 
 export interface Usage {
+  account_label?: string
+  account_label_short?: string
+  account_label_tiny?: string
+  account_level?: 'error' | 'muted' | 'warn'
   calls: number
   compressions?: number
   context_max?: number
