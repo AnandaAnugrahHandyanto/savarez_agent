@@ -713,6 +713,33 @@ def test_comment_rejects_empty_body(worker_env):
     assert json.loads(out).get("error")
 
 
+def test_comment_on_blocked_task_with_action_verb_warns(worker_env):
+    """Action-looking comments on blocked tasks are context, not dispatch."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        assert kb.block_task(conn, worker_env, reason="waiting for human approval")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_comment({
+        "task_id": worker_env,
+        "body": "Please contact Yunuen directly from your room.",
+    })
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert "warning" in payload
+    assert "no worker will be spawned or woken" in payload["warning"]
+
+    conn = kb.connect()
+    try:
+        events = kb.list_events(conn, worker_env)
+        assert any(e.kind == "blocked_comment_action_warning" for e in events)
+    finally:
+        conn.close()
+
+
 def test_comment_ignores_caller_supplied_author(worker_env):
     """``args["author"]`` is no longer honored — the author is always
     derived from ``HERMES_PROFILE`` so a worker can't forge a comment

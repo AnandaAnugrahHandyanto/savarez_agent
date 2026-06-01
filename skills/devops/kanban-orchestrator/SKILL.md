@@ -51,6 +51,7 @@ Your job description says "route, don't execute." The rules that enforce that:
 - **Split multi-lane requests before creating cards.** A user prompt can contain several independent workstreams. Extract those lanes first, then create one card per lane instead of bundling unrelated work into a single implementer card.
 - **Run independent lanes in parallel.** If two cards do not need each other's output, leave them unlinked so the dispatcher can fan them out. Link only true data dependencies.
 - **Never create dependent work as independent ready cards.** If a card must wait for another card, pass `parents=[...]` in the original `kanban_create` call. Do not create it first and link it later, and do not rely on prose like "wait for T1" inside the body.
+- **A comment on a blocked task is not a dispatch request.** If a blocked worker must contact Yunuen or perform any other action, you must either send the message yourself, create a new assigned contact/action task, or explicitly unblock/re-dispatch the blocked task with the exact instruction. A plain comment is only recorded context and does not wake the worker; do not auto-unblock human blockers just to deliver a message.
 - **If no specialist fits the available profiles, ask the user which profile to create or which existing profile to use.** Do not invent profile names; the dispatcher will silently drop unknown assignees.
 - **Decompose, route, and summarize — that's the whole job.**
 

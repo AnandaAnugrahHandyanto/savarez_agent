@@ -1858,9 +1858,13 @@ def _cmd_comment(args: argparse.Namespace) -> int:
             suffix = f"\n\n[trimmed to {args.max_len} chars by --max-len]"
             body = body[: max(0, args.max_len - len(suffix))].rstrip() + suffix
     author = args.author or _profile_author()
+    warning = None
     with kb.connect_closing() as conn:
         kb.add_comment(conn, args.task_id, author, body)
+        warning = kb.blocked_comment_action_warning(conn, args.task_id, body)
     print(f"Comment added to {args.task_id}")
+    if warning:
+        print(f"WARNING: {warning}", file=sys.stderr)
     return 0
 
 

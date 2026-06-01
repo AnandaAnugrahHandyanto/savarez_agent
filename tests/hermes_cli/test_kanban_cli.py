@@ -148,6 +148,21 @@ def test_run_slash_comment_max_len_trims_long_body(kanban_home):
     assert "x" * 30 not in show
 
 
+def test_run_slash_comment_to_blocked_action_warns(kanban_home):
+    out = kc.run_slash("create 'blocked contact' --assignee alice")
+    import re
+    m = re.search(r"(t_[a-f0-9]+)", out)
+    assert m
+    tid = m.group(1)
+    kc.run_slash(f"claim {tid}")
+    kc.run_slash(f"block {tid} 'need approval'")
+
+    out = kc.run_slash(f"comment {tid} 'please contact Yunuen directly'")
+    assert "Comment added" in out
+    assert "WARNING:" in out
+    assert "no worker will be spawned or woken" in out
+
+
 def test_run_slash_block_unblock_cycle(kanban_home):
     out = kc.run_slash("create 'x' --assignee alice")
     import re
