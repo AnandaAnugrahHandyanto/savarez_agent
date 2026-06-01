@@ -99,6 +99,7 @@ _log = logging.getLogger(__name__)
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+VALID_REVIEW_PHASES = {"worker_done", "review_ready", "closed"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -744,6 +745,8 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    review_phase: Optional[str] = None
+    closeout_evidence: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -757,6 +760,9 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        closeout_evidence = None
+        if "closeout_evidence" in keys and row["closeout_evidence"]:
+            closeout_evidence = _json_loads_maybe(row["closeout_evidence"])
         return cls(
             id=row["id"],
             title=row["title"],
@@ -819,6 +825,10 @@ class Task:
             session_id=(
                 row["session_id"] if "session_id" in keys else None
             ),
+            review_phase=(
+                row["review_phase"] if "review_phase" in keys else None
+            ),
+            closeout_evidence=closeout_evidence,
         )
 
 
@@ -909,6 +919,110 @@ class Event:
     run_id: Optional[int] = None
 
 
+def _json_loads_maybe(value: Any) -> Optional[dict]:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _json_dumps_dict(value: dict, label: str) -> str:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _strtobool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _kanban_config_bool(key: str, *, default: bool = False) -> bool:
+    env_key = f"HERMES_KANBAN_{key.upper()}"
+    if env_key in os.environ:
+        return _strtobool(os.environ.get(env_key), default=default)
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        section = cfg.get("kanban") if isinstance(cfg, dict) else None
+        if isinstance(section, dict) and key in section:
+            return _strtobool(section.get(key), default=default)
+    except Exception:
+        pass
+    return default
+
+
+def _strict_ready_gate_enabled() -> bool:
+    return _kanban_config_bool("strict_ready_gate", default=False)
+
+
+def _task_row_to_ready_gate_candidate(row: sqlite3.Row) -> dict[str, Any]:
+    candidate = dict(row)
+    for field in ("routing_verdict", "admission_snapshot", "closeout_evidence"):
+        if field in candidate and isinstance(candidate.get(field), str):
+            parsed = _json_loads_maybe(candidate.get(field))
+            if parsed is not None:
+                candidate[field] = parsed
+    if isinstance(candidate.get("skills"), str):
+        try:
+            skills = json.loads(candidate["skills"])
+            if isinstance(skills, list):
+                candidate["skills"] = skills
+        except Exception:
+            pass
+    return candidate
+
+
+def _evaluate_autopilot_ready_gate_for_row(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        from gateway.kanban_autopilot import evaluate_autopilot_ready_gate
+
+        return evaluate_autopilot_ready_gate(_task_row_to_ready_gate_candidate(row))
+    except Exception as exc:
+        return {
+            "task_id": row["id"],
+            "autopilot_ready": False,
+            "status": "rejected",
+            "reason_codes": ["ready_gate_evaluator_error"],
+            "human_reason": f"ready gate evaluator failed: {exc}",
+        }
+
+
+def _block_for_ready_gate_failure(conn: sqlite3.Connection, row: sqlite3.Row, gate: dict[str, Any], *, source: str) -> None:
+    task_id = row["id"]
+    reason_codes = gate.get("reason_codes") or []
+    reason = "raw ready blocked by Chrisland strict ready gate"
+    if reason_codes:
+        reason += ": " + ", ".join(str(code) for code in reason_codes)
+    payload = {
+        "source": source,
+        "from_status": row["status"],
+        "to_status": "blocked",
+        "reason": reason,
+        "ready_gate": gate,
+    }
+    conn.execute(
+        "UPDATE tasks SET status = 'blocked', assignee = NULL, claim_lock = NULL, "
+        "claim_expires = NULL, worker_pid = NULL, consecutive_failures = 0, "
+        "last_failure_error = NULL WHERE id = ?",
+        (task_id,),
+    )
+    _append_event(conn, task_id, "ready_gate_blocked", payload)
+    _append_event(conn, task_id, "blocked", payload)
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -980,12 +1094,21 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
-    session_id           TEXT
+    session_id           TEXT,
+    -- Review/remediation carry state. ``review_phase`` stays NULL/empty
+    -- while original-worker remediation is pending; ``closeout_evidence``
+    -- stores structured reviewer/worker handoff payloads as JSON.
+    review_phase         TEXT,
+    closeout_evidence    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
-    parent_id  TEXT NOT NULL,
-    child_id   TEXT NOT NULL,
+    parent_id     TEXT NOT NULL,
+    child_id      TEXT NOT NULL,
+    -- Relationship semantics are explicit:
+    --   dependency: parent must be done before child can be ready/claimed.
+    --   hierarchy:  parent is an umbrella/epic container; it does not gate child work.
+    relation_type TEXT NOT NULL DEFAULT 'dependency',
     PRIMARY KEY (parent_id, child_id)
 );
 
@@ -1636,6 +1759,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "review_phase" not in cols:
+        _add_column_if_missing(conn, "tasks", "review_phase", "review_phase TEXT")
+    if "closeout_evidence" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "closeout_evidence", "closeout_evidence TEXT"
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -1650,6 +1780,27 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
+
+    link_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_links'"
+    ).fetchone() is not None
+    if link_table_exists:
+        link_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_links)")}
+        if "relation_type" not in link_cols:
+            _add_column_if_missing(
+                conn,
+                "task_links",
+                "relation_type",
+                "relation_type TEXT NOT NULL DEFAULT 'dependency'",
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_links_type_child "
+            "ON task_links(relation_type, child_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_links_type_parent "
+            "ON task_links(relation_type, parent_id)"
+        )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -2014,6 +2165,8 @@ def create_task(
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    closeout_evidence: Optional[dict] = None,
+    review_phase: Optional[str] = None,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -2179,8 +2332,9 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        review_phase, closeout_evidence
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2202,11 +2356,17 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        review_phase,
+                        json.dumps(closeout_evidence) if closeout_evidence is not None else None,
                     ),
                 )
                 for pid in parents:
                     conn.execute(
-                        "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                        """
+                        INSERT OR IGNORE INTO task_links
+                            (parent_id, child_id, relation_type)
+                        VALUES (?, ?, 'dependency')
+                        """,
                         (pid, task_id),
                     )
                 _append_event(
@@ -2262,6 +2422,152 @@ VALID_SORT_ORDERS: dict[str, str] = {
     "title": "title ASC, id ASC",
     "updated": "started_at DESC NULLS LAST, created_at DESC",
 }
+
+
+def set_task_authority(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    review_phase: Optional[str] = None,
+    closeout_evidence: Optional[dict] = None,
+) -> bool:
+    """Set closeout authority metadata without changing raw task lifecycle.
+
+    Test and CLI closeout flows use this to seed a known worker/review phase
+    before running a check-only verifier. It intentionally does not mark the
+    task done, review_ready, or closed.
+    """
+    if review_phase is not None and review_phase not in VALID_REVIEW_PHASES:
+        raise ValueError(f"review_phase must be one of {sorted(VALID_REVIEW_PHASES)}")
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET review_phase = COALESCE(?, review_phase),
+                   closeout_evidence = COALESCE(?, closeout_evidence)
+             WHERE id = ?
+               AND status != 'archived'
+            """,
+            (
+                review_phase,
+                _json_dumps_dict(closeout_evidence, "closeout_evidence")
+                if closeout_evidence is not None
+                else None,
+                task_id,
+            ),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "authority_updated",
+            {
+                "review_phase": review_phase,
+                "closeout_evidence_updated": closeout_evidence is not None,
+            },
+        )
+    return True
+
+
+def apply_closeout_transition(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    review_phase: str,
+    closeout_evidence: dict,
+) -> bool:
+    """Persist a verified Kanban-native closeout phase transition.
+
+    The verifier lives in :mod:`hermes_cli.kanban_closeout`; this DB helper only
+    applies already-verified facts to the governance columns. Final ``closed``
+    maps to raw task ``done`` because the v1 task status enum has no separate
+    ``closed`` state. Earlier review phases never imply final closure.
+    """
+    if review_phase not in VALID_REVIEW_PHASES:
+        raise ValueError(f"review_phase must be one of {sorted(VALID_REVIEW_PHASES)}")
+    if not isinstance(closeout_evidence, dict):
+        raise ValueError("closeout_evidence must be a JSON object")
+
+    now = int(time.time())
+    with write_txn(conn):
+        current = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if current is None:
+            return False
+
+        if review_phase == "closed":
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET review_phase = ?,
+                       closeout_evidence = ?,
+                       status = 'done',
+                       completed_at = COALESCE(completed_at, ?),
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL
+                 WHERE id = ?
+                   AND status != 'archived'
+                """,
+                (
+                    review_phase,
+                    _json_dumps_dict(closeout_evidence, "closeout_evidence"),
+                    now,
+                    task_id,
+                ),
+            )
+            if cur.rowcount != 1:
+                return False
+            run_id = _end_run(
+                conn,
+                task_id,
+                outcome="completed",
+                status="done",
+                summary="Kanban closeout approved and closed",
+                metadata={"closeout_phase": "closed"},
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET review_phase = ?,
+                       closeout_evidence = ?,
+                       status = 'blocked',
+                       completed_at = NULL,
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL
+                 WHERE id = ?
+                   AND status != 'archived'
+                """,
+                (
+                    review_phase,
+                    _json_dumps_dict(closeout_evidence, "closeout_evidence"),
+                    task_id,
+                ),
+            )
+            if cur.rowcount != 1:
+                return False
+            run_id = _current_run_id(conn, task_id)
+
+        _append_event(
+            conn,
+            task_id,
+            "closeout_transition",
+            {
+                "review_phase": review_phase,
+                "blockers": closeout_evidence.get("verification", {}).get("blockers", []),
+                "allowed": closeout_evidence.get("verification", {}).get("allowed"),
+                "linear_done_mutated": False,
+            },
+            run_id=run_id,
+        )
+    if review_phase == "closed":
+        recompute_ready(conn)
+    return True
 
 
 def list_tasks(
@@ -2353,9 +2659,30 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
 # Links
 # ---------------------------------------------------------------------------
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+VALID_LINK_TYPES = {"dependency", "hierarchy"}
+
+
+def _normalize_link_type(relation_type: str | None) -> str:
+    relation = (relation_type or "dependency").strip().lower()
+    if relation not in VALID_LINK_TYPES:
+        raise ValueError(
+            f"unknown link type {relation_type!r}; expected one of "
+            + ", ".join(sorted(VALID_LINK_TYPES))
+        )
+    return relation
+
+
+def link_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    relation_type: str = "dependency",
+) -> None:
+    relation = _normalize_link_type(relation_type)
     if parent_id == child_id:
-        raise ValueError("a task cannot depend on itself")
+        raise ValueError("a task cannot link to itself")
+    should_recompute = False
     with write_txn(conn):
         missing = _find_missing_parents(conn, [parent_id, child_id])
         if missing:
@@ -2364,23 +2691,48 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             raise ValueError(
                 f"linking {parent_id} -> {child_id} would create a cycle"
             )
-        conn.execute(
-            "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+        previous = conn.execute(
+            """
+            SELECT relation_type FROM task_links
+            WHERE parent_id = ? AND child_id = ?
+            """,
             (parent_id, child_id),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO task_links (parent_id, child_id, relation_type)
+            VALUES (?, ?, ?)
+            ON CONFLICT(parent_id, child_id)
+            DO UPDATE SET relation_type = excluded.relation_type
+            """,
+            (parent_id, child_id, relation),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
-            conn.execute(
-                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
-                (child_id,),
-            )
+        # Only dependency edges participate in scheduler gating. Hierarchy
+        # edges model epic/umbrella breakdown and must not block child work.
+        if relation == "dependency":
+            parent_status = conn.execute(
+                "SELECT status FROM tasks WHERE id = ?", (parent_id,)
+            ).fetchone()["status"]
+            if parent_status != "done":
+                conn.execute(
+                    "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                    (child_id,),
+                )
+        elif previous is not None and previous["relation_type"] == "dependency":
+            # Converting a blocking dependency to hierarchy can unblock the
+            # child immediately if no other open dependency remains.
+            should_recompute = True
         _append_event(
             conn, child_id, "linked",
-            {"parent": parent_id, "child": child_id},
+            {
+                "parent": parent_id,
+                "child": child_id,
+                "relation_type": relation,
+                "previous_relation_type": previous["relation_type"] if previous else None,
+            },
         )
+    if should_recompute:
+        recompute_ready(conn)
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
@@ -2406,16 +2758,32 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
     return False
 
 
-def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+def unlink_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    relation_type: str | None = None,
+) -> bool:
+    relation = _normalize_link_type(relation_type) if relation_type is not None else None
     with write_txn(conn):
-        cur = conn.execute(
-            "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
-            (parent_id, child_id),
-        )
+        if relation is None:
+            cur = conn.execute(
+                "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
+                (parent_id, child_id),
+            )
+        else:
+            cur = conn.execute(
+                """
+                DELETE FROM task_links
+                WHERE parent_id = ? AND child_id = ? AND relation_type = ?
+                """,
+                (parent_id, child_id, relation),
+            )
         if cur.rowcount:
             _append_event(
                 conn, child_id, "unlinked",
-                {"parent": parent_id, "child": child_id},
+                {"parent": parent_id, "child": child_id, "relation_type": relation},
             )
         removed = cur.rowcount > 0
     if removed:
@@ -2450,7 +2818,9 @@ def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Op
         SELECT t.id AS id, t.result AS result
         FROM tasks t
         JOIN task_links l ON l.parent_id = t.id
-        WHERE l.child_id = ? AND t.status = 'done'
+        WHERE l.child_id = ?
+          AND l.relation_type = 'dependency'
+          AND t.status = 'done'
         ORDER BY t.completed_at ASC
         """,
         (task_id,),
@@ -2857,8 +3227,7 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
-            "FROM tasks WHERE status IN ('todo', 'blocked')"
+            "SELECT * FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
@@ -2872,10 +3241,19 @@ def recompute_ready(
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
+                "WHERE l.child_id = ? AND l.relation_type = 'dependency'",
                 (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
+                if _strict_ready_gate_enabled():
+                    trial = dict(row)
+                    trial["status"] = "ready"
+                    gate = _evaluate_autopilot_ready_gate_for_row(trial)  # type: ignore[arg-type]
+                    if not gate.get("autopilot_ready"):
+                        _block_for_ready_gate_failure(
+                            conn, row, gate, source="recompute_ready",
+                        )
+                        continue
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -2939,7 +3317,9 @@ def claim_task(
         undone = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ? "
+            "AND l.relation_type = 'dependency' "
+            "AND p.status NOT IN ('done', 'archived') LIMIT 1",
             (task_id,),
         ).fetchone()
         if undone:
@@ -3541,6 +3921,17 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    existing = conn.execute(
+        "SELECT review_phase, closeout_evidence FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if existing is None:
+        return False
+    existing_phase = existing["review_phase"] if "review_phase" in existing.keys() else None
+    existing_closeout = existing["closeout_evidence"] if "closeout_evidence" in existing.keys() else None
+    governed_closeout = bool(existing_phase or existing_closeout)
+    if existing_phase in {"review_ready", "closed"}:
+        return False
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -3574,32 +3965,40 @@ def complete_task(
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'done',
+                   SET status       = CASE WHEN ? THEN 'blocked' ELSE 'done' END,
                        result       = ?,
-                       completed_at = ?,
+                       completed_at = CASE WHEN ? THEN NULL ELSE ? END,
                        claim_lock   = NULL,
                        claim_expires= NULL,
-                       worker_pid   = NULL
+                       worker_pid   = NULL,
+                       review_phase = CASE
+                           WHEN ? THEN 'worker_done'
+                           ELSE review_phase
+                       END
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                 """,
-                (result, now, task_id),
+                (1 if governed_closeout else 0, result, 1 if governed_closeout else 0, now, 1 if governed_closeout else 0, task_id),
             )
         else:
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'done',
+                   SET status       = CASE WHEN ? THEN 'blocked' ELSE 'done' END,
                        result       = ?,
-                       completed_at = ?,
+                       completed_at = CASE WHEN ? THEN NULL ELSE ? END,
                        claim_lock   = NULL,
                        claim_expires= NULL,
-                       worker_pid   = NULL
+                       worker_pid   = NULL,
+                       review_phase = CASE
+                           WHEN ? THEN 'worker_done'
+                           ELSE review_phase
+                       END
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
                 """,
-                (result, now, task_id, int(expected_run_id)),
+                (1 if governed_closeout else 0, result, 1 if governed_closeout else 0, now, 1 if governed_closeout else 0, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
@@ -3677,8 +4076,9 @@ def complete_task(
     # just tracks "is there a current pathology the breaker should
     # care about", and a success resets that question.
     _clear_failure_counter(conn, task_id)
-    # Recompute ready status for dependents (separate txn so children see done).
-    recompute_ready(conn)
+    if not governed_closeout:
+        # Recompute ready status for dependents only after legacy/final done.
+        recompute_ready(conn)
     # Clean up the scratch workspace and any stale tmux session for the worker.
     _cleanup_workspace(conn, task_id)
     return True
@@ -4150,7 +4550,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         undone_parents = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            "WHERE l.child_id = ? "
+            "AND l.relation_type = 'dependency' "
+            "AND p.status != 'done' LIMIT 1",
             (task_id,),
         ).fetchone()
         new_status = "todo" if undone_parents else "ready"
@@ -5632,6 +6034,82 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _mapping_from_jsonish(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    parsed = _json_loads_maybe(value)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _reviewer_loop_max_attempts(closeout_evidence: Any) -> int:
+    evidence = _mapping_from_jsonish(closeout_evidence)
+    loop_cfg = evidence.get("reviewer_loop") if isinstance(evidence.get("reviewer_loop"), dict) else {}
+    for source in (evidence, loop_cfg):
+        raw = (
+            source.get("max_verification_attempts")
+            or source.get("max_reviewer_attempts")
+            or source.get("max_attempts")
+        )
+        if raw is None:
+            continue
+        try:
+            parsed = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return 2
+
+
+def _reviewer_fail_remediation_pending(
+    closeout_evidence: Any,
+    *,
+    status: Optional[str] = None,
+    review_phase: Optional[str] = None,
+) -> bool:
+    """True when reviewer FAIL intentionally requeued the original worker.
+
+    This differs from a raw ready task with an active PR: the next worker must
+    update the existing branch/PR with reviewer remediation, not create a
+    duplicate PR.  The dispatcher may therefore respawn the worker even when
+    recent-run or active-PR guards would otherwise defer it.
+    """
+    if status is not None and status not in {"ready", "running"}:
+        return False
+    if review_phase not in (None, ""):
+        return False
+    evidence = _mapping_from_jsonish(closeout_evidence)
+    last_result = evidence.get("last_reviewer_result") if isinstance(evidence.get("last_reviewer_result"), dict) else {}
+    if str(last_result.get("verdict") or "").strip().upper() != "FAIL":
+        return False
+    candidate = evidence.get("worker_done_candidate") if isinstance(evidence.get("worker_done_candidate"), dict) else {}
+    if candidate and str(candidate.get("status") or "").strip().lower() != "rejected":
+        return False
+    loop_state = evidence.get("reviewer_loop") if isinstance(evidence.get("reviewer_loop"), dict) else {}
+    try:
+        attempt = int(loop_state.get("attempt") or candidate.get("attempt") or 1)
+    except (TypeError, ValueError):
+        attempt = 1
+    return attempt < _reviewer_loop_max_attempts(evidence)
+
+
+def _recent_pr_urls(conn: sqlite3.Connection, task_id: str, cutoff: int = 0) -> list[str]:
+    """Return distinct GitHub PR URLs from task comments since ``cutoff``."""
+    urls: list[str] = []
+    seen: set[str] = set()
+    for c in conn.execute(
+        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ? ORDER BY created_at ASC",
+        (task_id, cutoff),
+    ).fetchall():
+        for match in _RESPAWN_GUARD_PR_URL_RE.finditer(c["body"] or ""):
+            url = match.group(0).rstrip(".,)}]")
+            key = url.lower()
+            if key not in seen:
+                seen.add(key)
+                urls.append(url)
+    return urls
+
+
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -5667,7 +6145,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     genuinely dead (no live PID on this host).
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT status, review_phase, closeout_evidence, last_failure_error FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -5680,9 +6158,17 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     now = int(time.time())
 
+    remediation_pending = _reviewer_fail_remediation_pending(
+        row["closeout_evidence"],
+        status=row["status"],
+        review_phase=row["review_phase"],
+    )
+
     # 2. Completed run within guard window — proof of recent success.
+    # Reviewer FAIL remediation is an intentional requeue, so a recent reviewer
+    # run must not suppress the worker that should update the existing PR.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
-    if conn.execute(
+    if not remediation_pending and conn.execute(
         "SELECT id FROM task_runs "
         "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ?",
         (task_id, cutoff),
@@ -5690,13 +6176,11 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "recent_success"
 
     # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # For reviewer FAIL remediation, the active PR is the target to update, not
+    # a duplicate-PR reason to suppress the next worker.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    if _recent_pr_urls(conn, task_id, pr_cutoff) and not remediation_pending:
+        return "active_pr"
 
     return None
 
@@ -5837,10 +6321,11 @@ def dispatch_once(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT * FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
@@ -5895,6 +6380,16 @@ def dispatch_once(
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
+        if _strict_ready_gate_enabled():
+            gate = _evaluate_autopilot_ready_gate_for_row(row)
+            if not gate.get("autopilot_ready"):
+                result.auto_blocked.append(row["id"])
+                if not dry_run:
+                    with write_txn(conn):
+                        _block_for_ready_gate_failure(
+                            conn, row, gate, source="dispatch_once",
+                        )
+                continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
@@ -6702,6 +7197,29 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
         lines.append("")
 
+    if _reviewer_fail_remediation_pending(
+        task.closeout_evidence,
+        status=task.status,
+        review_phase=task.review_phase,
+    ):
+        lines.append("## Reviewer remediation mode")
+        lines.append(
+            "A reviewer returned FAIL and this worker run is a remediation retry. "
+            "Do not open a new PR. Update the existing task branch/PR only, then "
+            "submit the fixed evidence for another reviewer pass."
+        )
+        pr_urls = _recent_pr_urls(conn, task_id)
+        if pr_urls:
+            lines.append("Existing PR target(s):")
+            for url in pr_urls:
+                lines.append(f"- {url}")
+        evidence = task.closeout_evidence if isinstance(task.closeout_evidence, dict) else {}
+        reviewer_result = evidence.get("last_reviewer_result") if isinstance(evidence.get("last_reviewer_result"), dict) else {}
+        if reviewer_result:
+            lines.append("Reviewer FAIL payload:")
+            lines.append(f"`{_cap(json.dumps(reviewer_result, ensure_ascii=False, sort_keys=True))}`")
+        lines.append("")
+
     # Attachments — files uploaded to this task (PDFs, source docs,
     # images). Surface the absolute on-disk path so the worker, which has
     # full file-tool access, can read them directly (read_file, terminal
@@ -6765,7 +7283,12 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # fall back to ``task.result`` when no run rows exist (legacy DBs,
     # or tasks completed before the runs table landed).
     parent_rows = conn.execute(
-        "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+        """
+        SELECT parent_id
+        FROM task_links
+        WHERE child_id = ? AND relation_type = 'dependency'
+        ORDER BY parent_id
+        """,
         (task_id,),
     ).fetchall()
     parent_ids = [r["parent_id"] for r in parent_rows]

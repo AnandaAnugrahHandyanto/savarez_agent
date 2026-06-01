@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import sys
@@ -49,6 +50,79 @@ def test_init_creates_expected_tables(kanban_home):
         ).fetchall()
     names = {r["name"] for r in rows}
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
+
+    with kb.connect() as conn:
+        link_cols = {
+            row["name"]: row for row in conn.execute("PRAGMA table_info(task_links)")
+        }
+    assert link_cols["relation_type"]["dflt_value"] == "'dependency'"
+
+
+def test_init_migrates_legacy_task_links_to_dependency(tmp_path):
+    db = tmp_path / "legacy-kanban.db"
+    raw = sqlite3.connect(db)
+    raw.executescript(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            result TEXT,
+            workspace_kind TEXT NOT NULL DEFAULT 'default',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_failure_at INTEGER,
+            last_failure_error TEXT,
+            tenant TEXT,
+            public_id TEXT,
+            idempotency_key TEXT,
+            max_runtime_seconds INTEGER,
+            last_heartbeat_at INTEGER,
+            current_run_id INTEGER,
+            review_phase TEXT,
+            routing_verdict TEXT,
+            admission_snapshot TEXT,
+            closeout_evidence TEXT,
+            continuation_of TEXT,
+            workflow_template_id TEXT,
+            current_step_key TEXT,
+            skills TEXT,
+            max_retries INTEGER
+        );
+        CREATE TABLE task_links (
+            parent_id TEXT NOT NULL,
+            child_id TEXT NOT NULL,
+            PRIMARY KEY (parent_id, child_id)
+        );
+        INSERT INTO tasks (id, title, status, priority, created_by, created_at)
+        VALUES ('p', 'parent', 'todo', 0, 'test', 1),
+               ('c', 'child', 'todo', 0, 'test', 1);
+        INSERT INTO task_links (parent_id, child_id) VALUES ('p', 'c');
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    kb.init_db(db)
+
+    with kb.connect(db) as conn:
+        row = conn.execute(
+            "SELECT parent_id, child_id, relation_type FROM task_links"
+        ).fetchone()
+    assert dict(row) == {
+        "parent_id": "p",
+        "child_id": "c",
+        "relation_type": "dependency",
+    }
 
 
 def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
@@ -213,6 +287,23 @@ def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
         assert kb.get_task(conn, c).status == "ready"
 
 
+def test_recompute_ready_strict_gate_blocks_incomplete_dependency_wakeup(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_STRICT_READY_GATE", "true")
+    with kb.connect() as conn:
+        p = kb.create_task(conn, title="parent")
+        c = kb.create_task(conn, title="child", body="implement something", assignee="alice", parents=[p])
+        assert kb.get_task(conn, c).status == "todo"
+
+        kb.complete_task(conn, p, result="ok")
+
+        child = kb.get_task(conn, c)
+        events = kb.list_events(conn, c)
+
+    assert child.status == "blocked"
+    assert child.assignee is None
+    assert "ready_gate_blocked" in [event.kind for event in events]
+
+
 def test_create_task_unknown_parent_errors(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="unknown parent"):
         kb.create_task(conn, title="orphan", parents=["t_ghost"])
@@ -273,6 +364,47 @@ def test_link_keeps_ready_child_when_parent_already_done(kanban_home):
         assert kb.get_task(conn, b).status == "ready"
         kb.link_tasks(conn, a, b)
         assert kb.get_task(conn, b).status == "ready"
+
+
+def test_hierarchy_link_does_not_gate_child_readiness_or_completion(kanban_home):
+    """Umbrella/epic relationships must not behave like dependencies."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="umbrella parent")
+        child = kb.create_task(conn, title="executable child")
+        assert kb.get_task(conn, parent).status == "ready"
+        assert kb.get_task(conn, child).status == "ready"
+
+        kb.link_tasks(conn, parent, child, relation_type="hierarchy")
+
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.complete_task(conn, child, result="child done") is True
+        assert kb.get_task(conn, child).status == "done"
+        assert kb.get_task(conn, parent).status == "ready"
+
+
+def test_converting_dependency_to_hierarchy_releases_child_gate(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="umbrella parent")
+        child = kb.create_task(conn, title="executable child")
+        kb.link_tasks(conn, parent, child)
+        assert kb.get_task(conn, child).status == "todo"
+
+        kb.link_tasks(conn, parent, child, relation_type="hierarchy")
+
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.complete_task(conn, child, result="child done") is True
+
+
+def test_hierarchy_link_is_visible_but_excluded_from_parent_results(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="umbrella parent")
+        child = kb.create_task(conn, title="executable child")
+        kb.complete_task(conn, parent, result="umbrella note")
+        kb.link_tasks(conn, parent, child, relation_type="hierarchy")
+
+        assert kb.parent_ids(conn, child) == [parent]
+        assert kb.child_ids(conn, parent) == [child]
+        assert kb.parent_results(conn, child) == []
 
 
 def test_link_rejects_self_loop(kanban_home):
@@ -1278,6 +1410,40 @@ def test_dispatch_skips_unassigned(kanban_home):
     assert not res.spawned
 
 
+def test_dispatch_strict_ready_gate_blocks_raw_ready_before_spawn(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_STRICT_READY_GATE", "true")
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="raw ready", body="do a vague thing", assignee="alice")
+        res = kb.dispatch_once(conn, dry_run=False)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert t in res.auto_blocked
+    assert not res.spawned
+    assert task.status == "blocked"
+    assert task.assignee is None
+    assert "ready_gate_blocked" in [event.kind for event in events]
+
+
+def test_dispatch_strict_ready_gate_dry_run_does_not_mutate(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_STRICT_READY_GATE", "true")
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="raw ready", body="do a vague thing", assignee="alice")
+        res = kb.dispatch_once(conn, dry_run=True)
+        task = kb.get_task(conn, t)
+
+    assert t in res.auto_blocked
+    assert not res.spawned
+    assert task.status == "ready"
+    assert task.assignee == "alice"
+
+
 def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypatch):
     """Tasks whose assignee fails profile_exists() must NOT land in
     ``skipped_unassigned`` (which is operator-actionable) — they go in
@@ -1629,6 +1795,51 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in res.auto_blocked
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_allows_reviewer_fail_remediation_with_existing_pr(
+    kanban_home, all_assignees_spawnable
+):
+    """Reviewer FAIL remediation updates the existing PR instead of being duplicate-PR guarded."""
+    spawned_ids = []
+    contexts = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+        with kb.connect() as verify_conn:
+            contexts.append(kb.build_worker_context(verify_conn, task.id))
+
+    remediation_evidence = {
+        "last_reviewer_result": {
+            "verdict": "FAIL",
+            "criterion_results": [{"criterion_id": "c1", "verdict": "FAIL"}],
+            "remediation_instructions": ["Fix the failing criterion in the existing PR."],
+        },
+        "worker_done_candidate": {"status": "rejected", "attempt": 1},
+        "reviewer_loop": {"attempt": 1, "max_attempts": 2},
+    }
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reviewer remediation with active PR", assignee="alice")
+        kb.add_comment(
+            conn,
+            t,
+            "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        conn.execute(
+            "UPDATE tasks SET closeout_evidence = ? WHERE id = ?",
+            (json.dumps(remediation_evidence), t),
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert t in spawned_ids
+    assert (t, "active_pr") not in res.respawn_guarded
+    assert contexts
+    assert "Reviewer remediation mode" in contexts[0]
+    assert "https://github.com/totemx-AI/subsidysmart/pull/99" in contexts[0]
+    assert "Do not open a new PR" in contexts[0]
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

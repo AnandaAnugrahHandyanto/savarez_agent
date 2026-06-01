@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_closeout
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
@@ -491,12 +492,29 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     # --- link / unlink ---
-    p_link = sub.add_parser("link", help="Add a parent->child dependency")
+    p_link = sub.add_parser(
+        "link",
+        help="Add a task relationship (dependency by default; hierarchy for epic/umbrella children)",
+    )
     p_link.add_argument("parent_id")
     p_link.add_argument("child_id")
-    p_unlink = sub.add_parser("unlink", help="Remove a parent->child dependency")
+    p_link.add_argument(
+        "--type",
+        dest="relation_type",
+        choices=sorted(kb.VALID_LINK_TYPES),
+        default="dependency",
+        help="Relationship type: dependency gates child readiness; hierarchy is display/rollup only",
+    )
+    p_unlink = sub.add_parser("unlink", help="Remove a task relationship")
     p_unlink.add_argument("parent_id")
     p_unlink.add_argument("child_id")
+    p_unlink.add_argument(
+        "--type",
+        dest="relation_type",
+        choices=sorted(kb.VALID_LINK_TYPES),
+        default=None,
+        help="Remove only this relationship type (default: remove any relation between the pair)",
+    )
 
     # --- claim ---
     p_claim = sub.add_parser(
@@ -526,6 +544,33 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+
+    p_closeout = sub.add_parser(
+        "closeout",
+        help="Verify and persist worker_done/review_ready/closed governance transitions",
+    )
+    p_closeout.add_argument("task_id")
+    p_closeout.add_argument(
+        "phase",
+        choices=sorted(kb.VALID_REVIEW_PHASES),
+        help="Target review phase: worker_done, review_ready, or closed",
+    )
+    p_closeout.add_argument(
+        "--evidence",
+        default=None,
+        help="JSON object with PR/check/evidence/cleanup/approval closeout facts",
+    )
+    p_closeout.add_argument(
+        "--repo",
+        default=None,
+        help="Repository/worktree path for live git/gh verification (defaults to task workspace_path)",
+    )
+    p_closeout.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Verify but do not write the Kanban task",
+    )
+    p_closeout.add_argument("--json", action="store_true", help="Emit JSON output")
 
     p_edit = sub.add_parser(
         "edit",
@@ -947,6 +992,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "comment":  _cmd_comment,
         "complete": _cmd_complete,
         "edit":     _cmd_edit,
+        "closeout": _cmd_closeout,
         "block":    _cmd_block,
         "schedule": _cmd_schedule,
         "unblock":  _cmd_unblock,
@@ -1415,10 +1461,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
         assignee = _profile_author()
-    with kb.connect_closing() as conn:
-        # Cheap "mini-dispatch": recompute ready so list output reflects
-        # dependencies that may have cleared since the last dispatcher tick.
-        kb.recompute_ready(conn)
+    with kb.connect() as conn:
+        # List is intentionally read-only.  Dependency wake-ups / ready
+        # recomputation are lifecycle mutations and must not happen from an
+        # operator status check.
         tasks = kb.list_tasks(
             conn,
             assignee=assignee,
@@ -1810,19 +1856,23 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 
 def _cmd_link(args: argparse.Namespace) -> int:
+    relation = getattr(args, "relation_type", "dependency")
     with kb.connect_closing() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
-    print(f"Linked {args.parent_id} -> {args.child_id}")
+        kb.link_tasks(conn, args.parent_id, args.child_id, relation_type=relation)
+    print(f"Linked {args.parent_id} -> {args.child_id} ({relation})")
     return 0
 
 
 def _cmd_unlink(args: argparse.Namespace) -> int:
+    relation = getattr(args, "relation_type", None)
     with kb.connect_closing() as conn:
-        ok = kb.unlink_tasks(conn, args.parent_id, args.child_id)
+        ok = kb.unlink_tasks(conn, args.parent_id, args.child_id, relation_type=relation)
     if not ok:
-        print(f"No such link: {args.parent_id} -> {args.child_id}", file=sys.stderr)
+        suffix = f" ({relation})" if relation else ""
+        print(f"No such link: {args.parent_id} -> {args.child_id}{suffix}", file=sys.stderr)
         return 1
-    print(f"Unlinked {args.parent_id} -> {args.child_id}")
+    suffix = f" ({relation})" if relation else ""
+    print(f"Unlinked {args.parent_id} -> {args.child_id}{suffix}")
     return 0
 
 
@@ -1946,6 +1996,55 @@ def _cmd_edit(args: argparse.Namespace) -> int:
             )
             return 1
     print(f"Edited {args.task_id}")
+    return 0
+
+
+def _cmd_closeout(args: argparse.Namespace) -> int:
+    raw = getattr(args, "evidence", None)
+    try:
+        evidence = json.loads(raw) if raw else {}
+        if not isinstance(evidence, dict):
+            raise ValueError("must be a JSON object")
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"kanban: --evidence: {exc}", file=sys.stderr)
+        return 2
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, args.task_id)
+        if task is None:
+            print(f"no such task: {args.task_id}", file=sys.stderr)
+            return 1
+        repo_path = getattr(args, "repo", None) or task.workspace_path
+        if getattr(args, "check_only", False):
+            result = kanban_closeout.verify_closeout_transition(
+                args.phase,
+                evidence,
+                current_phase=task.review_phase,
+                repo_path=repo_path,
+            ).to_dict()
+            result.update({"status": "verified" if result["allowed"] else "blocked", "task_id": task.id})
+        else:
+            result = kanban_closeout.transition_task_closeout(
+                conn,
+                task.id,
+                args.phase,
+                evidence,
+                repo_path=repo_path,
+            )
+
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("status") in {"transitioned", "verified"} and not result.get("blockers") else 2
+
+    if result.get("blockers"):
+        print(
+            f"Closeout blocked for {args.task_id} -> {args.phase}: "
+            + ", ".join(result.get("blockers") or []),
+            file=sys.stderr,
+        )
+        return 2
+    action = "Verified" if getattr(args, "check_only", False) else "Transitioned"
+    print(f"{action} {args.task_id} -> {args.phase}")
     return 0
 
 

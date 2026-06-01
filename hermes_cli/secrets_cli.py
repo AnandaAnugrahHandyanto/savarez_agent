@@ -1,9 +1,9 @@
-"""CLI handlers for ``hermes secrets bitwarden ...``.
+"""CLI handlers for ``hermes secrets source bitwarden ...``.
 
 Subcommands:
     setup    — interactive wizard: install bws, prompt for token + project, test fetch
     status   — show current config + binary version + last fetch outcome
-    sync     — run a fetch right now and show what would be applied (dry-run friendly)
+    refresh  — run a source fetch and show what would be applied (dry-run friendly)
     disable  — flip ``secrets.bitwarden.enabled`` to False
     install  — just download the bws binary (no token / project required)
 """
@@ -70,13 +70,20 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     status = sub.add_parser("status", help="Show config + binary + last fetch")
     status.set_defaults(func=cmd_status)
 
-    sync = sub.add_parser("sync", help="Fetch secrets now and report what changed")
-    sync.add_argument(
+    refresh = sub.add_parser(
+        "refresh",
+        aliases=["sync"],
+        help=(
+            "Fetch from Bitwarden and report what would enter the process "
+            "(source refresh; not the BWS manifest projection sync)"
+        ),
+    )
+    refresh.add_argument(
         "--apply",
         action="store_true",
         help="Actually export the secrets into the current shell's env (default: dry-run)",
     )
-    sync.set_defaults(func=cmd_sync)
+    refresh.set_defaults(func=cmd_sync)
 
     disable = sub.add_parser("disable", help="Turn off the Bitwarden integration")
     disable.set_defaults(func=cmd_disable)
@@ -257,9 +264,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
         "Secrets will be pulled at the start of every Hermes process."
     )
     console.print(
-        "  Status:  [cyan]hermes secrets bitwarden status[/cyan]\n"
-        "  Refresh: [cyan]hermes secrets bitwarden sync[/cyan]\n"
-        "  Disable: [cyan]hermes secrets bitwarden disable[/cyan]"
+        "  Status:  [cyan]hermes secrets source bitwarden status[/cyan]\n"
+        "  Refresh: [cyan]hermes secrets source bitwarden refresh[/cyan]\n"
+        "  Disable: [cyan]hermes secrets source bitwarden disable[/cyan]"
     )
     return 0
 
@@ -299,7 +306,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     console.print(Panel(table, title="Bitwarden Secrets Manager", border_style="cyan"))
 
     if not enabled:
-        console.print("\n  Run [cyan]hermes secrets bitwarden setup[/cyan] to enable.")
+        console.print("\n  Run [cyan]hermes secrets source bitwarden setup[/cyan] to enable.")
         return 0
     if not token_set:
         console.print(
@@ -315,12 +322,17 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_sync(args: argparse.Namespace) -> int:
     console = Console()
+    console.print(
+        "[dim]Bitwarden source refresh only. Use `hermes secrets sync` for "
+        "BWS manifest -> .env projection, and `hermes secrets check/preflight` "
+        "for the policy gate.[/dim]"
+    )
     cfg = load_config()
     bw_cfg = (cfg.get("secrets") or {}).get("bitwarden") or {}
     if not bw_cfg.get("enabled"):
         console.print(
             "[yellow]Bitwarden integration is disabled.  Run "
-            "`hermes secrets bitwarden setup` first.[/yellow]"
+            "`hermes secrets source bitwarden setup` first.[/yellow]"
         )
         return 1
 
@@ -380,7 +392,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
         console.print(
             "\n  This was a dry-run — secrets are picked up automatically on the "
             "next [cyan]hermes[/cyan] invocation.  Re-run with [cyan]--apply[/cyan] "
-            "to export into the current shell instead."
+            "to export into the current shell instead.  This does not update "
+            "the BWS manifest projection; use [cyan]hermes secrets sync[/cyan] "
+            "for that."
         )
     else:
         console.print(f"\n  [green]Exported {applied} secret(s) into current process.[/green]")
@@ -467,7 +481,7 @@ def _list_projects(
             console.print(
                 "  [yellow]'invalid_client' from the US identity endpoint usually "
                 "means the token is for a different Bitwarden region.  Re-run "
-                "[cyan]hermes secrets bitwarden setup[/cyan] and pick EU or "
+                "[cyan]hermes secrets source bitwarden setup[/cyan] and pick EU or "
                 "self-hosted at the region prompt, or set [cyan]secrets.bitwarden."
                 "server_url[/cyan] in config.yaml.[/yellow]"
             )
