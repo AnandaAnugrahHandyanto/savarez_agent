@@ -77,6 +77,18 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("inclusionai/ring-2.6-1t:free",           "free"),
 ]
 
+# Headline models pinned to the top of the OpenRouter picker, in this order,
+# regardless of usage-based reordering (openrouter.sort_by_usage). Kept as a
+# separate tuple rather than widening OPENROUTER_MODELS entries so the many
+# ``for mid, _ in OPENROUTER_MODELS`` callers stay intact. build_model_catalog
+# emits ``"pinned": true`` for these ids; the runtime reads pins back from the
+# manifest via get_pinned_openrouter_model_ids(). Every id here MUST also appear
+# in OPENROUTER_MODELS (enforced by the catalog sync test).
+_OPENROUTER_PINNED_IDS: tuple[str, ...] = (
+    "anthropic/claude-opus-4.8",
+    "openai/gpt-5.5",
+)
+
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 
@@ -1189,6 +1201,26 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     return "tools" in params
 
 
+def _openrouter_sort_by_usage_enabled() -> bool:
+    """Return True when the picker should reorder OpenRouter by usage rankings.
+
+    Controlled by ``openrouter.sort_by_usage`` in config (default True).
+    Failure to load config defaults to enabled — the reorder itself degrades
+    gracefully to manifest order when ranking data is unavailable, so the
+    safe default is to attempt it.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        block = cfg.get("openrouter")
+        if isinstance(block, dict) and "sort_by_usage" in block:
+            return bool(block.get("sort_by_usage"))
+    except Exception:
+        pass
+    return True
+
+
 def fetch_openrouter_models(
     timeout: float = 8.0,
     *,
@@ -1251,6 +1283,30 @@ def fetch_openrouter_models(
     if not curated:
         return list(_openrouter_catalog_cache or fallback)
 
+    # Reorder by real-world OpenRouter usage when enabled (default on).
+    # Pinned headline models (manifest ``"pinned": true``) stay first; the
+    # rest are sorted by the public daily-usage rankings, with manifest order
+    # as the tiebreaker for models OpenRouter has no usage data for. Any
+    # failure (no key, network, rate limit) degrades silently to manifest
+    # order via an empty ranking map.
+    if _openrouter_sort_by_usage_enabled():
+        try:
+            from hermes_cli.model_catalog import get_pinned_openrouter_model_ids
+            from hermes_cli.openrouter_rankings import (
+                fetch_openrouter_rankings,
+                reorder_by_usage,
+            )
+
+            pinned_ids = get_pinned_openrouter_model_ids()
+            ranks = fetch_openrouter_rankings(force_refresh=force_refresh)
+            if ranks or pinned_ids:
+                curated = reorder_by_usage(curated, ranks, pinned_ids)
+        except Exception:
+            pass  # keep manifest order
+
+    # The top entry (after any reorder) is the headline recommendation. Strip
+    # a stale "free" badge there only if it was purely pricing-derived; keep
+    # any explicit manifest description otherwise by relabeling to recommended.
     first_id, _ = curated[0]
     curated[0] = (first_id, "recommended")
     _openrouter_catalog_cache = curated

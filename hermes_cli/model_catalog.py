@@ -340,6 +340,27 @@ def get_curated_openrouter_models() -> list[tuple[str, str]] | None:
     return out or None
 
 
+def get_pinned_openrouter_model_ids() -> list[str]:
+    """Return OpenRouter model ids flagged ``"pinned": true`` in the manifest.
+
+    Pinned models are the editorial headline picks that should stay at the top
+    of the picker regardless of usage-based reordering. Order follows the
+    manifest's ``models`` array order. Returns ``[]`` when the manifest is
+    unavailable or nothing is pinned (so usage ranking drives the whole list).
+    """
+    block = _get_provider_block("openrouter")
+    if not block:
+        return []
+    out: list[str] = []
+    for m in block.get("models", []):
+        if not isinstance(m, dict) or not m.get("pinned"):
+            continue
+        mid = str(m.get("id") or "").strip()
+        if mid:
+            out.append(mid)
+    return out
+
+
 def get_curated_nous_models() -> list[str] | None:
     """Return Nous Portal's curated list of model ids from the manifest.
 

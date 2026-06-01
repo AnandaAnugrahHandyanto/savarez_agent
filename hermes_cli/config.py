@@ -1098,10 +1098,19 @@ DEFAULT_CONFIG = {
     #   pick the strongest available coder (router's documented default
     #   when the plugins block is omitted).
     #   See: https://openrouter.ai/docs/guides/routing/routers/pareto-router
+    # sort_by_usage: order the OpenRouter model picker by real-world usage.
+    #   When true (default), the picker reorders the curated list by OpenRouter's
+    #   public daily-usage rankings (openrouter.ai/rankings, via the
+    #   /datasets/rankings-daily dataset). Models flagged "pinned" in the model
+    #   catalog stay at the top regardless; everything else is sorted most-used
+    #   first, with curated order as the tiebreaker for models with no usage data.
+    #   Falls back to curated order when no OpenRouter key / network is available.
+    #   Set false to keep the hand-curated catalog order.
     "openrouter": {
         "response_cache": True,
         "response_cache_ttl": 300,
         "min_coding_score": 0.65,
+        "sort_by_usage": True,
     },
 
     # AWS Bedrock provider configuration.
