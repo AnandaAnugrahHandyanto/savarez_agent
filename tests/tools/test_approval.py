@@ -93,6 +93,98 @@ class TestWebhookReadonlyAllowlist:
         assert result["approved"] is True
         assert result.get("webhook_allowlisted") is True
 
+    def _grant_update_notes_payload(self, notes):
+        return (
+            '{"path":"tasks:updateNotes","args":{"id":"kn715rhv354j03jchj738137qh87te4m",'
+            f'"notes":"{notes}"}}'
+        )
+
+    def _curl_mutation_with_data(self, data_arg):
+        return (
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
+            "-H 'content-type: application/json' "
+            f"--data-binary {data_arg}"
+        )
+
+    def _write_grant_tmp_payload(self, tmp_path, name, payload):
+        path = Path(f"/tmp/grant_{os.getpid()}_{tmp_path.name}_{name}.json")
+        path.write_text(payload, encoding="utf-8")
+        return path
+
+    def test_webhook_allows_grant_verdict_update_notes_post_regression(self):
+        command = (
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
+            "-H 'content-type: application/json' "
+            "-d '{\"path\":\"tasks:updateNotes\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\",\"notes\":\"<!-- grant-verdict:2026-06-01T12:00:00Z:CHANGES_REQUIRED -->\"}}'"
+        )
+        result = self._check(command)
+        assert result["approved"] is True
+        assert result.get("webhook_allowlisted") is True
+
+    def test_webhook_allows_confined_grant_verdict_atfile(self, tmp_path):
+        payload_path = self._write_grant_tmp_payload(
+            tmp_path,
+            "marker",
+            self._grant_update_notes_payload("<!-- grant-verdict:2026-06-01T12:00:00Z:CHANGES_REQUIRED -->"),
+        )
+        try:
+            result = self._check(self._curl_mutation_with_data(f"@{payload_path}"))
+        finally:
+            payload_path.unlink(missing_ok=True)
+        assert result["approved"] is True
+        assert result.get("webhook_allowlisted") is True
+
+    def test_webhook_blocks_confined_grant_atfile_without_marker(self, tmp_path):
+        payload_path = self._write_grant_tmp_payload(
+            tmp_path,
+            "no_marker",
+            self._grant_update_notes_payload("generic notes write"),
+        )
+        try:
+            result = self._check(self._curl_mutation_with_data(f"@{payload_path}"))
+        finally:
+            payload_path.unlink(missing_ok=True)
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_blocks_outside_tmp_atfile_without_reading(self, tmp_path):
+        payload_path = tmp_path / "evil.json"
+        payload_path.write_text(
+            self._grant_update_notes_payload("<!-- grant-verdict:2026-06-01T12:00:00Z:CHANGES_REQUIRED -->"),
+            encoding="utf-8",
+        )
+        result = self._check(self._curl_mutation_with_data(f"@{payload_path}"))
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_blocks_sensitive_atfile_without_reading(self):
+        result = self._check(self._curl_mutation_with_data("@/Users/TJ/.hermes/.env"))
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_blocks_missing_confined_grant_atfile_without_crashing(self, tmp_path):
+        missing_path = Path(f"/tmp/grant_{os.getpid()}_{tmp_path.name}_missing.json")
+        missing_path.unlink(missing_ok=True)
+        result = self._check(self._curl_mutation_with_data(f"@{missing_path}"))
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_blocks_confined_grant_symlink_escape(self, tmp_path):
+        secret_path = tmp_path / "secret.json"
+        secret_path.write_text(
+            self._grant_update_notes_payload("<!-- grant-verdict:2026-06-01T12:00:00Z:CHANGES_REQUIRED -->"),
+            encoding="utf-8",
+        )
+        symlink_path = Path(f"/tmp/grant_{os.getpid()}_{tmp_path.name}_symlink.json")
+        symlink_path.unlink(missing_ok=True)
+        symlink_path.symlink_to(secret_path)
+        try:
+            result = self._check(self._curl_mutation_with_data(f"@{symlink_path}"))
+        finally:
+            symlink_path.unlink(missing_ok=True)
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
     def test_webhook_allows_grant_mark_changes_required_post(self):
         command = (
             "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "

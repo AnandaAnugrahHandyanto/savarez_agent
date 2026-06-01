@@ -944,18 +944,35 @@ def _extract_curl_method_and_url(tokens: list[str]) -> tuple[str, str]:
     return method, url
 
 
+def _resolve_confined_curl_atfile_payload(value: str) -> str:
+    if not value.startswith("@"):
+        return value
+    path = value[1:]
+    try:
+        real_path = os.path.realpath(path)
+        # kn77d5y7: only Grant-owned /tmp/grant_* temp payloads may be read.
+        # Realpath both sides so macOS /tmp -> /private/tmp normalization keeps
+        # the intended security boundary while still blocking symlink escapes.
+        if not real_path.startswith(os.path.realpath("/tmp/grant_")):
+            return value
+        with open(real_path, encoding="utf-8") as payload_file:
+            return payload_file.read()
+    except OSError:
+        return value
+
+
 def _extract_curl_payload(tokens: list[str]) -> str:
     payloads = []
     i = 1
     while i < len(tokens):
         token = tokens[i]
         if token in {"-d", "--data", "--data-raw", "--data-binary", "--form", "-F"} and i + 1 < len(tokens):
-            payloads.append(tokens[i + 1])
+            payloads.append(_resolve_confined_curl_atfile_payload(tokens[i + 1]))
             i += 2
             continue
         for prefix in ("--data=", "--data-raw=", "--data-binary=", "--form=", "-d"):
             if token.startswith(prefix) and len(token) > len(prefix):
-                payloads.append(token[len(prefix):])
+                payloads.append(_resolve_confined_curl_atfile_payload(token[len(prefix):]))
                 break
         i += 1
     return "\n".join(payloads)
