@@ -2088,6 +2088,27 @@ class TestDashboardPluginManifestExtensions:
     """Tests for the extended plugin manifest fields (tab.override,
     tab.hidden, slots) read by _discover_dashboard_plugins()."""
 
+    def test_bundled_dashboard_plugins_advertise_existing_entry_assets(self, monkeypatch, tmp_path):
+        """Bundled dashboard plugins should not advertise missing JS bundles.
+
+        User/project plugins may be under active development, but bundled
+        manifests ship with the repo and should not pollute dashboard console
+        output with stale ``/dashboard-plugins/...`` 404s.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import web_server
+
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        missing = [
+            f"{plugin['name']}:{plugin['entry']}"
+            for plugin in plugins
+            if plugin["source"] == "bundled"
+            and not (Path(plugin["_dir"]) / plugin["entry"]).is_file()
+        ]
+
+        assert missing == []
+
     def _write_plugin(self, tmp_path, name, manifest):
         import json
         plug_dir = tmp_path / "plugins" / name / "dashboard"
