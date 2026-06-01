@@ -31,7 +31,7 @@ def build_streaming_pipeline(
   - `turns = turn_detector or build_local_turn_detector(media, call_id=call_id)`
   - `stt = stt or build_local_whisper_stt(media, call_id=call_id)`
   - `tts = tts or build_piper_tts(media, clock=clk, call_id=call_id)`
-  - `bf = brain_factory or build_call_agent_factory_brain` where the default resolves to `lambda: HermesSyncBrain(build_call_agent_factory())` (the session's `brain_factory` returns a `HermesBrainPort`; `HermesSyncBrain` IS that port).
+  - `bf = brain_factory or (lambda: HermesSyncBrain(build_call_agent_factory()))` (the session's `brain_factory` returns a `HermesBrainPort`; `HermesSyncBrain` IS that port).
 - Build `AiortcStreamingTransport(media, clock=clk, outbound_sink=sink or _noop_sink)`, `StreamingCallContext`, `StreamingCallSession(...)`, `StreamingCallTracer(call_id)` exactly as the fake branch does; return `StreamingPipeline(media=media, session=session, transport=transport, clock=clk)`.
 - Remove the `NotImplementedError`. `cognitive` other than `fake`/`real` still raises `ValueError`.
 
@@ -65,7 +65,7 @@ A test helper (in `tests/gateway/streaming/`) chunks the wav exactly as the exis
 ### 3.5 Carry-in fixes (`aiortc_engine.py` + `streaming/aiortc_transport.py`)
 
 - **#1 — resampler multi-frame drain** (`aiortc_engine.py::_create_pcm_streaming_track.recv`): `av.AudioResampler.resample()` can return >1 output frame for one input (reachable now that real Piper TTS emits variable-size chunks). Today only the first non-empty frame is returned and the rest are discarded. Fix: hold a `collections.deque` of pending resampled frames on the track; `recv()` drains the deque first, only pulling+resampling a new input frame when the deque is empty. Add a multi-frame-output test (importorskip av).
-- **#2 — inbound frame-rate robustness** (`_DirectFeedAccumulator.accept_pcm16`): today passes a hardcoded `self._native_rate` (config 48k) to `process_pcm16`. A non-48k remote frame would pitch-shift (process_pcm16 resamples *from* the passed rate). Fix: thread the actual frame's sample rate from the relay (derive from the `av.AudioFrame` the relay decoded) rather than a constant; fall back to `native_rate` only if unknown. Add a test that a 16k inbound frame is fed at 16k (no resample) and a 48k frame at 48k.
+- **#2 — inbound frame-rate robustness** (`_DirectFeedAccumulator.accept_pcm16`): today passes a hardcoded `self._native_rate` (config 48k) to `process_pcm16`. A non-48k remote frame would pitch-shift (process_pcm16 resamples *from* the passed rate). The relay decodes the raw `av.AudioFrame` (in scope at the `accept_pcm16` call site) and `_audio_frame_to_pcm16` resamples to *that frame's own rate*, so the bytes are at `frame.sample_rate` while the accumulator forwards 48k — a real mismatch. **Plumbing:** add a `sample_rate: int | None = None` kwarg to `accept_pcm16` (keep the existing `*, now=None` for back-compat with the turn-based `AudioUtteranceAccumulator` call shape; keep `sample_rate` optional so the existing positional `accept_pcm16(pcm16)` test call still works); the relay passes `int(getattr(frame, "sample_rate", 0) or native_rate)`; `accept_pcm16` forwards `sample_rate or self._native_rate` to `process_pcm16`. Add a test that a 16k inbound frame is fed at 16k (no resample) and a 48k frame at 48k.
 - **#3 — bounded inbound queue** (`AiortcStreamingTransport.__init__`): the inbound `asyncio.Queue()` is unbounded. Under live load with a slow STT, this could grow without limit. Fix: bound it (`maxsize`, e.g. matching the outbound `_PCM_STREAMING_QUEUE_MAXSIZE` magnitude) with drop-oldest + a `logger.warning` watermark, mirroring the outbound track's back-pressure. The `None` close-sentinel path must still always enqueue (close must not be dropped). Add a test for overflow drop + that close still terminates `inbound()`.
 
 ## 4. CI vs local coverage
@@ -84,7 +84,7 @@ A test helper (in `tests/gateway/streaming/`) chunks the wav exactly as the exis
 - **Modify:** `gateway/calls/native/streaming/simulate.py` — `build_real_stream_simulation`.
 - **Modify:** `gateway/calls/native/aiortc_engine.py` — `_create_pcm_streaming_track.recv` deque drain (#1); `_DirectFeedAccumulator` frame-rate threading (#2).
 - **Create:** `tests/gateway/streaming/test_real_e2e_simulation.py` — skipif real-deps; normal + barge-in E2E; the wav driver helper.
-- **Extend:** `tests/gateway/streaming/test_aiortc_transport.py` — cognitive="real" wiring (injected fakes, CI); brain default resolution; bounded inbound queue (#3).
+- **Extend:** `tests/gateway/streaming/test_aiortc_transport.py` — cognitive="real" wiring (injected fakes, CI); brain default resolution; bounded inbound queue (#3). **Remove/replace** the existing `test_build_streaming_pipeline_real_not_implemented` (~lines 420-422) which asserts `cognitive="real"` raises `NotImplementedError` — it will fail once the real branch lands; replace it with the new wiring assertion.
 - **Extend:** `tests/gateway/test_native_streaming_track.py` — resampler multi-frame drain (#1, importorskip av).
 - **Extend:** `tests/gateway/test_native_aiortc_engine.py` (or the accumulator test) — frame-rate threading (#2).
 
