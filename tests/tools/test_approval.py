@@ -791,6 +791,58 @@ class TestNormalizationBypass:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
 
+    # --- Shell-escape bypass tests (fixes #36846) ---
+
+    def test_backslash_escape_rm(self):
+        """r\\m -rf / must be caught after backslash normalization."""
+        cmd = "r\\m -rf /home/x"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Backslash-escaped 'rm' was not detected: {cmd!r}"
+
+    def test_empty_single_quote_rm(self):
+        """r''m -rf / must be caught after empty-quote removal."""
+        cmd = "r''m -rf /home/x"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Empty-quote 'rm' was not detected: {cmd!r}"
+
+    def test_empty_double_quote_rm(self):
+        """r""m -rf / must be caught after empty-quote removal."""
+        cmd = 'r""m -rf /home/x'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Double-quote 'rm' was not detected: {cmd!r}"
+
+    def test_backslash_escape_chmod(self):
+        """chmo\\d 777 must be caught after backslash normalization."""
+        cmd = "chmo\\d 777 /tmp"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Backslash-escaped 'chmod' was not detected: {cmd!r}"
+
+    def test_command_substitution_echo_rm(self):
+        """$(echo rm) -rf / must be caught after command-substitution resolution."""
+        cmd = "$(echo rm) -rf /home/x"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"$(echo rm) was not detected: {cmd!r}"
+
+    def test_parameter_substitution_rm(self):
+        """${0/x/r}m -rf / must be caught after parameter-substitution resolution."""
+        cmd = "${0/x/r}m -rf /home/x"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"${{0/x/r}}m was not detected: {cmd!r}"
+
+    def test_hardline_backslash_root_delete(self):
+        """r\\m -rf / must trigger hardline block."""
+        from tools.approval import detect_hardline_command
+        cmd = "r\\m -rf /"
+        hardline, desc = detect_hardline_command(cmd)
+        assert hardline is True, f"Hardline missed backslash-escaped root delete: {cmd!r}"
+
+    def test_hardline_empty_quote_root_delete(self):
+        """r''m -rf / must trigger hardline block."""
+        from tools.approval import detect_hardline_command
+        cmd = "r''m -rf /"
+        hardline, desc = detect_hardline_command(cmd)
+        assert hardline is True, f"Hardline missed empty-quote root delete: {cmd!r}"
+
 
 class TestHeredocScriptExecution:
     """Script execution via heredoc bypasses the -e/-c flag patterns.

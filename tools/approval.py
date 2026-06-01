@@ -486,8 +486,9 @@ def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
 
     Strips ANSI escape sequences (full ECMA-48 via tools.ansi_strip),
-    null bytes, and normalizes Unicode fullwidth characters so that
-    obfuscation techniques cannot bypass the pattern-based detection.
+    null bytes, normalizes Unicode fullwidth characters, and collapses
+    common shell-escape obfuscations so that trivially encoded commands
+    (``r\\m``, ``r''m``, etc.) cannot bypass pattern-based detection.
     """
     from tools.ansi_strip import strip_ansi
 
@@ -497,6 +498,16 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # --- Shell-escape normalization (fixes #36846) ---
+    # Collapse backslash-letter escapes:  r\m  →  rm
+    command = re.sub(r'\\(\w)', r'\1', command)
+    # Remove empty quote pairs:  r''m  →  rm,  r""m  →  rm
+    command = command.replace("''", '').replace('""', '')
+    # Resolve simple command substitution:  $(echo rm)  →  rm
+    command = re.sub(r'\$\(echo\s+([^)]+)\)', r'\1', command)
+    # Resolve trivial parameter substitution:  ${0/x/r}  →  r
+    # Only handles single-char replacement (most common obfuscation)
+    command = re.sub(r'\$\{[^}]+/([^/]+)/([^}]+)\}', r'\2', command)
     return command
 
 
