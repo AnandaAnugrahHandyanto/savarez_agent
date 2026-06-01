@@ -338,6 +338,39 @@ class TestAdapterInit:
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
 
+class TestAdapterDisconnect:
+    """Verify that disconnect() releases all resources including ResponseStore."""
+
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_response_store(self):
+        """disconnect() must close the sqlite3 connection in _response_store."""
+        config = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(config)
+        # _response_store is created during __init__
+        assert adapter._response_store is not None
+        conn = adapter._response_store._conn
+
+        await adapter.disconnect()
+
+        # After disconnect, _response_store should be None
+        assert adapter._response_store is None
+        # The underlying sqlite3 connection should be closed
+        # (operations on a closed connection raise ProgrammingError)
+        import sqlite3 as _sqlite3
+        with pytest.raises(_sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+
+    @pytest.mark.asyncio
+    async def test_disconnect_idempotent(self):
+        """Calling disconnect() twice should not raise."""
+        config = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(config)
+        await adapter.disconnect()
+        # Second call should be a no-op
+        await adapter.disconnect()
+        assert adapter._response_store is None
+
+
 # ---------------------------------------------------------------------------
 # Auth checking
 # ---------------------------------------------------------------------------
