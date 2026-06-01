@@ -9730,7 +9730,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "cron", "curator", "dashboard", "debug", "doctor",
+        "calls", "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
@@ -9824,6 +9824,16 @@ def _plugin_cli_discovery_needed() -> bool:
     # prompt, argparse will route it via positional handling and the
     # extra discovery cost is amortized over a full agent run anyway.
     return True
+
+
+def _dispatch_parsed_command(args, parser) -> None:
+    """Run a parsed subcommand and preserve integer exit codes."""
+    if hasattr(args, "func"):
+        result = args.func(args)
+        if isinstance(result, int):
+            sys.exit(result)
+        return
+    parser.print_help()
 
 
 def main():
@@ -9928,6 +9938,217 @@ def main():
         help="Remove all fallback entries",
     )
     fallback_parser.set_defaults(func=cmd_fallback)
+
+    # =========================================================================
+    # calls command — native-call debugging and traces
+    # =========================================================================
+    from hermes_cli.calls import cmd_calls
+
+    calls_parser = subparsers.add_parser(
+        "calls",
+        help="Inspect and simulate Hermes call sessions",
+        description="Inspect redacted call traces and simulate SimpleX-native sidecar signaling.",
+    )
+    calls_subparsers = calls_parser.add_subparsers(dest="calls_command")
+
+    calls_trace = calls_subparsers.add_parser(
+        "trace",
+        help="List call traces or print one trace",
+    )
+    calls_trace.add_argument(
+        "call_id",
+        nargs="?",
+        help="Call id to print; omitted lists available traces",
+    )
+    calls_trace.add_argument(
+        "-n",
+        "--lines",
+        type=int,
+        default=50,
+        help="Number of trace lines to print for a specific call (default: 50)",
+    )
+    calls_trace.add_argument(
+        "--trace-root",
+        help="Trace directory (default: HERMES_HOME/logs/calls)",
+    )
+
+    calls_sim = calls_subparsers.add_parser(
+        "simulate-simplex-native",
+        help="Run a deterministic SimpleX-native sidecar simulation",
+    )
+    calls_sim.add_argument(
+        "--sidecar-command",
+        default="",
+        help="Quoted sidecar command to execute, e.g. '/path/to/node sidecar.mjs'",
+    )
+    calls_sim.add_argument("--call-id", default="simulated-call")
+    calls_sim.add_argument("--contact-id", default="simulated-contact")
+    calls_sim.add_argument("--trace-root", help="Trace directory override")
+    calls_sim.add_argument("--timeout", type=float, default=10.0)
+    calls_sim.add_argument("--encrypted", action="store_true")
+    calls_sim.add_argument("--shared-key", default=None)
+    calls_sim.add_argument(
+        "--audio-path",
+        default=None,
+        help="Optional WAV file for a simulated STT -> Hermes -> TTS voice turn",
+    )
+    calls_sim.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    calls_loopback = calls_subparsers.add_parser(
+        "loopback-aiortc",
+        help="Run an in-process aiortc RTP loopback probe",
+    )
+    calls_loopback.add_argument("--timeout", type=float, default=8.0)
+    calls_loopback.add_argument(
+        "--voice-turn",
+        action="store_true",
+        help="Wait for RTP to reach the voice-turn PCM input",
+    )
+    calls_loopback.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    calls_voice_sim = calls_subparsers.add_parser(
+        "simplex-simulate-voice-turn",
+        help="Run a simulated SimpleX WebRTC STT-agent-TTS voice turn",
+    )
+    calls_voice_sim.add_argument("--call-id", default="simulated-voice-call")
+    calls_voice_sim.add_argument("--contact-id", default="simulated-contact")
+    calls_voice_sim.add_argument("--trace-root", help="Trace directory override")
+    calls_voice_sim.add_argument(
+        "--audio-path",
+        default=None,
+        help="Optional caller audio file; defaults to generated local TTS speech",
+    )
+    calls_voice_sim.add_argument(
+        "--caller-text",
+        default="Hermes simulation check.",
+        help="Text to synthesize when --audio-path is omitted",
+    )
+    calls_voice_sim.add_argument(
+        "--expect-transcript",
+        default=None,
+        help="Optional text expected to appear in the simulated STT transcript",
+    )
+    calls_voice_sim.add_argument("--timeout", type=float, default=12.0)
+    calls_voice_sim.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    calls_voice_health = calls_subparsers.add_parser(
+        "voice-health",
+        help="Check native-call STT/TTS provider locality and availability",
+    )
+    calls_voice_health.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    calls_health = calls_subparsers.add_parser(
+        "simplex-health",
+        help="Check SimpleX daemon contact and call preferences",
+    )
+    calls_health.add_argument("--ws-url", default="ws://127.0.0.1:5225")
+    calls_health.add_argument("--contact-id", default="4")
+    calls_health.add_argument("--count", type=int, default=10)
+    calls_health.add_argument("--timeout", type=float, default=5.0)
+    calls_health.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    calls_watch = calls_subparsers.add_parser(
+        "simplex-watch",
+        help="Watch for a new SimpleX call item from a contact",
+    )
+    calls_watch.add_argument("--ws-url", default="ws://127.0.0.1:5225")
+    calls_watch.add_argument("--contact-id", default="4")
+    calls_watch.add_argument("--count", type=int, default=50)
+    calls_watch.add_argument("--request-timeout", type=float, default=5.0)
+    calls_watch.add_argument("--timeout", type=float, default=60.0)
+    calls_watch.add_argument("--interval", type=float, default=1.0)
+    calls_watch.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    calls_simplex_call = calls_subparsers.add_parser(
+        "simplex-call",
+        help="Ask the running gateway to place a SimpleX native call",
+    )
+    calls_simplex_call.add_argument("--contact-id", default="4")
+    calls_simplex_call.add_argument(
+        "--reason",
+        default="",
+        help="Diagnostic reason stored with the local gateway call request",
+    )
+    calls_simplex_call.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=0.0,
+        help="Seconds to wait for the gateway to return the started call id",
+    )
+    calls_simplex_call.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    calls_events = calls_subparsers.add_parser(
+        "simplex-events",
+        help="Watch raw SimpleX websocket events for native call signaling",
+    )
+    calls_events.add_argument("--ws-url", default="ws://127.0.0.1:5225")
+    calls_events.add_argument("--timeout", type=float, default=60.0)
+    calls_events.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    calls_live_debug = calls_subparsers.add_parser(
+        "simplex-live-debug",
+        help="Run raw event, call item, and trace watchers for one SimpleX call test",
+    )
+    calls_live_debug.add_argument("--ws-url", default="ws://127.0.0.1:5225")
+    calls_live_debug.add_argument("--timeout", type=float, default=75.0)
+    calls_live_debug.add_argument("--settle", type=float, default=8.0)
+    calls_live_debug.add_argument("--count", type=int, default=50)
+    calls_live_debug.add_argument("--request-timeout", type=float, default=5.0)
+    calls_live_debug.add_argument("--interval", type=float, default=1.0)
+    calls_live_debug.add_argument("--trace-root", help="Trace directory override")
+    calls_live_debug.add_argument(
+        "--raw-events",
+        action="store_true",
+        help=(
+            "Also open a raw SimpleX event stream. Diagnostic only; it can "
+            "consume native call events before the gateway sees them."
+        ),
+    )
+    calls_live_debug.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    calls_acceptance = calls_subparsers.add_parser(
+        "simplex-acceptance",
+        help="Evaluate a native SimpleX call trace against voice acceptance checks",
+    )
+    calls_acceptance.add_argument("--call-id", help="Call id to inspect; defaults to newest trace")
+    calls_acceptance.add_argument("--trace-root", help="Trace directory override")
+    calls_acceptance.add_argument(
+        "--manual-heard",
+        action="store_true",
+        help="Set only after the iPhone user confirms they heard Hermes audio",
+    )
+    calls_acceptance.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    calls_observe = calls_subparsers.add_parser(
+        "simplex-observe",
+        help="Summarize observed STT, agent, and TTS call turns",
+    )
+    calls_observe.add_argument("--call-id", help="Call id to inspect; defaults to newest trace")
+    calls_observe.add_argument("--trace-root", help="Trace directory override")
+    calls_observe.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    calls_subparsers.add_parser(
+        "simplex-native-sidecar",
+        help="Run the aiortc-backed SimpleX native call sidecar on stdio",
+    )
+    calls_stream_sim = calls_subparsers.add_parser(
+        "simplex-simulate-stream",
+        help="Run the streaming voice reflex session in simulation (fakes + VirtualClock)",
+    )
+    calls_stream_sim.add_argument("--call-id", default="stream-sim")
+    calls_stream_sim.add_argument("--contact-id", default="sim-contact")
+    calls_stream_sim.add_argument(
+        "--caller-text",
+        default="what's the weather",
+        help="Simulated user transcript",
+    )
+    calls_stream_sim.add_argument(
+        "--response-text",
+        default="It's sunny today.",
+        help="Simulated brain response text",
+    )
+    calls_stream_sim.add_argument(
+        "--barge-in",
+        action="store_true",
+        help="Script a qualifying barge-in mid-speech",
+    )
+    calls_stream_sim.add_argument(
+        "--brain-delay-ms",
+        type=int,
+        default=0,
+        help="Simulated brain latency in milliseconds",
+    )
+    calls_stream_sim.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    calls_parser.set_defaults(func=cmd_calls)
 
     # =========================================================================
     # gateway command
@@ -12575,10 +12796,7 @@ Examples:
         return
 
     # Execute the command
-    if hasattr(args, "func"):
-        args.func(args)
-    else:
-        parser.print_help()
+    _dispatch_parsed_command(args, parser)
 
 
 if __name__ == "__main__":
