@@ -56,7 +56,7 @@ and one of:
 The skill writes files to disk. All work goes through the `terminal` tool to run the helper script, or `read_file` / `write_file` for direct edits.
 
 - **Scaffold a fresh `.devcontainer/`**: `python scripts/init.py <target-dir> --python 3.11 --features docker-in-docker`
-- **Add devcontainer.json to an existing repo**: `python scripts/init.py . --node 20 --no-dockerfile`
+- **Add devcontainer.json to an existing repo**: `python scripts/init.py . --node 20`
 - **Validate an existing config**: `python scripts/init.py . --validate`
 - **Show what a generated config would look like (no writes)**: `python scripts/init.py . --python 3.11 --dry-run`
 
@@ -131,7 +131,7 @@ Tell the user to open the repo in VS Code and run "Dev Containers: Reopen in Con
 A single command proves the skill is wired up and the scaffolder works:
 
 ```bash
-python scripts/init.py /tmp/devcontainer-smoketest --python 3.11 --features docker-in-docker --no-dockerfile --dry-run
+python scripts/init.py /tmp/devcontainer-smoketest --python 3.11 --features docker-in-docker --dry-run
 ```
 
 Expected: prints a JSON object to stdout that includes `"image": "mcr.microsoft.com/devcontainers/python:3.11-bookworm"` and a `features` block referencing `ghcr.io/devcontainers/features/docker-in-docker:2`. Exit 0. If anything else prints (traceback, "command not found"), the install is broken — check that the script is on `PATH` or run it with the explicit `python` prefix.
