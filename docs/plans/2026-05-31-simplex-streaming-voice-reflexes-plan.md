@@ -208,6 +208,7 @@ async def test_virtualclock_sleep_resolves_only_after_advance():
         woke.append(clock.now_ms())
     import asyncio
     task = asyncio.create_task(sleeper())
+    await asyncio.sleep(0)     # let the sleeper register its waiter first
     await clock.advance(299)
     assert woke == []          # not yet
     await clock.advance(1)
@@ -225,12 +226,13 @@ from __future__ import annotations
 import asyncio
 import heapq
 import time
+from collections.abc import Awaitable
 from typing import Protocol
 
 
 class Clock(Protocol):
     def now_ms(self) -> int: ...
-    def sleep(self, ms: int) -> "asyncio.Future[None] | asyncio.Task[None]": ...
+    def sleep(self, ms: int) -> Awaitable[None]: ...   # covers async def + Future-returning impls
 
 
 class MonotonicClock:
@@ -511,7 +513,56 @@ class CallTurnRecord:
 
 - [ ] **Step 8: Run green** — `uv run pytest tests/gateway/streaming/test_types.py -q` → PASS.
 
-- [ ] **Step 9: Implement `ports.py`** (Protocols only — no logic; §5.4)
+- [ ] **Step 9: Implement `cancellation.py`** (built BEFORE `ports.py`, which imports it)
+
+```python
+from __future__ import annotations
+
+from collections.abc import Callable
+
+
+class CallTurnCancelled(Exception):
+    pass
+
+
+class CancellationScope:
+    """Cooperative cancellation shared by the reflex loop and the brain worker."""
+
+    def __init__(self) -> None:
+        self._cancelled = False
+        self._reason = ""
+        self._listeners: list[Callable[[str], None]] = []
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    @property
+    def reason(self) -> str:
+        return self._reason
+
+    def cancel(self, reason: str) -> None:
+        if self._cancelled:
+            return
+        self._cancelled = True
+        self._reason = reason
+        for cb in list(self._listeners):
+            try:
+                cb(reason)
+            except Exception:
+                pass
+
+    def raise_if_cancelled(self) -> None:
+        if self._cancelled:
+            raise CallTurnCancelled(self._reason)
+
+    def add_listener(self, cb: Callable[[str], None]) -> None:
+        self._listeners.append(cb)
+        if self._cancelled:
+            cb(self._reason)
+```
+
+- [ ] **Step 10: Implement `ports.py`** (Protocols only — no logic; §5.4). It imports `CancellationScope` AND re-exports `CallTurnCancelled` so the exception stays part of the contract surface.
 
 ```python
 from __future__ import annotations
@@ -519,16 +570,18 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Protocol, runtime_checkable
 
-from .cancellation import CancellationScope
+from .cancellation import CallTurnCancelled, CancellationScope  # re-exported; part of the contract
 from .types import (
     AudioFrame, BrainEvent, CallTurnRecord, FlushResult, InterruptionDecision,
     InterruptionSignal, MediaFormat, PlaybackMark, StreamingCallContext,
     TranscriptEvent, TtsAudioEvent, TurnEvent,
 )
 
-
-class CallTurnCancelled(Exception):
-    """Raised by CancellationScope.raise_if_cancelled()."""
+__all__ = [
+    "CallTurnCancelled", "AudioTransportPort", "TurnDetectionPort",
+    "InterruptionPolicyPort", "SpeechToTextPort", "TextToSpeechPort",
+    "HermesBrainPort", "StreamingCallTracerPort",
+]
 
 
 @runtime_checkable
@@ -589,63 +642,12 @@ class StreamingCallTracerPort(Protocol):
     def turn_committed(self, record: CallTurnRecord) -> None: ...
 ```
 
-(Note: `ports.py` imports `cancellation.CancellationScope`; build `cancellation.py` in this task's Step 11 before importing, or define the import after WP1.5. To keep WP1 self-contained, implement `cancellation.py` here.)
+(Build order within this task: `clock.py` → `types.py` → `cancellation.py` (Step 9) → `ports.py` (Step 10, imports cancellation). This avoids the unresolved-import failure that an out-of-order build would hit at the Step 11 gate.)
 
-- [ ] **Step 10: Run ast-grep + ty on the contract**
+- [ ] **Step 11: Run ast-grep + ty on the contract**
 
 Run: `ast-grep scan gateway/calls/native/streaming && uv run ty check gateway/calls/native/streaming`
-Expected: clean (frozen-dataclass + purity rules satisfied; types align).
-
-- [ ] **Step 11: Implement `cancellation.py`** (needed by ports import)
-
-```python
-from __future__ import annotations
-
-from collections.abc import Callable
-
-
-class CallTurnCancelled(Exception):
-    pass
-
-
-class CancellationScope:
-    """Cooperative cancellation shared by the reflex loop and the brain worker."""
-
-    def __init__(self) -> None:
-        self._cancelled = False
-        self._reason = ""
-        self._listeners: list[Callable[[str], None]] = []
-
-    @property
-    def cancelled(self) -> bool:
-        return self._cancelled
-
-    @property
-    def reason(self) -> str:
-        return self._reason
-
-    def cancel(self, reason: str) -> None:
-        if self._cancelled:
-            return
-        self._cancelled = True
-        self._reason = reason
-        for cb in list(self._listeners):
-            try:
-                cb(reason)
-            except Exception:
-                pass
-
-    def raise_if_cancelled(self) -> None:
-        if self._cancelled:
-            raise CallTurnCancelled(self._reason)
-
-    def add_listener(self, cb: Callable[[str], None]) -> None:
-        self._listeners.append(cb)
-        if self._cancelled:
-            cb(self._reason)
-```
-
-Remove the duplicate `CallTurnCancelled` from `ports.py` and import it from `cancellation` instead (DRY).
+Expected: clean (frozen-dataclass + purity rules satisfied; types align; `ports.py` resolves `cancellation`).
 
 - [ ] **Step 12: Full gate + commit**
 
@@ -972,10 +974,10 @@ One test per scenario (spec §6). Each builds fakes + `VirtualClock`, scripts th
 
 ## Task 11 (WP11): Engine selector + Scenario F — after WP7 (serial; touches shared files)
 
-**Files:** Create `gateway/calls/native/streaming/engine.py`; Modify `hermes_cli/config.py` (default `calls.native.engine: turn_based`), `gateway/calls/native/application.py` (route via selector); Test `test_engine_selection.py`.
+**Files:** Create `gateway/calls/native/streaming/engine.py`; Modify `hermes_cli/config.py` (default `calls.native.engine: turn_based`); Modify the **voice-pipeline construction seam** — NOT the signaling handler. `NativeCallApplication` only does signaling/media setup; the turn-based voice loop is built in `voice_turn.py` (`HermesVoiceTurnPipeline`) and driven via `sidecar.py`/`simplex_sidecar.py`. **Step 0 of this task: grep for where `HermesVoiceTurnPipeline(` is constructed and where the sidecar processes audio, and wire the selector at that construction point** so `engine=streaming` builds a `StreamingCallSession` instead. Test `test_engine_selection.py`.
 
-- `select_call_engine(config) -> str` returns `"streaming"` only when `calls.native.engine == "streaming"`, else `"turn_based"` (default; unknown values fall back to turn_based with a warning).
-- `application.py` consults the selector at call setup; default path is byte-for-byte the existing behavior (assert existing native-call tests still pass).
+- `select_call_engine(config) -> str` returns `"streaming"` only when `calls.native.engine == "streaming"`, else `"turn_based"` (default; unknown/missing values fall back to turn_based with a logged warning).
+- The default path stays byte-for-byte the existing behavior (assert existing native-call tests still pass). If no clean construction seam exists, the minimal change is a factory function the voice path calls to obtain its pipeline, selected by `select_call_engine`.
 - [ ] **Step 1: Failing tests** — Scenario F both directions; default/missing/garbage → turn_based.
 - [ ] **Step 2–4:** red → implement → green.
 - [ ] **Step 5: Regression** — `uv run pytest tests/gateway/test_native_call_application.py tests/gateway/test_simplex_plugin.py -q` → still pass (zero behavior change at default).
