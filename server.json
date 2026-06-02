@@ -1,0 +1,42 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.nousresearch/hermes-agent",
+  "description": "Hermes Agent MCP bridge for reading conversations, polling events, and sending platform messages.",
+  "status": "active",
+  "repository": {
+    "url": "https://github.com/NousResearch/hermes-agent",
+    "source": "github",
+    "id": "1024554267"
+  },
+  "version": "0.15.1",
+  "websiteUrl": "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp#running-hermes-as-an-mcp-server",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "hermes-agent",
+      "version": "0.15.1",
+      "runtimeHint": "uvx",
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "--from",
+          "value": "hermes-agent[mcp]"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        },
+        {
+          "type": "positional",
+          "value": "serve"
+        }
+      ]
+    }
+  ]
+}
