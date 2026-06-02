@@ -89,4 +89,33 @@ describe('SkillsView toolset management', () => {
 
     await waitFor(() => expect(getToolsetConfig).toHaveBeenCalledWith('web'))
   })
+
+  it('disables the switch and labels restricted toolsets as managed via CLI', async () => {
+    getToolsets.mockResolvedValue([
+      toolset({ name: 'discord_admin', label: 'Discord Server Admin', enabled: false, restricted: true })
+    ])
+    await renderSkills()
+
+    const sw = await screen.findByRole('switch', { name: 'Toggle Discord Server Admin toolset' })
+    expect(sw.hasAttribute('disabled')).toBe(true)
+    expect(screen.getByText('Managed via CLI')).toBeTruthy()
+
+    // A restricted toggle must not issue a write that would silently no-op.
+    fireEvent.click(sw)
+    expect(toggleToolset).not.toHaveBeenCalled()
+  })
+
+  it('mirrors the server effective state, not the requested value', async () => {
+    // Server reports the enable did not persist (restricted/no-op): UI must
+    // reflect enabled=false rather than the optimistic requested true.
+    getToolsets.mockResolvedValue([toolset({ name: 'web', label: 'Web Search', enabled: false })])
+    toggleToolset.mockResolvedValue({ ok: true, name: 'web', enabled: false, restricted: false })
+    await renderSkills()
+
+    const sw = await screen.findByRole('switch', { name: 'Toggle Web Search toolset' })
+    fireEvent.click(sw)
+
+    await waitFor(() => expect(toggleToolset).toHaveBeenCalledWith('web', true))
+    await waitFor(() => expect(sw.getAttribute('aria-checked')).toBe('false'))
+  })
 })

@@ -1738,6 +1738,7 @@ class TestNewEndpoints:
                 "description": "web_search, web_extract",
                 "enabled": True,
                 "available": True,
+                "restricted": False,
                 "configured": False,
                 "tools": ["web_extract", "web_search"],
             },
@@ -1747,6 +1748,7 @@ class TestNewEndpoints:
                 "description": "list, view, manage",
                 "enabled": True,
                 "available": True,
+                "restricted": False,
                 "configured": True,
                 "tools": ["skill_view", "skills_list"],
             },
@@ -1756,6 +1758,7 @@ class TestNewEndpoints:
                 "description": "persistent memory across sessions",
                 "enabled": False,
                 "available": False,
+                "restricted": False,
                 "configured": True,
                 "tools": ["memory_read"],
             },
@@ -1787,6 +1790,34 @@ class TestNewEndpoints:
             "/api/tools/toolsets/not_a_real_toolset", json={"enabled": True}
         )
         assert resp.status_code == 400
+
+    def test_toggle_restricted_toolset_returns_effective_false(self):
+        """A toolset restricted to a non-cli platform (discord_admin) can't be
+        enabled from the GUI's cli scope. The PUT must report the EFFECTIVE
+        persisted state (False), never echo a false {enabled: true}, and a
+        later GET must AGREE — that agreement is what prevents the UI desync."""
+        resp = self.client.put(
+            "/api/tools/toolsets/discord_admin", json={"enabled": True}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["name"] == "discord_admin"
+        # Truthful, not the requested value: the enable was filtered out.
+        assert body["enabled"] is False
+        assert body["restricted"] is True
+
+        # PUT and GET must agree — a stale read here would re-introduce the bug.
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["discord_admin"]["enabled"] is False
+        assert listing["discord_admin"]["enabled"] == body["enabled"]
+
+    def test_toolsets_list_marks_restricted(self):
+        """GET flags platform-restricted toolsets so the client can disable the
+        toggle; unrestricted toolsets are not flagged."""
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["discord_admin"]["restricted"] is True
+        assert listing["web"]["restricted"] is False
 
     def test_get_toolset_config_returns_provider_matrix(self):
         """GET .../config returns provider rows with structured env_vars."""

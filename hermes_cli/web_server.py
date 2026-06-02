@@ -6442,6 +6442,7 @@ async def get_toolsets():
     from hermes_cli.tools_config import (
         _get_effective_configurable_toolsets,
         _get_platform_tools,
+        _toolset_allowed_for_platform,
         _toolset_has_keys,
     )
     from toolsets import resolve_toolset
@@ -6463,6 +6464,11 @@ async def get_toolsets():
             "name": name, "label": label, "description": desc,
             "enabled": is_enabled,
             "available": is_enabled,
+            # Platform-restricted toolsets (e.g. discord_admin) can never be
+            # enabled from the desktop GUI, which only writes the cli platform.
+            # Surface that so the client can disable the toggle instead of
+            # showing one that silently no-ops.
+            "restricted": not _toolset_allowed_for_platform(name, "cli"),
             "configured": _toolset_has_keys(name, config),
             "tools": tools,
         })
@@ -6485,6 +6491,7 @@ async def toggle_toolset(name: str, body: ToolsetToggle):
         _get_effective_configurable_toolsets,
         _get_platform_tools,
         _save_platform_tools,
+        _toolset_allowed_for_platform,
     )
 
     valid = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
@@ -6500,7 +6507,22 @@ async def toggle_toolset(name: str, body: ToolsetToggle):
     else:
         enabled.discard(name)
     _save_platform_tools(config, "cli", enabled)
-    return {"ok": True, "name": name, "enabled": body.enabled}
+    # _save_platform_tools silently drops toolsets that aren't allowed on this
+    # platform (e.g. discord_admin on cli), so the requested value can differ
+    # from what persisted. Re-read from the SAME source GET uses — load_config()
+    # then _get_platform_tools — so this response can never disagree with a
+    # subsequent GET and desync the UI. This assumes _save_platform_tools has
+    # already flushed to disk before this load_config(); if it ever becomes
+    # lazy/atomic-deferred, read effective state back from the in-memory config.
+    persisted = _get_platform_tools(
+        load_config(), "cli", include_default_mcp_servers=False
+    )
+    return {
+        "ok": True,
+        "name": name,
+        "enabled": name in persisted,
+        "restricted": not _toolset_allowed_for_platform(name, "cli"),
+    }
 
 
 @app.get("/api/tools/toolsets/{name}/config")

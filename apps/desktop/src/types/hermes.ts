@@ -471,6 +471,10 @@ export interface ToolsetInfo {
   enabled: boolean
   label: string
   name: string
+  // True when the toolset is restricted to a non-cli platform and so can never
+  // be enabled from the desktop GUI (e.g. discord_admin). Optional for
+  // backward compatibility with older gateways that don't send it.
+  restricted?: boolean
   tools: string[]
 }
 

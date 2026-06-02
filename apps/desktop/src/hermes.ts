@@ -337,8 +337,8 @@ export function getToolsets(): Promise<ToolsetInfo[]> {
 export function toggleToolset(
   name: string,
   enabled: boolean
-): Promise<{ ok: boolean; name: string; enabled: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
+): Promise<{ ok: boolean; name: string; enabled: boolean; restricted: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean; restricted: boolean }>({
     path: `/api/tools/toolsets/${encodeURIComponent(name)}`,
     method: 'PUT',
     body: { enabled }

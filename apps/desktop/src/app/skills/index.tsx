@@ -161,13 +161,18 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     setSavingToolset(toolset.name)
 
     try {
-      await toggleToolset(toolset.name, enabled)
+      // Trust the server's effective state, not the requested value: a
+      // platform-restricted toolset can't persist on cli, so the write may be
+      // a no-op. Mirroring the response keeps the UI from desyncing on nav.
+      const result = await toggleToolset(toolset.name, enabled)
       setToolsets(current =>
-        current?.map(row => (row.name === toolset.name ? { ...row, enabled, available: enabled } : row)) ?? current
+        current?.map(row =>
+          row.name === toolset.name ? { ...row, enabled: result.enabled, available: result.enabled } : row
+        ) ?? current
       )
       notify({
         kind: 'success',
-        title: enabled ? 'Toolset enabled' : 'Toolset disabled',
+        title: result.enabled ? 'Toolset enabled' : 'Toolset disabled',
         message: `${asText(toolset.label || toolset.name)} applies to new sessions.`
       })
     } catch (err) {
@@ -284,6 +289,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                       <div className="flex items-center justify-between gap-2">
                         <div className="truncate text-sm font-medium">{label}</div>
                         <div className="flex shrink-0 items-center gap-1.5">
+                          {toolset.restricted && (
+                            <StatusPill active={false}>Managed via CLI</StatusPill>
+                          )}
                           <button
                             aria-expanded={expanded}
                             aria-label={`Configure ${label}`}
@@ -298,7 +306,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                           <Switch
                             aria-label={`Toggle ${label} toolset`}
                             checked={toolset.enabled}
-                            disabled={savingToolset === toolset.name}
+                            disabled={savingToolset === toolset.name || toolset.restricted}
                             onCheckedChange={checked => void handleToggleToolset(toolset, checked)}
                           />
                         </div>
