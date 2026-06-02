@@ -35,26 +35,26 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli import __version__, __release_date__
+from gateway.status import get_running_pid, read_runtime_status
+from hermes_cli import __release_date__, __version__
 from hermes_cli.config import (
-    cfg_get,
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
+    cfg_get,
+    check_config_version,
+    detect_install_method,
+    format_docker_update_message,
     get_config_path,
     get_env_path,
     get_hermes_home,
     load_config,
     load_env,
-    save_config,
-    save_env_value,
-    remove_env_value,
-    check_config_version,
-    detect_install_method,
-    format_docker_update_message,
     recommended_update_command_for_method,
     redact_key,
+    remove_env_value,
+    save_config,
+    save_env_value,
 )
-from gateway.status import get_running_pid, read_runtime_status
 from utils import env_var_enabled
 
 try:
@@ -69,8 +69,15 @@ except ImportError:
     # them out of every other install path. After install, re-import.
     try:
         from tools.lazy_deps import ensure as _lazy_ensure
+
         _lazy_ensure("tool.dashboard", prompt=False)
-        from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+        from fastapi import (
+            FastAPI,
+            HTTPException,
+            Request,
+            WebSocket,
+            WebSocketDisconnect,
+        )
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
@@ -81,7 +88,11 @@ except ImportError:
             f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
         )
 
-WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
+WEB_DIST = (
+    Path(os.environ["HERMES_WEB_DIST"])
+    if "HERMES_WEB_DIST" in os.environ
+    else Path(__file__).parent / "web_dist"
+)
 _log = logging.getLogger(__name__)
 
 app = FastAPI(title="Hermes Agent", version=__version__)
@@ -94,7 +105,9 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # on every server start. Either way it dies when the process exits and is
 # injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+_SESSION_TOKEN = os.environ.get(
+    "HERMES_DASHBOARD_SESSION_TOKEN"
+) or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
@@ -130,9 +143,7 @@ app.add_middleware(
 # Keep the upstream list minimal — only truly non-sensitive, read-only
 # endpoints belong there.
 # ---------------------------------------------------------------------------
-from hermes_cli.dashboard_auth.public_paths import (
-    PUBLIC_API_PATHS as _PUBLIC_API_PATHS,
-)
+from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS as _PUBLIC_API_PATHS
 
 
 def _has_valid_session_token(request: Request) -> bool:
@@ -167,9 +178,13 @@ def _require_token(request: Request) -> None:
 # checks because the browser now considers evil.test and our dashboard
 # "same origin". Validating the Host header at the app layer rejects any
 # request whose Host isn't one we bound for. See GHSA-ppp5-vxwm-4cf7.
-_LOOPBACK_HOST_VALUES: frozenset = frozenset({
-    "localhost", "127.0.0.1", "::1",
-})
+_LOOPBACK_HOST_VALUES: frozenset = frozenset(
+    {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }
+)
 
 
 def should_require_auth(host: str, allow_public: bool) -> bool:
@@ -274,6 +289,7 @@ async def host_header_middleware(request: Request, call_next):
 @app.middleware("http")
 async def _dashboard_auth_gate(request: Request, call_next):
     from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
+
     return await gated_auth_middleware(request, call_next)
 
 
@@ -417,9 +433,21 @@ _CATEGORY_MERGE: Dict[str, str] = {
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
 _CATEGORY_ORDER = [
-    "general", "agent", "terminal", "display", "delegation",
-    "memory", "compression", "security", "browser", "voice",
-    "tts", "stt", "logging", "discord", "auxiliary",
+    "general",
+    "agent",
+    "terminal",
+    "display",
+    "delegation",
+    "memory",
+    "compression",
+    "security",
+    "browser",
+    "voice",
+    "tts",
+    "stt",
+    "logging",
+    "discord",
+    "auxiliary",
 ]
 
 
@@ -448,7 +476,9 @@ def _build_schema_from_config(
         full_key = f"{prefix}.{key}" if prefix else key
 
         # Skip internal / version keys
-        if full_key in {"_config_version",}:
+        if full_key in {
+            "_config_version",
+        }:
             continue
 
         # Category is the first path component for nested keys, or "general"
@@ -473,7 +503,9 @@ def _build_schema_from_config(
             if full_key in _SCHEMA_OVERRIDES:
                 entry.update(_SCHEMA_OVERRIDES[full_key])
             # Merge small categories
-            entry["category"] = _CATEGORY_MERGE.get(entry["category"], entry["category"])
+            entry["category"] = _CATEGORY_MERGE.get(
+                entry["category"], entry["category"]
+            )
             schema[full_key] = entry
     return schema
 
@@ -566,6 +598,7 @@ class ModelAssignment(BaseModel):
     scope="auxiliary" with task=""  → applied to every auxiliary.* slot
     scope="auxiliary" with task="__reset__"  → resets every slot to provider="auto"
     """
+
     scope: str
     provider: str
     model: str
@@ -673,7 +706,11 @@ async def get_status():
     # Prefer the detailed health endpoint response (has full state) when the
     # local runtime status file is absent or stale (cross-container).
     runtime = read_runtime_status()
-    if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
+    if (
+        runtime is None
+        and remote_health_body
+        and remote_health_body.get("gateway_state")
+    ):
         runtime = remote_health_body
 
     if runtime:
@@ -688,7 +725,11 @@ async def get_status():
         gateway_exit_reason = runtime.get("exit_reason")
         gateway_updated_at = runtime.get("updated_at")
         if not gateway_running:
-            gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
+            gateway_state = (
+                gateway_state
+                if gateway_state in {"stopped", "startup_failed"}
+                else "stopped"
+            )
             gateway_platforms = {}
         elif gateway_running and remote_health_body is not None:
             # The health probe confirmed the gateway is alive, but the local
@@ -705,12 +746,14 @@ async def get_status():
     active_sessions = 0
     try:
         from hermes_state import SessionDB
+
         db = SessionDB()
         try:
             sessions = db.list_sessions_rich(limit=50)
             now = time.time()
             active_sessions = sum(
-                1 for s in sessions
+                1
+                for s in sessions
                 if s.get("ended_at") is None
                 and (now - s.get("last_active", s.get("started_at", 0))) < 300
             )
@@ -727,6 +770,7 @@ async def get_status():
     auth_providers: list[str] = []
     try:
         from hermes_cli.dashboard_auth import list_providers as _list_providers
+
         auth_providers = [p.name for p in _list_providers()]
     except Exception:
         # Module not importable yet (early startup) — leave as [].
@@ -917,7 +961,9 @@ async def get_portal_status():
             for feat in feats.items():
                 if getattr(feat, "managed_by_nous", False):
                     state = "via Nous Portal"
-                elif getattr(feat, "active", False) and getattr(feat, "current_provider", None):
+                elif getattr(feat, "active", False) and getattr(
+                    feat, "current_provider", None
+                ):
                     state = feat.current_provider
                 elif getattr(feat, "active", False):
                     state = "active"
@@ -1219,7 +1265,11 @@ async def get_elevenlabs_voices():
     The desktop UI uses this for the ``tts.elevenlabs.voice_id`` dropdown.
     Only non-secret voice metadata is returned; the API key stays server-side.
     """
-    api_key = (load_env().get("ELEVENLABS_API_KEY") or os.environ.get("ELEVENLABS_API_KEY") or "").strip()
+    api_key = (
+        load_env().get("ELEVENLABS_API_KEY")
+        or os.environ.get("ELEVENLABS_API_KEY")
+        or ""
+    ).strip()
     if not api_key:
         return {"available": False, "voices": []}
 
@@ -1252,11 +1302,13 @@ async def get_elevenlabs_voices():
         if not voice_id:
             continue
 
-        voices.append({
-            "voice_id": voice_id,
-            "name": str(voice.get("name") or voice_id),
-            "label": _elevenlabs_voice_label(voice),
-        })
+        voices.append(
+            {
+                "voice_id": voice_id,
+                "name": str(voice.get("name") or voice_id),
+                "label": _elevenlabs_voice_label(voice),
+            }
+        )
 
     voices.sort(key=lambda item: str(item.get("label") or "").lower())
     return {"available": True, "voices": voices}
@@ -1277,6 +1329,7 @@ async def speak_text(payload: TTSSpeakRequest):
 
     try:
         from tools.tts_tool import text_to_speech_tool
+
         loop = asyncio.get_running_loop()
         result_json = await loop.run_in_executor(None, text_to_speech_tool, text)
     except Exception as exc:
@@ -1284,7 +1337,9 @@ async def speak_text(payload: TTSSpeakRequest):
         raise HTTPException(status_code=500, detail=f"Speech synthesis failed: {exc}")
 
     try:
-        result = json.loads(result_json) if isinstance(result_json, str) else result_json
+        result = (
+            json.loads(result_json) if isinstance(result_json, str) else result_json
+        )
     except Exception:
         raise HTTPException(status_code=500, detail="Invalid TTS response")
 
@@ -1389,6 +1444,7 @@ async def get_sessions(
         )
     try:
         from hermes_state import SessionDB
+
         db = SessionDB()
         try:
             min_message_count = max(0, min_messages)
@@ -1406,6 +1462,8 @@ async def get_sessions(
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
+                project_compression_tips=True,
+                include_children=False,
             )
             now = time.time()
             for s in sessions:
@@ -1415,7 +1473,12 @@ async def get_sessions(
                 )
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            return {
+                "sessions": sessions,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
         finally:
             db.close()
     except Exception:
@@ -1430,12 +1493,14 @@ async def search_sessions(q: str = "", limit: int = 20):
         return {"results": []}
     try:
         from hermes_state import SessionDB
+
         db = SessionDB()
         try:
             # Auto-add prefix wildcards so partial words match
             # e.g. "nimb" → "nimb*" matches "nimby"
             # Preserve quoted phrases and existing wildcards as-is
             import re
+
             terms = []
             for token in re.findall(r'"[^"]*"|\S+', q.strip()):
                 if token.startswith('"') or token.endswith("*"):
@@ -1546,6 +1611,7 @@ def get_model_info():
         # purely auto-detected value, then separately report the override)
         try:
             from agent.model_metadata import get_model_context_length
+
             auto_ctx = get_model_context_length(
                 model=model_name,
                 base_url=base_url,
@@ -1566,6 +1632,7 @@ def get_model_info():
         caps = {}
         try:
             from agent.models_dev import get_model_capabilities
+
             mc = get_model_capabilities(provider=provider, model=model_name)
             if mc is not None:
                 caps = {
@@ -1651,15 +1718,15 @@ def get_recommended_default_model(provider: str = ""):
 
     if slug == "nous":
         try:
+            from hermes_cli.auth import get_provider_auth_state
             from hermes_cli.models import (
+                check_nous_free_tier,
                 get_curated_nous_model_ids,
                 get_pricing_for_provider,
-                check_nous_free_tier,
                 partition_nous_models_by_tier,
                 union_with_portal_free_recommendations,
                 union_with_portal_paid_recommendations,
             )
-            from hermes_cli.auth import get_provider_auth_state
 
             model_ids = get_curated_nous_model_ids()
             pricing = get_pricing_for_provider("nous") or {}
@@ -1698,7 +1765,11 @@ def get_recommended_default_model(provider: str = ""):
         for row in payload.get("providers", []):
             if str(row.get("slug", "")).lower() == slug:
                 models = row.get("models") or []
-                return {"provider": slug, "model": models[0] if models else "", "free_tier": None}
+                return {
+                    "provider": slug,
+                    "model": models[0] if models else "",
+                    "free_tier": None,
+                }
         return {"provider": slug, "model": "", "free_tier": None}
     except Exception:
         _log.exception("GET /api/model/recommended-default failed")
@@ -1726,13 +1797,17 @@ def get_auxiliary_models():
 
         tasks = []
         for slot in _AUX_TASK_SLOTS:
-            slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
-            tasks.append({
-                "task": slot,
-                "provider": str(slot_cfg.get("provider", "auto") or "auto"),
-                "model": str(slot_cfg.get("model", "") or ""),
-                "base_url": str(slot_cfg.get("base_url", "") or ""),
-            })
+            slot_cfg = (
+                aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
+            )
+            tasks.append(
+                {
+                    "task": slot,
+                    "provider": str(slot_cfg.get("provider", "auto") or "auto"),
+                    "model": str(slot_cfg.get("model", "") or ""),
+                    "base_url": str(slot_cfg.get("base_url", "") or ""),
+                }
+            )
 
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, dict):
@@ -1763,14 +1838,18 @@ async def set_model_assignment(body: ModelAssignment):
     task = (body.task or "").strip().lower()
 
     if scope not in {"main", "auxiliary"}:
-        raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
+        raise HTTPException(
+            status_code=400, detail="scope must be 'main' or 'auxiliary'"
+        )
 
     try:
         cfg = load_config()
 
         if scope == "main":
             if not provider or not model:
-                raise HTTPException(status_code=400, detail="provider and model required for main")
+                raise HTTPException(
+                    status_code=400, detail="provider and model required for main"
+                )
             model_cfg = cfg.get("model", {})
             if not isinstance(model_cfg, dict):
                 model_cfg = {}
@@ -1842,12 +1921,16 @@ async def set_model_assignment(body: ModelAssignment):
             return {"ok": True, "scope": "auxiliary", "reset": True}
 
         if not provider:
-            raise HTTPException(status_code=400, detail="provider required for auxiliary")
+            raise HTTPException(
+                status_code=400, detail="provider required for auxiliary"
+            )
 
         targets = [task] if task else list(_AUX_TASK_SLOTS)
         for slot in targets:
             if slot not in _AUX_TASK_SLOTS:
-                raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
+                raise HTTPException(
+                    status_code=400, detail=f"unknown auxiliary task: {slot}"
+                )
             slot_cfg = aux.get(slot)
             if not isinstance(slot_cfg, dict):
                 slot_cfg = {}
@@ -1869,8 +1952,6 @@ async def set_model_assignment(body: ModelAssignment):
     except Exception:
         _log.exception("POST /api/model/set failed")
         raise HTTPException(status_code=500, detail="Failed to save model assignment")
-
-
 
 
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1979,7 +2060,10 @@ _CREDENTIAL_PROBES: dict[str, tuple[str, str]] = {
     "OPENROUTER_API_KEY": ("https://openrouter.ai/api/v1/key", "bearer"),
     "OPENAI_API_KEY": ("https://api.openai.com/v1/models", "bearer"),
     "XAI_API_KEY": ("https://api.x.ai/v1/models", "bearer"),
-    "GEMINI_API_KEY": ("https://generativelanguage.googleapis.com/v1beta/models", "query"),
+    "GEMINI_API_KEY": (
+        "https://generativelanguage.googleapis.com/v1beta/models",
+        "query",
+    ),
 }
 
 
@@ -2009,7 +2093,11 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
                 client.get(url)
             return {"ok": True, "reachable": True, "message": ""}
         except Exception:
-            return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
+            return {
+                "ok": False,
+                "reachable": False,
+                "message": f"Could not reach {url}.",
+            }
 
     probe = _CREDENTIAL_PROBES.get(key)
     if not probe:
@@ -2028,14 +2116,26 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
         with httpx.Client(timeout=httpx.Timeout(10.0)) as client:
             resp = client.get(url, headers=headers, params=params)
     except Exception:
-        return {"ok": False, "reachable": False, "message": "Could not reach the provider to verify the key."}
+        return {
+            "ok": False,
+            "reachable": False,
+            "message": "Could not reach the provider to verify the key.",
+        }
 
     if resp.status_code in (401, 403):
-        return {"ok": False, "reachable": True, "message": "That API key was rejected. Double-check it and try again."}
+        return {
+            "ok": False,
+            "reachable": True,
+            "message": "That API key was rejected. Double-check it and try again.",
+        }
     if resp.status_code == 429 or resp.is_success:
         # 429 = key is valid but rate-limited; success = valid.
         return {"ok": True, "reachable": True, "message": ""}
-    return {"ok": False, "reachable": True, "message": f"Provider returned HTTP {resp.status_code} for this key."}
+    return {
+        "ok": False,
+        "reachable": True,
+        "message": f"Provider returned HTTP {resp.status_code} for this key.",
+    }
 
 
 @app.delete("/api/env")
@@ -2074,7 +2174,9 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
     cutoff = now - _REVEAL_WINDOW_SECONDS
     _reveal_timestamps[:] = [t for t in _reveal_timestamps if t > cutoff]
     if len(_reveal_timestamps) >= _REVEAL_MAX_PER_WINDOW:
-        raise HTTPException(status_code=429, detail="Too many reveal requests. Try again shortly.")
+        raise HTTPException(
+            status_code=429, detail="Too many reveal requests. Try again shortly."
+        )
     _reveal_timestamps.append(now)
 
     # --- Reveal ---
@@ -2796,9 +2898,9 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
     """
     try:
         from agent.anthropic_adapter import (
-            read_hermes_oauth_credentials,
-            read_claude_code_credentials,
             _HERMES_OAUTH_FILE,
+            read_claude_code_credentials,
+            read_hermes_oauth_credentials,
         )
     except ImportError:
         read_claude_code_credentials = None  # type: ignore
@@ -2859,6 +2961,7 @@ def _claude_code_only_status() -> Dict[str, Any]:
     """
     try:
         from agent.anthropic_adapter import read_claude_code_credentials
+
         creds = read_claude_code_credentials()
     except Exception:
         creds = None
@@ -2947,6 +3050,7 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
             return {"logged_in": False, "error": str(e)}
     try:
         from hermes_cli import auth as hauth
+
         if provider_id == "nous":
             raw = hauth.get_nous_auth_status()
             return {
@@ -3014,14 +3118,16 @@ async def list_oauth_providers():
     providers = []
     for p in _OAUTH_PROVIDER_CATALOG:
         status = _resolve_provider_status(p["id"], p.get("status_fn"))
-        providers.append({
-            "id": p["id"],
-            "name": p["name"],
-            "flow": p["flow"],
-            "cli_command": p["cli_command"],
-            "docs_url": p["docs_url"],
-            "status": status,
-        })
+        providers.append(
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "flow": p["flow"],
+                "cli_command": p["cli_command"],
+                "docs_url": p["docs_url"],
+                "status": status,
+            }
+        )
     return {"providers": providers}
 
 
@@ -3035,7 +3141,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
         raise HTTPException(
             status_code=400,
             detail=f"Unknown provider: {provider_id}. "
-                   f"Available: {', '.join(sorted(valid_ids))}",
+            f"Available: {', '.join(sorted(valid_ids))}",
         )
 
     # Anthropic and claude-code clear the same Hermes-managed PKCE file
@@ -3045,6 +3151,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
     if provider_id in {"anthropic", "claude-code"}:
         try:
             from agent.anthropic_adapter import _HERMES_OAUTH_FILE
+
             if _HERMES_OAUTH_FILE.exists():
                 _HERMES_OAUTH_FILE.unlink()
         except Exception:
@@ -3052,6 +3159,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
         # Also clear the credential pool entry if present.
         try:
             from hermes_cli.auth import clear_provider_auth
+
             clear_provider_auth("anthropic")
         except Exception:
             pass
@@ -3060,6 +3168,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
 
     try:
         from hermes_cli.auth import clear_provider_auth
+
         cleared = clear_provider_auth(provider_id)
         _log.info("oauth/disconnect: %s (cleared=%s)", provider_id, cleared)
         return {"ok": bool(cleared), "provider": provider_id}
@@ -3112,13 +3221,14 @@ _oauth_sessions_lock = threading.Lock()
 # Guarded so hermes web still starts if anthropic_adapter is unavailable;
 # Phase 2 endpoints will return 501 in that case.
 try:
+    from agent.anthropic_adapter import _OAUTH_CLIENT_ID as _ANTHROPIC_OAUTH_CLIENT_ID
     from agent.anthropic_adapter import (
-        _OAUTH_CLIENT_ID as _ANTHROPIC_OAUTH_CLIENT_ID,
-        _OAUTH_TOKEN_URL as _ANTHROPIC_OAUTH_TOKEN_URL,
         _OAUTH_REDIRECT_URI as _ANTHROPIC_OAUTH_REDIRECT_URI,
-        _OAUTH_SCOPES as _ANTHROPIC_OAUTH_SCOPES,
-        _generate_pkce as _generate_pkce_pair,
     )
+    from agent.anthropic_adapter import _OAUTH_SCOPES as _ANTHROPIC_OAUTH_SCOPES
+    from agent.anthropic_adapter import _OAUTH_TOKEN_URL as _ANTHROPIC_OAUTH_TOKEN_URL
+    from agent.anthropic_adapter import _generate_pkce as _generate_pkce_pair
+
     _ANTHROPIC_OAUTH_AVAILABLE = True
 except ImportError:
     _ANTHROPIC_OAUTH_AVAILABLE = False
@@ -3129,7 +3239,9 @@ def _gc_oauth_sessions() -> None:
     """Drop expired sessions. Called opportunistically on /start."""
     cutoff = time.time() - _OAUTH_SESSION_TTL_SECONDS
     with _oauth_sessions_lock:
-        stale = [sid for sid, sess in _oauth_sessions.items() if sess["created_at"] < cutoff]
+        stale = [
+            sid for sid, sess in _oauth_sessions.items() if sess["created_at"] < cutoff
+        ]
         for sid in stale:
             _oauth_sessions.pop(sid, None)
 
@@ -3150,13 +3262,16 @@ def _new_oauth_session(provider_id: str, flow: str) -> tuple[str, Dict[str, Any]
     return sid, sess
 
 
-def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
+def _save_anthropic_oauth_creds(
+    access_token: str, refresh_token: str, expires_at_ms: int
+) -> None:
     """Persist Anthropic PKCE creds to both Hermes file AND credential pool.
 
     Mirrors what auth_commands.add_command does so the dashboard flow leaves
     the system in the same state as ``hermes auth add anthropic``.
     """
     from agent.anthropic_adapter import _HERMES_OAUTH_FILE
+
     payload = {
         "accessToken": access_token,
         "refreshToken": refresh_token,
@@ -3186,16 +3301,22 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
     # the file write — pool registration only matters for the rotation
     # strategy, not for runtime credential resolution.
     try:
+        import uuid
+
         from agent.credential_pool import (
-            PooledCredential,
-            load_pool,
             AUTH_TYPE_OAUTH,
             SOURCE_MANUAL,
+            PooledCredential,
+            load_pool,
         )
-        import uuid
+
         pool = load_pool("anthropic")
         # Avoid duplicate entries: delete any prior dashboard-issued OAuth entry
-        existing = [e for e in pool.entries() if getattr(e, "source", "").startswith(f"{SOURCE_MANUAL}:dashboard_pkce")]
+        existing = [
+            e
+            for e in pool.entries()
+            if getattr(e, "source", "").startswith(f"{SOURCE_MANUAL}:dashboard_pkce")
+        ]
         for e in existing:
             try:
                 pool.remove_entry(getattr(e, "id", ""))
@@ -3220,7 +3341,9 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
 def _start_anthropic_pkce() -> Dict[str, Any]:
     """Begin PKCE flow. Returns the auth URL the UI should open."""
     if not _ANTHROPIC_OAUTH_AVAILABLE:
-        raise HTTPException(status_code=501, detail="Anthropic OAuth not available (missing adapter)")
+        raise HTTPException(
+            status_code=501, detail="Anthropic OAuth not available (missing adapter)"
+        )
     verifier, challenge = _generate_pkce_pair()
     sid, sess = _new_oauth_session("anthropic", "pkce")
     sess["verifier"] = verifier
@@ -3251,7 +3374,11 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
     if not sess or sess["provider"] != "anthropic" or sess["flow"] != "pkce":
         raise HTTPException(status_code=404, detail="Unknown or expired session")
     if sess["status"] != "pending":
-        return {"ok": False, "status": sess["status"], "message": sess.get("error_message")}
+        return {
+            "ok": False,
+            "status": sess["status"],
+            "message": sess.get("error_message"),
+        }
 
     # Anthropic's redirect callback page formats the code as `<code>#<state>`.
     # Strip the state suffix if present (we already have the verifier server-side).
@@ -3261,14 +3388,16 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
         return {"ok": False, "status": "error", "message": "No code provided"}
     state_from_callback = parts[1] if len(parts) > 1 else ""
 
-    exchange_data = json.dumps({
-        "grant_type": "authorization_code",
-        "client_id": _ANTHROPIC_OAUTH_CLIENT_ID,
-        "code": code,
-        "state": state_from_callback or sess["state"],
-        "redirect_uri": _ANTHROPIC_OAUTH_REDIRECT_URI,
-        "code_verifier": sess["verifier"],
-    }).encode()
+    exchange_data = json.dumps(
+        {
+            "grant_type": "authorization_code",
+            "client_id": _ANTHROPIC_OAUTH_CLIENT_ID,
+            "code": code,
+            "state": state_from_callback or sess["state"],
+            "redirect_uri": _ANTHROPIC_OAUTH_REDIRECT_URI,
+            "code_verifier": sess["verifier"],
+        }
+    ).encode()
     req = urllib.request.Request(
         _ANTHROPIC_OAUTH_TOKEN_URL,
         data=exchange_data,
@@ -3318,11 +3447,10 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
     so the UI can render the verification page link + user code.
     """
     if provider_id == "nous":
-        from hermes_cli.auth import (
-            _request_device_code,
-            PROVIDER_REGISTRY,
-        )
         import httpx
+
+        from hermes_cli.auth import PROVIDER_REGISTRY, _request_device_code
+
         pconfig = PROVIDER_REGISTRY["nous"]
         portal_base_url = (
             os.getenv("HERMES_PORTAL_BASE_URL")
@@ -3378,7 +3506,9 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
         # verification_url back via the session dict. The helper prints
         # to stdout — we capture nothing here, just status.
         threading.Thread(
-            target=_codex_full_login_worker, args=(sid,), daemon=True,
+            target=_codex_full_login_worker,
+            args=(sid,),
+            daemon=True,
             name=f"oauth-codex-{sid[:6]}",
         ).start()
         # Block briefly until the worker has populated the user_code, OR error.
@@ -3392,9 +3522,14 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
         with _oauth_sessions_lock:
             s = _oauth_sessions.get(sid, {})
         if s.get("status") == "error":
-            raise HTTPException(status_code=500, detail=s.get("error_message") or "device-auth failed")
+            raise HTTPException(
+                status_code=500, detail=s.get("error_message") or "device-auth failed"
+            )
         if not s.get("user_code"):
-            raise HTTPException(status_code=504, detail="device-auth timed out before returning a user code")
+            raise HTTPException(
+                status_code=504,
+                detail="device-auth timed out before returning a user code",
+            )
         return {
             "session_id": sid,
             "flow": "device_code",
@@ -3411,17 +3546,20 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
         # flow; the PKCE bit (verifier + challenge from
         # _minimax_pkce_pair) is a security extension that binds the
         # token exchange to the original session.
+        import httpx
+
         from hermes_cli.auth import (
-            _minimax_pkce_pair,
-            _minimax_request_user_code,
             MINIMAX_OAUTH_CLIENT_ID,
             MINIMAX_OAUTH_GLOBAL_BASE,
+            _minimax_pkce_pair,
+            _minimax_request_user_code,
         )
-        import httpx
+
         verifier, challenge, state = _minimax_pkce_pair()
         portal_base_url = (
             os.getenv("MINIMAX_PORTAL_BASE_URL") or MINIMAX_OAUTH_GLOBAL_BASE
         ).rstrip("/")
+
         def _do_minimax_request():
             with httpx.Client(
                 timeout=httpx.Timeout(15.0),
@@ -3435,6 +3573,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
                     code_challenge=challenge,
                     state=state,
                 )
+
         device_data = await asyncio.get_event_loop().run_in_executor(
             None, _do_minimax_request
         )
@@ -3443,9 +3582,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
         # `interval` field is in milliseconds (defensive default 2000ms
         # in _minimax_poll_token).
         interval_raw = device_data.get("interval")
-        sess["interval_ms"] = (
-            int(interval_raw) if interval_raw is not None else None
-        )
+        sess["interval_ms"] = int(interval_raw) if interval_raw is not None else None
         sess["user_code"] = str(device_data["user_code"])
         sess["code_verifier"] = verifier
         sess["state"] = state
@@ -3480,17 +3617,20 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             "poll_interval": max(2, (sess["interval_ms"] or 2000) // 1000),
         }
 
-    raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
+    raise HTTPException(
+        status_code=400,
+        detail=f"Provider {provider_id} does not support device-code flow",
+    )
 
 
 def _nous_poller(session_id: str) -> None:
     """Background poller that drives a Nous device-code flow to completion."""
-    from hermes_cli.auth import (
-        _poll_for_token,
-        refresh_nous_oauth_from_state,
-    )
     from datetime import datetime, timezone
+
     import httpx
+
+    from hermes_cli.auth import _poll_for_token, refresh_nous_oauth_from_state
+
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
     if not sess:
@@ -3502,7 +3642,9 @@ def _nous_poller(session_id: str) -> None:
     scope = sess.get("scope")
     expires_in = max(60, int(sess["expires_at"] - time.time()))
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0), headers={"Accept": "application/json"}) as client:
+        with httpx.Client(
+            timeout=httpx.Timeout(15.0), headers={"Accept": "application/json"}
+        ) as client:
             token_data = _poll_for_token(
                 client=client,
                 portal_base_url=portal_base_url,
@@ -3524,8 +3666,11 @@ def _nous_poller(session_id: str) -> None:
             "refresh_token": token_data.get("refresh_token"),
             "obtained_at": now.isoformat(),
             "expires_at": (
-                datetime.fromtimestamp(now.timestamp() + token_ttl, tz=timezone.utc).isoformat()
-                if token_ttl else None
+                datetime.fromtimestamp(
+                    now.timestamp() + token_ttl, tz=timezone.utc
+                ).isoformat()
+                if token_ttl
+                else None
             ),
             "expires_in": token_ttl,
         }
@@ -3535,6 +3680,7 @@ def _nous_poller(session_id: str) -> None:
             force_refresh=False,
         )
         from hermes_cli.auth import persist_nous_credentials
+
         persist_nous_credentials(full_state)
         with _oauth_sessions_lock:
             sess["status"] = "approved"
@@ -3557,15 +3703,18 @@ def _minimax_poller(session_id: str) -> None:
     path leaves the system in the same state as
     ``hermes auth add minimax-oauth``.
     """
+    from datetime import datetime, timezone
+
+    import httpx
+
     from hermes_cli.auth import (
+        MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        MINIMAX_OAUTH_SCOPE,
         _minimax_poll_token,
         _minimax_resolve_token_expiry_unix,
         _minimax_save_auth_state,
-        MINIMAX_OAUTH_GLOBAL_INFERENCE,
-        MINIMAX_OAUTH_SCOPE,
     )
-    from datetime import datetime, timezone
-    import httpx
+
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
     if not sess:
@@ -3598,7 +3747,8 @@ def _minimax_poller(session_id: str) -> None:
         # flow which supports `--region cn`.
         now = datetime.now(timezone.utc)
         expires_at_ts = _minimax_resolve_token_expiry_unix(
-            int(token_data["expired_in"]), now=now,
+            int(token_data["expired_in"]),
+            now=now,
         )
         expires_in_s = max(0, int(expires_at_ts - now.timestamp()))
         auth_state = {
@@ -3646,11 +3796,13 @@ def _codex_full_login_worker(session_id: str) -> None:
     """
     try:
         import httpx
+
         from hermes_cli.auth import (
             CODEX_OAUTH_CLIENT_ID,
             CODEX_OAUTH_TOKEN_URL,
             DEFAULT_CODEX_BASE_URL,
         )
+
         issuer = "https://auth.openai.com"
 
         # Step 1: request device code
@@ -3667,7 +3819,9 @@ def _codex_full_login_worker(session_id: str) -> None:
         device_auth_id = device_data.get("device_auth_id", "")
         poll_interval = max(3, int(device_data.get("interval", "5")))
         if not user_code or not device_auth_id:
-            raise RuntimeError("device-code response missing user_code or device_auth_id")
+            raise RuntimeError(
+                "device-code response missing user_code or device_auth_id"
+            )
         verification_url = f"{issuer}/codex/device"
         with _oauth_sessions_lock:
             sess = _oauth_sessions.get(session_id)
@@ -3708,7 +3862,9 @@ def _codex_full_login_worker(session_id: str) -> None:
         authorization_code = code_resp.get("authorization_code", "")
         code_verifier = code_resp.get("code_verifier", "")
         if not authorization_code or not code_verifier:
-            raise RuntimeError("device-auth response missing authorization_code/code_verifier")
+            raise RuntimeError(
+                "device-auth response missing authorization_code/code_verifier"
+            )
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
             token_resp = client.post(
                 CODEX_OAUTH_TOKEN_URL,
@@ -3730,13 +3886,15 @@ def _codex_full_login_worker(session_id: str) -> None:
             raise RuntimeError("token exchange did not return access_token")
 
         # Persist via credential pool — same shape as auth_commands.add_command
+        import uuid as _uuid
+
         from agent.credential_pool import (
-            PooledCredential,
-            load_pool,
             AUTH_TYPE_OAUTH,
             SOURCE_MANUAL,
+            PooledCredential,
+            load_pool,
         )
-        import uuid as _uuid
+
         pool = load_pool("openai-codex")
         base_url = (
             os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
@@ -3810,9 +3968,14 @@ async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Re
     _require_token(request)
     if provider_id == "anthropic":
         return await asyncio.get_running_loop().run_in_executor(
-            None, _submit_anthropic_pkce, body.session_id, body.code,
+            None,
+            _submit_anthropic_pkce,
+            body.session_id,
+            body.code,
         )
-    raise HTTPException(status_code=400, detail=f"submit not supported for {provider_id}")
+    raise HTTPException(
+        status_code=400, detail=f"submit not supported for {provider_id}"
+    )
 
 
 @app.get("/api/providers/oauth/{provider_id}/poll/{session_id}")
@@ -3846,7 +4009,6 @@ async def cancel_oauth_session(session_id: str, request: Request):
 # ---------------------------------------------------------------------------
 # Session detail endpoints
 # ---------------------------------------------------------------------------
-
 
 
 def _session_latest_descendant(session_id: str):
@@ -3887,11 +4049,13 @@ def _session_latest_descendant(session_id: str):
                 "SELECT id, parent_session_id, started_at FROM sessions"
             ).fetchall()
             for row in raw_rows:
-                rows.append({
-                    "id": row_get(row, "id", 0),
-                    "parent_session_id": row_get(row, "parent_session_id", 1),
-                    "started_at": row_get(row, "started_at", 2),
-                })
+                rows.append(
+                    {
+                        "id": row_get(row, "id", 0),
+                        "parent_session_id": row_get(row, "parent_session_id", 1),
+                        "started_at": row_get(row, "started_at", 2),
+                    }
+                )
         else:
             rows = db.list_sessions_rich(limit=10000, offset=0)
 
@@ -3925,6 +4089,7 @@ def _session_latest_descendant(session_id: str):
     finally:
         db.close()
 
+
 @app.get("/api/sessions/stats")
 async def get_session_stats():
     """Session-store statistics for the Sessions page (mirrors `hermes sessions stats`).
@@ -3957,9 +4122,11 @@ async def get_session_stats():
     finally:
         db.close()
 
+
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str):
     from hermes_state import SessionDB
+
     db = SessionDB()
     try:
         sid = db.resolve_session_id(session_id)
@@ -3969,7 +4136,6 @@ async def get_session_detail(session_id: str):
         return session
     finally:
         db.close()
-
 
 
 @app.get("/api/sessions/{session_id}/latest-descendant")
@@ -3984,9 +4150,11 @@ async def get_session_latest_descendant(session_id: str):
         "changed": bool(path and latest != path[0]),
     }
 
+
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str):
     from hermes_state import SessionDB
+
     db = SessionDB()
     try:
         sid = db.resolve_session_id(session_id)
@@ -4001,6 +4169,7 @@ async def get_session_messages(session_id: str):
 @app.delete("/api/sessions/{session_id}")
 async def delete_session_endpoint(session_id: str):
     from hermes_state import SessionDB
+
     db = SessionDB()
     try:
         if not db.delete_session(session_id):
@@ -4023,6 +4192,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
     restores the session. Either field may be omitted.
     """
     from hermes_state import SessionDB
+
     db = SessionDB()
     try:
         sid = db.resolve_session_id(session_id)
@@ -4105,7 +4275,7 @@ async def get_logs(
     component: Optional[str] = None,
     search: Optional[str] = None,
 ):
-    from hermes_cli.logs import _read_tail, LOG_FILES
+    from hermes_cli.logs import LOG_FILES, _read_tail
 
     log_name = LOG_FILES.get(file)
     if not log_name:
@@ -4129,14 +4299,15 @@ async def get_logs(
             raise HTTPException(
                 status_code=400,
                 detail=f"Unknown component: {component}. "
-                       f"Available: {', '.join(sorted(COMPONENT_PREFIXES))}",
+                f"Available: {', '.join(sorted(COMPONENT_PREFIXES))}",
             )
     else:
         comp_prefixes = None
 
     has_filters = bool(min_level or comp_prefixes or search)
     result = _read_tail(
-        log_path, min(lines, 500) if not search else 2000,
+        log_path,
+        min(lines, 500) if not search else 2000,
         has_filters=has_filters,
         min_level=min_level,
         component_prefixes=comp_prefixes,
@@ -4146,7 +4317,7 @@ async def get_logs(
     # trim to the requested line count afterward.
     if search:
         needle = search.lower()
-        result = [l for l in result if needle in l.lower()][-min(lines, 500):]
+        result = [l for l in result if needle in l.lower()][-min(lines, 500) :]
     return {"file": file, "lines": result}
 
 
@@ -4172,10 +4343,13 @@ _CRON_PROFILE_LOCK = threading.RLock()
 def _cron_profile_dicts() -> List[Dict[str, Any]]:
     """Return dashboard profile records, falling back to a directory scan."""
     from hermes_cli import profiles as profiles_mod
+
     try:
         return [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
     except Exception:
-        _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
+        _log.exception(
+            "Failed to list profiles for cron dashboard; falling back to directory scan"
+        )
         return _fallback_profile_dicts(profiles_mod)
 
 
@@ -4190,7 +4364,9 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not profiles_mod.profile_exists(canon):
-        raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
+        raise HTTPException(
+            status_code=404, detail=f"Profile '{canon}' does not exist."
+        )
     return canon, profiles_mod.get_profile_dir(canon)
 
 
@@ -4292,7 +4468,9 @@ async def create_cron_job(body: CronJobCreate, profile: str = "default"):
 
 
 @app.put("/api/cron/jobs/{job_id}")
-async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
+async def update_cron_job(
+    job_id: str, body: CronJobUpdate, profile: Optional[str] = None
+):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -4385,7 +4563,9 @@ def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
-    transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
+    transport = (
+        "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
+    )
     return {
         "name": name,
         "transport": transport,
@@ -4523,21 +4703,23 @@ async def list_mcp_catalog():
     try:
         for entry in mcp_catalog.list_catalog():
             auth = entry.auth
-            entries.append({
-                "name": entry.name,
-                "description": entry.description,
-                "source": entry.source,
-                "transport": entry.transport.type,
-                "auth_type": getattr(auth, "type", "none"),
-                # Env vars the user must supply (names + prompts only, never values).
-                "required_env": [
-                    {"name": e.name, "prompt": e.prompt, "required": e.required}
-                    for e in getattr(auth, "env", []) or []
-                ],
-                "needs_install": entry.install is not None,
-                "installed": mcp_catalog.is_installed(entry.name),
-                "enabled": mcp_catalog.is_enabled(entry.name),
-            })
+            entries.append(
+                {
+                    "name": entry.name,
+                    "description": entry.description,
+                    "source": entry.source,
+                    "transport": entry.transport.type,
+                    "auth_type": getattr(auth, "type", "none"),
+                    # Env vars the user must supply (names + prompts only, never values).
+                    "required_env": [
+                        {"name": e.name, "prompt": e.prompt, "required": e.required}
+                        for e in getattr(auth, "env", []) or []
+                    ],
+                    "needs_install": entry.install is not None,
+                    "installed": mcp_catalog.is_installed(entry.name),
+                    "enabled": mcp_catalog.is_enabled(entry.name),
+                }
+            )
     except Exception:
         _log.exception("list_mcp_catalog failed")
 
@@ -4703,7 +4885,9 @@ class WebhookCreate(BaseModel):
     secret: Optional[str] = None
 
 
-def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+def _webhook_route_summary(
+    name: str, route: Dict[str, Any], base_url: str
+) -> Dict[str, Any]:
     return {
         "name": name,
         "description": route.get("description", ""),
@@ -4742,6 +4926,7 @@ async def create_webhook(body: WebhookCreate):
     import re as _re
     import secrets as _secrets
     import time as _time
+
     import hermes_cli.webhook as wh
 
     if not wh._is_webhook_enabled():
@@ -4911,23 +5096,26 @@ async def list_credential_pool():
         entries = pool.entries()
         if not entries:
             continue
-        providers.append({
-            "provider": provider_id,
-            "entries": [
-                _pool_entry_summary(e, i) for i, e in enumerate(entries, start=1)
-            ],
-        })
+        providers.append(
+            {
+                "provider": provider_id,
+                "entries": [
+                    _pool_entry_summary(e, i) for i, e in enumerate(entries, start=1)
+                ],
+            }
+        )
     return {"providers": providers}
 
 
 @app.post("/api/credentials/pool")
 async def add_credential_pool_entry(body: CredentialPoolAdd):
     import uuid as _uuid
+
     from agent.credential_pool import (
-        load_pool,
-        PooledCredential,
         AUTH_TYPE_API_KEY,
         SOURCE_MANUAL,
+        PooledCredential,
+        load_pool,
     )
 
     provider = (body.provider or "").strip().lower()
@@ -5005,11 +5193,13 @@ async def get_memory_status():
     providers = []
     try:
         for name, description, configured in discover_memory_providers():
-            providers.append({
-                "name": name,
-                "description": description,
-                "configured": bool(configured),
-            })
+            providers.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "configured": bool(configured),
+                }
+            )
     except Exception:
         _log.exception("discover_memory_providers failed")
 
@@ -5055,7 +5245,9 @@ async def set_memory_provider(body: MemoryProviderSelect):
 async def reset_memory(body: MemoryReset):
     target = (body.target or "all").strip().lower()
     if target not in {"all", "memory", "user"}:
-        raise HTTPException(status_code=400, detail="target must be all, memory, or user")
+        raise HTTPException(
+            status_code=400, detail="target must be all, memory, or user"
+        )
 
     mem_dir = get_hermes_home() / "memories"
     deleted = []
@@ -5071,7 +5263,9 @@ async def reset_memory(body: MemoryReset):
                 path.unlink()
                 deleted.append(fname)
             except OSError as exc:
-                raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}")
+                raise HTTPException(
+                    status_code=500, detail=f"Could not delete {fname}: {exc}"
+                )
     return {"ok": True, "deleted": deleted}
 
 
@@ -5104,7 +5298,9 @@ async def run_security_audit():
         proc = _spawn_hermes_action(["security", "audit"], "security-audit")
     except Exception as exc:
         _log.exception("Failed to spawn security audit")
-        raise HTTPException(status_code=500, detail=f"Failed to run security audit: {exc}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to run security audit: {exc}"
+        )
     return {"ok": True, "pid": proc.pid, "name": "security-audit"}
 
 
@@ -5153,11 +5349,12 @@ async def list_hooks():
     currently executable, plus the set of valid hook events so the create
     form can offer them.
     """
-    from hermes_cli.config import load_config as _load_config
     from agent import shell_hooks
+    from hermes_cli.config import load_config as _load_config
 
     try:
         from hermes_cli.plugins import VALID_HOOKS
+
         valid_events = sorted(VALID_HOOKS)
     except Exception:
         valid_events = []
@@ -5180,15 +5377,17 @@ async def list_hooks():
             executable = shell_hooks.script_is_executable(spec.command)
         except Exception:
             pass
-        out.append({
-            "event": spec.event,
-            "matcher": spec.matcher,
-            "command": spec.command,
-            "timeout": spec.timeout,
-            "allowed": entry is not None,
-            "approved_at": (entry or {}).get("approved_at"),
-            "executable": executable,
-        })
+        out.append(
+            {
+                "event": spec.event,
+                "matcher": spec.matcher,
+                "command": spec.command,
+                "timeout": spec.timeout,
+                "allowed": entry is not None,
+                "approved_at": (entry or {}).get("approved_at"),
+                "executable": executable,
+            }
+        )
 
     return {"hooks": out, "valid_events": valid_events}
 
@@ -5222,6 +5421,7 @@ async def create_hook(body: HookCreate):
 
     try:
         from hermes_cli.plugins import VALID_HOOKS
+
         if event not in VALID_HOOKS:
             raise HTTPException(
                 status_code=400,
@@ -5282,7 +5482,8 @@ async def delete_hook(body: HookDelete):
     if isinstance(hooks_cfg, dict) and isinstance(hooks_cfg.get(event), list):
         before = len(hooks_cfg[event])
         hooks_cfg[event] = [
-            e for e in hooks_cfg[event]
+            e
+            for e in hooks_cfg[event]
             if not (isinstance(e, dict) and e.get("command") == command)
         ]
         removed = len(hooks_cfg[event]) < before
@@ -5327,11 +5528,13 @@ async def list_checkpoints():
                     except OSError:
                         pass
             total_bytes += size
-            sessions.append({
-                "session": child.name,
-                "files": count,
-                "bytes": size,
-            })
+            sessions.append(
+                {
+                    "session": child.name,
+                    "files": count,
+                    "bytes": size,
+                }
+            )
     return {"sessions": sessions, "total_bytes": total_bytes}
 
 
@@ -5341,7 +5544,9 @@ async def prune_checkpoints():
         proc = _spawn_hermes_action(["checkpoints", "prune"], "checkpoints-prune")
     except Exception as exc:
         _log.exception("Failed to spawn checkpoints prune")
-        raise HTTPException(status_code=500, detail=f"Failed to prune checkpoints: {exc}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to prune checkpoints: {exc}"
+        )
     return {"ok": True, "pid": proc.pid, "name": "checkpoints-prune"}
 
 
@@ -5382,7 +5587,9 @@ async def uninstall_skill_hub(body: SkillUninstallRequest):
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
     try:
-        proc = _spawn_hermes_action(["skills", "uninstall", name, "--yes"], "skills-uninstall")
+        proc = _spawn_hermes_action(
+            ["skills", "uninstall", name, "--yes"], "skills-uninstall"
+        )
     except Exception as exc:
         _log.exception("Failed to spawn skills uninstall")
         raise HTTPException(status_code=500, detail=f"Failed to uninstall skill: {exc}")
@@ -5487,32 +5694,44 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
     profiles: List[Dict[str, Any]] = []
     default_home = profiles_mod._get_default_hermes_home()
     if default_home.is_dir():
-        model, provider = _safe(lambda: profiles_mod._read_config_model(default_home), (None, None))
-        profiles.append({
-            "name": "default",
-            "path": str(default_home),
-            "is_default": True,
-            "model": model,
-            "provider": provider,
-            "has_env": (default_home / ".env").exists(),
-            "skill_count": _safe(lambda: profiles_mod._count_skills(default_home), 0),
-        })
+        model, provider = _safe(
+            lambda: profiles_mod._read_config_model(default_home), (None, None)
+        )
+        profiles.append(
+            {
+                "name": "default",
+                "path": str(default_home),
+                "is_default": True,
+                "model": model,
+                "provider": provider,
+                "has_env": (default_home / ".env").exists(),
+                "skill_count": _safe(
+                    lambda: profiles_mod._count_skills(default_home), 0
+                ),
+            }
+        )
 
     profiles_root = profiles_mod._get_profiles_root()
     if profiles_root.is_dir():
         for entry in sorted(profiles_root.iterdir()):
             if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
                 continue
-            model, provider = _safe(lambda entry=entry: profiles_mod._read_config_model(entry), (None, None))
-            profiles.append({
-                "name": entry.name,
-                "path": str(entry),
-                "is_default": False,
-                "model": model,
-                "provider": provider,
-                "has_env": (entry / ".env").exists(),
-                "skill_count": _safe(lambda entry=entry: profiles_mod._count_skills(entry), 0),
-            })
+            model, provider = _safe(
+                lambda entry=entry: profiles_mod._read_config_model(entry), (None, None)
+            )
+            profiles.append(
+                {
+                    "name": entry.name,
+                    "path": str(entry),
+                    "is_default": False,
+                    "model": model,
+                    "provider": provider,
+                    "has_env": (entry / ".env").exists(),
+                    "skill_count": _safe(
+                        lambda entry=entry: profiles_mod._count_skills(entry), 0
+                    ),
+                }
+            )
 
     return profiles
 
@@ -5520,6 +5739,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
 def _resolve_profile_dir(name: str) -> Path:
     """Validate ``name`` and resolve to its directory or raise an HTTPException."""
     from hermes_cli import profiles as profiles_mod
+
     try:
         profiles_mod.validate_profile_name(name)
     except ValueError as e:
@@ -5538,16 +5758,20 @@ def _profile_setup_command(name: str) -> str:
 @app.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
+
     try:
         return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
     except Exception:
-        _log.exception("GET /api/profiles failed; falling back to profile directory scan")
+        _log.exception(
+            "GET /api/profiles failed; falling back to profile directory scan"
+        )
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
 
 
 @app.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
+
     try:
         path = profiles_mod.create_profile(
             name=body.name,
@@ -5599,7 +5823,10 @@ async def open_profile_terminal_endpoint(name: str):
             subprocess.Popen(["osascript", "-e", applescript])
         else:
             terminal_commands = [
-                ("x-terminal-emulator", ["x-terminal-emulator", "-e", "sh", "-lc", command]),
+                (
+                    "x-terminal-emulator",
+                    ["x-terminal-emulator", "-e", "sh", "-lc", command],
+                ),
                 ("gnome-terminal", ["gnome-terminal", "--", "sh", "-lc", command]),
                 ("konsole", ["konsole", "-e", "sh", "-lc", command]),
                 ("xfce4-terminal", ["xfce4-terminal", "-e", f"sh -lc '{command}'"]),
@@ -5611,11 +5838,14 @@ async def open_profile_terminal_endpoint(name: str):
                 ("xterm", ["xterm", "-e", "sh", "-lc", command]),
             ]
             for executable, popen_args in terminal_commands:
-                if subprocess.call(
-                    ["which", executable],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                ) == 0:
+                if (
+                    subprocess.call(
+                        ["which", executable],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    == 0
+                ):
                     subprocess.Popen(popen_args)
                     break
             else:
@@ -5638,6 +5868,7 @@ async def open_profile_terminal_endpoint(name: str):
 @app.patch("/api/profiles/{name}")
 async def rename_profile_endpoint(name: str, body: ProfileRename):
     from hermes_cli import profiles as profiles_mod
+
     try:
         path = profiles_mod.rename_profile(name, body.new_name)
     except FileNotFoundError as e:
@@ -5656,6 +5887,7 @@ async def delete_profile_endpoint(name: str):
     its own dialog before this request, so we always pass ``yes=True`` to
     skip the CLI's interactive prompt."""
     from hermes_cli import profiles as profiles_mod
+
     try:
         path = profiles_mod.delete_profile(name, yes=True)
     except FileNotFoundError as e:
@@ -5702,8 +5934,9 @@ class SkillToggle(BaseModel):
 
 @app.get("/api/skills")
 async def get_skills():
-    from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
+    from tools.skills_tool import _find_all_skills
+
     config = load_config()
     disabled = get_disabled_skills(config)
     skills = _find_all_skills(skip_disabled=True)
@@ -5715,6 +5948,7 @@ async def get_skills():
 @app.put("/api/skills/toggle")
 async def toggle_skill(body: SkillToggle):
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+
     config = load_config()
     disabled = get_disabled_skills(config)
     if body.enabled:
@@ -5747,13 +5981,17 @@ async def get_toolsets():
         except Exception:
             tools = []
         is_enabled = name in enabled_toolsets
-        result.append({
-            "name": name, "label": label, "description": desc,
-            "enabled": is_enabled,
-            "available": is_enabled,
-            "configured": _toolset_has_keys(name, config),
-            "tools": tools,
-        })
+        result.append(
+            {
+                "name": name,
+                "label": label,
+                "description": desc,
+                "enabled": is_enabled,
+                "available": is_enabled,
+                "configured": _toolset_has_keys(name, config),
+                "tools": tools,
+            }
+        )
     return result
 
 
@@ -5780,9 +6018,7 @@ async def toggle_toolset(name: str, body: ToolsetToggle):
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
     config = load_config()
-    enabled = set(
-        _get_platform_tools(config, "cli", include_default_mcp_servers=False)
-    )
+    enabled = set(_get_platform_tools(config, "cli", include_default_mcp_servers=False))
     if body.enabled:
         enabled.add(name)
     else:
@@ -5801,13 +6037,13 @@ async def get_toolset_config(name: str):
     entry. Toolsets without a ``TOOL_CATEGORIES`` entry return an empty
     provider list and ``has_category: false``. Returns 400 for unknown keys.
     """
+    from hermes_cli.config import get_env_value
     from hermes_cli.tools_config import (
         TOOL_CATEGORIES,
         _get_effective_configurable_toolsets,
         _is_provider_active,
         _visible_providers,
     )
-    from hermes_cli.config import get_env_value
 
     valid = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
     if name not in valid:
@@ -5836,15 +6072,17 @@ async def get_toolset_config(name: str):
             is_active = _is_provider_active(prov, config, force_fresh=True)
             if is_active and active_provider is None:
                 active_provider = prov["name"]
-            providers.append({
-                "name": prov["name"],
-                "badge": prov.get("badge", ""),
-                "tag": prov.get("tag", ""),
-                "env_vars": env_vars,
-                "post_setup": prov.get("post_setup"),
-                "requires_nous_auth": bool(prov.get("requires_nous_auth")),
-                "is_active": is_active,
-            })
+            providers.append(
+                {
+                    "name": prov["name"],
+                    "badge": prov.get("badge", ""),
+                    "tag": prov.get("tag", ""),
+                    "env_vars": env_vars,
+                    "post_setup": prov.get("post_setup"),
+                    "requires_nous_auth": bool(prov.get("requires_nous_auth")),
+                    "is_active": is_active,
+                }
+            )
     return {
         "name": name,
         "has_category": cat is not None,
@@ -5868,8 +6106,8 @@ async def select_toolset_provider(name: str, body: ToolsetProviderSelect):
     400 for unknown toolset or provider names.
     """
     from hermes_cli.tools_config import (
-        apply_provider_selection,
         _get_effective_configurable_toolsets,
+        apply_provider_selection,
     )
 
     valid = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
@@ -5921,13 +6159,14 @@ async def update_config_raw(body: RawConfigUpdate):
 
 @app.get("/api/analytics/usage")
 async def get_usage_analytics(days: int = 30):
-    from hermes_state import SessionDB
     from agent.insights import InsightsEngine
+    from hermes_state import SessionDB
 
     db = SessionDB()
     try:
         cutoff = time.time() - (days * 86400)
-        cur = db._conn.execute("""
+        cur = db._conn.execute(
+            """
             SELECT date(started_at, 'unixepoch') as day,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
@@ -5939,10 +6178,13 @@ async def get_usage_analytics(days: int = 30):
                    SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ?
             GROUP BY day ORDER BY day
-        """, (cutoff,))
+        """,
+            (cutoff,),
+        )
         daily = [dict(r) for r in cur.fetchall()]
 
-        cur2 = db._conn.execute("""
+        cur2 = db._conn.execute(
+            """
             SELECT model,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
@@ -5951,10 +6193,13 @@ async def get_usage_analytics(days: int = 30):
                    SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL
             GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
-        """, (cutoff,))
+        """,
+            (cutoff,),
+        )
         by_model = [dict(r) for r in cur2.fetchall()]
 
-        cur3 = db._conn.execute("""
+        cur3 = db._conn.execute(
+            """
             SELECT SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
                    SUM(cache_read_tokens) as total_cache_read,
@@ -5964,18 +6209,23 @@ async def get_usage_analytics(days: int = 30):
                    COUNT(*) as total_sessions,
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
             FROM sessions WHERE started_at > ?
-        """, (cutoff,))
+        """,
+            (cutoff,),
+        )
         totals = dict(cur3.fetchone())
         insights_report = InsightsEngine(db).generate(days=days)
-        skills = insights_report.get("skills", {
-            "summary": {
-                "total_skill_loads": 0,
-                "total_skill_edits": 0,
-                "total_skill_actions": 0,
-                "distinct_skills_used": 0,
+        skills = insights_report.get(
+            "skills",
+            {
+                "summary": {
+                    "total_skill_loads": 0,
+                    "total_skill_edits": 0,
+                    "total_skill_actions": 0,
+                    "distinct_skills_used": 0,
+                },
+                "top_skills": [],
             },
-            "top_skills": [],
-        })
+        )
 
         return {
             "daily": daily,
@@ -6001,7 +6251,8 @@ async def get_models_analytics(days: int = 30):
     try:
         cutoff = time.time() - (days * 86400)
 
-        cur = db._conn.execute("""
+        cur = db._conn.execute(
+            """
             SELECT model,
                    billing_provider,
                    SUM(input_tokens) as input_tokens,
@@ -6018,7 +6269,9 @@ async def get_models_analytics(days: int = 30):
             FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
             GROUP BY model, billing_provider
             ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
-        """, (cutoff,))
+        """,
+            (cutoff,),
+        )
         rows = [dict(r) for r in cur.fetchall()]
 
         models = []
@@ -6028,6 +6281,7 @@ async def get_models_analytics(days: int = 30):
             caps = {}
             try:
                 from agent.models_dev import get_model_capabilities
+
                 mc = get_model_capabilities(provider=provider, model=model_name)
                 if mc is not None:
                     caps = {
@@ -6041,24 +6295,27 @@ async def get_models_analytics(days: int = 30):
             except Exception:
                 pass
 
-            models.append({
-                "model": model_name,
-                "provider": provider,
-                "input_tokens": row["input_tokens"],
-                "output_tokens": row["output_tokens"],
-                "cache_read_tokens": row["cache_read_tokens"],
-                "reasoning_tokens": row["reasoning_tokens"],
-                "estimated_cost": row["estimated_cost"],
-                "actual_cost": row["actual_cost"],
-                "sessions": row["sessions"],
-                "api_calls": row["api_calls"],
-                "tool_calls": row["tool_calls"],
-                "last_used_at": row["last_used_at"],
-                "avg_tokens_per_session": row["avg_tokens_per_session"],
-                "capabilities": caps,
-            })
+            models.append(
+                {
+                    "model": model_name,
+                    "provider": provider,
+                    "input_tokens": row["input_tokens"],
+                    "output_tokens": row["output_tokens"],
+                    "cache_read_tokens": row["cache_read_tokens"],
+                    "reasoning_tokens": row["reasoning_tokens"],
+                    "estimated_cost": row["estimated_cost"],
+                    "actual_cost": row["actual_cost"],
+                    "sessions": row["sessions"],
+                    "api_calls": row["api_calls"],
+                    "tool_calls": row["tool_calls"],
+                    "last_used_at": row["last_used_at"],
+                    "avg_tokens_per_session": row["avg_tokens_per_session"],
+                    "capabilities": caps,
+                }
+            )
 
-        totals_cur = db._conn.execute("""
+        totals_cur = db._conn.execute(
+            """
             SELECT COUNT(DISTINCT model) as distinct_models,
                    SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
@@ -6069,7 +6326,9 @@ async def get_models_analytics(days: int = 30):
                    COUNT(*) as total_sessions,
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
-        """, (cutoff,))
+        """,
+            (cutoff,),
+        )
         totals = dict(totals_cur.fetchone())
 
         return {
@@ -6103,6 +6362,7 @@ import re
 # /api/pty endpoint cleanly refuses with a WSL-suggested message.
 try:
     from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
+
     _PTY_BRIDGE_AVAILABLE = True
 except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
     PtyBridge = None  # type: ignore[assignment]
@@ -6110,7 +6370,9 @@ except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
 
     class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
         """Stub on platforms where pty_bridge can't be imported."""
+
         pass
+
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
@@ -6225,10 +6487,7 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
         # Lazy import — keeps this function importable in test harnesses
         # that don't bring in the dashboard_auth layer.
         from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-        from hermes_cli.dashboard_auth.ws_tickets import (
-            TicketInvalid,
-            consume_ticket,
-        )
+        from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
 
         try:
             consume_ticket(ticket)
@@ -6244,6 +6503,7 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 
     token = ws.query_params.get("token", "")
     return hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
+
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -6345,7 +6605,11 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     if not host or not port:
         return None
 
-    netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+    netloc = (
+        f"[{host}]:{port}"
+        if ":" in host and not host.startswith("[")
+        else f"{host}:{port}"
+    )
 
     if getattr(app.state, "auth_required", False):
         # Gated mode — mint a ticket so the WS upgrade survives _ws_auth_ok.
@@ -6370,7 +6634,9 @@ async def _broadcast_event(channel: str, payload: str) -> None:
         except Exception:
             # Subscriber went away mid-send; the /api/events finally clause
             # will remove it from the registry on its next iteration.
-            _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
+            _log.warning(
+                "broadcast send failed for subscriber on %s", channel, exc_info=True
+            )
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
@@ -6421,7 +6687,6 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
-
 
     try:
         bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
@@ -6610,6 +6875,7 @@ def _normalise_prefix(raw: Optional[str]) -> str:
     SPA mount all agree on validation rules.
     """
     from hermes_cli.dashboard_auth.prefix import normalise_prefix
+
     return normalise_prefix(raw)
 
 
@@ -6628,12 +6894,14 @@ def mount_spa(application: FastAPI):
     without rebuilding the bundle.
     """
     if not WEB_DIST.exists():
+
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
             return JSONResponse(
                 {"error": "Frontend not built. Run: cd web && npm run build"},
                 status_code=404,
             )
+
         return
 
     _index_path = WEB_DIST / "index.html"
@@ -6704,11 +6972,13 @@ def mount_spa(application: FastAPI):
         if prefix:
             for asset_dir in ("/fonts/", "/fonts-terminal/", "/ds-assets/", "/assets/"):
                 css = css.replace(f"url({asset_dir}", f"url({prefix}{asset_dir}")
-                css = css.replace(f"url(\"{asset_dir}", f"url(\"{prefix}{asset_dir}")
+                css = css.replace(f'url("{asset_dir}', f'url("{prefix}{asset_dir}')
                 css = css.replace(f"url('{asset_dir}", f"url('{prefix}{asset_dir}")
         return Response(content=css, media_type="text/css")
 
-    application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
+    application.mount(
+        "/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets"
+    )
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):
@@ -6743,17 +7013,47 @@ def mount_spa(application: FastAPI):
 # Built-in dashboard themes — label + description only.  The actual color
 # definitions live in the frontend (web/src/themes/presets.ts).
 _BUILTIN_DASHBOARD_THEMES = [
-    {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
-    {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
-    {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
-    {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
-    {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
-    {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
-    {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {
+        "name": "default",
+        "label": "Hermes Teal",
+        "description": "Classic dark teal — the canonical Hermes look",
+    },
+    {
+        "name": "default-large",
+        "label": "Hermes Teal (Large)",
+        "description": "Hermes Teal with bigger fonts and roomier spacing",
+    },
+    {
+        "name": "midnight",
+        "label": "Midnight",
+        "description": "Deep blue-violet with cool accents",
+    },
+    {
+        "name": "ember",
+        "label": "Ember",
+        "description": "Warm crimson and bronze — forge vibes",
+    },
+    {
+        "name": "mono",
+        "label": "Mono",
+        "description": "Clean grayscale — minimal and focused",
+    },
+    {
+        "name": "cyberpunk",
+        "label": "Cyberpunk",
+        "description": "Neon green on black — matrix terminal",
+    },
+    {
+        "name": "rose",
+        "label": "Rosé",
+        "description": "Soft pink and warm ivory — easy on the eyes",
+    },
 ]
 
 
-def _parse_theme_layer(value: Any, default_hex: str, default_alpha: float = 1.0) -> Optional[Dict[str, Any]]:
+def _parse_theme_layer(
+    value: Any, default_hex: str, default_alpha: float = 1.0
+) -> Optional[Dict[str, Any]]:
     """Normalise a theme layer spec from YAML into `{hex, alpha}` form.
 
     Accepts shorthand (a bare hex string) or full dict form.  Returns
@@ -6791,11 +7091,25 @@ _THEME_DEFAULT_LAYOUT: Dict[str, str] = {
 }
 
 _THEME_OVERRIDE_KEYS = {
-    "card", "cardForeground", "popover", "popoverForeground",
-    "primary", "primaryForeground", "secondary", "secondaryForeground",
-    "muted", "mutedForeground", "accent", "accentForeground",
-    "destructive", "destructiveForeground", "success", "warning",
-    "border", "input", "ring",
+    "card",
+    "cardForeground",
+    "popover",
+    "popoverForeground",
+    "primary",
+    "primaryForeground",
+    "secondary",
+    "secondaryForeground",
+    "muted",
+    "mutedForeground",
+    "accent",
+    "accentForeground",
+    "destructive",
+    "destructiveForeground",
+    "success",
+    "warning",
+    "border",
+    "input",
+    "ring",
 }
 
 # Well-known named asset slots themes can populate.  Any other keys under
@@ -6810,8 +7124,15 @@ _THEME_NAMED_ASSET_KEYS = {"bg", "hero", "logo", "crest", "sidebar", "header"}
 # can restyle chrome (clip-path, border-image, segmented progress, etc.)
 # without shipping their own CSS.
 _THEME_COMPONENT_BUCKETS = {
-    "card", "header", "footer", "sidebar", "tab",
-    "progress", "badge", "backdrop", "page",
+    "card",
+    "header",
+    "footer",
+    "sidebar",
+    "tab",
+    "progress",
+    "badge",
+    "backdrop",
+    "page",
 }
 
 _THEME_LAYOUT_VARIANTS = {"standard", "cockpit", "tiled"}
@@ -6836,20 +7157,30 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
         return None
 
     # Palette
-    palette_src = data.get("palette", {}) if isinstance(data.get("palette"), dict) else {}
+    palette_src = (
+        data.get("palette", {}) if isinstance(data.get("palette"), dict) else {}
+    )
     # Allow top-level `colors.background` as a shorthand too.
     colors_src = data.get("colors", {}) if isinstance(data.get("colors"), dict) else {}
 
-    def _layer(key: str, default_hex: str, default_alpha: float = 1.0) -> Dict[str, Any]:
+    def _layer(
+        key: str, default_hex: str, default_alpha: float = 1.0
+    ) -> Dict[str, Any]:
         spec = palette_src.get(key, colors_src.get(key))
         parsed = _parse_theme_layer(spec, default_hex, default_alpha)
-        return parsed if parsed is not None else {"hex": default_hex, "alpha": default_alpha}
+        return (
+            parsed
+            if parsed is not None
+            else {"hex": default_hex, "alpha": default_alpha}
+        )
 
     palette = {
         "background": _layer("background", "#041c1c", 1.0),
         "midground": _layer("midground", "#ffe6cb", 1.0),
         "foreground": _layer("foreground", "#ffffff", 0.0),
-        "warmGlow": palette_src.get("warmGlow") or data.get("warmGlow") or "rgba(255, 189, 56, 0.35)",
+        "warmGlow": palette_src.get("warmGlow")
+        or data.get("warmGlow")
+        or "rgba(255, 189, 56, 0.35)",
         "noiseOpacity": 1.0,
     }
     raw_noise = palette_src.get("noiseOpacity", data.get("noiseOpacity"))
@@ -6859,9 +7190,19 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
         palette["noiseOpacity"] = 1.0
 
     # Typography
-    typo_src = data.get("typography", {}) if isinstance(data.get("typography"), dict) else {}
+    typo_src = (
+        data.get("typography", {}) if isinstance(data.get("typography"), dict) else {}
+    )
     typography = dict(_THEME_DEFAULT_TYPOGRAPHY)
-    for key in ("fontSans", "fontMono", "fontDisplay", "fontUrl", "baseSize", "lineHeight", "letterSpacing"):
+    for key in (
+        "fontSans",
+        "fontMono",
+        "fontDisplay",
+        "fontUrl",
+        "baseSize",
+        "lineHeight",
+        "letterSpacing",
+    ):
         val = typo_src.get(key)
         if isinstance(val, str) and val.strip():
             typography[key] = val
@@ -6943,7 +7284,8 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
     layout_variant_src = data.get("layoutVariant")
     layout_variant = (
         layout_variant_src
-        if isinstance(layout_variant_src, str) and layout_variant_src in _THEME_LAYOUT_VARIANTS
+        if isinstance(layout_variant_src, str)
+        and layout_variant_src in _THEME_LAYOUT_VARIANTS
         else "standard"
     )
 
@@ -7010,12 +7352,14 @@ async def get_dashboard_themes():
     for t in user_themes:
         if t["name"] in seen:
             continue
-        themes.append({
-            "name": t["name"],
-            "label": t["label"],
-            "description": t["description"],
-            "definition": t,
-        })
+        themes.append(
+            {
+                "name": t["name"],
+                "label": t["label"],
+                "description": t["description"],
+                "definition": t,
+            }
+        )
         seen.add(t["name"])
     return {"themes": themes, "active": active}
 
@@ -7038,6 +7382,7 @@ async def set_dashboard_theme(body: ThemeSetBody):
 # ---------------------------------------------------------------------------
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
+
 
 def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional[str]:
     """Validate the manifest's ``api`` field for the plugin loader.
@@ -7088,6 +7433,7 @@ def _discover_dashboard_plugins() -> list:
     seen_names: set = set()
 
     from hermes_cli.plugins import get_bundled_plugins_dir
+
     bundled_root = get_bundled_plugins_dir()
     search_dirs = [
         (get_hermes_home() / "plugins", "user"),
@@ -7125,7 +7471,9 @@ def _discover_dashboard_plugins() -> list:
                 # ``override`` to replace a built-in route, and ``hidden`` to
                 # register the plugin component/slots without adding a tab
                 # (useful for slot-only plugins like a header-crest injector).
-                raw_tab = data.get("tab", {}) if isinstance(data.get("tab"), dict) else {}
+                raw_tab = (
+                    data.get("tab", {}) if isinstance(data.get("tab"), dict) else {}
+                )
                 tab_info = {
                     "path": raw_tab.get("path", f"/{name}"),
                     "position": raw_tab.get("position", "end"),
@@ -7150,30 +7498,35 @@ def _discover_dashboard_plugins() -> list:
                 # (RCE, GHSA-5qr3-c538-wm9j).
                 raw_api = data.get("api")
                 dashboard_dir = child / "dashboard"
-                safe_api = _safe_plugin_api_relpath(raw_api, dashboard_dir=dashboard_dir)
+                safe_api = _safe_plugin_api_relpath(
+                    raw_api, dashboard_dir=dashboard_dir
+                )
                 if raw_api and safe_api is None:
                     _log.warning(
                         "Plugin %s: refusing unsafe api path %r (must be a "
                         "relative file inside the plugin's dashboard/ "
                         "directory); backend routes from this plugin will "
                         "not be mounted",
-                        name, raw_api,
+                        name,
+                        raw_api,
                     )
-                plugins.append({
-                    "name": name,
-                    "label": data.get("label", name),
-                    "description": data.get("description", ""),
-                    "icon": data.get("icon", "Puzzle"),
-                    "version": data.get("version", "0.0.0"),
-                    "tab": tab_info,
-                    "slots": slots,
-                    "entry": data.get("entry", "dist/index.js"),
-                    "css": data.get("css"),
-                    "has_api": bool(safe_api),
-                    "source": source,
-                    "_dir": str(dashboard_dir),
-                    "_api_file": safe_api,
-                })
+                plugins.append(
+                    {
+                        "name": name,
+                        "label": data.get("label", name),
+                        "description": data.get("description", ""),
+                        "icon": data.get("icon", "Puzzle"),
+                        "version": data.get("version", "0.0.0"),
+                        "tab": tab_info,
+                        "slots": slots,
+                        "entry": data.get("entry", "dist/index.js"),
+                        "css": data.get("css"),
+                        "has_api": bool(safe_api),
+                        "source": source,
+                        "_dir": str(dashboard_dir),
+                        "_api_file": safe_api,
+                    }
+                )
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
                 continue
@@ -7230,14 +7583,14 @@ def _merged_plugins_hub() -> Dict[str, Any]:
     """Agent discovery + dashboard manifests + optional provider picker metadata."""
     from hermes_cli.plugins_cmd import (
         _discover_all_plugins,
-        _get_current_context_engine,
-        _get_current_memory_provider,
         _discover_context_engines,
         _discover_memory_providers,
+        _get_current_context_engine,
+        _get_current_memory_provider,
         _get_disabled_set,
         _get_enabled_set,
-        _read_manifest as _read_plugin_manifest_at,
     )
+    from hermes_cli.plugins_cmd import _read_manifest as _read_plugin_manifest_at
 
     dashboard_list = _get_dashboard_plugins()
     dash_by_name = {str(p["name"]): p for p in dashboard_list}
@@ -7247,7 +7600,9 @@ def _merged_plugins_hub() -> Dict[str, Any]:
 
     # Read user-hidden plugins from config for the user_hidden field.
     config = load_config()
-    hidden_plugins: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+    hidden_plugins: list = (
+        cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+    )
 
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
     rows: List[Dict[str, Any]] = []
@@ -7262,7 +7617,9 @@ def _merged_plugins_hub() -> Dict[str, Any]:
 
         dir_path = Path(dir_str)
         dm = dash_by_name.get(name)
-        has_dash_manifest = dm is not None or (dir_path / "dashboard" / "manifest.json").exists()
+        has_dash_manifest = (
+            dm is not None or (dir_path / "dashboard" / "manifest.json").exists()
+        )
 
         under_user_tree = False
         try:
@@ -7283,6 +7640,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
         if provides_tools:
             try:
                 from tools.registry import registry
+
                 for tname in provides_tools:
                     entry = registry.get_entry(tname)
                     if entry and entry.check_fn and not entry.check_fn():
@@ -7292,21 +7650,24 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             except Exception:
                 pass
 
-        rows.append({
-            "name": name,
-            "version": version or "",
-            "description": description or "",
-            "source": source,
-            "runtime_status": runtime_status,
-            "has_dashboard_manifest": has_dash_manifest,
-            "dashboard_manifest": _strip_dashboard_manifest(dm) if dm else None,
-            "path": dir_str,
-            "can_remove": can_remove_update,
-            "can_update_git": can_remove_update and (Path(dir_str) / ".git").exists(),
-            "auth_required": auth_required,
-            "auth_command": auth_command,
-            "user_hidden": name in hidden_plugins,
-        })
+        rows.append(
+            {
+                "name": name,
+                "version": version or "",
+                "description": description or "",
+                "source": source,
+                "runtime_status": runtime_status,
+                "has_dashboard_manifest": has_dash_manifest,
+                "dashboard_manifest": _strip_dashboard_manifest(dm) if dm else None,
+                "path": dir_str,
+                "can_remove": can_remove_update,
+                "can_update_git": can_remove_update
+                and (Path(dir_str) / ".git").exists(),
+                "auth_required": auth_required,
+                "auth_command": auth_command,
+                "user_hidden": name in hidden_plugins,
+            }
+        )
 
     agent_names = {r["name"] for r in rows}
     orphan_dashboard = [
@@ -7349,7 +7710,9 @@ async def get_plugins_hub(request: Request):
         return _merged_plugins_hub()
     except Exception as exc:
         _log.warning("plugins/hub failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
+        raise HTTPException(
+            status_code=500, detail="Failed to build plugins hub."
+        ) from exc
 
 
 @app.post("/api/dashboard/agent-plugins/install")
@@ -7389,7 +7752,9 @@ async def post_agent_plugin_enable(request: Request, name: str):
 
     result = dashboard_set_agent_plugin_enabled(name, enabled=True)
     if not result.get("ok"):
-        raise HTTPException(status_code=400, detail=result.get("error") or "Enable failed.")
+        raise HTTPException(
+            status_code=400, detail=result.get("error") or "Enable failed."
+        )
     return result
 
 
@@ -7401,7 +7766,9 @@ async def post_agent_plugin_disable(request: Request, name: str):
 
     result = dashboard_set_agent_plugin_enabled(name, enabled=False)
     if not result.get("ok"):
-        raise HTTPException(status_code=400, detail=result.get("error") or "Disable failed.")
+        raise HTTPException(
+            status_code=400, detail=result.get("error") or "Disable failed."
+        )
     return result
 
 
@@ -7413,7 +7780,9 @@ async def post_agent_plugin_update(request: Request, name: str):
 
     result = dashboard_update_user_plugin(name)
     if not result.get("ok"):
-        raise HTTPException(status_code=400, detail=result.get("error") or "Update failed.")
+        raise HTTPException(
+            status_code=400, detail=result.get("error") or "Update failed."
+        )
     _get_dashboard_plugins(force_rescan=True)
     return result
 
@@ -7426,7 +7795,9 @@ async def delete_agent_plugin(request: Request, name: str):
 
     result = dashboard_remove_user_plugin(name)
     if not result.get("ok"):
-        raise HTTPException(status_code=400, detail=result.get("error") or "Remove failed.")
+        raise HTTPException(
+            status_code=400, detail=result.get("error") or "Remove failed."
+        )
     _get_dashboard_plugins(force_rescan=True)
     return result
 
@@ -7440,10 +7811,7 @@ class _PluginProvidersPutBody(BaseModel):
 async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
     """Persist memory provider / context engine selection (writes config.yaml)."""
     _require_token(request)
-    from hermes_cli.plugins_cmd import (
-        _save_context_engine,
-        _save_memory_provider,
-    )
+    from hermes_cli.plugins_cmd import _save_context_engine, _save_memory_provider
 
     if body.memory_provider is not None:
         _save_memory_provider(body.memory_provider)
@@ -7457,7 +7825,9 @@ class _PluginVisibilityBody(BaseModel):
 
 
 @app.post("/api/dashboard/plugins/{name:path}/visibility")
-async def post_plugin_visibility(request: Request, name: str, body: _PluginVisibilityBody):
+async def post_plugin_visibility(
+    request: Request, name: str, body: _PluginVisibilityBody
+):
     """Toggle a plugin's sidebar visibility (persists to config.yaml dashboard.hidden_plugins)."""
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -7571,7 +7941,8 @@ def _mount_plugin_api_routes():
                 "Plugin %s: ignoring backend api=%s (project plugins may "
                 "not auto-import Python code; move the plugin to "
                 "~/.hermes/plugins/ if you trust it)",
-                plugin["name"], api_file_name,
+                plugin["name"],
+                api_file_name,
             )
             continue
         dashboard_dir = Path(plugin["_dir"])
@@ -7587,11 +7958,17 @@ def _mount_plugin_api_routes():
             # primitive contained even if the upstream check regresses.
             _log.warning(
                 "Plugin %s: refusing to import api file outside its "
-                "dashboard directory (%s)", plugin["name"], api_path,
+                "dashboard directory (%s)",
+                plugin["name"],
+                api_path,
             )
             continue
         if not api_path.exists():
-            _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
+            _log.warning(
+                "Plugin %s declares api=%s but file not found",
+                plugin["name"],
+                api_file_name,
+            )
             continue
         try:
             module_name = f"hermes_dashboard_plugin_{plugin['name']}"
@@ -7613,7 +7990,9 @@ def _mount_plugin_api_routes():
                 raise
             router = getattr(mod, "router", None)
             if router is None:
-                _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
+                _log.warning(
+                    "Plugin %s api file has no 'router' attribute", plugin["name"]
+                )
                 continue
             app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
@@ -7628,7 +8007,10 @@ _mount_plugin_api_routes()
 # SPA catch-all so /{full_path:path} doesn't swallow them.  These are
 # always mounted — the gate middleware decides whether to enforce auth,
 # not whether the routes exist.
-from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
+from hermes_cli.dashboard_auth.routes import (  # noqa: E402
+    router as _dashboard_auth_router,
+)
+
 app.include_router(_dashboard_auth_router)
 
 mount_spa(app)
@@ -7659,6 +8041,7 @@ def start_server(
         # "refusing to bind" guard is replaced by "require at least one
         # provider to be registered, else fail closed".
         from hermes_cli.dashboard_auth import list_providers
+
         if not list_providers():
             # Surface the *specific* reason any bundled provider declined
             # to register (e.g. missing HERMES_DASHBOARD_OAUTH_CLIENT_ID).
@@ -7671,9 +8054,7 @@ def start_server(
                 from plugins.dashboard_auth import nous as _nous_plugin
 
                 if _nous_plugin.LAST_SKIP_REASON:
-                    skip_reasons.append(
-                        f"  • nous: {_nous_plugin.LAST_SKIP_REASON}"
-                    )
+                    skip_reasons.append(f"  • nous: {_nous_plugin.LAST_SKIP_REASON}")
             except Exception:
                 pass
 
@@ -7700,8 +8081,7 @@ def start_server(
                 f"networks)."
             )
         _log.info(
-            "Dashboard binding to %s with OAuth auth gate enabled. "
-            "Providers: %s",
+            "Dashboard binding to %s with OAuth auth gate enabled. " "Providers: %s",
             host,
             ", ".join(p.name for p in list_providers()),
         )
@@ -7709,7 +8089,8 @@ def start_server(
         # --insecure path — no auth, loud warning.
         _log.warning(
             "Binding to %s with --insecure — the dashboard has no robust "
-            "authentication. Only use on trusted networks.", host,
+            "authentication. Only use on trusted networks.",
+            host,
         )
 
     # Record the bound host so host_header_middleware can validate incoming
@@ -7736,6 +8117,7 @@ def start_server(
         )
 
         if _has_display:
+
             def _open():
                 try:
                     time.sleep(1.0)
@@ -7758,6 +8140,9 @@ def start_server(
     # (Fly.io) and need X-Forwarded-Proto to decide cookie Secure flags, so
     # we flip proxy_headers on for that mode.
     uvicorn.run(
-        app, host=host, port=port, log_level="warning",
+        app,
+        host=host,
+        port=port,
+        log_level="warning",
         proxy_headers=bool(app.state.auth_required),
     )
