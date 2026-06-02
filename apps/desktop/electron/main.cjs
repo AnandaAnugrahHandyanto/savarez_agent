@@ -1,5 +1,6 @@
 const {
   app,
+  globalShortcut,
   BrowserWindow,
   Menu,
   Notification,
@@ -190,6 +191,7 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+const DESKTOP_SETTINGS_PATH = path.join(app.getPath('userData'), 'desktop-settings.json')
 // Branch we track for self-update. The GUI work has merged to main, so this
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
@@ -1079,6 +1081,23 @@ function readDesktopUpdateConfig() {
 function writeDesktopUpdateConfig(config) {
   fs.mkdirSync(path.dirname(DESKTOP_UPDATE_CONFIG_PATH), { recursive: true })
   fs.writeFileSync(DESKTOP_UPDATE_CONFIG_PATH, JSON.stringify(config, null, 2))
+}
+
+function readDesktopSettings() {
+  try {
+    const raw = fs.readFileSync(DESKTOP_SETTINGS_PATH, 'utf8')
+    const parsed = JSON.parse(raw)
+    return {
+      zoomFactor: typeof parsed?.zoomFactor === 'number' ? parsed.zoomFactor : 1.0
+    }
+  } catch {
+    return { zoomFactor: 1.0 }
+  }
+}
+
+function writeDesktopSettings(settings) {
+  fs.mkdirSync(path.dirname(DESKTOP_SETTINGS_PATH), { recursive: true })
+  fs.writeFileSync(DESKTOP_SETTINGS_PATH, JSON.stringify(settings, null, 2))
 }
 
 // Match the backend's source resolution but bias toward a real git checkout.
@@ -3320,6 +3339,36 @@ function createWindow() {
   installPreviewShortcut(mainWindow)
   installDevToolsShortcut(mainWindow)
   installContextMenu(mainWindow)
+
+  // Apply saved zoom factor and register global shortcuts for Windows
+  const settings = readDesktopSettings()
+  if (settings.zoomFactor !== 1.0 && Number.isFinite(settings.zoomFactor)) {
+    mainWindow.webContents.setZoomFactor(settings.zoomFactor)
+  }
+
+  if (!IS_MAC) {
+    globalShortcut.register('CommandOrControl+=', () => {
+      const current = mainWindow.webContents.getZoomFactor()
+      const next = Math.min(3.0, current + 0.1)
+      mainWindow.webContents.setZoomFactor(next)
+      writeDesktopSettings({ ...readDesktopSettings(), zoomFactor: next })
+      mainWindow.webContents.send('hermes:zoom-changed', next)
+    })
+
+    globalShortcut.register('CommandOrControl+-', () => {
+      const current = mainWindow.webContents.getZoomFactor()
+      const next = Math.max(0.5, current - 0.1)
+      mainWindow.webContents.setZoomFactor(next)
+      writeDesktopSettings({ ...readDesktopSettings(), zoomFactor: next })
+      mainWindow.webContents.send('hermes:zoom-changed', next)
+    })
+
+    globalShortcut.register('CommandOrControl+0', () => {
+      mainWindow.webContents.setZoomFactor(1.0)
+      writeDesktopSettings({ ...readDesktopSettings(), zoomFactor: 1.0 })
+      mainWindow.webContents.send('hermes:zoom-changed', 1.0)
+    })
+  }
   mainWindow.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)
 
@@ -3911,6 +3960,17 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   return { branch }
 })
 
+ipcMain.handle('hermes:desktop-settings:get', async () => readDesktopSettings())
+
+ipcMain.handle('hermes:desktop-settings:set-zoom', async (_event, zoomFactor) => {
+  const clamped = Math.max(0.5, Math.min(3.0, Number(zoomFactor) || 1.0))
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.setZoomFactor(clamped)
+  }
+  writeDesktopSettings({ ...readDesktopSettings(), zoomFactor: clamped })
+  return { zoomFactor: clamped }
+})
+
 // Resolve the canonical Hermes version (the one `release.py` bumps in
 // hermes_cli/__init__.py + pyproject.toml) so the desktop About panel shows the
 // real Hermes version instead of the Electron app's own package.json version,
@@ -3940,6 +4000,12 @@ ipcMain.handle('hermes:version', async () => ({
   platform: process.platform,
   hermesRoot: resolveUpdateRoot()
 }))
+
+// Prevent blurry rendering on Windows high-DPI displays
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('high-dpi-support', '1')
+  app.commandLine.appendSwitch('force-device-scale-factor', '1')
+}
 
 app.whenReady().then(() => {
   if (IS_MAC) {
@@ -3982,6 +4048,11 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  // Clean up global shortcuts on Windows
+  if (!IS_MAC) {
+    globalShortcut.unregisterAll()
+  }
+
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {
     try {
