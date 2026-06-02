@@ -99,20 +99,16 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       const trimmed = arg.trim()
 
-      // Immediate actions (new session / resume-by-id) switch the live session
-      // out from under an in-flight turn, which can corrupt streaming/busy UI
-      // state — guard them while busy. Opening the bare overlay to *browse* is
-      // always safe (the switch itself is the risky part).
+      // A new *live* session keeps the current one running in the background
+      // (it doesn't close it), so fanning out while busy is allowed — that's
+      // the whole point of multiple live sessions.
       if (trimmed.toLowerCase() === 'new') {
-        if (ctx.session.guardBusySessionSwitch('start a new session')) {
-          return
-        }
-
         return ctx.session.newLiveSession()
       }
 
-      // `/resume <id|title>` (and `/sessions <id>`) jump straight to a prior
-      // session; bare opens the unified Sessions overlay (live + resumable).
+      // `/resume <id|title>` (and `/sessions <id>`) load a cold session and
+      // CLOSE the current one, so guard it while a turn is in-flight to avoid
+      // corrupting streaming/busy state. Bare opens the overlay to browse.
       if (trimmed) {
         if (ctx.session.guardBusySessionSwitch('switch sessions')) {
           return
