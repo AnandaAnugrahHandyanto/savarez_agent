@@ -9281,6 +9281,8 @@ class GatewayRunner:
                 "chat_id": source.chat_id or "",
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
+                "trigger": "message",
+                "interrupt_depth": 0,
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
@@ -18806,6 +18808,8 @@ class GatewayRunner:
                     "chat_id": next_source.chat_id or "",
                     "session_id": session_id,
                     "message": next_message[:500],
+                    "trigger": "interrupt",
+                    "interrupt_depth": _interrupt_depth + 1,
                 })
 
                 followup_result = await self._run_agent(
