@@ -46,6 +46,10 @@ if (Test-Path -LiteralPath $envFile) {
         $parts = $line -split '=', 2
         $name = $parts[0].Trim()
         $value = $parts[1]
+        $preferHostEnvironment = $name -match '^(TELEGRAM|DISCORD|LINE)_' -or $name -match '^(TELEGRAM|DISCORD|LINE).*(TOKEN|SECRET|KEY|WEBHOOK)'
+        if ($name -and $preferHostEnvironment -and [Environment]::GetEnvironmentVariable($name, "Process")) {
+            continue
+        }
         if ($name) {
             [Environment]::SetEnvironmentVariable($name, $value, "Process")
         }

@@ -776,6 +776,41 @@ def _tweet_url_from_result(result: Any) -> str:
     return ""
 
 
+def _safe_post_create_tweet(post_api: Any, *, tweet_text: str, in_reply_to_tweet_id: str | None = None) -> Any:
+    """Create a tweet while stripping template quote/attachment defaults.
+
+    twitter-openapi-python ships example/default CreateTweet variables containing
+    an `attachment_url?` that points at an Elon Musk tweet. If the high-level
+    helper serializes that default, ordinary posts become quote tweets. Build the
+    request explicitly and clear quote/reply state unless a reply was requested.
+    """
+    import twitter_openapi_python_generated as twitter
+    from twitter_openapi_python.utils import non_nullable
+    from twitter_openapi_python.utils.api import get_headers
+
+    flags = post_api.flag["CreateTweet"]
+    variables = non_nullable(twitter.PostCreateTweetRequestVariables.from_dict(flags["variables"]))
+    features = non_nullable(twitter.PostCreateTweetRequestFeatures.from_dict(flags["features"]))
+    variables.tweet_text = tweet_text
+    variables.attachment_url = None
+    variables.reply = None
+    if in_reply_to_tweet_id:
+        variables.reply = twitter.PostCreateTweetRequestVariablesReply(
+            in_reply_to_tweet_id=str(in_reply_to_tweet_id),
+            exclude_reply_user_ids=[],
+        )
+    request = twitter.PostCreateTweetRequest(
+        queryId=flags["queryId"],
+        variables=variables,
+        features=features,
+    )
+    return post_api.api.post_create_tweet(
+        path_query_id=flags["queryId"],
+        post_create_tweet_request=request,
+        _headers=get_headers(flags, post_api.ct),
+    )
+
+
 def post(
     topic: str = "",
     *,
@@ -801,7 +836,8 @@ def post(
         _remember_generated_post(text, cfg, dry_run=True, topic=topic)
         return result
     client = _twitter_client(cfg)
-    created = client.get_post_api().post_create_tweet(tweet_text=text)
+    post_api = client.get_post_api()
+    created = _safe_post_create_tweet(post_api, tweet_text=text)
     url = _tweet_url_from_result(created)
     result.update({"posted": True, "url": url})
     _append_log({"action": "post", **result}, cfg)
@@ -903,7 +939,8 @@ def reply_mentions(
             continue
 
         try:
-            created = post_api.post_create_tweet(
+            created = _safe_post_create_tweet(
+                post_api,
                 tweet_text=reply_text,
                 in_reply_to_tweet_id=tweet_id,
             )

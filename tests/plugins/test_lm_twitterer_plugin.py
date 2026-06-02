@@ -4,6 +4,7 @@ import importlib.util
 import sqlite3
 import sys
 import time
+import types
 from pathlib import Path
 
 
@@ -206,6 +207,99 @@ def test_post_generation_includes_relevant_ebbinghaus_memory_context(tmp_path):
     user_message = captured["messages"][1]["content"]
     assert "Use these trusted Hakua/Hermes memory notes" in user_message
     assert "embodiment shell" in user_message
+
+
+def test_safe_post_create_tweet_clears_default_quote_attachment(monkeypatch):
+    plugin = load_plugin()
+    core = plugin.core
+    captured = {}
+
+    twitter_module = types.ModuleType("twitter_openapi_python_generated")
+
+    class Variables:
+        def __init__(self):
+            self.tweet_text = ""
+            self.attachment_url = None
+            self.reply = None
+
+        @classmethod
+        def from_dict(cls, data):
+            item = cls()
+            item.tweet_text = data.get("tweet_text", "")
+            item.attachment_url = data.get("attachment_url")
+            item.reply = data.get("reply")
+            return item
+
+    class Features:
+        @classmethod
+        def from_dict(cls, data):
+            item = cls()
+            item.data = dict(data)
+            return item
+
+    class Reply:
+        def __init__(self, *, in_reply_to_tweet_id, exclude_reply_user_ids):
+            self.in_reply_to_tweet_id = in_reply_to_tweet_id
+            self.exclude_reply_user_ids = exclude_reply_user_ids
+
+    class Request:
+        def __init__(self, *, queryId, variables, features):
+            self.queryId = queryId
+            self.variables = variables
+            self.features = features
+
+    twitter_module.PostCreateTweetRequestVariables = Variables
+    twitter_module.PostCreateTweetRequestFeatures = Features
+    twitter_module.PostCreateTweetRequestVariablesReply = Reply
+    twitter_module.PostCreateTweetRequest = Request
+
+    utils_module = types.ModuleType("twitter_openapi_python.utils")
+    utils_module.non_nullable = lambda value: value
+    utils_api_module = types.ModuleType("twitter_openapi_python.utils.api")
+    utils_api_module.get_headers = lambda flags, ct: {"ct0": ct}
+
+    monkeypatch.setitem(sys.modules, "twitter_openapi_python_generated", twitter_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "twitter_openapi_python",
+        types.ModuleType("twitter_openapi_python"),
+    )
+    monkeypatch.setitem(sys.modules, "twitter_openapi_python.utils", utils_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "twitter_openapi_python.utils.api",
+        utils_api_module,
+    )
+
+    class Api:
+        def post_create_tweet(self, **kwargs):
+            captured.update(kwargs)
+            return {"ok": True}
+
+    class PostApi:
+        ct = "csrf-token"
+        api = Api()
+        flag = {
+            "CreateTweet": {
+                "queryId": "create-tweet-query",
+                "variables": {
+                    "tweet_text": "",
+                    "attachment_url": "https://x.com/template/status/1",
+                    "reply": {"in_reply_to_tweet_id": "template"},
+                },
+                "features": {"tweetypie_unmention_optimization_enabled": True},
+            }
+        }
+
+    result = core._safe_post_create_tweet(PostApi(), tweet_text="Hello Hermes")
+
+    assert result == {"ok": True}
+    request = captured["post_create_tweet_request"]
+    assert captured["path_query_id"] == "create-tweet-query"
+    assert captured["_headers"] == {"ct0": "csrf-token"}
+    assert request.variables.tweet_text == "Hello Hermes"
+    assert request.variables.attachment_url is None
+    assert request.variables.reply is None
 
 
 def test_dry_run_post_is_written_to_ebbinghaus_memory_db(tmp_path):
