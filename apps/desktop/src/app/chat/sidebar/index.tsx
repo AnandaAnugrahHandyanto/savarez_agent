@@ -55,6 +55,7 @@ import {
   $sessionsLoading,
   $sessionsTotal,
   $workingSessionIds,
+  resolvePinnedSessions,
   sessionPinId
 } from '@/store/session'
 
@@ -220,6 +221,7 @@ export function ChatSidebar({
   const [workspaceOrderIds, setWorkspaceOrderIds] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
+  const [pinnedSearchSessions, setPinnedSearchSessions] = useState<SessionInfo[]>([])
   const trimmedQuery = searchQuery.trim()
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
@@ -248,24 +250,6 @@ export function ChatSidebar({
 
     return map
   }, [sessions])
-
-  const pinnedSessions = useMemo(() => {
-    const seen = new Set<string>()
-    const out: SessionInfo[] = []
-
-    for (const pinId of pinnedSessionIds) {
-      const session = sessionByAnyId.get(pinId)
-
-      if (session && !seen.has(session.id)) {
-        seen.add(session.id)
-        out.push(session)
-      }
-    }
-
-    return out
-  }, [pinnedSessionIds, sessionByAnyId])
-
-  const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
 
   // Full-text search across *all* sessions (not just the loaded page) so 699
   // sessions stay findable. Debounced; loaded sessions are matched instantly
@@ -321,6 +305,23 @@ export function ChatSidebar({
     return [...out.values()]
   }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
 
+  const pinnedSessions = useMemo(
+    () => resolvePinnedSessions(pinnedSessionIds, sessions, pinnedSearchSessions),
+    [pinnedSessionIds, sessions, pinnedSearchSessions]
+  )
+
+  const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
+
+  const handlePinSearchResult = (pinId: string) => {
+    const session = searchResults.find(s => s.id === pinId || sessionPinId(s) === pinId)
+
+    if (session) {
+      setPinnedSearchSessions(current => resolvePinnedSessions([pinId, ...current.map(sessionPinId)], [session], current))
+    }
+
+    pinSession(pinId)
+  }
+
   const unpinnedAgentSessions = useMemo(
     () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
     [sortedSessions, pinnedRealIdSet]
@@ -355,7 +356,7 @@ export function ChatSidebar({
 
     // Sortable ids are live session ids; the pinned store is keyed by durable
     // (lineage-root) ids, so translate before reordering.
-    const dragged = sessionByAnyId.get(String(active.id))
+    const dragged = pinnedSessions.find(s => s.id === String(active.id))
     reorderPinnedSession(dragged ? sessionPinId(dragged) : String(active.id), newIndex)
   }
 
@@ -491,7 +492,7 @@ export function ChatSidebar({
             onDeleteSession={onDeleteSession}
             onResumeSession={onResumeSession}
             onToggle={() => undefined}
-            onTogglePin={pinSession}
+            onTogglePin={handlePinSearchResult}
             open
             pinned={false}
             rootClassName="min-h-0 flex-1 p-0"

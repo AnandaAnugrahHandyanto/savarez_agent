@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { sessionPinId } from './session'
+import { resolvePinnedSessions, sessionPinId } from './session'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -32,5 +32,27 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+})
+
+describe('resolvePinnedSessions', () => {
+  it('renders a pinned search result that is absent from the loaded session list', () => {
+    const loaded = session({ id: 'loaded', title: 'Loaded chat' })
+    const searchOnly = session({ id: 'search-only', title: 'desktop ui bug' })
+
+    expect(resolvePinnedSessions(['search-only'], [loaded], [searchOnly])).toEqual([searchOnly])
+  })
+
+  it('prefers the loaded session over a search-result fallback for the same pin id', () => {
+    const loaded = session({ id: 'loaded', title: 'Loaded chat' })
+    const staleSearchResult = session({ id: 'loaded', title: 'Stale search title' })
+
+    expect(resolvePinnedSessions(['loaded'], [loaded], [staleSearchResult])).toEqual([loaded])
+  })
+
+  it('resolves search-result fallbacks by lineage root pin id', () => {
+    const searchOnly = session({ id: 'tip', _lineage_root_id: 'root', title: 'Compressed search result' })
+
+    expect(resolvePinnedSessions(['root'], [], [searchOnly])).toEqual([searchOnly])
   })
 })

@@ -22,6 +22,42 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
 
+function indexSessionsByPinnedId(sessions: SessionInfo[]): Map<string, SessionInfo> {
+  const map = new Map<string, SessionInfo>()
+
+  for (const session of sessions) {
+    map.set(session.id, session)
+
+    if (session._lineage_root_id && !map.has(session._lineage_root_id)) {
+      map.set(session._lineage_root_id, session)
+    }
+  }
+
+  return map
+}
+
+export function resolvePinnedSessions(
+  pinnedSessionIds: string[],
+  loadedSessions: SessionInfo[],
+  fallbackSessions: SessionInfo[] = []
+): SessionInfo[] {
+  const loadedByPinnedId = indexSessionsByPinnedId(loadedSessions)
+  const fallbackByPinnedId = indexSessionsByPinnedId(fallbackSessions)
+  const seen = new Set<string>()
+  const out: SessionInfo[] = []
+
+  for (const pinId of pinnedSessionIds) {
+    const session = loadedByPinnedId.get(pinId) ?? fallbackByPinnedId.get(pinId)
+
+    if (session && !seen.has(session.id)) {
+      seen.add(session.id)
+      out.push(session)
+    }
+  }
+
+  return out
+}
+
 export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])
