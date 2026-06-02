@@ -222,17 +222,26 @@ def _remove_hermes_pkce(provider: str, removed) -> RemovalResult:
 def _clear_auth_store_provider(provider: str) -> bool:
     """Delete auth_store.providers[provider].  Returns True if deleted."""
     from hermes_cli.auth import (
+        SHARED_CREDENTIAL_POOL_PROVIDERS,
         _auth_store_lock,
+        _codex_auth_file_path,
+        _codex_auth_store_lock,
         _load_auth_store,
         _save_auth_store,
     )
 
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+    auth_file = (
+        _codex_auth_file_path()
+        if provider in SHARED_CREDENTIAL_POOL_PROVIDERS
+        else None
+    )
+    lock = _codex_auth_store_lock if auth_file is not None else _auth_store_lock
+    with lock():
+        auth_store = _load_auth_store(auth_file)
         providers_dict = auth_store.get("providers")
         if isinstance(providers_dict, dict) and provider in providers_dict:
             del providers_dict[provider]
-            _save_auth_store(auth_store)
+            _save_auth_store(auth_store, auth_file=auth_file)
             return True
     return False
 
@@ -291,13 +300,7 @@ def _remove_xai_oauth_loopback_pkce(provider: str, removed) -> RemovalResult:
 
 
 def _remove_codex_device_code(provider: str, removed) -> RemovalResult:
-    """Codex tokens live in TWO places: our auth store AND ~/.codex/auth.json.
-
-    refresh_codex_oauth_pure() writes both every time, so clearing only
-    the Hermes auth store is not enough — _seed_from_singletons() would
-    re-import from ~/.codex/auth.json on the next load_pool() call and
-    the removal would be instantly undone.  We suppress instead of
-    deleting Codex CLI's file, so the Codex CLI itself keeps working.
+    """Clear Hermes-owned Codex tokens and suppress singleton re-seeding.
 
     The canonical source name in ``_seed_from_singletons`` is
     ``"device_code"`` (no prefix).  Entries may show up in the pool as
@@ -318,7 +321,6 @@ def _remove_codex_device_code(provider: str, removed) -> RemovalResult:
     suppress_credential_source(provider, "device_code")
     result.hints.extend([
         "Suppressed openai-codex device_code source — it will not be re-seeded.",
-        "Note: Codex CLI credentials still live in ~/.codex/auth.json",
         "Run `hermes auth add openai-codex` to re-enable if needed.",
     ])
     return result
@@ -420,7 +422,7 @@ def _register_all_sources() -> None:
         provider="openai-codex", source_id="device_code",
         match_fn=lambda src: src == "device_code" or src.endswith(":device_code"),
         remove_fn=_remove_codex_device_code,
-        description="auth.json providers.openai-codex + ~/.codex/auth.json",
+        description="auth.json providers.openai-codex",
     ))
     register(RemovalStep(
         provider="xai-oauth", source_id="loopback_pkce",
