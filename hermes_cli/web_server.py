@@ -2891,6 +2891,16 @@ def _require_goal_contracts_enabled() -> None:
         raise HTTPException(status_code=404, detail="Goal Contracts disabled")
 
 
+def _approval_slices_enabled() -> bool:
+    config = load_config()
+    return cfg_get(config, "dashboard", "approval_slices_enabled", default=False) is True
+
+
+def _require_approval_slices_enabled() -> None:
+    if not _approval_slices_enabled():
+        raise HTTPException(status_code=404, detail="Approval Slices disabled")
+
+
 def _mission_brief_error(exc: Exception) -> HTTPException:
     from hermes_cli.mission_briefs import MissionBriefError
 
@@ -2913,6 +2923,18 @@ def _goal_contract_error(exc: Exception) -> HTTPException:
             return HTTPException(status_code=404, detail="Goal Contract not found")
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=500, detail="Goal Contract error")
+
+
+def _approval_slice_error(exc: Exception) -> HTTPException:
+    from hermes_cli.mission_control_approval_slices import ApprovalSliceError
+
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail="Approval Slice not found")
+    if isinstance(exc, ApprovalSliceError):
+        if str(exc) == "Invalid approval slice id":
+            return HTTPException(status_code=404, detail="Approval Slice not found")
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail="Approval Slice error")
 
 
 @app.get("/api/mission-control/packets")
@@ -3079,6 +3101,69 @@ async def delete_goal_contract(contract_id: str):
         return archive_contract(contract_id)
     except Exception as exc:
         raise _goal_contract_error(exc) from exc
+
+
+@app.get("/api/mission-control/approval-slices")
+async def get_approval_slices(include_inactive: bool = False):
+    _require_approval_slices_enabled()
+    from hermes_cli.mission_control_approval_slices import list_approval_slices
+
+    return list_approval_slices(include_inactive=include_inactive)
+
+
+@app.post("/api/mission-control/approval-slices")
+async def post_approval_slice(body: Dict[str, Any]):
+    _require_approval_slices_enabled()
+    from hermes_cli.mission_control_approval_slices import create_approval_slice
+
+    try:
+        return {"approval_slice": create_approval_slice(dict(body))}
+    except Exception as exc:
+        raise _approval_slice_error(exc) from exc
+
+
+@app.get("/api/mission-control/approval-slices/{slice_id}")
+async def get_approval_slice(slice_id: str):
+    _require_approval_slices_enabled()
+    from hermes_cli.mission_control_approval_slices import get_approval_slice as read_approval_slice
+
+    try:
+        return read_approval_slice(slice_id)
+    except Exception as exc:
+        raise _approval_slice_error(exc) from exc
+
+
+@app.post("/api/mission-control/approval-slices/{slice_id}/revoke")
+async def revoke_approval_slice(slice_id: str):
+    _require_approval_slices_enabled()
+    from hermes_cli.mission_control_approval_slices import transition_approval_slice
+
+    try:
+        return transition_approval_slice(slice_id, "revoked")
+    except Exception as exc:
+        raise _approval_slice_error(exc) from exc
+
+
+@app.post("/api/mission-control/approval-slices/{slice_id}/expire")
+async def expire_approval_slice(slice_id: str):
+    _require_approval_slices_enabled()
+    from hermes_cli.mission_control_approval_slices import transition_approval_slice
+
+    try:
+        return transition_approval_slice(slice_id, "expired")
+    except Exception as exc:
+        raise _approval_slice_error(exc) from exc
+
+
+@app.post("/api/mission-control/approval-slices/{slice_id}/complete")
+async def complete_approval_slice(slice_id: str):
+    _require_approval_slices_enabled()
+    from hermes_cli.mission_control_approval_slices import transition_approval_slice
+
+    try:
+        return transition_approval_slice(slice_id, "completed")
+    except Exception as exc:
+        raise _approval_slice_error(exc) from exc
 
 
 @app.get("/api/mission-control/project-rooms")
