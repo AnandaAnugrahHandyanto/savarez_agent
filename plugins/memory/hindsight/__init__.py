@@ -34,6 +34,7 @@ import importlib
 import json
 import logging
 import os
+import platform
 import queue
 import threading
 
@@ -436,6 +437,23 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    # macOS Apple Silicon: PyTorch MPS pre-allocates 4GB+ IOAccelerator
+    # memory for tiny embedding models, causing system-wide memory exhaustion
+    # on 8GB machines. Force CPU mode unless the user explicitly opted in.
+    # See issues #7135, #8972 — daemon also hangs on startup with MPS.
+    is_macos_arm = platform.system() == "Darwin" and platform.machine() == "arm64"
+    if is_macos_arm:
+        force_cpu_embeddings = config.get("embeddings_local_force_cpu")
+        force_cpu_reranker = config.get("reranker_local_force_cpu")
+        # Default to True on macOS ARM64 (safe); user can set to False to opt in to MPS.
+        env_values["HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU"] = (
+            "false" if force_cpu_embeddings is False else "true"
+        )
+        env_values["HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU"] = (
+            "false" if force_cpu_reranker is False else "true"
+        )
+
     return env_values
 
 
@@ -895,21 +913,48 @@ class HindsightMemoryProvider(MemoryProvider):
                     pass
                 except Exception as _e:
                     raise ImportError(str(_e))
+                import inspect
                 from hindsight import HindsightEmbedded
+
+                # Fail-fast: verify public SDK HindsightEmbedded (not DaemonEmbedManager alias)
+                sig = inspect.signature(HindsightEmbedded.__init__)
+                sig_params = set(sig.parameters.keys()) - {"self"}
+                required = {"profile", "llm_provider", "llm_model", "llm_api_key"}
+                missing = required - sig_params
+                if missing:
+                    raise RuntimeError(
+                        "Invalid Hindsight SDK import: "
+                        f"HindsightEmbedded={HindsightEmbedded!r}, "
+                        f"signature={sig}. "
+                        f"Missing required params: {missing}. "
+                        "Expected public hindsight-all HindsightEmbedded. "
+                        "Do not alias DaemonEmbedManager as HindsightEmbedded."
+                    )
+
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")
                 if llm_provider in {"openai_compatible", "openrouter"}:
                     llm_provider = "openai"
+                profile = self._config.get("profile", "hermes")
                 logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
-                             self._config.get("profile", "hermes"), llm_provider)
-                kwargs = dict(
-                    profile=self._config.get("profile", "hermes"),
+                             profile, llm_provider)
+
+                # Build kwargs from official signature — only pass params that exist
+                allowed = dict(
+                    profile=profile,
                     llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
+                    llm_api_key=(self._config.get("llmApiKey")
+                                 or self._config.get("llm_api_key")
+                                 or (os.environ.get(self._config.get("llmApiKeyEnv", "")) if self._config.get("llmApiKeyEnv") else None)
+                                 or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
+                                 or os.environ.get("HINDSIGHT_API_LLM_API_KEY", "")),
                     llm_model=self._config.get("llm_model", ""),
                 )
                 if self._llm_base_url:
-                    kwargs["llm_base_url"] = self._llm_base_url
+                    allowed["llm_base_url"] = self._llm_base_url
+                database_url = self._config.get("database_url") or os.environ.get("HINDSIGHT_API_DATABASE_URL", "")
+                if database_url and "database_url" in sig_params:
+                    allowed["database_url"] = database_url
                 idle_timeout = _parse_int_setting(
                     self._config.get("idle_timeout")
                     if self._config.get("idle_timeout") is not None
@@ -917,7 +962,9 @@ class HindsightMemoryProvider(MemoryProvider):
                     _DEFAULT_IDLE_TIMEOUT,
                 )
                 self._idle_timeout = idle_timeout
-                kwargs["idle_timeout"] = idle_timeout
+                if "idle_timeout" in sig_params:
+                    allowed["idle_timeout"] = idle_timeout
+                kwargs = {k: v for k, v in allowed.items() if k in sig_params and v is not None}
                 self._client = HindsightEmbedded(**kwargs)
             else:
                 from hindsight_client import Hindsight
