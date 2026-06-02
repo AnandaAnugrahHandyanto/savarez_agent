@@ -84,6 +84,27 @@ class TestHostHeaderValidator:
         # Loopback — reject (we bound to a specific non-loopback name)
         assert not _is_accepted_host("localhost", "my-server.corp.net")
 
+    def test_allowed_hosts_do_not_widen_explicit_non_loopback_bind(self):
+        """Reverse-proxy allowlists are only for loopback-bound dashboards."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        allowed = ["proxy.example.com", "node.tailnet.ts.net"]
+        assert _is_accepted_host(
+            "my-server.corp.net",
+            "my-server.corp.net",
+            allowed,
+        )
+        assert not _is_accepted_host(
+            "proxy.example.com",
+            "my-server.corp.net",
+            allowed,
+        )
+        assert not _is_accepted_host(
+            "node.tailnet.ts.net:443",
+            "my-server.corp.net",
+            allowed,
+        )
+
     def test_case_insensitive_comparison(self):
         """Host headers are case-insensitive per RFC — accept variations."""
         from hermes_cli.web_server import _is_accepted_host
@@ -155,6 +176,26 @@ class TestHostHeaderMiddleware:
                 headers={"Host": "node.tailnet.ts.net"},
             )
             assert resp.status_code != 400
+        finally:
+            if hasattr(app.state, "bound_host"):
+                del app.state.bound_host
+            if hasattr(app.state, "allowed_hosts"):
+                del app.state.allowed_hosts
+
+    def test_allowed_proxy_host_does_not_override_explicit_bind(self):
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        app.state.bound_host = "my-server.corp.net"
+        app.state.allowed_hosts = ("node.tailnet.ts.net",)
+        try:
+            client = TestClient(app)
+            resp = client.get(
+                "/api/status",
+                headers={"Host": "node.tailnet.ts.net"},
+            )
+            assert resp.status_code == 400
+            assert "Invalid Host header" in resp.json()["detail"]
         finally:
             if hasattr(app.state, "bound_host"):
                 del app.state.bound_host

@@ -234,14 +234,13 @@ def _is_accepted_host(
     Accepts:
     - Exact bound host (with or without port suffix)
     - Loopback aliases when bound to loopback
+    - Explicitly configured proxy/tunnel hostnames when bound to loopback
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
     """
     if not host_header:
         return False
     host_only = _host_header_host(host_header)
-    if host_only in _normalize_allowed_hosts(allowed_hosts):
-        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -252,7 +251,10 @@ def _is_accepted_host(
     # Loopback bind: accept the loopback names
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        return (
+            host_only in _LOOPBACK_HOST_VALUES
+            or host_only in _normalize_allowed_hosts(allowed_hosts)
+        )
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
