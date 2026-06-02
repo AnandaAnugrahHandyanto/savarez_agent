@@ -2925,6 +2925,16 @@ def _require_approval_slices_enabled() -> None:
         raise HTTPException(status_code=404, detail="Approval Slices disabled")
 
 
+def _task_control_envelopes_enabled() -> bool:
+    config = load_config()
+    return cfg_get(config, "dashboard", "task_control_envelopes_enabled", default=False) is True
+
+
+def _require_task_control_envelopes_enabled() -> None:
+    if not _task_control_envelopes_enabled():
+        raise HTTPException(status_code=404, detail="Task Control Envelopes disabled")
+
+
 def _mission_brief_error(exc: Exception) -> HTTPException:
     from hermes_cli.mission_briefs import MissionBriefError
 
@@ -2959,6 +2969,18 @@ def _approval_slice_error(exc: Exception) -> HTTPException:
             return HTTPException(status_code=404, detail="Approval Slice not found")
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=500, detail="Approval Slice error")
+
+
+def _task_control_envelope_error(exc: Exception) -> HTTPException:
+    from hermes_cli.mission_control_task_control_envelopes import TaskControlEnvelopeError
+
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail="Task Control Envelope not found")
+    if isinstance(exc, TaskControlEnvelopeError):
+        if str(exc) == "Invalid task control envelope id":
+            return HTTPException(status_code=404, detail="Task Control Envelope not found")
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail="Task Control Envelope error")
 
 
 @app.get("/api/mission-control/packets")
@@ -3188,6 +3210,60 @@ async def complete_approval_slice(slice_id: str):
         return transition_approval_slice(slice_id, "completed")
     except Exception as exc:
         raise _approval_slice_error(exc) from exc
+
+
+@app.get("/api/mission-control/task-control-envelopes")
+async def get_task_control_envelopes(include_inactive: bool = False):
+    _require_task_control_envelopes_enabled()
+    from hermes_cli.mission_control_task_control_envelopes import list_task_control_envelopes
+
+    return list_task_control_envelopes(include_inactive=include_inactive)
+
+
+@app.post("/api/mission-control/task-control-envelopes")
+async def post_task_control_envelope(body: Dict[str, Any]):
+    _require_task_control_envelopes_enabled()
+    from hermes_cli.mission_control_task_control_envelopes import create_task_control_envelope
+
+    try:
+        return {"task_control_envelope": create_task_control_envelope(dict(body))}
+    except Exception as exc:
+        raise _task_control_envelope_error(exc) from exc
+
+
+@app.get("/api/mission-control/task-control-envelopes/{envelope_id}")
+async def get_task_control_envelope(envelope_id: str):
+    _require_task_control_envelopes_enabled()
+    from hermes_cli.mission_control_task_control_envelopes import (
+        get_task_control_envelope as read_task_control_envelope,
+    )
+
+    try:
+        return read_task_control_envelope(envelope_id)
+    except Exception as exc:
+        raise _task_control_envelope_error(exc) from exc
+
+
+@app.post("/api/mission-control/task-control-envelopes/{envelope_id}/complete")
+async def complete_task_control_envelope(envelope_id: str):
+    _require_task_control_envelopes_enabled()
+    from hermes_cli.mission_control_task_control_envelopes import transition_task_control_envelope
+
+    try:
+        return transition_task_control_envelope(envelope_id, "completed")
+    except Exception as exc:
+        raise _task_control_envelope_error(exc) from exc
+
+
+@app.post("/api/mission-control/task-control-envelopes/{envelope_id}/archive")
+async def archive_task_control_envelope(envelope_id: str):
+    _require_task_control_envelopes_enabled()
+    from hermes_cli.mission_control_task_control_envelopes import transition_task_control_envelope
+
+    try:
+        return transition_task_control_envelope(envelope_id, "archived")
+    except Exception as exc:
+        raise _task_control_envelope_error(exc) from exc
 
 
 @app.get("/api/mission-control/project-rooms")
