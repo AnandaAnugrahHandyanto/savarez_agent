@@ -858,9 +858,12 @@ function findPythonForRoot(root) {
   const override = process.env.HERMES_DESKTOP_PYTHON
   if (override && fileExists(override)) return override
 
+  // Prefer Hermes' canonical install venv over an incidental developer .venv.
+  // install.sh/install.ps1 create ./venv; a stale .venv can point at an
+  // unsupported/newer system Python and miss Hermes' locked dependencies.
   const relativePaths = IS_WINDOWS
-    ? [path.join('.venv', 'Scripts', 'python.exe'), path.join('venv', 'Scripts', 'python.exe')]
-    : [path.join('.venv', 'bin', 'python'), path.join('venv', 'bin', 'python')]
+    ? [path.join('venv', 'Scripts', 'python.exe'), path.join('.venv', 'Scripts', 'python.exe')]
+    : [path.join('venv', 'bin', 'python'), path.join('.venv', 'bin', 'python')]
 
   for (const relativePath of relativePaths) {
     const candidate = path.join(root, relativePath)
