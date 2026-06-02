@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -55,26 +56,18 @@ ROUTING_TABLE = {
 }
 
 
-def load_env():
-    keys = {}
-    p = Path.home() / ".hermes" / ".env"
-    if p.exists():
-        for line in p.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
-                keys[k.strip()] = v.strip().strip('"').strip("'")
-    return keys
-
-
 def detect_available_providers():
-    env = load_env()
+    """Check which providers have credentials configured.
+
+    Uses os.environ (already loaded from .env by Hermes) instead of
+    parsing .env directly. Only checks key presence, never reads values.
+    """
     avail = {
-        "anthropic": bool(env.get("ANTHROPIC_API_KEY") or env.get("CLAUDE_OAUTH_TOKEN")),
-        "openrouter": bool(env.get("OPENROUTER_API_KEY")),
-        "opencode-zen": bool(env.get("OPENCODE_ZEN_API_KEY")),
+        "anthropic": bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_OAUTH_TOKEN")),
+        "openrouter": bool(os.getenv("OPENROUTER_API_KEY")),
+        "opencode-zen": bool(os.getenv("OPENCODE_ZEN_API_KEY")),
         "lmstudio": False,
-        "groq": bool(env.get("GROQ_API_KEY")),
+        "groq": bool(os.getenv("GROQ_API_KEY")),
     }
     try:
         import urllib.request

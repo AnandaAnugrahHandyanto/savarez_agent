@@ -153,9 +153,10 @@ When a new provider is added to `config.yaml` (or `.env`), the routing table
 
 ### How It Works
 
-1. **Detection**: `scripts/detect-providers.py` scans `config.yaml`, `.env`, and
-   `auth.json`:
-   - Standard providers: API keys in `.env`, OAuth tokens in `auth.json`
+1. **Detection**: `scripts/detect-providers.py` scans `config.yaml` and
+   `auth.json`, and checks `os.environ` for configured provider env vars.
+   It does **not** parse `.env` directly — this keeps secret values out of
+   script memory. Only key presence is checked, never values.
    - Custom providers: entries in `config.yaml` → `custom_providers`
    - Local services: LM Studio reachability on port 1234
    - Primary provider: `model.provider` in config

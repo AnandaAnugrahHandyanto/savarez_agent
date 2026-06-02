@@ -18,6 +18,7 @@ Usage:
 import argparse
 import copy
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -148,6 +149,11 @@ def check_lmstudio():
         return False
 
 def check_oauth_provider(name):
+    """Check if an OAuth provider has tokens configured.
+
+    Reads auth.json to check for provider key names only.
+    Never reads or stores actual token values from the file.
+    """
     auth_path = Path.home() / ".hermes" / "auth.json"
     if not auth_path.exists():
         return False
@@ -178,15 +184,19 @@ def load_hermes_config():
     return yaml.safe_load(p.read_text()) if p.exists() else None
 
 def load_hermes_env():
-    keys = {}
-    p = Path.home() / ".hermes" / ".env"
-    if p.exists():
-        for line in p.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
-                keys[k.strip()] = v.strip().strip('"').strip("'")
-    return keys
+    """Return a set of Hermes-relevant auth env var names that are set.
+
+    Only checks presence (bool), never reads or stores secret values.
+    Reads from os.environ which Hermes already loaded from .env at startup.
+    Avoids parsing .env directly to keep secrets out of script memory.
+    """
+    relevant_vars = set()
+    for meta in PROVIDER_CATALOG.values():
+        for var in meta.get("auth_env_vars", []):
+            relevant_vars.add(var)
+    # Also check AWS keys
+    relevant_vars.add("AWS_ACCESS_KEY_ID")
+    return {var: True for var in relevant_vars if os.getenv(var)}
 
 def detect_configured_providers():
     config = load_hermes_config()
