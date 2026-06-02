@@ -20,6 +20,7 @@ from agent.codex_responses_adapter import _normalize_codex_response
 
 import run_agent
 from run_agent import AIAgent
+from tools.todo_tool import TodoStore
 from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
@@ -1038,6 +1039,159 @@ class TestHydrateTodoStore:
         with patch("run_agent._set_interrupt"):
             agent._hydrate_todo_store(history)
         assert not agent._todo_store.has_items()
+
+    def test_recovers_from_context_compression_active_task_snapshot(self, agent):
+        history = [
+            {"role": "user", "content": "start"},
+            {
+                "role": "user",
+                "content": (
+                    "[Your active task list was preserved across context compression]\n"
+                    "- [>] slice-plan. Persist queue evidence (in_progress)\n"
+                    "- [ ] implement-tests. Add tests and implementation (pending)"
+                ),
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.read() == [
+            {
+                "id": "slice-plan",
+                "content": "Persist queue evidence",
+                "status": "in_progress",
+            },
+            {
+                "id": "implement-tests",
+                "content": "Add tests and implementation",
+                "status": "pending",
+            },
+        ]
+
+    def test_context_compression_snapshot_uses_marker_when_status_suffix_missing(self, agent):
+        history = [
+            {
+                "role": "user",
+                "content": (
+                    "[Your active task list was preserved across context compression]\n"
+                    "- [>] active. Keep going\n"
+                    "- [ ] next. Do next thing"
+                ),
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.read() == [
+            {"id": "active", "content": "Keep going", "status": "in_progress"},
+            {"id": "next", "content": "Do next thing", "status": "pending"},
+        ]
+
+    def test_context_compression_snapshot_skips_completed_and_cancelled_items(self, agent):
+        history = [
+            {
+                "role": "user",
+                "content": (
+                    "[Your active task list was preserved across context compression]\n"
+                    "- [x] done. Already done (completed)\n"
+                    "- [~] stopped. No longer needed (cancelled)\n"
+                    "- [>] current. Continue this (in_progress)"
+                ),
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.read() == [
+            {"id": "current", "content": "Continue this", "status": "in_progress"},
+        ]
+
+    def test_newer_context_compression_snapshot_wins_over_older_tool_response(self, agent):
+        history = [
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    {"todos": [{"id": "old", "content": "old task", "status": "pending"}]}
+                ),
+                "tool_call_id": "c1",
+            },
+            {
+                "role": "user",
+                "content": (
+                    "[Your active task list was preserved across context compression]\n"
+                    "- [>] current. Current task (in_progress)"
+                ),
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.read() == [
+            {"id": "current", "content": "Current task", "status": "in_progress"},
+        ]
+
+    def test_newer_tool_response_wins_over_older_context_compression_snapshot(self, agent):
+        history = [
+            {
+                "role": "user",
+                "content": (
+                    "[Your active task list was preserved across context compression]\n"
+                    "- [>] old. Old task (in_progress)"
+                ),
+            },
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    {
+                        "todos": [
+                            {
+                                "id": "current",
+                                "content": "Current tool task",
+                                "status": "pending",
+                            }
+                        ]
+                    }
+                ),
+                "tool_call_id": "c1",
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.read() == [
+            {"id": "current", "content": "Current tool task", "status": "pending"},
+        ]
+
+    def test_context_compression_snapshot_round_trips_formatted_todos_with_period_ids(self, agent):
+        store = TodoStore()
+        store.write(
+            [
+                {"id": "phase.1", "content": "Do thing", "status": "pending"},
+                {"id": "phase.2", "content": "Keep going", "status": "in_progress"},
+            ]
+        )
+        history = [
+            {
+                "role": "user",
+                "content": (
+                    "[Your active task list was preserved across context compression]\n"
+                    f"{store.format_for_injection()}"
+                ),
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.read() == [
+            {"id": "phase.1", "content": "Do thing", "status": "pending"},
+            {"id": "phase.2", "content": "Keep going", "status": "in_progress"},
+        ]
 
 
 class TestBuildSystemPrompt:

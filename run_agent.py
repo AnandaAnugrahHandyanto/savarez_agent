@@ -2667,22 +2667,72 @@ class AIAgent:
         except Exception:
             pass
 
+    _TODO_SNAPSHOT_HEADER = "[Your active task list was preserved across context compression]"
+    _TODO_SNAPSHOT_LINE_RE = re.compile(
+        r"^-\s*\[(?P<marker>[ xX>~])\]\s*"
+        r"(?P<id>(?:[^.\n]|\.(?!\s))+?)\.\s+"
+        r"(?P<content>.*?)"
+        r"(?:\s+\((?P<status>pending|in_progress|completed|cancelled)\))?\s*$"
+    )
+
+    @classmethod
+    def _parse_todo_snapshot(cls, content: Any) -> List[Dict[str, str]]:
+        """Parse the post-compression active-task snapshot into todo items."""
+        if not isinstance(content, str) or cls._TODO_SNAPSHOT_HEADER not in content:
+            return []
+
+        marker_status = {
+            " ": "pending",
+            ">": "in_progress",
+            "x": "completed",
+            "X": "completed",
+            "~": "cancelled",
+        }
+        active_statuses = {"pending", "in_progress"}
+        parsed: List[Dict[str, str]] = []
+
+        for line in content.splitlines():
+            match = cls._TODO_SNAPSHOT_LINE_RE.match(line.strip())
+            if not match:
+                continue
+
+            status = match.group("status") or marker_status.get(match.group("marker"), "pending")
+            if status not in active_statuses:
+                continue
+
+            item_id = match.group("id").strip()
+            item_content = match.group("content").strip()
+            if not item_id or not item_content:
+                continue
+
+            parsed.append({"id": item_id, "content": item_content, "status": status})
+
+        return parsed
+
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """
         Recover todo state from conversation history.
         
         The gateway creates a fresh AIAgent per message, so the in-memory
         TodoStore is empty. We scan the history for the most recent todo
-        tool response and replay it to reconstruct the state.
+        state source and replay it to reconstruct the state. Sources include
+        todo tool responses and the active-task snapshot appended after
+        context compression.
         """
-        # Walk history backwards to find the most recent todo tool response
+        # Walk history backwards so the newest durable todo source wins.
         last_todo_response = None
         for msg in reversed(history):
+            content = msg.get("content", "")
+
+            snapshot_todos = self._parse_todo_snapshot(content)
+            if snapshot_todos:
+                last_todo_response = snapshot_todos
+                break
+
             if msg.get("role") != "tool":
                 continue
-            content = msg.get("content", "")
             # Quick check: todo responses contain "todos" key
-            if '"todos"' not in content:
+            if not isinstance(content, str) or '"todos"' not in content:
                 continue
             try:
                 data = json.loads(content)
