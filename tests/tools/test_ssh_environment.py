@@ -201,6 +201,118 @@ class TestSSHPreflight:
         assert env.user == "alice"
 
 
+class TestNonUTF8SubprocessOutput:
+    """Regression tests for issue #37130.
+
+    Windows OpenSSH targets running Git Bash/MSYS shells can emit non-UTF8
+    bytes on stdout/stderr. The backend decoded subprocess output in strict
+    text mode (``text=True`` without ``errors=``), so a single undecodable
+    byte raised ``UnicodeDecodeError`` during ``_ensure_remote_dirs()`` —
+    before any user command ran — bricking all terminal/file/search tools
+    even though a manual SSH connection to the same host worked fine.
+    """
+
+    _BAD_BYTES = b"setup output \xff\xfe done\n"
+
+    @staticmethod
+    def _decoding_run(stdout=b"", stderr=b"", returncode=0):
+        """A ``subprocess.run`` stand-in that reproduces real text-mode decoding.
+
+        On the unfixed backend (no ``errors="replace"``) this raises
+        ``UnicodeDecodeError`` exactly as the real ``subprocess`` would; once
+        the backend passes ``errors="replace"`` it decodes with U+FFFD.
+        """
+        def _run(cmd, *a, **kwargs):
+            out, err = stdout, stderr
+            if kwargs.get("text") or kwargs.get("universal_newlines"):
+                enc = kwargs.get("encoding") or "utf-8"
+                errs = kwargs.get("errors", "strict")
+                out = stdout.decode(enc, errors=errs)
+                err = stderr.decode(enc, errors=errs)
+            return subprocess.CompletedProcess(cmd, returncode, out, err)
+        return _run
+
+    @pytest.fixture
+    def _ssh_env_factory(self, monkeypatch):
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _n: "/usr/bin/ssh")
+        monkeypatch.setattr("tools.environments.base.time.sleep", lambda _s: None)
+        from pathlib import Path as _Path
+        monkeypatch.setattr(_Path, "mkdir", lambda *a, **k: None)
+        monkeypatch.setattr(ssh_env, "FileSyncManager", lambda **kw: MagicMock())
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session",
+                            lambda self: None)
+
+        def _factory(stdout=b"", stderr=b"", returncode=0):
+            monkeypatch.setattr(
+                "tools.environments.ssh.subprocess.run",
+                self._decoding_run(stdout, stderr, returncode),
+            )
+            return ssh_env.SSHEnvironment(host="winhost", user="hermes")
+        return _factory
+
+    def test_init_survives_non_utf8_output(self, _ssh_env_factory):
+        """Full __init__ (connect + detect home + _ensure_remote_dirs) must
+        not raise on non-UTF8 subprocess output — the issue #37130 crash."""
+        env = _ssh_env_factory(stdout=self._BAD_BYTES)
+        assert env.host == "winhost"
+
+    def test_init_survives_non_utf8_on_stderr(self, _ssh_env_factory):
+        env = _ssh_env_factory(stderr=self._BAD_BYTES, returncode=0)
+        assert env.user == "hermes"
+
+    def test_detect_home_replaces_bad_bytes(self, _ssh_env_factory):
+        env = _ssh_env_factory(stdout=b"/home/hermes\xff\n")
+        assert env._remote_home == "/home/hermes�"
+
+    def test_ensure_remote_dirs_does_not_raise(self, _ssh_env_factory):
+        """Directly re-exercise the method named in the issue traceback."""
+        env = _ssh_env_factory(stdout=self._BAD_BYTES)
+        env._ensure_remote_dirs()
+
+    def test_every_text_run_call_uses_errors_replace(self, monkeypatch, tmp_path):
+        """All text-mode ``subprocess.run`` calls in the backend — including
+        the file-sync sites that __init__ does not reach — must pass
+        ``errors="replace"`` so non-UTF8 output can never crash them."""
+        calls = []
+
+        def _record(cmd, *a, **kwargs):
+            calls.append(kwargs)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        def _fake_popen(*a, **k):
+            m = MagicMock()
+            m.returncode = 0
+            m.poll.return_value = 0
+            m.communicate.return_value = (b"", b"")
+            m.stderr.read.return_value = b""
+            return m
+
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _n: "/usr/bin/ssh")
+        monkeypatch.setattr("tools.environments.base.time.sleep", lambda _s: None)
+        from pathlib import Path as _Path
+        monkeypatch.setattr(_Path, "mkdir", lambda *a, **k: None)
+        monkeypatch.setattr(ssh_env, "FileSyncManager", lambda **kw: MagicMock())
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session",
+                            lambda self: None)
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", _record)
+        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen", _fake_popen)
+
+        env = ssh_env.SSHEnvironment(host="winhost", user="hermes")
+
+        src = tmp_path / "payload.txt"
+        src.write_text("x")
+        env._ssh_delete(["~/.hermes/a"])
+        env._scp_upload(str(src), "~/.hermes/b")
+        env._ssh_bulk_upload([(str(src), f"{env._remote_home}/.hermes/sub/c")])
+
+        text_calls = [k for k in calls if k.get("text")]
+        assert text_calls, "expected text-mode subprocess.run calls"
+        for kwargs in text_calls:
+            assert kwargs.get("errors") == "replace", (
+                f"text-mode subprocess.run missing errors='replace': {kwargs}"
+            )
+
+
 def _setup_ssh_env(monkeypatch, persistent: bool):
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", _SSH_HOST)

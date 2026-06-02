@@ -4,9 +4,10 @@ Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
+import sys
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, _popen_bash
 
 
 class _TestableEnv(BaseEnvironment):
@@ -194,3 +195,21 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestPopenBashDecoding:
+    """Regression for issue #37130.
+
+    ``_popen_bash`` reads subprocess stdout in text mode. Without
+    ``errors="replace"`` a non-UTF8 byte (common from Windows OpenSSH /
+    Git Bash targets) raises ``UnicodeDecodeError`` the moment the output
+    is read, instead of being substituted with U+FFFD.
+    """
+
+    def test_non_utf8_output_is_replaced_not_raised(self):
+        proc = _popen_bash(
+            [sys.executable, "-c", "import os; os.write(1, b'\\xff\\xfe')"]
+        )
+        out = proc.stdout.read()
+        proc.wait()
+        assert "�" in out
