@@ -261,13 +261,20 @@ function describeInterval(
  * human sentence for them. Returns ``null`` when the expression has any
  * ranges, steps, or other complexity that would be misleading to
  * "humanize" — caller falls back to displaying the raw expression so
- * the user sees what's actually scheduled. */
+ * the user sees what's actually scheduled.
+ *
+ * Strictly 5-field only: the backend ``parse_schedule`` also accepts the
+ * 6-field ``minute hour dom month dow year`` form, but humanising those
+ * by destructuring only the first five fields would silently drop the
+ * year and mislead the user (e.g. ``0 9 * * * 2099`` would read as
+ * "Daily at 09:00"). 6+ field expressions intentionally fall through to
+ * the raw-string fallback in {@link describeSchedule}. */
 function describeCronExpression(
   expr: string,
   strings: ScheduleDescribeStrings,
 ): string | null {
   const parts = expr.trim().split(/\s+/);
-  if (parts.length < 5) return null;
+  if (parts.length !== 5) return null;
   const [minField, hourField, domField, monField, dowField] = parts;
 
   const month = monField === "*";

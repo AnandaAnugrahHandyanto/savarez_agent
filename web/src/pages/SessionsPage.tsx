@@ -404,9 +404,14 @@ function SessionRow({
       ? "border-success/30 bg-success/[0.03]"
       : "border-border";
 
-  // Clicking the checkbox (or its hit-region) must NOT toggle row
-  // expansion; selection and expansion are independent gestures.
-  // ``onClick`` carries shift-key state for range select.
+  // Clicking the checkbox must NOT toggle row expansion; selection and
+  // expansion are independent gestures. We bind ``onClick`` directly on
+  // the Checkbox (which Radix forwards to its underlying ``<button
+  // role=checkbox>``) so the event carries the real ``shiftKey`` state
+  // for range-select AND so keyboard activation (Space on the focused
+  // checkbox) toggles selection via the same code path — the browser
+  // synthesises a click on <button> for Space, so one handler covers
+  // mouse + keyboard cleanly.
   const handleSelectClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     onSelectClick(e);
@@ -420,13 +425,10 @@ function SessionRow({
         className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30"
         onClick={onToggle}
       >
-        <span
-          className="flex shrink-0 items-center pt-0.5"
-          onClick={handleSelectClick}
-        >
+        <span className="flex shrink-0 items-center pt-0.5">
           <Checkbox
             checked={isSelected}
-            onCheckedChange={() => {}}
+            onClick={handleSelectClick}
             aria-label={t.sessions.selectSession}
           />
         </span>
@@ -1587,6 +1589,8 @@ interface SessionRowProps {
   isExpanded: boolean;
   isSelected: boolean;
   onDelete: () => void;
+  onExport: (id: string) => void;
+  onRename: (id: string, title: string) => Promise<void>;
   onSelectClick: (event: React.MouseEvent) => void;
   onToggle: () => void;
   resumeInChatEnabled: boolean;
