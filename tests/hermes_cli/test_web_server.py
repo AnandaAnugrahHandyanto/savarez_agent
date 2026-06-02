@@ -243,6 +243,68 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_get_hindsight_config_returns_safe_defaults(self):
+        resp = self.client.get("/api/memory/hindsight/config")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {
+            "mode": "cloud",
+            "api_url": "https://api.hindsight.vectorize.io",
+            "bank_id": "hermes",
+            "recall_budget": "mid",
+            "api_key_set": False,
+        }
+
+    def test_put_hindsight_config_writes_provider_config_and_secret(self):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_config, load_env
+
+        resp = self.client.put(
+            "/api/memory/hindsight/config",
+            json={
+                "mode": "local_external",
+                "api_url": "http://localhost:8888",
+                "api_key": "hs-test-key",
+                "bank_id": "ben-bank",
+                "recall_budget": "high",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert load_config()["memory"]["provider"] == "hindsight"
+        assert load_env()["HINDSIGHT_API_KEY"] == "hs-test-key"
+
+        config_path = get_hermes_home() / "hindsight" / "config.json"
+        provider_config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert provider_config == {
+            "mode": "local_external",
+            "api_url": "http://localhost:8888",
+            "bank_id": "ben-bank",
+            "recall_budget": "high",
+        }
+
+    def test_get_hindsight_config_does_not_return_api_key(self):
+        self.client.put(
+            "/api/memory/hindsight/config",
+            json={
+                "mode": "cloud",
+                "api_url": "https://api.hindsight.vectorize.io",
+                "api_key": "secret-value",
+                "bank_id": "hermes",
+                "recall_budget": "mid",
+            },
+        )
+
+        resp = self.client.get("/api/memory/hindsight/config")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["api_key_set"] is True
+        assert "api_key" not in data
+        assert "secret-value" not in json.dumps(data)
+
     def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
         """Session rows without persisted cwd must not inherit TERMINAL_CWD.
 

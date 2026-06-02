@@ -98,6 +98,25 @@ export interface EnvVarInfo {
   url: null | string
 }
 
+export type HindsightMode = 'cloud' | 'local_embedded' | 'local_external'
+export type HindsightRecallBudget = 'high' | 'low' | 'mid'
+
+export interface HindsightConfig {
+  api_key_set: boolean
+  api_url: string
+  bank_id: string
+  mode: HindsightMode
+  recall_budget: HindsightRecallBudget
+}
+
+export interface HindsightConfigUpdate {
+  api_key?: string
+  api_url: string
+  bank_id: string
+  mode: HindsightMode
+  recall_budget: HindsightRecallBudget
+}
+
 export interface MessagingEnvVarInfo {
   advanced: boolean
   description: string

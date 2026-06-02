@@ -509,6 +509,13 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+class HindsightConfigUpdate(BaseModel):
+    mode: str = "cloud"
+    api_url: str = "https://api.hindsight.vectorize.io"
+    api_key: str = ""
+    bank_id: str = "hermes"
+    recall_budget: str = "mid"
+
 class MessagingPlatformUpdate(BaseModel):
     enabled: Optional[bool] = None
     env: Dict[str, str] = {}
@@ -1486,6 +1493,131 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         config["model_context_length"] = 0
     return config
+
+
+_HINDSIGHT_DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
+_HINDSIGHT_VALID_MODES = {"cloud", "local_external", "local_embedded"}
+_HINDSIGHT_VALID_BUDGETS = {"low", "mid", "high"}
+
+
+def _hindsight_config_path() -> Path:
+    return get_hermes_home() / "hindsight" / "config.json"
+
+
+def _read_hindsight_config_file() -> Dict[str, Any]:
+    path = _hindsight_config_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        _log.warning("Failed to read Hindsight config from %s", path, exc_info=True)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _hindsight_api_key_is_set(config: Dict[str, Any]) -> bool:
+    env_on_disk = load_env()
+    return bool(
+        env_on_disk.get("HINDSIGHT_API_KEY")
+        or config.get("apiKey")
+        or config.get("api_key")
+    )
+
+
+def _hindsight_config_payload() -> Dict[str, Any]:
+    provider_config = _read_hindsight_config_file()
+    banks = provider_config.get("banks", {})
+    if not isinstance(banks, dict):
+        banks = {}
+    hermes_bank = banks.get("hermes", {})
+    if not isinstance(hermes_bank, dict):
+        hermes_bank = {}
+
+    mode = str(provider_config.get("mode") or "cloud")
+    if mode not in _HINDSIGHT_VALID_MODES:
+        mode = "cloud"
+
+    api_url = str(
+        provider_config.get("api_url")
+        or provider_config.get("apiUrl")
+        or load_env().get("HINDSIGHT_API_URL")
+        or _HINDSIGHT_DEFAULT_API_URL
+    )
+    bank_id = str(provider_config.get("bank_id") or hermes_bank.get("bankId") or "hermes")
+    recall_budget = str(
+        provider_config.get("recall_budget")
+        or provider_config.get("budget")
+        or hermes_bank.get("budget")
+        or "mid"
+    )
+    if recall_budget not in _HINDSIGHT_VALID_BUDGETS:
+        recall_budget = "mid"
+
+    return {
+        "mode": mode,
+        "api_url": api_url,
+        "bank_id": bank_id,
+        "recall_budget": recall_budget,
+        "api_key_set": _hindsight_api_key_is_set(provider_config),
+    }
+
+
+def _write_hindsight_config_file(values: Dict[str, Any]) -> None:
+    path = _hindsight_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = _read_hindsight_config_file()
+    existing.update(values)
+    from utils import atomic_json_write
+    atomic_json_write(path, existing, mode=0o600)
+
+
+@app.get("/api/memory/hindsight/config")
+async def get_hindsight_config():
+    return _hindsight_config_payload()
+
+
+@app.put("/api/memory/hindsight/config")
+async def update_hindsight_config(body: HindsightConfigUpdate):
+    mode = (body.mode or "cloud").strip()
+    if mode not in _HINDSIGHT_VALID_MODES:
+        raise HTTPException(status_code=400, detail="Invalid Hindsight mode")
+
+    recall_budget = (body.recall_budget or "mid").strip()
+    if recall_budget not in _HINDSIGHT_VALID_BUDGETS:
+        raise HTTPException(status_code=400, detail="Invalid Hindsight recall budget")
+
+    api_url = (body.api_url or _HINDSIGHT_DEFAULT_API_URL).strip() or _HINDSIGHT_DEFAULT_API_URL
+    bank_id = (body.bank_id or "hermes").strip() or "hermes"
+
+    try:
+        config = load_config()
+        memory_config = config.get("memory")
+        if not isinstance(memory_config, dict):
+            memory_config = {}
+            config["memory"] = memory_config
+        memory_config["provider"] = "hindsight"
+        save_config(config)
+
+        _write_hindsight_config_file({
+            "mode": mode,
+            "api_url": api_url,
+            "bank_id": bank_id,
+            "recall_budget": recall_budget,
+        })
+
+        api_key = (body.api_key or "").strip()
+        if api_key:
+            save_env_value("HINDSIGHT_API_KEY", api_key)
+
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        _log.exception("PUT /api/memory/hindsight/config failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/config")

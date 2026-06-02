@@ -18,6 +18,7 @@ import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { enumOptionsFor, getNested, includesQuery, prettyName, setNested } from './helpers'
+import { HindsightSettings } from './hindsight-settings'
 import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
 import type { SearchProps } from './types'
@@ -328,6 +329,11 @@ export function ConfigSettings({
       {activeSectionId === 'model' && !query.trim() && (
         <div className="mb-6">
           <ModelSettings onMainModelChanged={onMainModelChanged} />
+        </div>
+      )}
+      {activeSectionId === 'memory' && !query.trim() && getNested(config, 'memory.provider') === 'hindsight' && (
+        <div className="mb-6">
+          <HindsightSettings />
         </div>
       )}
       {query.trim() && (
