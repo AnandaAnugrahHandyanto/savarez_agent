@@ -1,5 +1,6 @@
 """Focused tests for API server session-control endpoints."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -39,6 +40,11 @@ def auth_adapter(session_db):
 def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application()
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_get("/v1/sessions/active", adapter._handle_list_active_sessions)
+    app.router.add_get("/v1/sessions/{session_id}/state", adapter._handle_session_state)
+    app.router.add_get("/v1/sessions/{session_id}/items", adapter._handle_session_items)
+    app.router.add_get("/v1/sessions/{session_id}/events", adapter._handle_session_events)
+    app.router.add_get("/v1/session_events/firehose", adapter._handle_session_firehose)
     app.router.add_get("/api/sessions", adapter._handle_list_sessions)
     app.router.add_post("/api/sessions", adapter._handle_create_session)
     app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
@@ -76,6 +82,14 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 
 
 @pytest.mark.asyncio
+async def test_query_access_token_auth_supports_websocket_clients(auth_adapter):
+    app = _create_session_app(auth_adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/v1/capabilities?access_token=sk-test")
+        assert resp.status == 200
+
+
+@pytest.mark.asyncio
 async def test_session_crud_and_message_history(adapter, session_db):
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
@@ -108,6 +122,7 @@ async def test_session_crud_and_message_history(adapter, session_db):
         assert messages["object"] == "list"
         assert [m["role"] for m in messages["data"]] == ["user", "assistant"]
         assert messages["data"][0]["content"] == "hello from phone"
+        assert messages["data"][0]["items"][0]["id"].startswith("msg:")
 
         patch_resp = await cli.patch(f"/api/sessions/{session_id}", json={"title": "Renamed"})
         assert patch_resp.status == 200
@@ -204,6 +219,106 @@ async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db)
 
     _, kwargs = mock_run.call_args
     assert kwargs["user_message"] == expected_user_message
+
+
+@pytest.mark.asyncio
+async def test_session_replay_api_exposes_stable_items_events_and_state(adapter, session_db):
+    session_id = session_db.create_session("sync-session", "api_server")
+    session_db.append_message(session_id, "user", "please inspect")
+    session_db.append_message(
+        session_id,
+        "assistant",
+        "",
+        tool_calls=[{"id": "call_1", "function": {"name": "read_file", "arguments": "{\"path\":\"a\"}"}}],
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        items_resp = await cli.get(f"/v1/sessions/{session_id}/items")
+        assert items_resp.status == 200
+        items_payload = await items_resp.json()
+        item_ids = [item["id"] for item in items_payload["data"]]
+        assert item_ids[0].startswith("msg:")
+        assert any(item_id.endswith(":tool_call:call_1") for item_id in item_ids)
+        assert items_payload["latest_event_cursor"] is not None
+
+        events_resp = await cli.get(f"/v1/sessions/{session_id}/events?after=0")
+        assert events_resp.status == 200
+        events_payload = await events_resp.json()
+        assert events_payload["object"] == "list"
+        assert all(event["event_id"].startswith("evt:") for event in events_payload["data"])
+        assert [event["event_type"] for event in events_payload["data"]].count("session.item.upserted") >= 2
+        cursor = events_payload["data"][0]["cursor"]
+
+        replay_resp = await cli.get(f"/v1/sessions/{session_id}/events?after={cursor}")
+        assert replay_resp.status == 200
+        replay_payload = await replay_resp.json()
+        assert all(int(event["cursor"]) > int(cursor) for event in replay_payload["data"])
+
+        state_resp = await cli.get(f"/v1/sessions/{session_id}/state")
+        assert state_resp.status == 200
+        state_payload = await state_resp.json()
+        assert state_payload["state"] == "interrupted"
+        assert state_payload["pending_tool_call_ids"] == ["call_1"]
+
+        active_resp = await cli.get("/v1/sessions/active")
+        assert active_resp.status == 200
+        active_payload = await active_resp.json()
+        listed = {session["id"]: session for session in active_payload["data"]}
+        assert listed[session_id]["sync_state"]["state"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_session_state_and_firehose_include_run_terminal_events(adapter, session_db):
+    session_id = session_db.create_session("run-terminal-session", "api_server")
+    adapter._set_run_status("run_test", "running", session_id=session_id)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        state_resp = await cli.get(f"/v1/sessions/{session_id}/state")
+        assert state_resp.status == 200
+        state_payload = await state_resp.json()
+        assert state_payload["state"] == "processing"
+        assert state_payload["active"] is True
+
+        cursor = session_db.latest_session_event_cursor(session_id) or "0"
+        adapter._record_run_session_event(
+            session_id=session_id,
+            event_type="run.completed",
+            run_id="run_test",
+            payload={"status": "completed", "output": "done"},
+        )
+
+        events_resp = await cli.get(f"/v1/sessions/{session_id}/events?after={cursor}")
+        assert events_resp.status == 200
+        events_payload = await events_resp.json()
+
+    terminal_event = events_payload["data"][0]
+    assert terminal_event["event_id"].startswith("evt:")
+    assert terminal_event["event_type"] == "run.completed"
+    assert terminal_event["item_id"] == "run:run_test"
+    assert terminal_event["payload"]["run_id"] == "run_test"
+    assert terminal_event["payload"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_session_firehose_streams_missed_events(adapter, session_db):
+    session_id = session_db.create_session("firehose-session", "api_server")
+    cursor = session_db.latest_session_event_cursor() or "0"
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        ws = await cli.ws_connect(f"/v1/session_events/firehose?after={cursor}")
+        session_db.append_message(session_id, "user", "from firehose")
+        try:
+            message = await asyncio.wait_for(ws.receive(), timeout=3)
+            assert message.type == web.WSMsgType.TEXT
+            payload = message.json()
+            assert payload["session_id"] == session_id
+            assert payload["event_type"] == "session.item.upserted"
+            assert payload["payload"]["item"]["id"].startswith("msg:")
+        finally:
+            await ws.close()
 
 
 @pytest.mark.asyncio

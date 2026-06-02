@@ -882,6 +882,9 @@ class APIServerAdapter(BasePlatformAdapter):
             token = auth_header[7:].strip()
             if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
+        query_token = request.query.get("access_token") or request.query.get("api_key")
+        if query_token and hmac.compare_digest(str(query_token), self._api_key):
+            return None  # Auth OK
 
         logger.warning(
             "API server rejected invalid API key: %s",
@@ -1414,7 +1417,13 @@ class APIServerAdapter(BasePlatformAdapter):
             "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
             "reasoning_content",
         )
-        return {key: message.get(key) for key in safe_keys if key in message}
+        payload = {key: message.get(key) for key in safe_keys if key in message}
+        try:
+            from hermes_state import SessionDB
+            payload["items"] = SessionDB._session_items_from_message(message)
+        except Exception:
+            payload["items"] = []
+        return payload
 
     async def _read_json_body(self, request: "web.Request") -> tuple[Dict[str, Any], Optional["web.Response"]]:
         try:
@@ -1443,6 +1452,199 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
+
+    def _live_session_state(self, session_id: str, state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        payload = dict(state or {
+            "object": "hermes.session.state",
+            "session_id": session_id,
+            "state": "idle",
+            "status": "idle",
+            "active": False,
+        })
+        active_run = any(
+            run.get("session_id") == session_id
+            and run.get("status") in {"queued", "running", "waiting_for_approval", "stopping"}
+            for run in self._run_statuses.values()
+        )
+        if session_id in self._active_response_agents_by_session or active_run:
+            payload["state"] = "processing"
+            payload["status"] = "processing"
+            payload["active"] = True
+        return payload
+
+    def _record_response_session_event(
+        self,
+        *,
+        session_id: Optional[str],
+        event_type: str,
+        response_id: str,
+        response: Dict[str, Any],
+    ) -> None:
+        if not session_id:
+            return
+        db = self._ensure_session_db()
+        if db is None:
+            return
+        try:
+            db.append_session_event(
+                session_id,
+                event_type,
+                {
+                    "session_id": session_id,
+                    "response_id": response_id,
+                    "response": response,
+                },
+                item_id=f"response:{response_id}",
+                response_id=response_id,
+            )
+        except Exception as exc:
+            logger.debug("Failed to record response session event for %s: %s", session_id, exc)
+
+    def _record_run_session_event(
+        self,
+        *,
+        session_id: Optional[str],
+        event_type: str,
+        run_id: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        if not session_id:
+            return
+        db = self._ensure_session_db()
+        if db is None:
+            return
+        try:
+            event_payload = dict(payload)
+            event_payload["session_id"] = session_id
+            event_payload["run_id"] = run_id
+            db.append_session_event(
+                session_id,
+                event_type,
+                event_payload,
+                item_id=f"run:{run_id}",
+            )
+        except Exception as exc:
+            logger.debug("Failed to record run session event for %s: %s", session_id, exc)
+
+    async def _handle_list_active_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions/active — sessions Nako should reconcile on startup."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+        limit = self._parse_nonnegative_int(request.query.get("limit"), default=200, maximum=1000)
+        recent_seconds = self._parse_nonnegative_int(
+            request.query.get("recent_seconds"),
+            default=14 * 24 * 60 * 60,
+            maximum=90 * 24 * 60 * 60,
+        )
+        sessions = db.list_sync_sessions(limit=limit, recent_seconds=recent_seconds)
+        data = []
+        for session in sessions:
+            payload = self._session_response(session)
+            sync_state = session.get("sync_state")
+            payload["sync_state"] = self._live_session_state(session["id"], sync_state)
+            payload["latest_event_cursor"] = session.get("latest_event_cursor")
+            data.append(payload)
+        return web.json_response({"object": "list", "data": data, "limit": limit})
+
+    async def _handle_session_state(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions/{session_id}/state."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        db = self._ensure_session_db()
+        return web.json_response(self._live_session_state(session_id, db.get_session_sync_state(session_id)))
+
+    async def _handle_session_items(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions/{session_id}/items — full stable item projection."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        db = self._ensure_session_db()
+        items = db.get_session_items(session_id)
+        return web.json_response({
+            "object": "list",
+            "session_id": session_id,
+            "data": items,
+            "latest_event_cursor": db.latest_session_event_cursor(session_id),
+        })
+
+    async def _handle_session_events(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions/{session_id}/events — replay durable events after a cursor."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        db = self._ensure_session_db()
+        limit = self._parse_nonnegative_int(request.query.get("limit"), default=100, maximum=1000)
+        events = db.list_session_events(
+            session_id=session_id,
+            after=request.query.get("after") or request.query.get("cursor"),
+            limit=limit,
+        )
+        return web.json_response({
+            "object": "list",
+            "session_id": session_id,
+            "data": events,
+            "latest_event_cursor": db.latest_session_event_cursor(session_id),
+            "has_more": len(events) == limit,
+        })
+
+    async def _handle_session_firehose(self, request: "web.Request") -> "web.StreamResponse":
+        """GET /v1/session_events/firehose — websocket stream of durable session events."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+
+        ws = web.WebSocketResponse(heartbeat=30.0)
+        await ws.prepare(request)
+
+        session_id = request.query.get("session_id") or None
+        cursor = request.query.get("after") or request.query.get("cursor")
+        idle_sleep_seconds = 0.5
+        try:
+            while not ws.closed:
+                events = db.list_session_events(session_id=session_id, after=cursor, limit=100)
+                if events:
+                    for event in events:
+                        await ws.send_json(event)
+                        cursor = event["cursor"]
+                    continue
+                try:
+                    message = await ws.receive(timeout=idle_sleep_seconds)
+                except asyncio.TimeoutError:
+                    continue
+                if message.type in (web.WSMsgType.CLOSE, web.WSMsgType.CLOSING, web.WSMsgType.CLOSED):
+                    break
+                if message.type == web.WSMsgType.TEXT:
+                    try:
+                        payload = json.loads(message.data)
+                    except Exception:
+                        continue
+                    if isinstance(payload, dict) and payload.get("after") is not None:
+                        cursor = str(payload["after"])
+        except Exception as exc:
+            logger.debug("[api_server] session firehose closed: %s", exc)
+        finally:
+            await ws.close()
+        return ws
 
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions — list persisted Hermes sessions."""
@@ -2429,6 +2631,14 @@ class APIServerAdapter(BasePlatformAdapter):
             })
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
+            status = response_env.get("status")
+            if isinstance(status, str) and status in {"completed", "failed", "incomplete"}:
+                self._record_response_session_event(
+                    session_id=session_id,
+                    event_type=f"response.{status}",
+                    response_id=response_id,
+                    response=response_env,
+                )
 
         def _persist_incomplete_if_needed() -> None:
             """Persist an ``incomplete`` snapshot if no terminal one was written.
@@ -3259,6 +3469,12 @@ class APIServerAdapter(BasePlatformAdapter):
             # conversation name automatically chains to this response
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
+        self._record_response_session_event(
+            session_id=session_id,
+            event_type="response.completed",
+            response_id=response_id,
+            response=response_data,
+        )
 
         response_headers = {"X-Hermes-Session-Id": session_id}
         if gateway_session_key:
@@ -4283,6 +4499,16 @@ class APIServerAdapter(BasePlatformAdapter):
                         error=error_msg,
                         last_event="run.failed",
                     )
+                    self._record_run_session_event(
+                        session_id=session_id,
+                        event_type="run.failed",
+                        run_id=run_id,
+                        payload={
+                            "status": "failed",
+                            "error": error_msg,
+                            "timestamp": time.time(),
+                        },
+                    )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                     q.put_nowait({
@@ -4299,6 +4525,17 @@ class APIServerAdapter(BasePlatformAdapter):
                         usage=usage,
                         last_event="run.completed",
                     )
+                    self._record_run_session_event(
+                        session_id=session_id,
+                        event_type="run.completed",
+                        run_id=run_id,
+                        payload={
+                            "status": "completed",
+                            "output": final_response,
+                            "usage": usage,
+                            "timestamp": time.time(),
+                        },
+                    )
             except asyncio.CancelledError:
                 self._set_run_status(
                     run_id,
@@ -4313,6 +4550,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     })
                 except Exception:
                     pass
+                self._record_run_session_event(
+                    session_id=session_id,
+                    event_type="run.cancelled",
+                    run_id=run_id,
+                    payload={
+                        "status": "cancelled",
+                        "timestamp": time.time(),
+                    },
+                )
                 raise
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
@@ -4331,6 +4577,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     })
                 except Exception:
                     pass
+                self._record_run_session_event(
+                    session_id=session_id,
+                    event_type="run.failed",
+                    run_id=run_id,
+                    payload={
+                        "status": "failed",
+                        "error": str(exc),
+                        "timestamp": time.time(),
+                    },
+                )
             finally:
                 # If the asyncio wrapper is cancelled (for example via
                 # /stop), the executor thread can still be blocked waiting
@@ -4620,6 +4876,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
+            self._app.router.add_get("/v1/sessions/active", self._handle_list_active_sessions)
+            self._app.router.add_get("/v1/sessions/{session_id}/state", self._handle_session_state)
+            self._app.router.add_get("/v1/sessions/{session_id}/items", self._handle_session_items)
+            self._app.router.add_get("/v1/sessions/{session_id}/events", self._handle_session_events)
+            self._app.router.add_get("/v1/session_events/firehose", self._handle_session_firehose)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)
             self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)
