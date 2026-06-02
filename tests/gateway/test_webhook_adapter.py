@@ -839,6 +839,101 @@ class TestDeliveryCleanup:
         assert "webhook:test:new" in adapter._delivery_info_created
 
 
+class TestHttpCallbackDelivery:
+
+    @pytest.mark.asyncio
+    async def test_http_callback_posts_templated_json_body(self):
+        """http_callback POSTs the agent response to deliver_extra.url."""
+        adapter = _make_adapter()
+        delivery = {
+            "deliver": "http_callback",
+            "deliver_extra": {
+                "url": "https://example.test/callback",
+                "body_template": {"content": "<p>{content_html}</p>"},
+            },
+        }
+        captured = {}
+
+        class _Response:
+            status = 201
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, *_args):
+                return b"{}"
+
+        def _fake_urlopen(req, timeout):
+            captured["url"] = req.full_url
+            captured["timeout"] = timeout
+            captured["headers"] = dict(req.header_items())
+            captured["body"] = req.data.decode("utf-8")
+            return _Response()
+
+        chat_id = "webhook:test:1"
+        adapter._delivery_info[chat_id] = delivery
+        with patch("gateway.platforms.webhook.urllib.request.urlopen", _fake_urlopen):
+            result = await adapter.send(chat_id, "Hello <Rob>\nDone")
+
+        assert result.success is True
+        assert captured["url"] == "https://example.test/callback"
+        assert captured["timeout"] == 30
+        assert json.loads(captured["body"]) == {"content": "<p>Hello &lt;Rob&gt;<br>Done</p>"}
+        assert captured["headers"]["Content-type"] == "application/json"
+
+    @pytest.mark.asyncio
+    async def test_http_callback_supports_bearer_token(self):
+        adapter = _make_adapter()
+        delivery = {
+            "deliver": "http_callback",
+            "deliver_extra": {
+                "url": "https://example.test/callback",
+                "bearer_token": "secret-token",
+            },
+        }
+        captured = {}
+
+        class _Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, *_args):
+                return b"{}"
+
+        def _fake_urlopen(req, timeout):
+            captured["headers"] = dict(req.header_items())
+            return _Response()
+
+        chat_id = "webhook:test:1"
+        adapter._delivery_info[chat_id] = delivery
+        with patch("gateway.platforms.webhook.urllib.request.urlopen", _fake_urlopen):
+            result = await adapter.send(chat_id, "Done")
+
+        assert result.success is True
+        assert captured["headers"]["Authorization"] == "Bearer secret-token"
+
+    @pytest.mark.asyncio
+    async def test_http_callback_rejects_missing_url(self):
+        adapter = _make_adapter()
+        delivery = {"deliver": "http_callback", "deliver_extra": {}}
+
+        adapter._delivery_info["webhook:test:1"] = delivery
+
+        result = await adapter.send("webhook:test:1", "Done")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "url" in result.error
+
+
 # ===================================================================
 # check_webhook_requirements
 # ===================================================================

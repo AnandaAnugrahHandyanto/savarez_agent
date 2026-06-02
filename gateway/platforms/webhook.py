@@ -36,6 +36,9 @@ import logging
 import re
 import subprocess
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Any, Dict, List, Optional
 
 try:
@@ -244,6 +247,9 @@ class WebhookAdapter(BasePlatformAdapter):
 
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
+
+        if deliver_type == "http_callback":
+            return await self._deliver_http_callback(content, delivery)
 
         # Cross-platform delivery — any platform with a gateway adapter.
         # Check both built-in names and plugin-registered platforms.
@@ -819,11 +825,110 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
+        if deliver_type == "http_callback":
+            return await self._deliver_http_callback(content, delivery)
+
         # Fall through to the cross-platform dispatcher, which validates the
         # target name and routes via the gateway runner.
         return await self._deliver_cross_platform(
             deliver_type, content, delivery
         )
+
+    def _format_http_callback_body(
+        self, template: Any, content: str
+    ) -> Any:
+        """Substitute agent response tokens in an HTTP callback body template."""
+        escaped = (
+            content.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&#x27;")
+            .replace("\n", "<br>")
+        )
+        replacements = {
+            "{content}": content,
+            "{content_html}": escaped,
+            "{content_json}": json.dumps(content)[1:-1],
+        }
+        if isinstance(template, str):
+            result = template
+            for token, value in replacements.items():
+                result = result.replace(token, value)
+            return result
+        if isinstance(template, dict):
+            return {
+                key: self._format_http_callback_body(value, content)
+                for key, value in template.items()
+            }
+        if isinstance(template, list):
+            return [self._format_http_callback_body(value, content) for value in template]
+        return template
+
+    async def _deliver_http_callback(
+        self, content: str, delivery: dict
+    ) -> SendResult:
+        """POST the agent response to a templated HTTP callback URL."""
+        extra = delivery.get("deliver_extra", {})
+        url = extra.get("url", "")
+        if not isinstance(url, str) or not url:
+            logger.error("[webhook] http_callback delivery missing deliver_extra.url")
+            return SendResult(success=False, error="Missing deliver_extra.url")
+
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            logger.error("[webhook] http_callback delivery invalid URL")
+            return SendResult(success=False, error="Invalid callback URL")
+        if parsed.scheme == "http" and not extra.get("allow_insecure_http"):
+            host = parsed.hostname or ""
+            if host not in _LOOPBACK_HOSTS:
+                logger.error("[webhook] http_callback refuses non-HTTPS URL")
+                return SendResult(success=False, error="HTTPS required for callback URL")
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Hermes Webhook HTTP Callback",
+        }
+        extra_headers = extra.get("headers", {})
+        if isinstance(extra_headers, dict):
+            headers.update({str(k): str(v) for k, v in extra_headers.items()})
+        bearer_token = extra.get("bearer_token") or extra.get("secret")
+        if bearer_token:
+            headers["Authorization"] = f"Bearer {bearer_token}"
+
+        body_template = extra.get("body_template", {"content": "{content}"})
+        body_obj = self._format_http_callback_body(body_template, content)
+
+        def _post() -> tuple[int, str]:
+            if headers.get("Content-Type", "").startswith("application/json"):
+                body = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
+            elif isinstance(body_obj, str):
+                body = body_obj.encode("utf-8")
+            else:
+                body = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=body,
+                method="POST",
+                headers=headers,
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    return resp.status, resp.read(1000).decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                return e.code, e.read(1000).decode("utf-8", "replace")
+
+        try:
+            status, response_text = await asyncio.to_thread(_post)
+        except Exception as e:
+            logger.error("[webhook] http_callback delivery error: %s", e)
+            return SendResult(success=False, error=str(e))
+        if 200 <= status < 300:
+            logger.info("[webhook] Posted HTTP callback status=%s", status)
+            return SendResult(success=True)
+        logger.error("[webhook] HTTP callback failed status=%s response=%s", status, response_text[:300])
+        return SendResult(success=False, error=f"HTTP {status}")
 
     async def _deliver_github_comment(
         self, content: str, delivery: dict
