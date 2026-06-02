@@ -423,7 +423,12 @@ export default function OperationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [loadWarnings, setLoadWarnings] = useState<string[]>([]);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [actionResult, setActionResult] = useState<string | null>(null);
+  const [actionResults, setActionResults] = useState<Array<{
+    id: string;
+    timestamp: string;
+    type: string;
+    summary: string;
+  }>>([]);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [alertFilter, setAlertFilter] = useState<AlertSeverity | "all">("all");
   const [acknowledgedAlerts, setAcknowledgedAlerts] = useState<Set<string>>(new Set());
@@ -584,7 +589,7 @@ export default function OperationsPage() {
   const runEval = async (agentId: string) => {
     setBusyAction(`eval:${agentId}`);
     setError(null);
-    setActionResult(null);
+    setError(null);
     const selectedProject = project.trim() || DEFAULT_PROJECT;
     try {
       const resp = await api.runExternalAgentEval({
@@ -593,7 +598,15 @@ export default function OperationsPage() {
         timeout_seconds: 10,
       });
       const result = resp.results[0];
-      setActionResult(`${agentId} eval recorded: ${result?.classification ?? "unknown"} / ${result?.status ?? "unknown"}`);
+      setActionResults((prev) => [
+        {
+          id: `eval:${agentId}:${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          type: "eval",
+          summary: `${agentId} eval recorded: ${result?.classification ?? "unknown"} / ${result?.status ?? "unknown"}`,
+        },
+        ...prev,
+      ].slice(0, 10));
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -605,7 +618,7 @@ export default function OperationsPage() {
   const runCollaborationSmoke = async () => {
     setBusyAction("collaboration-smoke");
     setError(null);
-    setActionResult(null);
+    setError(null);
     const selectedProject = project.trim() || DEFAULT_PROJECT;
     try {
       const resp = await api.runExternalAgentEval({
@@ -617,7 +630,15 @@ export default function OperationsPage() {
       const summary = resp.results
         .map((result) => `${result.agent_id}:${result.classification || result.status}`)
         .join(", ");
-      setActionResult(`Collaboration sample recorded: ${summary}`);
+      setActionResults((prev) => [
+        {
+          id: `smoke:${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          type: "collaboration-smoke",
+          summary: `Collaboration sample recorded: ${summary}`,
+        },
+        ...prev,
+      ].slice(0, 10));
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -629,7 +650,7 @@ export default function OperationsPage() {
   const runKernelSmoke = async () => {
     setBusyAction("kernel-smoke");
     setError(null);
-    setActionResult(null);
+    setError(null);
     const selectedProject = project.trim() || DEFAULT_PROJECT;
     try {
       const resp = await api.runKernelizationSmoke({
@@ -640,7 +661,15 @@ export default function OperationsPage() {
         failed_model_ref: routeFailedModel || undefined,
         classification: routeFailure,
       });
-      setActionResult(resp.ok ? `Kernel smoke recorded: ${resp.task_id}` : `Kernel smoke failed: ${resp.error ?? "unknown"}`);
+      setActionResults((prev) => [
+        {
+          id: `kernel:${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          type: "kernel-smoke",
+          summary: resp.ok ? `Kernel smoke recorded: ${resp.task_id}` : `Kernel smoke failed: ${resp.error ?? "unknown"}`,
+        },
+        ...prev,
+      ].slice(0, 10));
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -816,11 +845,40 @@ export default function OperationsPage() {
         </Card>
       ) : null}
 
-      {actionResult ? (
-        <Card className="border-primary/30">
-          <CardContent className="flex items-center gap-2 py-4 text-sm normal-case">
-            <CheckCircle2 className="h-4 w-4 text-primary" />
-            {actionResult}
+      {actionResults.length > 0 ? (
+        <Card className="border-primary/20">
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between text-sm">
+              <span className="flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 text-primary" />
+                Action Results
+              </span>
+              <button
+                className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setActionResults([])}
+              >
+                Clear all
+              </button>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 pt-0">
+            {actionResults.map((result) => (
+              <div key={result.id} className="flex items-start justify-between gap-3 rounded-md border border-border p-2.5 text-sm">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[10px] uppercase text-muted-foreground">{result.type}</span>
+                    <span className="text-[11px] text-muted-foreground">{isoTimeAgo(result.timestamp)}</span>
+                  </div>
+                  <div className="mt-0.5 text-xs normal-case">{result.summary}</div>
+                </div>
+                <button
+                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => setActionResults((prev) => prev.filter((r) => r.id !== result.id))}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
           </CardContent>
         </Card>
       ) : null}
@@ -1203,7 +1261,15 @@ export default function OperationsPage() {
                               timeout_seconds: 8,
                               prompt: "Hermes collaboration smoke: respond with one short readiness line. Do not edit files.",
                             });
-                            setActionResult(agentId + " smoke " + (resp.results[0]?.classification ?? "recorded"));
+                            setActionResults((prev) => [
+                              {
+                                id: `smoke:${agentId}:${Date.now()}`,
+                                timestamp: new Date().toISOString(),
+                                type: "smoke",
+                                summary: agentId + " smoke " + (resp.results[0]?.classification ?? "recorded"),
+                              },
+                              ...prev,
+                            ].slice(0, 10));
                             await load();
                           } catch (e) {
                             setError(e instanceof Error ? e.message : String(e));
