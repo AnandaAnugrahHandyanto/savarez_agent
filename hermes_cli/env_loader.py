@@ -304,7 +304,8 @@ def _record_secret_source_result(result, *, source: str, display_name: str) -> N
 
 
 def _apply_bitwarden_secret_source(cfg: dict, home_path: Path) -> None:
-    bw_cfg = (cfg or {}).get("bitwarden") or {}
+    bw_cfg = (cfg or {}).get("bitwarden")
+    bw_cfg = bw_cfg if isinstance(bw_cfg, dict) else {}
     if not bw_cfg.get("enabled"):
         return
 
@@ -329,7 +330,8 @@ def _apply_bitwarden_secret_source(cfg: dict, home_path: Path) -> None:
 
 
 def _apply_onepassword_secret_source(cfg: dict, home_path: Path) -> None:
-    op_cfg = (cfg or {}).get("onepassword") or {}
+    op_cfg = (cfg or {}).get("onepassword")
+    op_cfg = op_cfg if isinstance(op_cfg, dict) else {}
     if not op_cfg.get("enabled"):
         return
 

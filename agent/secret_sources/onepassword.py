@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -51,8 +52,9 @@ _OP_RUN_TIMEOUT = 30
 # Cache key: (token/session fingerprint, account, sorted refs).  We include a
 # fingerprint of common 1Password auth env vars so changing service-account or
 # session credentials does not reuse values fetched under a previous identity.
-_CacheKey = Tuple[str, str, Tuple[Tuple[str, str], ...]]
+_CacheKey = Tuple[str, str, str, Tuple[Tuple[str, str], ...]]
 _CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 # Disk-persisted cache so short-lived Hermes processes (gateway workers,
 # shell one-shots, cron jobs) do not each pay one `op read` subprocess per
@@ -71,7 +73,7 @@ def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
 def _cache_key_str(cache_key: _CacheKey) -> str:
     """Serialize a cache key to a stable string for JSON storage."""
 
-    auth_fp, account, refs = cache_key
+    auth_fp, account, _home_key, refs = cache_key
     refs_material = "\0".join(f"{name}={ref}" for name, ref in refs)
     refs_fp = hashlib.sha256(refs_material.encode("utf-8")).hexdigest()[:16]
     return f"{auth_fp}|{account}|{refs_fp}"
@@ -176,6 +178,7 @@ def fetch_onepassword_secrets(
     cache_key = (
         _auth_fingerprint(service_account_token_env),
         account,
+        str(Path(home_path).resolve()) if home_path is not None else "",
         tuple(sorted(valid_refs.items())),
     )
     if use_cache:
@@ -213,9 +216,9 @@ def fetch_onepassword_secrets(
         if not secrets:
             raise RuntimeError("; ".join(read_errors))
 
-    entry = _CachedFetch(secrets=dict(secrets), fetched_at=time.time())
-    _CACHE[cache_key] = entry
-    if use_cache:
+    if use_cache and cache_ttl_seconds > 0:
+        entry = _CachedFetch(secrets=dict(secrets), fetched_at=time.time())
+        _CACHE[cache_key] = entry
         _write_disk_cache(cache_key, entry, home_path)
     return secrets, warnings
 
@@ -332,9 +335,10 @@ def _run_op_read(
     account: str = "",
     service_account_token_env: str = "OP_SERVICE_ACCOUNT_TOKEN",
 ) -> str:
-    cmd = [str(op), "read", reference]
+    cmd = [str(op), "read"]
     if account:
         cmd.extend(["--account", account])
+    cmd.extend(["--", reference])
     env = {
         key: value
         for key, value in os.environ.items()
@@ -363,7 +367,7 @@ def _run_op_read(
         raise RuntimeError(f"failed to invoke op: {exc}") from exc
 
     if proc.returncode != 0:
-        err = (proc.stderr or "").strip().replace("\x1b", "")
+        err = _strip_ansi(proc.stderr or "").strip()
         if not err:
             err = f"op exited with status {proc.returncode}"
         raise RuntimeError(f"op read failed for {reference!r}: {err[:200]}")
@@ -384,6 +388,10 @@ def _auth_fingerprint(service_account_token_env: str = "OP_SERVICE_ACCOUNT_TOKEN
         return ""
     material = "\0".join(values)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def _strip_ansi(value: str) -> str:
+    return _ANSI_CSI_RE.sub("", value).replace("\x1b", "")
 
 
 def _is_valid_env_name(name: str) -> bool:

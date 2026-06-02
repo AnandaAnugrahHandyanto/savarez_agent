@@ -47,7 +47,12 @@ def test_fetch_happy_path(monkeypatch, tmp_path):
 
     assert secrets == {"OPENAI_API_KEY": "secret-value"}
     assert warnings == []
-    assert calls[0][0] == [str(fake_binary), "read", "op://Private/OpenAI/credential"]
+    assert calls[0][0] == [
+        str(fake_binary),
+        "read",
+        "--",
+        "op://Private/OpenAI/credential",
+    ]
 
 
 def test_fetch_child_env_is_limited(monkeypatch, tmp_path):
@@ -95,9 +100,10 @@ def test_fetch_account_flag(monkeypatch, tmp_path):
     assert captured["cmd"] == [
         str(fake_binary),
         "read",
-        "op://Vault/Item/field",
         "--account",
         "my.1password.com",
+        "--",
+        "op://Vault/Item/field",
     ]
 
 
@@ -190,6 +196,34 @@ def test_fetch_op_failure_does_not_echo_stdout(monkeypatch, tmp_path):
     assert "status 1" in str(exc_info.value)
 
 
+def test_fetch_op_failure_strips_ansi_sequences(monkeypatch, tmp_path):
+    fake_binary = tmp_path / "op"
+    fake_binary.write_text("")
+
+    monkeypatch.setattr(
+        op_secret.subprocess,
+        "run",
+        lambda *a, **kw: mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr="\x1b[31mnot signed in\x1b[0m\x1b[2K",
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        op_secret.fetch_onepassword_secrets(
+            references={"KEY": "op://Vault/Item/field"},
+            binary=fake_binary,
+            use_cache=False,
+        )
+
+    message = str(exc_info.value)
+    assert "\x1b" not in message
+    assert "[31m" not in message
+    assert "[2K" not in message
+    assert "not signed in" in message
+
+
 def test_fetch_empty_op_read_is_error(monkeypatch, tmp_path):
     fake_binary = tmp_path / "op"
     fake_binary.write_text("")
@@ -213,7 +247,7 @@ def test_fetch_partial_failure_returns_successes_and_warnings(monkeypatch, tmp_p
     fake_binary.write_text("")
 
     def fake_run(cmd, **_kwargs):
-        if "bad" in cmd[2]:
+        if "bad" in cmd[-1]:
             return mock.Mock(returncode=1, stdout="", stderr="not signed in")
         return mock.Mock(returncode=0, stdout="good-value\n", stderr="")
 
@@ -503,6 +537,7 @@ def test_fetch_ignores_stale_disk_cache(monkeypatch, tmp_path):
                     (
                         op_secret._auth_fingerprint(),
                         "",
+                        str(tmp_path.resolve()),
                         (("KEY", "op://Vault/Item/field"),),
                     )
                 ),
@@ -528,6 +563,61 @@ def test_fetch_ignores_stale_disk_cache(monkeypatch, tmp_path):
 
     assert secrets == {"KEY": "fresh"}
     assert calls["n"] == 1
+
+
+def test_fetch_ttl_zero_disables_memory_and_disk_cache(monkeypatch, tmp_path):
+    fake_binary = tmp_path / "op"
+    fake_binary.write_text("")
+    calls = {"n": 0}
+
+    def fake_run(*_args, **_kwargs):
+        calls["n"] += 1
+        return mock.Mock(returncode=0, stdout=f"value-{calls['n']}\n", stderr="")
+
+    monkeypatch.setattr(op_secret.subprocess, "run", fake_run)
+    kwargs = {
+        "references": {"KEY": "op://Vault/Item/field"},
+        "binary": fake_binary,
+        "cache_ttl_seconds": 0,
+        "home_path": tmp_path,
+    }
+
+    first, _warnings = op_secret.fetch_onepassword_secrets(**kwargs)
+    second, _warnings = op_secret.fetch_onepassword_secrets(**kwargs)
+
+    assert first == {"KEY": "value-1"}
+    assert second == {"KEY": "value-2"}
+    assert not (tmp_path / "cache" / "op_cache.json").exists()
+
+
+def test_fetch_memory_cache_is_partitioned_by_home_path(monkeypatch, tmp_path):
+    fake_binary = tmp_path / "op"
+    fake_binary.write_text("")
+    calls = {"n": 0}
+
+    def fake_run(*_args, **_kwargs):
+        calls["n"] += 1
+        return mock.Mock(returncode=0, stdout=f"value-{calls['n']}\n", stderr="")
+
+    monkeypatch.setattr(op_secret.subprocess, "run", fake_run)
+    common_kwargs = {
+        "references": {"KEY": "op://Vault/Item/field"},
+        "binary": fake_binary,
+        "cache_ttl_seconds": 60,
+    }
+
+    first, _warnings = op_secret.fetch_onepassword_secrets(
+        **common_kwargs,
+        home_path=tmp_path / "profile-a",
+    )
+    second, _warnings = op_secret.fetch_onepassword_secrets(
+        **common_kwargs,
+        home_path=tmp_path / "profile-b",
+    )
+
+    assert first == {"KEY": "value-1"}
+    assert second == {"KEY": "value-2"}
+    assert calls["n"] == 2
 
 
 def test_auth_fingerprint_includes_named_op_sessions(monkeypatch):
