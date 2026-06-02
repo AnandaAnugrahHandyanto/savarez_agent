@@ -351,6 +351,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+    p_create.add_argument("--workflow-key", default=None,
+                          dest="workflow_key",
+                          help="Grouping key for tasks in the same orchestrator workflow. "
+                               "Use this to tag child tasks created in a fan-out so "
+                               "the originating chat receives a unified status report "
+                               "when the finalizer task completes.")
+    p_create.add_argument("--current-step-key", default=None,
+                          dest="current_step_key",
+                          help="Current phase of the workflow (e.g. 'finalizer', "
+                               "'synthesizer', 'implementation'). Used by the "
+                               "vault-doc-impact gate to detect finalizer tasks.")
 
     # --- swarm ---
     p_swarm = sub.add_parser(
@@ -1353,12 +1364,52 @@ def _cmd_create(args: argparse.Namespace) -> int:
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
             initial_status=getattr(args, "initial_status", "running"),
+            workflow_key=getattr(args, "workflow_key", None),
+            current_step_key=getattr(args, "current_step_key", None),
         )
         task = kb.get_task(conn, task_id)
+    # --- vault doc impact gate (auto-insert curator before finalizer) ---
+    vault_doc_impact = None
+    if (
+        task
+        and args.parent
+        and getattr(args, "workflow_key", None)
+        and not getattr(args, "triage", False)
+        and getattr(args, "initial_status", "running") != "blocked"
+    ):
+        try:
+            from hermes_cli.kanban_vault_doc_impact import (
+                ensure_vault_doc_impact_for_task,
+            )
+            with kb.connect_closing() as conn2:
+                finalizer = kb.get_task(conn2, task_id)
+                if finalizer:
+                    vault_doc_impact = ensure_vault_doc_impact_for_task(
+                        conn2,
+                        finalizer,
+                        source="cli_create",
+                    )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug(
+                "vault_doc_impact gate skipped during CLI create",
+                exc_info=True,
+            )
     if getattr(args, "json", False):
-        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+        out = dict(_task_to_dict(task))
+        if vault_doc_impact:
+            out["vault_doc_impact"] = vault_doc_impact
+        print(json.dumps(out, indent=2, ensure_ascii=False))
     else:
         print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+        if vault_doc_impact:
+            status = vault_doc_impact.get("status", "?")
+            if status == "gate_created":
+                gid = vault_doc_impact.get("gate_task_id", "?")
+                print(f"  Vault doc impact: gate_created  curator card: {gid}")
+            elif status == "no_op":
+                reason = vault_doc_impact.get("reason", "")
+                print(f"  Vault doc impact: no_op  ({reason})")
 
         # Warn when the task would sit in `ready` because no dispatcher is
         # present. Only warn on ready+assigned tasks — triage/todo are

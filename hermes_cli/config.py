@@ -1741,6 +1741,17 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Automated Vault-V2 documentation-impact gate. When enabled, every
+        # kanban_create of a finalizer/synthesizer task with parents and a
+        # workflow_key automatically inserts a vault-v2-curator assessment
+        # card between the implementation parents and the finalizer, so
+        # documentation impact is evaluated before the workflow marks done.
+        "vault_doc_impact": {
+            "enabled": True,
+            "curator_assignee": "vault-v2-curator",
+            "finalizer_step_keys": ["finalizer", "synthesizer"],
+            "finalizer_title_keywords": ["finalizer", "synthesizer"],
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

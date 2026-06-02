@@ -2073,6 +2073,8 @@ def create_task(
     initial_status: str = "running",
     session_id: Optional[str] = None,
     workflow_key: Optional[str] = None,
+    workflow_template_id: Optional[str] = None,
+    current_step_key: Optional[str] = None,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -2259,8 +2261,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
                         skills, model_override, model_provider_override,
-                        model_reasoning_effort, max_retries, session_id, workflow_key
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        model_reasoning_effort, max_retries, session_id, workflow_key,
+                        workflow_template_id, current_step_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2284,6 +2287,8 @@ def create_task(
                         int(max_retries) if max_retries is not None else None,
                         session_id,
                         workflow_key or None,
+                        workflow_template_id or None,
+                        current_step_key or None,
                     ),
                 )
                 for pid in parents:
