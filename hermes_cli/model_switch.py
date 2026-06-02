@@ -1003,8 +1003,11 @@ def switch_model(
     if not validation.get("accepted"):
         override = False
         if user_providers:
+            from hermes_cli.config import is_provider_enabled
             # user_providers is a dict: {provider_slug: config_dict}
             for slug, cfg in user_providers.items():
+                if not is_provider_enabled(cfg):
+                    continue
                 if slug == target_provider:
                     cfg_models = cfg.get("models", {})
                     # Direct membership works for dict (keys) and list (strings)
@@ -1600,8 +1603,13 @@ def list_authenticated_providers(
     # and one "custom:openrouter" from section 4, both labelled identically.
     _section3_emitted_pairs: set = set()
     if user_providers and isinstance(user_providers, dict):
+        from hermes_cli.config import is_provider_enabled
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
+                continue
+            # Honour explicit ``providers.<name>.enabled: false`` from
+            # config — these are hidden from the picker.
+            if not is_provider_enabled(ep_cfg):
                 continue
             # Skip if this slug was already emitted (e.g. canonical provider
             # with the same name) or will be picked up by section 4.
@@ -1873,6 +1881,28 @@ def list_authenticated_providers(
             })
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
+
+    # Apply final ``providers.<name>.enabled: false`` post-filter — covers
+    # built-in PROVIDER_REGISTRY rows (sections 1-2) which would otherwise
+    # bypass the per-section gate. Indexed by lowercase slug AND by
+    # ``provider_id`` so PROVIDER_REGISTRY entries that match user-config
+    # blocks are filtered consistently.
+    try:
+        from hermes_cli.config import is_provider_enabled
+        if isinstance(user_providers, dict):
+            _disabled_slugs = {
+                str(name).strip().lower()
+                for name, cfg in user_providers.items()
+                if isinstance(cfg, dict) and not is_provider_enabled(cfg)
+            }
+            if _disabled_slugs:
+                results = [
+                    r for r in results
+                    if str(r.get("provider_id", "")).strip().lower() not in _disabled_slugs
+                    and str(r.get("slug", "")).strip().lower() not in _disabled_slugs
+                ]
+    except Exception:
+        pass
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
