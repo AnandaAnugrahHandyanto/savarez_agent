@@ -57,6 +57,16 @@ def test_start_meeting_invite_starts_meet_call_path():
     assert "onClick={() => void startCall()}" in source
 
 
+def test_meet_transcripts_use_active_call_mode_not_stale_react_state():
+    source = (WEB_DIR / "src/pages/VoiceCallPage.tsx").read_text(encoding="utf-8")
+
+    assert "const activeCallModeRef = useRef<\"solo\" | \"meet\">(\"solo\")" in source
+    assert "activeCallModeRef.current = callMode" in source
+    assert "const currentMode = activeCallModeRef.current" in source
+    assert "currentMode === \"meet\"" in source
+    assert "mode === \"meet\"\n              ? { mode" not in source
+
+
 @pytest.fixture()
 def voice_client(monkeypatch, _isolate_hermes_home):
     try:

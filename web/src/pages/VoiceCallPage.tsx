@@ -92,6 +92,7 @@ export default function VoiceCallPage() {
   const [voiceTasks, setVoiceTasks] = useState<VoiceTaskResponse[]>([]);
   const [rollyListenState, setRollyListenState] = useState("Always on");
   const handledToolCallsRef = useRef<Set<string>>(new Set());
+  const activeCallModeRef = useRef<"solo" | "meet">("solo");
   const meetInvokedRef = useRef(false);
   const userSpeakingRef = useRef(false);
   const responseActiveRef = useRef(false);
@@ -721,7 +722,8 @@ export default function VoiceCallPage() {
       if (type === "conversation.item.input_audio_transcription.completed") {
         const text = eventText(event);
         if (text) {
-          if (mode === "meet") {
+          const currentMode = activeCallModeRef.current;
+          if (currentMode === "meet") {
             const invoked = isRollyWakePhrase(text);
             if (invoked) {
               meetInvokedRef.current = true;
@@ -733,10 +735,10 @@ export default function VoiceCallPage() {
             }
           }
           const meetMetadata =
-            mode === "meet"
-              ? { mode, invoked_rolly: meetInvokedRef.current, dashboard_user: speaker, speaker_attribution: "unknown_room_speaker" }
-              : { mode, invoked_rolly: meetInvokedRef.current };
-          addLog("user", mode === "meet" ? `[room mic / dashboard: ${speaker || "unknown"}] ${text}` : text);
+            currentMode === "meet"
+              ? { mode: currentMode, invoked_rolly: meetInvokedRef.current, dashboard_user: speaker, speaker_attribution: "unknown_room_speaker" }
+              : { mode: currentMode, invoked_rolly: meetInvokedRef.current };
+          addLog("user", currentMode === "meet" ? `[room mic / dashboard: ${speaker || "unknown"}] ${text}` : text);
           persistTranscript("user", text, "transcript", meetMetadata);
         }
         return;
@@ -766,7 +768,7 @@ export default function VoiceCallPage() {
       if (type === "response.done" || type === "response.cancelled") {
         finishResponse(type === "response.cancelled" ? "cancelled" : "done");
         stopWorkingCue(type === "response.cancelled" ? false : "done");
-        if (mode === "meet") {
+        if (activeCallModeRef.current === "meet") {
           meetInvokedRef.current = false;
           setRollyListenState("Silent until “Hey Rolly”");
         }
@@ -796,11 +798,12 @@ export default function VoiceCallPage() {
         persistTranscript("error", messageText, "realtime_error");
       }
     },
-    [addLog, finishResponse, flushPendingHandoffs, handleToolCall, mode, persistTranscript, requestResponseCreate, sendRealtimeEvent, speaker, startBoundedWorkingCue, startWorkingCue, stopWorkingCue],
+    [addLog, finishResponse, flushPendingHandoffs, handleToolCall, persistTranscript, requestResponseCreate, sendRealtimeEvent, speaker, startBoundedWorkingCue, startWorkingCue, stopWorkingCue],
   );
 
   const startCall = useCallback(async (overrideMode?: "solo" | "meet") => {
     const callMode = overrideMode ?? mode;
+    activeCallModeRef.current = callMode;
     if (!speaker) {
       setError("Pick a dashboard user first, then start the call.");
       addLog("error", "Pick a dashboard user first, then start the call.");
