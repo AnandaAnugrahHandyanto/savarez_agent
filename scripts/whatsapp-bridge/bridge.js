@@ -204,6 +204,13 @@ async function startSocket() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      if (process.env.HERMES_WHATSAPP_QR_FILE) {
+        try {
+          writeFileSync(process.env.HERMES_WHATSAPP_QR_FILE, qr, { encoding: 'utf8', mode: 0o600 });
+        } catch (err) {
+          console.error('Failed to write QR payload file:', err.message);
+        }
+      }
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
       console.log('\nWaiting for scan...\n');
@@ -311,6 +318,15 @@ async function startSocket() {
             }));
           } catch {}
           continue;
+        }
+
+        // Mark accepted inbound messages as read as soon as Hermes sees them.
+        // This triggers WhatsApp read receipts (blue ticks / "seen") for the
+        // sender when read receipts are enabled on the paired account.
+        try {
+          await sock.readMessages([msg.key]);
+        } catch (err) {
+          console.error('[bridge] Failed to mark message read:', err.message);
         }
       }
 
