@@ -2523,7 +2523,7 @@ class GatewayRunner:
     def _release_pool_slot(self, session_key: str) -> None:
     """Release a pool-assigned slot for a session (if one exists).
 
-    Centralizes the release pattern used in 4 places: session reset,
+    Centralizes the release pattern used in 3 places: session reset,
     /model override, in-place model switch, and any other override path.
     Thread-safe: acquires ``_pool_assigned_models_lock`` internally.
     """
@@ -2532,7 +2532,9 @@ class GatewayRunner:
             _old_pool = self._pool_assigned_models.pop(session_key, None)
         if _old_pool:
             from gateway.session_model_pool import get_session_model_pool as _get_pool
-            _p = _get_pool(_load_gateway_config())
+            # The singleton ignores config after first init; pass {}
+            # to avoid unnecessary disk I/O via _load_gateway_config().
+            _p = _get_pool({})
             if _p:
                 _p.release_session_slot(session_key)
     except Exception as _exc:
@@ -2576,11 +2578,12 @@ class GatewayRunner:
                 _cfg = user_config if user_config else _load_gateway_config()
                 _pool = _get_pool(_cfg)
                 if _pool and _pool.enabled:
-                    # Already assigned? Reuse (keeps slot alive).
-                    with self._pool_assigned_models_lock:
-                        _pool_assign = self._pool_assigned_models.get(resolved_session_key)
-                    if not _pool_assign:
-                        _pool_assign = _pool.acquire_session_slot(resolved_session_key)
+                    # Always call acquire_session_slot — it is thread-safe
+                    # internally and refreshes the session timestamp on every
+                    # call. This prevents premature eviction of active sessions
+                    # and avoids a TOCTOU race between the local cache check
+                    # and the pool's own state.
+                    _pool_assign = _pool.acquire_session_slot(resolved_session_key)
                     if _pool_assign:
                         with self._pool_assigned_models_lock:
                             self._pool_assigned_models[resolved_session_key] = _pool_assign

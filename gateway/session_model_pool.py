@@ -144,6 +144,11 @@ class SessionModelPool:
             priority = raw.get("priority", 5)
             if not isinstance(priority, int):
                 priority = 5
+            if priority < 1 or priority > 10:
+                logger.warning(
+                    "priority (%d) out of 1-10 range for %s:%s — clamping", priority, provider, model,
+                )
+                priority = max(1, min(priority, 10))
             entries.append(
                 PoolModelEntry(
                     model=model,

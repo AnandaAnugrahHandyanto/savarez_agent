@@ -541,16 +541,19 @@ def _peek_pool_entry(provider: str) -> Optional[Any]:
 
 # ---- SessionModelPool helper (auxiliary slot tracking) ----
 
-_aux_pool_cache = None  # cached singleton reference
+_UNSET = object()  # sentinel: distinguishes "never tried" from "pool is None/disabled"
+_aux_pool_cache = _UNSET
 
 
 def _get_session_model_pool():
     """Return the SessionModelPool singleton (or None if disabled/unavailable).
 
-    Caches the reference to avoid repeated lazy imports inside the hot path.
+    Uses a sentinel so that a ``None`` result (pool disabled/not configured)
+    is not cached permanently — if the pool is created later in the process
+    lifetime, subsequent calls will find it.
     """
     global _aux_pool_cache
-    if _aux_pool_cache is not None:
+    if _aux_pool_cache is not _UNSET:
         return _aux_pool_cache
     try:
         from gateway.session_model_pool import get_session_model_pool
@@ -5305,9 +5308,8 @@ def call_llm(
         # completes (success, error, or fallback).
         if _pool_aux_acquired:
             try:
-                _pool_fin = _get_session_model_pool()
-                if _pool_fin and _pool_fin.enabled:
-                    _pool_fin.release_auxiliary_slot(final_model or "", resolved_provider or "")
+                if _pool and _pool.enabled:
+                    _pool.release_auxiliary_slot(final_model or "", resolved_provider or "")
             except Exception:
                 pass
 

@@ -116,6 +116,18 @@ class TestFromConfig:
         pool = SessionModelPool.from_config(config)
         assert pool._entries[0].reserved_for_auxiliary == 1
 
+    def test_priority_clamped_to_1_10(self):
+        config = {
+            "enabled": True,
+            "pool": [
+                {"model": "glm-5", "provider": "zai", "max_concurrent": 1, "priority": 0},
+                {"model": "glm-4", "provider": "zai", "max_concurrent": 1, "priority": 99},
+            ],
+        }
+        pool = SessionModelPool.from_config(config)
+        assert pool._entries[0].priority == 1
+        assert pool._entries[1].priority == 10
+
 
 # ---------------------------------------------------------------------------
 # Session slot management
