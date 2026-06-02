@@ -2719,6 +2719,7 @@ def _apply_run_task_execution_policy_sync(
     risk_level: str = "R1",
 ) -> Dict[str, Any]:
     decision = _task_execution_policy(project, task_id, task_type=task_type, risk_level=risk_level)
+    proposed_actions: list = []
     action = str(decision.get("action") or "")
     if action in {"complete", "continue"}:
         lifecycle = _append_run_lifecycle_event(
@@ -3170,6 +3171,52 @@ def _run_kernelization_smoke(body: Any) -> Dict[str, Any]:
 async def run_agent_kernelization_smoke(body: AgentRunSmokeCreate):
     """Run a durable end-to-end smoke over the executor kernel without spawning external CLIs."""
     return await asyncio.to_thread(_run_kernelization_smoke, body)
+
+
+@app.post("/api/agents/runs/policy/propose")
+async def propose_execution_policy(body: AgentRunSmokeCreate):
+    """Propose execution policy actions without executing them.
+    
+    Evaluates the task against execution policy and returns proposed actions
+    with requires_human_approval flags. No actions are auto-executed.
+    """
+    try:
+        from agent.managed_agents.execution_policy import derive_proposed_action
+        task_id = f"propose-{uuid.uuid4().hex[:10]}"
+        project = (body.project or "staam").strip() or "staam"
+        decision = _task_execution_policy(project, task_id, task_type=body.task_type, risk_level=body.risk_level)
+        proposed: list = []
+        if decision:
+            pa = derive_proposed_action(decision)
+            if pa:
+                proposed.append(pa)
+                _append_run_ledger_row(
+                    project,
+                    {
+                        "schema_version": "2.8",
+                        "event": "execution_policy_evaluated",
+                        "event_type": "policy.proposed",
+                        "task_id": task_id,
+                        "action_id": pa.action_id,
+                        "action_type": pa.action_type,
+                        "proposed_action": pa.to_dict(),
+                        "requires_human_approval": pa.requires_human_approval,
+                    },
+                )
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "task_type": body.task_type,
+            "risk_level": body.risk_level,
+            "decision": decision.to_dict() if decision else None,
+            "proposed_actions": [pa.to_dict() for pa in proposed],
+            "advisory_only": True,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("POST /api/agents/runs/policy/propose failed")
+        raise HTTPException(status_code=500, detail=f"Failed to propose policy: {exc}") from exc
 
 
 

@@ -8,7 +8,7 @@ needs revision.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from .failure_reroute import FailureRerouteDecision, decide_failure_reroute
@@ -93,6 +93,99 @@ class LedgerEventType(str, Enum):
         return mapping.get(event_name, LedgerEventType("unknown"))
 
 
+
+
+
+# -- Policy dry-run / proposed actions -----------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ProposedAction:
+    action_id: str
+    task_id: str
+    run_id: str | None
+    action_type: str
+    reason: str
+    risk_level: str
+    requires_human_approval: bool
+    created_at: str
+    source_policy: str
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action_id": self.action_id,
+            "task_id": self.task_id,
+            "run_id": self.run_id,
+            "action_type": self.action_type,
+            "reason": self.reason,
+            "risk_level": self.risk_level,
+            "requires_human_approval": self.requires_human_approval,
+            "created_at": self.created_at,
+            "source_policy": self.source_policy,
+            "evidence": self.evidence,
+        }
+
+
+ACTION_TYPES = {
+    "retry": "retry",
+    "switch_agent": "switch_agent",
+    "escalate_to_review": "escalate_to_review",
+    "mark_blocked": "mark_blocked",
+    "request_human_approval": "request_human_approval",
+    "complete": "complete",
+    "continue": "continue",
+}
+
+
+def derive_proposed_action(
+    decision: ExecutionPolicyDecision,
+    run_id: str | None = None,
+) -> ProposedAction | None:
+    """Derive a proposed action from an execution policy decision.
+    
+    Returns None for safe auto-complete/continue actions.
+    Returns a ProposedAction for impactful actions that should be:
+    - retry, switch_agent, escalate_to_review, mark_blocked, request_human_approval
+    """
+    if not decision.should_execute and decision.action in ("continue", "complete"):
+        return None  # Safe actions, no proposal needed
+
+    action_type = decision.action
+    # Normalize action types
+    if action_type == "retry":
+        action_type = ACTION_TYPES["retry"]
+    elif action_type in ("reroute", "switch_agent", "demote_and_retry"):
+        action_type = ACTION_TYPES["switch_agent"]
+    elif action_type in ("escalate", "manual_review", "escalate_to_review"):
+        action_type = ACTION_TYPES["escalate_to_review"]
+    elif action_type in ("block", "reject", "mark_blocked"):
+        action_type = ACTION_TYPES["mark_blocked"]
+    elif decision.requires_human_approval:
+        action_type = ACTION_TYPES["request_human_approval"]
+    else:
+        action_type = ACTION_TYPES["retry"]  # default fallback
+
+    import uuid
+    import datetime
+
+    return ProposedAction(
+        action_id=f"{action_type}-{uuid.uuid4().hex[:8]}",
+        task_id=decision.task_id,
+        run_id=run_id or decision.latest_run_id,
+        action_type=action_type,
+        reason=decision.reason,
+        risk_level=decision.risk_level,
+        requires_human_approval=decision.requires_human_approval,
+        created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        source_policy="execution_policy",
+        evidence={
+            "status": decision.status,
+            "classification": decision.latest_classification,
+            "attempt_count": decision.attempt_count,
+            "max_attempts": decision.max_attempts,
+            "current_agent_id": decision.current_agent_id,
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)

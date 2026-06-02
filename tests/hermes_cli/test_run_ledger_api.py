@@ -1819,3 +1819,124 @@ def test_canonical_event_type_helper():
     assert _canonical_event_type("run_finished", "ok") == "execution.completed"
     assert _canonical_event_type("run_finished", "timeout") == "execution.failed"
     assert _canonical_event_type(None) == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Policy Dry-run / Proposed Actions tests
+# ---------------------------------------------------------------------------
+
+def test_proposed_action_dataclass_to_dict():
+    import datetime
+    from agent.managed_agents.execution_policy import ProposedAction
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    pa = ProposedAction(
+        action_id="test-1",
+        task_id="task-1",
+        run_id=None,
+        action_type="retry",
+        reason="timeout",
+        risk_level="R1",
+        requires_human_approval=True,
+        created_at=now,
+        source_policy="execution_policy",
+        evidence={"status": "failed"},
+    )
+    d = pa.to_dict()
+    assert d["action_id"] == "test-1"
+    assert d["requires_human_approval"] is True
+    assert "evidence" in d
+
+
+def test_derive_proposed_action_for_timeout():
+    from agent.managed_agents.execution_policy import (
+        ExecutionPolicyDecision,
+        derive_proposed_action,
+    )
+    decision = ExecutionPolicyDecision(
+        task_id="task-to",
+        status="failed",
+        action="retry",
+        reason="timeout",
+        task_type="tests",
+        risk_level="R1",
+        current_agent_id="claude",
+        current_model_ref="sonnet",
+        next_agent_id="codex",
+        next_model_ref="gpt5",
+        max_attempts=3,
+        attempt_count=1,
+        should_execute=True,
+        requires_human_approval=False,
+    )
+    pa = derive_proposed_action(decision)
+    assert pa is not None
+    assert pa.action_type == "retry"
+    assert pa.reason == "timeout"
+    assert pa.requires_human_approval is False
+
+
+def test_derive_proposed_action_switch_agent():
+    from agent.managed_agents.execution_policy import (
+        ExecutionPolicyDecision,
+        derive_proposed_action,
+    )
+    decision = ExecutionPolicyDecision(
+        task_id="task-sw",
+        status="failed",
+        action="switch_agent",
+        reason="revision_needed",
+        task_type="tests",
+        risk_level="R2",
+        current_agent_id="claude",
+        current_model_ref="sonnet",
+        next_agent_id="deepseek-tui",
+        next_model_ref="deepseek",
+        max_attempts=3,
+        attempt_count=2,
+        should_execute=True,
+        requires_human_approval=True,
+    )
+    pa = derive_proposed_action(decision)
+    assert pa is not None
+    assert pa.action_type == "switch_agent"
+    assert pa.requires_human_approval is True
+
+
+def test_derive_proposed_action_returns_none_for_safe():
+    from agent.managed_agents.execution_policy import (
+        ExecutionPolicyDecision,
+        derive_proposed_action,
+    )
+    decision = ExecutionPolicyDecision(
+        task_id="safe",
+        status="ok",
+        action="complete",
+        reason="run_succeeded",
+        task_type="tests",
+        risk_level="R0",
+        current_agent_id="claude",
+        current_model_ref="sonnet",
+        next_agent_id=None,
+        next_model_ref=None,
+        max_attempts=3,
+        attempt_count=1,
+        should_execute=False,
+        requires_human_approval=False,
+    )
+    pa = derive_proposed_action(decision)
+    assert pa is None
+
+
+def test_propose_endpoint_returns_advisory_only():
+    from hermes_cli import web_server as ws
+    from fastapi.testclient import TestClient
+    client = TestClient(ws.app)
+    headers = {ws._SESSION_HEADER_NAME: ws._SESSION_TOKEN}
+    resp = client.post("/api/agents/runs/policy/propose",
+                       json={"project": "staam", "task_type": "bugfix", "risk_level": "R2"},
+                       headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["advisory_only"] is True
+    assert "proposed_actions" in data
