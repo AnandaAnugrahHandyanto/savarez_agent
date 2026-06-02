@@ -72,6 +72,8 @@ interface AlertAction {
   params?: Record<string, string | number | boolean | undefined>;
 }
 
+type RiskCategory = "system" | "agent" | "routing" | "scheduler";
+
 interface OperationAlert {
   id: string;
   severity: AlertSeverity;
@@ -79,6 +81,7 @@ interface OperationAlert {
   detail: string;
   source: string;
   uncertainty: "known" | "partial" | "unknown" | "external-managed";
+  category: RiskCategory;
   action: AlertAction;
 }
 
@@ -258,6 +261,7 @@ function buildAlerts(args: {
       source: "effectiveness",
       uncertainty: isExternalRuntime(agent) ? "external-managed" : "unknown",
       action: { type: "run_eval", label: "Run eval", agent_id: agent.agent_id, params: { source: "effectiveness" } },
+      category: "system",
     });
   }
   if (isExternalRuntime(agent)) {
@@ -269,6 +273,7 @@ function buildAlerts(args: {
       source: "runtime",
       uncertainty: "external-managed",
       action: { type: "run_eval", label: "Run bounded eval", agent_id: agent.agent_id, params: { source: "runtime" } },
+      category: "system",
     });
   }
   if (evalResult.state === "timeout") {
@@ -280,6 +285,7 @@ function buildAlerts(args: {
       source: evalResult.source,
       uncertainty: "known",
       action: { type: "view_routing", label: "View routing", agent_id: agent.agent_id, params: { failure: "timeout" } },
+      category: "agent",
     });
   } else if (evalResult.state === "failed") {
     alerts.push({
@@ -290,6 +296,7 @@ function buildAlerts(args: {
       source: evalResult.source,
       uncertainty: "known",
       action: { type: "view_logs", label: "View logs", agent_id: agent.agent_id, params: { search: agent.agent_id } },
+      category: "agent",
     });
   } else if (evalResult.state === "unknown") {
     alerts.push({
@@ -300,6 +307,7 @@ function buildAlerts(args: {
       source: evalResult.source,
       uncertainty: "unknown",
       action: { type: "run_eval", label: "Run eval", agent_id: agent.agent_id, params: { source: "eval" } },
+      category: "agent",
     });
   }
   if (effectiveness && effectiveness.timeout_rate >= 30) {
@@ -311,6 +319,7 @@ function buildAlerts(args: {
       source: "effectiveness",
       uncertainty: "known",
       action: { type: "view_routing", label: "Review demotion", agent_id: agent.agent_id, params: { failure: "timeout" } },
+      category: "routing",
     });
   }
   if (effectiveness && effectiveness.handoff_count > 0 && effectiveness.handoff_success_rate < 70) {
@@ -322,6 +331,7 @@ function buildAlerts(args: {
       source: "agent-runs",
       uncertainty: "partial",
       action: { type: "view_runs", label: "View runs", agent_id: agent.agent_id, params: { status: "failed" } },
+      category: "agent",
     });
   }
   if (handoff.queued > 0 || handoff.running > 0) {
@@ -333,6 +343,7 @@ function buildAlerts(args: {
       source: handoff.source,
       uncertainty: "known",
       action: { type: "view_runs", label: "View handoffs", agent_id: agent.agent_id, params: { status: handoff.running > 0 ? "running" : "queued" } },
+      category: "agent",
     });
   }
   const watchdogCount = watchdog?.agent_counts?.[agent.agent_id];
@@ -350,6 +361,7 @@ function buildAlerts(args: {
       source: "watchdog",
       uncertainty: "known",
       action: { type: "view_runs", label: "View runs", agent_id: agent.agent_id, params: { status: "attention" } },
+      category: "scheduler",
     });
   }
   if (routingRank === null) {
@@ -361,6 +373,7 @@ function buildAlerts(args: {
       source: "routing",
       uncertainty: "unknown",
       action: { type: "view_routing", label: "View routing", agent_id: agent.agent_id },
+      category: "routing",
     });
   }
   return alerts;
@@ -414,6 +427,7 @@ export default function OperationsPage() {
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [alertFilter, setAlertFilter] = useState<AlertSeverity | "all">("all");
   const [acknowledgedAlerts, setAcknowledgedAlerts] = useState<Set<string>>(new Set());
+  const [categoryFilter, setCategoryFilter] = useState<RiskCategory | "all">("all");
 
 
   useEffect(() => {
@@ -837,6 +851,27 @@ export default function OperationsPage() {
                 routing {routing?.preview ? "available" : "unknown"}
               </Badge>
             </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              {(["all", "system", "agent", "routing", "scheduler"] as const).map((cat) => {
+                const count =
+                  cat === "all"
+                    ? allAlerts.length
+                    : allAlerts.filter((a) => a.category === cat).length;
+                return (
+                  <button
+                    key={cat}
+                    className={`rounded-full px-2.5 py-0.5 text-[10px] font-medium transition-colors border ${
+                      categoryFilter === cat
+                        ? "bg-muted border-border text-foreground"
+                        : "border-transparent text-muted-foreground hover:border-border/50"
+                    }`}
+                    onClick={() => setCategoryFilter(cat)}
+                  >
+                    {cat === "all" ? `All` : `${cat} ${count}`}
+                  </button>
+                );
+              })}
+            </div>
           </CardHeader>
           <CardContent>
             {loading && !operations.length ? (
@@ -1062,8 +1097,13 @@ export default function OperationsPage() {
                 {allAlerts
                   .filter((alert) => {
                     if (acknowledgedAlerts.has(alert.id)) return false;
-                    if (alertFilter === "all") return true;
-                    return alert.severity === alertFilter;
+                    if (alertFilter === "all") {
+                      if (categoryFilter === "all") return true;
+                      return alert.category === categoryFilter;
+                    }
+                    if (alert.severity !== alertFilter) return false;
+                    if (categoryFilter !== "all" && alert.category !== categoryFilter) return false;
+                    return true;
                   })
                   .slice(0, 12)
                   .map((alert) => {
@@ -1083,7 +1123,7 @@ export default function OperationsPage() {
                       </div>
                       <div className="mt-1 text-xs normal-case text-muted-foreground">{alert.detail}</div>
                       <div className="mt-1 text-[11px] normal-case text-muted-foreground">
-                        source: {alert.source} · uncertainty: {alert.uncertainty}
+                        source: {alert.source} · {alert.category} · uncertainty: {alert.uncertainty}
                         <span className="ml-1 text-[11px] italic text-muted-foreground/70">
                           → {actionWhy(alert.action, alert)}
                         </span>
