@@ -2196,3 +2196,90 @@ class TestCloseCodeClassification:
         assert 4014 in fatal_codes
         assert 4001 in fatal_codes
         assert 4915 in fatal_codes
+
+
+# ---------------------------------------------------------------------------
+# _listen_loop: reconnect exception backoff (regression tests for #37125)
+# ---------------------------------------------------------------------------
+
+class TestReconnectExceptionBackoff:
+    """Verify _reconnect exceptions increment backoff and eventually stop."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @pytest.mark.asyncio
+    async def test_reconnect_exception_increments_backoff(self):
+        """When _reconnect raises, backoff_idx is incremented (not skipped)."""
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+
+        from gateway.platforms.qqbot.adapter import QQCloseError
+
+        # Make _read_events raise a non-fatal close code (4006 = session invalid)
+        # then stop the loop by setting _running = False
+        call_count = [0]
+
+        async def raise_close_then_stop():
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                adapter._running = False
+            raise QQCloseError(4006, "session invalid")
+
+        adapter._read_events = raise_close_then_stop
+        # _reconnect raises an unexpected exception
+        adapter._reconnect = mock.AsyncMock(side_effect=RuntimeError("DNS failure"))
+
+        adapter._mark_disconnected = mock.MagicMock()
+        adapter._mark_transport_disconnected = mock.MagicMock()
+        adapter._fail_pending = mock.MagicMock()
+        adapter._set_fatal_error = mock.MagicMock()
+        adapter._fatal_error_message = None
+
+        try:
+            await asyncio.wait_for(adapter._listen_loop(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+
+        # _reconnect should have been called (the exception was handled, backoff incremented)
+        assert adapter._reconnect.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_reconnect_exception_hits_max_stops(self):
+        """When _reconnect keeps failing, MAX_RECONNECT_ATTEMPTS stops the loop."""
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+
+        from gateway.platforms.qqbot.adapter import QQCloseError, MAX_RECONNECT_ATTEMPTS
+
+        # Make _read_events raise a non-fatal close code
+        call_count = [0]
+
+        async def raise_close():
+            call_count[0] += 1
+            raise QQCloseError(4006, "session invalid")
+
+        adapter._read_events = raise_close
+        adapter._reconnect = mock.AsyncMock(side_effect=RuntimeError("persistent DNS failure"))
+        adapter._mark_disconnected = mock.MagicMock()
+        adapter._mark_transport_disconnected = mock.MagicMock()
+        adapter._fail_pending = mock.MagicMock()
+        adapter._set_fatal_error = mock.MagicMock()
+        adapter._fatal_error_message = None
+
+        # Disable quick-disconnect guard so MAX_RECONNECT_ATTEMPTS is reached
+        with mock.patch(
+            "gateway.platforms.qqbot.adapter.MAX_QUICK_DISCONNECT_COUNT", 999
+        ):
+            try:
+                await asyncio.wait_for(adapter._listen_loop(), timeout=3.0)
+            except asyncio.TimeoutError:
+                pass
+
+        # Should have called _mark_disconnected at least once (stopped due to max attempts)
+        assert adapter._mark_disconnected.call_count >= 1
+        # _reconnect should have been called at least MAX_RECONNECT_ATTEMPTS times
+        assert adapter._reconnect.call_count >= MAX_RECONNECT_ATTEMPTS

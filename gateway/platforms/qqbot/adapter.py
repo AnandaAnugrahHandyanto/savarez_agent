@@ -581,11 +581,21 @@ class QQAdapter(BasePlatformAdapter):
                         self._mark_disconnected()
                         return
                     await asyncio.sleep(RATE_LIMIT_DELAY)
-                    if await self._reconnect(backoff_idx):
-                        backoff_idx = 0
-                        quick_disconnect_count = 0
-                    else:
+                    try:
+                        if await self._reconnect(backoff_idx):
+                            backoff_idx = 0
+                            quick_disconnect_count = 0
+                        else:
+                            backoff_idx += 1
+                    except Exception:
                         backoff_idx += 1
+                        if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
+                            logger.error(
+                                "[%s] Max reconnect attempts reached (rate limit reconnect failed)",
+                                self._log_tag,
+                            )
+                            self._mark_disconnected()
+                            return
                     continue
 
                 # Token invalid → clear cached token so _ensure_token() refreshes
@@ -626,13 +636,26 @@ class QQAdapter(BasePlatformAdapter):
                     self._session_id = None
                     self._last_seq = None
 
-                if await self._reconnect(backoff_idx):
-                    backoff_idx = 0
-                    quick_disconnect_count = 0
-                else:
+                try:
+                    if await self._reconnect(backoff_idx):
+                        backoff_idx = 0
+                        quick_disconnect_count = 0
+                    else:
+                        backoff_idx += 1
+                        if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
+                            logger.error(
+                                "[%s] Max reconnect attempts reached (QQCloseError)",
+                                self._log_tag,
+                            )
+                            self._mark_disconnected()
+                            return
+                except Exception:
                     backoff_idx += 1
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                        logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
+                        logger.error(
+                            "[%s] Max reconnect attempts reached (QQCloseError reconnect failed)",
+                            self._log_tag,
+                        )
                         self._mark_disconnected()
                         return
 
@@ -648,11 +671,21 @@ class QQAdapter(BasePlatformAdapter):
                     self._mark_disconnected()
                     return
 
-                if await self._reconnect(backoff_idx):
-                    backoff_idx = 0
-                    quick_disconnect_count = 0
-                else:
+                try:
+                    if await self._reconnect(backoff_idx):
+                        backoff_idx = 0
+                        quick_disconnect_count = 0
+                    else:
+                        backoff_idx += 1
+                except Exception:
                     backoff_idx += 1
+                    if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
+                        logger.error(
+                            "[%s] Max reconnect attempts reached (reconnect failed)",
+                            self._log_tag,
+                        )
+                        self._mark_disconnected()
+                        return
 
     async def _reconnect(self, backoff_idx: int) -> bool:
         """Attempt to reconnect the WebSocket. Returns True on success."""
