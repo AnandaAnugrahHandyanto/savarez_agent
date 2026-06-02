@@ -115,6 +115,66 @@ Lane-lock behavior:
 - If the task encounters a tempting adjacent issue, Jenny must report it as a
   recommended next slice, not act on it.
 
+### Interim Discord Thread Discipline
+
+Until Mission Control replaces Discord as the operating surface, every Discord
+task should begin with a control block. Jenny must treat the control block as
+the source of authority for the current slice instead of relying on vague chat
+context, overloaded labels, or short acknowledgements.
+
+Required Discord control block fields:
+
+- Active lane
+- Mode
+- Allowed actions
+- Forbidden actions
+- Current repo/path
+- Expected systems/files
+- Stop condition
+- Other threads excluded
+
+Thread and channel names act as lane locks. Use these lanes as separate
+workstreams unless a message explicitly opens a new slice:
+
+- Context/memory bugs + SSH/locality issues
+- OneDrive/rclone locality
+- Mission Control OS development
+- Artifact Browser UI
+- Social queue / Meta / Instagram
+- Reliability stop-states
+
+Discord approval discipline:
+
+- Do not use W1A/W1B/W1C shorthand unless the prompt defines that label in the
+  same message.
+- "ok next," "continue," or "sure" must not be treated as operational approval
+  unless paired with an active lane, mode, allowed actions, and stop condition.
+- A dirty worktree before start means stop and classify the dirty files before
+  editing.
+- Adjacent issues must become recommended next slices, not current actions.
+- Use this wrong-lane detector phrase when lane drift is suspected: "Wrong-lane
+  check. Stop and report whether the last action belongs to the active lane or
+  an adjacent lane. Do not continue."
+
+Discord mode rules:
+
+- Discussion-only means no commands.
+- Stop-state-only means no cleanup or forward progress.
+- Documentation-only means no tests, no code changes, and no remote access.
+- Cleanup-only means only the named cleanup target may be touched.
+- Commit-only means no new edits.
+
+Pinned thread ledger template:
+
+```markdown
+Thread name:
+Active purpose:
+Allowed topics:
+Excluded topics:
+Current known commits:
+Current stop-state:
+```
+
 Final reports for bounded lane work should include:
 
 - active lane
