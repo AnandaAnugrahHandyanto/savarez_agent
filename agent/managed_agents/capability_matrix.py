@@ -298,3 +298,135 @@ def preview_route(
             else "no_capability_match"
         ),
     }
+
+
+
+# -- Structured Router Explanation --------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class CandidateExplanation:
+    agent: str
+    score: float | None
+    reasons: list[str] = field(default_factory=list)
+    penalties: list[str] = field(default_factory=list)
+    metrics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class RouterExplanation:
+    selected_agent: str | None
+    candidate_agents: list[str]
+    score: float | None
+    reasons: list[str]
+    penalties: list[str]
+    decision_mode: str
+    advisory_only: bool
+    manual_override_available: bool
+    candidates: list[CandidateExplanation]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "selected_agent": self.selected_agent,
+            "candidate_agents": self.candidate_agents,
+            "score": self.score,
+            "reasons": self.reasons,
+            "penalties": self.penalties,
+            "decision_mode": self.decision_mode,
+            "advisory_only": self.advisory_only,
+            "manual_override_available": self.manual_override_available,
+            "candidates": [
+                {
+                    "agent": c.agent,
+                    "score": c.score,
+                    "reasons": c.reasons,
+                    "penalties": c.penalties,
+                    "metrics": c.metrics,
+                }
+                for c in self.candidates
+            ],
+        }
+
+
+def build_router_explanation(
+    candidates: list[str],
+    primary: str | None = None,
+    effectiveness: dict[str, Any] | None = None,
+    failure_map: dict[str, Any] | None = None,
+    decision_mode: str = "capability_fallback",
+    manual_override_available: bool = True,
+) -> RouterExplanation:
+    """Build a structured router explanation from available data.
+    
+    This does NOT change ranking behavior. It only produces an explainable
+    record of what the router considered and why.
+    """
+    if not candidates:
+        return RouterExplanation(
+            selected_agent=None,
+            candidate_agents=[],
+            score=None,
+            reasons=["No candidates available for this task type"],
+            penalties=[],
+            decision_mode="unavailable",
+            advisory_only=True,
+            manual_override_available=True,
+            candidates=[],
+        )
+
+    selected = primary or candidates[0]
+    candidate_list: list[CandidateExplanation] = []
+    reasons_global: list[str] = [
+        f"Router evaluated {len(candidates)} candidate agent(s)",
+        f"Decision mode: {decision_mode}",
+    ]
+    penalties_global: list[str] = []
+
+    for i, agent_id in enumerate(candidates):
+        agent_reasons: list[str] = []
+        agent_penalties: list[str] = []
+        agent_metrics: dict[str, Any] = {}
+        rank_reason = f"Ranked #{i+1} by capability ordering" if agent_id != selected else "Selected as primary"
+
+        if effectiveness and isinstance(effectiveness, dict):
+            eff = effectiveness.get(agent_id)
+            if isinstance(eff, dict):
+                score = eff.get("effectiveness_score")
+                timeout = eff.get("timeout_rate", 0)
+                failed = eff.get("failed_rate", 0)
+                agent_metrics["effectiveness_score"] = score if score is not None else "unavailable"
+                agent_metrics["timeout_rate"] = timeout if timeout is not None else "unavailable"
+                agent_metrics["failed_rate"] = failed if failed is not None else "unavailable"
+                agent_metrics["samples"] = eff.get("sample_count", "unavailable")
+                if isinstance(timeout, (int, float)) and timeout >= 30:
+                    agent_penalties.append(f"High timeout rate ({timeout}%)")
+                if isinstance(failed, (int, float)) and failed >= 30:
+                    agent_penalties.append(f"High failure rate ({failed}%)")
+            else:
+                agent_metrics["note"] = "Effectiveness data unavailable for this agent"
+        else:
+            agent_metrics["note"] = "No effectiveness data available"
+
+        if failure_map and isinstance(failure_map, dict) and agent_id in failure_map:
+            agent_penalties.append(f"Recent failure: {failure_map[agent_id]}")
+
+        agent_reasons.append(rank_reason)
+        candidate_list.append(CandidateExplanation(
+            agent=agent_id,
+            score=agent_metrics.get("effectiveness_score") if isinstance(agent_metrics.get("effectiveness_score"), (int, float)) else None,
+            reasons=agent_reasons,
+            penalties=agent_penalties,
+            metrics=agent_metrics,
+        ))
+
+    return RouterExplanation(
+        selected_agent=selected,
+        candidate_agents=list(candidates),
+        score=candidates.index(selected) + 1 if selected in candidates else None,
+        reasons=reasons_global,
+        penalties=penalties_global,
+        decision_mode=decision_mode,
+        advisory_only=True,
+        manual_override_available=manual_override_available,
+        candidates=candidate_list,
+    )
+

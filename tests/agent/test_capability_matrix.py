@@ -345,3 +345,76 @@ def test_failure_reroute_sends_auth_error_to_manual_review() -> None:
 
     assert decision.action == "manual_review"
     assert decision.requires_human_approval is True
+
+
+# ---------------------------------------------------------------------------
+# Router Explanation tests
+# ---------------------------------------------------------------------------
+
+def test_build_router_explanation_empty_candidates():
+    from agent.managed_agents.capability_matrix import build_router_explanation
+    result = build_router_explanation([])
+    assert result.selected_agent is None
+    assert result.candidate_agents == []
+    assert result.decision_mode == "unavailable"
+    assert result.advisory_only is True
+    assert result.manual_override_available is True
+
+
+def test_build_router_explanation_with_candidates():
+    from agent.managed_agents.capability_matrix import build_router_explanation
+    result = build_router_explanation(
+        candidates=["claude", "codex", "deepseek-tui"],
+        primary="claude",
+        decision_mode="adaptive_effectiveness",
+    )
+    assert result.selected_agent == "claude"
+    assert result.candidate_agents == ["claude", "codex", "deepseek-tui"]
+    assert len(result.candidates) == 3
+    assert result.advisory_only is True
+    assert result.decision_mode == "adaptive_effectiveness"
+
+
+def test_build_router_explanation_with_effectiveness():
+    from agent.managed_agents.capability_matrix import build_router_explanation
+    eff = {
+        "claude": {"effectiveness_score": 85, "timeout_rate": 5, "failed_rate": 2, "sample_count": 10},
+        "codex": {"effectiveness_score": 72, "timeout_rate": 35, "failed_rate": 10, "sample_count": 8},
+    }
+    result = build_router_explanation(
+        candidates=["claude", "codex"],
+        primary="claude",
+        effectiveness=eff,
+    )
+    claude = result.candidates[0]
+    codex = result.candidates[1]
+    assert claude.score == 85
+    assert len(codex.penalties) > 0  # codex has high timeout
+    assert any("35" in p for p in codex.penalties)
+
+
+def test_build_router_explanation_unknown_metrics():
+    from agent.managed_agents.capability_matrix import build_router_explanation
+    result = build_router_explanation(
+        candidates=["opencode"],
+        effectiveness=None,
+    )
+    c = result.candidates[0]
+    assert c.metrics.get("note") == "No effectiveness data available"
+    assert c.score is None
+
+
+def test_router_explanation_to_dict():
+    from agent.managed_agents.capability_matrix import build_router_explanation
+    result = build_router_explanation(["claude"], primary="claude")
+    d = result.to_dict()
+    assert d["selected_agent"] == "claude"
+    assert d["advisory_only"] is True
+    assert "candidates" in d
+
+
+def test_router_explanation_advisory_only_flag():
+    from agent.managed_agents.capability_matrix import build_router_explanation
+    result = build_router_explanation(["claude"], primary="claude")
+    assert result.advisory_only is True
+    assert result.manual_override_available is True

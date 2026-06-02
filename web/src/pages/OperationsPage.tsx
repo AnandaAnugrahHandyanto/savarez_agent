@@ -18,6 +18,7 @@ import {
 import { api } from "@/lib/api";
 import type {
   AgentCapabilityMatrixResponse,
+  RouterExplanation,
   AgentEffectivenessEntry,
   AgentRunEntry,
   AgentRunExecutorSchedulerStatus,
@@ -423,6 +424,7 @@ export default function OperationsPage() {
   const [scheduler, setScheduler] = useState<AgentRunExecutorSchedulerStatus | null>(null);
   const [watchdog, setWatchdog] = useState<RunsWatchdogResponse | null>(null);
   const [routing, setRouting] = useState<AgentCapabilityMatrixResponse | null>(null);
+  const [routerExplanation, setRouterExplanation] = useState<RouterExplanation | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadWarnings, setLoadWarnings] = useState<string[]>([]);
@@ -481,6 +483,7 @@ export default function OperationsPage() {
       setScheduler(schedulerResp.status === "fulfilled" ? schedulerResp.value : null);
       setWatchdog(watchdogResp.status === "fulfilled" ? watchdogResp.value : null);
       setRouting(routingResp.status === "fulfilled" ? routingResp.value : null);
+      setRouterExplanation(routingResp.status === "fulfilled" && routingResp.value?.router_explanation ? routingResp.value.router_explanation : null);
       setLoadWarnings(warnings);
       setLastUpdatedAt(new Date().toISOString());
     } catch (e) {
@@ -1122,7 +1125,14 @@ export default function OperationsPage() {
                 <div className="rounded-md border border-border p-3">
                   <div className="text-xs text-muted-foreground">Candidate order (by effectiveness)</div>
                   <div className="mt-2 flex flex-wrap gap-1">
-                    {(routing?.preview?.candidate_agents ?? []).length ? (
+                    {routerExplanation?.candidates.length ? (
+                      routerExplanation.candidates.map((c, index) => (
+                        <span key={c.agent} className="bg-muted px-1.5 py-0.5 font-mono text-[10px] normal-case text-muted-foreground">
+                          #{index + 1} {c.agent}
+                          {c.score !== null ? ` (${Math.round(c.score)}/100)` : ""}
+                        </span>
+                      ))
+                    ) : (routing?.preview?.candidate_agents ?? []).length ? (
                       routing?.preview?.candidate_agents.map((agentId, index) => {
                         const eff = effectiveness.find((e) => e.agent_id === agentId);
                         return (
@@ -1137,7 +1147,30 @@ export default function OperationsPage() {
                     )}
                   </div>
                   <div className="mt-1.5 space-y-1">
-                    {(routing?.preview?.candidate_agents ?? []).map((agentId) => {
+                    {routerExplanation?.candidates.length ? (
+                      routerExplanation.candidates.map((c) => {
+                        const needsDemotion = c.penalties.length > 0;
+                        return (
+                          <div key={c.agent} className="flex items-center gap-2 text-[10px] text-muted-foreground/70">
+                            <span className="font-mono">{c.agent}</span>
+                            {c.metrics.timeout_rate !== undefined && c.metrics.timeout_rate !== "unavailable" ? (
+                              <span>timeout {typeof c.metrics.timeout_rate === "number" ? Math.round(c.metrics.timeout_rate) : c.metrics.timeout_rate}%</span>
+                            ) : <span className="text-muted-foreground/40">timeout N/A</span>}
+                            {c.metrics.failed_rate !== undefined && c.metrics.failed_rate !== "unavailable" ? (
+                              <span>fail {typeof c.metrics.failed_rate === "number" ? Math.round(c.metrics.failed_rate) : c.metrics.failed_rate}%</span>
+                            ) : <span className="text-muted-foreground/40">fail N/A</span>}
+                            {c.penalties.map((p) => (
+                              <span key={p} className="text-amber-500" title={p}>penalty</span>
+                            ))}
+                            {needsDemotion ? (
+                              <span className="text-amber-500" title="High failure/timeout rate. Consider lowering routing weight.">
+                                demotion suggested
+                              </span>
+                            ) : null}
+                          </div>
+                        );
+                      })
+                    ) : (routing?.preview?.candidate_agents ?? []).map((agentId) => {
                       const eff = effectiveness.find((e) => e.agent_id === agentId);
                       if (!eff) return null;
                       const needsDemotion = (eff.timeout_rate ?? 0) >= 30 || (eff.failed_rate ?? 0) >= 30;
@@ -1155,6 +1188,17 @@ export default function OperationsPage() {
                       );
                     })}
                   </div>
+                  {routerExplanation?.candidates.length ? (
+                    <div className="mt-2 space-y-1">
+                      {routerExplanation.candidates.map((c) =>
+                        c.reasons.map((r) => (
+                          <div key={r} className="text-[9px] text-muted-foreground/50 italic">
+                            {c.agent}: {r}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="rounded-md border border-border p-3">
                   <div className="text-xs text-muted-foreground">Reroute</div>

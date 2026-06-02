@@ -1947,6 +1947,38 @@ async def get_agent_capability_matrix(
                     failed_model_ref=failed_model_ref,
                     effectiveness=_agent_effectiveness_map(None),
                 ).to_dict()
+
+            # Build structured router explanation (advisory only, no behavior change)
+            preview = response.get("preview", {})
+            candidates_raw = preview.get("candidate_agents", [])
+            primary = preview.get("primary_agent")
+            eff_map = _agent_effectiveness_map(None)
+            failure_map: dict = {}
+            if failure and failed_agent_id:
+                failure_map[failed_agent_id] = failure
+            from agent.managed_agents.capability_matrix import build_router_explanation
+            response["router_explanation"] = build_router_explanation(
+                candidates=list(candidates_raw),
+                primary=primary,
+                effectiveness=eff_map if eff_map else None,
+                failure_map=failure_map,
+                decision_mode="adaptive_effectiveness" if eff_map else "capability_fallback",
+                manual_override_available=True,
+            ).to_dict()
+        else:
+            # Still provide router explanation even without reroute context
+            preview = response.get("preview", {})
+            candidates_raw = preview.get("candidate_agents", [])
+            primary = preview.get("primary_agent")
+            eff_map = _agent_effectiveness_map(None)
+            from agent.managed_agents.capability_matrix import build_router_explanation
+            response["router_explanation"] = build_router_explanation(
+                candidates=list(candidates_raw),
+                primary=primary,
+                effectiveness=eff_map if eff_map else None,
+                decision_mode="adaptive_effectiveness" if eff_map else "capability_fallback",
+                manual_override_available=True,
+            ).to_dict()
         return response
     except HTTPException:
         raise

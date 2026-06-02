@@ -58,6 +58,28 @@ export type LedgerEventType =
   | "user.acknowledged"
   | "user.overrode"
   | "unknown";
+/** Structured router explanation for each agent. */
+export interface AgentCandidateExplanation {
+  agent: string;
+  score: number | null;
+  reasons: string[];
+  penalties: string[];
+  metrics: Record<string, string | number | null>;
+}
+
+/** Structured router decision explanation. */
+export interface RouterExplanation {
+  selected_agent: string | null;
+  candidate_agents: string[];
+  score: number | null;
+  reasons: string[];
+  penalties: string[];
+  decision_mode: string;
+  advisory_only: boolean;
+  manual_override_available: boolean;
+  candidates: AgentCandidateExplanation[];
+}
+
 
 
 export const HERMES_BASE_PATH = readBasePath();
@@ -1219,6 +1241,7 @@ export interface AgentFailureReroute {
 }
 
 export interface AgentCapabilityMatrixResponse {
+  router_explanation?: RouterExplanation;
   agents: Record<string, AgentCapabilityProfile>;
   task_types: string[];
   preview?: AgentRoutePreview;
