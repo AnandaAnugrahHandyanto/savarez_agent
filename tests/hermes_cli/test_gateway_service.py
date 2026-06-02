@@ -1629,6 +1629,20 @@ class TestProfileArg:
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
 
+    def test_launchd_keepalive_is_unconditional(self, tmp_path, monkeypatch):
+        """generate_launchd_plist should use unconditional KeepAlive so launchd
+        restarts the gateway after any exit, including clean zero-code exits
+        from --replace handoffs (#37388)."""
+        import re
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        plist = gateway_cli.generate_launchd_plist()
+        # Must have unconditional KeepAlive, not SuccessfulExit dict
+        assert "<key>KeepAlive</key>\n    <true/>" in plist
+        assert "SuccessfulExit" not in plist
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)
