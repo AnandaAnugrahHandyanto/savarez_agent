@@ -11,7 +11,10 @@ Verifies that the agent cache correctly:
 
 import hashlib
 import json
+import logging
 import threading
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +28,12 @@ def _make_runner():
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     return runner
+
+
+def _write_fixture_memory(home: Path, content: str) -> None:
+    memories = home / "memories"
+    memories.mkdir(parents=True, exist_ok=True)
+    (memories / "MEMORY.md").write_text(content, encoding="utf-8")
 
 
 class TestAgentConfigSignature:
@@ -565,6 +574,128 @@ class TestAgentCacheLifecycle:
         assert result is None
         assert session_key not in runner._agent_cache
         runner._cleanup_agent_resources.assert_called_once_with(stale_agent)
+
+    def test_cached_agent_refreshes_file_memory_on_next_turn(self, tmp_path, monkeypatch):
+        """Cached Discord agent sees updated built-in file memory on next turn."""
+        from gateway.run import GatewayRunner
+        from tools.memory_tool import MemoryStore
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _write_fixture_memory(tmp_path, "old fact\n")
+        store = MemoryStore()
+        store.load_from_disk()
+        agent = SimpleNamespace(
+            session_id="session-1",
+            _memory_store=store,
+            _memory_enabled=True,
+            _user_profile_enabled=False,
+            _cached_system_prompt="cached prompt with old fact",
+            _last_activity_ts=0,
+            _last_activity_desc="idle",
+            _api_call_count=7,
+        )
+        runner = _make_runner()
+        with runner._agent_cache_lock:
+            runner._agent_cache["agent:main:discord:thread:abc123:abc123"] = (agent, "sig")
+
+        _write_fixture_memory(tmp_path, "fresh laptop SSH fact\n")
+
+        reused = runner._take_cached_agent_for_turn(
+            session_key="agent:main:discord:thread:abc123:abc123",
+            signature="sig",
+            session_id="session-1",
+            interrupt_depth=0,
+        )
+
+        assert reused is agent
+        assert "fresh laptop SSH fact" in store.format_for_system_prompt("memory")
+        assert agent._cached_system_prompt is None
+
+    def test_cached_agent_skips_memory_reload_when_revision_unchanged(self, tmp_path, monkeypatch):
+        """Unchanged memory source does not reload or invalidate cached prompt."""
+        from tools.memory_tool import MemoryStore
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _write_fixture_memory(tmp_path, "stable fact\n")
+        store = MemoryStore()
+        store.load_from_disk()
+        store.load_from_disk = MagicMock(side_effect=store.load_from_disk)
+        agent = SimpleNamespace(
+            session_id="session-1",
+            _memory_store=store,
+            _memory_enabled=True,
+            _user_profile_enabled=False,
+            _cached_system_prompt="cached prompt",
+        )
+        runner = _make_runner()
+
+        refreshed = runner._refresh_cached_agent_memory_if_stale(
+            agent,
+            session_key="agent:main:discord:thread:abc123:abc123",
+        )
+
+        assert refreshed is False
+        store.load_from_disk.assert_not_called()
+        assert agent._cached_system_prompt == "cached prompt"
+
+    def test_cached_turn_checks_memory_freshness(self, monkeypatch):
+        """Cache-hit path calls the freshness check before returning agent."""
+        runner = _make_runner()
+        agent = SimpleNamespace(
+            session_id="session-1",
+            _memory_store=None,
+            _last_activity_ts=0,
+            _last_activity_desc="idle",
+            _api_call_count=3,
+        )
+        with runner._agent_cache_lock:
+            runner._agent_cache["agent:main:discord:thread:abc123:abc123"] = (agent, "sig")
+
+        called = []
+        monkeypatch.setattr(
+            runner,
+            "_refresh_cached_agent_memory_if_stale",
+            lambda cached_agent, *, session_key: called.append((cached_agent, session_key)) or False,
+        )
+
+        reused = runner._take_cached_agent_for_turn(
+            session_key="agent:main:discord:thread:abc123:abc123",
+            signature="sig",
+            session_id="session-1",
+            interrupt_depth=0,
+        )
+
+        assert reused is agent
+        assert called == [(agent, "agent:main:discord:thread:abc123:abc123")]
+
+    def test_memory_refresh_logs_redacted_metadata_only(self, tmp_path, monkeypatch, caplog):
+        from tools.memory_tool import MemoryStore
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        private_fixture_fact = "Jenny has SSH access to the laptop"
+        _write_fixture_memory(tmp_path, "old fact\n")
+        store = MemoryStore()
+        store.load_from_disk()
+        agent = SimpleNamespace(
+            session_id="session-1",
+            _memory_store=store,
+            _memory_enabled=True,
+            _user_profile_enabled=False,
+            _cached_system_prompt="cached prompt",
+        )
+        runner = _make_runner()
+        session_key = "agent:main:discord:thread:1234567890:9876543210"
+
+        _write_fixture_memory(tmp_path, private_fixture_fact + "\n")
+
+        with caplog.at_level(logging.INFO, logger="gateway.run"):
+            assert runner._refresh_cached_agent_memory_if_stale(agent, session_key=session_key)
+
+        log_text = "\n".join(record.getMessage() for record in caplog.records)
+        assert private_fixture_fact not in log_text
+        assert session_key not in log_text
+        assert "discord" in log_text
+        assert "rev=" in log_text
 
     def test_cached_agent_flush_cursor_rewinds_to_durable_history(self):
         """If DB history is shorter than the cached cursor, persist this turn."""

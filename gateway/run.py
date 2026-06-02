@@ -26,6 +26,7 @@ except ModuleNotFoundError:
 
 import asyncio
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -16044,6 +16045,53 @@ class GatewayRunner:
             with _lock:
                 self._agent_cache.pop(session_key, None)
 
+    @staticmethod
+    def _redact_session_key_for_log(session_key: str) -> str:
+        if not session_key:
+            return "-"
+        parts = str(session_key).split(":")
+        platform = parts[2] if len(parts) > 2 else "session"
+        suffix = hashlib.sha256(str(session_key).encode("utf-8")).hexdigest()[:8]
+        return f"{platform}:...:{suffix}"
+
+    def _refresh_cached_agent_memory_if_stale(self, agent: Any, *, session_key: str) -> bool:
+        """Refresh built-in memory on a cached agent when files changed."""
+        store = getattr(agent, "_memory_store", None)
+        if not store or not (
+            getattr(agent, "_memory_enabled", False)
+            or getattr(agent, "_user_profile_enabled", False)
+        ):
+            return False
+        refresh = getattr(store, "refresh_from_disk_if_changed", None)
+        if not callable(refresh):
+            return False
+        try:
+            changed = bool(refresh())
+        except Exception as exc:
+            logger.warning(
+                "Built-in memory freshness check failed: provider=built-in-file session=%s error=%s",
+                self._redact_session_key_for_log(session_key),
+                exc,
+            )
+            return False
+        if not changed:
+            return False
+
+        agent._cached_system_prompt = None
+        metadata = {}
+        try:
+            metadata = store.revision_metadata()
+        except Exception:
+            metadata = {"provider": "built-in-file", "revision": "unknown", "path": ""}
+        logger.info(
+            "Refreshed cached agent memory snapshot: provider=%s path=%s rev=%s session=%s action=refresh",
+            metadata.get("provider", "built-in-file"),
+            metadata.get("path", ""),
+            metadata.get("revision", "unknown"),
+            self._redact_session_key_for_log(session_key),
+        )
+        return True
+
     def _take_cached_agent_for_turn(
         self,
         *,
@@ -16075,6 +16123,10 @@ class GatewayRunner:
                         _cache.move_to_end(session_key)
                     except KeyError:
                         pass
+                self._refresh_cached_agent_memory_if_stale(
+                    agent,
+                    session_key=session_key,
+                )
                 self._init_cached_agent_for_turn(agent, interrupt_depth)
                 logger.debug("Reusing cached agent for session %s", session_key)
                 return agent

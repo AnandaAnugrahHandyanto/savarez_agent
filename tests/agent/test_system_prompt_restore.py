@@ -31,6 +31,9 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent.model = "test-model"
     agent.platform = "cli"
     agent._session_db = session_db
+    agent._memory_store = None
+    agent._memory_enabled = False
+    agent._user_profile_enabled = False
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     return agent
 
@@ -217,6 +220,36 @@ class TestPromptStabilityInvariant:
         assert agent._cached_system_prompt == stored
         # Byte-level check
         assert agent._cached_system_prompt.encode("utf-8") == stored.encode("utf-8")
+
+
+class TestMemoryFreshnessOnResume:
+    def test_restart_recovery_uses_fresh_memory_snapshot(self, caplog):
+        """Gateway resume/recovery must not restore a stale DB prompt."""
+        stored = "Stored prompt with old memory snapshot"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db, prebuilt_prompt="BUILT_PROMPT_WITH_FRESH_MEMORY")
+        agent.platform = "discord"
+        agent._memory_store = MagicMock()
+        agent._memory_store.revision_metadata.return_value = {
+            "provider": "built-in-file",
+            "revision": "abc12345",
+            "path": "/tmp/hermes/memories",
+        }
+        agent._memory_enabled = True
+
+        with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "resume"}])
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT_WITH_FRESH_MEMORY"
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(
+            agent.session_id,
+            "BUILT_PROMPT_WITH_FRESH_MEMORY",
+        )
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("fresh built-in memory snapshot" in message for message in messages)
+        assert stored not in "\n".join(messages)
 
 
 if __name__ == "__main__":

@@ -177,10 +177,32 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
     if stored_prompt:
-        # Continuing session — reuse the exact system prompt from the
-        # previous turn so the Anthropic cache prefix matches.
-        agent._cached_system_prompt = stored_prompt
-        return
+        if (
+            getattr(agent, "platform", None) not in (None, "", "cli")
+            and getattr(agent, "_memory_store", None)
+            and (
+                getattr(agent, "_memory_enabled", False)
+                or getattr(agent, "_user_profile_enabled", False)
+            )
+        ):
+            try:
+                _meta = agent._memory_store.revision_metadata()
+            except Exception:
+                _meta = {"provider": "built-in-file", "revision": "unknown", "path": ""}
+            logger.info(
+                "Rebuilding stored system prompt with fresh built-in memory snapshot "
+                "(provider=%s path=%s rev=%s session=%s platform=%s)",
+                _meta.get("provider", "built-in-file"),
+                _meta.get("path", ""),
+                _meta.get("revision", "unknown"),
+                "set" if getattr(agent, "session_id", None) else "-",
+                getattr(agent, "platform", "") or "",
+            )
+        else:
+            # Continuing session — reuse the exact system prompt from the
+            # previous turn so the Anthropic cache prefix matches.
+            agent._cached_system_prompt = stored_prompt
+            return
 
     if conversation_history and stored_state in ("null", "empty"):
         # Continuing session whose stored prompt is unusable.  The

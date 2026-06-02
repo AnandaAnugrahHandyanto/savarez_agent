@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import hashlib
 import tempfile
 import time
 from contextlib import contextmanager
@@ -197,6 +198,33 @@ class MemoryStore:
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self._source_revision: str = self.source_revision()
+
+    @staticmethod
+    def source_revision() -> str:
+        """Return a non-content fingerprint for built-in memory files."""
+        mem_dir = get_memory_dir()
+        digest = hashlib.sha256()
+        for filename in ("MEMORY.md", "USER.md"):
+            path = mem_dir / filename
+            digest.update(filename.encode("utf-8"))
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                digest.update(b":missing")
+            except OSError:
+                digest.update(b":unreadable")
+            else:
+                digest.update(f":{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8"))
+        return digest.hexdigest()[:16]
+
+    def revision_metadata(self) -> Dict[str, str]:
+        """Return safe metadata for diagnostics without memory content."""
+        return {
+            "provider": "built-in-file",
+            "path": str(get_memory_dir()),
+            "revision": self._source_revision or self.source_revision(),
+        }
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
@@ -215,6 +243,15 @@ class MemoryStore:
             "memory": self._render_block("memory", self.memory_entries),
             "user": self._render_block("user", self.user_entries),
         }
+        self._source_revision = self.source_revision()
+
+    def refresh_from_disk_if_changed(self) -> bool:
+        """Reload built-in memory only when the source revision changed."""
+        current_revision = self.source_revision()
+        if current_revision == self._source_revision:
+            return False
+        self.load_from_disk()
+        return True
 
     @staticmethod
     @contextmanager
@@ -282,6 +319,7 @@ class MemoryStore:
         """Persist entries to the appropriate file. Called after every mutation."""
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
+        self._source_revision = self.source_revision()
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -728,7 +766,6 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 
