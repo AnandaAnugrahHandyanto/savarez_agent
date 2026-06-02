@@ -1251,13 +1251,20 @@ function Install-Repository {
         }
     }
 
-    # Ensure submodules are initialized and updated
-    Write-Info "Initializing submodules..."
-    git -c windows.appendAtomically=false submodule update --init --recursive 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warn "Submodule init failed (terminal/RL tools may need manual setup)"
+    # Ensure submodules are initialized and updated when the repository
+    # actually declares them.  Current Hermes has no .gitmodules; running
+    # `git submodule` anyway forces Git-for-Windows through shell helper
+    # scripts and can fail on machines where that optional path is broken.
+    if (Test-Path ".gitmodules") {
+        Write-Info "Initializing submodules..."
+        git -c windows.appendAtomically=false submodule update --init --recursive 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "Submodule init failed (terminal/RL tools may need manual setup)"
+        } else {
+            Write-Success "Submodules ready"
+        }
     } else {
-        Write-Success "Submodules ready"
+        Write-Info "No submodules declared; skipping submodule init"
     }
     Pop-Location
 
