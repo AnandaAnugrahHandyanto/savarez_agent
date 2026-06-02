@@ -110,6 +110,13 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
 
+    def test_excludes_browser_cdp_runtime_profiles(self):
+        """Live Chrome/CDP profiles contain locked SQLite DBs on Windows."""
+        from hermes_cli.backup import _should_exclude
+
+        assert _should_exclude(Path("browser-cdp-profile/Default/Cookies"))
+        assert _should_exclude(Path("browser-cdp-test-profile/first_party_sets.db"))
+
     def test_excludes_sqlite_sidecars(self):
         """SQLite WAL/SHM/journal sidecars must not ship alongside the
         safe-copied .db — pairing a fresh snapshot with stale sidecar state

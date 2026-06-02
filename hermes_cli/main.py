@@ -7263,6 +7263,39 @@ def _format_time_ago(iso_ts: str) -> str:
         return "recently"
 
 
+def _windows_subprocess_creationflags() -> int:
+    """Return subprocess creation flags that avoid console popups on Windows."""
+    if sys.platform != "win32":
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+
+def _decode_windows_subprocess_output(data: bytes | str | None) -> str:
+    """Decode localized Windows subprocess output without crashing."""
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    encodings = ("mbcs", "utf-8", "cp1252") if sys.platform == "win32" else ("utf-8",)
+    for enc in encodings:
+        try:
+            return data.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _windows_taskkill_pid_not_found(message: str) -> bool:
+    """Return True when taskkill says the process already exited."""
+    lower = message.lower()
+    return (
+        "not found" in lower
+        or "not running" in lower
+        or "no running instance" in lower
+        or "没有找到进程" in message
+    )
+
+
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
 ) -> None:
@@ -7297,16 +7330,26 @@ def _kill_stale_dashboard_processes(
     if sys.platform == "win32":
         for pid in pids:
             try:
+                env = os.environ.copy()
+                env.setdefault("MSYS2_ARG_CONV_EXCL", "*")
                 result = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/F"],
                     capture_output=True,
-                    text=True,
+                    text=False,
                     timeout=10,
+                    env=env,
+                    creationflags=_windows_subprocess_creationflags(),
                 )
+                output = (
+                    _decode_windows_subprocess_output(result.stderr)
+                    or _decode_windows_subprocess_output(result.stdout)
+                ).strip()
                 if result.returncode == 0:
                     killed.append(pid)
+                elif _windows_taskkill_pid_not_found(output):
+                    killed.append(pid)
                 else:
-                    failed.append((pid, (result.stderr or result.stdout or "").strip()))
+                    failed.append((pid, output))
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
                 failed.append((pid, str(e)))
     else:

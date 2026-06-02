@@ -32,13 +32,15 @@ logger = logging.getLogger(__name__)
 
 # Directory names to skip entirely (matched against each path component)
 _EXCLUDED_DIRS = {
-    "hermes-agent",     # the codebase repo — re-clone instead
-    "__pycache__",      # bytecode caches — regenerated on import
-    ".git",             # nested git dirs (profiles shouldn't have these, but safety)
-    "node_modules",     # js deps if website/ somehow leaks in
-    "backups",          # prior auto-backups — don't nest backups exponentially
-    "checkpoints",      # session-local trajectory caches — regenerated per-session,
-                        # session-hash-keyed so they don't port to another machine anyway
+    "hermes-agent",             # the codebase repo — re-clone instead
+    "__pycache__",              # bytecode caches — regenerated on import
+    ".git",                     # nested git dirs (profiles shouldn't have these, but safety)
+    "node_modules",             # js deps if website/ somehow leaks in
+    "backups",                  # prior auto-backups — don't nest backups exponentially
+    "checkpoints",              # session-local trajectory caches — regenerated per-session,
+                                # session-hash-keyed so they don't port to another machine anyway
+    "browser-cdp-profile",      # live Chrome profile: SQLite DBs can block sqlite3.backup() on Windows
+    "browser-cdp-test-profile", # same for test/runtime CDP profile
 }
 
 # File-name suffixes to skip
