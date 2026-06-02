@@ -2842,6 +2842,52 @@ async def get_mission_control_recent_audit_log():
 
 @app.get("/api/mission-control/active-envelope")
 async def get_mission_control_active_envelope():
+    from hermes_cli.mission_control_task_control_envelopes import active_task_control_envelope_selection
+
+    selection = active_task_control_envelope_selection()
+    envelope = selection.get("task_control_envelope")
+    if envelope:
+        selected_from_count = int(selection.get("selected_from_count") or 0)
+        repo_context = envelope.get("repo_context") or {}
+        lane_lock = envelope.get("lane_lock") if isinstance(envelope.get("lane_lock"), dict) else {}
+        return {
+            "exists": True,
+            "active_lane": lane_lock.get("active_lane"),
+            "active_mode": envelope.get("mode"),
+            "execution_boundary": "persisted_envelope_inert_non_authorizing",
+            "allowed_actions": envelope.get("allowed_actions", []),
+            "forbidden_actions": envelope.get("forbidden_actions", []),
+            "checkpoint": envelope.get("checkpoint"),
+            "repo_state": {
+                "status": repo_context.get("dirty_state", "not_probed"),
+                "source": repo_context.get("source", "unknown"),
+            },
+            "evidence": {
+                "count": selected_from_count,
+                "links": [],
+            },
+            "data_source": "persisted_task_control_envelope",
+            "task_control_envelope": {
+                "id": envelope.get("id"),
+                "schema": envelope.get("schema"),
+                "status": envelope.get("status"),
+                "title": envelope.get("title"),
+                "mode": envelope.get("mode"),
+                "mode_label": envelope.get("mode_label", ""),
+                "created_at": envelope.get("created_at"),
+                "updated_at": envelope.get("updated_at"),
+                "trusted_for_execution": False,
+                "inert_context_only": True,
+                "vocabulary_version": "g1",
+            },
+            "selection": {
+                "selected_from_count": selected_from_count,
+                "ambiguous": selected_from_count > 1,
+                "selection_reason": "newest_active_updated_at",
+            },
+            "trusted_for_execution": False,
+            "inert_context_only": True,
+        }
     return {
         "exists": False,
         "active_lane": None,

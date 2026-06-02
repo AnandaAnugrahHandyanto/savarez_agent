@@ -206,6 +206,15 @@ def _summary(envelope: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _active_read_summary(envelope: dict[str, Any]) -> dict[str, Any]:
+    summary = _summary(envelope)
+    return {
+        **summary,
+        "checkpoint": (summary.get("checkpoints") or [None])[0],
+        "lane_lock": redact_value(envelope.get("lane_lock", {})),
+    }
+
+
 def _read_envelope_unlocked(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -267,6 +276,30 @@ def list_task_control_envelopes(*, include_inactive: bool = False) -> dict[str, 
                 envelopes.append(envelope)
     envelopes.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
     return {"items": [_summary(envelope) for envelope in envelopes], "warnings": []}
+
+
+def active_task_control_envelope_selection() -> dict[str, Any]:
+    """Read the display-only active envelope selection without mutating storage."""
+    with _LOCK:
+        directory = state_dir()
+        if not directory.exists():
+            return {"task_control_envelope": None, "selected_from_count": 0, "warnings": []}
+        envelopes: list[dict[str, Any]] = []
+        for path in sorted(directory.glob("envelope_*.json")):
+            try:
+                envelope = _read_envelope_unlocked(path)
+                if envelope.get("status") != "active":
+                    continue
+                envelopes.append(_active_read_summary(envelope))
+            except Exception:
+                continue
+    envelopes.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    selected = envelopes[0] if envelopes else None
+    return {
+        "task_control_envelope": selected,
+        "selected_from_count": len(envelopes),
+        "warnings": [],
+    }
 
 
 def get_task_control_envelope(envelope_id: str) -> dict[str, Any]:
