@@ -3493,7 +3493,11 @@ class AIAgent:
         # scrubber's output feeds into the context scrubber's state.
         think_scrubber = getattr(self, "_stream_think_scrubber", None)
         if think_scrubber is not None:
-            think_tail = think_scrubber.flush()
+            # flush() returns a (visible_tail, reasoning_tail) tuple.  Only the
+            # visible tail belongs in the visible output stream; the reasoning
+            # tail is unterminated chain-of-thought that must not leak into
+            # visible content (see StreamingThinkScrubber.flush docstring).
+            think_tail, _reasoning_tail = think_scrubber.flush()
             if think_tail:
                 # Route the tail through the context scrubber too so a
                 # memory-context span straddling the final boundary is
@@ -3587,7 +3591,13 @@ class AIAgent:
             # reasoning content as regular response text).
             think_scrubber = getattr(self, "_stream_think_scrubber", None)
             if think_scrubber is not None:
-                text = think_scrubber.feed(text or "")
+                # feed() returns (visible, reasoning); only the visible
+                # portion continues down the visible-text pipeline. The
+                # reasoning portion goes to the reasoning channel (or is
+                # dropped if no consumer) — never concatenated as text.
+                text, reasoning = think_scrubber.feed(text or "")
+                if reasoning:
+                    self._fire_reasoning_delta(reasoning)
             else:
                 # Defensive: legacy callers without the scrubber attribute.
                 text = self._strip_think_blocks(text or "")
