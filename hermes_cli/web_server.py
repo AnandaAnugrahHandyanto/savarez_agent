@@ -3095,6 +3095,106 @@ async def run_agent_kernelization_smoke(body: AgentRunSmokeCreate):
     return await asyncio.to_thread(_run_kernelization_smoke, body)
 
 
+
+@app.post("/api/agents/eval/queue")
+async def run_external_agent_eval_nonblocking(body: AgentEvalRunCreate):
+    """Queue external agent evals as non-blocking handoffs.
+    
+    Unlike the blocking /api/agents/eval, this endpoint creates queued
+    agent runs and returns immediately. The background executor scheduler
+    picks them up on its next tick.
+    """
+    from agent.managed_agents.registry import load_agent_registry
+
+    registry = load_agent_registry(_AGENTS_CONFIG_PATH)
+    project = (body.project or "staam").strip() or "staam"
+    timeout_seconds = max(1.0, min(float(body.timeout_seconds or 20.0), 120.0))
+    requested_ids = [str(item).strip() for item in (body.agent_ids or []) if str(item).strip()]
+    external_ids = sorted(_external_agent_ids())
+    agent_ids = requested_ids or external_ids
+    batch_id = f"eval-queue-{uuid.uuid4().hex[:10]}"
+    queued: List[Dict[str, Any]] = []
+
+    for requested_id in agent_ids:
+        resolved_agent_id = registry.resolve_agent_id(requested_id) or requested_id
+        if resolved_agent_id not in external_ids:
+            queued.append({
+                "agent_id": resolved_agent_id,
+                "status": "skipped",
+                "reason": "not_external_runtime",
+            })
+            continue
+        agent = registry.get(resolved_agent_id)
+        task_id = f"{batch_id}-{resolved_agent_id}"
+        run_id = f"{batch_id}-{resolved_agent_id}-{uuid.uuid4().hex[:6]}"
+        now = _utc_iso()
+        run = {
+            "run_id": run_id,
+            "agent_id": resolved_agent_id,
+            "display_name": agent.name,
+            "prompt": body.prompt or "External agent eval (queued)",
+            "workspace": str(get_hermes_home()),
+            "risk_level": "R0",
+            "model_ref": agent.model_ref,
+            "status": "queued",
+            "created_at": now,
+            "updated_at": now,
+            "task_id": task_id,
+            "session_id": None,
+            "project": project,
+            "source": "external_agent_eval",
+            "policy_action": None,
+            "result_summary": None,
+            "error": None,
+            "executor": {
+                "mode": "queued_eval",
+                "timeout_seconds": timeout_seconds,
+                "queued_at": now,
+            },
+        }
+        runs = _load_agent_runs()
+        runs.append(run)
+        _save_agent_runs(runs)
+        _append_run_ledger_row(
+            project,
+            {
+                "schema_version": "2.8",
+                "event": "run_queued",
+                "run_id": run_id,
+                "task_id": task_id,
+                "agent_id": resolved_agent_id,
+                "model_ref": agent.model_ref,
+                "run_type": "external_agent_eval",
+                "queued_at": now,
+                "timeout_seconds": timeout_seconds,
+            },
+        )
+        queued.append({
+            "agent_id": resolved_agent_id,
+            "run_id": run_id,
+            "task_id": task_id,
+            "status": "queued",
+        })
+
+    scheduler = _executor_scheduler_status()
+    return {
+        "ok": True,
+        "project": project,
+        "batch_id": batch_id,
+        "timeout_seconds": timeout_seconds,
+        "queued": queued,
+        "scheduler": {
+            "enabled": scheduler.get("enabled"),
+            "running": scheduler.get("running"),
+            "queued_count": scheduler.get("queued_count"),
+        },
+        "message": (
+            f"Queued {len([q for q in queued if q.get('status') == 'queued'])} evals. "
+            "The background scheduler will pick them up on its next tick."
+        ),
+    }
+
+
 @app.post("/api/agents/eval")
 async def run_external_agent_eval(body: AgentEvalRunCreate):
     """Run bounded real external CLI evals and record results in Run Ledger."""
@@ -5364,6 +5464,19 @@ def _executor_scheduler_status() -> Dict[str, Any]:
         run for run in _load_agent_runs()
         if run.get("status") == "queued" and run.get("source") == "execution_policy"
     ]
+    pool_status = {}
+    try:
+        from agent.executor.cli_pool import get_global_pool
+        pool = get_global_pool()
+        if pool is not None:
+            pool_status = {
+                "max_workers": pool.max_workers,
+                "active_workers": pool.active_workers,
+                "queued_jobs": pool.queued_jobs,
+                "total_workers": pool.max_workers,
+            }
+    except Exception:
+        pass
     return {
         "enabled": enabled,
         "running": bool(thread and thread.is_alive()),
@@ -5374,6 +5487,7 @@ def _executor_scheduler_status() -> Dict[str, Any]:
         "active_runs": active,
         "active_count": len(active),
         "queued_count": len(queued),
+        "pool_status": pool_status if pool_status else None,
     }
 
 

@@ -173,6 +173,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  /** Queue agent evals as non-blocking handoffs (returns immediately). */
+  queueExternalAgentEval: (body: AgentEvalRunRequest = {}) =>
+    fetchJSON<AgentEvalRunResponse & { queued?: Array<{ agent_id: string; run_id: string; task_id: string; status: string }> }>("/api/agents/eval/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   setManagedAgentModelStrategy: (agentId: string, body: UpdateAgentModelStrategyRequest) =>
     fetchJSON<UpdateAgentModelStrategyResponse>(
       `/api/agents/${encodeURIComponent(agentId)}/model-strategy`,
