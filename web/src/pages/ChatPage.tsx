@@ -133,6 +133,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [ptyReconnectSeq, setPtyReconnectSeq] = useState(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -615,7 +617,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // Server already wrote an ANSI error frame.
         return;
       }
-      term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
+      term.write("\r\n\x1b[90m[session ended — reconnecting…]\x1b[0m\r\n");
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        setPtyReconnectSeq((seq) => seq + 1);
+      }, 1000);
     };
 
     // Keystrokes → PTY.
@@ -682,8 +689,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         clearTimeout(copyResetRef.current);
         copyResetRef.current = null;
       }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
     };
-  }, [channel, resumeParam]);
+  }, [channel, resumeParam, ptyReconnectSeq]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -860,7 +871,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             title="Copy last assistant response as raw markdown"
             aria-label="Copy last assistant response"
             className={cn(
-              "absolute z-10",
+              "fixed z-40 lg:absolute lg:z-10",
               "normal-case tracking-normal font-normal",
               "rounded border border-current/30",
               "bg-black/20 backdrop-blur-sm",
