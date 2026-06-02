@@ -62,9 +62,12 @@
   - `cbor2 5.8.0 -> 6.1.1`
 - Updated npm lockfiles with `npm audit fix --package-lock-only`:
   - `package-lock.json`
+  - `apps/desktop/package-lock.json`
   - `website/package-lock.json`
   - `web/package-lock.json`
   - `scripts/whatsapp-bridge/package-lock.json`
+- Desktop standalone lock refresh specifically updated:
+  - `tmp 0.2.5 -> 0.2.7`
 - WhatsApp bridge lock refresh specifically updated:
   - `protobufjs 7.5.6 -> 7.6.2`
   - `ws 8.20.0 -> 8.21.0`
@@ -74,6 +77,8 @@
 - `1ce1dc126` - `merge: sync upstream main through c6501c0f4`
 - `ebdcbffcf` - `fix: refresh vulnerable dependency locks`
 - `a4b34ae01` - `fix: refresh whatsapp bridge vulnerable locks`
+- `bda494ed8` - `docs: add upstream sync implementation log`
+- `b7edd42f4` - `fix: refresh desktop standalone vulnerable lock`
 
 ## Verification
 
@@ -101,6 +106,7 @@
     - `436 passed, 1 skipped`
 - npm:
   - Ran `npm audit --package-lock-only --audit-level=moderate` for every repository `package-lock.json`.
+  - Ran `npm audit --package-lock-only --audit-level=moderate --workspaces=false` for the standalone `apps/desktop/package-lock.json`.
   - Results:
     - `package-lock.json`: OK
     - `scripts/whatsapp-bridge/package-lock.json`: OK
@@ -139,6 +145,7 @@ Not selected:
 
 ## Residual Risks and Follow-Up
 
-- GitHub push output still reported 38 Dependabot alerts immediately after push. Local evidence showed all npm `package-lock.json` files pass `npm audit --package-lock-only --audit-level=moderate`; Dependabot can lag behind pushed lockfile updates.
+- GitHub Dependabot API now reports one remaining open alert after the npm lockfile refreshes:
+  - `uv.lock` / `PyNaCl` / `GHSA-mrfv-m5wm-5w6w`
 - `PyNaCl` remains at `1.5.0` in `uv.lock` because `discord.py[voice] 2.7.1`, the latest available release at the time of this run, requires `PyNaCl >=1.5.0,<1.6`. Forcing `PyNaCl==1.6.2` makes the `messaging` extra unsatisfiable. This should be revisited when `discord.py` relaxes its upper bound or if Hermes decides to remove the voice extra from the default messaging extra.
 - Broad full-repo pytest and frontend builds were not run in this closeout. The verification scope focused on merge fallout, security-relevant paths, dependency resolution, lockfile audit, and CodeGraph indexing.
