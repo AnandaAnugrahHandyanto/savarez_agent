@@ -821,6 +821,77 @@ class TestSegmentBreakOnToolBoundary:
         assert consumer._final_response_sent is True
 
     @pytest.mark.asyncio
+    async def test_fallback_final_deletes_all_overflow_preview_messages(self):
+        """Telegram overflow edits can turn one preview into several messages.
+
+        When a later flood-control fallback sends the complete final answer as
+        a fresh message, every stale preview message must be cleaned up — not
+        just the last continuation id (#16668 / #23416 follow-up).
+        """
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_final"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.delete_message = AsyncMock(return_value=None)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Seed the consumer as if TelegramAdapter.edit_message split an
+        # oversized streaming edit across the original message and two
+        # continuation messages, then the stream got stuck on the last id.
+        consumer._message_id = "msg_continuation_2"
+        consumer._preview_message_ids = [
+            "msg_initial",
+            "msg_continuation_1",
+            "msg_continuation_2",
+        ]
+        consumer._last_sent_text = ""
+
+        await consumer._send_fallback_final("Complete final answer")
+
+        assert [
+            call.args for call in adapter.delete_message.await_args_list
+        ] == [
+            ("chat_123", "msg_initial"),
+            ("chat_123", "msg_continuation_1"),
+            ("chat_123", "msg_continuation_2"),
+        ]
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_segment_break_after_first_message_overflow_clears_preview_ids(self):
+        """Overflow ids from a finalized pre-tool segment must not leak into
+        the next segment's cleanup set."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_pre_1"),
+            SimpleNamespace(success=True, message_id="msg_pre_2"),
+            SimpleNamespace(success=True, message_id="msg_final"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.truncate_message = MagicMock(
+            return_value=["pre tool chunk 1", "pre tool chunk 2"],
+        )
+        adapter.MAX_MESSAGE_LENGTH = 610
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("x" * 620)
+        consumer.on_delta(None)
+        consumer.on_delta("Final answer")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert consumer._preview_message_ids == ["msg_final"]
+
+    @pytest.mark.asyncio
     async def test_fallback_final_does_not_delete_when_no_chunks_reach_user(self):
         """If every fallback send fails, the partial is the only thing the
         user has — must NOT be deleted."""
@@ -1109,6 +1180,11 @@ class TestEditOverflowSplitAndDeliver:
         assert ok is True
         # Consumer advanced to the latest continuation id.
         assert consumer._message_id == "msg_continuation_2"
+        assert consumer._preview_message_ids == [
+            "msg_initial",
+            "msg_continuation_1",
+            "msg_continuation_2",
+        ]
         # Skip-if-same cache reset so the next edit doesn't false-positive.
         assert consumer._last_sent_text == ""
         # on_new_message fired so the tool-progress bubble breaks below
@@ -1907,4 +1983,3 @@ class TestUtf16OverflowDetection:
         # auto-attr mock. Verified indirectly by all the other tests in
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
-
