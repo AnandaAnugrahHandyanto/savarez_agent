@@ -1344,24 +1344,60 @@ class TestSessionStartDialecticPrewarm:
         # The sync first-turn path must NOT have fired another .chat()
         assert p._manager.dialectic_query.call_count == 0
 
-    def test_turn1_falls_back_to_sync_when_prewarm_missing(self):
-        """If the prewarm produced nothing (empty graph, API blip), turn 1
-        still fires its own sync dialectic."""
-        p = self._make_provider(dialectic_result="")  # prewarm returns empty
+    def test_turn1_stays_nonblocking_when_prewarm_missing(self):
+        """If the prewarm produced nothing, turn 1 should stay non-blocking
+        and let the recovery dialectic finish in background."""
+        import threading as _threading
+        import time as _time
+
+        p = self._make_provider(cfg_extra={"timeout": 0.05}, dialectic_result="")
         if p._prefetch_thread:
             p._prefetch_thread.join(timeout=3.0)
         with p._prefetch_lock:
             assert p._prefetch_result == ""  # prewarm landed nothing
-        # Switch dialectic_query to return something on the sync first-turn call
-        p._manager.dialectic_query.return_value = "sync recovery"
         p._manager.dialectic_query.reset_mock()
+        started = _threading.Event()
+        release = _threading.Event()
+
+        def _late_recovery(*_args, **_kwargs):
+            started.set()
+            release.wait(timeout=10.0)
+            return "async recovery"
+
+        p._manager.dialectic_query.side_effect = _late_recovery
         p._session_key = "test-prewarm"
         p._base_context_cache = ""
         p._turn_count = 1
 
+        started_at = _time.perf_counter()
         result = p.prefetch("hello world")
-        assert "sync recovery" in result
+        elapsed = _time.perf_counter() - started_at
+
+        assert result == ""
+        assert elapsed < 0.5, "turn 1 must not wait on a slow Honcho dialectic"
+        assert started.wait(timeout=1.0), "background dialectic should still fire"
         assert p._manager.dialectic_query.call_count == 1
+        assert p._prefetch_thread and p._prefetch_thread.is_alive()
+        release.set()
+        p._prefetch_thread.join(timeout=2.0)
+
+    def test_turn1_does_not_fetch_base_context_synchronously(self):
+        """A cold cache with no ready background context should return empty
+        instead of calling get_prefetch_context() inline."""
+        p = self._make_provider(dialectic_result="prewarm synthesis")
+        _settle_prewarm(p)
+        p._manager.get_prefetch_context.reset_mock()
+        p._manager.pop_context_result.return_value = {}
+        p._session_key = "test-prewarm"
+        p._base_context_cache = None
+        p._turn_count = 1
+        p._last_dialectic_turn = 0
+
+        result = p.prefetch("hello world")
+
+        assert result == ""
+        assert p._manager.get_prefetch_context.call_count == 0
+        assert p._base_context_cache == ""
 
 
 class TestDialecticLiveness:

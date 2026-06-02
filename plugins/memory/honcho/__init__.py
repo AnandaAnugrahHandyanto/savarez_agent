@@ -575,51 +575,35 @@ class HonchoMemoryProvider(MemoryProvider):
         parts = []
 
         # ----- Layer 1: Base context (representation + card) -----
-        # On first call, fetch synchronously so turn 1 isn't empty.
-        # After that, serve from cache and refresh in background on cadence.
-        with self._base_context_lock:
-            if self._base_context_cache is None:
-                # First call — synchronous fetch
-                try:
-                    ctx = self._manager.get_prefetch_context(self._session_key)
-                    self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
-                    self._last_context_turn = self._turn_count
-                except Exception as e:
-                    logger.debug("Honcho base context fetch failed: %s", e)
-                    self._base_context_cache = ""
-            base_context = self._base_context_cache
-
-        # Check if background context prefetch has a fresher result
+        # Consume only background-prefetched context here. A cold-cache turn
+        # returns empty rather than paying a synchronous Honcho round-trip on
+        # the gateway message path.
+        fresh_ctx = {}
         if self._manager:
             fresh_ctx = self._manager.pop_context_result(self._session_key)
+
+        with self._base_context_lock:
             if fresh_ctx:
-                formatted = self._format_first_turn_context(fresh_ctx)
-                if formatted:
-                    with self._base_context_lock:
-                        self._base_context_cache = formatted
-                    base_context = formatted
+                self._base_context_cache = self._format_first_turn_context(fresh_ctx)
+            elif self._base_context_cache is None:
+                self._base_context_cache = ""
+            base_context = self._base_context_cache
 
         if base_context:
             parts.append(base_context)
 
         # ----- Layer 2: Dialectic supplement -----
         # On the very first turn, no queue_prefetch() has run yet so the
-        # dialectic result is empty.  Run with a bounded timeout so a slow
-        # Honcho connection doesn't block the first response indefinitely.
-        # On timeout we let the thread keep running and write its result into
-        # _prefetch_result under the lock, so the next turn picks it up.
-        #
-        # Skip if the session-start prewarm already filled _prefetch_result —
-        # firing another .chat() would be duplicate work.
+        # dialectic result may still be empty. If the session-start prewarm
+        # has not landed yet, fire the dialectic in background and surface it
+        # on a later turn instead of synchronously waiting on the gateway
+        # message-processing path.
         with self._prefetch_lock:
             _prewarm_landed = bool(self._prefetch_result)
         if _prewarm_landed and self._last_dialectic_turn == -999:
             self._last_dialectic_turn = self._turn_count
 
-        if self._last_dialectic_turn == -999 and query:
-            _first_turn_timeout = (
-                self._config.timeout if self._config and self._config.timeout else 8.0
-            )
+        if self._last_dialectic_turn == -999 and query and not self._thread_is_live():
             _fired_at = self._turn_count
 
             def _run_first_turn() -> None:
@@ -645,16 +629,6 @@ class HonchoMemoryProvider(MemoryProvider):
                 target=_run_first_turn, daemon=True, name="honcho-prefetch-first"
             )
             self._prefetch_thread.start()
-            self._prefetch_thread.join(timeout=_first_turn_timeout)
-            if self._prefetch_thread.is_alive():
-                logger.debug(
-                    "Honcho first-turn dialectic still running after %.1fs — "
-                    "will surface on next turn",
-                    _first_turn_timeout,
-                )
-
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
             dialectic_result = self._prefetch_result
             fired_at = self._prefetch_result_fired_at
