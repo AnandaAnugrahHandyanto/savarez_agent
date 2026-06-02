@@ -85,6 +85,10 @@ CONFIGURABLE_TOOLSETS = [
 # but the setup checklist won't pre-select them for first-time users.
 _DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
 
+# Plugin toolsets in this set are default-enabled on fresh platform defaults
+# but must be named explicitly once a platform has a saved toolset override.
+_PLUGIN_TOOLSETS_REQUIRE_EXPLICIT_SELECTION_WHEN_PLATFORM_CONFIGURED = {"drive"}
+
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
 # absent from this map is available on every platform (current behaviour).
@@ -986,7 +990,9 @@ def _get_platform_tools(
     from toolsets import resolve_toolset, TOOLSETS
 
     platform_toolsets = config.get("platform_toolsets") or {}
-    toolset_names = platform_toolsets.get(platform)
+    configured_toolset_names = platform_toolsets.get(platform)
+    has_platform_toolset_override = isinstance(configured_toolset_names, list)
+    toolset_names = configured_toolset_names
 
     if toolset_names is None or not isinstance(toolset_names, list):
         plat_info = PLATFORMS.get(platform)
@@ -1131,6 +1137,17 @@ def _get_platform_tools(
                 enabled_toolsets.add(pts)
             elif pts in _DEFAULT_OFF_TOOLSETS:
                 # Opt-in plugin toolset — stay off until user picks it
+                continue
+            elif (
+                has_explicit_config
+                and pts in _PLUGIN_TOOLSETS_REQUIRE_EXPLICIT_SELECTION_WHEN_PLATFORM_CONFIGURED
+            ):
+                # The platform has explicit configurable-toolset selections
+                # saved (the user touched the TUI checklist). Do not widen that
+                # with Drive unless the user listed Drive in their selection.
+                # A composite-only list (e.g. ``["hermes-cli"]`` with no
+                # configurable keys) is NOT an explicit selection — it must
+                # behave like a fresh config and let Drive auto-enable.
                 continue
             elif pts not in known_for_platform:
                 # New plugin not yet seen by hermes tools — default enabled
