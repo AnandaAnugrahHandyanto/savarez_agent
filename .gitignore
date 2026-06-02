@@ -82,3 +82,6 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
+
+# Codebase-familiarity map — machine-local / regenerable (committed sibling is CONTEXT.md)
+.codebase-map.md
