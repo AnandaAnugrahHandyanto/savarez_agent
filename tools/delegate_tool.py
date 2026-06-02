@@ -1695,6 +1695,15 @@ def _build_child_agent(
 
         child_thinking_cb = _child_thinking
 
+    # Subagents inherit the parent's toolset (including kanban), but must
+    # not inherit HERMES_KANBAN_TASK — without it, ownership checks reject
+    # kanban_complete/kanban_block on the parent task, preventing
+    # completion-summary drift (see t_814f0e3b incident).  Subagents can
+    # still use kanban tools for kanban_create, kanban_comment, etc.
+    # Restore on the other side so the parent worker keeps its own
+    # kanban task context.
+    _saved_kanban_task = os.environ.pop("HERMES_KANBAN_TASK", None)
+    _saved_kanban_ws = os.environ.pop("HERMES_KANBAN_WORKSPACE", None)
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1727,6 +1736,12 @@ def _build_child_agent(
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )
+    # Restore the parent's kanban env vars now that AIAgent.__init__ has
+    # run (get_tool_definitions / auto-injection already resolved).
+    if _saved_kanban_task is not None:
+        os.environ["HERMES_KANBAN_TASK"] = _saved_kanban_task
+    if _saved_kanban_ws is not None:
+        os.environ["HERMES_KANBAN_WORKSPACE"] = _saved_kanban_ws
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
