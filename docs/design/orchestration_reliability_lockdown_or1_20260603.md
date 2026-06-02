@@ -9,10 +9,11 @@ orchestration work. Its purpose is to reduce wrong-worktree execution, lane
 drift, ambiguous approvals, unverified "implemented" claims, and lost
 carry-forward state between continuation threads.
 
-OR1A is documentation-only. It records the protocol, templates, failure rules,
-and evidence expectations for later implementation work. OR1A does not
-implement enforcement, command parsing, runtime checks, UI, backend behavior,
-feature flags, persistence, tests, deployment, restarts, or worker automation.
+OR1A and OR1B are documentation-only. They record the protocol, templates,
+failure rules, and evidence expectations for later implementation work. They
+do not implement enforcement, command parsing, runtime checks, UI, backend
+behavior, feature flags, persistence, tests, deployment, restarts, or worker
+automation.
 
 ## Mandatory Task Control Envelope
 
@@ -60,40 +61,114 @@ Minimum required fields:
 If any minimum field is missing or conflicts with the request, the worker must
 stop and ask for a corrected envelope before acting.
 
-## Start Gate Template
+## OR1B Mandatory Start Gate Operating Rule
 
-The Start Gate confirms locality and clean state before work begins. It must be
-performed in the required worktree named by the Task Control Envelope.
+The Start Gate is mandatory for every bounded task. It confirms lane, locality,
+identity, and clean state before any implementation, edit, test, commit,
+deploy, cleanup, remote probe, or investigation beyond the actions explicitly
+allowed by the active lane.
+
+The worker must perform the Start Gate in the required worktree named by the
+Task Control Envelope. Shorthand user replies such as "continue", "ok next",
+or "go ahead" cannot bypass the Start Gate and cannot expand the approval
+slice unless they include a new or updated Task Control Envelope with lane,
+mode, allowed actions, forbidden actions, expected locality, excluded
+workstreams, and stop condition.
+
+Allowed pre-gate actions are limited to reading the active Task Control
+Envelope, reading applicable operating instructions, and running the locality
+and status commands needed to complete the Start Gate. Anything outside that
+minimum is blocked until the Start Gate decision is PASS.
 
 Template:
 
 ```markdown
 Start Gate
 
-pwd:
-git rev-parse --show-toplevel:
-git branch --show-current:
-git rev-parse HEAD:
-git status --short --branch:
-
-Envelope match:
-- Required worktree matched: yes/no
-- Required branch matched: yes/no
-- Expected HEAD matched: yes/no
-- Worktree clean before start: yes/no
-- Forbidden paths present in dirty state: yes/no/not applicable
-
-Decision:
-- proceed
-- stop: wrong worktree
-- stop: wrong branch
-- stop: wrong HEAD
-- stop: dirty worktree
-- stop: envelope conflict
+Active lane:
+Mode:
+Allowed actions:
+Forbidden actions:
+Expected path:
+Actual path:
+Repo root:
+Branch:
+HEAD:
+Worktree status:
+Dirty files:
+Other-thread workstreams excluded:
+Stop condition:
+Decision: PASS | BLOCKED
 ```
 
-The worker may proceed only when the required worktree, branch, expected HEAD,
-and allowed starting state match the envelope.
+PASS criteria:
+
+- Active lane and mode are present and match the requested slice.
+- Allowed actions are specific enough to identify what may be done.
+- Forbidden actions are specific enough to prevent adjacent-lane drift.
+- Actual path and repo root both match the expected path in the envelope.
+- Branch matches the required branch in the envelope.
+- HEAD matches the expected HEAD in the envelope.
+- Worktree status is clean, unless the envelope explicitly allows the exact
+  dirty files and starting state.
+- Dirty files are absent, or every dirty file is explicitly allowed by the
+  envelope and outside forbidden areas.
+- Other-thread workstreams excluded are named clearly enough to prevent the
+  worker from touching them.
+- Stop condition is present and consistent with the active lane.
+
+BLOCKED criteria:
+
+- Any minimum Task Control Envelope field is missing or conflicts with the
+  request.
+- Actual path or repo root does not match the expected path.
+- Branch does not match the required branch.
+- HEAD does not match the expected HEAD.
+- Worktree status is dirty and the envelope does not explicitly allow that
+  exact dirty state.
+- Any dirty file is in an explicitly forbidden area.
+- Allowed actions would require crossing into a forbidden lane.
+- The requested action depends on another thread, workstream, remote system,
+  secret, deploy, cleanup, or live probe that is excluded or not named in the
+  envelope.
+- The user gives only shorthand approval such as "continue", "ok next", or
+  "go ahead" after a blocked or completed slice.
+
+### Wrong-Worktree Block Behavior
+
+Wrong worktree is a hard block. If actual path or repo root differs from the
+expected path in the Task Control Envelope, the worker must stop immediately.
+The worker may report only the required path, actual path, repo root, branch,
+HEAD, active lane, and stop condition. The worker must not inspect unrelated
+dirty state beyond the Start Gate, edit files, run tests, clean up, commit,
+deploy, restart, or continue by switching worktrees unless the user provides a
+new explicit approval slice.
+
+### Dirty-Worktree Block Behavior
+
+Dirty worktree is a hard block unless the Task Control Envelope explicitly
+allows the exact dirty files and starting state. If blocked, the worker must
+list dirty files, classify whether any dirty file is inside a forbidden area,
+and stop. The worker must not clean, revert, stage, commit, overwrite, or work
+around dirty files without a new approval slice. If new dirty files appear
+during the slice and were not created by the worker's current work, the worker
+must stop and report the new state before continuing.
+
+### Interaction With Task Control Envelopes
+
+The Task Control Envelope is the authority for the Start Gate. The Start Gate
+does not replace the envelope; it verifies that the current operating context
+matches it. A PASS decision authorizes only the allowed actions in the active
+envelope and only until the named stop condition. A BLOCKED decision ends the
+slice until the user provides a corrected envelope or a new approval slice.
+
+### Interaction With Evidence Cards
+
+Evidence Cards may be used to preserve the Start Gate result, especially for
+claims that a slice is in the correct worktree, clean before start, docs-only,
+implemented, verified, or blocked. A Start Gate Evidence Card should identify
+the command outputs used for actual path, repo root, branch, HEAD, worktree
+status, dirty files, and final PASS or BLOCKED decision.
 
 ## Pre-Commit Stop-State Template
 
@@ -316,13 +391,13 @@ Locality context can inform risk, but it does not authorize remote probes,
 copies, moves, extraction, credential access, or unrelated file inspection
 unless an approval slice explicitly allows those actions.
 
-## OR1A Non-Enforcement Statement
+## OR1A / OR1B Non-Enforcement Statement
 
-OR1A is a documentation-only hardening slice. It creates this protocol document
-only. It does not add runtime guards, CLI commands, gateway hooks, dashboard
-panels, MCP tools, test suites, CI checks, commit hooks, config keys, feature
-flags, persistence changes, deployment changes, restart behavior, or social
-platform/live-count behavior.
+OR1A and OR1B are documentation-only hardening slices. They create and refine
+this protocol document only. They do not add runtime guards, CLI commands,
+gateway hooks, dashboard panels, MCP tools, test suites, CI checks, commit
+hooks, config keys, feature flags, persistence changes, deployment changes,
+restart behavior, or social platform/live-count behavior.
 
 Any enforcement, automation, UI surfacing, or runtime integration for OR1 must
 be proposed and approved in a later implementation slice.
