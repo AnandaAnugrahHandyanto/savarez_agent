@@ -3370,6 +3370,52 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.resume_typing_for_chat(str(query_chat_id))
             return
 
+        # --- Cron delivery accept/dismiss callbacks (cron:choice:id) ---
+        if data.startswith("cron:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                choice = parts[1]  # accept, dismiss
+                notice_id = parts[2]
+
+                # Only authorized users may resolve cron notices.
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized.")
+                    return
+
+                # The on-disk notice buffer is the source of truth (keyed by
+                # platform:chat_id), so this survives a gateway restart.
+                from cron.pending_notices import dismiss as dismiss_notice
+                from cron.pending_notices import mark_accepted
+
+                chat_key = str(query_chat_id)
+                if choice == "accept":
+                    ok = mark_accepted("telegram", chat_key, notice_id)
+                    label = "📥 Added to context" if ok else "Already resolved"
+                elif choice == "dismiss":
+                    ok = dismiss_notice("telegram", chat_key, notice_id)
+                    label = "✕ Dismissed" if ok else "Already resolved"
+                else:
+                    await query.answer(text="Invalid action.")
+                    return
+
+                await query.answer(text=label)
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message(label),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass  # non-fatal if the edit fails
+            return
+
         # --- Slash-confirm callbacks (sc:choice:confirm_id) ---
         if data.startswith("sc:"):
             parts = data.split(":", 2)
