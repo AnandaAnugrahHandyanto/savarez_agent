@@ -1818,6 +1818,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         * If the transcript ends with that user message, also keep the
           immediately preceding assistant/tool group so short replies retain
           the question they answer.
+          Orphan tool results are summarized instead of protected raw, because
+          the sanitizer would otherwise remove them after compression.
         * If assistant/tool messages follow the most recent user message, keep
           that whole in-progress exchange.
         * Always align backward so assistant tool_calls and tool results are
@@ -1831,12 +1833,17 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         cut_idx = last_user_idx
         if last_user_idx == n - 1:
             prev_idx = last_user_idx - 1
+            prev_role = messages[prev_idx].get("role") if prev_idx >= 0 else None
             if (
                 prev_idx > head_end
-                and messages[prev_idx].get("role") in {"assistant", "tool"}
+                and prev_role in {"assistant", "tool"}
                 and _content_length_for_budget(messages[prev_idx].get("content")) <= _FALLBACK_SUMMARY_MAX_CHARS
             ):
-                cut_idx = prev_idx
+                # For a tool result, let boundary alignment inspect the whole
+                # tool run before the user.  If no parent assistant tool_call is
+                # found, the cut stays at the user so the orphan result is
+                # summarized rather than later stripped by _sanitize_tool_pairs.
+                cut_idx = last_user_idx if prev_role == "tool" else prev_idx
 
         cut_idx = self._align_boundary_backward(messages, cut_idx)
         return max(cut_idx, head_end + 1)

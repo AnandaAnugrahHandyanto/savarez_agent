@@ -2005,6 +2005,86 @@ class TestTokenBudgetTailProtection:
             for content in contents
         )
 
+    def test_tool_result_before_latest_user_reply_stays_with_parent_call(self):
+        """When a user replies after a tool result, keep the full tool group raw."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=20,
+            )
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "start the session"},
+            {"role": "assistant", "content": "ready"},
+        ]
+        for i in range(30):
+            msgs.append({"role": "user", "content": f"old proxy debugging turn {i}"})
+            msgs.append({"role": "assistant", "content": f"old proxy response {i}"})
+        msgs.extend([
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_current",
+                    "type": "function",
+                    "function": {"name": "lookup_prices", "arguments": "{}"},
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_current",
+                "content": "fresh tool output: latest market data",
+            },
+            {"role": "user", "content": "use that result"},
+        ])
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        assert [m.get("role") for m in result[-3:]] == ["assistant", "tool", "user"]
+        assert result[-3]["tool_calls"][0]["id"] == "call_current"
+        assert result[-2]["tool_call_id"] == "call_current"
+        assert result[-2]["content"] == "fresh tool output: latest market data"
+        assert result[-1]["content"] == "use that result"
+
+    def test_orphan_tool_before_latest_user_is_summarized_not_tail_sanitized(self):
+        """Do not protect an orphan tool result that sanitizer will later drop."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=20,
+            )
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "start the session"},
+            {"role": "assistant", "content": "ready"},
+        ]
+        for i in range(30):
+            msgs.append({"role": "user", "content": f"old proxy debugging turn {i}"})
+            msgs.append({"role": "assistant", "content": f"old proxy response {i}"})
+        msgs.extend([
+            {
+                "role": "tool",
+                "tool_call_id": "orphan_current",
+                "content": "fresh orphan tool output",
+            },
+            {"role": "user", "content": "use that result"},
+        ])
+
+        head_end = c._align_boundary_forward(msgs, c._protect_head_size(msgs))
+
+        assert c._find_active_tail_cut(msgs, head_end) == len(msgs) - 1
+
     def test_manual_preflight_uses_same_active_tail_boundary_as_compress(self):
         """A huge token budget should not make /compress skip a transcript that
         active-tail compression can still compact safely.
