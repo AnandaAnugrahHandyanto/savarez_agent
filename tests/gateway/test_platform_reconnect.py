@@ -718,3 +718,179 @@ class TestPlatformSlashCommand:
         out = await runner._handle_platform_command(self._make_event("/platform"))
         assert "Gateway platforms" in out
 
+
+
+class TestReconnectDisconnectCleanup:
+    """Verify _safe_adapter_disconnect is called on every reconnect failure path.
+
+    Regression tests for PR #37018 — without these disconnect calls,
+    failed reconnect adapters leak sqlite3 connections, aiohttp sessions,
+    and other resources until the process hits [Errno 24] Too many open files.
+    """
+
+    @pytest.mark.asyncio
+    async def test_retryable_failure_disconnects_adapter(self):
+        """When connect() fails with a retryable error, adapter must be disconnected."""
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        fail_adapter = StubAdapter(
+            succeed=False, fatal_error="DNS timeout", fatal_retryable=True
+        )
+        disconnect_spy = AsyncMock(wrapping=fail_adapter.disconnect)
+        fail_adapter.disconnect = disconnect_spy
+
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=fail_adapter):
+            async def run_one_iteration():
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+            await run_one_iteration()
+
+        disconnect_spy.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_nonretryable_fatal_disconnects_adapter(self):
+        """When adapter reports non-retryable fatal error, adapter must be disconnected."""
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        fail_adapter = StubAdapter(
+            succeed=False, fatal_error="bad token", fatal_retryable=False
+        )
+        disconnect_spy = AsyncMock(wrapping=fail_adapter.disconnect)
+        fail_adapter.disconnect = disconnect_spy
+
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=fail_adapter):
+            async def run_one_iteration():
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+            await run_one_iteration()
+
+        disconnect_spy.assert_called_once()
+        assert Platform.TELEGRAM not in runner._failed_platforms
+
+    @pytest.mark.asyncio
+    async def test_exception_during_connect_disconnects_adapter(self):
+        """When _connect_adapter_with_timeout raises, adapter must be disconnected."""
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        # Create a real adapter to verify disconnect is called
+        adapter = StubAdapter(succeed=True)
+        disconnect_spy = AsyncMock(wrapping=adapter.disconnect)
+        adapter.disconnect = disconnect_spy
+
+        # Make _connect_adapter_with_timeout raise an exception
+        async def raise_connect(adapt, plat):
+            raise RuntimeError("simulated connect failure")
+
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=adapter):
+            with patch.object(runner, "_connect_adapter_with_timeout", side_effect=raise_connect):
+                async def run_one_iteration():
+                    runner._running = True
+                    call_count = 0
+
+                    async def fake_sleep(n):
+                        nonlocal call_count
+                        call_count += 1
+                        if call_count > 1:
+                            runner._running = False
+                        await real_sleep(0)
+
+                    with patch("asyncio.sleep", side_effect=fake_sleep):
+                        await runner._platform_reconnect_watcher()
+
+                await run_one_iteration()
+
+        # disconnect must have been called even though connect raised
+        disconnect_spy.assert_called_once()
+        # Platform should stay in retry queue (exception = transient)
+        assert Platform.TELEGRAM in runner._failed_platforms
+
+    @pytest.mark.asyncio
+    async def test_exception_before_adapter_creation_no_disconnect(self):
+        """When _create_adapter itself raises, no disconnect should be attempted."""
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        # _create_adapter raises before adapter is created
+        def raise_create(platform, config):
+            raise RuntimeError("adapter factory exploded")
+
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", side_effect=raise_create):
+            async def run_one_iteration():
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+            await run_one_iteration()
+
+        # Platform should stay in retry queue
+        assert Platform.TELEGRAM in runner._failed_platforms

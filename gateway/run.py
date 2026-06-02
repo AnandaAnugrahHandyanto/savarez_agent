@@ -6151,6 +6151,7 @@ class GatewayRunner:
                     platform.value, attempt,
                 )
 
+                adapter = None
                 try:
                     adapter = self._create_adapter(platform, platform_config)
                     if not adapter:
@@ -6228,7 +6229,7 @@ class GatewayRunner:
                 except Exception as e:
                     # Clean up adapter if it was created before the exception.
                     # _safe_adapter_disconnect swallows all errors.
-                    if "adapter" in locals():
+                    if adapter is not None:
                         await self._safe_adapter_disconnect(adapter, platform)
                     self._update_platform_runtime_status(
                         platform.value,
