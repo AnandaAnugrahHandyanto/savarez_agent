@@ -10,6 +10,7 @@ Usage:
 """
 
 import asyncio
+import base64
 import hmac
 import hashlib
 import importlib.util
@@ -22,6 +23,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -3736,6 +3738,8 @@ _AUDIO_EXTENSIONS = {
     ".aac", ".aif", ".aiff", ".flac", ".m4a", ".mp3", ".mp4",
     ".oga", ".ogg", ".opus", ".wav", ".webm",
 }
+_OPENAI_AUDIO_DIARIZATION_MODEL = "gpt-audio-mini"
+_OPENAI_AUDIO_CHUNK_SECONDS = 600
 
 
 def _audio_uploads_dir() -> Path:
@@ -3818,14 +3822,21 @@ def _turns_from_words(words: Any) -> List[Dict[str, Any]]:
 def _turns_from_labelled_text(text: str) -> List[Dict[str, str]]:
     turns: List[Dict[str, str]] = []
     current: Optional[Dict[str, str]] = None
-    label_re = re.compile(r"^(?:\[?((?:SPEAKER[_ -]?\d+)|(?:Speaker\s*\d+))\]?\s*[:\-]\s*)(.+)$", re.I)
+    label_re = re.compile(
+        r"^(?:\[?((?:SPEAKER[_ -]?[A-Z0-9]+)|(?:Speaker\s*[A-Z0-9]+))\]?\s*[:\-]\s*)(.+)$",
+        re.I,
+    )
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
         match = label_re.match(line)
         if match:
-            current = {"speaker": match.group(1).replace(" ", "_"), "text": match.group(2).strip()}
+            label = re.sub(r"\s+", " ", match.group(1).strip().replace("_", " "))
+            if label.upper().startswith("SPEAKER"):
+                rest = label[7:].strip()
+                label = f"Speaker {rest}" if rest else "Speaker"
+            current = {"speaker": label, "text": match.group(2).strip()}
             turns.append(current)
         elif current is not None:
             current["text"] = (current["text"] + " " + line).strip()
@@ -3840,6 +3851,135 @@ def _speaker_examples(turns: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         if text_value and speaker not in examples:
             examples[speaker] = text_value[:240]
     return [{"speaker": speaker, "example": example} for speaker, example in examples.items()]
+
+
+def _ffmpeg_audio_chunks(audio_path: Path, *, chunk_seconds: int = _OPENAI_AUDIO_CHUNK_SECONDS) -> List[bytes]:
+    """Convert uploaded audio to <=chunk_seconds MP3 chunks for OpenAI audio input."""
+    with tempfile.TemporaryDirectory(prefix="hermes-audio-diarize-") as tmp:
+        out_pattern = Path(tmp) / "chunk-%03d.mp3"
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(audio_path),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-codec:a",
+                "libmp3lame",
+                "-b:a",
+                "64k",
+                "-f",
+                "segment",
+                "-segment_time",
+                str(chunk_seconds),
+                "-reset_timestamps",
+                "1",
+                str(out_pattern),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=900,
+            check=False,
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(f"ffmpeg audio chunking failed ({proc.returncode}): {detail[:500]}")
+        chunks = [p.read_bytes() for p in sorted(Path(tmp).glob("chunk-*.mp3")) if p.stat().st_size > 0]
+        if not chunks:
+            raise RuntimeError("ffmpeg produced no audio chunks")
+        return chunks
+
+
+def _openai_audio_chat_completion(audio_mp3: bytes, *, chunk_index: int, total_chunks: int) -> str:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set; cannot run OpenAI audio diarization")
+
+    prompt = (
+        "Transcribe this phone call / meeting audio and diarize speakers. "
+        "Return only speaker-labelled transcript lines in this exact style:\n"
+        "Speaker A: ...\nSpeaker B: ...\n"
+        "Use a new line whenever the speaker changes. Do not include timestamps, summaries, markdown, "
+        "or any text that is not part of the labelled transcript."
+    )
+    if total_chunks > 1:
+        prompt += f"\nThis is chunk {chunk_index + 1} of {total_chunks}; label speakers within this chunk as Speaker A, Speaker B, etc."
+    payload = {
+        "model": _OPENAI_AUDIO_DIARIZATION_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a careful audio transcription and speaker diarization assistant."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": base64.b64encode(audio_mp3).decode("ascii"),
+                            "format": "mp3",
+                        },
+                    },
+                ],
+            },
+        ],
+        "temperature": 0,
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=900) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"OpenAI audio diarization failed ({exc.code}): {detail}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"OpenAI audio diarization request failed: {exc}") from exc
+    try:
+        content = body["choices"][0]["message"]["content"]
+    except Exception as exc:
+        raise RuntimeError(f"OpenAI audio diarization returned unexpected response: {body}") from exc
+    return str(content or "").strip()
+
+
+def _run_openai_audio_diarization(audio_path: Path) -> Dict[str, Any]:
+    chunks = _ffmpeg_audio_chunks(audio_path)
+    chunk_texts = [
+        _openai_audio_chat_completion(chunk, chunk_index=i, total_chunks=len(chunks))
+        for i, chunk in enumerate(chunks)
+    ]
+    named_transcript = "\n".join(text for text in chunk_texts if text.strip()).strip()
+    turns = _turns_from_labelled_text(named_transcript)
+    if not turns:
+        raise RuntimeError("OpenAI audio diarization returned no parseable speaker-labelled turns")
+    speakers = _speaker_examples(turns)
+    speaker_count = len({s["speaker"] for s in speakers})
+    status = "needs_speaker_names" if speaker_count > 1 else "complete"
+    return {
+        "status": status,
+        "provider": f"openai:{_OPENAI_AUDIO_DIARIZATION_MODEL}",
+        "transcript": "\n".join(str(turn.get("text") or "").strip() for turn in turns).strip(),
+        "turns": turns,
+        "speakers": speakers,
+        "speaker_names": {},
+        "named_transcript": named_transcript,
+        "chunks": len(chunks),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _run_audio_cli(audio_path: Path) -> Dict[str, Any]:
@@ -3926,8 +4066,7 @@ def _run_audio_diarization(audio_path: Path) -> None:
     running.update({"status": "running"})
     _write_audio_analysis(audio_path, running)
     try:
-        cli_result = _run_audio_cli(audio_path)
-        analysis = _load_cli_audio_result(cli_result)
+        analysis = _run_openai_audio_diarization(audio_path)
         _write_audio_analysis(audio_path, analysis)
         transcript_path = audio_path.with_suffix(audio_path.suffix + ".transcript.txt")
         transcript_path.write_text(analysis.get("named_transcript") or analysis.get("transcript") or "", encoding="utf-8")
