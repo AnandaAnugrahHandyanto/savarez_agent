@@ -1957,7 +1957,7 @@ _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = (
 
 
 def _is_openai_fast_model(model_id: Optional[str]) -> bool:
-    """Return True if the model is an OpenAI flagship eligible for Priority Processing."""
+    """Return True if the model is an OpenAI flagship eligible for service tiers."""
     raw = _strip_vendor_prefix(str(model_id or ""))
     # After stripping one vendor prefix (e.g. 'openrouter/'), the model may
     # still carry an 'openai/' sub-prefix (e.g. 'openai/gpt-4.1' from a path
@@ -1968,10 +1968,10 @@ def _is_openai_fast_model(model_id: Optional[str]) -> bool:
     base = raw.split(":")[0]
     if not base:
         return False
-    # Exclude Codex-series — they route through the Codex Responses API
-    # which doesn't accept service_tier.
-    if "codex" in base:
-        return False
+    # Note: Codex-series models (gpt-5.3-codex etc.) are NOT excluded here.
+    # The direct OpenAI Codex Responses API has its own service_tier handling
+    # in codex_responses_adapter.py. When Codex models are routed through
+    # OpenRouter or other chat_completions providers, service_tier works fine.
     return any(base.startswith(prefix) for prefix in _OPENAI_FAST_MODE_PREFIXES)
 
 
