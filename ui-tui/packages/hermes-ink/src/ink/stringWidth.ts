@@ -8,6 +8,13 @@ import { lruEvict } from './lru.js'
 
 const EMOJI_REGEX = emojiRegex()
 
+// Some Unicode symbols live in emoji-adjacent blocks and match emoji-regex,
+// but terminals render their default text presentation as a single cell. Treat
+// those as narrow unless the caller explicitly requests emoji presentation via
+// U+FE0F. This keeps prompt glyphs like `❯` from stealing an extra column after
+// dependency updates alter emoji classification data.
+const TEXT_PRESENTATION_SYMBOLS = new Set([0x26a0, 0x276f])
+
 /**
  * Fallback JavaScript implementation of stringWidth when Bun.stringWidth is not available.
  *
@@ -85,6 +92,14 @@ function stringWidthJavaScript(str: string): number {
     EMOJI_REGEX.lastIndex = 0
 
     if (EMOJI_REGEX.test(grapheme)) {
+      const first = grapheme.codePointAt(0)!
+
+      if (!grapheme.includes('\ufe0f') && TEXT_PRESENTATION_SYMBOLS.has(first)) {
+        width += eastAsianWidth(first, { ambiguousAsWide: false })
+
+        continue
+      }
+
       width += getEmojiWidth(grapheme)
 
       continue
