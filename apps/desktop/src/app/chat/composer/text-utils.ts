@@ -8,33 +8,16 @@ export interface TriggerState {
 
 const TRIGGER_RE = /(?:^|[\s])([@/])([^\s@/]*)$/
 
-// Chromium exposes the same pasted image on BOTH `clipboard.items` and
-// `clipboard.files`, and each call to `item.getAsFile()` / `files.item(i)`
-// returns a fresh File instance. Dedup-by-object-identity (Set<Blob>) keeps
-// both copies and the user sees their screenshot attached twice. Hash on
-// (name, size, lastModified, type) instead so duplicate metadata collapses.
-function fileFingerprint(blob: Blob): string {
-  const file = blob as File
-
-  return [file.name ?? '', blob.size, file.lastModified ?? 0, blob.type ?? ''].join('::')
-}
-
 export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   const blobs: Blob[] = []
-  const seen = new Set<string>()
+  const seen = new Set<Blob>()
 
   const push = (blob: Blob | null) => {
-    if (!blob || blob.size === 0) {
+    if (!blob || blob.size === 0 || seen.has(blob)) {
       return
     }
 
-    const key = fileFingerprint(blob)
-
-    if (seen.has(key)) {
-      return
-    }
-
-    seen.add(key)
+    seen.add(blob)
     blobs.push(blob)
   }
 
