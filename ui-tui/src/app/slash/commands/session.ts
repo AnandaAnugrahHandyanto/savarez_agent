@@ -99,6 +99,12 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       const trimmed = arg.trim()
 
+      // Allow opening the Sessions overlay even while busy, but prevent actions
+      // that would switch sessions mid-turn.
+      if (trimmed && ctx.session.guardBusySessionSwitch('switch sessions')) {
+        return
+      }
+
       if (trimmed.toLowerCase() === 'new') {
         return ctx.session.newLiveSession()
       }
@@ -110,7 +116,6 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       patchOverlayState({ sessions: true })
-    }
   },
 
   {
