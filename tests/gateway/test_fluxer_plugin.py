@@ -1596,6 +1596,46 @@ async def test_home_channel_is_free_response_even_with_require_mention(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_configured_free_response_channel_is_conversational(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    adapter = FluxerAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "base_url": "https://fluxer.example",
+                "bot_token": "app.secret",
+                "free_response_channels": ["bot-room"],
+            },
+        )
+    )
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    adapter.handle_message = fake_handle
+
+    await adapter._handle_gateway_dispatch(
+        {
+            "op": 0,
+            "t": "MESSAGE_CREATE",
+            "d": {
+                "id": "msg-free",
+                "channel_id": "bot-room",
+                "channel_type": "channel",
+                "content": "follow-up without tagging the bot",
+                "author": {"id": "user-1", "username": "Alice", "bot": False},
+            },
+        }
+    )
+
+    assert len(seen) == 1
+    assert seen[0].text == "follow-up without tagging the bot"
+    assert seen[0].source.chat_type == "channel"
+
+
+@pytest.mark.asyncio
 async def test_message_create_dispatches_image_attachment(monkeypatch):
     from gateway.config import PlatformConfig
     from gateway.platforms.base import MessageType

@@ -153,7 +153,7 @@ Hermes, check this please     # accepted
 I think Hermes said that      # ignored in channels
 ```
 
-Set `FLUXER_FREE_RESPONSE_CHANNELS` for additional channels where Hermes should always respond.
+Set `FLUXER_FREE_RESPONSE_CHANNELS` for additional channels where Hermes should always respond. Use this for dedicated bot/project rooms (for example weatherbot, trading, or other automation channels) where every message is effectively part of the conversation. Leave ordinary shared/social channels mention-gated so a passing “Hermes said…” does not wake the bot.
 
 ## Native interactions
 
