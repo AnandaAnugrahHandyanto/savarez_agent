@@ -175,6 +175,10 @@ class ChatCompletionsTransport(ProviderTransport):
             ):
                 needs_sanitize = True
                 break
+            # ``name`` on tool-result messages — see docstring.
+            if msg.get("role") == "tool" and "name" in msg:
+                needs_sanitize = True
+                break
             if any(isinstance(k, str) and k.startswith("_") for k in msg):
                 needs_sanitize = True
                 break
@@ -199,6 +203,12 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
+            # Strip ``name`` ONLY on tool-result messages (``role=tool``) —
+            # leave ``name`` on assistant/function messages alone where the
+            # spec actually expects it. Palantir's OpenAI surface rejects
+            # ``name`` on ``role=tool`` with ``unrecognizedProperty=name``.
+            if msg.get("role") == "tool":
+                msg.pop("name", None)
             # Reasoning echo fields — see docstring above.  Dropping on
             # the OpenAI-wire path is provider-agnostic; the
             # Anthropic-Messages transport reads these from a separate
