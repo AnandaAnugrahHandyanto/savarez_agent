@@ -77,6 +77,7 @@ CONFIGURABLE_TOOLSETS = [
     ("factory",         "🏭 Agent Factory",             "project, lane, task, gate, status"),
     ("calendar",        "📅 Agent Calendar",            "actors, calendars, availability, events"),
     ("crm",             "👥 Agent CRM",                 "organizations, contacts, interactions"),
+    ("fitness",         "💪 Fitness Coach Core",        "profiles, nutrition, routines, workouts, progress"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),

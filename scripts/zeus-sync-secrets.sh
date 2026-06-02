@@ -168,12 +168,34 @@ for pwd_key, url_key in {
     'CALENDAR_DB_RUNTIME_PASSWORD': 'CALENDAR_DATABASE_URL',
     'CRM_DB_RUNTIME_PASSWORD': 'CRM_DATABASE_URL',
     'SALES_DB_RUNTIME_PASSWORD': 'SALES_DATABASE_URL',
+    'ACCOUNTING_DB_RUNTIME_PASSWORD': 'ACCOUNTING_DATABASE_URL',
+    'FITNESS_DB_RUNTIME_PASSWORD': 'FITNESS_DATABASE_URL',
 }.items():
     url = values.get(url_key, '')
     if url:
         parsed = urlparse(url)
         if parsed.password:
             set_if_missing(pwd_key, unquote(parsed.password))
+
+def _agent_db_host_port():
+    agent_url = values.get('AGENT_DATABASE_URL', '')
+    if agent_url:
+        parsed = urlparse(agent_url)
+        if parsed.hostname:
+            return parsed.hostname, str(parsed.port or 5432)
+    return values.get('AGENT_DB_HOST_BIND') or '127.0.0.1', values.get('AGENT_DB_HOST_PORT') or '55430'
+
+def host_url(user_key, pwd_key, db_key, out_key):
+    if values.get(out_key):
+        return
+    user = values.get(user_key)
+    pwd = values.get(pwd_key)
+    db = values.get(db_key)
+    if user and pwd and db:
+        host, port = _agent_db_host_port()
+        values[out_key] = f"postgresql://{quote(user)}:{quote(pwd)}@{host}:{port}/{db}"
+        if out_key not in order:
+            order.append(out_key)
 
 def docker_url(user_key, pwd_key, db_key, out_key):
     user = values.get(user_key)
@@ -184,11 +206,20 @@ def docker_url(user_key, pwd_key, db_key, out_key):
         if out_key not in order:
             order.append(out_key)
 
+host_url('FACTORY_DB_RUNTIME_USER', 'FACTORY_DB_RUNTIME_PASSWORD', 'AGENT_DB_NAME', 'FACTORY_DATABASE_URL')
+host_url('CALENDAR_DB_RUNTIME_USER', 'CALENDAR_DB_RUNTIME_PASSWORD', 'AGENT_CALENDAR_DB_NAME', 'CALENDAR_DATABASE_URL')
+host_url('CRM_DB_RUNTIME_USER', 'CRM_DB_RUNTIME_PASSWORD', 'AGENT_CRM_DB_NAME', 'CRM_DATABASE_URL')
+host_url('SALES_DB_RUNTIME_USER', 'SALES_DB_RUNTIME_PASSWORD', 'AGENT_DB_NAME', 'SALES_DATABASE_URL')
+host_url('ACCOUNTING_DB_RUNTIME_USER', 'ACCOUNTING_DB_RUNTIME_PASSWORD', 'AGENT_DB_NAME', 'ACCOUNTING_DATABASE_URL')
+host_url('FITNESS_DB_RUNTIME_USER', 'FITNESS_DB_RUNTIME_PASSWORD', 'AGENT_DB_NAME', 'FITNESS_DATABASE_URL')
+
 docker_url('AGENT_DB_RUNTIME_USER', 'AGENT_DB_RUNTIME_PASSWORD', 'AGENT_DB_NAME', 'AGENT_DATABASE_URL_DOCKER')
 docker_url('FACTORY_DB_RUNTIME_USER', 'FACTORY_DB_RUNTIME_PASSWORD', 'AGENT_DB_NAME', 'FACTORY_DATABASE_URL_DOCKER')
 docker_url('CALENDAR_DB_RUNTIME_USER', 'CALENDAR_DB_RUNTIME_PASSWORD', 'AGENT_CALENDAR_DB_NAME', 'CALENDAR_DATABASE_URL_DOCKER')
 docker_url('CRM_DB_RUNTIME_USER', 'CRM_DB_RUNTIME_PASSWORD', 'AGENT_CRM_DB_NAME', 'CRM_DATABASE_URL_DOCKER')
 docker_url('SALES_DB_RUNTIME_USER', 'SALES_DB_RUNTIME_PASSWORD', 'AGENT_DB_NAME', 'SALES_DATABASE_URL_DOCKER')
+docker_url('ACCOUNTING_DB_RUNTIME_USER', 'ACCOUNTING_DB_RUNTIME_PASSWORD', 'AGENT_DB_NAME', 'ACCOUNTING_DATABASE_URL_DOCKER')
+docker_url('FITNESS_DB_RUNTIME_USER', 'FITNESS_DB_RUNTIME_PASSWORD', 'AGENT_DB_NAME', 'FITNESS_DATABASE_URL_DOCKER')
 
 # Agent-facing aliases for the generic calendar toolset. ACCOUNT_API_KEY is
 # the Nettu account key; keep a Hermes-native alias so the tool contract stays

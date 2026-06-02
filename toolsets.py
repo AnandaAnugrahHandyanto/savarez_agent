@@ -263,6 +263,21 @@ TOOLSETS = {
         "includes": []
     },
 
+    "fitness": {
+        "description": "Agent-native personal fitness coach core: profiles, goals, food database/cache, nutrition, exercises, routines, workouts, body metrics, check-ins, and progress summaries",
+        "tools": [
+            "fitness_status", "fitness_profile_upsert", "fitness_goal_upsert",
+            "fitness_food_upsert", "fitness_food_search",
+            "fitness_nutrition_log_create", "fitness_nutrition_day_summary",
+            "fitness_exercise_upsert", "fitness_exercise_search",
+            "fitness_routine_create", "fitness_routine_get",
+            "fitness_workout_session_create", "fitness_workout_set_log", "fitness_workout_finish",
+            "fitness_body_metric_log_create", "fitness_checkin_create",
+            "fitness_progress_summary", "fitness_coach_review",
+        ],
+        "includes": []
+    },
+
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
         "tools": ["send_message"],
