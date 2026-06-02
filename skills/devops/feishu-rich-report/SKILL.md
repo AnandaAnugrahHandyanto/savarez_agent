@@ -1,69 +1,101 @@
 ---
 name: feishu-rich-report
-version: 1.0.0
-description: "重要汇报用 lark-cli 发飞书富文本（post），支持 Markdown 表格。Hermes 内置回复会把表格降级成纯 text，本 skill 不改 Hermes 源码。当用户要求向飞书群汇报结果、且内容含表格/多级标题/结构化总结时使用。"
+version: 1.1.0
+description: "Side-chain Feishu rich posts via lark-cli; Hermes must ack done."
 metadata:
   requires:
     bins: ["lark-cli"]
   tags: [feishu, lark-cli, report, markdown, table]
 ---
 
-# Feishu 富文本汇报（lark-cli）
+# Feishu 侧链富文本 + Hermes 终态 ack
 
-> **前置：** 阅读 `~/.claude/skills/lark-shared/SKILL.md`（认证与 `--as`）。
+> **前置：** `~/.claude/skills/lark-shared/SKILL.md`（认证与 `--as`）。
+> **SOUL：** `SOUL.md` → **飞书 IM 交付契约**（禁 pipe 表、强制 Phase B ack）。
 
-## 何时用本 skill（必守）
+## 何时用
 
 | 场景 | 用什么 |
-|------|--------|
-| 进度条、单行状态、`⚙️ mcp_...` | Hermes **正常回复**即可 |
-| **重要汇报**：测试结论、验收、含 **Markdown 表格** | **本 skill** → `feishu_rich_send.py` |
-| 向指定群汇报（用户给了 `oc_xxx`） | `--chat-id oc_xxx` |
-| 在当前飞书会话里跟帖 | 不设 chat-id，用 `HERMES_SESSION_CHAT_ID` + 可选 `--thread-id` |
+| --- | --- |
+| Hermes IM 短回复、列表、分段 | **Hermes 正常回复**（禁止 `\|` pipe 表格） |
+| 含 pipe 表格 / 长报告 / 正式验收 | **侧链 Phase A** → 本 skill 或 `lark-doc` |
+| 侧链成功后 | **Phase B 必做** → Hermes 再发一条终态 IM（见下） |
 
-**禁止**对含表格的终稿使用 Hermes `send_message` / 普通聊天回复（会变成 `msg_type=text`，表格不渲染）。
+**禁止**仅跑 `lark-cli` / `terminal` 后结束 turn；用户看不到 Hermes bot 的「已完成」。
 
-## 一键发送
+## 两阶段闭环（必守）
+
+### Phase A — 侧链交付
 
 ```bash
-# 当前 Hermes 飞书会话（环境变量由 gateway 注入）
 python3 skills/devops/feishu-rich-report/scripts/feishu_rich_send.py \
+  --task-label "验收报告" \
+  --doc-link "https://xxx.feishu.cn/docx/..." \
+  --markdown-file /path/to/REPORT.md
+```
+
+- 检查 **exit 0**
+- 解析 stdout JSON：`side_delivery.status == "done"`
+- 记录 `message_id`、`suggested_chat_reply`
+
+大表优先 **文档侧链**：
+
+1. `lark-doc` 创建/更新文档（表格在 doc 里）
+2. Phase A 可选：用本脚本发 **摘要**（小表或无表）+ `--doc-link`
+3. 或 Phase A 仅 doc，Phase B 只发链接 + 结论
+
+### Phase B — Hermes 终态 ack（NON-NEGOTIABLE）
+
+**必须**在当前飞书会话再发一条 **Hermes 正常 IM 回复**（assistant 消息，非 terminal 打印）：
+
+- 可直接复制 JSON 里的 `suggested_chat_reply`
+- 或按 SOUL 模板：`✅ 已完成` + `📎 链接` + `↪ message_id`
+
+侧链失败时 Phase B 仍要发，说明失败与替代方案。
+
+## 命令示例
+
+```bash
+# 当前 Hermes 飞书会话（HERMES_SESSION_CHAT_ID 由 gateway 注入）
+python3 skills/devops/feishu-rich-report/scripts/feishu_rich_send.py \
+  --task-label "联调结果" \
   --markdown $'## 标题\n\n| 项 | 结果 |\n| --- | --- |\n| A | 通过 |'
 
-# 指定群 + 从文件读（长报告）
+# 指定群 + 长报告文件
 python3 skills/devops/feishu-rich-report/scripts/feishu_rich_send.py \
-  --chat-id oc_bfa70445b7411381db594886a2201495 \
-  --markdown-file /path/to/REPORT.md
+  --chat-id oc_xxx \
+  --task-label "周报" \
+  --markdown-file ./REPORT.md
 
-# 回复到用户消息所在话题
+# 仅打印建议的 Phase B 文案（发送成功后）
 python3 skills/devops/feishu-rich-report/scripts/feishu_rich_send.py \
-  --thread-id om_xxx \
-  --markdown-file ./summary.md
+  --chat-id oc_xxx --markdown $'## test' --task-label "测试" \
+  --dry-run --suggested-reply-only
 
-# 预览不发送
+# 预览 argv，不发送
 python3 skills/devops/feishu-rich-report/scripts/feishu_rich_send.py \
   --chat-id oc_xxx --markdown $'## test' --dry-run
 ```
 
-工作目录：在 `hermes-agent` 仓库根执行，或写脚本的绝对路径。
+工作目录：`hermes-agent` 仓库根，或写脚本绝对路径。
 
-## 与 lark-cli 直接调用等价
+## 输出字段（给 agent 读）
 
-```bash
-lark-cli im +messages-send --as bot \
-  --chat-id oc_xxx \
-  --markdown $'## ...\n\n| a | b |\n|---|---|\n| 1 | 2 |'
-```
+| 字段 | 含义 |
+| --- | --- |
+| `side_delivery.status` | `done` = 侧链成功；`dry_run` = 未发送 |
+| `completion_ack_required` | `true` 时必须 Phase B |
+| `suggested_chat_reply` | 建议复制到 Hermes IM 的终态文案 |
+| stderr `FEISHU_SIDE_DELIVERY_DONE` | 侧链成功标记（便于日志/监控） |
 
-`feishu_rich_send.py` 封装了：环境变量 chat/thread、长度校验、错误 JSON 解析。
+## 与 Hermes 内置 send 的分工
 
-## 撰写建议
-
-- 用 `##` / `###` 分段，用 `|` 表格汇总结果
-- 超长正文（>24k 字符）：飞书文档 + 消息里只发摘要表 + 文档链接
-- 需要卡片/按钮：改用 `lark-cli` `interactive` 或 `lark-im` skill，不在此脚本范围
+- Hermes `feishu.py`：**不改**；含 `\|` 表格 → 降级 `text`
+- 本 skill：侧链 post，表格正常渲染
+- 终态「任务结束」：**永远**以 Hermes Phase B IM 为准
 
 ## 参考
 
-- Hermes 为何无表格：`gateway/platforms/feishu.py` 中 `_build_outbound_payload` 对表格强制 `text`
-- 看板短消息仍用：`kanban-feishu-live/scripts/kanban_feishu_stage_notify.py`（`--text`）
+- SOUL：`飞书 IM 交付契约`
+- 官方行为：`gateway/platforms/feishu.py` `_build_outbound_payload`
+- 看板短消息：`kanban-feishu-live/scripts/kanban_feishu_stage_notify.py`（`--text`）

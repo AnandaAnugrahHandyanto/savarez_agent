@@ -56,3 +56,27 @@ def test_send_markdown_dry_run():
     out = mod.send_markdown("oc_x", "## t", dry_run=True)
     assert out["dry_run"] is True
     assert out["chars"] == 4
+    assert out["side_delivery"]["status"] == "dry_run"
+    assert out["completion_ack_required"] is False
+
+
+def test_wrap_side_delivery_result_done():
+    mod = _load()
+    out = mod.wrap_side_delivery_result(
+        {"data": {"message_id": "om_abc123"}},
+        chat_id="oc_test",
+        task_label="验收",
+        doc_link="https://example.feishu.cn/docx/abc",
+    )
+    assert out["side_delivery"]["status"] == "done"
+    assert out["side_delivery"]["message_id"] == "om_abc123"
+    assert out["completion_ack_required"] is True
+    assert "✅ 已完成：验收" in out["suggested_chat_reply"]
+    assert "https://example.feishu.cn/docx/abc" in out["suggested_chat_reply"]
+    assert "om_abc123" in out["suggested_chat_reply"]
+
+
+def test_format_completion_ack_minimal():
+    mod = _load()
+    text = mod.format_completion_ack(task_label="联调")
+    assert text == "✅ 已完成：联调"
