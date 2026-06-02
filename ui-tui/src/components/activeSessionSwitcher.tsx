@@ -318,9 +318,11 @@ export function ActiveSessionSwitcher({
   const [confirmDelete, setConfirmDelete] = useState<null | string>(null)
   const [deleting, setDeleting] = useState(false)
   const initialSelectionAppliedRef = useRef(false)
-  // Mirrors `history` so the quiet live-status poll can re-dedupe against the
-  // latest live set without re-querying the session DB every 1.5s.
-  const historyRef = useRef<SessionListItem[]>([])
+  // Holds the RAW `session.list` results (pre-dedupe). The quiet 1.5s poll
+  // re-derives the resumable list from this against the latest live set, so a
+  // session that was hidden while live reappears in history once it closes —
+  // without re-querying the DB. Only refreshed on a full (includeHistory) load.
+  const rawHistoryRef = useRef<SessionListItem[]>([])
   const { stdout } = useStdout()
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
   const promptColumns = Math.max(20, width - 11)
@@ -360,9 +362,12 @@ export function ActiveSessionSwitcher({
         }
 
         const next = r.sessions ?? []
-        const hist = includeHistory
-          ? resumableHistory(asRpcResult<SessionListResponse>(histRaw)?.sessions ?? [], next)
-          : resumableHistory(historyRef.current, next)
+
+        if (includeHistory) {
+          rawHistoryRef.current = asRpcResult<SessionListResponse>(histRaw)?.sessions ?? []
+        }
+
+        const hist = resumableHistory(rawHistoryRef.current, next)
         const initializeSelection = !initialSelectionAppliedRef.current
         initialSelectionAppliedRef.current = true
         const maxSel = next.length + hist.length // == total - 1 (new row is index 0)
@@ -390,10 +395,6 @@ export function ActiveSessionSwitcher({
     },
     [currentSessionId, gw]
   )
-
-  useEffect(() => {
-    historyRef.current = history
-  }, [history])
 
   useEffect(() => {
     void load()
@@ -473,6 +474,7 @@ export function ActiveSessionSwitcher({
             return
           }
 
+          rawHistoryRef.current = rawHistoryRef.current.filter(h => h.id !== target.id)
           setHistory(prev => prev.filter(h => h.id !== target.id))
           setSel(s => Math.max(0, Math.min(s, items.length + history.length - 1)))
           setErr('')
