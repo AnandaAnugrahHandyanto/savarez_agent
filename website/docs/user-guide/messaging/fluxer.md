@@ -107,6 +107,9 @@ Normally Hermes discovers this from `GET /gateway/bot`.
 | `FLUXER_ALLOW_ALL_USERS` | Optional | Allow every Fluxer user. Only safe for private/dev deployments. Default: `false`. |
 | `FLUXER_ALLOWED_CHANNELS` | Optional | Comma-separated channel IDs where Hermes may respond. Empty means no channel whitelist. DMs are still governed by user authorization. |
 | `FLUXER_FREE_RESPONSE_CHANNELS` | Optional | Comma-separated channel IDs where Hermes responds without being mentioned. |
+| `FLUXER_HOME_GUILD_ID` / `FLUXER_HOME_GUILDS` | Optional | Guild/community IDs that represent the user's own Hermes workspace. |
+| `FLUXER_AUTO_FREE_RESPONSE_HOME_GUILD` | Optional | When `true`, channels inside configured home guilds are conversational without per-channel opt-in. Default: `false`. |
+| `FLUXER_MENTION_GATED_CHANNELS` | Optional | Comma-separated channel IDs that still require a mention even inside auto-free-response home guilds. |
 | `FLUXER_REQUIRE_MENTION` | Optional | Require a direct mention/address in non-home channels. Default: `true`. |
 | `FLUXER_STRICT_MENTION` | Optional | Require a fresh mention on every channel message instead of remembering mentioned threads. Default: `false`. |
 | `FLUXER_MENTION_PATTERNS` | Optional | Comma-separated regexes that count as direct addresses. Defaults already cover `Hermes` at the start of a message. |
@@ -154,6 +157,8 @@ I think Hermes said that      # ignored in channels
 ```
 
 Set `FLUXER_FREE_RESPONSE_CHANNELS` for additional channels where Hermes should always respond. Use this for dedicated bot/project rooms (for example weatherbot, trading, or other automation channels) where every message is effectively part of the conversation. Leave ordinary shared/social channels mention-gated so a passing “Hermes said…” does not wake the bot.
+
+For a personal Hermes-owned Fluxer community, set `FLUXER_HOME_GUILD_ID` (or `FLUXER_HOME_GUILDS`) plus `FLUXER_AUTO_FREE_RESPONSE_HOME_GUILD=true`. New channels created inside those home guilds then work like conversational bot rooms without editing `FLUXER_FREE_RESPONSE_CHANNELS` every time. Use `FLUXER_MENTION_GATED_CHANNELS` to opt noisy rooms such as logs or notification feeds back into mention-only mode.
 
 ## Native interactions
 
@@ -269,9 +274,9 @@ The plugin registers a standalone sender, so cron delivery also works when the c
 
 **Messages send but don't appear** — Keep `FLUXER_DELIVERY_VERIFICATION=true` and check gateway logs. Hermes reads the sent message back when possible and logs delivery mismatch warnings.
 
-**The bot answers in channels where it should stay quiet** — Check `FLUXER_HOME_CHANNEL`, `FLUXER_FREE_RESPONSE_CHANNELS`, and `FLUXER_REQUIRE_MENTION`. The home channel is intentionally free-response.
+**The bot answers in channels where it should stay quiet** — Check `FLUXER_HOME_CHANNEL`, `FLUXER_FREE_RESPONSE_CHANNELS`, `FLUXER_AUTO_FREE_RESPONSE_HOME_GUILD`, and `FLUXER_REQUIRE_MENTION`. The home channel and configured home-guild channels are intentionally free-response. Add noisy channel IDs to `FLUXER_MENTION_GATED_CHANNELS` to opt them out of home-guild auto-response.
 
-**The bot ignores channel messages** — In non-home channels, address it directly (`Hermes, ...` or a real bot mention), add the channel to `FLUXER_FREE_RESPONSE_CHANNELS`, or set `FLUXER_REQUIRE_MENTION=false`.
+**The bot ignores channel messages** — In non-home channels, address it directly (`Hermes, ...` or a real bot mention), add the channel to `FLUXER_FREE_RESPONSE_CHANNELS`, configure `FLUXER_HOME_GUILD_ID` with `FLUXER_AUTO_FREE_RESPONSE_HOME_GUILD=true`, or set `FLUXER_REQUIRE_MENTION=false`.
 
 **Dangerous-command approval text fallback is needed** — Some Fluxer hosted/client builds accept component payloads but do not render buttons. Use `/approve once`, `/approve session`, `/approve always`, or `/deny` from the prompt text. If buttons are visible, they are optional shortcuts.
 

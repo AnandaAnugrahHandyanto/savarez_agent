@@ -65,6 +65,22 @@ optional_env:
     description: "Comma-separated channel IDs where Fluxer responds without mention"
     prompt: "Free-response channel IDs"
     password: false
+  - name: FLUXER_HOME_GUILD_ID
+    description: "Fluxer guild/community ID treated as the user's home Hermes workspace"
+    prompt: "Home guild ID"
+    password: false
+  - name: FLUXER_HOME_GUILDS
+    description: "Comma-separated Fluxer guild/community IDs treated as home Hermes workspaces"
+    prompt: "Home guild IDs"
+    password: false
+  - name: FLUXER_AUTO_FREE_RESPONSE_HOME_GUILD
+    description: "Respond without mention in channels inside configured home guilds (true/false)"
+    prompt: "Auto free-response in home guilds?"
+    password: false
+  - name: FLUXER_MENTION_GATED_CHANNELS
+    description: "Comma-separated channel IDs that still require mentions even in auto-free-response home guilds"
+    prompt: "Mention-gated channel IDs"
+    password: false
   - name: FLUXER_ALLOWED_CHANNELS
     description: "Comma-separated channel IDs where Fluxer is allowed to respond; empty means all"
     prompt: "Allowed channel IDs"

@@ -1666,6 +1666,49 @@ async def test_configured_free_response_channel_is_conversational(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_home_guild_channel_is_conversational_without_manual_channel_opt_in(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    adapter = FluxerAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "base_url": "https://fluxer.example",
+                "bot_token": "app.secret",
+                "home_guild_id": "guild-home",
+                "auto_free_response_home_guild": True,
+            },
+        )
+    )
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    adapter.handle_message = fake_handle
+
+    await adapter._handle_gateway_dispatch(
+        {
+            "op": 0,
+            "t": "MESSAGE_CREATE",
+            "d": {
+                "id": "msg-home-guild",
+                "channel_id": "new-project-room",
+                "guild_id": "guild-home",
+                "channel_type": "channel",
+                "content": "new channel should work without tagging",
+                "author": {"id": "user-1", "username": "Alice", "bot": False},
+            },
+        }
+    )
+
+    assert len(seen) == 1
+    assert seen[0].text == "new channel should work without tagging"
+    assert seen[0].source.chat_id == "new-project-room"
+    assert seen[0].source.guild_id == "guild-home"
+
+
+@pytest.mark.asyncio
 async def test_message_create_dispatches_image_attachment(monkeypatch):
     from gateway.config import PlatformConfig
     from gateway.platforms.base import MessageType

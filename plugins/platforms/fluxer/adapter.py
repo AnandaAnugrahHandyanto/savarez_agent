@@ -439,6 +439,19 @@ class FluxerAdapter(BasePlatformAdapter):
         self._free_response_channels = _split_ids(
             os.getenv("FLUXER_FREE_RESPONSE_CHANNELS") or extra.get("free_response_channels")
         )
+        self._mention_gated_channels = _split_ids(
+            os.getenv("FLUXER_MENTION_GATED_CHANNELS") or extra.get("mention_gated_channels")
+        )
+        self._auto_free_response_home_guild = _coerce_bool(
+            os.getenv("FLUXER_AUTO_FREE_RESPONSE_HOME_GUILD", extra.get("auto_free_response_home_guild")),
+            False,
+        )
+        self._home_guild_ids = _split_ids(
+            os.getenv("FLUXER_HOME_GUILDS")
+            or os.getenv("FLUXER_HOME_GUILD_ID")
+            or extra.get("home_guild_ids")
+            or extra.get("home_guild_id")
+        )
         self._allowed_channel_ids = _split_ids(
             os.getenv("FLUXER_ALLOWED_CHANNELS") or extra.get("allowed_channels")
         )
@@ -1470,6 +1483,19 @@ class FluxerAdapter(BasePlatformAdapter):
             logger.debug("Fluxer ignoring message in non-allowed channel %s", channel_id)
             return False, text
         if channel_id in self._free_response_channels or channel_id in self._home_channel_ids:
+            return True, text
+        guild_id = str(
+            data.get("guild_id")
+            or (data.get("guild") or {}).get("id")
+            or (data.get("channel") or {}).get("guild_id")
+            or ""
+        )
+        if (
+            self._auto_free_response_home_guild
+            and guild_id
+            and guild_id in self._home_guild_ids
+            and channel_id not in self._mention_gated_channels
+        ):
             return True, text
         if not self._require_mention:
             return True, text
