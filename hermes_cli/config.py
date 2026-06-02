@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli._subprocess_compat import secure_file_chmod
 
 logger = logging.getLogger(__name__)
 
@@ -668,7 +669,7 @@ def _secure_file(path):
         return
     try:
         if os.path.exists(str(path)):
-            os.chmod(path, 0o600)
+            secure_file_chmod(path)
     except (OSError, NotImplementedError):
         pass
 

@@ -70,6 +70,7 @@ from typing import Any, List, Optional, Tuple
 
 # Pin the legacy logger name so operator-side log filters keep matching
 # after the in-tree → plugin migration. See adapter.py for context.
+from hermes_cli._subprocess_compat import secure_file_chmod
 logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
 
 # Use the project's HERMES_HOME helper so the token follows the user's
@@ -82,7 +83,7 @@ except (ModuleNotFoundError, ImportError):
     # _hermes_home.py shim).
     def get_hermes_home() -> Path:
         val = os.environ.get("HERMES_HOME", "").strip()
-        return Path(val) if val else Path.home() / ".hermes"
+        return Path(val) if val else get_hermes_home()
 
     def display_hermes_home() -> str:
         home = get_hermes_home()
@@ -330,7 +331,7 @@ def _write_private_json(path: Path, data: Any) -> None:
     """Atomically write JSON with 0o600 permissions where supported."""
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        os.chmod(path.parent, 0o700)
+        secure_file_chmod(path.parent, mode=0o700)
     except OSError:
         pass
 

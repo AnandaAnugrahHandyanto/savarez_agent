@@ -88,6 +88,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
+from hermes_constants import get_hermes_home
 
 _log = logging.getLogger(__name__)
 
@@ -6378,7 +6379,7 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
 
     # An unset HERMES_HOME means the worker falls back to the default root
     # home (``~/.hermes``), which ships the bundled skill.
-    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
+    base = _Path(hermes_home) if hermes_home else (_get_hermes_home())
     skills_root = base / "skills"
     if not skills_root.is_dir():
         return False
@@ -6460,7 +6461,7 @@ def _default_spawn(
     # env, and when the child process starts `hermes -p <name>` the
     # _apply_profile_override() runs *before* hermes_constants is imported.
     # If HERMES_HOME is absent from the child's env, get_hermes_home() falls
-    # back to Path.home() / ".hermes" (the DEFAULT profile root), ignoring the
+    # back to get_hermes_home() (the DEFAULT profile root), ignoring the
     # profile-specific config entirely.  Fixes profile-scoped fallback_providers
     # being invisible to kanban workers.
     from hermes_cli.profiles import resolve_profile_env

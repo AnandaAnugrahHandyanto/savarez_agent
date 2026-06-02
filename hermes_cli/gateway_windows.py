@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
+from hermes_cli._subprocess_compat import safe_split_command
 _SCHTASKS_TIMEOUT_S = 15
 _SCHTASKS_NO_OUTPUT_TIMEOUT_S = 30
 # Patterns in schtasks stderr that mean "fall back to the Startup folder".
@@ -147,7 +148,7 @@ def _current_profile_cli_args() -> list[str]:
     from hermes_cli.gateway import _profile_arg
 
     profile_arg = _profile_arg()
-    return shlex.split(profile_arg) if profile_arg else []
+    return safe_split_command(profile_arg) if profile_arg else []
 
 
 def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None = None) -> bool:

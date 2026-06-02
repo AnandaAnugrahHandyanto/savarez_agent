@@ -23,6 +23,7 @@ from typing import Any
 
 from agent.file_safety import get_read_block_error, is_write_denied
 from agent.redact import redact_sensitive_text
+from hermes_cli._subprocess_compat import safe_split_command
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -65,7 +66,7 @@ def _resolve_args() -> list[str]:
     raw = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
     if not raw:
         return ["--acp", "--stdio"]
-    return shlex.split(raw)
+    return safe_split_command(raw)
 
 
 def _resolve_home_dir() -> str:

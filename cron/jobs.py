@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Union
+from hermes_cli._subprocess_compat import secure_file_chmod
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,7 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
 def _secure_dir(path: Path):
     """Set directory to owner-only access (0700). No-op on Windows."""
     try:
-        os.chmod(path, 0o700)
+        secure_file_chmod(path, mode=0o700)
     except (OSError, NotImplementedError):
         pass  # Windows or other platforms where chmod is not supported
 
@@ -168,7 +169,7 @@ def _secure_file(path: Path):
     """Set file to owner-only read/write (0600). No-op on Windows."""
     try:
         if path.exists():
-            os.chmod(path, 0o600)
+            secure_file_chmod(path)
     except (OSError, NotImplementedError):
         pass
 

@@ -14,6 +14,8 @@ Usage:
 
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
 # on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
+from hermes_cli._subprocess_compat import safe_split_command
+from hermes_cli._subprocess_compat import secure_file_chmod
 try:
     import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError:
@@ -2931,7 +2933,7 @@ def save_config_value(key_path: str, value: any) -> bool:
         
         # Enforce owner-only permissions on config files (contain API keys)
         try:
-            os.chmod(config_path, 0o600)
+            secure_file_chmod(config_path)
         except (OSError, NotImplementedError):
             pass
         
@@ -6208,7 +6210,7 @@ class HermesCLI:
                 _cprint(line)
 
         try:
-            parts = shlex.split(cmd)
+            parts = safe_split_command(cmd)
         except ValueError:
             parts = cmd.split()
 
@@ -8256,7 +8258,7 @@ class HermesCLI:
                     i += 1
             return opts
 
-        tokens = shlex.split(cmd)
+        tokens = safe_split_command(cmd)
 
         if len(tokens) == 1:
             print()
@@ -8437,7 +8439,7 @@ class HermesCLI:
         """
         import shlex
 
-        tokens = shlex.split(cmd)[1:] if cmd else []
+        tokens = safe_split_command(cmd)[1:] if cmd else []
         if not tokens:
             tokens = ["status"]
 

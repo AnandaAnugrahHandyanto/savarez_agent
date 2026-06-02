@@ -42,6 +42,7 @@ import tempfile
 import threading
 import time
 import uuid
+from hermes_cli._subprocess_compat import secure_file_chmod
 
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
@@ -1194,7 +1195,7 @@ def execute_code(
         else:
             server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             server_sock.bind(sock_path)
-            os.chmod(sock_path, 0o600)
+            secure_file_chmod(sock_path)
         server_sock.listen(1)
 
         # Wrapped so the thread inherits the turn's approval context + callbacks

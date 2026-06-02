@@ -45,6 +45,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from hermes_cli._subprocess_compat import secure_file_chmod
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
     to `$HERMES_HOME` / `~/.hermes` keeps direct callers working too.
     """
     if home_path is None:
-        home_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+        home_path = Path(os.getenv("HERMES_HOME", get_hermes_home()))
     return home_path / "cache" / _DISK_CACHE_BASENAME
 
 
@@ -157,7 +158,7 @@ def _write_disk_cache(cache_key: _CacheKey, entry: "_CachedFetch",
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f)
-            os.chmod(tmp, 0o600)
+            secure_file_chmod(tmp)
             os.replace(tmp, path)
         except BaseException:
             try:

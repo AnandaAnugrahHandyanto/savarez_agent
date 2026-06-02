@@ -15,6 +15,7 @@ Usage:
 
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
 # on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
+from hermes_cli._subprocess_compat import safe_split_command
 try:
     import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError:
@@ -3048,7 +3049,7 @@ class GatewayRunner:
         if not text:
             return "", False
         try:
-            tokens = shlex.split(text)
+            tokens = safe_split_command(text)
         except ValueError:
             tokens = text.split()
 
@@ -10142,7 +10143,7 @@ class GatewayRunner:
         if text.startswith("kanban"):
             text = text[len("kanban"):].lstrip()
 
-        tokens = shlex.split(text) if text else []
+        tokens = safe_split_command(text) if text else []
         requested_board = None
         action = None
         i = 0

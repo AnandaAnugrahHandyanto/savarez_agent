@@ -31,6 +31,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_cli._subprocess_compat import secure_file_chmod
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -759,7 +760,7 @@ def create_profile(
                     # explicitly so the clone doesn't inherit weak perms.
                     if filename == ".env":
                         try:
-                            os.chmod(str(dst), 0o600)
+                            secure_file_chmod(str(dst))
                         except OSError:
                             pass
 

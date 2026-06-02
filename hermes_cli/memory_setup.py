@@ -19,6 +19,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 # ---------------------------------------------------------------------------
 # Curses-based interactive picker (same pattern as hermes tools)
 # ---------------------------------------------------------------------------
+from hermes_cli._subprocess_compat import safe_split_command
 
 def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -> int:
     """Interactive single-select with arrow keys.
@@ -130,7 +131,7 @@ def _install_dependencies(provider_name: str) -> None:
         if check_cmd:
             try:
                 subprocess.run(
-                    shlex.split(check_cmd), check=True, capture_output=True, timeout=5
+                    safe_split_command(check_cmd), check=True, capture_output=True, timeout=5
                 )
             except Exception:
                 if install_cmd:
