@@ -17,6 +17,20 @@ from .workspace import Entrypoint, Workspace
 from .session import Session
 
 
+class UnsupportedEntryPointError(ValueError):
+    """Raised when an inbound event references an entrypoint with no registered adapter.
+
+    Callers must handle this explicitly rather than relying on silent fallback.
+    """
+
+    def __init__(self, entrypoint: str) -> None:
+        self.entrypoint = entrypoint
+        super().__init__(
+            f"No EntryAdapter registered for entrypoint '{entrypoint}'. "
+            f"Register an adapter before ingesting events from this source."
+        )
+
+
 @runtime_checkable
 class EntryAdapter(Protocol):
     """Protocol that every Hermes entry adapter must satisfy.
@@ -71,8 +85,10 @@ class EntryAdapterRegistry:
     Registered at startup. Handles:
     - deterministic duplicate rejection
     - adapter lookup by entrypoint
-    - ingest: raw -> normalize -> resolve workspace/session -> EntryEvent
+    - ingest: raw -> normalize -> EntryEvent
     - health aggregation
+
+    Ingesting from an unregistered entrypoint raises UnsupportedEntryPointError.
     """
 
     def __init__(self) -> None:
@@ -118,18 +134,13 @@ class EntryAdapterRegistry:
     def ingest(self, raw: dict[str, Any], entrypoint: str) -> EntryEvent:
         """Route a raw inbound payload through the correct adapter.
 
-        If no adapter is registered for *entrypoint*, the event is still
-        normalized into an EntryEvent with origin_entrypoint set to the
-        requested entrypoint and entrypoint set to "cli".
+        Raises UnsupportedEntryPointError if no adapter is registered for
+        the given entrypoint. Callers must handle unsupported sources
+        explicitly rather than relying on silent fallback.
         """
         adapter = self.get(entrypoint)
         if adapter is None:
-            return EntryEvent(
-                event_id="",
-                entrypoint="cli",
-                message=str(raw.get("message", "")),
-                origin_entrypoint=entrypoint,
-            )
+            raise UnsupportedEntryPointError(entrypoint)
         return adapter.normalize_event(raw)
 
     # -- health -------------------------------------------------------------

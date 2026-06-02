@@ -5,6 +5,7 @@ import pytest
 from agent.managed_agents.entry_adapter import (
     EntryAdapter,
     EntryAdapterRegistry,
+    UnsupportedEntryPointError,
 )
 from agent.managed_agents.entry_event import EntryEvent
 from agent.managed_agents.workspace import Workspace, DEFAULT_WORKSPACE_ID
@@ -109,20 +110,38 @@ def test_ingest_routes_through_adapter():
     assert event.external_user_id == "u1"
 
 
-def test_ingest_unknown_entrypoint_falls_back():
+def test_ingest_unsupported_entrypoint_raises():
+    """Unregistered entrypoints must raise UnsupportedEntryPointError,
+    not silently normalize to 'cli'."""
     reg = EntryAdapterRegistry()
-    event = reg.ingest({"message": "hello"}, "discord")
-    assert event.entrypoint == "cli"
-    assert event.origin_entrypoint == "discord"
-    assert event.message == "hello"
+    with pytest.raises(UnsupportedEntryPointError) as exc_info:
+        reg.ingest({"message": "hello"}, "discord")
+    assert exc_info.value.entrypoint == "discord"
+    assert "discord" in str(exc_info.value)
 
 
-def test_ingest_unknown_empty_payload():
+def test_ingest_unsupported_empty_payload_raises():
+    """Even an empty payload must raise for unsupported entrypoints."""
     reg = EntryAdapterRegistry()
-    event = reg.ingest({}, "nonexistent")
-    assert event.entrypoint == "cli"
-    assert event.origin_entrypoint == "nonexistent"
-    assert event.message == ""
+    with pytest.raises(UnsupportedEntryPointError) as exc_info:
+        reg.ingest({}, "nonexistent")
+    assert exc_info.value.entrypoint == "nonexistent"
+
+
+def test_ingest_unsupported_after_unregister_raises():
+    """After unregister, a previously supported entrypoint must raise."""
+    reg = EntryAdapterRegistry()
+    reg.register(_TestAdapter())
+    reg.unregister("feishu")
+    with pytest.raises(UnsupportedEntryPointError):
+        reg.ingest({"message": "still here"}, "feishu")
+
+
+def test_unsupported_entrypoint_error_is_value_error():
+    """UnsupportedEntryPointError is a ValueError for catch compatibility."""
+    err = UnsupportedEntryPointError("test")
+    assert isinstance(err, ValueError)
+    assert err.entrypoint == "test"
 
 
 def test_test_adapter_satisfies_protocol():
