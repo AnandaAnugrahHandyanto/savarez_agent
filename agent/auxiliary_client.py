@@ -539,6 +539,27 @@ def _peek_pool_entry(provider: str) -> Optional[Any]:
     return None
 
 
+# ---- SessionModelPool helper (auxiliary slot tracking) ----
+
+_aux_pool_cache = None  # cached singleton reference
+
+
+def _get_session_model_pool():
+    """Return the SessionModelPool singleton (or None if disabled/unavailable).
+
+    Caches the reference to avoid repeated lazy imports inside the hot path.
+    """
+    global _aux_pool_cache
+    if _aux_pool_cache is not None:
+        return _aux_pool_cache
+    try:
+        from gateway.session_model_pool import get_session_model_pool
+        _aux_pool_cache = get_session_model_pool({})
+    except Exception:
+        pass
+    return _aux_pool_cache
+
+
 def _pool_runtime_api_key(entry: Any) -> str:
     if entry is None:
         return ""
@@ -4972,22 +4993,21 @@ def call_llm(
     # Session Model Pool: acquire an auxiliary slot before making the call
     # so the pool can throttle concurrent auxiliary requests to the same model.
     _pool_aux_acquired = False
+    _pool = _get_session_model_pool()
     try:
-        try:
-            from gateway.session_model_pool import get_session_model_pool as _get_pool
-            _pool = _get_pool({})
-            if _pool and _pool.enabled:
-                _pool_aux_acquired = _pool.acquire_auxiliary_slot(final_model or "", resolved_provider or "")
-        except Exception:
-            pass
+        if _pool and _pool.enabled:
+            _pool_aux_acquired = _pool.acquire_auxiliary_slot(final_model or "", resolved_provider or "")
+    except Exception:
+        pass
 
-        if not _pool_aux_acquired and _pool and _pool.enabled:
-            logger.warning(
-                "Auxiliary %s: blocked by SessionModelPool for %s:%s — skipping call",
-                task or "call", resolved_provider, final_model,
-            )
-            return {"error": "auxiliary_slot_blocked", "task": task}
+    if not _pool_aux_acquired and _pool and _pool.enabled:
+        logger.warning(
+            "Auxiliary %s: blocked by SessionModelPool for %s:%s — skipping call",
+            task or "call", resolved_provider, final_model,
+        )
+        return None
 
+    try:
         return _validate_llm_response(
             client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
@@ -5285,8 +5305,7 @@ def call_llm(
         # completes (success, error, or fallback).
         if _pool_aux_acquired:
             try:
-                from gateway.session_model_pool import get_session_model_pool as _get_pool_fin
-                _pool_fin = _get_pool_fin({})
+                _pool_fin = _get_session_model_pool()
                 if _pool_fin and _pool_fin.enabled:
                     _pool_fin.release_auxiliary_slot(final_model or "", resolved_provider or "")
             except Exception:

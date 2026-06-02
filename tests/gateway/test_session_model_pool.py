@@ -19,7 +19,7 @@ from gateway.session_model_pool import (
 class TestPoolModelEntry:
     def test_available_session_slots(self):
         e = PoolModelEntry(model="glm-5", provider="zai", max_concurrent=3, reserved_for_auxiliary=1)
-        e.session_slots = ["s1"]
+        e.session_slots = {"s1": time.monotonic()}
         assert e.available_session_slots == 1  # 3 - 1(reserved) - 1(session) = 1
 
     def test_available_auxiliary_slots(self):
@@ -29,13 +29,13 @@ class TestPoolModelEntry:
 
     def test_is_saturated(self):
         e = PoolModelEntry(model="glm-5", provider="zai", max_concurrent=2, reserved_for_auxiliary=1)
-        e.session_slots = ["s1"]
+        e.session_slots = {"s1": time.monotonic()}
         e.auxiliary_count = 1
         assert e.is_saturated
 
     def test_not_saturated(self):
         e = PoolModelEntry(model="glm-5", provider="zai", max_concurrent=3, reserved_for_auxiliary=1)
-        e.session_slots = ["s1"]
+        e.session_slots = {"s1": time.monotonic()}
         assert not e.is_saturated
 
     def test_pool_key(self):
