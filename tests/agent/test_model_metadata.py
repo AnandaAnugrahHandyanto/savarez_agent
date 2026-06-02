@@ -1247,3 +1247,165 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+class TestQwen36PlusStaleCacheGuard:
+    """Pre-catalog builds resolved qwen3.6-plus via the generic 'qwen' catch-all
+    (131,072) and persisted it before the 'qwen3.6-plus' (1M) entry was added on
+    2026-05-17.  The step-1 cache guard must drop that stale value so the correct
+    1M entry from DEFAULT_CONTEXT_LENGTHS is used instead."""
+
+    def test_helper_catches_bare_slug(self):
+        from agent.model_metadata import _model_name_suggests_qwen3_6_plus
+        assert _model_name_suggests_qwen3_6_plus("qwen3.6-plus") is True
+        assert _model_name_suggests_qwen3_6_plus("qwen/qwen3.6-plus") is True
+        assert _model_name_suggests_qwen3_6_plus("dashscope/qwen3.6-plus") is True
+
+    def test_helper_rejects_other_qwen(self):
+        from agent.model_metadata import _model_name_suggests_qwen3_6_plus
+        assert _model_name_suggests_qwen3_6_plus("qwen3-coder-plus") is False
+        assert _model_name_suggests_qwen3_6_plus("qwen") is False
+        assert _model_name_suggests_qwen3_6_plus("qwen3.5-72b") is False
+
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_stale_131k_cache_dropped_and_re_resolved(self, mock_fetch, _mock_mdev, tmp_path):
+        """A cached value of 131,072 (pre-catalog qwen catch-all) for qwen3.6-plus
+        must be dropped so the lookup falls through to the 1M hardcoded default
+        in DEFAULT_CONTEXT_LENGTHS."""
+        from agent.model_metadata import (
+            get_model_context_length,
+            save_context_length,
+        )
+        mock_fetch.return_value = {}
+        cache_file = tmp_path / "cache.yaml"
+        url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("qwen3.6-plus", url, 131_072)
+            result = get_model_context_length("qwen3.6-plus", base_url=url)
+        assert result == 1_048_576
+
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_correct_1m_cache_preserved(self, mock_fetch, _mock_mdev, tmp_path):
+        """A cached value of 1,048,576 (already correct) must not be evicted."""
+        from agent.model_metadata import (
+            get_model_context_length,
+            save_context_length,
+        )
+        mock_fetch.return_value = {}
+        cache_file = tmp_path / "cache.yaml"
+        url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("qwen3.6-plus", url, 1_048_576)
+            result = get_model_context_length("qwen3.6-plus", base_url=url)
+        assert result == 1_048_576
+
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_plain_qwen_256k_cache_not_clobbered(self, mock_fetch, _mock_mdev, tmp_path):
+        """A generic 'qwen' slug with a cached 131,072 must not be evicted by
+        the qwen3.6-plus guard (no false-positive widening of the guard)."""
+        from agent.model_metadata import (
+            get_model_context_length,
+            save_context_length,
+        )
+        mock_fetch.return_value = {}
+        cache_file = tmp_path / "cache.yaml"
+        url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("qwen", url, 131_072)
+            result = get_model_context_length("qwen", base_url=url)
+        assert result == 131_072
+
+
+class TestGrokFastAndGrok420StaleCacheGuard:
+    """grok-4-fast (2M) and grok-4.20 (2M) entries were added to
+    DEFAULT_CONTEXT_LENGTHS on 2026-04-10.  Before that, these slugs had no
+    explicit entry and could be cached at DEFAULT_FALLBACK_CONTEXT (256,000) or
+    lower via a context-overflow probe.  The step-1 guard must drop those stale
+    values so the 2M default is used."""
+
+    def test_helper_catches_grok_4_fast_variants(self):
+        from agent.model_metadata import _model_name_suggests_grok_4_fast_or_4_20
+        assert _model_name_suggests_grok_4_fast_or_4_20("grok-4-fast") is True
+        assert _model_name_suggests_grok_4_fast_or_4_20("grok-4-fast-reasoning") is True
+        assert _model_name_suggests_grok_4_fast_or_4_20("grok-4-fast-non-reasoning") is True
+
+    def test_helper_catches_grok_4_20_variants(self):
+        from agent.model_metadata import _model_name_suggests_grok_4_fast_or_4_20
+        assert _model_name_suggests_grok_4_fast_or_4_20("grok-4.20-0309-reasoning") is True
+        assert _model_name_suggests_grok_4_fast_or_4_20("grok-4.20-multi-agent-0309") is True
+        assert _model_name_suggests_grok_4_fast_or_4_20("grok-4.20") is True
+
+    def test_helper_rejects_plain_grok_4(self):
+        from agent.model_metadata import _model_name_suggests_grok_4_fast_or_4_20
+        assert _model_name_suggests_grok_4_fast_or_4_20("grok-4") is False
+        assert _model_name_suggests_grok_4_fast_or_4_20("grok-4-0709") is False
+        assert _model_name_suggests_grok_4_fast_or_4_20("grok-4.3") is False
+        assert _model_name_suggests_grok_4_fast_or_4_20("grok-3") is False
+
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_stale_256k_cache_dropped_grok_4_fast(self, mock_fetch, _mock_mdev, tmp_path):
+        """A cached 256,000 (DEFAULT_FALLBACK_CONTEXT, pre-catalog) for grok-4-fast
+        must be dropped so the 2M hardcoded default is used."""
+        from agent.model_metadata import (
+            get_model_context_length,
+            save_context_length,
+        )
+        mock_fetch.return_value = {}
+        cache_file = tmp_path / "cache.yaml"
+        url = "https://api.x.ai/v1"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("grok-4-fast", url, 256_000)
+            result = get_model_context_length("grok-4-fast", base_url=url)
+        assert result == 2_000_000
+
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_stale_256k_cache_dropped_grok_4_20(self, mock_fetch, _mock_mdev, tmp_path):
+        """A cached 256,000 for grok-4.20-0309-reasoning must be dropped."""
+        from agent.model_metadata import (
+            get_model_context_length,
+            save_context_length,
+        )
+        mock_fetch.return_value = {}
+        cache_file = tmp_path / "cache.yaml"
+        url = "https://api.x.ai/v1"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("grok-4.20-0309-reasoning", url, 256_000)
+            result = get_model_context_length("grok-4.20-0309-reasoning", base_url=url)
+        assert result == 2_000_000
+
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_correct_2m_cache_preserved(self, mock_fetch, _mock_mdev, tmp_path):
+        """A cached 2,000,000 (already correct) must not be evicted."""
+        from agent.model_metadata import (
+            get_model_context_length,
+            save_context_length,
+        )
+        mock_fetch.return_value = {}
+        cache_file = tmp_path / "cache.yaml"
+        url = "https://api.x.ai/v1"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("grok-4-fast", url, 2_000_000)
+            result = get_model_context_length("grok-4-fast", base_url=url)
+        assert result == 2_000_000
+
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_plain_grok_4_256k_cache_not_clobbered(self, mock_fetch, _mock_mdev, tmp_path):
+        """A plain 'grok-4' (256K is correct) cached value must not be evicted."""
+        from agent.model_metadata import (
+            get_model_context_length,
+            save_context_length,
+        )
+        mock_fetch.return_value = {}
+        cache_file = tmp_path / "cache.yaml"
+        url = "https://api.x.ai/v1"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("grok-4", url, 256_000)
+            result = get_model_context_length("grok-4", base_url=url)
+        assert result == 256_000
