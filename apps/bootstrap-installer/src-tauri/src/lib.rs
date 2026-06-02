@@ -91,7 +91,7 @@ pub fn run() {
     let force_setup = std::env::args()
         .skip(1)
         .any(|a| a == "--reinstall" || a == "--repair");
-    tracing::info!(?mode, force_setup, "Hermes Setup starting");
+    tracing::info!(?mode, force_setup, "Hermes installer starting");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
