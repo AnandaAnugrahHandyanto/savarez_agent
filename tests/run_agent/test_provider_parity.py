@@ -116,7 +116,7 @@ class TestBuildApiKwargsOpenRouter:
         assert "instructions" not in kwargs
         assert "store" not in kwargs
 
-    def test_strips_codex_only_tool_call_fields_from_chat_messages(self, monkeypatch):
+    def test_strips_internal_tool_call_fields_from_chat_messages(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
         messages = [
             {"role": "user", "content": "hi"},
@@ -148,13 +148,14 @@ class TestBuildApiKwargsOpenRouter:
         assert "codex_reasoning_items" not in assistant_msg
         assert tool_call["id"] == "call_123"
         assert tool_call["function"]["name"] == "terminal"
-        assert tool_call["extra_content"] == {"thought_signature": "opaque"}
         assert "call_id" not in tool_call
         assert "response_item_id" not in tool_call
+        assert "extra_content" not in tool_call
 
-        # Original stored history must remain unchanged for Responses replay mode.
+        # Original stored history must remain unchanged for provider-specific replay modes.
         assert messages[1]["tool_calls"][0]["call_id"] == "call_123"
         assert messages[1]["tool_calls"][0]["response_item_id"] == "fc_123"
+        assert messages[1]["tool_calls"][0]["extra_content"] == {"thought_signature": "opaque"}
         assert "codex_reasoning_items" in messages[1]
 
     def test_gemini_native_passes_base_url_for_top_level_thinking_config(self, monkeypatch):

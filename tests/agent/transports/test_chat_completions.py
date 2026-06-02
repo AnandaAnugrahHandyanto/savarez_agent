@@ -46,6 +46,31 @@ class TestChatCompletionsBasic:
         assert "codex_reasoning_items" in msgs[0]
         assert "codex_message_items" in msgs[0]
 
+    def test_convert_messages_strips_tool_call_extra_content(self, transport):
+        msgs = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_gemini",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                        "extra_content": {
+                            "google": {"thought_signature": "SIG_ABC123"},
+                        },
+                    },
+                ],
+            },
+        ]
+
+        result = transport.convert_messages(msgs)
+
+        assert "extra_content" not in result[0]["tool_calls"][0]
+        assert msgs[0]["tool_calls"][0]["extra_content"] == {
+            "google": {"thought_signature": "SIG_ABC123"},
+        }
+
     def test_convert_messages_strips_tool_name(self, transport):
         """Internal `tool_name` (used for FTS indexing in the SQLite store) is
         not part of the OpenAI Chat Completions schema. Strict providers like

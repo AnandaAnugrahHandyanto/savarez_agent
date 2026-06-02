@@ -119,6 +119,10 @@ class ChatCompletionsTransport(ProviderTransport):
         - Codex Responses API fields: ``codex_reasoning_items`` /
           ``codex_message_items`` on the message, ``call_id`` /
           ``response_item_id`` on ``tool_calls`` entries.
+        - Gemini response-side metadata: ``extra_content`` on
+          ``tool_calls`` entries. Gemini 3 thinking models emit this
+          metadata with thought signatures, but non-Gemini chat-completions
+          providers reject it when historical tool-call messages are replayed.
         - ``tool_name`` on tool-result messages — written by
           ``make_tool_result_message()`` for the SQLite FTS index, but not
           part of the Chat Completions schema. Strict providers (Fireworks,
@@ -155,7 +159,9 @@ class ChatCompletionsTransport(ProviderTransport):
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
                     if isinstance(tc, dict) and (
-                        "call_id" in tc or "response_item_id" in tc
+                        "call_id" in tc
+                        or "response_item_id" in tc
+                        or "extra_content" in tc
                     ):
                         needs_sanitize = True
                         break
@@ -183,6 +189,7 @@ class ChatCompletionsTransport(ProviderTransport):
                     if isinstance(tc, dict):
                         tc.pop("call_id", None)
                         tc.pop("response_item_id", None)
+                        tc.pop("extra_content", None)
         return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
