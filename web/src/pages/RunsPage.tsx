@@ -82,6 +82,8 @@ export default function RunsPage() {
   const { search } = useLocation();
   const initialParams = useMemo(() => new URLSearchParams(search), [search]);
   const initialStatus = initialParams.get("status") || "";
+  const initialSource = initialParams.get("source") || "";
+  const initialFrom = initialParams.get("from") || "";
   const initialView = initialParams.get("view") === "runs" || ["queued", "completed", "cancelled"].includes(initialStatus)
     ? "runs"
     : "tasks";
@@ -462,6 +464,24 @@ export default function RunsPage() {
         </Card>
       ) : null}
 
+      {initialFrom === "operations" ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <a
+            href="/operations"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-primary/40 transition-colors"
+          >
+            <ChevronDown className="h-3.5 w-3.5 rotate-90" />
+            Back to Operations
+          </a>
+          {initialSource ? (
+            <span className="text-xs normal-case text-muted-foreground">
+              From <span className="font-mono text-[11px]">{initialSource}</span> alert
+              {initialParams.get("severity") ? <span> · {initialParams.get("severity")}</span> : null}
+              {initialParams.get("category") ? <span> · {initialParams.get("category")}</span> : null}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <Card>
         <CardContent className="py-4">
           <Stats

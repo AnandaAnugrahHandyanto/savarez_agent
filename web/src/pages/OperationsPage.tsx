@@ -379,16 +379,20 @@ function buildAlerts(args: {
   return alerts;
 }
 
-function actionPath(action: AlertAction, project: string): string {
+function actionPath(action: AlertAction, project: string, extras?: { source?: string; alertSeverity?: string; alertCategory?: string }): string {
   let path = "/runs";
   if (action.type === "view_agents" || action.type === "view_routing") path = "/agents";
   else if (action.type === "view_logs") path = "/logs";
   else if (action.type === "view_models") path = "/models";
 
   const params = new URLSearchParams();
+  params.set("from", "operations");
   if (project) params.set("project", project);
   if (action.agent_id) params.set("agent_id", action.agent_id);
   if (action.type === "view_routing") params.set("section", "routing");
+  if (extras?.source) params.set("source", extras.source);
+  if (extras?.alertSeverity) params.set("severity", extras.alertSeverity);
+  if (extras?.alertCategory) params.set("category", extras.alertCategory);
   for (const [key, value] of Object.entries(action.params ?? {})) {
     if (value !== undefined) params.set(key, String(value));
   }
@@ -687,7 +691,11 @@ export default function OperationsPage() {
       void runCollaborationSmoke();
       return;
     }
-    navigate(actionPath(alert.action, project.trim() || DEFAULT_PROJECT));
+    navigate(actionPath(alert.action, project.trim() || DEFAULT_PROJECT, {
+      source: alert.source,
+      alertSeverity: alert.severity,
+      alertCategory: alert.category,
+    }));
   };
 
   const acknowledgeAlert = (alertId: string) => {
