@@ -3692,8 +3692,9 @@ def parallel_search_sources(
     if not active:
         return all_results, source_counts, timed_out_ids
 
-    with ThreadPoolExecutor(max_workers=min(len(active), 8)) as pool:
-        futures = {}
+    pool = ThreadPoolExecutor(max_workers=min(len(active), 8))
+    futures = {}
+    try:
         for src in active:
             lim = per_source_limits.get(src.source_id(), 50)
             fut = pool.submit(_search_one_source, src, query, lim)
@@ -3714,10 +3715,16 @@ def parallel_search_sources(
                 futures[f] for f in futures if not f.done()
             ]
             if timed_out_ids:
-                logger.debug(
-                    "Skills browse timed out waiting for: %s",
+                logger.warning(
+                    "Skills search timed out waiting for: %s — results from "
+                    "these sources are excluded. Use --source to skip them.",
                     ", ".join(timed_out_ids),
                 )
+    finally:
+        # shutdown(wait=False) so a stuck worker thread cannot block the
+        # caller after the timeout fires. cancel_futures=True (Python >=3.9)
+        # prevents queued-but-not-yet-started futures from dispatching.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     return all_results, source_counts, timed_out_ids
 
