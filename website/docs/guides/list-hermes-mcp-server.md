@@ -37,7 +37,7 @@ Use Hermes when you want one local MCP server to bridge multiple messaging and a
 ## Key use cases
 
 - Let Claude Code, Cursor, Codex, and other MCP clients read recent Hermes conversations.
-- Send human-reviewed messages to Discord, Slack, Telegram, email, or other configured Hermes gateway targets.
+- Use MCP clients to draft and operator-review messages before sending them to Discord, Slack, Telegram, email, or other configured Hermes gateway targets.
 - Poll for near-real-time conversation events from a coding agent or operator cockpit.
 - Centralize approval workflows so external MCP clients can see and resolve pending Hermes approvals.
 - Reuse one Hermes gateway instead of configuring every MCP client for every messaging platform.
