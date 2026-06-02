@@ -2520,6 +2520,20 @@ class GatewayRunner:
                 return None
         return None
 
+    def _mark_pool_override(self, session_key: str) -> None:
+    """Mark a session as manually overridden in the pool.
+
+    Called after ``_release_pool_slot`` so the pool knows not to
+    reassign a model on the next turn.
+    """
+    try:
+        from gateway.session_model_pool import get_session_model_pool as _get_pool
+        _p = _get_pool(_load_gateway_config())
+        if _p:
+            _p.mark_manual_override(session_key)
+    except Exception as _exc:
+        logger.debug("SessionModelPool: failed to mark override for %s: %s", session_key, _exc)
+
     def _release_pool_slot(self, session_key: str) -> None:
     """Release a pool-assigned slot for a session (if one exists).
 
@@ -11026,16 +11040,7 @@ class GatewayRunner:
                         # Release pool-assigned slot for this session if one
                         # exists — the manual override takes precedence.
                         self._release_pool_slot(_session_key)
-
-                        # Mark as manually overridden so the pool won't
-                        # try to reassign on the next turn.
-                        try:
-                            from gateway.session_model_pool import get_session_model_pool as _get_pool_1
-                            _p_1 = _get_pool_1(_load_gateway_config())
-                            if _p_1:
-                                _p_1.mark_manual_override(_session_key)
-                        except Exception as _exc:
-                            logger.debug("SessionModelPool: failed to mark override for %s: %s", _session_key, _exc)
+                        self._mark_pool_override(_session_key)
 
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
@@ -11194,16 +11199,7 @@ class GatewayRunner:
         # Release pool-assigned slot for this session if one exists —
         # the manual override takes precedence.
         self._release_pool_slot(session_key)
-
-        # Mark this session as manually overridden so the pool won't
-        # try to reassign it on the next turn.
-        try:
-            from gateway.session_model_pool import get_session_model_pool as _get_pool_mo
-            _p_mo = _get_pool_mo(_load_gateway_config())
-            if _p_mo:
-                _p_mo.mark_manual_override(session_key)
-        except Exception as _exc:
-            logger.debug("SessionModelPool: failed to mark override for %s: %s", session_key, _exc)
+        self._mark_pool_override(session_key)
 
         # Evict cached agent so the next turn creates a fresh agent from the
         # override rather than relying on cache signature mismatch detection.

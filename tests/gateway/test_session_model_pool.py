@@ -252,6 +252,41 @@ class TestStrategies:
         # round-robin uses oldest last_activity → should distribute
         assert r1["model"] != r2["model"]
 
+    def test_priority_tie_break_by_least_loaded(self):
+        """When two models have same priority, pick the least loaded."""
+        config = {
+            "enabled": True,
+            "strategy": "priority",
+            "pool": [
+                {"model": "a", "provider": "zai", "max_concurrent": 3, "priority": 5},
+                {"model": "b", "provider": "zai", "max_concurrent": 3, "priority": 5},
+            ],
+        }
+        pool = SessionModelPool.from_config(config)
+        r1 = pool.acquire_session_slot("s1")  # fills model a (first)
+        r2 = pool.acquire_session_slot("s2")  # tie-break → should pick b (0 sessions)
+        assert r1["model"] == "a"
+        assert r2["model"] == "b"
+
+    def test_least_loaded_tie_break_by_priority(self):
+        """When two models have same load, pick the highest priority."""
+        config = {
+            "enabled": True,
+            "strategy": "least-loaded",
+            "pool": [
+                {"model": "lo-pri", "provider": "zai", "max_concurrent": 3, "priority": 1},
+                {"model": "hi-pri", "provider": "zai", "max_concurrent": 3, "priority": 10},
+            ],
+        }
+        pool = SessionModelPool.from_config(config)
+        r1 = pool.acquire_session_slot("s1")
+        r2 = pool.acquire_session_slot("s2")
+        # Both have 1 session after r1 is on first; tie-break → hi-pri
+        # Actually both start at 0 load → hi-pri (10) should be picked first
+        assert r1["model"] == "hi-pri"
+        # After s1 on hi-pri, lo-pri (0 load) wins over hi-pri (1 load)
+        assert r2["model"] == "lo-pri"
+
 
 # ---------------------------------------------------------------------------
 # Auxiliary slot management
