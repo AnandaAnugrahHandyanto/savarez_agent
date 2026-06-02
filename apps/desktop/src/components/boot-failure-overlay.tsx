@@ -18,6 +18,12 @@ export function BootFailureOverlay() {
   const [busy, setBusy] = useState<BusyAction>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
+  // When the remote backend is forced via HERMES_DESKTOP_REMOTE_URL, the main
+  // process ignores the saved connection config (resolveRemoteBackend reads the
+  // env var first), so "Use local gateway" can't recover — switching to local
+  // just reloads back into the same failure. Surface the env-var instructions
+  // instead, mirroring how the Gateway settings screen handles envOverride.
+  const [envOverride, setEnvOverride] = useState(false)
 
   const visible = Boolean(boot.error) && !boot.running
   // While first-run onboarding owns the picker/flow we let it surface its own
@@ -33,6 +39,11 @@ export function BootFailureOverlay() {
     void window.hermesDesktop
       ?.getRecentLogs()
       .then(res => setLogs(res.lines ?? []))
+      .catch(() => undefined)
+
+    void window.hermesDesktop
+      ?.getConnectionConfig()
+      .then(config => setEnvOverride(Boolean(config?.envOverride)))
       .catch(() => undefined)
   }, [visible])
 
@@ -92,10 +103,12 @@ export function BootFailureOverlay() {
                 {busy === 'repair' ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
                 Repair install
               </Button>
-              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
-                {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : null}
-                Use local gateway
-              </Button>
+              {envOverride ? null : (
+                <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
+                  {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : null}
+                  Use local gateway
+                </Button>
+              )}
               <Button onClick={openLogs} variant="ghost">
                 <FileText className="size-4" />
                 Open logs
@@ -104,6 +117,13 @@ export function BootFailureOverlay() {
             <p className="text-xs text-muted-foreground">
               Repair re-runs the installer and can take a few minutes on a fresh machine.
             </p>
+            {envOverride ? (
+              <p className="text-xs text-muted-foreground">
+                A remote gateway is forced by environment variables, so switching to the local gateway from here won't
+                help. Unset <code>HERMES_DESKTOP_REMOTE_URL</code> and <code>HERMES_DESKTOP_REMOTE_TOKEN</code>, then
+                restart Hermes to fall back to the local gateway.
+              </p>
+            ) : null}
           </div>
 
           {logs.length > 0 ? (
