@@ -322,6 +322,7 @@ def test_mobile_prompt_submit_interrupts_running_turn_and_runs_after_current_tur
         )
 
         assert second == {"jsonrpc": "2.0", "id": "second", "result": {"status": "interrupting"}}
+        assert session["transport"] is primary
         assert agent.interrupts == ["mobile followup"]
         prompt_frames = [f for f in primary.frames if f.get("params", {}).get("type") == "prompt.submitted"]
         assert prompt_frames == [
@@ -828,6 +829,8 @@ def test_remote_bridge_ws_passes_bridge_allowlist(monkeypatch):
 def test_remote_bridge_allowlist_blocks_dangerous_methods_but_forwards_allowed(monkeypatch):
     """Only allowlisted methods reach dispatch over the remote bridge."""
     assert "prompt.submit" in ws_module.BRIDGE_ALLOWED_METHODS
+    assert "image.attach" in ws_module.BRIDGE_ALLOWED_METHODS
+    assert "image.detach" in ws_module.BRIDGE_ALLOWED_METHODS
     assert "session.close" in ws_module.BRIDGE_ALLOWED_METHODS
     assert "shell.exec" not in ws_module.BRIDGE_ALLOWED_METHODS
     assert "config.set" not in ws_module.BRIDGE_ALLOWED_METHODS
@@ -860,12 +863,12 @@ def test_remote_bridge_allowlist_blocks_dangerous_methods_but_forwards_allowed(m
             {
                 "jsonrpc": "2.0",
                 "id": 2,
-                "method": "prompt.submit",
-                "params": {"session_id": "x", "text": "hi"},
+                "method": "image.attach",
+                "params": {"session_id": "x", "path": "/tmp/cat.png"},
             }
         ]
     )
     asyncio.run(
         ws_module.handle_ws(allowed, allowed_methods=ws_module.BRIDGE_ALLOWED_METHODS)
     )
-    assert dispatched == ["prompt.submit"]
+    assert dispatched == ["image.attach"]
