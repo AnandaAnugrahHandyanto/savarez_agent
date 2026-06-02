@@ -45,6 +45,51 @@ What this module does on POSIX:
 
 Idempotent: safe to call multiple times.  ``_bootstrap_once`` guards
 against double-reconfigure.
+
+
+-------------------------------------------------------------------------------
+RTK Integration (optional)
+-------------------------------------------------------------------------------
+
+RTK (Rust Token Killer, https://github.com/rtk-ai/rtk) is a CLI proxy that
+reduces LLM token consumption by 60-90% on common dev commands (git, cargo,
+pytest, etc.).  Hermes uses RTK's plugin adapter to rewrite terminal
+commands before execution, so the agent receives compact output without
+calling ``rtk`` explicitly.
+
+Windows Setup (WSL recommended):
+
+    # Inside WSL (full hook support -- recommended)
+    curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+    rtk init --agent hermes
+
+    # Inside WSL: verify
+    rtk --version       # -> "rtk <version>"
+    rtk gain            # token savings stats
+
+    # On native Windows (cmd.exe/PowerShell): hook is unavailable, falls back
+    # to CLAUDE.md injection. Filters work, auto-rewrite does not.
+    # Download rtk-x86_64-pc-windows-msvc.zip from the releases page,
+    # add rtk.exe to your PATH, then:
+    rtk init --agent hermes
+    # Use explicitly: rtk git status, rtk cargo test, etc.
+
+Hermes Integration Method:
+
+    Plugin-based: Hermes uses RTK's Python plugin adapter to mutate terminal
+    commands via ``rtk rewrite``.  The agent receives compact output
+    transparently.  Source/tests live in RTK's ``hooks/hermes/`` directory.
+
+Features:
+
+    | Feature                  | WSL   | Native Windows |
+    |--------------------------|-------|-----------------|
+    | Filters (git, cargo, etc) | Full  | Full            |
+    | Auto-rewrite hook         | Yes   | No (CLAUDE.md)  |
+    | Token analytics           | Full  | Full            |
+
+-------------------------------------------------------------------------------
+
 """
 
 from __future__ import annotations
