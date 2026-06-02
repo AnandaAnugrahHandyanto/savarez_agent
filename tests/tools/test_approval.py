@@ -61,13 +61,20 @@ class TestWebhookReadonlyAllowlist:
             }
         }
 
-    def _check(self, command):
+    def _check(self, command, route_name="grant-auto-review"):
+        def session_env(key, default=""):
+            if key == "HERMES_SESSION_PLATFORM":
+                return "webhook"
+            if key == "HERMES_SESSION_USER_NAME":
+                return route_name
+            return default
+
         with mock_patch("hermes_cli.config.load_config", return_value=self._config()):
             token = approval_module._approval_session_key.set("webhook-test")
             try:
                 env = {"HERMES_CRON_SESSION": "", "HERMES_GATEWAY_SESSION": "true"}
                 with mock_patch.dict("os.environ", env, clear=False):
-                    with mock_patch("gateway.session_context.get_session_env", side_effect=lambda key, default="": "webhook" if key == "HERMES_SESSION_PLATFORM" else default):
+                    with mock_patch("gateway.session_context.get_session_env", side_effect=session_env):
                         with mock_patch.dict(approval_module._session_approved, {"webhook-test": set()}, clear=True):
                             with mock_patch.dict(approval_module._gateway_notify_cbs, {}, clear=True):
                                 with mock_patch.object(approval_module, "_permanent_approved", set()):
@@ -85,22 +92,35 @@ class TestWebhookReadonlyAllowlist:
         assert result["approved"] is False
         assert result.get("webhook_allowlisted") is not True
 
-    def test_webhook_allows_grant_verdict_update_notes_post(self):
-        command = (
-            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
-            "-H 'content-type: application/json' "
-            "-d '{\"path\":\"tasks:updateNotes\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\",\"notes\":\"<!-- grant-verdict:2026-06-01T12:00:00Z:CHANGES_REQUIRED -->\"}}'"
+    def test_webhook_blocks_bare_grant_verdict_update_notes_post(self):
+        command = self._curl_mutation_with_data(
+            repr(self._grant_update_notes_payload(self._grant_verdict_notes()))
+        )
+        result = self._check(command)
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_allows_grant_verdict_update_notes_post_with_reason(self):
+        reason = "Specific gap: build evidence is missing, so Reid must run npx next build and post the exact output."
+        command = self._curl_mutation_with_data(
+            repr(self._grant_update_notes_payload(self._grant_verdict_notes(reason=reason)))
         )
         result = self._check(command)
         assert result["approved"] is True
         assert result.get("webhook_allowlisted") is True
 
     def _grant_update_notes_payload(self, notes):
-        return (
-            '{"path":"tasks:updateNotes","args":{"id":"kn715rhv354j03jchj738137qh87te4m",'
-            f'"notes":"{notes}"'
-            '}}'
-        )
+        import json
+        return json.dumps({
+            "path": "tasks:updateNotes",
+            "args": {"id": "kn715rhv354j03jchj738137qh87te4m", "notes": notes},
+        })
+
+    def _grant_verdict_notes(self, verdict="CHANGES_REQUIRED", reason=None):
+        body = ""
+        if reason is not None:
+            body = f"\n{reason}"
+        return f"<!-- grant-verdict:2026-06-01T12:00:00Z:{verdict}:attempt=test-attempt -->{body}"
 
     def _curl_mutation_with_data(self, data_arg):
         return (
@@ -116,10 +136,9 @@ class TestWebhookReadonlyAllowlist:
         return path
 
     def test_webhook_allows_grant_verdict_update_notes_post_regression(self):
-        command = (
-            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
-            "-H 'content-type: application/json' "
-            "-d '{\"path\":\"tasks:updateNotes\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\",\"notes\":\"<!-- grant-verdict:2026-06-01T12:00:00Z:CHANGES_REQUIRED -->\"}}'"
+        reason = "Regression proof: actionable Grant notes survive the webhook gate and name the exact missing evidence."
+        command = self._curl_mutation_with_data(
+            repr(self._grant_update_notes_payload(self._grant_verdict_notes(reason=reason)))
         )
         result = self._check(command)
         assert result["approved"] is True
@@ -129,7 +148,7 @@ class TestWebhookReadonlyAllowlist:
         payload_path = self._write_grant_tmp_payload(
             Path("tmp"),
             "marker",
-            self._grant_update_notes_payload("<!-- grant-verdict:2026-06-01T12:00:00Z:CHANGES_REQUIRED -->"),
+            self._grant_update_notes_payload(self._grant_verdict_notes(reason="Specific gap: artifact path missing, so Reid must write the report file and cite it.")),
         )
         try:
             result = self._check(self._curl_mutation_with_data(f"@{payload_path}"))
@@ -154,7 +173,7 @@ class TestWebhookReadonlyAllowlist:
     def test_webhook_blocks_outside_tmp_atfile_without_reading(self, tmp_path):
         payload_path = tmp_path / "evil.json"
         payload_path.write_text(
-            self._grant_update_notes_payload("<!-- grant-verdict:2026-06-01T12:00:00Z:CHANGES_REQUIRED -->"),
+            self._grant_update_notes_payload(self._grant_verdict_notes(reason="Specific gap: artifact path missing, so Reid must write the report file and cite it.")),
             encoding="utf-8",
         )
         with mock_patch("builtins.open", side_effect=AssertionError("outside @file was read")):
@@ -198,7 +217,7 @@ class TestWebhookReadonlyAllowlist:
     def test_webhook_blocks_confined_grant_symlink_escape(self, tmp_path):
         secret_path = tmp_path / "secret.json"
         secret_path.write_text(
-            self._grant_update_notes_payload("<!-- grant-verdict:2026-06-01T12:00:00Z:CHANGES_REQUIRED -->"),
+            self._grant_update_notes_payload(self._grant_verdict_notes(reason="Specific gap: artifact path missing, so Reid must write the report file and cite it.")),
             encoding="utf-8",
         )
         symlink_path = Path(f"/tmp/grant_verdict_{os.getpid()}_{tmp_path.name}_symlink.json")
@@ -211,21 +230,40 @@ class TestWebhookReadonlyAllowlist:
         assert result["approved"] is False
         assert result.get("webhook_allowlisted") is not True
 
-    def test_webhook_blocks_grant_mark_changes_required_post(self):
+    def test_webhook_allows_grant_mark_changes_required_post(self):
         command = (
             "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
             "-H 'content-type: application/json' "
             "-d '{\"path\":\"tasks:markChangesRequired\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\"}}'"
         )
         result = self._check(command)
+        assert result["approved"] is True
+        assert result.get("webhook_allowlisted") is True
+
+    def test_webhook_blocks_grant_verdict_update_notes_from_other_route(self):
+        reason = "Specific gap: route isolation must prevent any non-Grant webhook from writing Grant verdict notes."
+        command = self._curl_mutation_with_data(
+            repr(self._grant_update_notes_payload(self._grant_verdict_notes(reason=reason)))
+        )
+        result = self._check(command, route_name="other-webhook")
         assert result["approved"] is False
         assert result.get("webhook_allowlisted") is not True
 
-    def test_webhook_blocks_grant_update_status_post(self):
+    def test_webhook_allows_grant_update_status_done_post(self):
         command = (
             "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
             "-H 'content-type: application/json' "
             "-d '{\"path\":\"tasks:updateStatus\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\",\"status\":\"done\"}}'"
+        )
+        result = self._check(command)
+        assert result["approved"] is True
+        assert result.get("webhook_allowlisted") is True
+
+    def test_webhook_blocks_grant_update_status_non_done_post(self):
+        command = (
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation "
+            "-H 'content-type: application/json' "
+            "-d '{\"path\":\"tasks:updateStatus\",\"args\":{\"id\":\"kn715rhv354j03jchj738137qh87te4m\",\"status\":\"in_review\"}}'"
         )
         result = self._check(command)
         assert result["approved"] is False

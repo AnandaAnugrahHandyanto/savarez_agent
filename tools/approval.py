@@ -897,6 +897,24 @@ def _is_webhook_session() -> bool:
     return _get_session_platform().strip().lower() == "webhook"
 
 
+def _get_webhook_route_name() -> str:
+    try:
+        from gateway.session_context import get_session_env
+
+        route_name = get_session_env("HERMES_SESSION_USER_NAME", "").strip()
+        if route_name:
+            return route_name
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+    except Exception:
+        chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "").strip()
+
+    if chat_id.startswith("webhook:"):
+        parts = chat_id.split(":", 2)
+        if len(parts) >= 2:
+            return parts[1]
+    return ""
+
+
 def _has_shell_control_operator(command: str) -> bool:
     """Reject compound shell syntax for the webhook terminal allowlist."""
     return bool(re.search(r'(?:[;&|`]|\$\(|\n)', command))
@@ -983,10 +1001,17 @@ def _extract_curl_payload(tokens: list[str]) -> str:
                 payloads.append(_resolve_confined_curl_atfile_payload(token[len(prefix):]))
                 break
         i += 1
-    return "\n".join(payloads)
+    return "&".join(payloads)
 
 
-_GRANT_REVIEW_MUTATION_PATHS = {"tasks:updateNotes"}
+_GRANT_REVIEW_MUTATION_PATHS = {"tasks:updateNotes", "tasks:markChangesRequired", "tasks:updateStatus"}
+_GRANT_VERDICT_BLOCK_RE = re.compile(
+    r"<!--\s*grant-verdict:.+?:(PASS|CHANGES_REQUIRED|FAIL|VERIFICATION_BLOCKED|TIMEOUT)"
+    r"(?::attempt=[A-Za-z0-9_-]+)?\s*-->\s*(.*?)(?=\n\s*<!--\s*grant-verdict:|\Z)",
+    re.DOTALL,
+)
+_GRANT_VERDICTS_REQUIRING_REASON = {"CHANGES_REQUIRED", "FAIL", "VERIFICATION_BLOCKED"}
+_MIN_GRANT_VERDICT_REASON_CHARS = 40
 
 
 def _extract_convex_mutation_path(payload: str) -> str:
@@ -1012,11 +1037,52 @@ def _is_grant_verdict_update_notes_payload(payload: str) -> bool:
     notes = args.get("notes")
     if not task_id.startswith("kn") or not isinstance(notes, str):
         return False
-    # Only Grant verdict notes may pass from autonomous webhook context.
-    return "<!-- grant-verdict:" in notes
+    # Only Grant verdict notes with actionable rationale may pass from autonomous webhook context.
+    return _latest_grant_verdict_has_required_reason(notes)
+
+
+def _latest_grant_verdict_has_required_reason(notes: str) -> bool:
+    matches = list(_GRANT_VERDICT_BLOCK_RE.finditer(notes))
+    if not matches:
+        return False
+    latest = matches[-1]
+    verdict = latest.group(1)
+    reason = re.sub(r"<!--.*?-->", "", latest.group(2), flags=re.DOTALL).strip()
+    reason_len = len(re.sub(r"\s+", "", reason))
+    if verdict in _GRANT_VERDICTS_REQUIRING_REASON:
+        return reason_len >= _MIN_GRANT_VERDICT_REASON_CHARS
+    return True
+
+
+def _is_grant_mark_changes_required_payload(payload: str) -> bool:
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(decoded, dict) or decoded.get("path") != "tasks:markChangesRequired":
+        return False
+    args = decoded.get("args")
+    return isinstance(args, dict) and str(args.get("id", "")).startswith("kn")
+
+
+def _is_grant_update_status_done_payload(payload: str) -> bool:
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(decoded, dict) or decoded.get("path") != "tasks:updateStatus":
+        return False
+    args = decoded.get("args")
+    return (
+        isinstance(args, dict)
+        and str(args.get("id", "")).startswith("kn")
+        and args.get("status") == "done"
+    )
 
 
 def _is_grant_review_mutation_curl(method: str, url: str, tokens: list[str]) -> bool:
+    if _get_webhook_route_name() != "grant-auto-review":
+        return False
     if method != "POST" or url != "https://mellow-mule-232.convex.cloud/api/mutation":
         return False
     payload = _extract_curl_payload(tokens)
@@ -1025,7 +1091,11 @@ def _is_grant_review_mutation_curl(method: str, url: str, tokens: list[str]) -> 
         return False
     if path == "tasks:updateNotes":
         return _is_grant_verdict_update_notes_payload(payload)
-    return True
+    if path == "tasks:markChangesRequired":
+        return _is_grant_mark_changes_required_payload(payload)
+    if path == "tasks:updateStatus":
+        return _is_grant_update_status_done_payload(payload)
+    return False
 
 
 def _split_webhook_terminal_command(command: str) -> list[str]:
