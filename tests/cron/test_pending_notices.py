@@ -1,7 +1,14 @@
 """Tests for cron/pending_notices.py — the push-side buffer for cron
 session-awareness (record on delivery, drain on next interactive turn)."""
 
-from cron.pending_notices import record, drain, _MAX_PER_KEY
+from cron.pending_notices import (
+    record,
+    drain,
+    mark_accepted,
+    dismiss,
+    new_notice_id,
+    _MAX_PER_KEY,
+)
 
 
 class TestRecordDrain:
@@ -59,3 +66,69 @@ class TestRecordDrain:
         record("telegram", "123", "j", "x", thread_id="42", base_dir=tmp_path)
         got = drain("telegram", "123", base_dir=tmp_path)
         assert got[0]["thread_id"] == "42"
+
+
+class TestInjectGating:
+    """Button mode buffers entries with inject=False until the user accepts.
+
+    drain() returns only injectable entries and leaves the rest, so the
+    gateway's system-prompt fold (run.py) stays mode-agnostic.
+    """
+
+    def test_record_assigns_id_and_defaults_inject_true(self, tmp_path):
+        nid = record("telegram", "123", "j", "x", base_dir=tmp_path)
+        assert isinstance(nid, str) and nid
+        got = drain("telegram", "123", base_dir=tmp_path)
+        assert got[0]["id"] == nid
+        assert got[0]["inject"] is True
+
+    def test_record_with_explicit_id(self, tmp_path):
+        nid = record("telegram", "123", "j", "x", notice_id="abc123", base_dir=tmp_path)
+        assert nid == "abc123"
+        assert drain("telegram", "123", base_dir=tmp_path)[0]["id"] == "abc123"
+
+    def test_inject_false_held_until_accepted(self, tmp_path):
+        record("telegram", "123", "j", "held", notice_id="n1", inject=False, base_dir=tmp_path)
+        # not injected while pending, but not lost
+        assert drain("telegram", "123", base_dir=tmp_path) == []
+        assert mark_accepted("telegram", "123", "n1", base_dir=tmp_path) is True
+        got = drain("telegram", "123", base_dir=tmp_path)
+        assert [e["text"] for e in got] == ["held"]
+
+    def test_mark_accepted_unknown_id(self, tmp_path):
+        record("telegram", "123", "j", "x", notice_id="n1", inject=False, base_dir=tmp_path)
+        assert mark_accepted("telegram", "123", "nope", base_dir=tmp_path) is False
+
+    def test_dismiss_removes_entry(self, tmp_path):
+        record("telegram", "123", "j", "x", notice_id="n1", inject=False, base_dir=tmp_path)
+        assert dismiss("telegram", "123", "n1", base_dir=tmp_path) is True
+        assert drain("telegram", "123", base_dir=tmp_path) == []
+        # gone for good
+        assert mark_accepted("telegram", "123", "n1", base_dir=tmp_path) is False
+
+    def test_dismiss_unknown_id(self, tmp_path):
+        assert dismiss("telegram", "123", "nope", base_dir=tmp_path) is False
+
+    def test_drain_returns_injectable_leaves_pending(self, tmp_path):
+        record("telegram", "123", "j", "auto", notice_id="a", base_dir=tmp_path)
+        record("telegram", "123", "j", "held", notice_id="b", inject=False, base_dir=tmp_path)
+        assert [e["text"] for e in drain("telegram", "123", base_dir=tmp_path)] == ["auto"]
+        # the pending one survived the drain and can still be accepted later
+        assert mark_accepted("telegram", "123", "b", base_dir=tmp_path) is True
+        assert [e["text"] for e in drain("telegram", "123", base_dir=tmp_path)] == ["held"]
+
+    def test_legacy_entry_without_inject_is_drained(self, tmp_path):
+        # entries written by the pre-button record() have no inject/id field
+        import json
+        from cron.pending_notices import _store_path
+        p = _store_path(tmp_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(
+            {"telegram:123": [{"ts": "t", "job_name": "j", "thread_id": None, "text": "old"}]}
+        ))
+        assert [e["text"] for e in drain("telegram", "123", base_dir=tmp_path)] == ["old"]
+
+    def test_new_notice_id_unique_and_short(self):
+        ids = {new_notice_id() for _ in range(50)}
+        assert len(ids) == 50
+        assert all(isinstance(i, str) and 0 < len(i) <= 16 for i in ids)
