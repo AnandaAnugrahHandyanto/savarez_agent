@@ -288,31 +288,36 @@ function Install-AgentBrowser {
 # Dependency checks
 # ============================================================================
 
+function Get-KnownUvPath {
+    foreach ($uvPath in @("$env:USERPROFILE\.local\bin\uv.exe", "$env:USERPROFILE\.cargo\bin\uv.exe")) {
+        if (Test-Path $uvPath) {
+            return $uvPath
+        }
+    }
+    return $null
+}
+
 function Install-Uv {
     Write-Info "Checking for uv package manager..."
-    
-    # Check if uv is already available
+
+    # Prefer the uv location installed by the Astral installer before PATH.
+    # PATH can contain unrelated package-manager shims, such as Anaconda's uv.
+    $knownUvPath = Get-KnownUvPath
+    if ($knownUvPath) {
+        $script:UvCmd = $knownUvPath
+        $version = & $knownUvPath --version
+        Write-Success "uv found at $knownUvPath ($version)"
+        return $true
+    }
+
+    # Fall back to PATH for winget/manual installs.
     if (Get-Command uv -ErrorAction SilentlyContinue) {
         $version = uv --version
         $script:UvCmd = "uv"
         Write-Success "uv found ($version)"
         return $true
     }
-    
-    # Check common install locations
-    $uvPaths = @(
-        "$env:USERPROFILE\.local\bin\uv.exe",
-        "$env:USERPROFILE\.cargo\bin\uv.exe"
-    )
-    foreach ($uvPath in $uvPaths) {
-        if (Test-Path $uvPath) {
-            $script:UvCmd = $uvPath
-            $version = & $uvPath --version
-            Write-Success "uv found at $uvPath ($version)"
-            return $true
-        }
-    }
-    
+
     # Install uv
     Write-Info "Installing uv (fast Python package manager)..."
     # Capture EAP outside the try block so the catch's restore call always
@@ -395,6 +400,13 @@ function Resolve-UvCmd {
     # in the same process and set $script:UvCmd).
     if ($script:UvCmd) {
         if ($script:UvCmd -eq "uv") {
+            # Upgrade a PATH-only uv to the known Astral location when it
+            # exists. PATH can prefer unrelated shims such as Anaconda's uv.
+            $knownUvPath = Get-KnownUvPath
+            if ($knownUvPath) {
+                $script:UvCmd = $knownUvPath
+                return
+            }
             # "uv" on PATH -- verify it's still resolvable (PATH could have
             # changed mid-session; cheap to recheck).
             if (Get-Command uv -ErrorAction SilentlyContinue) { return }
@@ -404,29 +416,27 @@ function Resolve-UvCmd {
         # Stale; fall through to re-discover.
     }
 
-    # Try PATH first (covers `winget install astral.uv`, manual installs,
-    # and the post-Install-Uv state where uv.exe lives in
-    # %USERPROFILE%\.local\bin which the installer added to PATH).
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
-        $script:UvCmd = "uv"
+    # Prefer the well-known install locations the Astral installer drops uv
+    # into before PATH, which may contain unrelated package-manager shims.
+    $knownUvPath = Get-KnownUvPath
+    if ($knownUvPath) {
+        $script:UvCmd = $knownUvPath
         return
     }
 
     # Refresh PATH from registry in case the current process started before
     # Install-Uv updated User PATH.
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
-        $script:UvCmd = "uv"
+    $knownUvPath = Get-KnownUvPath
+    if ($knownUvPath) {
+        $script:UvCmd = $knownUvPath
         return
     }
 
-    # Check the well-known install locations the astral.sh installer drops
-    # uv into.  Mirrors the probe order Install-Uv uses.
-    foreach ($uvPath in @("$env:USERPROFILE\.local\bin\uv.exe", "$env:USERPROFILE\.cargo\bin\uv.exe")) {
-        if (Test-Path $uvPath) {
-            $script:UvCmd = $uvPath
-            return
-        }
+    # Fall back to PATH for winget/manual installs.
+    if (Get-Command uv -ErrorAction SilentlyContinue) {
+        $script:UvCmd = "uv"
+        return
     }
 
     throw "uv is not installed or not on PATH. Run install.ps1 -Stage uv first."

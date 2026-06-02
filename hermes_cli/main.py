@@ -7480,7 +7480,7 @@ def _update_via_zip(args):
     print("→ Updating Python dependencies...")
 
     pip_cmd = [sys.executable, "-m", "pip"]
-    uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
+    uv_bin = _resolve_uv_binary() or _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
         uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
         if _is_termux_env(uv_env):
@@ -7507,6 +7507,7 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
+    _validate_python_update_environment()
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
 
@@ -8535,6 +8536,67 @@ def _install_python_dependencies_with_optional_fallback(
         )
 
 
+def _python_update_validation_code() -> str:
+    """Return a target-interpreter validation script for post-update installs."""
+    return r'''
+import pathlib
+import re
+import sys
+import sysconfig
+
+from frozenlist import FrozenList
+from multidict import CIMultiDict, MultiDict
+import aiohttp
+import uvicorn.protocols.websockets.websockets_impl
+
+if FrozenList is None or CIMultiDict is None or MultiDict is None:
+    raise RuntimeError("compiled container symbols did not import")
+if not hasattr(aiohttp, "ClientSession"):
+    raise RuntimeError("aiohttp.ClientSession is missing")
+
+current_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+site_paths = {
+    pathlib.Path(value)
+    for key, value in sysconfig.get_paths().items()
+    if key in {"purelib", "platlib"} and value
+}
+bad = []
+compiled_re = re.compile(r"^Tag:\s+(cp\d+)-cp\d+-", re.MULTILINE)
+for site_path in site_paths:
+    if not site_path.exists():
+        continue
+    for wheel in site_path.glob("*.dist-info/WHEEL"):
+        text = wheel.read_text(encoding="utf-8", errors="replace")
+        compiled_tags = {match.group(1) for match in compiled_re.finditer(text)}
+        if compiled_tags and current_tag not in compiled_tags:
+            bad.append(f"{wheel.parent.name}: {', '.join(sorted(compiled_tags))}")
+
+if bad:
+    raise RuntimeError(
+        "binary wheel tag mismatch for this Python "
+        f"({current_tag} expected): " + "; ".join(bad)
+    )
+'''
+
+
+def _validate_python_update_environment() -> None:
+    """Fail update if dependency metadata, wheel tags, or compiled imports are broken."""
+    print("→ Validating Python dependencies...")
+    checks = (
+        ("dependency metadata", [sys.executable, "-m", "pip", "check"]),
+        (
+            "compiled dependency imports and wheel tags",
+            [sys.executable, "-c", _python_update_validation_code()],
+        ),
+    )
+    for label, cmd in checks:
+        result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+        if result.returncode != 0:
+            print(f"✗ Python {label} validation failed")
+            sys.exit(result.returncode)
+    print("  ✓ Python dependency validation passed")
+
+
 def _is_termux_env(env: dict[str, str] | None = None) -> bool:
     return _is_termux_startup_environment(env)
 
@@ -8579,9 +8641,46 @@ def _install_psutil_android_compat(
         )
 
 
+def _uv_executable_names() -> tuple[str, ...]:
+    if os.name == "nt":
+        return ("uv.exe", "uv")
+    return ("uv",)
+
+
+def _existing_uv_binary(path: Path) -> str | None:
+    if path.is_file() and (os.name == "nt" or os.access(path, os.X_OK)):
+        return str(path)
+    return None
+
+
+def _resolve_uv_binary() -> str | None:
+    """Prefer Hermes-managed uv locations before falling back to PATH."""
+    candidates: list[Path] = []
+    for env_dir in (Path(sys.prefix), PROJECT_ROOT / "venv"):
+        bindir = env_dir / ("Scripts" if os.name == "nt" else "bin")
+        for name in _uv_executable_names():
+            candidates.append(bindir / name)
+
+    home = Path(os.environ.get("USERPROFILE") or str(Path.home()))
+    for name in _uv_executable_names():
+        candidates.append(home / ".local" / "bin" / name)
+        candidates.append(home / ".cargo" / "bin" / name)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = os.path.normcase(os.path.abspath(candidate))
+        if key in seen:
+            continue
+        seen.add(key)
+        if uv_bin := _existing_uv_binary(candidate):
+            return uv_bin
+
+    return shutil.which("uv")
+
+
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     """Best-effort uv bootstrap on Termux for faster update installs."""
-    uv_bin = shutil.which("uv")
+    uv_bin = _resolve_uv_binary()
     if uv_bin or not _is_termux_env():
         return uv_bin
     try:
@@ -8589,7 +8688,7 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
         subprocess.run(pip_cmd + ["install", "uv"], cwd=PROJECT_ROOT, check=False)
     except Exception:
         pass
-    return shutil.which("uv")
+    return _resolve_uv_binary()
 
 
 def _update_node_dependencies() -> None:
@@ -9237,7 +9336,7 @@ def _cmd_update_pip(args):
     print(f"→ Current version: {__version__}")
     print("→ Checking PyPI for updates...")
 
-    uv = shutil.which("uv")
+    uv = _resolve_uv_binary()
     in_venv = sys.prefix != sys.base_prefix
     # pipx-managed installs live under .../pipx/venvs/<name>/...
     pipx_managed = "pipx" in sys.prefix.split(os.sep)
@@ -9649,7 +9748,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
         pip_cmd = [sys.executable, "-m", "pip"]
-        uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
+        uv_bin = _resolve_uv_binary() or _ensure_uv_for_termux(pip_cmd)
         install_group = "all"
 
         if uv_bin:
@@ -9692,6 +9791,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _install_psutil_android_compat(pip_cmd)
             _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
 
+        _validate_python_update_environment()
         _refresh_active_lazy_features()
 
         _update_node_dependencies()
