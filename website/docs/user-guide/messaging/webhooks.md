@@ -279,7 +279,7 @@ platforms:
 - `{content_html}` — HTML-escaped response text with newlines converted to `<br>`
 - `{content_json}` — JSON-string-escaped response text without surrounding quotes
 
-By default, Hermes sends `{"content": "{content}"}` as JSON. Callback URLs must be HTTPS unless they target a loopback host or `allow_insecure_http: true` is explicitly set for local testing.
+By default, Hermes sends `{"content": "{content}"}` as JSON. Callback URLs must be HTTPS and resolve only to public, globally routable IP addresses; loopback, private, link-local, metadata-service, reserved, and other non-public destinations are rejected. Automatic redirects are disabled so a public callback URL cannot redirect Hermes to an internal host. For local testing only, set `allow_insecure_http: true` with an HTTP loopback URL.
 
 ---
 

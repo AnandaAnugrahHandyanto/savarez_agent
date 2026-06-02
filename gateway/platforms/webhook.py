@@ -31,9 +31,11 @@ import base64
 import binascii
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import re
+import socket
 import subprocess
 import time
 import urllib.error
@@ -93,6 +95,89 @@ def _is_loopback_host(host: str) -> bool:
     if not host:
         return False
     return host.strip().lower() in _LOOPBACK_HOSTS
+
+
+def _is_public_callback_ip(ip: Any) -> bool:
+    """Return True only for globally routable callback destinations.
+
+    ``ip_address.is_global`` is intentionally stricter than checking only
+    RFC1918/private ranges: it also rejects loopback, link-local, multicast,
+    unspecified, reserved/documentation ranges, and cloud metadata addresses
+    such as 169.254.169.254.  For callback delivery, fail-closed is safer
+    than trying to enumerate every non-public network.
+    """
+    return ip.is_global
+
+
+def _resolve_callback_host(host: str) -> list[ipaddress._BaseAddress]:
+    """Resolve a callback hostname to IP addresses for SSRF filtering."""
+    try:
+        literal = ipaddress.ip_address(host)
+        return [literal]
+    except ValueError:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"Cannot resolve callback host: {host}") from exc
+
+    addresses: list[ipaddress._BaseAddress] = []
+    seen: set[str] = set()
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        raw_ip = str(sockaddr[0])
+        # IPv6 link-local addresses may include a scope id (fe80::1%lo0).
+        ip_text = raw_ip.split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(ip_text)
+        except ValueError:
+            continue
+        if str(ip) not in seen:
+            addresses.append(ip)
+            seen.add(str(ip))
+    if not addresses:
+        raise ValueError(f"Cannot resolve callback host: {host}")
+    return addresses
+
+
+def _validate_http_callback_url(url: str, *, allow_insecure_http: bool = False) -> None:
+    """Validate an outbound http_callback URL before making the request.
+
+    The webhook payload can render into ``deliver_extra.url`` (for example via
+    ``{callback_url}``), so this must defend the gateway host against SSRF.
+    HTTPS is required by default.  HTTP is allowed only for explicit local
+    testing and only to loopback hosts.  HTTPS targets must resolve solely to
+    globally routable IPs.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Invalid callback URL")
+
+    host = parsed.hostname or ""
+    if not host:
+        raise ValueError("Invalid callback URL")
+
+    if parsed.scheme == "http":
+        if not allow_insecure_http:
+            raise ValueError("HTTPS required for callback URL")
+        if not _is_loopback_host(host):
+            raise ValueError("HTTP callback URL is only allowed for loopback hosts")
+        return
+
+    ips = _resolve_callback_host(host)
+    blocked = [str(ip) for ip in ips if not _is_public_callback_ip(ip)]
+    if blocked:
+        raise ValueError("Callback URL resolves to a non-public IP address")
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Disable urllib's default redirect following for callback delivery."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
 
 
 def check_webhook_requirements() -> bool:
@@ -875,15 +960,15 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] http_callback delivery missing deliver_extra.url")
             return SendResult(success=False, error="Missing deliver_extra.url")
 
-        parsed = urllib.parse.urlparse(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            logger.error("[webhook] http_callback delivery invalid URL")
-            return SendResult(success=False, error="Invalid callback URL")
-        if parsed.scheme == "http" and not extra.get("allow_insecure_http"):
-            host = parsed.hostname or ""
-            if host not in _LOOPBACK_HOSTS:
-                logger.error("[webhook] http_callback refuses non-HTTPS URL")
-                return SendResult(success=False, error="HTTPS required for callback URL")
+        try:
+            _validate_http_callback_url(
+                url,
+                allow_insecure_http=bool(extra.get("allow_insecure_http")),
+            )
+        except ValueError as exc:
+            error = str(exc)
+            logger.error("[webhook] http_callback delivery rejected URL: %s", error)
+            return SendResult(success=False, error=error)
 
         headers = {
             "Content-Type": "application/json",
@@ -913,8 +998,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 method="POST",
                 headers=headers,
             )
+            opener = urllib.request.build_opener(_NoRedirectHandler)
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with opener.open(req, timeout=30) as resp:
                     return resp.status, resp.read(1000).decode("utf-8", "replace")
             except urllib.error.HTTPError as e:
                 return e.code, e.read(1000).decode("utf-8", "replace")
