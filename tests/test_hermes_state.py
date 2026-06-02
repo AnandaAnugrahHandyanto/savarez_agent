@@ -2,6 +2,7 @@
 
 import sqlite3
 import time
+
 import pytest
 
 from hermes_state import SCHEMA_SQL, SessionDB
@@ -63,6 +64,7 @@ def db(tmp_path):
 # Session lifecycle
 # =========================================================================
 
+
 class TestSessionLifecycle:
     def test_create_and_get_session(self, db):
         sid = db.create_session(
@@ -77,7 +79,6 @@ class TestSessionLifecycle:
         assert session["source"] == "cli"
         assert session["model"] == "test-model"
         assert session["ended_at"] is None
-
 
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
@@ -140,9 +141,15 @@ class TestSessionLifecycle:
     def test_update_token_counts_tracks_api_call_count(self, db):
         """api_call_count increments with each update_token_counts call."""
         db.create_session(session_id="s1", source="cli")
-        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
-        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
-        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts(
+            "s1", input_tokens=100, output_tokens=50, api_call_count=1
+        )
+        db.update_token_counts(
+            "s1", input_tokens=100, output_tokens=50, api_call_count=1
+        )
+        db.update_token_counts(
+            "s1", input_tokens=100, output_tokens=50, api_call_count=1
+        )
 
         session = db.get_session("s1")
         assert session["api_call_count"] == 3
@@ -150,9 +157,12 @@ class TestSessionLifecycle:
     def test_update_token_counts_api_call_count_absolute(self, db):
         """absolute mode sets api_call_count directly."""
         db.create_session(session_id="s1", source="cli")
-        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
-        db.update_token_counts("s1", input_tokens=300, output_tokens=150,
-                               api_call_count=5, absolute=True)
+        db.update_token_counts(
+            "s1", input_tokens=100, output_tokens=50, api_call_count=1
+        )
+        db.update_token_counts(
+            "s1", input_tokens=300, output_tokens=150, api_call_count=5, absolute=True
+        )
 
         session = db.get_session("s1")
         assert session["api_call_count"] == 5
@@ -160,14 +170,20 @@ class TestSessionLifecycle:
 
     def test_update_token_counts_backfills_model_when_null(self, db):
         db.create_session(session_id="s1", source="telegram")
-        db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4")
+        db.update_token_counts(
+            "s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4"
+        )
 
         session = db.get_session("s1")
         assert session["model"] == "openai/gpt-5.4"
 
     def test_update_token_counts_preserves_existing_model(self, db):
-        db.create_session(session_id="s1", source="cli", model="anthropic/claude-opus-4.6")
-        db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4")
+        db.create_session(
+            session_id="s1", source="cli", model="anthropic/claude-opus-4.6"
+        )
+        db.update_token_counts(
+            "s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4"
+        )
 
         session = db.get_session("s1")
         assert session["model"] == "anthropic/claude-opus-4.6"
@@ -179,11 +195,13 @@ class TestSessionLifecycle:
         the dashboard kept showing the original model after a switch (#34850).
         update_session_model sets the column unconditionally.
         """
-        db.create_session(session_id="s1", source="telegram",
-                          model="xiaomi/mimo-v2.5-pro")
+        db.create_session(
+            session_id="s1", source="telegram", model="xiaomi/mimo-v2.5-pro"
+        )
         # Token updates never change the model once set.
-        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
-                               model="xiaomi/mimo-v2.5-pro")
+        db.update_token_counts(
+            "s1", input_tokens=10, output_tokens=5, model="xiaomi/mimo-v2.5-pro"
+        )
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5-pro"
 
         # Explicit switch overwrites it.
@@ -192,8 +210,9 @@ class TestSessionLifecycle:
 
         # And a subsequent token update does NOT revert it (COALESCE no-ops
         # because the column is now non-NULL).
-        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
-                               model="xiaomi/mimo-v2.5-pro")
+        db.update_token_counts(
+            "s1", input_tokens=10, output_tokens=5, model="xiaomi/mimo-v2.5-pro"
+        )
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
 
     def test_parent_session(self, db):
@@ -221,7 +240,9 @@ class TestSessionLifecycle:
             assert db._fts_table_exists("messages_fts_trigram") is False
 
             db.create_session(session_id="s1", source="cli")
-            db.append_message("s1", role="user", content="hello from sqlite without fts")
+            db.append_message(
+                "s1", role="user", content="hello from sqlite without fts"
+            )
 
             messages = db.get_messages("s1")
             assert len(messages) == 1
@@ -230,9 +251,7 @@ class TestSessionLifecycle:
         finally:
             db.close()
 
-    def test_existing_fts_tables_do_not_break_without_fts5(
-        self, tmp_path, monkeypatch
-    ):
+    def test_existing_fts_tables_do_not_break_without_fts5(self, tmp_path, monkeypatch):
         db_path = tmp_path / "state.db"
         seeded = SessionDB(db_path=db_path)
         try:
@@ -335,6 +354,7 @@ class TestSessionLifecycle:
 # Message storage
 # =========================================================================
 
+
 class TestMessageStorage:
     def test_append_and_get_messages(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -405,8 +425,14 @@ class TestMessageStorage:
 
         # Assistant makes 2 parallel tool calls in one message
         tool_calls = [
-            {"id": "call_1", "function": {"name": "ha_call_service", "arguments": "{}"}},
-            {"id": "call_2", "function": {"name": "ha_call_service", "arguments": "{}"}},
+            {
+                "id": "call_1",
+                "function": {"name": "ha_call_service", "arguments": "{}"},
+            },
+            {
+                "id": "call_2",
+                "function": {"name": "ha_call_service", "arguments": "{}"},
+            },
         ]
         db.append_message("s1", role="assistant", content="", tool_calls=tool_calls)
 
@@ -423,7 +449,9 @@ class TestMessageStorage:
 
     def test_tool_calls_serialization(self, db):
         db.create_session(session_id="s1", source="cli")
-        tool_calls = [{"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}}]
+        tool_calls = [
+            {"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}}
+        ]
         db.append_message("s1", role="assistant", tool_calls=tool_calls)
 
         messages = db.get_messages("s1")
@@ -487,6 +515,7 @@ class TestMessageStorage:
         """`replace_messages` (used by /retry, /undo, /compress) must write
         tool_name to the DB for messages built by make_tool_result_message."""
         from agent.tool_dispatch_helpers import make_tool_result_message
+
         db.create_session(session_id="s1", source="cli")
         db.replace_messages(
             "s1",
@@ -585,7 +614,9 @@ class TestMessageStorage:
             "second answer",
         ]
 
-    def test_get_messages_as_conversation_avoids_repeated_resume_prompts_from_ancestors(self, db):
+    def test_get_messages_as_conversation_avoids_repeated_resume_prompts_from_ancestors(
+        self, db
+    ):
         db.create_session("root", "tui")
         db.append_message("root", role="user", content="same prompt")
         db.append_message("root", role="user", content="same prompt")
@@ -595,7 +626,10 @@ class TestMessageStorage:
 
         conv = db.get_messages_as_conversation("child", include_ancestors=True)
 
-        assert [m["content"] for m in conv if m["role"] == "user"] == ["same prompt", "next prompt"]
+        assert [m["content"] for m in conv if m["role"] == "user"] == [
+            "same prompt",
+            "next prompt",
+        ]
 
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -632,17 +666,28 @@ class TestMessageStorage:
             "s1",
             role="assistant",
             content=None,
-            tool_calls=[{"function": {"name": "cronjob", "arguments": "{}"}, "id": "c1", "type": "function"}],
+            tool_calls=[
+                {
+                    "function": {"name": "cronjob", "arguments": "{}"},
+                    "id": "c1",
+                    "type": "function",
+                }
+            ],
             reasoning="I should call the cronjob tool to schedule this.",
         )
-        db.append_message("s1", role="tool", content='{"job_id": "abc"}', tool_call_id="c1")
+        db.append_message(
+            "s1", role="tool", content='{"job_id": "abc"}', tool_call_id="c1"
+        )
 
         conv = db.get_messages_as_conversation("s1")
         assert len(conv) == 3
         # reasoning must be present on the assistant message
         assistant = conv[1]
         assert assistant["role"] == "assistant"
-        assert assistant.get("reasoning") == "I should call the cronjob tool to schedule this."
+        assert (
+            assistant.get("reasoning")
+            == "I should call the cronjob tool to schedule this."
+        )
         # user and tool messages must NOT carry reasoning
         assert "reasoning" not in conv[0]
         assert "reasoning" not in conv[2]
@@ -713,7 +758,13 @@ class TestMessageStorage:
             "s1",
             role="assistant",
             content="",
-            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "date", "arguments": "{}"}}],
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "date", "arguments": "{}"},
+                }
+            ],
             reasoning_content="",
         )
 
@@ -743,7 +794,9 @@ class TestMessageStorage:
                 "content": [{"type": "output_text", "text": "Done!"}],
             },
         ]
-        db.append_message("s1", role="assistant", content="Done!", codex_message_items=items)
+        db.append_message(
+            "s1", role="assistant", content="Done!", codex_message_items=items
+        )
 
         conv = db.get_messages_as_conversation("s1")
         assert len(conv) == 1
@@ -785,12 +838,15 @@ class TestMessageStorage:
         conv = db.get_messages_as_conversation("s1")
         assert len(conv) == 1
         assert conv[0]["codex_reasoning_items"] == codex_items
-        assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
+        assert (
+            conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
+        )
 
 
 # =========================================================================
 # FTS5 search
 # =========================================================================
+
 
 class TestFTS5Search:
     def test_search_finds_content(self, db):
@@ -833,11 +889,20 @@ class TestFTS5Search:
         for src in ("cli", "telegram", "signal", "homeassistant", "acp", "matrix"):
             sid = f"s-{src}"
             db.create_session(session_id=sid, source=src)
-            db.append_message(sid, role="user", content=f"universal search test from {src}")
+            db.append_message(
+                sid, role="user", content=f"universal search test from {src}"
+            )
 
         results = db.search_messages("universal search test")
         found_sources = {r["source"] for r in results}
-        assert found_sources == {"cli", "telegram", "signal", "homeassistant", "acp", "matrix"}
+        assert found_sources == {
+            "cli",
+            "telegram",
+            "signal",
+            "homeassistant",
+            "acp",
+            "matrix",
+        }
 
     def test_search_with_role_filter(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -851,7 +916,9 @@ class TestFTS5Search:
     def test_search_returns_context(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Tell me about Kubernetes")
-        db.append_message("s1", role="assistant", content="Kubernetes is an orchestrator.")
+        db.append_message(
+            "s1", role="assistant", content="Kubernetes is an orchestrator."
+        )
 
         results = db.search_messages("Kubernetes")
         assert len(results) == 2
@@ -866,11 +933,17 @@ class TestFTS5Search:
         db.append_message("s1", role="user", content="before needle")
         db.append_message("s2", role="user", content="other session message")
         db.append_message("s1", role="assistant", content="needle match")
-        db.append_message("s2", role="assistant", content="another other session message")
+        db.append_message(
+            "s2", role="assistant", content="another other session message"
+        )
         db.append_message("s1", role="user", content="after needle")
 
         results = db.search_messages('"needle match"')
-        needle_result = next(r for r in results if r["session_id"] == "s1" and "needle match" in r["snippet"])
+        needle_result = next(
+            r
+            for r in results
+            if r["session_id"] == "s1" and "needle match" in r["snippet"]
+        )
 
         assert [msg["content"] for msg in needle_result["context"]] == [
             "before needle",
@@ -885,14 +958,14 @@ class TestFTS5Search:
 
         # Each of these previously caused sqlite3.OperationalError
         dangerous_queries = [
-            'C++',              # + is FTS5 column filter
-            '"unterminated',    # unbalanced double-quote
-            '(problem',         # unbalanced parenthesis
-            'hello AND',        # dangling boolean operator
-            '***',              # repeated wildcard
-            '{test}',           # curly braces (column reference)
-            'OR hello',         # leading boolean operator
-            'a AND OR b',       # adjacent operators
+            "C++",  # + is FTS5 column filter
+            '"unterminated',  # unbalanced double-quote
+            "(problem",  # unbalanced parenthesis
+            "hello AND",  # dangling boolean operator
+            "***",  # repeated wildcard
+            "{test}",  # curly braces (column reference)
+            "OR hello",  # leading boolean operator
+            "a AND OR b",  # adjacent operators
         ]
         for query in dangerous_queries:
             # Must not raise — should return list (possibly empty)
@@ -917,14 +990,20 @@ class TestFTS5Search:
         results = db.search_messages("chat-send")
         assert isinstance(results, list)
         assert len(results) >= 1
-        assert any("chat-send" in (r.get("snippet") or r.get("content", "")).lower()
-                    for r in results)
+        assert any(
+            "chat-send" in (r.get("snippet") or r.get("content", "")).lower()
+            for r in results
+        )
 
     def test_search_dotted_term_does_not_crash(self, db):
         """Dotted terms like 'P2.2' or 'simulate.p2.test.ts' should not crash FTS5."""
         db.create_session(session_id="s1", source="cli")
-        db.append_message("s1", role="user", content="Working on P2.2 session_search edge cases")
-        db.append_message("s1", role="assistant", content="See simulate.p2.test.ts for details")
+        db.append_message(
+            "s1", role="user", content="Working on P2.2 session_search edge cases"
+        )
+        db.append_message(
+            "s1", role="assistant", content="See simulate.p2.test.ts for details"
+        )
 
         results = db.search_messages("P2.2")
         assert isinstance(results, list)
@@ -950,23 +1029,25 @@ class TestFTS5Search:
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
-        assert s('hello world') == 'hello world'
-        assert '+' not in s('C++')
+        assert s("hello world") == "hello world"
+        assert "+" not in s("C++")
         assert '"' not in s('"unterminated')
-        assert '(' not in s('(problem')
-        assert '{' not in s('{test}')
+        assert "(" not in s("(problem")
+        assert "{" not in s("{test}")
         # Dangling operators removed
-        assert s('hello AND') == 'hello'
-        assert s('OR world') == 'world'
+        assert s("hello AND") == "hello"
+        assert s("OR world") == "world"
         # Leading bare * removed
-        assert s('***') == ''
+        assert s("***") == ""
         # Valid prefix kept
-        assert s('deploy*') == 'deploy*'
+        assert s("deploy*") == "deploy*"
 
     def test_sanitize_fts5_preserves_quoted_phrases(self):
         """Properly paired double-quoted phrases should be preserved."""
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
         # Simple quoted phrase
         assert s('"exact phrase"') == '"exact phrase"'
@@ -982,18 +1063,19 @@ class TestFTS5Search:
     def test_sanitize_fts5_quotes_hyphenated_terms(self):
         """Hyphenated terms should be wrapped in quotes for exact matching."""
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
         # Simple hyphenated term
-        assert s('chat-send') == '"chat-send"'
+        assert s("chat-send") == '"chat-send"'
         # Multiple hyphens
-        assert s('docker-compose-up') == '"docker-compose-up"'
+        assert s("docker-compose-up") == '"docker-compose-up"'
         # Hyphenated term with other words
-        result = s('fix chat-send bug')
+        result = s("fix chat-send bug")
         assert '"chat-send"' in result
-        assert 'fix' in result
-        assert 'bug' in result
+        assert "fix" in result
+        assert "bug" in result
         # Multiple hyphenated terms with OR
-        result = s('chat-send OR deploy-prod')
+        result = s("chat-send OR deploy-prod")
         assert '"chat-send"' in result
         assert '"deploy-prod"' in result
         # Already-quoted hyphenated term — no double quoting
@@ -1004,23 +1086,24 @@ class TestFTS5Search:
     def test_sanitize_fts5_quotes_dotted_terms(self):
         """Dotted terms should be wrapped in quotes to avoid FTS5 query parse edge cases."""
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
 
-        assert s('P2.2') == '"P2.2"'
-        assert s('simulate.p2') == '"simulate.p2"'
-        assert s('simulate.p2.test.ts') == '"simulate.p2.test.ts"'
+        assert s("P2.2") == '"P2.2"'
+        assert s("simulate.p2") == '"simulate.p2"'
+        assert s("simulate.p2.test.ts") == '"simulate.p2.test.ts"'
 
         # Already quoted — no double quoting
         assert s('"P2.2"') == '"P2.2"'
 
         # Works with boolean syntax
-        result = s('P2.2 OR simulate.p2')
+        result = s("P2.2 OR simulate.p2")
         assert '"P2.2"' in result
         assert '"simulate.p2"' in result
 
         # Mixed dots and hyphens — single pass avoids double-quoting
-        assert s('my-app.config') == '"my-app.config"'
-        assert s('my-app.config.ts') == '"my-app.config.ts"'
+        assert s("my-app.config") == '"my-app.config"'
+        assert s("my-app.config.ts") == '"my-app.config.ts"'
 
     def test_sanitize_fts5_quotes_underscored_terms(self):
         """Underscored terms should be wrapped in quotes for exact matching.
@@ -1030,26 +1113,28 @@ class TestFTS5Search:
         ('sp AND new') that fails to match rows indexed as 'sp_new1'.
         """
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
         # Simple underscored term
-        assert s('sp_new') == '"sp_new"'
+        assert s("sp_new") == '"sp_new"'
         # Multiple underscores
-        assert s('a_b_c') == '"a_b_c"'
+        assert s("a_b_c") == '"a_b_c"'
         # Mixed underscores and hyphens/dots — single pass avoids double-quoting
-        assert s('sp_new1') == '"sp_new1"'
-        assert s('docker-compose_up') == '"docker-compose_up"'
-        assert s('my.app_config.ts') == '"my.app_config.ts"'
+        assert s("sp_new1") == '"sp_new1"'
+        assert s("docker-compose_up") == '"docker-compose_up"'
+        assert s("my.app_config.ts") == '"my.app_config.ts"'
         # Already-quoted — no double quoting
         assert s('"sp_new"') == '"sp_new"'
         # Mixed with other words
-        result = s('sp_new and 血管瘤')
+        result = s("sp_new and 血管瘤")
         assert '"sp_new"' in result
-        assert '血管瘤' in result
+        assert "血管瘤" in result
 
 
 # =========================================================================
 # CJK (Chinese/Japanese/Korean) LIKE fallback
 # =========================================================================
+
 
 class TestCJKSearchFallback:
     """Regression tests for CJK search (see #11511).
@@ -1063,6 +1148,7 @@ class TestCJKSearchFallback:
 
     def test_cjk_detection_covers_all_ranges(self):
         from hermes_state import SessionDB
+
         f = SessionDB._contains_cjk
         # Chinese (CJK Unified Ideographs)
         assert f("记忆断裂") is True
@@ -1082,7 +1168,8 @@ class TestCJKSearchFallback:
         """The headline bug: multi-char Chinese query must not return []."""
         db.create_session(session_id="s1", source="cli")
         db.append_message(
-            "s1", role="user",
+            "s1",
+            role="user",
             content="昨天和其他Agent的聊天记录，记忆断裂问题复现了",
         )
         results = db.search_messages("记忆断裂")
@@ -1146,7 +1233,8 @@ class TestCJKSearchFallback:
         long_prefix = "这是一段很长的前缀用来把匹配位置推到文档中间" * 3
         long_suffix = "这是一段很长的后缀内容填充剩余空间" * 3
         db.append_message(
-            "s1", role="user",
+            "s1",
+            role="user",
             content=f"{long_prefix}记忆断裂{long_suffix}",
         )
         results = db.search_messages("记忆断裂")
@@ -1264,6 +1352,7 @@ class TestCJKSearchFallback:
 # Session search and listing
 # =========================================================================
 
+
 class TestSearchSessions:
     def test_list_all_sessions(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -1295,6 +1384,7 @@ class TestSearchSessions:
 # Counts
 # =========================================================================
 
+
 class TestCounts:
     def test_session_count(self, db):
         assert db.session_count() == 0
@@ -1317,6 +1407,7 @@ class TestCounts:
         includes compression roots that get projected away by the list.
         """
         import time as _time
+
         t0 = _time.time() - 3600
 
         db.create_session("root1", "cli")
@@ -1348,6 +1439,7 @@ class TestCounts:
         that, not underflow.
         """
         import time as _time
+
         t0 = _time.time() - 3600
         db.create_session("root1", "cli")
         db.append_message("root1", "user", "first")
@@ -1407,6 +1499,7 @@ class TestCounts:
 # Delete and export
 # =========================================================================
 
+
 class TestDeleteAndExport:
     def test_delete_session(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -1421,7 +1514,9 @@ class TestDeleteAndExport:
 
     def test_resolve_session_id_exact(self, db):
         db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
-        assert db.resolve_session_id("20260315_092437_c9a6ff") == "20260315_092437_c9a6ff"
+        assert (
+            db.resolve_session_id("20260315_092437_c9a6ff") == "20260315_092437_c9a6ff"
+        )
 
     def test_resolve_session_id_unique_prefix(self, db):
         db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
@@ -1470,6 +1565,7 @@ class TestDeleteAndExport:
 # =========================================================================
 # Prune
 # =========================================================================
+
 
 class TestPruneSessions:
     def test_prune_old_ended_sessions(self, db):
@@ -1537,7 +1633,12 @@ class TestPruneSessions:
         db.end_session("D", end_reason="done")
 
         # Backdate A and B to be old; C and D stay recent
-        for sid, ts in [("A", old_ts), ("B", old_ts), ("C", recent_ts), ("D", recent_ts)]:
+        for sid, ts in [
+            ("A", old_ts),
+            ("B", old_ts),
+            ("C", recent_ts),
+            ("D", recent_ts),
+        ]:
             db._conn.execute(
                 "UPDATE sessions SET started_at = ? WHERE id = ?", (ts, sid)
             )
@@ -1584,7 +1685,9 @@ class TestDeleteSessionOrphansChildren:
         """Deleting a parent session orphans its children."""
         db.create_session(session_id="parent", source="cli")
         db.create_session(session_id="child", source="cli", parent_session_id="parent")
-        db.create_session(session_id="grandchild", source="cli", parent_session_id="child")
+        db.create_session(
+            session_id="grandchild", source="cli", parent_session_id="child"
+        )
 
         # Should not raise IntegrityError
         result = db.delete_session("parent")
@@ -1607,6 +1710,7 @@ class TestDeleteSessionOrphansChildren:
 # =========================================================================
 # Session title
 # =========================================================================
+
 
 class TestSessionTitle:
     def test_set_and_get_title(self, db):
@@ -1792,6 +1896,7 @@ class TestSchemaInit:
 
     def test_schema_version(self, db):
         from hermes_state import SCHEMA_VERSION
+
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
         assert version == SCHEMA_VERSION
@@ -1873,7 +1978,9 @@ class TestSchemaInit:
         assert {"chat_id", "chat_type", "thread_id", "session_key"}.isdisjoint(columns)
         db.close()
 
-    def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):
+    def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(
+        self, tmp_path
+    ):
         """The /topic opt-in path owns the DB migration for Telegram topic mode."""
         old_db = tmp_path / "old.db"
         import sqlite3
@@ -1956,7 +2063,10 @@ class TestSchemaInit:
             user_id="208214988",
         )
 
-        assert db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585") is None
+        assert (
+            db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+            is None
+        )
 
         db.bind_telegram_topic(
             chat_id="208214988",
@@ -1976,7 +2086,9 @@ class TestSchemaInit:
         assert db.get_meta("telegram_dm_topic_schema_version") == "2"
         db.close()
 
-    def test_telegram_topic_binding_refuses_to_relink_session_to_another_topic(self, tmp_path):
+    def test_telegram_topic_binding_refuses_to_relink_session_to_another_topic(
+        self, tmp_path
+    ):
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session(
             session_id="topic-session",
@@ -2001,7 +2113,9 @@ class TestSchemaInit:
             )
         db.close()
 
-    def test_list_unlinked_telegram_sessions_for_user_excludes_bound_and_other_users(self, tmp_path):
+    def test_list_unlinked_telegram_sessions_for_user_excludes_bound_and_other_users(
+        self, tmp_path
+    ):
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session(
             session_id="old-unlinked",
@@ -2045,7 +2159,8 @@ class TestSchemaInit:
         db_path = tmp_path / "migrate_test.db"
         conn = sqlite3.connect(str(db_path))
         # Create v2 schema (without title column)
-        conn.executescript("""
+        conn.executescript(
+            """
             CREATE TABLE schema_version (version INTEGER NOT NULL);
             INSERT INTO schema_version (version) VALUES (2);
 
@@ -2078,7 +2193,8 @@ class TestSchemaInit:
                 token_count INTEGER,
                 finish_reason TEXT
             );
-        """)
+        """
+        )
         conn.execute(
             "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
             ("existing", "cli", 1000.0),
@@ -2091,6 +2207,7 @@ class TestSchemaInit:
 
         # Verify migration
         from hermes_state import SCHEMA_VERSION
+
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
         assert cursor.fetchone()[0] == SCHEMA_VERSION
 
@@ -2127,7 +2244,8 @@ class TestSchemaInit:
         db_path = tmp_path / "gap_test.db"
         conn = sqlite3.connect(str(db_path))
         # Simulate the old v7 state: api_call_count exists, reasoning_content does NOT
-        conn.executescript("""
+        conn.executescript(
+            """
             CREATE TABLE schema_version (version INTEGER NOT NULL);
             INSERT INTO schema_version (version) VALUES (7);
 
@@ -2176,7 +2294,8 @@ class TestSchemaInit:
                 reasoning_details TEXT,
                 codex_reasoning_items TEXT
             );
-        """)
+        """
+        )
         conn.execute(
             "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
             ("s1", "cli", 1000.0),
@@ -2219,11 +2338,15 @@ class TestSchemaInit:
         """Opening the same database twice doesn't error or duplicate columns."""
         db_path = tmp_path / "idempotent.db"
         db1 = SessionDB(db_path=db_path)
-        cols1 = {r[1] for r in db1._conn.execute("PRAGMA table_info(messages)").fetchall()}
+        cols1 = {
+            r[1] for r in db1._conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
         db1.close()
 
         db2 = SessionDB(db_path=db_path)
-        cols2 = {r[1] for r in db2._conn.execute("PRAGMA table_info(messages)").fetchall()}
+        cols2 = {
+            r[1] for r in db2._conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
         db2.close()
 
         assert cols1 == cols2
@@ -2308,6 +2431,7 @@ class TestTitleLineage:
     def test_resolve_returns_latest_numbered(self, db):
         """When numbered variants exist, return the most recent one."""
         import time
+
         db.create_session("s1", "cli")
         db.set_session_title("s1", "my project")
         time.sleep(0.01)
@@ -2420,6 +2544,7 @@ class TestListSessionsRich:
 
     def test_last_active_from_latest_message(self, db):
         import time
+
         db.create_session("s1", "cli")
         db.append_message("s1", "user", "Hello")
         time.sleep(0.01)
@@ -2434,14 +2559,18 @@ class TestListSessionsRich:
         # No messages, so last_active falls back to started_at
         assert sessions[0]["last_active"] == sessions[0]["started_at"]
 
-    def test_order_by_last_active_surfaces_recently_touched_older_session_first(self, db):
+    def test_order_by_last_active_surfaces_recently_touched_older_session_first(
+        self, db
+    ):
         t0 = 1709500000.0
         db.create_session("old", "cli")
         db.create_session("new", "cli")
 
         with db._lock:
             db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "old"))
-            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 10, "new"))
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 10, "new")
+            )
 
         db.append_message("old", "user", "old first")
         db.append_message("new", "user", "new first")
@@ -2479,7 +2608,9 @@ class TestListSessionsRich:
         t0 = 1709500000.0
         db.create_session("root1", "cli")
         with db._lock:
-            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1")
+            )
             db._conn.execute(
                 "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
                 (t0 + 100, "compression", "root1"),
@@ -2489,7 +2620,9 @@ class TestListSessionsRich:
         # Continuation tip created after root ended; last activity much later.
         db.create_session("tip1", "cli", parent_session_id="root1")
         with db._lock:
-            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 101, "tip1"))
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 101, "tip1")
+            )
         db.append_message("tip1", "user", "latest message")
 
         # Bunch of newer, uncompressed sessions — fresher start_at but older
@@ -2563,12 +2696,15 @@ class TestListSessionsRich:
 
         sessions = db.list_sessions_rich()
         ids = [s["id"] for s in sessions]
-        assert "delegate" not in ids, "Delegate sub-agent should not appear in default list"
+        assert (
+            "delegate" not in ids
+        ), "Delegate sub-agent should not appear in default list"
         assert "root" in ids
 
     def test_compression_child_still_hidden(self, db):
         """Compression continuation sessions remain hidden (parent ended with 'compression')."""
         import time as _time
+
         t0 = _time.time()
         db.create_session("root", "cli")
         db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root"))
@@ -2646,6 +2782,7 @@ class TestCompressionChainProjection:
 
     def test_get_compression_tip_walks_full_chain(self, db):
         import time as _time
+
         self._build_compression_chain(db, _time.time() - 3600)
         assert db.get_compression_tip("root1") == "tip1"
         assert db.get_compression_tip("mid1") == "tip1"
@@ -2661,6 +2798,7 @@ class TestCompressionChainProjection:
         continuations — the started_at >= ended_at guard handles this.
         """
         import time as _time
+
         self._build_compression_chain(db, _time.time() - 3600)
         # delegate1 is a child of root1 but NOT a compression continuation.
         # root1's tip must be tip1 (via mid1), not delegate1.
@@ -2671,6 +2809,7 @@ class TestCompressionChainProjection:
         the root row, so users can see and resume the live conversation.
         """
         import time as _time
+
         self._build_compression_chain(db, _time.time() - 3600)
         # Add an uncompressed root for comparison.
         db.create_session("solo", "cli")
@@ -2718,6 +2857,7 @@ class TestCompressionChainProjection:
         rows — useful for admin/debug UIs.
         """
         import time as _time
+
         self._build_compression_chain(db, _time.time() - 3600)
         sessions = db.list_sessions_rich(
             source="cli", limit=20, project_compression_tips=False
@@ -2736,6 +2876,7 @@ class TestCompressionChainProjection:
         even as new compressions push the tip forward in time.
         """
         import time as _time
+
         t0 = _time.time() - 3600
         self._build_compression_chain(db, t0)
 
@@ -2743,7 +2884,9 @@ class TestCompressionChainProjection:
         # if we used tip.started_at, but below if we correctly use root.started_at.
         t_between = t0 + 120  # between root1 and its compression
         db.create_session("newer", "cli")
-        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t_between, "newer"))
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t_between, "newer")
+        )
         db.append_message("newer", "user", "newer session started after root1")
         db._conn.commit()
 
@@ -2759,6 +2902,7 @@ class TestCompressionChainProjection:
         crash the list — it should fall back to surfacing the root as-is.
         """
         import time as _time
+
         t0 = _time.time() - 100
         db.create_session("orphan", "cli")
         db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "orphan"))
@@ -2780,6 +2924,7 @@ class TestCompressionChainProjection:
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)
 # =========================================================================
+
 
 class TestExcludeSources:
     """Tests for exclude_sources on list_sessions_rich and search_messages."""
@@ -2880,6 +3025,7 @@ class TestResolveSessionByNameOrId:
 # Concurrent write safety / lock contention fixes (#3139)
 # =========================================================================
 
+
 class TestConcurrentWriteSafety:
     def test_create_session_insert_or_ignore_is_idempotent(self, db):
         """create_session with the same ID twice must not raise (INSERT OR IGNORE)."""
@@ -2931,16 +3077,19 @@ class TestConcurrentWriteSafety:
         # Access the underlying connection timeout via sqlite3 introspection.
         # There is no public API, so we check the kwarg via the module default.
         import inspect
+
         from hermes_state import SessionDB as _SessionDB
+
         src = inspect.getsource(_SessionDB.__init__)
-        assert "30" in src, (
-            "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
-        )
+        assert (
+            "30" in src
+        ), "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
 
 
 # =========================================================================
 # Auto-maintenance: state_meta + vacuum + maybe_auto_prune_and_vacuum
 # =========================================================================
+
 
 class TestStateMeta:
     def test_get_meta_missing_returns_none(self, db):
@@ -3051,9 +3200,7 @@ class TestAutoMaintenance:
 
     def test_second_call_within_interval_skips(self, db):
         self._make_old_ended(db, "old", days_old=100)
-        first = db.maybe_auto_prune_and_vacuum(
-            retention_days=90, min_interval_hours=24
-        )
+        first = db.maybe_auto_prune_and_vacuum(retention_days=90, min_interval_hours=24)
         assert first["skipped"] is False
         assert first["pruned"] == 1
 
@@ -3175,6 +3322,7 @@ class TestAutoMaintenance:
 # FTS5 indexing of tool_calls / tool_name (#16751)
 # =========================================================================
 
+
 class TestFTS5ToolCallIndexing:
     """Regression tests: search_messages must see tool_name and tool_calls.
 
@@ -3186,7 +3334,9 @@ class TestFTS5ToolCallIndexing:
     def test_tool_name_is_searchable(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message(
-            "s1", role="assistant", content="",
+            "s1",
+            role="assistant",
+            content="",
             tool_name="UNIQUETOOLNAME",
         )
         results = db.search_messages("UNIQUETOOLNAME")
@@ -3195,15 +3345,19 @@ class TestFTS5ToolCallIndexing:
     def test_tool_calls_args_are_searchable(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message(
-            "s1", role="assistant", content="",
-            tool_calls=[{
-                "id": "c1",
-                "type": "function",
-                "function": {
-                    "name": "web_search",
-                    "arguments": '{"query": "UNIQUESEARCHTOKEN"}',
-                },
-            }],
+            "s1",
+            role="assistant",
+            content="",
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"query": "UNIQUESEARCHTOKEN"}',
+                    },
+                }
+            ],
         )
         results = db.search_messages("UNIQUESEARCHTOKEN")
         assert len(results) == 1
@@ -3211,12 +3365,16 @@ class TestFTS5ToolCallIndexing:
     def test_tool_function_name_in_tool_calls_is_searchable(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message(
-            "s1", role="assistant", content="",
-            tool_calls=[{
-                "id": "c1",
-                "type": "function",
-                "function": {"name": "UNIQUEFUNCNAME", "arguments": "{}"},
-            }],
+            "s1",
+            role="assistant",
+            content="",
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "UNIQUEFUNCNAME", "arguments": "{}"},
+                }
+            ],
         )
         results = db.search_messages("UNIQUEFUNCNAME")
         assert len(results) == 1
@@ -3231,18 +3389,24 @@ class TestFTS5ToolCallIndexing:
         """
         db.create_session(session_id="s1", source="cli")
         db.append_message(
-            "s1", role="assistant", content="hello",
+            "s1",
+            role="assistant",
+            content="hello",
             tool_name="web_search",
-            tool_calls=[{
-                "id": "c1",
-                "type": "function",
-                "function": {"name": "web_search", "arguments": '{"q": "x"}'},
-            }],
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"q": "x"}'},
+                }
+            ],
         )
+
         # end_session + end-time prune path would exercise DELETE; hit the
         # row directly through the write helper to keep the regression focused.
         def _delete(conn):
             conn.execute("DELETE FROM messages WHERE session_id = ?", ("s1",))
+
         db._execute_write(_delete)  # must not raise
 
         assert db.search_messages("hello") == []
@@ -3252,7 +3416,9 @@ class TestFTS5ToolCallIndexing:
         """UPDATE must refresh the FTS row so old tokens drop out and new tokens appear."""
         db.create_session(session_id="s1", source="cli")
         db.append_message(
-            "s1", role="assistant", content="",
+            "s1",
+            role="assistant",
+            content="",
             tool_name="ORIGINALTOOL",
         )
         assert len(db.search_messages("ORIGINALTOOL")) == 1
@@ -3262,6 +3428,7 @@ class TestFTS5ToolCallIndexing:
                 "UPDATE messages SET tool_name = ? WHERE session_id = ?",
                 ("RENAMEDTOOL", "s1"),
             )
+
         db._execute_write(_update)
 
         assert db.search_messages("ORIGINALTOOL") == []
@@ -3283,7 +3450,8 @@ class TestFTS5ToolCallMigration:
         # Build the pre-v11 schema by hand: external-content FTS tables +
         # old triggers that only reference new.content.
         conn = sqlite3.connect(str(db_path))
-        conn.executescript("""
+        conn.executescript(
+            """
             CREATE TABLE schema_version (version INTEGER NOT NULL);
             INSERT INTO schema_version (version) VALUES (10);
 
@@ -3329,7 +3497,8 @@ class TestFTS5ToolCallMigration:
             CREATE TRIGGER messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
                 INSERT INTO messages_fts_trigram(rowid, content) VALUES (new.id, new.content);
             END;
-        """)
+        """
+        )
         conn.execute(
             "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
             ("s1", "cli", time.time()),
@@ -3337,8 +3506,14 @@ class TestFTS5ToolCallMigration:
         conn.execute(
             "INSERT INTO messages (session_id, timestamp, role, content, tool_name, tool_calls) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            ("s1", time.time(), "assistant", "", "LEGACYTOOL",
-             '{"function":{"name":"web_search","arguments":"{\\"q\\":\\"LEGACYARG\\"}"}}'),
+            (
+                "s1",
+                time.time(),
+                "assistant",
+                "",
+                "LEGACYTOOL",
+                '{"function":{"name":"web_search","arguments":"{\\"q\\":\\"LEGACYARG\\"}"}}',
+            ),
         )
         conn.commit()
 
@@ -3352,12 +3527,15 @@ class TestFTS5ToolCallMigration:
         # Now open via SessionDB — migration runs.
         session_db = SessionDB(db_path=db_path)
         try:
-            assert len(session_db.search_messages("LEGACYTOOL")) == 1, \
-                "v11 migration must backfill tool_name into FTS"
-            assert len(session_db.search_messages("LEGACYARG")) == 1, \
-                "v11 migration must backfill tool_calls JSON into FTS"
+            assert (
+                len(session_db.search_messages("LEGACYTOOL")) == 1
+            ), "v11 migration must backfill tool_name into FTS"
+            assert (
+                len(session_db.search_messages("LEGACYARG")) == 1
+            ), "v11 migration must backfill tool_calls JSON into FTS"
             # schema_version bumped
             from hermes_state import SCHEMA_VERSION
+
             row = session_db._conn.execute(
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
@@ -3378,6 +3556,7 @@ class TestApplyWalProbe:
     def test_skips_set_pragma_when_already_wal(self, tmp_path):
         """Already-WAL connection must not trigger the set-pragma."""
         import sqlite3
+
         from hermes_state import apply_wal_with_fallback
 
         class _TracingConn(sqlite3.Connection):
@@ -3402,16 +3581,17 @@ class TestApplyWalProbe:
 
         assert result == "wal"
         # Only the probe should have fired; the set-pragma must NOT appear.
-        assert any("PRAGMA journal_mode" == sql.strip() for sql in conn.executed), (
-            "probe PRAGMA should have run"
-        )
-        assert not any("journal_mode=WAL" in sql for sql in conn.executed), (
-            "set-pragma must not run when already in WAL mode"
-        )
+        assert any(
+            "PRAGMA journal_mode" == sql.strip() for sql in conn.executed
+        ), "probe PRAGMA should have run"
+        assert not any(
+            "journal_mode=WAL" in sql for sql in conn.executed
+        ), "set-pragma must not run when already in WAL mode"
 
     def test_sets_wal_on_fresh_connection(self, tmp_path):
         """Probe sees 'delete', then set-pragma runs and returns 'wal'."""
         import sqlite3
+
         from hermes_state import apply_wal_with_fallback
 
         class _TracingConn(sqlite3.Connection):
@@ -3431,15 +3611,16 @@ class TestApplyWalProbe:
             conn.close()
 
         assert result == "wal"
-        assert any("journal_mode=WAL" in sql for sql in conn.executed), (
-            "set-pragma must fire on a fresh (non-WAL) connection"
-        )
+        assert any(
+            "journal_mode=WAL" in sql for sql in conn.executed
+        ), "set-pragma must fire on a fresh (non-WAL) connection"
 
     def test_apply_wal_concurrent_connects_no_eio(self, tmp_path):
         """20 threads calling connect() on the same DB must not see disk I/O error."""
+        import sqlite3
         import sys
         import threading
-        import sqlite3
+
         from hermes_state import apply_wal_with_fallback
 
         db_path = tmp_path / "concurrent.db"
@@ -3483,6 +3664,7 @@ class TestApplyWalProbe:
     def test_fallback_to_delete_still_works(self, tmp_path):
         """When set-pragma raises a WAL-incompat error, falls back to DELETE."""
         import sqlite3
+
         from hermes_state import apply_wal_with_fallback
 
         class _IncompatConn(sqlite3.Connection):
@@ -3510,6 +3692,7 @@ class TestApplyWalProbe:
     def test_probe_failure_falls_through_to_set_pragma(self, tmp_path):
         """When the read probe raises OperationalError, fall through to set-pragma."""
         import sqlite3
+
         from hermes_state import apply_wal_with_fallback
 
         class _ProbeFails(sqlite3.Connection):
@@ -3536,7 +3719,9 @@ class TestApplyWalProbe:
     def test_no_downgrade_from_wal_to_delete_on_eio(self, tmp_path):
         """OperationalError NOT in _WAL_INCOMPAT_MARKERS must propagate, not downgrade."""
         import sqlite3
+
         import pytest
+
         from hermes_state import apply_wal_with_fallback
 
         class _EIOConn(sqlite3.Connection):
@@ -3563,6 +3748,7 @@ class TestApplyWalProbe:
     def test_returns_wal_not_delete_from_probe(self, tmp_path):
         """Early-return only on 'wal'; 'delete' or 'memory' must fall through to set-pragma."""
         import sqlite3
+
         from hermes_state import apply_wal_with_fallback
 
         class _TracingConn(sqlite3.Connection):
@@ -3583,9 +3769,9 @@ class TestApplyWalProbe:
             conn.close()
 
         assert result == "wal"
-        assert any("journal_mode=WAL" in sql for sql in conn.executed), (
-            "set-pragma must fire when probe returns 'delete'"
-        )
+        assert any(
+            "journal_mode=WAL" in sql for sql in conn.executed
+        ), "set-pragma must fire when probe returns 'delete'"
 
 
 class TestSessionArchive:
