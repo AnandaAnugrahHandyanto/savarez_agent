@@ -58,6 +58,12 @@ export function useCwdActions({
             cwd: trimmed
           })
 
+          // Adopt the backend's normalized cwd so the persisted workspace and
+          // branch stay consistent with what the agent will use.
+          if (info.cwd) {
+            setCurrentCwd(info.cwd)
+          }
+
           setCurrentBranch(info.branch || '')
         } catch {
           setCurrentBranch('')

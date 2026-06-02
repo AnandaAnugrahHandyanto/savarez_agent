@@ -4730,8 +4730,13 @@ def _(rid, params: dict) -> dict:
         if line
     )
 
-    preview_cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
-    if preview_cwd and not os.path.isdir(preview_cwd):
+    # Normalize defensively: a malformed client path (embedded NUL, etc.) must
+    # not blow up the whole restart — treat it as "no validated cwd".
+    try:
+        preview_cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
+        if preview_cwd and not os.path.isdir(preview_cwd):
+            preview_cwd = ""
+    except Exception:
         preview_cwd = ""
 
     def run():
