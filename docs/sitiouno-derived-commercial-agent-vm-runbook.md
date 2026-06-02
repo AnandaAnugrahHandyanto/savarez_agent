@@ -73,4 +73,13 @@ CRM/Sales/Factory/Calendar, Signature Core, and Accounting Lite Core now exist a
 - `db/modules/accounting/`
 - `toolsets.py` entries for `signature` and `accounting`
 
+Video analysis has two layers:
+
+- `video_analyze`: requires a real vision/video-capable provider. Bael uses Gemini via `auxiliary.vision.provider=gemini` and `model=gemini-3-flash-preview`.
+- `video-intel-pipeline`: local skill/runtime pipeline for yt-dlp + ffmpeg + faster-whisper + hybrid search.
+
+Video generation is separate:
+
+- `video_generate` requires a configured provider/plugin such as FAL with `FAL_KEY`. Do not mark it complete without a real provider credential and smoke test.
+
 Do not treat skills alone as sufficient; the agent must have schemas plus registered tools plus smoke tests.
