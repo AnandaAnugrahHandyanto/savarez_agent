@@ -8,7 +8,7 @@ Covers:
 """
 
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -248,3 +248,90 @@ class TestGatewayUsageLastTurn:
             result = await runner._handle_usage_command(event)
 
         assert "Last turn" not in result
+
+
+# ---------------------------------------------------------------------------
+# True end-to-end: drive the real _handle_message router (not just handlers)
+# ---------------------------------------------------------------------------
+
+def _make_routing_event(command, args=""):
+    """MessageEvent-shaped mock that flows through GatewayRunner._handle_message."""
+    event = MagicMock()
+    event.get_command.return_value = command
+    event.get_command_args.return_value = args
+    event.text = f"/{command} {args}".strip()
+    event.message_type = None
+    event.source = MagicMock()
+    event.source.user_id = "571820863"
+    event.source.user_name = "Ace"
+    event.source.platform = MagicMock()
+    event.source.platform.value = "telegram"
+    event.source.chat_type = "dm"
+    event.source.chat_id = "571820863"
+    return event
+
+
+def _make_routing_runner():
+    """Bare GatewayRunner wired with just enough state to reach slash dispatch."""
+    from gateway.run import GatewayRunner
+    runner = object.__new__(GatewayRunner)
+    runner.config = {}
+    runner.adapters = {}
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = threading.Lock()
+    runner._draining = False
+    runner._busy_input_mode = "interrupt"
+    runner.session_store = MagicMock()
+    runner._is_user_authorized = MagicMock(return_value=True)
+    runner._session_key_for_source = MagicMock(return_value=SK)
+    # No per-command access gate, no hook interception.
+    runner._check_slash_access = MagicMock(return_value=None)
+    runner.hooks = MagicMock()
+    runner.hooks.emit_collect = AsyncMock(return_value=[])
+    return runner
+
+
+class TestSlashCommandEndToEndRouting:
+    """Exercise the full _handle_message dispatch path, including alias
+    resolution and the known-command gate — not just the leaf handlers."""
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_routes_through_handle_message(self):
+        runner = _make_routing_runner()
+        event = _make_routing_event("system_prompt")
+        fake = _fake_breakdown()
+        with patch("hermes_cli.prompt_size.compute_system_prompt_breakdown", return_value=fake):
+            result = await runner._handle_message(event)
+        assert result is not None
+        assert "System prompt breakdown" in result
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_alias_routes_through_handle_message(self):
+        """The `/prompt` alias must resolve to the same handler end-to-end."""
+        runner = _make_routing_runner()
+        event = _make_routing_event("prompt")
+        fake = _fake_breakdown()
+        with patch("hermes_cli.prompt_size.compute_system_prompt_breakdown", return_value=fake):
+            result = await runner._handle_message(event)
+        assert result is not None
+        assert "System prompt breakdown" in result
+
+    @pytest.mark.asyncio
+    async def test_usage_routes_through_handle_message(self):
+        from agent.usage_pricing import CanonicalUsage
+        runner = _make_routing_runner()
+        agent = _make_usage_agent(
+            last_turn=CanonicalUsage(input_tokens=2_000, output_tokens=800, cache_read_tokens=28_000)
+        )
+        runner._agent_cache[SK] = (agent, "sig")
+        event = _make_routing_event("usage")
+        with patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+            mock_cost.return_value = MagicMock(amount_usd=None, status="included")
+            result = await runner._handle_message(event)
+        assert result is not None
+        assert "Last turn" in result
+        assert "Cached: 28,000" in result
+
