@@ -41,6 +41,7 @@ from pathlib import Path
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
 _SCHTASKS_TIMEOUT_S = 15
 _SCHTASKS_NO_OUTPUT_TIMEOUT_S = 30
+_SCHTASKS_ENCODINGS = ("mbcs", "utf-8", "cp1252")
 # Patterns in schtasks stderr that mean "fall back to the Startup folder".
 _FALLBACK_PATTERNS = re.compile(
     r"(access is denied|acceso denegado|přístup byl odepřen|schtasks timed out|schtasks produced no output)",
@@ -97,6 +98,20 @@ def _quote_schtasks_arg(value: str) -> str:
 # schtasks.exe wrapper
 # ---------------------------------------------------------------------------
 
+def _decode_schtasks_output(data: bytes | str | None) -> str:
+    """Decode localized schtasks.exe output without crashing on Windows."""
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    for enc in _SCHTASKS_ENCODINGS:
+        try:
+            return data.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
     """Run ``schtasks.exe`` with a hard timeout. Return (code, stdout, stderr).
 
@@ -108,17 +123,24 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
     if schtasks is None:
         return (1, "", "schtasks.exe not found on PATH")
     try:
+        env = os.environ.copy()
+        env.setdefault("MSYS2_ARG_CONV_EXCL", "*")
         proc = subprocess.run(
             [schtasks, *args],
             capture_output=True,
-            text=True,
+            text=False,
             timeout=_SCHTASKS_TIMEOUT_S,
+            env=env,
             # CREATE_NO_WINDOW avoids a flashing console window when the CLI
             # is itself hosted in a TUI. See tools/browser_tool.py for the
             # same pattern and the windows-subprocess-sigint-storm.md ref.
             creationflags=0x08000000,  # CREATE_NO_WINDOW
         )
-        return (proc.returncode, proc.stdout or "", proc.stderr or "")
+        return (
+            proc.returncode,
+            _decode_schtasks_output(proc.stdout),
+            _decode_schtasks_output(proc.stderr),
+        )
     except subprocess.TimeoutExpired:
         return (124, "", f"schtasks timed out after {_SCHTASKS_TIMEOUT_S}s")
     except OSError as e:

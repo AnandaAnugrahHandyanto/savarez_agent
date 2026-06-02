@@ -314,10 +314,30 @@ class TestKillStaleDashboardWindows:
         assert len(taskkill_calls) == 2
         assert ["taskkill", "/PID", "12345", "/F"] in [c.args[0] for c in taskkill_calls]
         assert ["taskkill", "/PID", "12346", "/F"] in [c.args[0] for c in taskkill_calls]
+        for call in taskkill_calls:
+            assert call.kwargs["text"] is False
+            assert call.kwargs["env"]["MSYS2_ARG_CONV_EXCL"] == "*"
+            assert call.kwargs["creationflags"] != 0
 
         out = capsys.readouterr().out
         assert "✓ stopped PID 12345" in out
         assert "✓ stopped PID 12346" in out
+
+    def test_taskkill_missing_pid_counts_as_stopped(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "platform", "win32")
+
+        def fake_run(args, *a, **kw):
+            return MagicMock(returncode=128, stdout=b"",
+                             stderr="错误: 没有找到进程 \"40360\"。".encode("gbk"))
+
+        with patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[40360]), \
+             patch("subprocess.run", side_effect=fake_run):
+            _kill_stale_dashboard_processes()
+
+        out = capsys.readouterr().out
+        assert "✓ stopped PID 40360" in out
+        assert "failed to stop" not in out
 
     def test_taskkill_failure_is_reported(self, monkeypatch, capsys):
         monkeypatch.setattr(sys, "platform", "win32")

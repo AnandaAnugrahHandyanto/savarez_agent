@@ -29,6 +29,35 @@ def test_schtasks_fallback_does_not_hide_unknown_errors():
     assert gateway_windows._should_fall_back(1, "ERROR: The system cannot find the file specified.") is False
 
 
+def test_exec_schtasks_decodes_localized_bytes_without_text_mode_crash(monkeypatch):
+    """Chinese Windows schtasks output may not be UTF-8."""
+
+    class Result:
+        returncode = 1
+        stdout = "成功".encode("gbk")
+        stderr = "错误: 没有找到任务".encode("gbk")
+
+    def fake_run(cmd, **kwargs):
+        assert kwargs["text"] is False
+        assert kwargs["env"]["MSYS2_ARG_CONV_EXCL"] == "*"
+        assert kwargs["creationflags"] == 0x08000000
+        return Result()
+
+    monkeypatch.setattr(gateway_windows.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: r"C:\Windows\System32\schtasks.exe")
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+
+    code, stdout, stderr = gateway_windows._exec_schtasks(["/Query"])
+
+    assert code == 1
+    assert stdout == "成功"
+    assert "没有找到任务" in stderr
+
+
+def test_decode_schtasks_output_replaces_undecodable_bytes():
+    assert "�" in gateway_windows._decode_schtasks_output(b"\x81")
+
+
 def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, tmp_path):
     """Avoid uv's venv pythonw launcher because it respawns console python.exe."""
 
