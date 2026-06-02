@@ -3078,9 +3078,10 @@ class FeishuAdapter(BasePlatformAdapter):
             media_types = list(media_types) + parent_media_types
         # If the current message is plain text but the quoted message has media, upgrade type
         if inbound_type == MessageType.TEXT and parent_media_types:
-            inbound_type = MessageType(
-                parent_media_types[0], default=MessageType.PHOTO
-            ) if hasattr(MessageType, "__call__") else MessageType.PHOTO
+            try:
+                inbound_type = MessageType(parent_media_types[0])
+            except ValueError:
+                inbound_type = MessageType.PHOTO
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
