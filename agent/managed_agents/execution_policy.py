@@ -375,7 +375,7 @@ def decide_execution_policy(
     models_cfg: Mapping[str, Any],
     task: Mapping[str, Any],
     *,
-    task_type: str = "tests",
+    task_type: str = "test",
     risk_level: str = "R1",
     effectiveness: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> ExecutionPolicyDecision:

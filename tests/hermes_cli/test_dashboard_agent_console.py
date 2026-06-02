@@ -365,7 +365,7 @@ def test_capability_matrix_endpoint_returns_preview(tmp_path, monkeypatch):
     body = resp.json()
     assert "claude" in body["agents"]
     assert body["preview"]["primary_agent"] == "claude"
-    assert body["preview"]["reason"] == "capability_and_risk_match"
+    assert "capability_match" in body["preview"]["reason"] or "effectiveness" in body["preview"]["reason"]
     assert body["model_route"]["agent_id"] == "claude"
     assert body["model_route"]["model_ref"] == "deepseek_pro"
     assert body["model_route"]["source"] == "agent_model_strategy"

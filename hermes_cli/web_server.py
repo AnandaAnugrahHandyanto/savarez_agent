@@ -536,7 +536,7 @@ class AgentModelStrategyUpdate(BaseModel):
 
 class AgentRunSmokeCreate(BaseModel):
     project: str = "staam"
-    task_type: str = "tests"
+    task_type: str = "test"
     risk_level: str = "R1"
     failed_agent_id: str = "deepseek-tui"
     failed_model_ref: str = "opencode_go_deepseek_flash"
@@ -2332,7 +2332,7 @@ def _task_execution_policy(
     project: Optional[str],
     task_id: str,
     *,
-    task_type: str = "tests",
+    task_type: str = "test",
     risk_level: str = "R1",
 ) -> Dict[str, Any]:
     from agent.managed_agents.execution_policy import decide_execution_policy
@@ -2678,7 +2678,7 @@ async def get_run_tasks(
     status: Optional[str] = None,
     agent_id: Optional[str] = None,
     include_policy: bool = False,
-    task_type: str = "tests",
+    task_type: str = "test",
     risk_level: str = "R1",
     limit: int = 100,
     offset: int = 0,
@@ -2715,7 +2715,7 @@ def _apply_run_task_execution_policy_sync(
     task_id: str,
     *,
     project: Optional[str] = None,
-    task_type: str = "tests",
+    task_type: str = "test",
     risk_level: str = "R1",
 ) -> Dict[str, Any]:
     decision = _task_execution_policy(project, task_id, task_type=task_type, risk_level=risk_level)
@@ -3329,7 +3329,7 @@ async def run_external_agent_eval(body: AgentEvalRunCreate):
 async def get_run_task_execution_policy(
     task_id: str,
     project: Optional[str] = None,
-    task_type: str = "tests",
+    task_type: str = "test",
     risk_level: str = "R1",
 ):
     """Return the next execution-policy decision for a ledger task."""
@@ -3340,7 +3340,7 @@ async def get_run_task_execution_policy(
 async def record_run_task_execution_policy(
     task_id: str,
     project: Optional[str] = None,
-    task_type: str = "tests",
+    task_type: str = "test",
     risk_level: str = "R1",
 ):
     """Append the current execution-policy decision into Run Ledger lifecycle."""
@@ -3363,7 +3363,7 @@ async def record_run_task_execution_policy(
 async def apply_run_task_execution_policy(
     task_id: str,
     project: Optional[str] = None,
-    task_type: str = "tests",
+    task_type: str = "test",
     risk_level: str = "R1",
 ):
     """Apply the current execution policy as a durable executor handoff.
