@@ -25,10 +25,7 @@ Press `Win + R`, type `Powershell`, and press **Enter**.
 ```powershell
 iex (irm https://raw.githubusercontent.com/Nous-Research/hermes-agent/main/scripts/install.ps1)
 `````
-
-The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash**.  Hermes uses this bundled Git Bash to run shell commands.
-
-If you already have Git installed, the installer detects it and uses that instead.  Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
+The one-liner installs Node.js and everything else for you.
 
 ### Linux, macOS, WSL2, Termux
 
