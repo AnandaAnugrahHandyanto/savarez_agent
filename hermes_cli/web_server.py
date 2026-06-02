@@ -5881,7 +5881,9 @@ async def toggle_toolset(name: str, body: ToolsetToggle):
     else:
         enabled.discard(name)
     _save_platform_tools(config, "cli", enabled)
-    return {"ok": True, "name": name, "enabled": body.enabled}
+    config_after = load_config()
+    effective = set(_get_platform_tools(config_after, "cli", include_default_mcp_servers=False))
+    return {"ok": True, "name": name, "enabled": name in effective}
 
 
 @app.get("/api/tools/toolsets/{name}/config")

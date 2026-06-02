@@ -1748,6 +1748,24 @@ class TestNewEndpoints:
         )
         assert resp.status_code == 400
 
+    def test_toggle_toolset_platform_restricted_returns_actual_state(self):
+        """PUT for a platform-restricted toolset must return enabled=false.
+
+        discord_admin is restricted to the 'discord' platform.
+        _save_platform_tools silently drops it for the 'cli' platform, so the
+        response must reflect what was actually persisted — not the requested state.
+        Closes #37609.
+        """
+        resp = self.client.put("/api/tools/toolsets/discord_admin", json={"enabled": True})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["name"] == "discord_admin"
+        assert body["enabled"] is False
+
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["discord_admin"]["enabled"] is False
+
     def test_config_raw_get(self):
         resp = self.client.get("/api/config/raw")
         assert resp.status_code == 200
