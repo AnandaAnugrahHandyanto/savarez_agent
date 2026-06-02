@@ -1837,6 +1837,42 @@ def test_worktree_provision_is_idempotent(kanban_home, tmp_path):
     assert (ws1 / ".git").exists()
 
 
+def test_worktree_respawn_with_persisted_path_does_not_nest(kanban_home, tmp_path):
+    """Regression: after the dispatcher persists the RESOLVED worktree path
+    back to the task (set_workspace_path), a respawn must reuse that worktree —
+    NOT cut a nested <wt>/.worktrees/<branch> inside it.
+
+    Without the linked-worktree guard, the second dispatch dies with
+    'git worktree add failed' on a doubly-nested path.
+    """
+    repo = tmp_path / "project"
+    _git_init_repo(repo)
+    branch = "story/1-1-scaffold"
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn, title="scaffold", workspace_kind="worktree",
+            workspace_path=str(repo), branch_name=branch,
+        )
+        # First dispatch: resolves to the sibling worktree; dispatcher persists
+        # that path back to the row.
+        task = kb.get_task(conn, t)
+        ws1 = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, str(ws1))
+        # Second dispatch (respawn): workspace_path is now the worktree itself.
+        task2 = kb.get_task(conn, t)
+        ws2 = kb.resolve_workspace(task2)
+
+    assert ws2 == ws1, f"respawn nested the worktree: {ws2} != {ws1}"
+    # Path must be exactly one .worktrees level deep, never nested.
+    assert str(ws2.relative_to(repo)) == ".worktrees/story-1-1-scaffold"
+    import subprocess
+    head = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=ws2,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert head == branch
+
+
 # ---------------------------------------------------------------------------
 # Scratch cleanup containment (#28818)
 # ---------------------------------------------------------------------------

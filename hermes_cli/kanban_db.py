@@ -4756,7 +4756,25 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         repo: Optional[Path] = None
         top = _git_toplevel(p)
         if top is not None and top == p.resolve():
-            # p IS a repo checkout (the classic bug: workspace_path == repo root).
+            # p IS a checkout root. Two sub-cases:
+            #   (a) p is ALREADY the provisioned worktree on the target branch
+            #       (e.g. a respawn after set_workspace_path persisted the
+            #       resolved worktree path). Return it as-is — do NOT nest a
+            #       <p>/.worktrees/<branch> inside it. This is the idempotent
+            #       respawn path; without it the second dispatch fails with
+            #       "git worktree add failed" on a doubly-nested path.
+            #   (b) p is the shared main checkout (the classic bug:
+            #       workspace_path == repo root). We must NOT hand the worker
+            #       the shared checkout; cut a sibling worktree under
+            #       <repo>/.worktrees/<branch> instead.
+            head = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=p)
+            cur_branch = head.stdout.strip() if head.returncode == 0 else None
+            # A linked worktree's top-level .git is a FILE (gitdir pointer);
+            # the primary checkout's is a DIRECTORY. If p is already a linked
+            # worktree on the right branch, it's case (a).
+            is_linked_worktree = (p / ".git").is_file()
+            if cur_branch == branch and is_linked_worktree:
+                return p
             repo = top
             safe = re.sub(r"[^A-Za-z0-9._-]", "-", branch) or task.id
             worktree_path = repo / ".worktrees" / safe
