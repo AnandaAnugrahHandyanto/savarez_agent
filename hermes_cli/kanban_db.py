@@ -276,7 +276,7 @@ def get_current_board() -> str:
     if env:
         try:
             normed = _normalize_board_slug(env)
-            if normed and board_exists(normed):
+            if normed and board_exists(normed) and not read_board_metadata(normed).get("archived"):
                 return normed
         except ValueError:
             pass
@@ -287,7 +287,7 @@ def get_current_board() -> str:
             if val:
                 try:
                     normed = _normalize_board_slug(val)
-                    if normed and board_exists(normed):
+                    if normed and board_exists(normed) and not read_board_metadata(normed).get("archived"):
                         return normed
                 except ValueError:
                     pass
@@ -346,7 +346,15 @@ def board_exists(board: Optional[str] = None) -> bool:
     if slug == DEFAULT_BOARD:
         return True
     d = board_dir(slug)
-    return (d / "board.json").exists() or (d / "kanban.db").exists()
+    meta_path = d / "board.json"
+    if meta_path.exists():
+        try:
+            raw = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and raw.get("archived"):
+                return False
+        except (OSError, json.JSONDecodeError):
+            pass
+    return meta_path.exists() or (d / "kanban.db").exists()
 
 
 def kanban_db_path(board: Optional[str] = None) -> Path:
@@ -570,6 +578,7 @@ def create_board(
         description=description,
         icon=icon,
         color=color,
+        archived=False,
         default_workdir=default_workdir,
     )
     # Touch the DB so list_boards() sees it immediately.
@@ -577,13 +586,17 @@ def create_board(
     return meta
 
 
-def list_boards(*, include_archived: bool = True) -> list[dict]:
-    """Enumerate all boards that exist on disk.
+def list_boards(*, include_archived: bool = False) -> list[dict]:
+    """Enumerate boards that exist on disk.
 
     Always includes ``default`` (even when the ``boards/default/``
     metadata dir doesn't exist, because its DB is at the legacy path).
     Other boards are discovered by scanning ``boards/`` for subdirectories
     that either contain a ``kanban.db`` or a ``board.json``.
+
+    Archived tombstones are hidden by default so active-board views stay
+    clean after ``remove_board(archive=True)``. Pass ``include_archived=True``
+    to include those tombstones for recovery/debugging.
 
     Returns a list of metadata dicts, sorted with ``default`` first and
     the rest alphabetically.
@@ -641,6 +654,8 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     if not d.exists():
         raise ValueError(f"board {normed!r} does not exist")
 
+    original_meta = read_board_metadata(normed)
+
     # If the user removed the currently-active board, revert to default.
     if get_current_board() == normed:
         clear_current_board()
@@ -660,12 +675,46 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         while target.exists():
             target = archive_root / f"{normed}-{ts}-{suffix}"
             suffix += 1
-        d.rename(target)
+        for attempt in range(5):
+            try:
+                d.rename(target)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                import gc
+                gc.collect()
+                time.sleep(0.2)
+
+        # Leave an archived tombstone at the original path. Without this,
+        # a gateway dispatcher/notifier tick that enumerated the board just
+        # before the rename can still call connect(board=slug) afterward,
+        # which recreates an empty active board directory/DB. The tombstone
+        # lets that stale connect happen harmlessly while list_boards(False)
+        # keeps the board out of active views on the next tick.
+        tombstone = {
+            "slug": normed,
+            "name": original_meta.get("name") or _default_board_display_name(normed),
+            "description": original_meta.get("description", ""),
+            "icon": original_meta.get("icon", ""),
+            "color": original_meta.get("color", ""),
+            "default_workdir": original_meta.get("default_workdir"),
+            "created_at": original_meta.get("created_at"),
+            "archived": True,
+            "archived_at": ts,
+            "archive_path": str(target),
+        }
+        tombstone_path = board_metadata_path(normed)
+        tombstone_path.parent.mkdir(parents=True, exist_ok=True)
+        tombstone_path.write_text(
+            json.dumps(tombstone, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
         return {"slug": normed, "action": "archived", "new_path": str(target)}
-    else:
-        import shutil
-        shutil.rmtree(d)
-        return {"slug": normed, "action": "deleted", "new_path": ""}
+
+    import shutil
+    shutil.rmtree(d)
+    return {"slug": normed, "action": "deleted", "new_path": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -2223,6 +2272,23 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if task_status == "blocked":
+                    # A task explicitly created as blocked is an operator /
+                    # workflow hold, not a transient circuit-breaker state.
+                    # Emit the same event that block_task() uses so
+                    # recompute_ready() treats it as sticky instead of
+                    # auto-promoting parentless "last task on the board"
+                    # holds back to ready on the next dispatcher tick.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "initial_status=blocked",
+                            "source": "create_task",
+                            "parents": list(parents),
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -2230,6 +2296,7 @@ def create_task(
             # Retry with a fresh id.
             continue
     raise RuntimeError("unreachable")
+
 
 
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:

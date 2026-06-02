@@ -48,6 +48,23 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
+def test_task_created_blocked_is_sticky_without_parent_workaround(kanban_home: Path) -> None:
+    """Creating a standalone blocked task is an explicit operator hold.
+
+    This covers the Ask-Hermes/Codex workaround Matthew saw: when the
+    final remaining item on a board was created/parked as blocked, the
+    dispatcher treated it like a parentless dependency block and promoted
+    it back to ready on the next tick.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="hold for Matthew", initial_status="blocked")
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        for _ in range(3):
+            assert kb.recompute_ready(conn) == 0
+            assert kb.get_task(conn, tid).status == "blocked"
+
+
 # ---------------------------------------------------------------------------
 # Worker-initiated kanban_block must be sticky
 # ---------------------------------------------------------------------------
