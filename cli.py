@@ -9337,7 +9337,7 @@ class HermesCLI:
         return mgr
 
     def _handle_goal_command(self, cmd: str) -> None:
-        """Dispatch /goal subcommands: set / status / pause / resume / clear."""
+        """Dispatch /goal subcommands: set / status / pause / resume / clear / budget."""
         parts = (cmd or "").strip().split(None, 1)
         arg = parts[1].strip() if len(parts) > 1 else ""
 
@@ -9380,6 +9380,27 @@ class HermesCLI:
                 _cprint("  ✓ Goal cleared.")
             else:
                 _cprint(f"  {_DIM}No active goal.{_RST}")
+            return
+
+        # /goal budget <N> — bump the turn budget on the active goal
+        if lower.startswith("budget"):
+            sub_parts = arg.split(None, 1)
+            n_str = sub_parts[1].strip() if len(sub_parts) > 1 else ""
+            if not n_str:
+                _cprint(f"  Usage: /goal budget <N>   (e.g. /goal budget 50)")
+                return
+            if not mgr.has_goal():
+                _cprint(f"  {_DIM}No goal set. Set one with /goal <text> first.{_RST}")
+                return
+            try:
+                state = mgr.set_budget(n_str)
+            except ValueError as exc:
+                _cprint(f"  Invalid budget: {exc}")
+                return
+            _cprint(
+                f"  ⊙ Goal budget updated to {state.max_turns} turns "
+                f"({state.turns_used} used so far). Status: {state.status}."
+            )
             return
 
         # Otherwise treat the arg as the goal text.

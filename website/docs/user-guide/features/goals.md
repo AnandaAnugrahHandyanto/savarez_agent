@@ -43,6 +43,7 @@ What you'll see:
 | `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
 | `/goal resume` | Resume the loop (resets the turn counter back to zero). |
+| `/goal budget <N>` | Update the turn budget on the active goal in place. Does NOT reset `turns_used` — useful for extending a long-running goal without losing progress. If the goal was auto-paused because the previous budget was exhausted, raising the budget above `turns_used` flips it back to active automatically. |
 | `/goal clear` | Drop the goal entirely. |
 
 Works identically on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard).

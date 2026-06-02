@@ -553,6 +553,39 @@ class GoalManager:
         save_goal(self.session_id, self._state)
         return self._state
 
+    def set_budget(self, max_turns: int) -> Optional[GoalState]:
+        """Update the turn budget on the existing goal in place.
+
+        Returns the updated state, or None if no goal is set. Raises
+        ValueError if ``max_turns`` isn't a positive integer.
+
+        Does NOT reset ``turns_used`` — if the new budget is higher than
+        ``turns_used``, the loop has fresh runway; if it's lower or equal,
+        the goal stays paused (or auto-pauses on the next turn boundary
+        via the existing exhausted-budget check).
+        """
+        try:
+            n = int(max_turns)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"max_turns must be an integer, got {max_turns!r}") from exc
+        if n <= 0:
+            raise ValueError(f"max_turns must be positive, got {n}")
+        if not self._state:
+            return None
+        self._state.max_turns = n
+        # If the state was paused purely because the budget was exhausted,
+        # and the new budget gives breathing room, flip it back to active.
+        if (
+            self._state.status == "paused"
+            and self._state.paused_reason
+            and self._state.paused_reason.startswith("turn budget exhausted")
+            and self._state.turns_used < n
+        ):
+            self._state.status = "active"
+            self._state.paused_reason = None
+        save_goal(self.session_id, self._state)
+        return self._state
+
     def clear(self) -> None:
         if self._state is None:
             return
