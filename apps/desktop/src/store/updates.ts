@@ -155,13 +155,22 @@ export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null
     return null
   }
 
-  const next = await window.hermesDesktop?.getVersion?.()
+  // Best-effort UI sync: callers (checkUpdates, startUpdatePoller, window
+  // focus handler) all kick this off with `void refreshDesktopVersion()`,
+  // so any rejection from the IPC bridge (e.g. main process shutting down
+  // mid-reload, or the bridge not yet ready on first paint) would surface
+  // as an unhandled promise rejection in the renderer. Swallow it.
+  try {
+    const next = await window.hermesDesktop?.getVersion?.()
 
-  if (next) {
-    $desktopVersion.set(next)
+    if (next) {
+      $desktopVersion.set(next)
+    }
+
+    return next ?? null
+  } catch {
+    return null
   }
-
-  return next ?? null
 }
 
 export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
