@@ -2004,3 +2004,141 @@ async def test_pr_review_metadata_loader_ignores_inline_comment_cleared_by_later
 
     assert stats.copilot_review_detected is False
     assert stats.total_suggestions_count == 0
+
+
+@pytest.mark.asyncio
+async def test_pr_review_metadata_loader_prefers_current_line_for_moved_inline_comment(monkeypatch):
+    """Moved inline comments should clear when the current GitHub line is touched."""
+    pr = PullRequestMetadata(
+        number=328,
+        url="https://github.com/m0nklabs/cryptotrader/pull/328",
+        head_ref_name="hermes/manual-merge-gatekeeper-20260602",
+        head_ref_oid="newsha",
+    )
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/328/reviews"]:
+            return CompletedProcess(command, 0, stdout="[]", stderr="")
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/328/comments"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "user": {"login": "github-code-quality[bot]"},
+                            "commit_id": "oldsha",
+                            "original_commit_id": "oldsha",
+                            "path": "scripts/merge_routing.py",
+                            "line": 296,
+                            "original_line": 298,
+                            "body": "This statement is unreachable.",
+                        }
+                    ]
+                ),
+                stderr="",
+            )
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/328/commits"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps([
+                    {"sha": "oldsha"},
+                    {"sha": "newsha"},
+                ]),
+                stderr="",
+            )
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/commits/newsha"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "files": [
+                            {
+                                "filename": "scripts/merge_routing.py",
+                                "patch": "@@ -296,1 +296,1 @@\n-old\n+new\n",
+                            }
+                        ]
+                    }
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+
+    stats = await _load_pr_review_suggestion_stats("m0nklabs/cryptotrader", pr)
+
+    assert stats.copilot_review_detected is False
+    assert stats.total_suggestions_count == 0
+
+
+@pytest.mark.asyncio
+async def test_pr_review_metadata_loader_clears_multiline_comment_when_follow_up_line_changes(monkeypatch):
+    """Multiline review ranges can anchor on the blank line above a follow-up addition."""
+    pr = PullRequestMetadata(
+        number=326,
+        url="https://github.com/m0nklabs/cryptotrader/pull/326",
+        head_ref_name="fix/dashboard-db-env-loading",
+        head_ref_oid="newsha",
+    )
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/326/reviews"]:
+            return CompletedProcess(command, 0, stdout="[]", stderr="")
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/326/comments"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "user": {"login": "Copilot"},
+                            "commit_id": "newsha",
+                            "original_commit_id": "oldsha",
+                            "path": "tests/test_api_endpoints.py",
+                            "line": 43,
+                            "original_line": 45,
+                            "start_line": 32,
+                            "original_start_line": 33,
+                            "body": "Consider adding a regression test for the case where DATABASE_URL is present but empty.",
+                        }
+                    ]
+                ),
+                stderr="",
+            )
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/326/commits"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps([
+                    {"sha": "oldsha"},
+                    {"sha": "newsha"},
+                ]),
+                stderr="",
+            )
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/commits/newsha"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "files": [
+                            {
+                                "filename": "tests/test_api_endpoints.py",
+                                "patch": "@@ -44,0 +44,1 @@\n+# Regression: empty DATABASE_URL must still allow runtime env fallback loading.\n",
+                            }
+                        ]
+                    }
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+
+    stats = await _load_pr_review_suggestion_stats("m0nklabs/cryptotrader", pr)
+
+    assert stats.copilot_review_detected is False
+    assert stats.total_suggestions_count == 0

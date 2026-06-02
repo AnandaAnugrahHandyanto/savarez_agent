@@ -1916,7 +1916,7 @@ def _parse_changed_lines_from_patch(patch: str) -> set[int]:
 
 
 def _review_record_line(record: dict[str, Any]) -> int:
-    for key in ("original_line", "line", "originalLine", "start_line"):
+    for key in ("line", "original_line", "originalLine", "start_line"):
         value = record.get(key)
         try:
             line = int(value or 0)
@@ -1925,6 +1925,24 @@ def _review_record_line(record: dict[str, Any]) -> int:
         if line > 0:
             return line
     return 0
+
+
+def _review_record_candidate_lines(record: dict[str, Any]) -> set[int]:
+    line = _review_record_line(record)
+    if line <= 0:
+        return set()
+
+    candidates = {line}
+    for key in ("start_line", "original_start_line", "startLine"):
+        value = record.get(key)
+        try:
+            start_line = int(value or 0)
+        except (TypeError, ValueError):
+            start_line = 0
+        if 0 < start_line < line:
+            candidates.add(line + 1)
+            break
+    return candidates
 
 
 def _review_record_is_inline(record: dict[str, Any]) -> bool:
@@ -1950,13 +1968,13 @@ async def _inline_comment_cleared_by_later_commit(
         return False
 
     path = str(comment.get("path") or "").strip()
-    line = _review_record_line(comment)
-    if not path or line <= 0:
+    candidate_lines = _review_record_candidate_lines(comment)
+    if not path or not candidate_lines:
         return False
 
     for sha in commit_shas[start_index + 1 :]:
         changed_by_path = await _load_commit_changed_lines(repo, sha, changed_lines_cache)
-        if line in changed_by_path.get(path, set()):
+        if candidate_lines & changed_by_path.get(path, set()):
             return True
     return False
 
