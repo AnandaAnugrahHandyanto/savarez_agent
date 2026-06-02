@@ -950,6 +950,14 @@ def restore_primary_runtime(agent) -> bool:
             api_mode=rt.get("compressor_api_mode", ""),
         )
 
+        # Restore the primary's output cap so a fallback's re-resolved
+        # max_tokens doesn't stick to the restored primary (the #28782 leak
+        # inverted). rt.get() tolerates pre-PR snapshots; explicit constructor
+        # values are never overwritten.
+        if not getattr(agent, "_max_tokens_explicit", False):
+            agent.max_tokens = rt.get("max_tokens")
+            agent._config_max_tokens = rt.get("config_max_tokens")
+
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
@@ -1398,6 +1406,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "_anthropic_base_url",
             "_is_anthropic_oauth",
             "_config_context_length",
+            "max_tokens",
+            "_config_max_tokens",
         )
     }
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
@@ -1409,6 +1419,12 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # actual context window is resolved via get_model_context_length()
         # instead of inheriting the stale value from the previous model.
         agent._config_context_length = None
+        # Clear the config-resolved max_tokens so the new model's per-model
+        # override is re-resolved instead of inheriting the previous value; the
+        # global never re-applies on switch (no leak — #28782). An explicit
+        # constructor value is preserved (re-resolution skipped below).
+        if not getattr(agent, "_max_tokens_explicit", False):
+            agent._config_max_tokens = None
 
         # ── Swap core runtime fields ──
         agent.model = new_model
@@ -1509,6 +1525,27 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── LM Studio: preload before probing context length ──
     agent._ensure_lmstudio_runtime_loaded()
 
+    # ── Re-resolve per-model max_tokens for the new model ──
+    # Reads live config so a /model switch to a custom provider is honored.
+    # The global model.max_tokens is intentionally NOT re-applied — it belonged
+    # to the primary model only (#28782). Explicit constructor values persist.
+    if not getattr(agent, "_max_tokens_explicit", False):
+        _sm_mt = None
+        try:
+            from hermes_cli.config import (
+                load_config,
+                get_compatible_custom_providers,
+                get_custom_provider_max_tokens,
+            )
+            _sm_mt = get_custom_provider_max_tokens(
+                agent.model, agent.base_url,
+                custom_providers=get_compatible_custom_providers(load_config()),
+            )
+        except Exception:
+            _sm_mt = None
+        agent._config_max_tokens = int(_sm_mt) if _sm_mt else None
+        agent.max_tokens = agent._config_max_tokens
+
     # ── Update context compressor ──
     if hasattr(agent, "context_compressor") and agent.context_compressor:
         from agent.model_metadata import get_model_context_length
@@ -1557,6 +1594,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
+        "max_tokens": agent.max_tokens,
+        "config_max_tokens": getattr(agent, "_config_max_tokens", None),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
