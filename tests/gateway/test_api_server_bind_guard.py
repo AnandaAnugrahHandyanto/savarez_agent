@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import APIServerAdapter, _parse_bind_hosts
 from gateway.platforms.base import is_network_accessible
 
 
@@ -131,3 +131,72 @@ class TestConnectBindGuard:
         assert adapter._api_key == "sk-test"
         assert is_network_accessible("0.0.0.0") is True
         # Combined: the guard condition is False (key is set), so it passes
+
+
+class TestAPIServerBindHosts:
+    def test_comma_separated_hosts_are_split(self):
+        assert _parse_bind_hosts("127.0.0.1,192.168.124.244") == (
+            "127.0.0.1",
+            "192.168.124.244",
+        )
+
+    def test_adapter_keeps_legacy_host_string_and_normalized_hosts(self):
+        adapter = APIServerAdapter(
+            PlatformConfig(enabled=True, extra={"host": "127.0.0.1,192.168.124.244"})
+        )
+        assert adapter._host == "127.0.0.1,192.168.124.244"
+        assert adapter._hosts == ("127.0.0.1", "192.168.124.244")
+
+    @pytest.mark.asyncio
+    async def test_partial_multi_host_start_failure_cleans_up(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+
+        adapter = APIServerAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "host": "127.0.0.1,127.0.0.1",
+                    "port": port,
+                    "key": "sk-valid-test-key",
+                },
+            )
+        )
+
+        try:
+            result = await adapter.connect()
+            assert result is False
+            assert adapter._sites == []
+            assert adapter._site is None
+            assert adapter._runner is None
+            assert [task for task in adapter._background_tasks if not task.done()] == []
+
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as check_sock:
+                check_sock.settimeout(1)
+                assert check_sock.connect_ex(("127.0.0.1", port)) != 0
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_successful_start_background_tasks(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+
+        adapter = APIServerAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"host": "127.0.0.1", "port": port, "key": "sk-valid-test-key"},
+            )
+        )
+
+        result = await adapter.connect()
+        assert result is True
+        assert [task for task in adapter._background_tasks if not task.done()]
+
+        await adapter.disconnect()
+        assert adapter._sites == []
+        assert adapter._site is None
+        assert adapter._runner is None
+        assert [task for task in adapter._background_tasks if not task.done()] == []
