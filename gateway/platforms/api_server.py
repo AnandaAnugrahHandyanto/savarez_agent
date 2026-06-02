@@ -4195,7 +4195,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
     async def disconnect(self) -> None:
-        """Stop the aiohttp web server."""
+        """Stop the aiohttp web server and release the response store."""
         self._mark_disconnected()
         if self._site:
             await self._site.stop()
@@ -4203,6 +4203,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
+        if self._response_store is not None:
+            self._response_store.close()
+            self._response_store = None
         self._app = None
         logger.info("[%s] API server stopped", self.name)
 

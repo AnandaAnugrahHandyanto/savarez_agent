@@ -6175,6 +6175,7 @@ class GatewayRunner:
                     platform.value, attempt,
                 )
 
+                adapter = None
                 try:
                     adapter = self._create_adapter(platform, platform_config)
                     if not adapter:
@@ -6214,6 +6215,7 @@ class GatewayRunner:
                             pass
                     # Check if the failure is non-retryable
                     elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
+                        await self._safe_adapter_disconnect(adapter, platform)
                         self._update_platform_runtime_status(
                             platform.value,
                             platform_state="fatal",
@@ -6226,6 +6228,7 @@ class GatewayRunner:
                         )
                         del self._failed_platforms[platform]
                     else:
+                        await self._safe_adapter_disconnect(adapter, platform)
                         self._update_platform_runtime_status(
                             platform.value,
                             platform_state="retrying",
@@ -6248,6 +6251,10 @@ class GatewayRunner:
                         # `not fatal_error_retryable` branch above, so anything
                         # reaching here is by definition retryable.
                 except Exception as e:
+                    # Clean up adapter if it was created before the exception.
+                    # _safe_adapter_disconnect swallows all errors.
+                    if adapter is not None:
+                        await self._safe_adapter_disconnect(adapter, platform)
                     self._update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying",
