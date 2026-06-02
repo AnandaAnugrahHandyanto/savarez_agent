@@ -79,7 +79,11 @@ export function ContextMenu({
             <MessageSquareText />
             <span>Prompt snippets</span>
           </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="w-72">
+          <DropdownMenuSubContent
+            className="max-h-[60vh] w-72 overflow-y-auto"
+            collisionPadding={12}
+            sideOffset={4}
+          >
             {[
               { label: 'Code review', text: 'Please review this for bugs, regressions, and missing tests.' },
               { label: 'Implementation plan', text: 'Please make a concise implementation plan before changing code.' },

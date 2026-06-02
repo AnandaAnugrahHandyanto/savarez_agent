@@ -457,14 +457,15 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
       {!jobs ? (
         <PageLoader label="Loading cron jobs..." />
       ) : visibleJobs.length === 0 ? (
+        // The "New cron" button in the filters row is already visible above
+        // the empty state, so the empty state itself doesn't render a second
+        // action button — it just explains what's missing.
         <EmptyState
-          actionLabel={totalCount === 0 ? 'Create first cron' : undefined}
           description={
             totalCount === 0
               ? 'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.'
               : 'Try a broader search query.'
           }
-          onAction={totalCount === 0 ? () => setEditor({ mode: 'create' }) : undefined}
           title={totalCount === 0 ? 'No scheduled jobs yet' : 'No matches'}
         />
       ) : (

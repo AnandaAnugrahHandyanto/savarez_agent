@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, ArchiveOff, Loader2, Trash2 } from '@/lib/icons'
+import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import { setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
@@ -105,6 +105,8 @@ export function SessionsSettings({ query }: SearchProps) {
 
   return (
     <SettingsContent>
+      <DefaultProjectDirSetting />
+
       <SectionHeading
         icon={Archive}
         meta={sessions.length ? String(sessions.length) : undefined}
@@ -164,5 +166,89 @@ export function SessionsSettings({ query }: SearchProps) {
         </div>
       )}
     </SettingsContent>
+  )
+}
+
+// Lets the user pin the default cwd for new sessions. Without this, packaged
+// builds on Windows used to spawn sessions in the install dir (`win-unpacked`
+// / Program Files), which buried any files Hermes wrote there.
+function DefaultProjectDirSetting() {
+  const [dir, setDir] = useState<null | string>(null)
+  const [fallback, setFallback] = useState<string>('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+
+    void window.hermesDesktop?.settings.getDefaultProjectDir().then(result => {
+      if (!alive) return
+      setDir(result.dir)
+      setFallback(result.defaultLabel)
+    })
+
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const choose = useCallback(async () => {
+    if (!window.hermesDesktop?.settings) return
+
+    setBusy(true)
+
+    try {
+      const picked = await window.hermesDesktop.settings.pickDefaultProjectDir()
+
+      if (picked.canceled || !picked.dir) {
+        return
+      }
+
+      const result = await window.hermesDesktop.settings.setDefaultProjectDir(picked.dir)
+      setDir(result.dir)
+      notify({ durationMs: 2_000, kind: 'success', message: 'Default project directory updated' })
+    } catch (err) {
+      notifyError(err, 'Could not update default directory')
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  const clear = useCallback(async () => {
+    setBusy(true)
+
+    try {
+      await window.hermesDesktop?.settings.setDefaultProjectDir(null)
+      setDir(null)
+    } catch (err) {
+      notifyError(err, 'Could not clear default directory')
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  return (
+    <div className="mb-6">
+      <SectionHeading icon={FolderOpen} title="Default project directory" />
+      <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+        New sessions start in this folder unless you pick another. Leave it unset to use your home directory.
+      </p>
+      <ListRow
+        action={
+          <div className="flex items-center gap-1.5">
+            <Button disabled={busy} onClick={() => void choose()} size="sm" type="button" variant="outline">
+              <FolderOpen className="size-3.5" />
+              <span>{dir ? 'Change' : 'Choose'}</span>
+            </Button>
+            {dir && (
+              <Button disabled={busy} onClick={() => void clear()} size="sm" type="button" variant="ghost">
+                Clear
+              </Button>
+            )}
+          </div>
+        }
+        description={dir || `Defaults to ${fallback || '~/hermes-projects'}.`}
+        title={dir ? dir : 'Not set'}
+      />
+    </div>
   )
 }
