@@ -1033,6 +1033,50 @@ class HindsightMemoryProvider(MemoryProvider):
             self._client = client
             return self._run_sync(operation(client))
 
+    def _build_recall_kwargs(self, query: str) -> Dict[str, Any]:
+        """Build the shared kwargs for Hindsight recall calls."""
+        recall_kwargs: Dict[str, Any] = {
+            "bank_id": self._bank_id,
+            "query": query,
+            "budget": self._budget,
+            "max_tokens": self._recall_max_tokens,
+        }
+        if self._recall_tags:
+            recall_kwargs["tags"] = self._recall_tags
+            recall_kwargs["tags_match"] = self._recall_tags_match
+        if self._recall_types:
+            recall_kwargs["types"] = self._recall_types
+        return recall_kwargs
+
+    @staticmethod
+    def _format_recall_results(resp, *, bullet: bool = False) -> str:
+        """Format a Hindsight recall response for context/tool output."""
+        if not getattr(resp, "results", None):
+            return ""
+        if bullet:
+            return "\n".join(
+                f"- {r.text}" for r in resp.results if getattr(r, "text", "")
+            )
+        return "\n".join(
+            f"{i}. {r.text}"
+            for i, r in enumerate(resp.results, 1)
+            if getattr(r, "text", "")
+        )
+
+    def _recall_text(self, query: str, *, bullet: bool = False) -> str:
+        """Run recall and return formatted text, or an empty string when no results."""
+        recall_kwargs = self._build_recall_kwargs(query)
+        logger.debug(
+            "Hindsight recall: bank=%s, query_len=%d, budget=%s",
+            self._bank_id,
+            len(query),
+            self._budget,
+        )
+        resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+        num_results = len(resp.results) if resp.results else 0
+        logger.debug("Hindsight recall: %d results", num_results)
+        return self._format_recall_results(resp, bullet=bullet)
+
     def _probe_url(self) -> str:
         """Return the URL to probe /version on.
 
@@ -1334,24 +1378,18 @@ class HindsightMemoryProvider(MemoryProvider):
             try:
                 if self._prefetch_method == "reflect":
                     logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                    resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
-                    text = resp.text or ""
+                    try:
+                        resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
+                        text = resp.text or ""
+                    except Exception as reflect_exc:
+                        logger.debug(
+                            "Hindsight reflect prefetch failed; falling back to recall: %s",
+                            reflect_exc,
+                            exc_info=True,
+                        )
+                        text = self._recall_text(query, bullet=True)
                 else:
-                    recall_kwargs: dict = {
-                        "bank_id": self._bank_id, "query": query,
-                        "budget": self._budget, "max_tokens": self._recall_max_tokens,
-                    }
-                    if self._recall_tags:
-                        recall_kwargs["tags"] = self._recall_tags
-                        recall_kwargs["tags_match"] = self._recall_tags_match
-                    if self._recall_types:
-                        recall_kwargs["types"] = self._recall_types
-                    logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
-                                 self._bank_id, len(query), self._budget)
-                    resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                    num_results = len(resp.results) if resp.results else 0
-                    logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                    text = self._recall_text(query, bullet=True)
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
@@ -1541,24 +1579,10 @@ class HindsightMemoryProvider(MemoryProvider):
             if not query:
                 return tool_error("Missing required parameter: query")
             try:
-                recall_kwargs: dict = {
-                    "bank_id": self._bank_id, "query": query, "budget": self._budget,
-                    "max_tokens": self._recall_max_tokens,
-                }
-                if self._recall_tags:
-                    recall_kwargs["tags"] = self._recall_tags
-                    recall_kwargs["tags_match"] = self._recall_tags_match
-                if self._recall_types:
-                    recall_kwargs["types"] = self._recall_types
-                logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
-                resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                num_results = len(resp.results) if resp.results else 0
-                logger.debug("Tool hindsight_recall: %d results", num_results)
-                if not resp.results:
+                text = self._recall_text(query)
+                if not text:
                     return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
-                return json.dumps({"result": "\n".join(lines)})
+                return json.dumps({"result": text})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to search memory: {e}")
@@ -1570,16 +1594,38 @@ class HindsightMemoryProvider(MemoryProvider):
             try:
                 logger.debug("Tool hindsight_reflect: bank=%s, query_len=%d, budget=%s",
                              self._bank_id, len(query), self._budget)
-                resp = self._run_hindsight_operation(
-                    lambda client: client.areflect(
-                        bank_id=self._bank_id, query=query, budget=self._budget
+                try:
+                    resp = self._run_hindsight_operation(
+                        lambda client: client.areflect(
+                            bank_id=self._bank_id, query=query, budget=self._budget
+                        )
                     )
-                )
-                logger.debug("Tool hindsight_reflect: response_len=%d", len(resp.text or ""))
-                return json.dumps({"result": resp.text or "No relevant memories found."})
+                    logger.debug("Tool hindsight_reflect: response_len=%d", len(resp.text or ""))
+                    return json.dumps({"result": resp.text or "No relevant memories found."})
+                except Exception as reflect_exc:
+                    logger.warning(
+                        "hindsight_reflect failed; falling back to recall: %s",
+                        reflect_exc,
+                        exc_info=True,
+                    )
+                    detail = type(reflect_exc).__name__
+                    text = self._recall_text(query)
+                    if text:
+                        return json.dumps({
+                            "result": (
+                                "Hindsight reflection failed; showing raw recall results instead.\n"
+                                f"Reflect error type: {detail}\n\n{text}"
+                            )
+                        })
+                    return json.dumps({
+                        "result": (
+                            "Hindsight reflection failed and recall found no relevant memories.\n"
+                            f"Reflect error type: {detail}"
+                        )
+                    })
             except Exception as e:
-                logger.warning("hindsight_reflect failed: %s", e, exc_info=True)
-                return tool_error(f"Failed to reflect: {e}")
+                logger.warning("hindsight_reflect fallback recall failed: %s", e, exc_info=True)
+                return tool_error(f"Failed to reflect or search memory: {e}")
 
         return tool_error(f"Unknown tool: {tool_name}")
 

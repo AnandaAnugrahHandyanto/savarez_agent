@@ -40,6 +40,9 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
         "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_TIMEOUT",
         "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
+        "HINDSIGHT_LLM_PROVIDER", "HINDSIGHT_LLM_MODEL", "HINDSIGHT_LLM_BASE_URL",
+        "HINDSIGHT_API_LLM_PROVIDER", "HINDSIGHT_API_LLM_MODEL",
+        "HINDSIGHT_API_LLM_API_KEY", "HINDSIGHT_API_LLM_BASE_URL",
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
     ):
@@ -544,6 +547,28 @@ class TestToolHandlers:
         ))
         assert result["result"] == "Synthesized answer"
 
+    def test_reflect_falls_back_to_recall_when_synthesis_fails(self, provider):
+        provider._client.areflect.side_effect = RuntimeError("llm unavailable")
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_reflect", {"query": "summarize"}
+        ))
+        assert "error" not in result
+        assert "Hindsight reflection failed" in result["result"]
+        assert "Reflect error type: RuntimeError" in result["result"]
+        assert "1. Memory 1" in result["result"]
+        assert "2. Memory 2" in result["result"]
+        provider._client.arecall.assert_called_once()
+
+    def test_reflect_fallback_reports_no_results_without_error(self, provider):
+        provider._client.areflect.side_effect = RuntimeError("llm unavailable")
+        provider._client.arecall.return_value = SimpleNamespace(results=[])
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_reflect", {"query": "summarize"}
+        ))
+        assert "error" not in result
+        assert "recall found no relevant memories" in result["result"]
+        assert "Reflect error type: RuntimeError" in result["result"]
+
     def test_reflect_missing_query(self, provider):
         result = json.loads(provider.handle_tool_call(
             "hindsight_reflect", {}
@@ -664,6 +689,17 @@ class TestPrefetch:
         assert call_kwargs["tags"] == ["t1"]
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
+
+    def test_queue_prefetch_reflect_falls_back_to_recall(self, provider_with_config):
+        p = provider_with_config(recall_prefetch_method="reflect")
+        p._client.areflect.side_effect = RuntimeError("llm unavailable")
+        p.queue_prefetch("test query")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert p._prefetch_result == "- Memory 1\n- Memory 2"
+        p._client.areflect.assert_called_once()
+        p._client.arecall.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
