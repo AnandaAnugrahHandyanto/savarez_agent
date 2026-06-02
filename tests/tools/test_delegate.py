@@ -2122,6 +2122,58 @@ class TestDispatchDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["override_acp_command"], "claude")
             self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
 
+    def test_dispatcher_forwards_reasoning_effort_and_route_overrides(self):
+        """_dispatch_delegate_task must forward reasoning_effort, provider, model to delegate_task."""
+        from unittest.mock import patch
+        import tools.delegate_tool  # ensure module is loaded before patching
+        from run_agent import AIAgent
+
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool.delegate_task") as mock_dt:
+            mock_dt.return_value = '{"results":[{"completed":true}]}'
+            AIAgent._dispatch_delegate_task(parent, {
+                "goal": "test",
+                "reasoning_effort": "xhigh",
+                "provider": "nous",
+                "model": "deepseek-v4-pro",
+                "context": "some context",
+                "toolsets": ["web"],
+                "tasks": None,
+                "max_iterations": None,
+                "acp_command": None,
+                "acp_args": None,
+                "role": None,
+            })
+
+        mock_dt.assert_called_once()
+        call_kwargs = mock_dt.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_effort"], "xhigh")
+        self.assertEqual(call_kwargs["provider"], "nous")
+        self.assertEqual(call_kwargs["model"], "deepseek-v4-pro")
+        self.assertEqual(call_kwargs["goal"], "test")
+        self.assertEqual(call_kwargs["context"], "some context")
+
+    def test_dispatcher_forwards_reasoning_effort_none_when_unspecified(self):
+        """_dispatch_delegate_task should pass None for missing overrides (no crash)."""
+        from unittest.mock import patch
+        import tools.delegate_tool  # ensure module is loaded before patching
+        from run_agent import AIAgent
+
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool.delegate_task") as mock_dt:
+            mock_dt.return_value = '{"results":[{"completed":true}]}'
+            AIAgent._dispatch_delegate_task(parent, {
+                "goal": "test",
+            })
+
+        mock_dt.assert_called_once()
+        call_kwargs = mock_dt.call_args[1]
+        self.assertIsNone(call_kwargs.get("reasoning_effort"))
+        self.assertIsNone(call_kwargs.get("provider"))
+        self.assertIsNone(call_kwargs.get("model"))
+
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""
 
