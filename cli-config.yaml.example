@@ -266,6 +266,23 @@ terminal:
   container_persistent: true    # Persist filesystem across sessions (false = ephemeral)
 
 # -----------------------------------------------------------------------------
+# OPTION 7: Kubernetes session pod
+# Each command runs in a separate pod in the same cluster as the agent.
+# Great for: isolation from the agent's home/secrets, retained PVC workspaces,
+# and operator-managed agent deployments.
+# Sample RBAC + ValidatingAdmissionPolicy in k8s/.
+# Backend-specifics (namespace, image, session SA, persistence, deadline,
+# pull secrets) are set via environment variables — see .env.example
+# (TERMINAL_KUBERNETES_*). Auth: in-cluster SA token when running as a
+# Kubernetes pod, falling back to the local kubeconfig otherwise.
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "kubernetes"
+#   cwd: "/workspace"            # session pod's only writable mount
+#   timeout: 180
+#   lifetime_seconds: 300
+
+# -----------------------------------------------------------------------------
 # SUDO SUPPORT (works with ALL backends above)
 # -----------------------------------------------------------------------------
 # Add sudo_password to any terminal config above to enable sudo commands.

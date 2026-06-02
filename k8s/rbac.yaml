@@ -1,0 +1,55 @@
+# Sample RBAC for the Kubernetes terminal backend (TERMINAL_ENV=kubernetes).
+#
+# Grants the agent's ServiceAccount the minimum verbs needed to create,
+# exec into, and delete session pods (and the PVCs that back persistent
+# workspaces) IN ITS OWN NAMESPACE only.
+#
+# Replace the placeholders before applying:
+#   <AGENT_NAMESPACE>   namespace where the agent pod runs (e.g. "hermes")
+#   <AGENT_SA>          ServiceAccount the agent runs as (e.g. "hermes")
+#
+# Pair these with the ValidatingAdmissionPolicy in ./validatingadmissionpolicy.yaml
+# to constrain the *shape* of pods the agent may create — without it,
+# pods/create in a namespace is effectively namespace-admin.
+
+---
+# The session pods themselves run as this no-perms SA so they hold no
+# cluster credentials. automountServiceAccountToken is off; the session
+# pod manifest also sets it false at pod level.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hermes-session-noperms
+  namespace: <AGENT_NAMESPACE>
+automountServiceAccountToken: false
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hermes-session-exec
+  namespace: <AGENT_NAMESPACE>
+rules:
+  # Lifecycle of session pods + their PVCs (persistent workspaces).
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "persistentvolumeclaims"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  # Streaming exec into the session pod.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hermes-session-exec
+  namespace: <AGENT_NAMESPACE>
+subjects:
+  - kind: ServiceAccount
+    name: <AGENT_SA>
+    namespace: <AGENT_NAMESPACE>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hermes-session-exec
