@@ -129,8 +129,8 @@ export async function listSessions(
   }
 }
 
-export function getSession(id: string): Promise<{ object: string; session: SessionInfo }> {
-  return window.hermesDesktop.api<{ object: string; session: SessionInfo }>({
+export function getSession(id: string): Promise<SessionInfo> {
+  return window.hermesDesktop.api<SessionInfo>({
     path: `/api/sessions/${encodeURIComponent(id)}`
   })
 }

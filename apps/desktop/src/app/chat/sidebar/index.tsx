@@ -332,7 +332,7 @@ export function ChatSidebar({
 
       results.forEach((result, index) => {
         if (result.status === 'fulfilled') {
-          hydrated.push(result.value.session)
+          hydrated.push(result.value)
         } else {
           failed.push(missingPinnedSessionIds[index])
         }
