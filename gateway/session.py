@@ -16,7 +16,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -969,6 +969,40 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+
+    def get_latest_active_origin(
+        self,
+        *,
+        exclude_platforms: Optional[set[Platform]] = None,
+    ) -> Optional[SessionSource]:
+        """Return the origin for the most recently active persisted session.
+
+        Webhook-triggered runs can use this to deliver their output back to
+        the user's latest real conversation instead of a statically configured
+        home channel.  The returned ``SessionSource`` is a copy so callers
+        cannot mutate the persisted session metadata by accident.
+        """
+        excluded = exclude_platforms or set()
+        with self._lock:
+            self._ensure_loaded_locked()
+            candidates = [
+                entry
+                for entry in self._entries.values()
+                if entry.origin is not None
+                and not entry.suspended
+                and entry.origin.platform not in excluded
+            ]
+            if not candidates:
+                return None
+            latest = max(candidates, key=lambda entry: entry.updated_at)
+            origin = latest.origin
+            if origin is None:
+                return None
+            try:
+                return replace(origin)
+            except Exception:
+                logger.debug("Failed to copy latest active session origin", exc_info=True)
+                return origin
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.

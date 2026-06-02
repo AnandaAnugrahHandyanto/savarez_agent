@@ -28,6 +28,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
+from gateway.session import SessionSource
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
@@ -368,6 +369,57 @@ class TestRenderDeliveryExtra:
         assert result["repo"] == "org/repo"
         assert result["pr_number"] == "7"
         assert result["static"] == 42  # non-string left as-is
+
+
+class TestResumeLatestSessionDelivery:
+    def test_build_delivery_config_targets_latest_active_session(self):
+        adapter = _make_adapter()
+        session_store = MagicMock()
+        session_store.get_latest_active_origin.return_value = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="D123",
+            thread_id="1776702934.713419",
+        )
+        setattr(adapter, "gateway_runner", MagicMock(session_store=session_store))
+
+        delivery = adapter._build_delivery_config(
+            {
+                "deliver": "slack",
+                "deliver_extra": {"chat_id": "fixed", "thread_id": "fixed-thread"},
+                "resume_latest_session": True,
+            },
+            {},
+        )
+
+        assert delivery["deliver"] == "slack"
+        assert delivery["deliver_extra"] == {
+            "chat_id": "D123",
+            "thread_id": "1776702934.713419",
+        }
+        session_store.get_latest_active_origin.assert_called_once_with(
+            exclude_platforms={Platform.WEBHOOK, Platform.API_SERVER}
+        )
+
+    def test_build_delivery_config_falls_back_when_no_latest_session(self):
+        adapter = _make_adapter()
+        session_store = MagicMock()
+        session_store.get_latest_active_origin.return_value = None
+        setattr(adapter, "gateway_runner", MagicMock(session_store=session_store))
+
+        delivery = adapter._build_delivery_config(
+            {
+                "deliver": "slack",
+                "deliver_extra": {"chat_id": "fixed", "thread_id": "fixed-thread"},
+                "resume_latest_session": True,
+            },
+            {},
+        )
+
+        assert delivery["deliver"] == "slack"
+        assert delivery["deliver_extra"] == {
+            "chat_id": "fixed",
+            "thread_id": "fixed-thread",
+        }
 
 
 # ===================================================================

@@ -518,13 +518,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # to a user's chat with zero LLM cost.  Reuses the same HMAC auth,
         # rate limiting, idempotency, and template rendering as agent mode.
         if route_config.get("deliver_only"):
-            delivery = {
-                "deliver": route_config.get("deliver", "log"),
-                "deliver_extra": self._render_delivery_extra(
-                    route_config.get("deliver_extra", {}), payload
-                ),
-                "payload": payload,
-            }
+            delivery = self._build_delivery_config(route_config, payload)
             logger.info(
                 "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
                 event_type,
@@ -576,13 +570,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),
         # so we do NOT pop on send.  TTL-based cleanup keeps the dict bounded.
-        deliver_config = {
-            "deliver": route_config.get("deliver", "log"),
-            "deliver_extra": self._render_delivery_extra(
-                route_config.get("deliver_extra", {}), payload
-            ),
-            "payload": payload,
-        }
+        deliver_config = self._build_delivery_config(route_config, payload)
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
         self._prune_delivery_info(now)
@@ -626,6 +614,47 @@ class WebhookAdapter(BasePlatformAdapter):
             },
             status=202,
         )
+
+    def _build_delivery_config(self, route_config: dict, payload: dict) -> dict:
+        """Build delivery config, optionally targeting the latest active session."""
+        delivery = {
+            "deliver": route_config.get("deliver", "log"),
+            "deliver_extra": self._render_delivery_extra(
+                route_config.get("deliver_extra", {}), payload
+            ),
+            "payload": payload,
+        }
+        if route_config.get("resume_latest_session"):
+            self._route_delivery_to_latest_active_session(delivery)
+        return delivery
+
+    def _route_delivery_to_latest_active_session(self, delivery: dict) -> None:
+        """Mutate delivery to target the latest non-webhook session, if known."""
+        runner = self.gateway_runner
+        session_store = getattr(runner, "session_store", None) if runner else None
+        if session_store is None:
+            return
+
+        origin: Any = None
+        get_latest = getattr(session_store, "get_latest_active_origin", None)
+        if callable(get_latest):
+            try:
+                origin = get_latest(exclude_platforms={Platform.WEBHOOK, Platform.API_SERVER})
+            except Exception:
+                logger.debug("[webhook] Failed to resolve latest active session", exc_info=True)
+                origin = None
+        if origin is None:
+            return
+
+        delivery["deliver"] = origin.platform.value
+        extra = dict(delivery.get("deliver_extra") or {})
+        extra["chat_id"] = origin.chat_id
+        if origin.thread_id:
+            extra["thread_id"] = origin.thread_id
+        else:
+            extra.pop("thread_id", None)
+            extra.pop("message_thread_id", None)
+        delivery["deliver_extra"] = extra
 
     # ------------------------------------------------------------------
     # Signature validation

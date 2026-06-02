@@ -1,5 +1,6 @@
 """Tests for gateway session management."""
 import json
+from datetime import timedelta
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -609,6 +610,49 @@ class TestSessionStoreSwitchSession:
         assert resumed["ended_at"] is None
         assert resumed["end_reason"] is None
         db.close()
+
+
+class TestSessionStoreLatestActiveOrigin:
+    def test_returns_latest_non_excluded_origin(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+        store._loaded = True
+
+        old = store.get_or_create_session(
+            SessionSource(platform=Platform.SLACK, chat_id="old", thread_id="old-thread")
+        )
+        latest = store.get_or_create_session(
+            SessionSource(platform=Platform.SLACK, chat_id="latest", thread_id="latest-thread")
+        )
+        webhook = store.get_or_create_session(
+            SessionSource(platform=Platform.WEBHOOK, chat_id="webhook:event")
+        )
+        old.updated_at = latest.updated_at - timedelta(minutes=10)
+        webhook.updated_at = latest.updated_at + timedelta(minutes=10)
+
+        origin = store.get_latest_active_origin(exclude_platforms={Platform.WEBHOOK})
+
+        assert origin is not None
+        assert origin.chat_id == "latest"
+        assert origin.thread_id == "latest-thread"
+
+    def test_returns_copy_not_persisted_origin(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+        store._loaded = True
+
+        store.get_or_create_session(SessionSource(platform=Platform.SLACK, chat_id="c1"))
+        origin = store.get_latest_active_origin()
+        assert origin is not None
+        origin.chat_id = "mutated"
+
+        origin_again = store.get_latest_active_origin()
+        assert origin_again is not None
+        assert origin_again.chat_id == "c1"
 
 
 class TestWhatsAppSessionKeyConsistency:
