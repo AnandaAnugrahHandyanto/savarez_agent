@@ -1199,6 +1199,11 @@ class SlashCommandCompleter(Completer):
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
         self._file_cache_cwd: str = ""
+        # Cached gateway config for /handoff completions. load_gateway_config()
+        # re-reads config files, runs plugin discovery, and mutates os.environ,
+        # so we must not call it on every keystroke (complete_while_typing).
+        self._gateway_cfg = None
+        self._gateway_cfg_time: float = 0.0
 
     def _command_allowed(self, slash_command: str) -> bool:
         if self._command_filter is None:
@@ -1599,6 +1604,28 @@ class SlashCommandCompleter(Completer):
         except Exception:
             pass
 
+    def _handoff_completions(self, sub_text: str, sub_lower: str):
+        """Yield completions for /handoff from handoff-eligible gateway platforms."""
+        try:
+            now = time.monotonic()
+            gw = self._gateway_cfg
+            if gw is None or now - self._gateway_cfg_time >= 5.0:
+                from gateway.config import load_gateway_config
+                gw = load_gateway_config()
+                self._gateway_cfg = gw
+                self._gateway_cfg_time = now
+            for platform, home in gw.get_handoff_platforms():
+                name = platform.value
+                if name.startswith(sub_lower) and name != sub_lower:
+                    yield Completion(
+                        name,
+                        start_position=-len(sub_text),
+                        display=name,
+                        display_meta=home.name or "",
+                    )
+        except Exception:
+            pass
+
     def _model_completions(self, sub_text: str, sub_lower: str):
         """Yield completions for /model from config aliases + built-in aliases."""
         seen = set()
@@ -1676,6 +1703,9 @@ class SlashCommandCompleter(Completer):
                     return
                 if base_cmd == "/personality":
                     yield from self._personality_completions(sub_text, sub_lower)
+                    return
+                if base_cmd == "/handoff":
+                    yield from self._handoff_completions(sub_text, sub_lower)
                     return
 
             # Static subcommand completions
