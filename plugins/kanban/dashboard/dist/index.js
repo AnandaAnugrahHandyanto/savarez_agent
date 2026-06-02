@@ -87,8 +87,8 @@
     return body || raw;
   }
 
-  // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  // Rolly uses a deliberately simple card schema: triage -> ready -> done.
+  const COLUMN_ORDER = ["triage", "ready", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
@@ -514,6 +514,8 @@
   function KanbanPage() {
     const { t } = useI18n();
     const [board, setBoard] = useState(() => readUrlParam("board") || readSelectedBoard() || null);
+    const path = window.location.pathname.replace(/\/$/, "");
+    const isPriorityListRoute = path === "/kanban/list" || path === "/kanban/priority";
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
 
@@ -721,9 +723,12 @@
         }
         return true;
       };
+      const byName = {};
+      for (const col of boardData.columns || []) byName[col.name] = col;
       return Object.assign({}, boardData, {
-        columns: boardData.columns.map(function (col) {
-          return Object.assign({}, col, { tasks: col.tasks.filter(filterTask) });
+        columns: COLUMN_ORDER.map(function (name) {
+          const col = byName[name] || { name, tasks: [] };
+          return Object.assign({}, col, { tasks: (col.tasks || []).filter(filterTask) });
         }),
       });
     }, [boardData, tenantFilter, assigneeFilter, search]);
@@ -1065,6 +1070,7 @@
         }),
         h(BoardToolbar, {
           board: boardData,
+          isPriorityListRoute,
           tenantFilter, setTenantFilter,
           assigneeFilter, setAssigneeFilter,
           includeArchived, setIncludeArchived,
@@ -1086,7 +1092,15 @@
          onDelete: deleteSelected,
        }) : null,
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
-        h(BoardColumns, {
+        isPriorityListRoute ? h(PriorityList, {
+          board: filteredBoard,
+          selectedIds,
+          failedIds,
+          draggingTaskId,
+          toggleSelected,
+          toggleRange,
+          onOpen: openTask,
+        }) : h(BoardColumns, {
           board: filteredBoard,
           laneByProfile,
           selectedIds,
@@ -1102,7 +1116,7 @@
           onDelete: deleteTask,
           onOpen: openTask,
           onCreate: createTask,
-          allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
+          allTasks: filteredBoard.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
@@ -2026,6 +2040,16 @@
     const tenants = (props.board && props.board.tenants) || [];
     const assignees = (props.board && props.board.assignees) || [];
     return h("div", { className: "flex flex-wrap items-end gap-3" },
+      h("div", { className: "hermes-kanban-view-tabs" },
+        h("a", {
+          href: "/kanban",
+          className: cn("hermes-kanban-view-tab", !props.isPriorityListRoute ? "hermes-kanban-view-tab--active" : ""),
+        }, "Board"),
+        h("a", {
+          href: "/kanban/list",
+          className: cn("hermes-kanban-view-tab", props.isPriorityListRoute ? "hermes-kanban-view-tab--active" : ""),
+        }, "Priority list"),
+      ),
       h("div", { className: "flex flex-col gap-1",
                  title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "search", "Search")),
@@ -2115,27 +2139,15 @@
       h("span", { className: "hermes-kanban-bulk-count" },
         `${props.count} ${tx(t, "selected", "selected")}`),
       h(Button, {
-        onClick: function () { props.onApply({ status: "todo" }); },
+        onClick: function () { props.onApply({ status: "triage" }); },
         size: "sm",
-        title: "Move selected tasks to Todo.",
-      }, "→ todo"),
+        title: "Move selected tasks to Triage.",
+      }, "→ triage"),
       h(Button, {
         onClick: function () { props.onApply({ status: "ready" }); },
         size: "sm",
         title: "Move selected tasks to Ready. Ready tasks are picked up by the dispatcher on the next tick.",
       }, "→ ready"),
-      h(Button, {
-        onClick: function () { props.onApply({ status: "blocked" },
-          `Block ${props.count} task(s)?`); },
-        size: "sm",
-        title: "Block selected tasks. Releases any active claims.",
-      }, "Block"),
-      h(Button, {
-        onClick: function () { props.onApply({ status: "ready" },
-          `Unblock ${props.count} task(s)?`); },
-        size: "sm",
-        title: "Unblock selected tasks (promote to Ready).",
-      }, "Unblock"),
       h(Button, {
         onClick: function () {
           props.onApply({ status: "done" },
@@ -2285,6 +2297,44 @@
   // -------------------------------------------------------------------------
   // Columns
   // -------------------------------------------------------------------------
+
+  function priorityOrderedTasks(boardData) {
+    if (!boardData || !boardData.columns) return [];
+    const tasks = [];
+    for (const col of boardData.columns) {
+      for (const task of col.tasks || []) tasks.push(task);
+    }
+    return tasks.sort(function (a, b) {
+      const ap = Number(a.priority || 0);
+      const bp = Number(b.priority || 0);
+      if (ap !== bp) return bp - ap;
+      return String(a.created_at || "").localeCompare(String(b.created_at || ""));
+    });
+  }
+
+  function PriorityList(props) {
+    const tasks = useMemo(function () {
+      return priorityOrderedTasks(props.board);
+    }, [props.board]);
+    return h("div", { className: "hermes-kanban-priority-list" },
+      tasks.length === 0
+        ? h("div", { className: "hermes-kanban-empty" }, "— no cards —")
+        : tasks.map(function (tk, idx) {
+            return h("div", { key: tk.id, className: "hermes-kanban-priority-row" },
+              h("div", { className: "hermes-kanban-priority-rank" }, String(idx + 1)),
+              h(TaskCard, {
+                task: tk,
+                selected: props.selectedIds.has(tk.id),
+                failed: props.failedIds && props.failedIds.has(tk.id),
+                draggingTaskId: props.draggingTaskId,
+                toggleSelected: props.toggleSelected,
+                toggleRange: props.toggleRange,
+                onOpen: props.onOpen,
+              })
+            );
+          })
+    );
+  }
 
   function BoardColumns(props) {
     const handleDragStart = useCallback(function (e) {
@@ -4051,16 +4101,8 @@
         decomposeButton,
         b("→ triage",  { status: "triage" },   task.status !== "triage"),
         b("→ ready",   { status: "ready" },    task.status !== "ready"),
-        // No direct → running button: /tasks/:id PATCH rejects status=running
-        // with 400 (issue #19535). Tasks enter running only through the
-        // dispatcher's claim_task path, which atomically creates the run row,
-        // claim lock, and worker process metadata.
-        b(tx(t, "block", "Block"),     { status: "blocked" },
-          task.status === "running" || task.status === "ready",
-          getDestructiveConfirm(t, "blocked")),
-        b(tx(t, "unblock", "Unblock"),   { status: "ready" },    task.status === "blocked"),
         b(tx(t, "complete", "Complete"),  { status: "done" },
-          task.status === "running" || task.status === "ready" || task.status === "blocked",
+          task.status !== "done" && task.status !== "archived",
           getDestructiveConfirm(t, "done")),
         b(tx(t, "archive", "Archive"),   { status: "archived" }, task.status !== "archived",
           getDestructiveConfirm(t, "archived")),

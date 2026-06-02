@@ -68,11 +68,9 @@ def test_board_empty(client):
     r = client.get("/api/plugins/kanban/board")
     assert r.status_code == 200
     data = r.json()
-    # All canonical columns present (triage + the rest), each empty.
+    # Rolly's dashboard schema is intentionally simple.
     names = [c["name"] for c in data["columns"]]
-    assert set(names) == kb.VALID_STATUSES - {"archived"}
-    for expected in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
-        assert expected in names, f"missing column {expected}: {names}"
+    assert names == ["triage", "ready", "done"]
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
     assert data["assignees"] == []
@@ -230,8 +228,22 @@ def test_dashboard_rolly_chat_passes_board_slug_to_tmux_session():
     assert "url.pathname = taskId ? `/kanban/cards/${encodeURIComponent(taskId)}` : \"/kanban\"" in js
 
 
-def test_scheduled_tasks_have_their_own_column_not_todo(client):
-    """Scheduled/time-delay tasks must not be silently bucketed into todo."""
+def test_dashboard_has_simple_columns_and_priority_list_route():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    style = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    js = bundle.read_text()
+    css = style.read_text()
+
+    assert 'const COLUMN_ORDER = ["triage", "ready", "done"]' in js
+    assert "function PriorityList" in js
+    assert 'path === "/kanban/list" || path === "/kanban/priority"' in js
+    assert 'className: "hermes-kanban-priority-list"' in js
+    assert ".hermes-kanban-priority-list" in css
+
+
+def test_legacy_statuses_bucket_into_triage(client):
+    """The dashboard hard-cuts old workflow states into the simple card schema."""
 
     task = client.post(
         "/api/plugins/kanban/tasks",
@@ -251,8 +263,8 @@ def test_scheduled_tasks_have_their_own_column_not_todo(client):
     r = client.get("/api/plugins/kanban/board")
     assert r.status_code == 200
     columns = {c["name"]: c["tasks"] for c in r.json()["columns"]}
-    assert any(t["id"] == task["id"] for t in columns["scheduled"])
-    assert not any(t["id"] == task["id"] for t in columns["todo"])
+    assert list(columns) == ["triage", "ready", "done"]
+    assert any(t["id"] == task["id"] for t in columns["triage"])
 
 
 def test_tenant_filter(client):
@@ -467,9 +479,9 @@ def test_patch_schedule_then_unblock(client):
     assert r.json()["task"]["status"] == "scheduled"
 
     columns = client.get("/api/plugins/kanban/board").json()["columns"]
-    assert "scheduled" in [c["name"] for c in columns]
-    scheduled = next(c for c in columns if c["name"] == "scheduled")
-    assert any(x["id"] == t["id"] for x in scheduled["tasks"])
+    assert [c["name"] for c in columns] == ["triage", "ready", "done"]
+    triage = next(c for c in columns if c["name"] == "triage")
+    assert any(x["id"] == t["id"] for x in triage["tasks"])
 
     r = client.patch(
         f"/api/plugins/kanban/tasks/{t['id']}",
@@ -2289,15 +2301,16 @@ def test_dashboard_search_includes_body_and_result():
 
 
 def test_dashboard_bulk_actions_include_reclaim_first():
-    """Bulk action bar must expose reclaim_first checkbox and expanded status buttons."""
+    """Bulk action bar must expose reclaim_first and the simplified status buttons."""
     repo_root = Path(__file__).resolve().parents[2]
     dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
 
     assert "reclaim_first: reclaimFirst" in dist
     assert "hermes-kanban-bulk-reclaim-first" in dist
-    assert '"→ todo"' in dist
-    assert '"Block"' in dist
-    assert '"Unblock"' in dist
+    assert '"→ triage"' in dist
+    assert '"→ ready"' in dist
+    assert '"Complete"' in dist
+    assert '"→ todo"' not in dist
 
 
 def test_dashboard_shift_click_range_selection_exists():

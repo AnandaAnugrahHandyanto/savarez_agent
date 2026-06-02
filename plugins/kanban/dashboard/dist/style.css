@@ -60,6 +60,60 @@
   color: var(--color-muted-foreground) !important;
 }
 
+
+/* ---- Simplified board / priority list -------------------------------- */
+
+.hermes-kanban-view-tabs {
+  display: flex;
+  gap: 0.35rem;
+  align-items: end;
+}
+
+.hermes-kanban-view-tab {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.4rem 0.65rem;
+  font-size: 0.78rem;
+  color: var(--color-muted-foreground);
+  text-decoration: none;
+  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+}
+
+.hermes-kanban-view-tab--active {
+  color: var(--color-foreground);
+  border-color: var(--color-ring);
+}
+
+.hermes-kanban-priority-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  max-width: 920px;
+}
+
+.hermes-kanban-priority-row {
+  display: grid;
+  grid-template-columns: 2.4rem minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: start;
+}
+
+.hermes-kanban-priority-rank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  color: var(--color-muted-foreground);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.hermes-kanban-priority-list .hermes-kanban-card {
+  width: 100%;
+}
+
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {

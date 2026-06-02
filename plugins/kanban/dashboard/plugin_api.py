@@ -137,14 +137,9 @@ def _conn(board: Optional[str] = None):
 # Columns shown by the dashboard, in left-to-right order. "archived" is
 # available via a filter toggle rather than a visible column.
 #
-# Keep this in sync with kanban_db.VALID_STATUSES.  In particular,
-# ``scheduled`` is a first-class waiting column used for time-based follow-ups;
-# if it is omitted here, the board-level fallback below mis-buckets scheduled
-# tasks into ``todo`` and makes the dashboard look like the Scheduled column
-# disappeared.
-BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
-]
+# Rolly's dashboard card schema is deliberately simple: triage -> ready -> done.
+# Legacy/unknown statuses are shown as triage instead of preserving extra lanes.
+BOARD_COLUMNS: list[str] = ["triage", "ready", "done"]
 
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
@@ -470,7 +465,7 @@ def get_board(
                 # needs the summary.
                 d["diagnostics"] = diags
                 d["warnings"] = _warnings_summary_from_diagnostics(diags)
-            col = t.status if t.status in columns else "todo"
+            col = t.status if t.status in columns else "triage"
             columns[col].append(d)
 
         # Stable per-column ordering already applied by list_tasks
