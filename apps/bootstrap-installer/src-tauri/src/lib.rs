@@ -93,6 +93,42 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .manage(Arc::new(AppState::new(mode)))
+        .setup(move |app| {
+            use tauri::Manager;
+            // Launcher fast path: a bare ("Install") launch when Hermes is
+            // already installed should NOT show the installer or rebuild — it
+            // should just open the app. This lets the /Applications "Hermes"
+            // act as a normal launcher (pin-to-Dock friendly): first run
+            // installs, every later run launches instantly. Fresh/repair
+            // installs and Update mode still show the window (kept hidden until
+            // here via `"visible": false` so the fast path never flashes a
+            // window).
+            if mode == AppMode::Install {
+                let install_root = paths::hermes_home().join("hermes-agent");
+                if bootstrap::hermes_is_installed(&install_root) {
+                    match bootstrap::spawn_installed_desktop(&install_root) {
+                        Ok(()) => {
+                            tracing::info!(
+                                "hermes already installed — relaunched desktop; exiting installer"
+                            );
+                            app.handle().exit(0);
+                            return Ok(());
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                ?err,
+                                "relaunch of installed desktop failed; showing installer UI"
+                            );
+                        }
+                    }
+                }
+            }
+            // First run / repair install, or Update mode: reveal the UI.
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // Mode (install vs update)
             get_mode,
