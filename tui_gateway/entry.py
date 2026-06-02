@@ -195,19 +195,39 @@ def _log_exit(reason: str) -> None:
 def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
     """Briefly block until background MCP discovery finishes, up to ``timeout``.
 
-    MCP discovery runs in a daemon thread spawned at startup (see main()) so a
-    slow/dead server can't freeze ``gateway.ready``.  But the agent snapshots
-    its tool list ONCE at build time and never re-reads it, so a reachable-but-
-    slow server that finishes connecting *after* the first prompt would be
-    invisible for the whole session.  Joining with a short bounded timeout
-    before the first agent build lets already-spawning fast servers land
-    without re-introducing the startup hang: a dead server simply isn't waited
-    on beyond ``timeout``.  No-op when no discovery thread was started.
+    The effective timeout is resolved in this order:
+    1. ``HERMES_MCP_DISCOVERY_WAIT`` environment variable (float, seconds).
+    2. ``mcp.discovery_wait`` key in config.yaml.
+    3. The ``timeout`` argument passed by the caller.
+
+    Headless one-shot callers (``hermes -z``) should pass a higher default
+    (5.0 s) so container- and stdio-backed servers with a real process
+    cold-start have enough time to connect before the tool snapshot is taken.
+    No-op when no discovery thread was started.
     """
+    import os
+
+    effective = timeout
+    raw_env = os.getenv("HERMES_MCP_DISCOVERY_WAIT", "").strip()
+    if raw_env:
+        try:
+            effective = float(raw_env)
+        except ValueError:
+            pass
+    else:
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            val = cfg.get("mcp", {}).get("discovery_wait")
+            if val is not None:
+                effective = float(val)
+        except Exception:
+            pass
+
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
         return
-    thread.join(timeout=timeout)
+    thread.join(timeout=effective)
 
 
 def main():

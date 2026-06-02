@@ -52,8 +52,39 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
 
 
 def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
-    """Briefly wait for background MCP discovery before the first tool snapshot."""
+    """Briefly wait for background MCP discovery before the first tool snapshot.
+
+    The effective timeout is resolved in this order:
+    1. ``HERMES_MCP_DISCOVERY_WAIT`` environment variable (float, seconds).
+    2. ``mcp.discovery_wait`` key in config.yaml.
+    3. The ``timeout`` argument passed by the caller.
+
+    Headless one-shot callers (``hermes -z``) should pass a higher default
+    (5.0 s) so container- and stdio-backed servers with a real process
+    cold-start have enough time to connect before the tool snapshot is taken.
+    """
+    import os
+
+    effective = timeout
+    # 1. env var override
+    raw_env = os.getenv("HERMES_MCP_DISCOVERY_WAIT", "").strip()
+    if raw_env:
+        try:
+            effective = float(raw_env)
+        except ValueError:
+            pass
+    else:
+        # 2. config.yaml override
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            val = cfg.get("mcp", {}).get("discovery_wait")
+            if val is not None:
+                effective = float(val)
+        except Exception:
+            pass
+
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
         return
-    thread.join(timeout=timeout)
+    thread.join(timeout=effective)

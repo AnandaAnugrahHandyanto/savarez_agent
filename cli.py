@@ -790,7 +790,7 @@ def get_tool_definitions(*args, **kwargs):
     from hermes_cli.mcp_startup import wait_for_mcp_discovery
     from model_tools import get_tool_definitions as _get_tool_definitions
 
-    wait_for_mcp_discovery()
+    wait_for_mcp_discovery(timeout=5.0)
     return _get_tool_definitions(*args, **kwargs)
 
 
@@ -4934,7 +4934,7 @@ class HermesCLI:
 
         from hermes_cli.mcp_startup import wait_for_mcp_discovery
 
-        wait_for_mcp_discovery()
+        wait_for_mcp_discovery(timeout=5.0)
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:
