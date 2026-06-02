@@ -271,6 +271,14 @@ class TestExtractMedia:
         assert media[0][0] == "/path/to/audio.ogg"
         assert media[0][1] is False  # no voice tag
 
+    def test_svg_media_tag(self):
+        content = "MEDIA:/path/to/chart.svg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/path/to/chart.svg"
+        assert media[0][1] is False
+        assert "MEDIA:" not in cleaned
+
     def test_media_with_voice_directive(self):
         content = "[[audio_as_voice]]\nMEDIA:/path/to/voice.ogg"
         media, cleaned = BasePlatformAdapter.extract_media(content)
