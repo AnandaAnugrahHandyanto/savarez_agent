@@ -196,6 +196,15 @@ Mission Control should become an operator console with four lanes:
 4. Notify: send lightweight notifications to Discord/WhatsApp when something
    needs Travis, but keep the actual state and controls in Hermes.
 
+Mission Control operations also need a lane lock before action. Jenny should
+classify the active lane, explicitly allowed actions, forbidden adjacent lanes,
+other-thread/chat exclusions, and the approval slice required before crossing
+lanes. Context from a neighboring lane may be recorded as risk/background, but
+it must not authorize work outside the current lane. A documentation-only lane
+stays documentation-only; a read-only inventory lane stays read-only; a
+stop-state lane permits no cleanup or forward progress; and a cleanup/revert
+lane may touch only the named cleanup target.
+
 Discord should become notification-only because it is a poor source of truth:
 thread rollover loses context, copy/paste relays waste Codex turns, and
 important state is hard to query. Discord can still announce "approval needed",

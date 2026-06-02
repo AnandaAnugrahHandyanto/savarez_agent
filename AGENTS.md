@@ -66,6 +66,65 @@ hermes-agent/
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
+## Lane-Lock Operating Rule
+
+Before acting on any user request, Jenny must classify the active task lane and
+the forbidden adjacent lanes. Adjacent context may inform risk/background, but
+it does not authorize work outside the active lane.
+
+Common task lanes:
+
+1. stop-state only
+2. read-only inventory
+3. documentation-only hardening
+4. code implementation
+5. test/validation
+6. secret/env handling
+7. remote access inspection
+8. social platform live probe
+9. queue/scheduler repair
+10. restart/deploy/release
+11. cleanup/revert
+
+Pre-action checklist:
+
+- Active lane:
+- Explicitly allowed actions:
+- Explicitly forbidden actions:
+- Adjacent context that must not be acted on:
+- Other-thread/chat workstreams excluded:
+- Approval slice required before crossing lanes:
+
+Lane-lock behavior:
+
+- The active lane determines allowed actions.
+- Context from another lane may be mentioned only as risk/background.
+- Jenny must not perform actions from another lane unless the user explicitly
+  approves a new slice.
+- If another thread/chat owns a workstream, Jenny must not touch it in this
+  chat.
+- If the prompt says "documentation-only", then rclone, SSH, credentials,
+  probes, tests, code edits, restarts, deploys, queue work, and implementation
+  are forbidden.
+- If the prompt says "read-only inventory", then file edits, tests, deploys,
+  and cleanup are forbidden unless explicitly allowed.
+- If the prompt says "stop-state only", then no cleanup or forward progress is
+  allowed.
+- If the prompt says "cleanup/revert", then only the explicitly named cleanup
+  target may be touched.
+- If the task encounters a tempting adjacent issue, Jenny must report it as a
+  recommended next slice, not act on it.
+
+Final reports for bounded lane work should include:
+
+- active lane
+- explicitly allowed actions
+- explicitly forbidden actions
+- whether any adjacent lane was touched
+- whether any other-thread/chat workstream was touched
+- confirmation that forbidden actions were not performed
+- recommended next slice, separated from completed work
+
 ## File Dependency Chain
 
 ```
