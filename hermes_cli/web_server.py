@@ -1029,7 +1029,12 @@ def _record_completed_action(name: str, message: str, exit_code: int = 1) -> Non
     _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": None}
 
 
-def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
+def _spawn_hermes_action(
+    subcommand: List[str],
+    name: str,
+    *,
+    sudo_if_needed: bool = False,
+) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
 
     Uses the running interpreter's ``hermes_cli.main`` module so the action
@@ -1044,6 +1049,12 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     )
 
     cmd = [sys.executable, "-m", "hermes_cli.main", *subcommand]
+    if sudo_if_needed and os.geteuid() != 0:
+        # Dashboard actions run detached/non-interactively, so use `-n`: if the
+        # host has not granted passwordless sudo for this user the command fails
+        # immediately and the action log explains why, instead of hanging on a
+        # password prompt the browser cannot answer.
+        cmd = ["sudo", "-n", *cmd]
 
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
@@ -1086,9 +1097,23 @@ def _tail_lines(path: Path, n: int) -> List[str]:
 
 @app.post("/api/gateway/restart")
 async def restart_gateway():
-    """Kick off a ``hermes gateway restart`` in the background."""
+    """Kick off a ``hermes gateway restart`` in the background.
+
+    If the installed gateway is a system service, restart that scope explicitly
+    and use non-interactive sudo when needed.  The dashboard route is already a
+    fixed, authenticated action, so this does not expose general command
+    execution; it only lets the existing button manage the service it displays.
+    """
     try:
-        proc = _spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+        from hermes_cli.gateway import get_systemd_unit_path
+
+        system_service = get_systemd_unit_path(system=True).exists()
+        subcommand = ["gateway", "restart", "--system"] if system_service else ["gateway", "restart"]
+        proc = _spawn_hermes_action(
+            subcommand,
+            "gateway-restart",
+            sudo_if_needed=system_service,
+        )
     except Exception as exc:
         _log.exception("Failed to spawn gateway restart")
         raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")

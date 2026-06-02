@@ -1100,6 +1100,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "chat_completions_streaming": True,
                 "responses_api": True,
                 "responses_streaming": True,
+                "gateway_restart": True,
                 "run_submission": True,
                 "run_status": True,
                 "run_events_sse": True,
@@ -1127,6 +1128,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "models": {"method": "GET", "path": "/v1/models"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
+                "gateway_restart": {"method": "POST", "path": "/api/gateway/restart"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
@@ -1145,6 +1147,43 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
             },
         })
+
+    async def _handle_gateway_restart(self, request: "web.Request") -> "web.Response":
+        """POST /api/gateway/restart — request a supervised gateway restart.
+
+        This intentionally uses GatewayRunner.request_restart(via_service=True)
+        instead of shelling out to sudo/systemctl.  When Hermes is installed as
+        a service, the gateway exits with the service-restart code and systemd
+        respawns it.  That makes the web/API UI restart-capable without a TTY,
+        sudo prompt, or broad command-execution surface.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None:
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "Gateway runner is unavailable; restart cannot be requested from this process",
+                        "type": "server_error",
+                        "code": "gateway_runner_unavailable",
+                    }
+                },
+                status=503,
+            )
+
+        accepted = runner.request_restart(detached=False, via_service=True)
+        status = 202 if accepted else 409
+        return web.json_response(
+            {
+                "object": "hermes.gateway.restart",
+                "accepted": accepted,
+                "state": "restarting" if accepted else "already_requested",
+            },
+            status=status,
+        )
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.
@@ -4094,6 +4133,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_post("/api/gateway/restart", self._handle_gateway_restart)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
