@@ -208,6 +208,7 @@ class VoiceTask:
         ]
         self.call_ended = False
         self.post_call_notification: Dict[str, Any] = {"status": "not_needed"}
+        self.runner_pid: Optional[int] = None
         self.created_at = now
         self.updated_at = now
 
@@ -235,9 +236,58 @@ class VoiceTask:
             "error": self.error,
             "call_ended": self.call_ended,
             "post_call_notification": dict(self.post_call_notification),
+            "runner_pid": self.runner_pid,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+
+
+def _voice_tasks_root() -> Path:
+    root = Path(get_hermes_home()) / "voice-tasks"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _voice_task_state_path(task_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", task_id).strip("._") or "unknown-task"
+    return _voice_tasks_root() / f"{safe}.json"
+
+
+def _voice_write_task_state(task: VoiceTask) -> None:
+    path = _voice_task_state_path(task.task_id)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(task.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _voice_task_from_dict(data: Dict[str, Any]) -> VoiceTask:
+    task = VoiceTask(
+        task_id=str(data["task_id"]),
+        call_id=str(data["call_id"]),
+        user=str(data.get("user") or "unknown dashboard user"),
+        request=str(data.get("request") or ""),
+        session_id=str(data.get("session_id") or f"voice_task_{data['task_id']}"),
+    )
+    task.status = str(data.get("status") or "queued")
+    task.progress = list(data.get("progress") or task.progress)
+    task.result = data.get("result")
+    task.error = data.get("error")
+    task.call_ended = bool(data.get("call_ended"))
+    task.post_call_notification = dict(data.get("post_call_notification") or {"status": "not_needed"})
+    task.runner_pid = data.get("runner_pid")
+    task.created_at = str(data.get("created_at") or task.created_at)
+    task.updated_at = str(data.get("updated_at") or task.updated_at)
+    return task
+
+
+def _voice_read_task_state(task_id: str) -> VoiceTask | None:
+    path = _voice_task_state_path(task_id)
+    if not path.exists():
+        return None
+    try:
+        return _voice_task_from_dict(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return None
 
 
 def _voice_api_key() -> str:
@@ -368,6 +418,7 @@ def _voice_update_call_state(event: VoiceTranscriptEvent, user: str) -> None:
                 if task.call_id == event.call_id:
                     task.call_ended = True
                     task.updated_at = now
+                    _voice_write_task_state(task)
                     ended_tasks.append(task)
         for task in ended_tasks:
             if task.status in {"complete", "failed", "cancelled"}:
@@ -407,6 +458,7 @@ def _voice_maybe_notify_post_call(task: VoiceTask, final_status: str) -> None:
     if current in {"sent", "skipped_unconfigured", "failed"}:
         return
     task.post_call_notification = {"status": "pending", "final_status": final_status, "updated_at": datetime.now(timezone.utc).isoformat()}
+    _voice_write_task_state(task)
     try:
         sent = _voice_send_post_call_notification(task)
     except Exception as exc:
@@ -416,6 +468,7 @@ def _voice_maybe_notify_post_call(task: VoiceTask, final_status: str) -> None:
             "error": str(exc)[:500],
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        _voice_write_task_state(task)
         _voice_task_event(task, "post_call_notification_error", str(exc)[:700], {"task_id": task.task_id, "status": final_status})
         return
     task.post_call_notification = {
@@ -426,6 +479,7 @@ def _voice_maybe_notify_post_call(task: VoiceTask, final_status: str) -> None:
     }
     event = "post_call_notification_sent" if sent else "post_call_notification_skipped"
     text = "Telegram handoff sent after call end." if sent else "Telegram handoff skipped: HERMES_VOICE_TELEGRAM_HANDOFF_TARGET/TELEGRAM_BOT_TOKEN not configured."
+    _voice_write_task_state(task)
     _voice_task_event(task, event, text, {"task_id": task.task_id, "status": final_status})
 
 
@@ -466,12 +520,14 @@ def _voice_task_status_lookup(query: str | None = None, limit: int = 1600) -> st
     if not task_ids:
         return ""
     rows: list[str] = []
-    with _VOICE_TASKS_LOCK:
-        for task_id in task_ids:
-            task = _VOICE_TASKS.get(task_id)
-            if task is not None:
-                latest = task.progress[-1]["message"] if task.progress else task.status
-                rows.append(f"{task_id}: {task.status}; updated {task.updated_at}; {latest}")
+    for task_id in task_ids:
+        task = _voice_read_task_state(task_id)
+        if task is None:
+            with _VOICE_TASKS_LOCK:
+                task = _VOICE_TASKS.get(task_id)
+        if task is not None:
+            latest = task.progress[-1]["message"] if task.progress else task.status
+            rows.append(f"{task_id}: {task.status}; updated {task.updated_at}; {latest}")
     missing = [task_id for task_id in task_ids if not any(row.startswith(f"{task_id}:") for row in rows)]
     if missing:
         transcript_root = Path(get_hermes_home()) / "voice-transcripts"
@@ -517,20 +573,36 @@ def _voice_task_worker(task_id: str) -> None:
     with _VOICE_TASKS_LOCK:
         task = _VOICE_TASKS[task_id]
         task.mark("running", "Rolly is working in the background.")
+        _voice_write_task_state(task)
     _voice_task_event(task, "delegation_started", "Rolly background task started.")
     try:
         result = _run_voice_research(task.request, user=task.user, source="dashboard-voice-background", parent_call_id=task.call_id)
         result = _voice_visible_task_result(result, task)
         with _VOICE_TASKS_LOCK:
             task.mark("complete", "Rolly background task completed.", result=result)
+            _voice_write_task_state(task)
         _voice_task_event(task, "delegation_result", result, {"status": "complete"})
         _voice_maybe_notify_post_call(task, "complete")
     except Exception as exc:
         message = str(exc)[:1200]
         with _VOICE_TASKS_LOCK:
             task.mark("failed", f"Rolly background task failed: {message}", error=message)
+            _voice_write_task_state(task)
         _voice_task_event(task, "delegation_error", message, {"status": "failed"})
         _voice_maybe_notify_post_call(task, "failed")
+
+
+def _voice_spawn_task_process(task: VoiceTask) -> int:
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "hermes_cli.voice_task_runner", "--task-file", str(_voice_task_state_path(task.task_id))],
+        cwd=str(PROJECT_ROOT),
+        env={**os.environ, "HERMES_HOME": str(get_hermes_home())},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return int(getattr(proc, "pid", 0) or 0)
 
 
 def _voice_start_background_task(call_id: str, request_text: str, user: str) -> VoiceTask:
@@ -539,8 +611,10 @@ def _voice_start_background_task(call_id: str, request_text: str, user: str) -> 
     task = VoiceTask(task_id=task_id, call_id=call_id, user=user, request=request_text, session_id=f"voice_task_{task_id}")
     with _VOICE_TASKS_LOCK:
         _VOICE_TASKS[task_id] = task
+        _voice_write_task_state(task)
     _voice_task_event(task, "delegation_queued", "Background Rolly task queued.", {"request": request_text})
-    _VOICE_TASK_EXECUTOR.submit(_voice_task_worker, task_id)
+    task.runner_pid = _voice_spawn_task_process(task)
+    _voice_write_task_state(task)
     return task
 
 
@@ -1102,11 +1176,13 @@ async def start_voice_task(payload: VoiceTaskStartRequest, request: Request):
 
 @app.get("/api/voice/tasks/{task_id}")
 async def get_voice_task(task_id: str, _request: Request):
-    with _VOICE_TASKS_LOCK:
-        task = _VOICE_TASKS.get(task_id)
-        if task is None:
-            raise HTTPException(status_code=404, detail="Voice task not found")
-        return task.to_dict()
+    task = _voice_read_task_state(task_id)
+    if task is None:
+        with _VOICE_TASKS_LOCK:
+            task = _VOICE_TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Voice task not found")
+    return task.to_dict()
 
 
 @app.post("/api/voice/transcript")

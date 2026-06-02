@@ -320,6 +320,47 @@ def test_voice_background_tool_starts_real_task_contract(voice_client, monkeypat
     assert started[0].request == "do the thing"
 
 
+def test_voice_background_task_spawns_durable_process_and_can_be_reloaded(voice_client, monkeypatch):
+    client, web_server = voice_client
+    popen_calls = []
+
+    class FakePopen:
+        pid = 12345
+
+    def fake_popen(args, **kwargs):
+        popen_calls.append((args, kwargs))
+        return FakePopen()
+
+    monkeypatch.setattr(web_server.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        web_server._VOICE_TASK_EXECUTOR,
+        "submit",
+        lambda *_args, **_kwargs: pytest.fail("voice background tasks must not depend on the dashboard thread pool"),
+    )
+
+    resp = client.post(
+        "/api/voice/tool",
+        json={"name": "rolly_background", "call_id": "voice-durable", "arguments": {"request": "do durable work"}},
+        headers={"X-Rolly-User": "deniz"},
+    )
+
+    assert resp.status_code == 200
+    task_id = resp.json()["data"]["task_id"]
+    assert popen_calls
+    assert "hermes_cli.voice_task_runner" in popen_calls[0][0]
+    assert web_server._voice_task_state_path(task_id).exists()
+
+    with web_server._VOICE_TASKS_LOCK:
+        web_server._VOICE_TASKS.clear()
+
+    status = client.get(f"/api/voice/tasks/{task_id}")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["task_id"] == task_id
+    assert body["status"] == "queued"
+    assert body["request"] == "do durable work"
+
+
 def test_voice_context_lookup_reports_live_voice_task_status(voice_client, monkeypatch):
     client, web_server = voice_client
     task = web_server.VoiceTask("vt_live", "call-live", "deniz", "do work", "voice_task_vt_live")
