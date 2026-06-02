@@ -934,9 +934,10 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 
 
 # Per-task environment overrides registry.
-# Allows environments (e.g., TerminalBench2Env) to specify a custom Docker/Modal
-# image for a specific task_id BEFORE the agent loop starts. When the terminal or
-# file tools create a new sandbox for that task_id, they check this registry first
+# Allows infrastructure code to configure a task's sandbox BEFORE the agent loop
+# starts. RL/benchmark environments use this for custom Docker/Modal images;
+# gateway session workspaces use it for per-chat cwd isolation. When terminal or
+# file tools create a sandbox for that task_id, they check this registry first
 # and fall back to the TERMINAL_MODAL_IMAGE (etc.) env var if no override is set.
 #
 # This is never exposed to the model -- only infrastructure code calls it.
@@ -948,8 +949,8 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     """
     Register environment overrides for a specific task/rollout.
 
-    Called by Atropos environments before the agent loop to configure
-    per-task sandbox settings (e.g., a custom Dockerfile for the Modal image).
+    Called by Atropos environments and gateway session workspace routing before
+    the agent loop to configure per-task sandbox settings.
 
     Supported override keys:
         - modal_image: str -- Path to Dockerfile or Docker Hub image name
@@ -1001,12 +1002,11 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     ``"default"`` here so subagents share the parent's long-lived container
     (one bash, one /workspace, one set of installed packages).
 
-    Exception: RL / benchmark environments (TerminalBench2, HermesSweEnv, ...)
-    call ``register_task_env_overrides(task_id, {...})`` to request a
-    per-task Docker/Modal image. When an override is registered for a
-    task_id, we honour it by returning the task_id unchanged -- those
-    rollouts need their own isolated sandbox, which is the whole point of
-    the override.
+    Exception: infrastructure paths that need task-local runtime state call
+    ``register_task_env_overrides(task_id, {...})``. RL/benchmark rollouts use
+    this for per-task Docker/Modal images; gateway sessions use it for per-chat
+    workspaces. When an override is registered for a task_id, we honour it by
+    returning the task_id unchanged so its sandbox and file tools stay isolated.
     """
     if task_id and task_id in _task_env_overrides:
         return task_id

@@ -78,6 +78,22 @@ def test_live_tracking_cwd_wins_over_relative_terminal_cwd(_isolated_cwd, monkey
     assert resolved == (workspace / "target.py")
 
 
+def test_task_override_cwd_wins_before_live_env_exists(_isolated_cwd, monkeypatch):
+    """Gateway workspace overrides must route first-turn file tools."""
+    workspace, decoy = _isolated_cwd
+    override = decoy / "gateway-workspace"
+    override.mkdir()
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+    monkeypatch.setattr(
+        "tools.terminal_tool._task_env_overrides",
+        {"gateway-session": {"cwd": str(override)}},
+    )
+
+    resolved = ft._resolve_path_for_task("target.py", task_id="gateway-session")
+
+    assert resolved == (override / "target.py")
+
+
 def test_absolute_terminal_cwd_used_verbatim(_isolated_cwd, monkeypatch):
     """An absolute TERMINAL_CWD is the resolution base (no live tracking)."""
     workspace, decoy = _isolated_cwd
@@ -194,4 +210,3 @@ def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     assert "WORKSPACE_PATCHED" in (workspace / "target.py").read_text()
     # And the decoy copy is untouched.
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
-

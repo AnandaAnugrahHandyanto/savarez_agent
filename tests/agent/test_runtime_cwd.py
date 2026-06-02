@@ -14,6 +14,30 @@ def _raise_oserror(*args, **kwargs):
 
 
 class TestResolveAgentCwd:
+    def test_prefers_session_cwd_over_terminal_cwd(self, monkeypatch, tmp_path):
+        session_dir = tmp_path / "session"
+        global_dir = tmp_path / "global"
+        session_dir.mkdir()
+        global_dir.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(global_dir))
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(session_cwd=str(session_dir))
+        try:
+            assert resolve_agent_cwd() == session_dir
+        finally:
+            clear_session_vars(tokens)
+
+    def test_ignores_inherited_session_cwd_env(self, monkeypatch, tmp_path):
+        session_dir = tmp_path / "session"
+        global_dir = tmp_path / "global"
+        session_dir.mkdir()
+        global_dir.mkdir()
+        monkeypatch.setenv("HERMES_SESSION_CWD", str(session_dir))
+        monkeypatch.setenv("TERMINAL_CWD", str(global_dir))
+
+        assert resolve_agent_cwd() == global_dir
+
     def test_prefers_terminal_cwd_over_getcwd(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         monkeypatch.chdir(os.path.expanduser("~"))
@@ -51,6 +75,30 @@ class TestResolveAgentCwd:
 
 
 class TestResolveContextCwd:
+    def test_prefers_session_cwd_over_terminal_cwd(self, monkeypatch, tmp_path):
+        session_dir = tmp_path / "session"
+        global_dir = tmp_path / "global"
+        session_dir.mkdir()
+        global_dir.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(global_dir))
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(session_cwd=str(session_dir))
+        try:
+            assert resolve_context_cwd() == session_dir
+        finally:
+            clear_session_vars(tokens)
+
+    def test_ignores_inherited_session_cwd_env(self, monkeypatch, tmp_path):
+        session_dir = tmp_path / "session"
+        global_dir = tmp_path / "global"
+        session_dir.mkdir()
+        global_dir.mkdir()
+        monkeypatch.setenv("HERMES_SESSION_CWD", str(session_dir))
+        monkeypatch.setenv("TERMINAL_CWD", str(global_dir))
+
+        assert resolve_context_cwd() == global_dir
+
     def test_returns_dir_when_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert resolve_context_cwd() == tmp_path

@@ -264,12 +264,23 @@ gateway:
     save_failed:           "Failed to save home channel: {error}"
     success:               "✅ Home channel set to **{name}** (ID: {chat_id}).\nCron jobs and cross-platform messages will be delivered here."
 
+  workspace:
+    source_session:         "session override"
+    source_global:          "global default"
+    status:                 "📁 **Workspace:** `{cwd}` ({source})\nGlobal default: `{global_cwd}`\nUse `/workspace /absolute/path` to bind this chat, or `/workspace clear` to return to the global default."
+    set:                    "✅ Workspace set for this session: `{cwd}`\nFuture turns in this chat will use this directory for project context, files, terminal commands, @ references, and rollback. Existing tool environments for this chat were restarted."
+    cleared:                "Workspace override cleared. Using global default: `{cwd}`\nExisting tool environments for this chat were restarted."
+    relative_rejected:      "Use an absolute path, e.g. `/workspace /home/me/project`."
+    invalid:                "Invalid workspace path `{path}`: {error}"
+    not_dir:                "Workspace path is not an existing directory: `{path}`"
+
   status:
     header:                "📊 **Hermes Gateway Status**"
     session_id:            "**Session ID:** `{session_id}`"
     title:                 "**Title:** {title}"
     created:               "**Created:** {timestamp}"
     last_activity:         "**Last Activity:** {timestamp}"
+    workspace:             "**Workspace:** `{cwd}` ({source})"
     tokens:                "**Cumulative API tokens (re-sent each call):** {tokens}"
     agent_running:         "**Agent Running:** {state}"
     state_yes:             "Yes ⚡"

@@ -6,16 +6,29 @@ gateway/cron startup). The local-CLI backend deliberately leaves it unset and
 relies on the launch dir. Reading it in one place keeps the system prompt, the
 tool surfaces, and context-file discovery agreeing on where the agent lives.
 
-The #29531 per-session extension point is this function: a future PR adds a
-contextvar arm inside `resolve_agent_cwd` and `.set()`s it at the
-`set_session_vars` seam — by design, not a reopening hazard.
+Gateway sessions may set `HERMES_SESSION_CWD` through `set_session_vars`;
+that session-scoped override wins over the process-wide `TERMINAL_CWD`.
 """
 
 import os
 from pathlib import Path
 
 
+def _session_cwd() -> str:
+    try:
+        from gateway.session_context import get_session_context_value
+    except ImportError:
+        return ""
+    return get_session_context_value("HERMES_SESSION_CWD", "").strip()
+
+
 def resolve_agent_cwd() -> Path:
+    session_raw = _session_cwd()
+    if session_raw:
+        session_path = Path(session_raw).expanduser()
+        if session_path.is_dir():
+            return session_path
+
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         p = Path(raw).expanduser()
@@ -29,5 +42,5 @@ def resolve_context_cwd() -> Path | None:
     # to the launch dir (os.getcwd()) — correct for the local CLI. The gateway
     # avoids slurping its install dir by setting TERMINAL_CWD (see system_prompt.py).
     # No getcwd arm here: that fallback is owned by the caller, not this resolver.
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    raw = _session_cwd() or os.environ.get("TERMINAL_CWD", "").strip()
     return Path(raw).expanduser() if raw else None

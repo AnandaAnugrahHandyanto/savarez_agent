@@ -2323,6 +2323,106 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
+    def _global_gateway_cwd(self) -> str:
+        raw = os.environ.get("TERMINAL_CWD", "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            if path.is_dir():
+                return str(path.resolve())
+        return str(Path.home().resolve())
+
+    def _session_workspace_cwd(self, session_entry: Optional[Any] = None) -> Optional[str]:
+        raw = getattr(session_entry, "workspace_cwd", None)
+        if not raw:
+            return None
+        path = Path(str(raw)).expanduser()
+        if not path.is_dir():
+            return None
+        return str(path.resolve())
+
+    def _effective_workspace_cwd(self, session_entry: Optional[Any] = None) -> str:
+        return self._session_workspace_cwd(session_entry) or self._global_gateway_cwd()
+
+    def _sync_gateway_workspace_state(
+        self,
+        session_key: str,
+        session_entry: Optional[Any],
+        *,
+        previous_session_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Return the valid session workspace and keep runtime state in sync.
+
+        If a previously bound directory has disappeared, clear the binding and
+        terminal overrides instead of silently showing the global cwd while
+        tools keep using the stale task override.
+        """
+        if session_entry is None:
+            return None
+
+        current_session_id = getattr(session_entry, "session_id", None)
+        if previous_session_id and previous_session_id != current_session_id:
+            self._register_gateway_workspace_override(previous_session_id, None)
+
+        workspace_cwd = self._session_workspace_cwd(session_entry)
+        raw_workspace = getattr(session_entry, "workspace_cwd", None)
+        if raw_workspace and not workspace_cwd:
+            self.session_store.set_workspace_cwd(session_key, None)
+            session_entry.workspace_cwd = None
+            self._register_gateway_workspace_override(
+                session_key,
+                None,
+                session_id=getattr(session_entry, "session_id", None),
+            )
+            self._evict_cached_agent(session_key)
+            try:
+                from tools.terminal_tool import cleanup_vm
+
+                cleanup_vm(session_key)
+                cleanup_vm(session_entry.session_id)
+            except Exception as exc:
+                logger.debug("workspace: stale workspace cleanup skipped for %s: %s", session_key, exc)
+            logger.warning(
+                "gateway workspace cleared for %s because bound cwd no longer exists: %s",
+                session_key,
+                raw_workspace,
+            )
+            return None
+
+        if workspace_cwd:
+            self._register_gateway_workspace_override(
+                session_key,
+                workspace_cwd,
+                session_id=getattr(session_entry, "session_id", None),
+            )
+            if getattr(session_entry, "session_id", None) and getattr(self.session_store, "_db", None):
+                try:
+                    self.session_store._db.update_session_cwd(session_entry.session_id, workspace_cwd)
+                except Exception as exc:
+                    logger.debug("Session DB workspace cwd sync failed: %s", exc)
+        return workspace_cwd
+
+    def _register_gateway_workspace_override(
+        self,
+        session_key: str,
+        cwd: Optional[str],
+        *,
+        session_id: Optional[str] = None,
+    ) -> None:
+        try:
+            from tools.terminal_tool import (
+                clear_task_env_overrides,
+                register_task_env_overrides,
+            )
+
+            task_ids = [task_id for task_id in (session_key, session_id) if task_id]
+            for task_id in task_ids:
+                if cwd:
+                    register_task_env_overrides(task_id, {"cwd": cwd})
+                else:
+                    clear_task_env_overrides(task_id)
+        except Exception as exc:
+            logger.warning("gateway workspace override registration failed: %s", exc)
+
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
@@ -8045,6 +8145,9 @@ class GatewayRunner:
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
 
+        if canonical == "workspace":
+            return await self._handle_workspace_command(event)
+
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
@@ -8544,7 +8647,12 @@ class GatewayRunner:
                 from agent.context_references import preprocess_context_references_async
                 from agent.model_metadata import get_model_context_length
 
-                _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
+                try:
+                    _msg_entry = self.session_store._entries.get(session_key)
+                except Exception:
+                    _msg_entry = None
+                self._sync_gateway_workspace_state(session_key, _msg_entry)
+                _msg_cwd = self._effective_workspace_cwd(_msg_entry)
                 _msg_runtime = _resolve_runtime_agent_kwargs()
                 _msg_config_ctx = None
                 try:
@@ -8719,6 +8827,8 @@ class GatewayRunner:
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
+
+        self._sync_gateway_workspace_state(session_key, session_entry)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -9079,8 +9189,14 @@ class GatewayRunner:
                                     # and searchable via session_search.
                                     _hyg_new_sid = _hyg_agent.session_id
                                     if _hyg_new_sid != session_entry.session_id:
+                                        _hyg_old_sid = session_entry.session_id
                                         session_entry.session_id = _hyg_new_sid
                                         self.session_store._save()
+                                        self._sync_gateway_workspace_state(
+                                            session_key,
+                                            session_entry,
+                                            previous_session_id=_hyg_old_sid,
+                                        )
                                         self._sync_telegram_topic_binding(
                                             source, session_entry,
                                             reason="hygiene-compression",
@@ -9348,8 +9464,14 @@ class GatewayRunner:
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
+                old_session_id = session_entry.session_id
                 session_entry.session_id = agent_result["session_id"]
                 self.session_store._save()
+                self._sync_gateway_workspace_state(
+                    session_key,
+                    session_entry,
+                    previous_session_id=old_session_id,
+                )
                 self._sync_telegram_topic_binding(
                     source, session_entry, reason="agent-result-compression",
                 )
@@ -9390,7 +9512,7 @@ class GatewayRunner:
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
-                    cwd=os.environ.get("TERMINAL_CWD", ""),
+                    cwd=self._effective_workspace_cwd(session_entry),
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -10241,6 +10363,15 @@ class GatewayRunner:
         lines.extend([
             t("gateway.status.created", timestamp=session_entry.created_at.strftime('%Y-%m-%d %H:%M')),
             t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime('%Y-%m-%d %H:%M')),
+            t(
+                "gateway.status.workspace",
+                cwd=self._effective_workspace_cwd(session_entry),
+                source=(
+                    t("gateway.workspace.source_session")
+                    if session_entry.workspace_cwd
+                    else t("gateway.workspace.source_global")
+                ),
+            ),
             t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
             t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
         ])
@@ -11715,6 +11846,73 @@ class GatewayRunner:
 
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
+    async def _handle_workspace_command(self, event: MessageEvent) -> str:
+        """Handle /workspace -- bind this gateway session to a project cwd."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        session_key = session_entry.session_key
+        self._sync_gateway_workspace_state(session_key, session_entry)
+        arg = event.get_command_args().strip()
+        global_cwd = self._global_gateway_cwd()
+
+        if not arg or arg.lower() in {"status", "show"}:
+            current = self._effective_workspace_cwd(session_entry)
+            source_label = (
+                t("gateway.workspace.source_session")
+                if session_entry.workspace_cwd
+                else t("gateway.workspace.source_global")
+            )
+            return t(
+                "gateway.workspace.status",
+                cwd=current,
+                source=source_label,
+                global_cwd=global_cwd,
+            )
+
+        if arg.lower() in {"clear", "reset", "default"}:
+            self.session_store.set_workspace_cwd(session_key, None)
+            self._register_gateway_workspace_override(
+                session_key,
+                None,
+                session_id=session_entry.session_id,
+            )
+            self._evict_cached_agent(session_key)
+            try:
+                from tools.terminal_tool import cleanup_vm
+
+                cleanup_vm(session_key)
+                cleanup_vm(session_entry.session_id)
+            except Exception as exc:
+                logger.debug("workspace: terminal cleanup skipped for %s: %s", session_key, exc)
+            return t("gateway.workspace.cleared", cwd=global_cwd)
+
+        path = Path(os.path.expanduser(arg))
+        if not path.is_absolute():
+            return t("gateway.workspace.relative_rejected")
+        try:
+            resolved = path.resolve()
+        except Exception as exc:
+            return t("gateway.workspace.invalid", path=arg, error=exc)
+        if not resolved.is_dir():
+            return t("gateway.workspace.not_dir", path=str(resolved))
+
+        cwd = str(resolved)
+        self.session_store.set_workspace_cwd(session_key, cwd)
+        self._register_gateway_workspace_override(
+            session_key,
+            cwd,
+            session_id=session_entry.session_id,
+        )
+        self._evict_cached_agent(session_key)
+        try:
+            from tools.terminal_tool import cleanup_vm
+
+            cleanup_vm(session_key)
+            cleanup_vm(session_entry.session_id)
+        except Exception as exc:
+            logger.debug("workspace: terminal cleanup skipped for %s: %s", session_key, exc)
+        return t("gateway.workspace.set", cwd=cwd)
+
     @staticmethod
     def _get_guild_id(event: MessageEvent) -> Optional[int]:
         """Extract Discord guild_id from the raw message object."""
@@ -12270,7 +12468,9 @@ class GatewayRunner:
             max_file_size_mb=cp_cfg.get("max_file_size_mb", 10),
         )
 
-        cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
+        session_entry = self.session_store.get_or_create_session(event.source)
+        self._sync_gateway_workspace_state(session_entry.session_key, session_entry)
+        cwd = self._effective_workspace_cwd(session_entry)
         arg = event.get_command_args().strip()
 
         if not arg:
@@ -15317,6 +15517,13 @@ class GatewayRunner:
         in a ``finally`` block.
         """
         from gateway.session_context import set_session_vars
+        session_entry = None
+        try:
+            session_entry = self.session_store._entries.get(context.session_key)
+        except Exception:
+            session_entry = None
+        self._sync_gateway_workspace_state(context.session_key, session_entry)
+        session_cwd = self._session_workspace_cwd(session_entry) or ""
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -15325,6 +15532,7 @@ class GatewayRunner:
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            session_cwd=session_cwd,
             message_id=str(context.source.message_id) if context.source.message_id else "",
         )
 
@@ -18080,8 +18288,14 @@ class GatewayRunner:
                 )
                 entry = self.session_store._entries.get(session_key)
                 if entry:
+                    old_session_id = entry.session_id
                     entry.session_id = agent.session_id
                     self.session_store._save()
+                    self._sync_gateway_workspace_state(
+                        session_key,
+                        entry,
+                        previous_session_id=old_session_id,
+                    )
 
                 # If this is a Telegram DM and source.thread_id was lost during
                 # the session split (synthetic / recovered event), restore it

@@ -116,14 +116,31 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     return None
 
 
+def _get_task_override_cwd(task_id: str = "default") -> str | None:
+    """Return a registered per-task cwd before any terminal env exists."""
+    try:
+        from tools.terminal_tool import _resolve_container_task_id, _task_env_overrides
+
+        container_key = _resolve_container_task_id(task_id)
+        for key in (container_key, task_id):
+            override = _task_env_overrides.get(key, {})
+            cwd = override.get("cwd") if isinstance(override, dict) else None
+            if isinstance(cwd, str) and cwd.strip():
+                return cwd
+    except Exception:
+        pass
+    return None
+
+
 def _resolve_base_dir(task_id: str = "default") -> Path:
     """Return the ABSOLUTE base directory for resolving relative paths.
 
     Resolution order:
       1. The task's live terminal cwd (the directory the agent is actually
          working in — e.g. a git worktree). Authoritative when known.
-      2. ``$TERMINAL_CWD`` from config/env.
-      3. The process cwd.
+      2. A registered per-task cwd override, before any terminal env exists.
+      3. ``$TERMINAL_CWD`` from config/env.
+      4. The process cwd.
 
     The returned base is ALWAYS absolute. This is the core invariant that
     prevents the worktree-cwd divergence bug: a relative ``TERMINAL_CWD``
@@ -137,6 +154,8 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     live = _get_live_tracking_cwd(task_id)
     if live:
         base = Path(live).expanduser()
+    elif override := _get_task_override_cwd(task_id):
+        base = Path(override).expanduser()
     else:
         raw = os.environ.get("TERMINAL_CWD")
         base = Path(raw).expanduser() if raw else Path(os.getcwd())

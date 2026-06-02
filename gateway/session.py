@@ -491,6 +491,11 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Optional gateway session-scoped working directory.  When set, this
+    # chat/thread/session uses this project root instead of the process-wide
+    # terminal.cwd / TERMINAL_CWD default.
+    workspace_cwd: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -521,6 +526,7 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "workspace_cwd": self.workspace_cwd,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -569,6 +575,7 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            workspace_cwd=data.get("workspace_cwd") or None,
             is_fresh_reset=data.get("is_fresh_reset", False),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
@@ -875,6 +882,10 @@ class SessionStore:
         with self._lock:
             self._ensure_loaded_locked()
 
+            previous_workspace_cwd = None
+            if session_key in self._entries:
+                previous_workspace_cwd = self._entries[session_key].workspace_cwd
+
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
 
@@ -926,6 +937,7 @@ class SessionStore:
                 display_name=source.chat_name,
                 platform=source.platform,
                 chat_type=source.chat_type,
+                workspace_cwd=previous_workspace_cwd,
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
@@ -937,6 +949,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "cwd": entry.workspace_cwd,
             }
 
         # SQLite operations outside the lock
@@ -969,6 +982,28 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+
+    def set_workspace_cwd(self, session_key: str, cwd: Optional[str]) -> Optional[SessionEntry]:
+        """Set or clear the gateway session-scoped workspace directory."""
+        session_id = None
+        workspace_cwd = None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            entry.workspace_cwd = cwd or None
+            entry.updated_at = _now()
+            session_id = entry.session_id
+            workspace_cwd = entry.workspace_cwd
+            self._save()
+
+        if self._db:
+            try:
+                self._db.update_session_cwd(session_id, workspace_cwd or "")
+            except Exception as e:
+                logger.debug("Session DB cwd update failed: %s", e)
+        return entry
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.
@@ -1154,6 +1189,7 @@ class SessionStore:
                 display_name=display_name if display_name is not None else old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                workspace_cwd=old_entry.workspace_cwd,
                 is_fresh_reset=True,
             )
 
@@ -1163,6 +1199,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                "cwd": new_entry.workspace_cwd,
             }
 
         if self._db and db_end_session_id:
@@ -1215,6 +1252,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                workspace_cwd=old_entry.workspace_cwd,
             )
 
             self._entries[session_key] = new_entry
@@ -1229,6 +1267,9 @@ class SessionStore:
         if self._db:
             try:
                 self._db.reopen_session(target_session_id)
+                # Gateway workspaces are chat/thread scoped. Resuming an older
+                # transcript into this chat adopts the chat's current workspace.
+                self._db.update_session_cwd(target_session_id, new_entry.workspace_cwd or "")
             except Exception as e:
                 logger.debug("Session DB reopen_session failed: %s", e)
 
