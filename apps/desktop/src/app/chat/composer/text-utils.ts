@@ -10,21 +10,35 @@ const TRIGGER_RE = /(?:^|[\s])([@/])([^\s@/]*)$/
 
 export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   const blobs: Blob[] = []
-  const seen = new Set<Blob>()
+  const seenByReference = new Set<Blob>()
+  const itemImageKeys = new Set<string>()
 
-  const push = (blob: Blob | null) => {
-    if (!blob || blob.size === 0 || seen.has(blob)) {
+  const imageKey = (blob: Blob) => `${blob.type}:${blob.size}`
+
+  const push = (blob: Blob | null, source: 'derived' | 'file' | 'item') => {
+    if (!blob || blob.size === 0 || seenByReference.has(blob)) {
       return
     }
 
-    seen.add(blob)
+    const key = imageKey(blob)
+
+    if (source === 'file' && itemImageKeys.has(key)) {
+      return
+    }
+
+    seenByReference.add(blob)
+
+    if (source === 'item') {
+      itemImageKeys.add(key)
+    }
+
     blobs.push(blob)
   }
 
   if (clipboard.items?.length) {
     for (const item of clipboard.items) {
       if (item.kind === 'file' && item.type.startsWith('image/')) {
-        push(item.getAsFile())
+        push(item.getAsFile(), 'item')
       }
     }
   }
@@ -34,7 +48,7 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
       const file = clipboard.files.item(i)
 
       if (file && file.type.startsWith('image/')) {
-        push(file)
+        push(file, 'file')
       }
     }
   }
@@ -46,7 +60,7 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   const text = clipboard.getData('text/plain').trim()
 
   if (DATA_IMAGE_URL_RE.test(text)) {
-    push(dataUrlToBlob(text))
+    push(dataUrlToBlob(text), 'derived')
   }
 
   if (blobs.length === 0) {
@@ -56,7 +70,7 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
       const matches = html.matchAll(/<img\b[^>]*?\bsrc\s*=\s*["'](data:image\/[^"']+)["']/gi)
 
       for (const match of matches) {
-        push(dataUrlToBlob(match[1]))
+        push(dataUrlToBlob(match[1]), 'derived')
       }
     }
   }
