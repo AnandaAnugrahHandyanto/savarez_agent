@@ -247,6 +247,29 @@ def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     assert 'readSelectedBoard() || "default"' not in js
 
 
+def test_dashboard_dependency_labels_follow_displayed_direction():
+    """The dependency editor labels must match the visible relationship direction."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    dependency_start = js.index("function DependencyEditor(props)")
+    children_label_start = js.index('tx(t, "children", "Children:")', dependency_start)
+    parents_label_start = js.index('tx(t, "parents", "Parents:")', children_label_start)
+    dependency_end = js.index("function StatusActions(props)", parents_label_start)
+    children_section = js[children_label_start:parents_label_start]
+    parents_section = js[parents_label_start:dependency_end]
+
+    assert 'tx(t, "children", "Children:")' in children_section
+    assert 'tx(t, "addChild", "— add child —")' in children_section
+    assert '}, "+ child")' in children_section
+
+    assert 'tx(t, "parents", "Parents:")' in parents_section
+    assert 'tx(t, "addParent", "— add parent —")' in parents_section
+    assert '}, "+ parent")' in parents_section
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------

@@ -3602,7 +3602,7 @@
     return h("div", { className: "hermes-kanban-section" },
       h("div", { className: "hermes-kanban-section-head" }, tx(t, "dependencies", "Dependencies")),
       h("div", { className: "hermes-kanban-deps-row" },
-        h("span", { className: "hermes-kanban-deps-label" }, tx(t, "parents", "Parents:")),
+        h("span", { className: "hermes-kanban-deps-label" }, tx(t, "children", "Children:")),
         h("div", { className: "hermes-kanban-deps-chips" },
           (links.parents || []).length === 0
             ? h("span", { className: "hermes-kanban-deps-empty" }, tx(t, "none", "none"))
@@ -3624,7 +3624,7 @@
           value: newParent,
           className: "h-7 text-xs flex-1",
         }, selectChangeHandler(setNewParent)),
-          h(SelectOption, { value: "" }, tx(t, "addParent", "— add parent —")),
+          h(SelectOption, { value: "" }, tx(t, "addChild", "— add child —")),
           candidatesFor(parentExclude).map(function (tk) {
             return h(SelectOption, { key: tk.id, value: tk.id },
               `${tk.id} — ${(tk.title || "").slice(0, 50)}`);
@@ -3637,10 +3637,10 @@
           },
           disabled: !newParent,
           size: "sm",
-        }, "+ parent"),
+        }, "+ child"),
       ),
       h("div", { className: "hermes-kanban-deps-row" },
-        h("span", { className: "hermes-kanban-deps-label" }, tx(t, "children", "Children:")),
+        h("span", { className: "hermes-kanban-deps-label" }, tx(t, "parents", "Parents:")),
         h("div", { className: "hermes-kanban-deps-chips" },
           (links.children || []).length === 0
             ? h("span", { className: "hermes-kanban-deps-empty" }, tx(t, "none", "none"))
@@ -3662,7 +3662,7 @@
           value: newChild,
           className: "h-7 text-xs flex-1",
         }, selectChangeHandler(setNewChild)),
-          h(SelectOption, { value: "" }, tx(t, "addChild", "— add child —")),
+          h(SelectOption, { value: "" }, tx(t, "addParent", "— add parent —")),
           candidatesFor(childExclude).map(function (tk) {
             return h(SelectOption, { key: tk.id, value: tk.id },
               `${tk.id} — ${(tk.title || "").slice(0, 50)}`);
@@ -3675,7 +3675,7 @@
           },
           disabled: !newChild,
           size: "sm",
-        }, "+ child"),
+        }, "+ parent"),
       ),
     );
   }
