@@ -1206,20 +1206,30 @@ def _tui_need_npm_install(root: Path) -> bool:
     Extra entries that exist only in the hidden lock are ignored — stale
     transitives left over from a removed dependency don't break runtime and
     we'd rather not force a reinstall for them. Falls back to mtime
-    comparison if either lockfile is unparseable.
+    comparison if either file is malformed JSON.
     """
-    lock = root / "package-lock.json"
-    entry = root / "dist" / "entry.js"
-    # Prebuilt self-contained bundle (nix / packaged release): no lockfile
-    # shipped, dist/entry.js is the single runtime artefact.
-    if entry.is_file() and not lock.is_file():
+    if os.environ.get("HERMES_SKIP_NPM_INSTALL"):
         return False
 
     ink = root / "node_modules" / "@hermes" / "ink" / "package.json"
     if not ink.is_file():
         return True
-    if not lock.is_file():
+
+    lock = root / "package-lock.json"
+    pnpm_lock = root / "pnpm-lock.yaml"
+    
+    if pnpm_lock.is_file():
+        # When pnpm is used, checking node_modules is sufficient as pnpm keeps it in sync
+        return not (root / "node_modules").is_dir()
+        
+    entry = root / "dist" / "entry.js"
+    # Prebuilt self-contained bundle (nix / packaged release): no lockfile
+    # shipped, dist/entry.js is the single runtime artefact.
+    if entry.is_file() and not lock.is_file():
         return False
+        
+    if not lock.is_file():
+        return True
     marker = root / "node_modules" / ".package-lock.json"
     if not marker.is_file():
         return True
@@ -1322,6 +1332,19 @@ def _tui_need_rebuild(root: Path) -> bool:
     return False
 
 
+def _find_real_npm() -> Optional[str]:
+    """Find the real npm binary on PATH, skipping wrappers that redirect to pnpm."""
+    import shutil
+    path_dirs = os.environ.get("PATH", "").split(os.path.pathsep)
+    for d in path_dirs:
+        candidate = os.path.join(d, "npm")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            # Do NOT skip wrappers that delegate to pnpm, as we now support it 
+            # as an alternative workspace installer!
+            return candidate
+    return shutil.which("npm")
+
+
 def _ensure_tui_node() -> None:
     """Make sure `node` + `npm` are on PATH for the TUI.
 
@@ -1335,7 +1358,7 @@ def _ensure_tui_node() -> None:
     Idempotent no-op when node+npm are already discoverable. Set
     ``HERMES_SKIP_NODE_BOOTSTRAP=1`` to disable auto-install.
     """
-    if shutil.which("node") and shutil.which("npm"):
+    if shutil.which("node") and _find_real_npm():
         return
     if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
         return
@@ -1439,10 +1462,15 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     did_install = False
     if _tui_need_npm_install(tui_dir):
         npm = _node_bin("npm")
+        pm_args = ["install", "--silent", "--no-fund", "--no-audit", "--progress=false"]
+        if shutil.which("pnpm") and (tui_dir / "pnpm-lock.yaml").exists():
+            npm = shutil.which("pnpm")
+            pm_args = ["install", "--silent", "--frozen-lockfile"]
+            
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
         result = subprocess.run(
-            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
+            [npm, *pm_args],
             cwd=str(tui_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -2053,13 +2081,21 @@ def cmd_whatsapp(args):
         print(
             "\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)..."
         )
-        npm = shutil.which("npm")
+        pnpm_lock = bridge_dir / "pnpm-lock.yaml"
+        pm_args = ["install", "--no-fund", "--no-audit", "--progress=false"]
+        if shutil.which("pnpm") and pnpm_lock.exists():
+            # If using pnpm, skip baileys source build issues by doing an npm install
+            # inside the whatsapp bridge specifically
+            npm = shutil.which("npm")
+        else:
+            npm = _find_real_npm()
+            
         if not npm:
-            print("  ✗ npm not found on PATH — install Node.js first")
+            print("  ✗ npm/pnpm not found on PATH — install Node.js first")
             return
         try:
             result = subprocess.run(
-                [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
+                [npm, *pm_args],
                 cwd=str(bridge_dir),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -6729,7 +6765,23 @@ def _run_npm_install_deterministic(
     the working tree dirty and causes the next ``hermes update`` to stash the
     lockfile — repeatedly.
     """
+    pnpm_lock = cwd / "pnpm-lock.yaml"
     lockfile = cwd / "package-lock.json"
+    
+    if pnpm_lock.exists() and shutil.which("pnpm"):
+        cmd = ["pnpm", "install", "--frozen-lockfile", *extra_args]
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=capture_output,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if result.returncode == 0:
+            return result
+
     if lockfile.exists():
         ci_cmd = [npm, "ci", *extra_args]
         ci_result = subprocess.run(
@@ -6745,7 +6797,12 @@ def _run_npm_install_deterministic(
             return ci_result
         # Fall through to `npm install` — lockfile may be out of sync on a
         # WIP fork/branch, or `npm ci` may not be available on very old npm.
-    install_cmd = [npm, "install", *extra_args]
+    
+    if pnpm_lock.exists() and shutil.which("pnpm"):
+        install_cmd = ["pnpm", "install", "--frozen-lockfile", *extra_args]
+    else:
+        install_cmd = [npm, "install", *extra_args]
+        
     return subprocess.run(
         install_cmd,
         cwd=cwd,
@@ -6785,7 +6842,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             encoding = getattr(sys.stdout, "encoding", None) or "ascii"
             print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
-    npm = shutil.which("npm")
+    npm = _find_real_npm()
     if not npm:
         if fatal:
             _say("Web UI frontend not built and npm is not available.")
@@ -6957,7 +7014,7 @@ def cmd_gui(args):
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
     if source_mode or not skip_build:
-        npm = shutil.which("npm")
+        npm = _find_real_npm()
         if not npm:
             print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
             print("Install Node.js, then run:  hermes gui")
@@ -8593,7 +8650,8 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
 
 
 def _update_node_dependencies() -> None:
-    npm = shutil.which("npm")
+    npm = _find_real_npm()
+    pm_args = []
     if not npm:
         return
 
@@ -8608,27 +8666,27 @@ def _update_node_dependencies() -> None:
     for label, path in paths:
         if not (path / "package.json").exists():
             continue
-
+            
+        is_pnpm = shutil.which("pnpm") and (path / "pnpm-lock.yaml").exists()
+        current_pm = shutil.which("pnpm") if is_pnpm else npm
+        pm_args = ["install"] if is_pnpm else ["install", "--no-fund", "--no-audit"]
+        
         # Stream npm output (no `--silent`, no `capture_output`) so any
         # optional dependency postinstall scripts (e.g. `agent-browser`'s
         # Chromium fetch on first install) print progress instead of
         # appearing to hang silently for minutes (#18840).  The
         # `_UpdateOutputStream` wrapper installed by the updater mirrors
-        # streamed output to ``~/.hermes/logs/update.log`` so nothing is lost.
-        #
-        # The repo root install also passes `--workspaces=false` so npm
-        # does not recursively install every `apps/*` workspace (dashboard,
-        # desktop, shared) — those are installed/built on demand via
-        # `_build_web_ui()` and the desktop launchers.
-        extra_args = ["--no-fund", "--no-audit", "--progress=false"]
-        if path == PROJECT_ROOT:
+        # this to the TUI terminal automatically.
+        
+        extra_args = pm_args
+        if path == PROJECT_ROOT and not is_pnpm:
             extra_args.append("--workspaces=false")
-
-        result = _run_npm_install_deterministic(
-            npm,
-            path,
-            extra_args=tuple(extra_args),
-            capture_output=False,
+        
+        result = subprocess.run(
+            [current_pm, *extra_args],
+            cwd=str(path),
+            text=True,
+            check=False,
         )
         if result.returncode == 0:
             print(f"  ✓ {label}")

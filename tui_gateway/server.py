@@ -1565,7 +1565,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "personality": str(personality or ""),
         "running": bool((session or {}).get("running")),
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-        "version": "",
+        "version": "1.0.0",
         "release_date": "",
         "update_behind": None,
         "update_command": "",
