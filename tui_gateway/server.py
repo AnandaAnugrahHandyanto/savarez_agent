@@ -4547,6 +4547,19 @@ def _(rid, params: dict) -> dict:
     )
 
 
+@method("image.clear")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+
+    with session["history_lock"]:
+        removed = len(session.get("attached_images", []))
+        session["attached_images"] = []
+
+    return _ok(rid, {"removed": removed})
+
+
 @method("input.detect_drop")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)

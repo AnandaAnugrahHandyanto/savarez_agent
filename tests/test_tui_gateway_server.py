@@ -2420,6 +2420,23 @@ def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
     assert len(server._sessions["sid"]["attached_images"]) == 1
 
 
+def test_image_clear_removes_pending_attachments():
+    session = _session()
+    session["attached_images"] = ["/tmp/cat.png", "/tmp/dog.png"]
+    server._sessions["sid"] = session
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.clear",
+            "params": {"session_id": "sid"},
+        }
+    )
+
+    assert resp["result"]["removed"] == 2
+    assert server._sessions["sid"]["attached_images"] == []
+
+
 def test_commands_catalog_surfaces_quick_commands(monkeypatch):
     monkeypatch.setattr(
         server,
