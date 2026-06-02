@@ -458,6 +458,11 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
 
+    # macOS Apple Silicon: PyTorch MPS pre-allocates 4GB+ IOAccelerator
+    # memory for tiny embedding models, causing system-wide memory exhaustion
+    # on 8GB machines. Force CPU mode unless the user explicitly opts in
+    # via embeddings_local_force_cpu / reranker_local_force_cpu = false.
+    # See issues #7135, #8972 — daemon also hangs on startup with MPS.
     is_macos_arm = platform.system() == "Darwin" and platform.machine() == "arm64"
     force_cpu_embeddings = config.get("embeddings_local_force_cpu")
     force_cpu_reranker = config.get("reranker_local_force_cpu")
@@ -478,22 +483,6 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     if idle_timeout is not None and idle_timeout != "":
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
-        )
-
-    # macOS Apple Silicon: PyTorch MPS pre-allocates 4GB+ IOAccelerator
-    # memory for tiny embedding models, causing system-wide memory exhaustion
-    # on 8GB machines. Force CPU mode unless the user explicitly opted in.
-    # See issues #7135, #8972 — daemon also hangs on startup with MPS.
-    is_macos_arm = platform.system() == "Darwin" and platform.machine() == "arm64"
-    if is_macos_arm:
-        force_cpu_embeddings = config.get("embeddings_local_force_cpu")
-        force_cpu_reranker = config.get("reranker_local_force_cpu")
-        # Default to True on macOS ARM64 (safe); user can set to False to opt in to MPS.
-        env_values["HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU"] = (
-            "false" if force_cpu_embeddings is False else "true"
-        )
-        env_values["HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU"] = (
-            "false" if force_cpu_reranker is False else "true"
         )
 
     return env_values
@@ -990,9 +979,6 @@ class HindsightMemoryProvider(MemoryProvider):
                 )
                 if self._llm_base_url:
                     allowed["llm_base_url"] = self._llm_base_url
-                database_url = self._config.get("database_url") or os.environ.get("HINDSIGHT_API_DATABASE_URL", "")
-                if database_url and "database_url" in sig_params:
-                    allowed["database_url"] = database_url
                 idle_timeout = _parse_int_setting(
                     self._config.get("idle_timeout")
                     if self._config.get("idle_timeout") is not None
