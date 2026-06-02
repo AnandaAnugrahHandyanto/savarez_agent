@@ -93,3 +93,18 @@ def test_stage2_hook_runs_config_migration_as_hermes(stage2_text: str) -> None:
 
 def test_stage2_hook_documents_config_migration_opt_out(stage2_text: str) -> None:
     assert "HERMES_SKIP_CONFIG_MIGRATION" in stage2_text
+
+
+def test_stage2_hook_creates_s6_envdir_before_writing_browser_path(stage2_text: str) -> None:
+    """Regression guard for browser-path export on runtimes where the
+    s6 container_environment directory is absent when the cont-init hook runs.
+    """
+    mkdir_line = "mkdir -p /run/s6/container_environment"
+    write_line = (
+        "printf '%s' \"$browser_bin\" > "
+        "/run/s6/container_environment/AGENT_BROWSER_EXECUTABLE_PATH"
+    )
+
+    assert mkdir_line in stage2_text
+    assert write_line in stage2_text
+    assert stage2_text.index(mkdir_line) < stage2_text.index(write_line)

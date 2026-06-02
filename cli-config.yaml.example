@@ -3,7 +3,7 @@
 # This file configures the CLI behavior. Environment variables in .env take precedence.
 
 # Keep this in sync with DEFAULT_CONFIG["_config_version"] in hermes_cli/config.py.
-_config_version: 24
+_config_version: 25
 
 # =============================================================================
 # Model Configuration
