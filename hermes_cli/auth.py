@@ -4352,8 +4352,82 @@ def _pool_codex_access_token() -> str:
 
 
 # =============================================================================
-# xAI Grok OAuth — tokens stored in ~/.hermes/auth.json
+# xAI Grok OAuth — tokens stored in a shared store for named profiles
 # =============================================================================
+
+XAI_SHARED_STORE_FILENAME = "xai_oauth.json"
+_xai_shared_lock_holder = threading.local()
+
+
+def _xai_shared_store_enabled() -> bool:
+    """Return True when xAI OAuth should use the cross-profile shared store.
+
+    Named Hermes profiles live below ``<root>/profiles/<name>``. Their xAI
+    refresh tokens must be shared because the server can rotate refresh_token
+    on every refresh; sibling profiles with copied tokens then replay revoked
+    grants. Classic single-home installs keep the historical auth.json layout.
+    Tests can force shared mode by setting ``HERMES_SHARED_AUTH_DIR``.
+    """
+    override = os.getenv("HERMES_SHARED_AUTH_DIR", "").strip()
+    if override:
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            real_home = os.environ.get("HOME", "").strip()
+            if real_home:
+                real_home_shared = (
+                    Path(real_home) / ".hermes" / "shared" / XAI_SHARED_STORE_FILENAME
+                ).resolve(strict=False)
+                try:
+                    resolved = (Path(override).expanduser() / XAI_SHARED_STORE_FILENAME).resolve(strict=False)
+                except Exception:
+                    return False
+                if resolved == real_home_shared:
+                    return False
+        return True
+    try:
+        return "profiles" in get_hermes_home().parts
+    except Exception:
+        return False
+
+
+def _xai_shared_auth_dir() -> Path:
+    override = os.getenv("HERMES_SHARED_AUTH_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "shared"
+
+
+def _xai_shared_store_path() -> Path:
+    path = _xai_shared_auth_dir() / XAI_SHARED_STORE_FILENAME
+    if os.environ.get("PYTEST_CURRENT_TEST") and not os.getenv("HERMES_SHARED_AUTH_DIR", "").strip():
+        real_home = os.environ.get("HOME", "").strip()
+        if not real_home:
+            return path
+        real_home_shared = (
+            Path(real_home) / ".hermes" / "shared" / XAI_SHARED_STORE_FILENAME
+        ).resolve(strict=False)
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path
+        if resolved == real_home_shared:
+            raise RuntimeError(
+                f"Refusing to touch real user shared xAI auth store during test run: "
+                f"{path}. Set HERMES_SHARED_AUTH_DIR to a tmp_path in your test fixture."
+            )
+    return path
+
+
+@contextmanager
+def _xai_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    with _file_lock(
+        _xai_shared_store_path().with_suffix(".lock"),
+        _xai_shared_lock_holder,
+        timeout_seconds,
+        "Timed out waiting for shared xAI auth lock",
+    ):
+        yield
+
 
 def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Return usable xAI OAuth state from provider state or credential pool."""
@@ -4402,24 +4476,7 @@ def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
     )
 
 
-def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
-    if _lock:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-    else:
-        auth_store = _load_auth_store()
-    state = _xai_oauth_state_from_store(auth_store)
-    if not _xai_oauth_state_has_usable_tokens(state):
-        global_state = _xai_oauth_state_from_store(_load_global_auth_store())
-        if _xai_oauth_state_has_usable_tokens(global_state):
-            state = global_state
-    if not state:
-        raise AuthError(
-            "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
-            provider="xai-oauth",
-            code="xai_auth_missing",
-            relogin_required=True,
-        )
+def _validate_xai_oauth_state(state: Dict[str, Any]) -> Dict[str, Any]:
     tokens = state.get("tokens")
     if not isinstance(tokens, dict):
         raise AuthError(
@@ -4449,7 +4506,117 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
         "last_refresh": state.get("last_refresh"),
         "discovery": state.get("discovery") or {},
         "redirect_uri": state.get("redirect_uri"),
+        "source": state.get("source") or "hermes-auth-store",
     }
+
+
+def _read_shared_xai_oauth_state() -> Optional[Dict[str, Any]]:
+    if not _xai_shared_store_enabled():
+        return None
+    try:
+        path = _xai_shared_store_path()
+    except RuntimeError:
+        return None
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        logger.debug("Shared xAI auth store at %s is unreadable: %s", path, exc)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    state = dict(payload)
+    state["source"] = "hermes-shared-xai-store"
+    try:
+        return _validate_xai_oauth_state(state)
+    except AuthError as exc:
+        logger.debug("Shared xAI auth store at %s is invalid: %s", path, exc)
+        return None
+
+
+def _write_shared_xai_oauth_state(
+    tokens: Dict[str, Any],
+    *,
+    discovery: Optional[Dict[str, Any]],
+    redirect_uri: str,
+    last_refresh: str,
+) -> None:
+    with _xai_shared_store_lock():
+        path = _xai_shared_store_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        secure_parent_dir(path)
+        payload = {
+            "_schema": 1,
+            "tokens": tokens,
+            "last_refresh": last_refresh,
+            "auth_mode": "oauth_pkce",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if discovery:
+            payload["discovery"] = discovery
+        if redirect_uri:
+            payload["redirect_uri"] = redirect_uri
+        tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+        fd = os.open(
+            str(tmp),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            atomic_replace(tmp, path)
+            try:
+                dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            except OSError:
+                dir_fd = None
+            if dir_fd is not None:
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+        try:
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+
+
+def _clear_shared_xai_oauth_state(reason: str, *, expected_refresh_token: Optional[str] = None) -> None:
+    """Remove shared xAI OAuth state after terminal auth failure.
+
+    If ``expected_refresh_token`` is supplied, clear only when the shared file
+    still holds that same refresh token. xAI refresh tokens can rotate on every
+    refresh; this prevents a losing process from deleting a token chain that a
+    sibling profile already rotated successfully.
+    """
+    try:
+        with _xai_shared_store_lock():
+            path = _xai_shared_store_path()
+            if expected_refresh_token:
+                current = _read_shared_xai_oauth_state()
+                current_tokens = current.get("tokens") if isinstance(current, dict) else None
+                current_refresh = ""
+                if isinstance(current_tokens, dict):
+                    current_refresh = str(current_tokens.get("refresh_token", "") or "").strip()
+                if current_refresh and current_refresh != str(expected_refresh_token).strip():
+                    logger.debug("Skipping shared xAI clear for %s; shared token already rotated", reason)
+                    return
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        _oauth_trace("xai_shared_store_cleared", reason=reason)
+    except Exception as exc:
+        logger.debug("Failed to clear shared xAI auth store: %s", exc)
 
 
 def _profile_has_own_xai_oauth_state(auth_store: Dict[str, Any]) -> bool:
@@ -4508,6 +4675,31 @@ def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
         logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
 
 
+def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+    if _lock:
+        with _auth_store_lock():
+            return _read_xai_oauth_tokens(_lock=False)
+
+    shared_state = _read_shared_xai_oauth_state()
+    if shared_state:
+        return shared_state
+
+    auth_store = _load_auth_store()
+    state = _xai_oauth_state_from_store(auth_store)
+    if not _xai_oauth_state_has_usable_tokens(state):
+        global_state = _xai_oauth_state_from_store(_load_global_auth_store())
+        if _xai_oauth_state_has_usable_tokens(global_state):
+            state = global_state
+    if not state:
+        raise AuthError(
+            "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
+            provider="xai-oauth",
+            code="xai_auth_missing",
+            relogin_required=True,
+        )
+    return _validate_xai_oauth_state(state)
+
+
 def _save_xai_oauth_tokens(
     tokens: Dict[str, Any],
     *,
@@ -4519,6 +4711,26 @@ def _save_xai_oauth_tokens(
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
         auth_store = _load_auth_store()
+        if _xai_shared_store_enabled():
+            _write_shared_xai_oauth_state(
+                tokens,
+                discovery=discovery,
+                redirect_uri=redirect_uri,
+                last_refresh=last_refresh,
+            )
+            state = _load_provider_state(auth_store, "xai-oauth") or {}
+            state.pop("tokens", None)
+            state["last_refresh"] = last_refresh
+            state["auth_mode"] = "oauth_pkce"
+            state["shared_store"] = XAI_SHARED_STORE_FILENAME
+            if discovery:
+                state["discovery"] = discovery
+            if redirect_uri:
+                state["redirect_uri"] = redirect_uri
+            _save_provider_state(auth_store, "xai-oauth", state)
+            _save_auth_store(auth_store)
+            return
+
         # A profile that lacks its own xai-oauth block is reading the root
         # grant through _load_provider_state's fallback. When such a profile
         # refreshes the (rotating) grant, we must write the rotated chain back
@@ -4536,7 +4748,6 @@ def _save_xai_oauth_tokens(
         _save_auth_store(auth_store)
         if write_through_to_root:
             _write_through_xai_oauth_to_global_root(state)
-
 
 def _xai_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:
     if not isinstance(access_token, str) or "." not in access_token:
@@ -4831,6 +5042,76 @@ def _refresh_xai_oauth_tokens(
     return updated_tokens
 
 
+def _refresh_xai_oauth_locked(
+    *,
+    force_refresh: bool,
+    refresh_if_expiring: bool,
+    refresh_skew_seconds: int,
+    refresh_timeout_seconds: float,
+) -> tuple[Dict[str, Any], Dict[str, Any], str]:
+    """Re-read and refresh xAI OAuth tokens while caller holds required locks.
+
+    Caller must hold ``_auth_store_lock`` and, when shared mode is enabled,
+    ``_xai_shared_store_lock``. Keeping the shared lock across read -> refresh
+    -> write prevents sibling profiles from spending the same rotating refresh
+    token concurrently.
+    """
+    data = _read_xai_oauth_tokens(_lock=False)
+    tokens = dict(data["tokens"])
+    access_token = str(tokens.get("access_token", "") or "").strip()
+    discovery = dict(data.get("discovery") or {})
+    token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
+    redirect_uri = str(data.get("redirect_uri", "") or "").strip()
+    should_refresh = bool(force_refresh)
+    if (not should_refresh) and refresh_if_expiring:
+        should_refresh = _xai_access_token_is_expiring(access_token, refresh_skew_seconds)
+    if should_refresh:
+        if not token_endpoint:
+            token_endpoint = _xai_oauth_discovery(refresh_timeout_seconds)["token_endpoint"]
+        attempted_refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+        try:
+            tokens = _refresh_xai_oauth_tokens(
+                tokens,
+                token_endpoint=token_endpoint,
+                redirect_uri=redirect_uri,
+                timeout_seconds=refresh_timeout_seconds,
+            )
+            access_token = str(tokens.get("access_token", "") or "").strip()
+        except AuthError as exc:
+            if _is_terminal_xai_oauth_refresh_error(exc):
+                # Terminal failure (HTTP 400/401 — invalid_grant, token revoked).
+                # Clear dead tokens from the active xAI store so subsequent sessions fail fast
+                # without a network retry. Mirrors credential_pool.py quarantine.
+                try:
+                    if _xai_shared_store_enabled():
+                        _clear_shared_xai_oauth_state(
+                            "runtime_refresh_failure",
+                            expected_refresh_token=attempted_refresh_token,
+                        )
+                    _q_store = _load_auth_store()
+                    _q_state = _load_provider_state(_q_store, "xai-oauth") or {}
+                    _q_tokens = dict(_q_state.get("tokens") or {})
+                    _q_tokens.pop("access_token", None)
+                    _q_tokens.pop("refresh_token", None)
+                    _q_state["tokens"] = _q_tokens
+                    _q_state["last_auth_error"] = {
+                        "provider": "xai-oauth",
+                        "code": exc.code or "xai_refresh_failed",
+                        "message": str(exc),
+                        "reason": "runtime_refresh_failure",
+                        "relogin_required": True,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    _store_provider_state(_q_store, "xai-oauth", _q_state, set_active=False)
+                    _save_auth_store(_q_store)
+                except Exception as _save_exc:
+                    logger.debug(
+                        "xAI OAuth: failed to persist quarantined state: %s", _save_exc,
+                    )
+            raise
+    return data, tokens, access_token
+
+
 def resolve_xai_oauth_runtime_credentials(
     *,
     force_refresh: bool = False,
@@ -4850,53 +5131,21 @@ def resolve_xai_oauth_runtime_credentials(
         should_refresh = _xai_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
         with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
-            data = _read_xai_oauth_tokens(_lock=False)
-            tokens = dict(data["tokens"])
-            access_token = str(tokens.get("access_token", "") or "").strip()
-            discovery = dict(data.get("discovery") or {})
-            token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
-            redirect_uri = str(data.get("redirect_uri", "") or "").strip()
-            should_refresh = bool(force_refresh)
-            if (not should_refresh) and refresh_if_expiring:
-                should_refresh = _xai_access_token_is_expiring(access_token, refresh_skew_seconds)
-            if should_refresh:
-                if not token_endpoint:
-                    token_endpoint = _xai_oauth_discovery(refresh_timeout_seconds)["token_endpoint"]
-                try:
-                    tokens = _refresh_xai_oauth_tokens(
-                        tokens,
-                        token_endpoint=token_endpoint,
-                        redirect_uri=redirect_uri,
-                        timeout_seconds=refresh_timeout_seconds,
+            if _xai_shared_store_enabled():
+                with _xai_shared_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+                    data, tokens, access_token = _refresh_xai_oauth_locked(
+                        force_refresh=force_refresh,
+                        refresh_if_expiring=refresh_if_expiring,
+                        refresh_skew_seconds=refresh_skew_seconds,
+                        refresh_timeout_seconds=refresh_timeout_seconds,
                     )
-                    access_token = str(tokens.get("access_token", "") or "").strip()
-                except AuthError as exc:
-                    if _is_terminal_xai_oauth_refresh_error(exc):
-                        # Terminal failure (HTTP 400/401/403 — invalid_grant, token revoked).
-                        # Clear dead tokens from auth.json so subsequent sessions fail fast
-                        # without a network retry. Mirrors credential_pool.py quarantine.
-                        try:
-                            _q_store = _load_auth_store()
-                            _q_state = _load_provider_state(_q_store, "xai-oauth") or {}
-                            _q_tokens = dict(_q_state.get("tokens") or {})
-                            _q_tokens.pop("access_token", None)
-                            _q_tokens.pop("refresh_token", None)
-                            _q_state["tokens"] = _q_tokens
-                            _q_state["last_auth_error"] = {
-                                "provider": "xai-oauth",
-                                "code": exc.code or "xai_refresh_failed",
-                                "message": str(exc),
-                                "reason": "runtime_refresh_failure",
-                                "relogin_required": True,
-                                "at": datetime.now(timezone.utc).isoformat(),
-                            }
-                            _store_provider_state(_q_store, "xai-oauth", _q_state, set_active=False)
-                            _save_auth_store(_q_store)
-                        except Exception as _save_exc:
-                            logger.debug(
-                                "xAI OAuth: failed to persist quarantined state: %s", _save_exc,
-                            )
-                    raise
+            else:
+                data, tokens, access_token = _refresh_xai_oauth_locked(
+                    force_refresh=force_refresh,
+                    refresh_if_expiring=refresh_if_expiring,
+                    refresh_skew_seconds=refresh_skew_seconds,
+                    refresh_timeout_seconds=refresh_timeout_seconds,
+                )
 
     base_url = _xai_validate_inference_base_url(
         os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
