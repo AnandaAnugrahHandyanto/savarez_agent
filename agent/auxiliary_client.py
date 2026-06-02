@@ -4981,6 +4981,13 @@ def call_llm(
         except Exception:
             pass
 
+        if not _pool_aux_acquired and _pool and _pool.enabled:
+            logger.warning(
+                "Auxiliary %s: blocked by SessionModelPool for %s:%s — skipping call",
+                task or "call", resolved_provider, final_model,
+            )
+            return {"error": "auxiliary_slot_blocked", "task": task}
+
         return _validate_llm_response(
             client.chat.completions.create(**kwargs), task)
     except Exception as first_err:

@@ -2542,6 +2542,9 @@ class GatewayRunner:
 
         model = _resolve_gateway_model(user_config)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
+        # Will be set by pool integration below if a pool-assigned provider
+        # is available. Applied after runtime_kwargs is created.
+        _pool_provider_override = None
 
         # --- Session Model Pool integration ---
         # If no manual override exists for this session, check whether the
@@ -2563,6 +2566,9 @@ class GatewayRunner:
                         with self._pool_assigned_models_lock:
                             self._pool_assigned_models[resolved_session_key] = _pool_assign
                         model = _pool_assign.get("model", model)
+                        # Stash pool provider so it can be injected into
+                        # runtime_kwargs after _resolve_runtime_agent_kwargs().
+                        _pool_provider_override = _pool_assign.get("provider")
                         logger.debug(
                             "SessionModelPool: session=%s using pool-assigned model=%s provider=%s",
                             resolved_session_key, model, _pool_assign.get("provider"),
@@ -2612,6 +2618,10 @@ class GatewayRunner:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
             )
+
+        # Apply pool-assigned provider (set during pool integration above).
+        if not override and _pool_provider_override:
+            runtime_kwargs["provider"] = _pool_provider_override
 
         # When the config has no model.default but a provider was resolved
         # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
@@ -11179,6 +11189,16 @@ class GatewayRunner:
                 _p = _get_pool(_load_gateway_config())
                 if _p:
                     _p.release_session_slot(session_key)
+        except Exception:
+            pass
+
+        # Mark this session as manually overridden so the pool won't
+        # try to reassign it on the next turn.
+        try:
+            from gateway.session_model_pool import get_session_model_pool as _get_pool_mo
+            _p_mo = _get_pool_mo(_load_gateway_config())
+            if _p_mo:
+                _p_mo.mark_manual_override(session_key)
         except Exception:
             pass
 
