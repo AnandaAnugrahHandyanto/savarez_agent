@@ -396,6 +396,15 @@ class TestBackendSelection:
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             assert _get_backend() == "parallel"
 
+    def test_extract_results_have_content_helper(self):
+        """Fallback extraction detects content-bearing provider results."""
+        from tools.web_tools import _extract_results_have_content
+
+        assert _extract_results_have_content([{"url": "https://x.test", "content": "hello"}]) is True
+        assert _extract_results_have_content({"results": [{"url": "https://x.test", "markdown": "# hi"}]}) is True
+        assert _extract_results_have_content([{"url": "https://x.test", "content": "", "error": "empty"}]) is False
+        assert _extract_results_have_content({"success": False, "error": "failed"}) is False
+
 
 class TestParallelClientConfig:
     """Test suite for Parallel client initialization."""

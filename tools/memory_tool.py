@@ -294,6 +294,32 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    def _soft_guard_config(self, target: str) -> Dict[str, Any]:
+        """Return optional soft-budget settings for append-only writes.
+
+        Hard limits keep files from exceeding absolute prompt budget. The soft
+        guard is a hygiene layer: when enabled, new append-only entries are
+        refused once they would push core memory above the target percentage.
+        Agents can still consolidate with replace/remove, or the user can
+        intentionally bypass via HERMES_MEMORY_SOFT_GUARD_BYPASS=1.
+        """
+        if os.environ.get("HERMES_MEMORY_SOFT_GUARD_BYPASS") == "1":
+            return {"enabled": False}
+        try:
+            from hermes_cli.config import read_raw_config
+
+            cfg = read_raw_config() or {}
+            mem_cfg = cfg.get("memory", {}) if isinstance(cfg, dict) else {}
+            if not isinstance(mem_cfg, dict):
+                return {"enabled": False}
+            enabled = bool(mem_cfg.get("soft_guard_enabled", False))
+            target_pct = float(mem_cfg.get("soft_target_pct", 50))
+            if target_pct <= 0 or target_pct >= 100:
+                target_pct = 50.0
+            return {"enabled": enabled, "target_pct": target_pct}
+        except Exception:
+            return {"enabled": False}
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -337,6 +363,27 @@ class MemoryStore:
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
                 }
+
+            soft = self._soft_guard_config(target)
+            if soft.get("enabled"):
+                target_pct = float(soft.get("target_pct", 50.0))
+                soft_limit = int(limit * target_pct / 100.0)
+                if new_total > soft_limit:
+                    current = self._char_count(target)
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Memory soft guard: adding this entry would put {target} memory at "
+                            f"{new_total:,}/{limit:,} chars ({new_total / limit * 100:.1f}%), "
+                            f"above the configured {target_pct:.1f}% target. "
+                            "Use replace/remove to consolidate, save procedures as skills, "
+                            "or store detailed facts in fact_store/session/project docs. "
+                            "Set HERMES_MEMORY_SOFT_GUARD_BYPASS=1 only for an intentional override."
+                        ),
+                        "current_entries": entries,
+                        "usage": f"{current:,}/{limit:,}",
+                        "soft_limit": f"{soft_limit:,}/{limit:,}",
+                    }
 
             entries.append(content)
             self._set_entries(target, entries)

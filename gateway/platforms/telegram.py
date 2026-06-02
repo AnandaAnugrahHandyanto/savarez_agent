@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import mimetypes
 import os
 import tempfile
 import html as _html
@@ -405,6 +406,13 @@ class TelegramAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        # Optional secondary Bot client used only for media downloads. This enables
+        # hybrid mode: official Telegram cloud Bot API for polling/sending, local
+        # telegram-bot-api for getFile/file bytes.
+        self._download_bot: Optional[Any] = None
+        self._download_base_url: Optional[str] = self.config.extra.get("download_base_url") or None
+        self._download_base_file_url: Optional[str] = self.config.extra.get("download_base_file_url") or None
+        self._download_local_mode: bool = self._coerce_bool_extra("download_local_mode", False)
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -460,12 +468,13 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topic_chat_ids: Set[str] = {
             str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e
         }
-        # Document size cap. Telegram's public Bot API caps getFile at 20MB; a
-        # locally-hosted telegram-bot-api server (configured via extra.base_url)
-        # raises that to 2GB, so the presence of base_url is the opt-in.
+        # Document size cap. Telegram's public Bot API caps getFile at 20MB. A
+        # locally-hosted telegram-bot-api server raises that to 2GB. Treat either
+        # full local mode (extra.base_url) or hybrid download mode
+        # (extra.download_base_url) as opting into the larger media-download path.
         self._max_doc_bytes: int = (
             2 * 1024 * 1024 * 1024
-            if self.config.extra.get("base_url")
+            if (self.config.extra.get("base_url") or self._download_base_url)
             else 20 * 1024 * 1024
         )
         # Interactive model picker state per chat
@@ -491,6 +500,122 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+
+    def _telegram_download_limit_note(self, media_label: str) -> str:
+        """Human-readable Telegram file-download cap note for failed media caching."""
+        limit_mb = self._max_doc_bytes // (1024 * 1024)
+        api_mode = (
+            "hybrid local Telegram Bot API download path"
+            if self._download_base_url else
+            "local Telegram Bot API" if self.config.extra.get("base_url") else
+            "Telegram cloud Bot API"
+        )
+        return (
+            f"I received your {media_label}, but Telegram's {api_mode} couldn't download it "
+            f"for the bot. The current download limit is {limit_mb} MB. "
+            "Please send a smaller file or use another upload path."
+        )
+
+    def _is_telegram_file_too_big_error(self, exc: Exception) -> bool:
+        """Return True for Telegram/PTB download-size failures."""
+        text = str(exc).lower()
+        return "file is too big" in text or "file too big" in text or "too large" in text
+
+    def _media_file_size_exceeds_download_limit(self, media_obj: Any) -> bool:
+        """Pre-check Telegram media objects when file_size is available."""
+        file_size = getattr(media_obj, "file_size", None)
+        return isinstance(file_size, int) and file_size > self._max_doc_bytes
+
+    def _media_file_extension(self, file_obj: Any, candidates: Dict[str, str], default: str) -> str:
+        """Infer a cached extension from Telegram's file_path using an allowed map."""
+        file_path = str(getattr(file_obj, "file_path", "") or "").lower()
+        for candidate in candidates:
+            if file_path.endswith(candidate):
+                return candidate
+        return default
+
+    async def _get_download_file(self, media_obj: Any) -> Any:
+        """Return a Telegram File for media downloads, using hybrid local API if configured.
+
+        The main Telegram application can stay on Telegram's official cloud Bot API
+        for polling/sending while this secondary Bot is used only for getFile and
+        subsequent file-byte downloads.
+        """
+        file_id = getattr(media_obj, "file_id", None)
+        if self._download_bot is not None and file_id:
+            try:
+                return await self._download_bot.get_file(file_id)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Hybrid Telegram local download getFile failed; falling back to primary Bot API: %s",
+                    self.name,
+                    exc,
+                )
+        return await media_obj.get_file()
+
+    def _format_telegram_contact_summary(self, contact: Any) -> str:
+        """Convert a Telegram contact payload into model-readable text."""
+        name = " ".join(
+            part for part in [
+                str(getattr(contact, "first_name", "") or "").strip(),
+                str(getattr(contact, "last_name", "") or "").strip(),
+            ] if part
+        )
+        lines = ["[User sent a Telegram contact]"]
+        if name:
+            lines.append(f"Name: {name}")
+        phone = str(getattr(contact, "phone_number", "") or "").strip()
+        if phone:
+            lines.append(f"Phone: {phone}")
+        user_id = getattr(contact, "user_id", None)
+        if user_id:
+            lines.append(f"Telegram user ID: {user_id}")
+        vcard = str(getattr(contact, "vcard", "") or "").strip()
+        if vcard:
+            lines.append(f"vCard: {vcard[:2000]}")
+        return "\n".join(lines)
+
+    def _format_telegram_poll_summary(self, poll: Any) -> str:
+        """Convert a Telegram poll payload into model-readable text."""
+        question = str(getattr(poll, "question", "") or "").strip()
+        lines = ["[User sent a Telegram poll]"]
+        if question:
+            lines.append(f"Question: {question}")
+        options = getattr(poll, "options", None) or []
+        if options:
+            lines.append("Options:")
+            for option in options:
+                text = str(getattr(option, "text", "") or "").strip() or "(blank)"
+                votes = getattr(option, "voter_count", None)
+                if votes is None:
+                    lines.append(f"- {text}")
+                else:
+                    lines.append(f"- {text} — {votes}")
+        total_votes = getattr(poll, "total_voter_count", None)
+        if total_votes is not None:
+            lines.append(f"total votes: {total_votes}")
+        lines.append(f"closed: {bool(getattr(poll, 'is_closed', False))}")
+        if getattr(poll, "type", None):
+            lines.append(f"type: {getattr(poll, 'type')}")
+        lines.append(f"anonymous: {bool(getattr(poll, 'is_anonymous', False))}")
+        lines.append(f"multiple answers: {bool(getattr(poll, 'allows_multiple_answers', False))}")
+        return "\n".join(lines)
+
+    def _telegram_media_filter(self):
+        """Build the Telegram media filter, including optional PTB media types."""
+        media_filter = (
+            filters.PHOTO
+            | filters.VIDEO
+            | filters.AUDIO
+            | filters.VOICE
+            | filters.Document.ALL
+            | filters.Sticker.ALL
+        )
+        for optional_name in ("VIDEO_NOTE", "ANIMATION", "CONTACT", "POLL"):
+            optional_filter = getattr(filters, optional_name, None)
+            if optional_filter is not None:
+                media_filter = media_filter | optional_filter
+        return media_filter
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -891,6 +1016,33 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
             return default
         return bool(value)
+
+    def _resolve_concurrent_updates(self) -> bool | int:
+        """Resolve PTB concurrent update count for Telegram polling/webhooks.
+
+        Default to parallel Telegram update handling so slow media/file work in
+        one forum topic cannot block unrelated topics.  Per-session guards still
+        serialize same-topic agent turns.
+        """
+        raw = None
+        if getattr(self.config, "extra", None):
+            raw = self.config.extra.get("concurrent_updates")
+        if raw is None:
+            raw = os.getenv("HERMES_TELEGRAM_CONCURRENT_UPDATES", "32")
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, int):
+            return raw if raw > 0 else False
+        lowered = str(raw).strip().lower()
+        if lowered in {"", "false", "0", "no", "off", "disabled", "disable"}:
+            return False
+        if lowered in {"true", "yes", "on", "enabled", "enable"}:
+            return True
+        try:
+            count = int(lowered)
+        except (TypeError, ValueError):
+            return 32
+        return count if count > 0 else False
 
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
@@ -1515,8 +1667,20 @@ class TelegramAdapter(BasePlatformAdapter):
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
 
-            # Build the application
+            # Build the application.  Enable PTB's concurrent update
+            # processing by default so a slow media download or long handler in
+            # one Telegram forum topic cannot starve text updates from another
+            # topic in the same supergroup.  Hermes already has per-session
+            # guards in BasePlatformAdapter, so same-topic serialization stays
+            # intact while different topics remain independent.
             builder = Application.builder().token(self.config.token)
+            concurrent_updates = self._resolve_concurrent_updates()
+            builder = builder.concurrent_updates(concurrent_updates)
+            logger.info(
+                "[%s] Telegram concurrent update processing: %s",
+                self.name,
+                concurrent_updates,
+            )
             custom_base_url = self.config.extra.get("base_url")
             if custom_base_url:
                 builder = builder.base_url(custom_base_url)
@@ -1600,6 +1764,25 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
+
+            self._download_bot = None
+            if self._download_base_url:
+                download_file_url = self._download_base_file_url or self._download_base_url
+                download_request = HTTPXRequest(**request_kwargs)  # type: ignore[operator]
+                self._download_bot = Bot(  # type: ignore[operator]
+                    token=self.config.token,
+                    base_url=self._download_base_url,
+                    base_file_url=download_file_url,
+                    request=download_request,
+                    local_mode=self._download_local_mode,
+                )
+                logger.info(
+                    "[%s] Hybrid Telegram mode: primary Bot API=%s, media downloads=%s (local_mode=%s)",
+                    self.name,
+                    custom_base_url or "official Telegram cloud",
+                    self._download_base_url,
+                    self._download_local_mode,
+                )
             
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(
@@ -1615,8 +1798,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._handle_location_message
             ))
             self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
+                self._telegram_media_filter(),
+                self._handle_media_message,
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
@@ -1626,7 +1809,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 from telegram.error import NetworkError, TimedOut
             except ImportError:
                 NetworkError = TimedOut = OSError  # type: ignore[misc,assignment]
-            _max_connect = 8
+            _max_connect = max(1, _env_int("HERMES_TELEGRAM_CONNECT_ATTEMPTS", 8))
             for _attempt in range(_max_connect):
                 try:
                     await self._app.initialize()
@@ -1807,6 +1990,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._app.shutdown()
             except Exception as e:
                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, e, exc_info=True)
+        if self._download_bot:
+            try:
+                shutdown = getattr(self._download_bot, "shutdown", None)
+                if callable(shutdown):
+                    result = shutdown()
+                    if hasattr(result, "__await__"):
+                        await result  # type: ignore[misc]
+            except Exception as e:
+                logger.debug("[%s] Error during Telegram hybrid download bot shutdown: %s", self.name, e, exc_info=True)
+        self._download_bot = None
         self._release_platform_lock()
 
         for task in self._pending_photo_batch_tasks.values():
@@ -2143,6 +2336,16 @@ class TelegramAdapter(BasePlatformAdapter):
             if result.success:
                 if result.message_id:
                     self._status_message_ids[key] = str(result.message_id)
+                return result
+            err = (getattr(result, "error", "") or "").lower()
+            if "flood_control" in err or "retry after" in err or "flood" in err:
+                # Status/progress bubbles are lower priority than final
+                # replies.  If Telegram tells us to slow down while editing a
+                # status bubble, do not immediately create a fresh status
+                # message; that competes with final sends across sibling forum
+                # topics in the same supergroup and prolongs the flood window.
+                # Keep the cached id so a later, calmer status update can edit
+                # the same bubble.
                 return result
             # Edit failed — clear the cached id and fall through to a fresh send.
             self._status_message_ids.pop(key, None)
@@ -5289,12 +5492,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     _observe_type = MessageType.STICKER
                 elif _m.photo:
                     _observe_type = MessageType.PHOTO
-                elif _m.video:
+                elif _m.video or getattr(_m, "video_note", None) or getattr(_m, "animation", None):
                     _observe_type = MessageType.VIDEO
                 elif _m.audio:
                     _observe_type = MessageType.AUDIO
                 elif _m.voice:
                     _observe_type = MessageType.VOICE
+                elif getattr(_m, "contact", None) or getattr(_m, "poll", None):
+                    _observe_type = MessageType.TEXT
                 else:
                     _observe_type = MessageType.DOCUMENT
                 self._observe_unmentioned_group_message(_m, _observe_type, update_id=update.update_id)
@@ -5307,12 +5512,14 @@ class TelegramAdapter(BasePlatformAdapter):
             msg_type = MessageType.STICKER
         elif msg.photo:
             msg_type = MessageType.PHOTO
-        elif msg.video:
+        elif msg.video or getattr(msg, "video_note", None) or getattr(msg, "animation", None):
             msg_type = MessageType.VIDEO
         elif msg.audio:
             msg_type = MessageType.AUDIO
         elif msg.voice:
             msg_type = MessageType.VOICE
+        elif getattr(msg, "contact", None) or getattr(msg, "poll", None):
+            msg_type = MessageType.TEXT
         elif msg.document:
             msg_type = MessageType.DOCUMENT
         else:
@@ -5323,6 +5530,18 @@ class TelegramAdapter(BasePlatformAdapter):
         # Add caption as text
         if msg.caption:
             event.text = self._clean_bot_trigger_text(msg.caption)
+        if getattr(msg, "contact", None):
+            contact_summary = self._format_telegram_contact_summary(msg.contact)
+            event.text = self._merge_caption(event.text, contact_summary) if event.text else contact_summary
+            event = self._apply_telegram_group_observe_attribution(event)
+            await self.handle_message(event)
+            return
+        if getattr(msg, "poll", None):
+            poll_summary = self._format_telegram_poll_summary(msg.poll)
+            event.text = self._merge_caption(event.text, poll_summary) if event.text else poll_summary
+            event = self._apply_telegram_group_observe_attribution(event)
+            await self.handle_message(event)
+            return
         
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
@@ -5341,7 +5560,7 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 # msg.photo is a list of PhotoSize sorted by size; take the largest
                 photo = msg.photo[-1]
-                file_obj = await photo.get_file()
+                file_obj = await self._get_download_file(photo)
                 # Download the image bytes directly into memory
                 image_bytes = await file_obj.download_as_bytearray()
                 # Determine extension from the file path if available
@@ -5370,41 +5589,66 @@ class TelegramAdapter(BasePlatformAdapter):
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
             try:
-                file_obj = await msg.voice.get_file()
-                audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
-                event.media_urls = [cached_path]
-                event.media_types = ["audio/ogg"]
-                logger.info("[Telegram] Cached user voice at %s", cached_path)
+                if self._media_file_size_exceeds_download_limit(msg.voice):
+                    event.text = self._telegram_download_limit_note("voice message")
+                else:
+                    file_obj = await self._get_download_file(msg.voice)
+                    audio_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
+                    event.media_urls = [cached_path]
+                    event.media_types = ["audio/ogg"]
+                    logger.info("[Telegram] Cached user voice at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
+                if self._is_telegram_file_too_big_error(e):
+                    event.text = self._telegram_download_limit_note("voice message")
         elif msg.audio:
             try:
-                file_obj = await msg.audio.get_file()
-                audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
-                event.media_urls = [cached_path]
-                event.media_types = ["audio/mp3"]
-                logger.info("[Telegram] Cached user audio at %s", cached_path)
+                if self._media_file_size_exceeds_download_limit(msg.audio):
+                    event.text = self._telegram_download_limit_note("audio file")
+                else:
+                    file_obj = await self._get_download_file(msg.audio)
+                    audio_bytes = await file_obj.download_as_bytearray()
+                    ext = ".mp3"
+                    file_name = str(getattr(msg.audio, "file_name", "") or "").lower()
+                    if file_name:
+                        _, name_ext = os.path.splitext(file_name)
+                        if name_ext in {".mp3", ".m4a", ".wav", ".ogg", ".aac", ".flac", ".webm", ".mp4", ".mpeg", ".mpga"}:
+                            ext = name_ext
+                    if getattr(file_obj, "file_path", None):
+                        for candidate in [".mp3", ".m4a", ".wav", ".ogg", ".aac", ".flac", ".webm", ".mp4", ".mpeg", ".mpga"]:
+                            if str(file_obj.file_path).lower().endswith(candidate):
+                                ext = candidate
+                                break
+                    cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [getattr(msg.audio, "mime_type", None) or mimetypes.guess_type(f"audio{ext}")[0] or "audio/mpeg"]
+                    logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
+                if self._is_telegram_file_too_big_error(e):
+                    event.text = self._telegram_download_limit_note("audio file")
 
-        elif msg.video:
+        elif msg.video or getattr(msg, "video_note", None) or getattr(msg, "animation", None):
+            video_payload = msg.video or getattr(msg, "video_note", None) or getattr(msg, "animation", None)
+            if video_payload is None:
+                video_payload = msg.video
+            assert video_payload is not None
             try:
-                file_obj = await msg.video.get_file()
-                video_bytes = await file_obj.download_as_bytearray()
-                ext = ".mp4"
-                if getattr(file_obj, "file_path", None):
-                    for candidate in SUPPORTED_VIDEO_TYPES:
-                        if file_obj.file_path.lower().endswith(candidate):
-                            ext = candidate
-                            break
-                cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
-                event.media_urls = [cached_path]
-                event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
-                logger.info("[Telegram] Cached user video at %s", cached_path)
+                if self._media_file_size_exceeds_download_limit(video_payload):
+                    event.text = self._telegram_download_limit_note("video")
+                else:
+                    file_obj = await self._get_download_file(video_payload)
+                    video_bytes = await file_obj.download_as_bytearray()
+                    ext = self._media_file_extension(file_obj, SUPPORTED_VIDEO_TYPES, ".mp4")
+                    cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
+                    logger.info("[Telegram] Cached user video at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
+                if self._is_telegram_file_too_big_error(e):
+                    event.text = self._telegram_download_limit_note("video")
 
         # Download document files to cache for agent processing
         elif msg.document:
@@ -5444,7 +5688,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # payload is actually an image, route it through the image cache
                 # and batching path instead of rejecting it as a document.
                 if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
-                    file_obj = await doc.get_file()
+                    file_obj = await self._get_download_file(doc)
                     image_bytes = await file_obj.download_as_bytearray()
                     image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
                     try:
@@ -5484,7 +5728,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     ext = image_mime_to_ext.get(doc.mime_type, "")
 
                 if ext in SUPPORTED_VIDEO_TYPES:
-                    file_obj = await doc.get_file()
+                    file_obj = await self._get_download_file(doc)
                     video_bytes = await file_obj.download_as_bytearray()
                     cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
                     event.media_urls = [cached_path]
@@ -5500,19 +5744,33 @@ class TelegramAdapter(BasePlatformAdapter):
                 # ext-in-SUPPORTED_IMAGE_DOCUMENT_TYPES branch would be dead
                 # code — the extension sets are identical.
 
-                # Check if supported
+                # Unknown document extensions are still useful to the agent: cache
+                # them generically instead of rejecting, so the user can ask for
+                # extraction/conversion or a tool can inspect the bytes.
                 if ext not in SUPPORTED_DOCUMENT_TYPES:
-                    supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
-                    event.text = (
-                        f"Unsupported document type '{ext or 'unknown'}'. "
-                        f"Supported types: {supported_list}"
+                    guessed_mime = None
+                    if original_filename:
+                        guessed_mime = mimetypes.guess_type(original_filename)[0]
+                    if not guessed_mime and doc_mime:
+                        guessed_mime = doc_mime
+                    mime_type = guessed_mime or "application/octet-stream"
+                    cache_name = original_filename or (f"document{ext}" if ext else "document.bin")
+                    file_obj = await self._get_download_file(doc)
+                    doc_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_document_from_bytes(bytes(doc_bytes), cache_name)
+                    event.media_urls = [cached_path]
+                    event.media_types = [mime_type]
+                    event.message_type = MessageType.DOCUMENT
+                    logger.info(
+                        "[Telegram] Cached generic document type %s at %s",
+                        ext or "unknown",
+                        cached_path,
                     )
-                    logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
                     await self.handle_message(event)
                     return
 
                 # Download and cache
-                file_obj = await doc.get_file()
+                file_obj = await self._get_download_file(doc)
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
                 cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
@@ -5521,23 +5779,31 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_types = [mime_type]
                 logger.info("[Telegram] Cached user document at %s", cached_path)
 
-                # For text files, inject content into event.text (capped at 100 KB)
+                # For text files, inject content into event.text (capped at 100 KB).
+                # Telegram clients sometimes export .txt as UTF-16/UTF-16-LE (BOM 0xff/0xfe),
+                # so try common encodings before giving up.  If none match, inject a
+                # replacement-decoded preview instead of dropping the file context entirely.
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
                 if ext in {".md", ".txt"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
-                    try:
-                        text_content = raw_bytes.decode("utf-8")
-                        display_name = original_filename or f"document{ext}"
-                        display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-                        injection = f"[Content of {display_name}]:\n{text_content}"
-                        if event.text:
-                            event.text = f"{injection}\n\n{event.text}"
-                        else:
-                            event.text = injection
-                    except UnicodeDecodeError:
+                    text_content = None
+                    for encoding in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be"):
+                        try:
+                            text_content = raw_bytes.decode(encoding)
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    if text_content is None:
+                        text_content = raw_bytes.decode("utf-8", errors="replace")
                         logger.warning(
-                            "[Telegram] Could not decode text file as UTF-8, skipping content injection",
-                            exc_info=True,
+                            "[Telegram] Text file was not UTF-8/UTF-16; injected replacement-decoded preview"
                         )
+                    display_name = original_filename or f"document{ext}"
+                    display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                    injection = f"[Content of {display_name}]:\n{text_content}"
+                    if event.text:
+                        event.text = f"{injection}\n\n{event.text}"
+                    else:
+                        event.text = injection
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
@@ -5621,7 +5887,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Cache miss -- download and analyze
         try:
-            file_obj = await sticker.get_file()
+            file_obj = await self._get_download_file(sticker)
             image_bytes = await file_obj.download_as_bytearray()
             cached_path = cache_image_from_bytes(bytes(image_bytes), ext=".webp")
             logger.info("[Telegram] Analyzing sticker at %s", cached_path)

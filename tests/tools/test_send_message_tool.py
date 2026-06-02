@@ -163,6 +163,36 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_bare_home_channel_preserves_thread_id(self):
+        """Bare platform targets should route to the configured home thread/topic."""
+        home = SimpleNamespace(chat_id="-1001", thread_id="1582")
+        config, _telegram_cfg = _make_config()
+        config.get_home_channel = lambda _platform: home
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert "thread_id: 1582" in result["note"]
+        send_mock.assert_awaited_once()
+        send_args = send_mock.await_args
+        assert send_args is not None
+        assert send_args.kwargs["thread_id"] == "1582"
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs["thread_id"] == "1582"
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()

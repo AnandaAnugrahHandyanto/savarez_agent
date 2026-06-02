@@ -216,6 +216,7 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "exit_reason": None,
         "restart_requested": False,
         "active_agents": 0,
+        "secret_redaction_enabled": None,
         "platforms": {},
         "updated_at": _utc_now_iso(),
     })
@@ -507,6 +508,7 @@ def write_runtime_status(
     exit_reason: Any = _UNSET,
     restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET,
+    secret_redaction_enabled: Any = _UNSET,
     platform: Any = _UNSET,
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
@@ -531,6 +533,8 @@ def write_runtime_status(
         payload["restart_requested"] = bool(restart_requested)
     if active_agents is not _UNSET:
         payload["active_agents"] = max(0, int(active_agents))
+    if secret_redaction_enabled is not _UNSET:
+        payload["secret_redaction_enabled"] = bool(secret_redaction_enabled)
 
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})

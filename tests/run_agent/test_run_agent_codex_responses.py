@@ -674,6 +674,73 @@ def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatc
     assert response.usage.total_tokens == 11
 
 
+def test_run_codex_stream_uses_low_level_create_stream(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    streamed_item = SimpleNamespace(
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="stream recovered")],
+    )
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.output_item.done", item=streamed_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(id="resp_low_level", status="completed", output=None),
+            ),
+        ]
+    )
+
+    def _unexpected_stream(**kwargs):
+        raise AssertionError("run_codex_stream should not use the SDK high-level responses.stream helper")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_unexpected_stream,
+            create=lambda **kwargs: create_stream,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.status == "completed"
+    assert response.output[0].content[0].text == "stream recovered"
+    assert create_stream.closed is True
+
+
+def test_codex_create_stream_fallback_backfills_null_completed_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    streamed_item = SimpleNamespace(
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="fallback recovered")],
+    )
+    terminal_response = SimpleNamespace(output=None, status="completed")
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.output_item.done", item=streamed_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=terminal_response,
+            ),
+        ]
+    )
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: create_stream)
+    )
+
+    response = agent._run_codex_create_stream_fallback(
+        _codex_request_kwargs(),
+        client=agent.client,
+    )
+
+    assert response is terminal_response
+    assert response.output[0].content[0].text == "fallback recovered"
+    assert create_stream.closed is True
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
@@ -1089,7 +1156,7 @@ def test_run_conversation_codex_tool_round_trip(monkeypatch):
     responses = [_codex_tool_call_response(), _codex_message_response("done")]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1280,7 +1347,7 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
 
     monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1315,7 +1382,7 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1667,7 +1734,7 @@ def test_run_conversation_codex_continues_after_commentary_phase_message(monkeyp
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1703,7 +1770,7 @@ def test_run_conversation_codex_continues_after_ack_stop_message(monkeypatch):
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1744,7 +1811,7 @@ def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
         for call in assistant_message.tool_calls:
             messages.append(
                 {

@@ -1013,7 +1013,7 @@ def _dispatch_to_plugin_provider(
 # ---------------------------------------------------------------------------
 
 
-def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
+def _validate_audio_file(file_path: str, *, allow_oversize: bool = False) -> Optional[Dict[str, Any]]:
     """Validate the audio file.  Returns an error dict or None if OK."""
     audio_path = Path(file_path)
 
@@ -1031,7 +1031,7 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
         }
     try:
         file_size = audio_path.stat().st_size
-        if file_size > MAX_FILE_SIZE:
+        if file_size > MAX_FILE_SIZE and not allow_oversize:
             return {
                 "success": False,
                 "transcript": "",
@@ -1521,7 +1521,6 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": f"xAI STT transcription failed: {e}"}
 
 
-# ---------------------------------------------------------------------------
 # Provider: ElevenLabs (Scribe STT API)
 # ---------------------------------------------------------------------------
 
@@ -1608,45 +1607,65 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Large-file chunking
 # ---------------------------------------------------------------------------
 
 
-def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Transcribe an audio file using the configured STT provider.
+def _audio_file_size(file_path: str) -> int:
+    try:
+        return Path(file_path).stat().st_size
+    except OSError:
+        return 0
 
-    Provider priority:
-      1. User config (``stt.provider`` in config.yaml)
-      2. Auto-detect: local > Groq > OpenAI > Mistral > xAI > ElevenLabs
 
-    Args:
-        file_path: Absolute path to the audio file to transcribe.
-        model:     Override the model. If None, uses config or provider default.
+def _split_audio_with_ffmpeg(file_path: str, output_dir: str, *, segment_seconds: int = 600) -> tuple[list[str], Optional[str]]:
+    """Transcode/split audio into small MP3 chunks suitable for STT APIs."""
+    ffmpeg = _find_ffmpeg_binary()
+    if not ffmpeg:
+        return [], "Audio is larger than the STT per-file limit and ffmpeg was not found for chunking"
 
-    Returns:
-        dict with keys:
-          - "success" (bool): Whether transcription succeeded
-          - "transcript" (str): The transcribed text (empty on failure)
-          - "error" (str, optional): Error message if success is False
-          - "provider" (str, optional): Which provider was used
-    """
-    # Validate input
-    error = _validate_audio_file(file_path)
-    if error:
-        return error
+    output_pattern = os.path.join(output_dir, "chunk_%03d.mp3")
+    command = [
+        ffmpeg,
+        "-y",
+        "-i",
+        file_path,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-b:a",
+        "64k",
+        "-f",
+        "segment",
+        "-segment_time",
+        str(segment_seconds),
+        "-reset_timestamps",
+        "1",
+        output_pattern,
+    ]
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        details = e.stderr.strip() or e.stdout.strip() or str(e)
+        logger.error("ffmpeg audio chunking failed for %s: %s", file_path, details)
+        return [], f"Failed to split audio for STT: {details}"
 
-    # Load config and determine provider
-    stt_config = _load_stt_config()
-    if not is_stt_enabled(stt_config):
-        return {
-            "success": False,
-            "transcript": "",
-            "error": "STT is disabled in config.yaml (stt.enabled: false).",
-        }
+    chunks = sorted(str(path) for path in Path(output_dir).glob("chunk_*.mp3"))
+    if not chunks:
+        return [], "ffmpeg completed but produced no audio chunks"
+    oversized = [path for path in chunks if _audio_file_size(path) > MAX_FILE_SIZE]
+    if oversized:
+        return [], (
+            "ffmpeg produced a chunk larger than the STT per-file limit; "
+            "try a shorter recording or lower bitrate"
+        )
+    return chunks, None
 
-    provider = _get_provider(stt_config)
 
+def _transcribe_with_provider(file_path: str, provider: str, stt_config: Dict[str, Any], model: Optional[str] = None) -> Dict[str, Any]:
+    """Dispatch to the selected STT provider after validation/chunking."""
     if provider == "local":
         local_cfg = stt_config.get("local", {})
         model_name = _normalize_local_model(
@@ -1676,7 +1695,6 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         return _transcribe_mistral(file_path, model_name)
 
     if provider == "xai":
-        # xAI Grok STT doesn't use a model parameter — pass through for logging
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
 
@@ -1701,19 +1719,6 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             model_override=model,
         )
 
-    # Plugin-registered STT backend (e.g. OpenRouter, SenseAudio,
-    # Gemini-STT). Fires only when ``provider`` is neither a built-in
-    # nor ``"none"`` AND there is no same-name command provider. The
-    # dispatcher enforces built-ins-always-win + command-wins-over-plugin
-    # defensively. Returns None when no plugin is registered for the
-    # configured name, falling through to the legacy "No STT provider"
-    # error message below.
-    #
-    # Plugin-scoped config namespace mirrors the built-in pattern
-    # (``stt.openai.model``, ``stt.mistral.model``): plugins read their
-    # per-provider config under ``stt.<provider>`` and the dispatcher
-    # forwards ``language`` from there. Top-level ``model`` argument
-    # overrides any config-set model.
     plugin_cfg = stt_config.get(provider, {}) if isinstance(stt_config.get(provider), dict) else {}
     plugin_language = plugin_cfg.get("language")
     plugin_model = model or plugin_cfg.get("model")
@@ -1727,7 +1732,6 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     if plugin_result is not None:
         return plugin_result
 
-    # No provider available
     return {
         "success": False,
         "transcript": "",
@@ -1740,6 +1744,90 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }
+
+
+def _transcribe_large_audio_in_chunks(file_path: str, provider: str, stt_config: Dict[str, Any], model: Optional[str] = None) -> Dict[str, Any]:
+    """Split oversized audio and transcribe chunks sequentially."""
+    with tempfile.TemporaryDirectory(prefix="hermes-stt-chunks-") as chunk_dir:
+        chunks, error = _split_audio_with_ffmpeg(file_path, chunk_dir)
+        if error:
+            return {"success": False, "transcript": "", "error": error}
+
+        transcripts: list[str] = []
+        chunk_provider = provider
+        for index, chunk_path in enumerate(chunks, start=1):
+            validation_error = _validate_audio_file(chunk_path)
+            if validation_error:
+                validation_error["error"] = f"Chunk {index} validation failed: {validation_error['error']}"
+                return validation_error
+            result = _transcribe_with_provider(chunk_path, provider, stt_config, model=model)
+            if not result.get("success"):
+                return {
+                    "success": False,
+                    "transcript": "\n\n".join(transcripts),
+                    "error": f"Chunk {index}/{len(chunks)} failed: {result.get('error', 'unknown STT error')}",
+                    "provider": result.get("provider", provider),
+                    "chunked": True,
+                    "chunks": len(chunks),
+                }
+            chunk_provider = result.get("provider", chunk_provider)
+            text = str(result.get("transcript") or "").strip()
+            if text:
+                transcripts.append(text)
+
+    return {
+        "success": True,
+        "transcript": "\n\n".join(transcripts),
+        "provider": chunk_provider,
+        "chunked": True,
+        "chunks": len(chunks),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Transcribe an audio file using the configured STT provider.
+
+    Provider priority:
+      1. User config (``stt.provider`` in config.yaml)
+      2. Auto-detect: local faster-whisper (free) > Groq (free tier) > OpenAI (paid)
+
+    Args:
+        file_path: Absolute path to the audio file to transcribe.
+        model:     Override the model. If None, uses config or provider default.
+
+    Returns:
+        dict with keys:
+          - "success" (bool): Whether transcription succeeded
+          - "transcript" (str): The transcribed text (empty on failure)
+          - "error" (str, optional): Error message if success is False
+          - "provider" (str, optional): Which provider was used
+    """
+    # Validate input.  Oversized audio is allowed through here so it can be
+    # split/transcoded into provider-safe chunks below.
+    error = _validate_audio_file(file_path, allow_oversize=True)
+    if error:
+        return error
+
+    # Load config and determine provider
+    stt_config = _load_stt_config()
+    if not is_stt_enabled(stt_config):
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "STT is disabled in config.yaml (stt.enabled: false).",
+        }
+
+    provider = _get_provider(stt_config)
+    if _audio_file_size(file_path) > MAX_FILE_SIZE:
+        return _transcribe_large_audio_in_chunks(file_path, provider, stt_config, model=model)
+
+    return _transcribe_with_provider(file_path, provider, stt_config, model=model)
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:

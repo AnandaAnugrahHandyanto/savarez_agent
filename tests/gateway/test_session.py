@@ -363,7 +363,8 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Multi-user thread" in prompt
-        assert "[sender name]" in prompt
+        assert "Sender:" in prompt
+        assert "not as topic tags" in prompt
         # Should NOT show a specific **User:** line (would bust cache)
         assert "**User:** Alice" not in prompt
 
@@ -406,7 +407,8 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Multi-user session" in prompt
-        assert "[sender name]" in prompt
+        assert "Sender:" in prompt
+        assert "not as topic tags" in prompt
         assert "**User:** Alice" not in prompt
 
     def test_dm_thread_shows_user_not_multi(self):
@@ -430,11 +432,11 @@ class TestBuildSessionContextPrompt:
         assert "Multi-user thread" not in prompt
 
 
-class TestSenderPrefixWithBackfill:
-    """Regression: sender prefix must not wrap the backfill context block.
+class TestSenderMetadataWithBackfill:
+    """Regression: sender metadata must not wrap the backfill context block.
 
     Tests exercise the real GatewayRunner._prepare_inbound_message_text()
-    method to ensure the [sender_name] prefix applies only to the trigger
+    method to ensure sender metadata applies only to the trigger
     message, not the channel_context backfill block.
     """
 
@@ -460,17 +462,17 @@ class TestSenderPrefixWithBackfill:
         )
 
     @pytest.mark.asyncio
-    async def test_plain_message_gets_prefix(self, runner, source):
-        """Normal message without backfill gets [sender] prefix."""
+    async def test_plain_message_gets_sender_metadata(self, runner, source):
+        """Normal message without backfill gets explicit sender metadata."""
         event = MessageEvent(text="hello world", source=source)
         result = await runner._prepare_inbound_message_text(
             event=event, source=source, history=[],
         )
-        assert result == "[Alice] hello world"
+        assert result == "Sender: Alice\n\nhello world"
 
     @pytest.mark.asyncio
-    async def test_backfill_prefix_only_on_trigger(self, runner, source):
-        """Backfill context must NOT get the sender prefix."""
+    async def test_backfill_sender_metadata_only_on_trigger(self, runner, source):
+        """Backfill context must NOT get the sender metadata."""
         event = MessageEvent(
             text="hello world",
             source=source,
@@ -480,8 +482,8 @@ class TestSenderPrefixWithBackfill:
             event=event, source=source, history=[],
         )
         assert result.startswith("[Recent channel messages]")
-        assert "[Alice] [Recent channel messages]" not in result
-        assert "[New message]\n[Alice] hello world" in result
+        assert "Sender: Alice\n\n[Recent channel messages]" not in result
+        assert "[New message]\nSender: Alice\n\nhello world" in result
 
     @pytest.mark.asyncio
     async def test_backfill_preserves_context_block(self, runner, source):
@@ -494,7 +496,7 @@ class TestSenderPrefixWithBackfill:
             event=event, source=source, history=[],
         )
         assert result.startswith(context)
-        assert "[Alice] hey everyone" in result
+        assert "Sender: Alice\n\nhey everyone" in result
         assert "[Alice] [Bob]" not in result
         assert "[Alice] [Charlie" not in result
         assert "[Alice] [Recent" not in result

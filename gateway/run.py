@@ -1282,6 +1282,8 @@ def _build_media_placeholder(event) -> str:
             parts.append(f"[User sent an image: {url}]")
         elif mtype.startswith("audio/"):
             parts.append(f"[User sent audio: {url}]")
+        elif mtype.startswith("video/") or getattr(event, "message_type", None) == MessageType.VIDEO:
+            parts.append(f"[User sent a video: {url}]")
         else:
             parts.append(f"[User sent a file: {url}]")
     return "\n".join(parts)
@@ -3143,6 +3145,8 @@ class GatewayRunner:
         if not mode:
             cfg = _load_gateway_runtime_config()
             mode = str(cfg_get(cfg, "display", "busy_text_mode", default="") or "").strip().lower()
+        if mode == "steer":
+            return "steer"
         if mode == "interrupt":
             return "interrupt"
         return "queue"
@@ -4244,7 +4248,14 @@ class GatewayRunner:
             pass
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(gateway_state="starting", exit_reason=None)
+            write_runtime_status(
+                gateway_state="starting",
+                exit_reason=None,
+                secret_redaction_enabled=(
+                    os.getenv("HERMES_REDACT_SECRETS", "true").lower()
+                    in {"1", "true", "yes", "on"}
+                ),
+            )
         except Exception:
             pass
 
@@ -8383,10 +8394,16 @@ class GatewayRunner:
             thread_sessions_per_user=_thread_sessions_per_user,
         )
         if _is_shared_multi_user and source.user_name:
-            message_text = f"[{source.user_name}] {message_text}"
+            # Keep sender attribution as explicit metadata instead of a
+            # bracket-prefix tag.  Bracket prefixes like ``[Stale Mate]`` look
+            # exactly like user-authored task labels/topics and can cause the
+            # agent to route a normal Life/general request into a content
+            # workflow.  The actual message text should remain the primary
+            # intent signal; the display name is only attribution.
+            message_text = f"Sender: {source.user_name}\n\n{message_text}"
 
         # Prepend channel context from history backfill (if any).  This
-        # happens after sender-prefix so the prefix only applies to the
+        # happens after sender metadata so the attribution only applies to the
         # trigger message, not the backfill block.
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
@@ -8394,6 +8411,7 @@ class GatewayRunner:
         # Declare at outer scope so the audio-file-paths handling block below
         # remains safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
+        video_paths: list[str] = []
 
         if event.media_urls:
             image_paths = []
@@ -8402,15 +8420,36 @@ class GatewayRunner:
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
-                # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) — never STT
-                # MessageType.VOICE = voice message (Opus/OGG) — always STT
+                # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a).
+                # By default it stays a file note; Telegram can opt into STT
+                # for recorder-app uploads via extra.auto_transcribe_audio_attachments.
+                # MessageType.VOICE = native voice message (Opus/OGG) — always STT.
+                _auto_transcribe_audio_attachments = False
                 if event.message_type == MessageType.AUDIO:
-                    audio_file_paths.append(path)
+                    try:
+                        _platform_cfg = self.config.platforms.get(source.platform)
+                        _raw_auto_audio = (
+                            _platform_cfg.extra.get("auto_transcribe_audio_attachments")
+                            if _platform_cfg is not None
+                            else False
+                        )
+                        if isinstance(_raw_auto_audio, str):
+                            _auto_transcribe_audio_attachments = _raw_auto_audio.strip().lower() in {"1", "true", "yes", "on"}
+                        else:
+                            _auto_transcribe_audio_attachments = bool(_raw_auto_audio)
+                    except Exception:
+                        _auto_transcribe_audio_attachments = False
+                    if _auto_transcribe_audio_attachments:
+                        audio_paths.append(path)
+                    else:
+                        audio_file_paths.append(path)
                 elif event.message_type == MessageType.VOICE or (
                     mtype.startswith("audio/")
                     and event.message_type not in {MessageType.AUDIO, MessageType.DOCUMENT}
                 ):
                     audio_paths.append(path)
+                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
+                    video_paths.append(path)
 
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
@@ -8486,6 +8525,23 @@ class GatewayRunner:
                     f"Ask the user what they'd like you to do with it, or pass the path to a transcription or media tool.]"
                 )
                 message_text = f"{_note}\n\n{message_text}"
+
+        if video_paths:
+            from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
+            notes = []
+            for _vpath in video_paths:
+                _basename = os.path.basename(_vpath)
+                _parts = _basename.split("_", 2)
+                _display = _parts[2] if len(_parts) >= 3 else _basename
+                _display = re.sub(r'[^\w.\- ]', '_', _display)
+                _agent_path = _to_agent_path(_vpath)
+                notes.append(
+                    f"[The user sent a video: '{_display}'. The file is saved at: {_agent_path}. "
+                    "For video-specific requests, inspect this exact file first "
+                    "(ffprobe/contact sheet/vision/audio as needed) before answering.]"
+                )
+            video_note = "\n".join(notes)
+            message_text = f"{video_note}\n\n{message_text}" if message_text else video_note
 
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
@@ -10564,6 +10620,24 @@ class GatewayRunner:
             if count:
                 return t("gateway.draining", count=count)
             return EphemeralReply(t("gateway.restart.in_progress"))
+
+        force_restart = False
+        try:
+            import shlex
+            _tokens = shlex.split(str(event.text or "").replace("—", "--"))
+            force_restart = "--force" in _tokens
+        except Exception:
+            force_restart = "--force" in str(event.text or "")
+
+        active_agents = self._running_agent_count()
+        if active_agents and not force_restart:
+            return (
+                "✗ Gateway restart refused: active agent run(s) are still in progress.\n"
+                f"Active agents: {active_agents}\n\n"
+                "This avoids interrupting Telegram tasks and losing in-memory run state. "
+                "Use `/reload-mcp` for MCP/tool changes, wait for the task to finish, "
+                "or run `/restart --force` if you intentionally want to interrupt active work."
+            )
 
         # Save the requester's routing info so the new gateway process can
         # notify them once it comes back online.
@@ -17151,13 +17225,19 @@ class GatewayRunner:
                                 )
                                 continue
                             if "flood" in _err or "retry after" in _err:
-                                # Flood control hit — backoff but keep editing.
-                                # Only disable edits for non-recoverable errors.
+                                # Flood control hit — back off and DROP this
+                                # non-essential progress frame.  Do NOT fall
+                                # back to a fresh progress send here: Telegram
+                                # flood limits are chat/bot scoped, so sending
+                                # a new bubble immediately after an edit 429
+                                # extends the same flood window and can delay
+                                # final answers in sibling forum topics.
                                 logger.info(
                                     "[%s] Progress edit flood control, backing off",
                                     adapter.name,
                                 )
                                 _last_edit_ts = time.monotonic()
+                                continue
                             else:
                                 can_edit = False
                             _flood_result = await adapter.send(

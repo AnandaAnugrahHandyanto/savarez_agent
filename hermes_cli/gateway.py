@@ -3387,6 +3387,12 @@ def launchd_status(deep: bool = False):
         print("  Service definition exists locally but launchd has not loaded it.")
         print("  Run: hermes gateway start")
 
+    runtime_lines = _runtime_health_lines()
+    if runtime_lines:
+        print()
+        print("Recent gateway health:")
+        for line in runtime_lines:
+            print(f"  {line}")
     if deep:
         log_file = get_hermes_home() / "logs" / "gateway.log"
         if log_file.exists():
@@ -4347,7 +4353,13 @@ def _runtime_health_lines() -> list[str]:
     exit_reason = state.get("exit_reason")
     active_agents = state.get("active_agents")
     restart_requested = state.get("restart_requested")
+    secret_redaction_enabled = state.get("secret_redaction_enabled")
     platforms = state.get("platforms", {}) or {}
+
+    if secret_redaction_enabled is True:
+        lines.append("✓ Secret redaction enabled")
+    elif secret_redaction_enabled is False:
+        lines.append("⚠ Secret redaction disabled")
 
     for platform, pdata in platforms.items():
         if pdata.get("state") == "fatal":
@@ -6216,7 +6228,24 @@ def _gateway_command_inner(args):
         service_available = False
         system = getattr(args, "system", False)
         restart_all = getattr(args, "all", False)
+        force_restart = getattr(args, "force", False)
         service_configured = False
+
+        if not restart_all and not force_restart:
+            try:
+                from gateway.status import read_runtime_status
+                status = read_runtime_status() or {}
+                active_agents = int(status.get("active_agents") or 0)
+            except Exception:
+                active_agents = 0
+            if active_agents > 0:
+                print("✗ Gateway restart refused: active agent run(s) are in progress.")
+                print(f"  Active agents: {active_agents}")
+                print("  This avoids interrupting Telegram tasks and losing in-memory run state.")
+                print("  Prefer an in-chat /reload-mcp for MCP/tool changes, or wait for the task to finish.")
+                print("  If you intentionally want to interrupt active work, run:")
+                print("    hermes gateway restart --force")
+                return
 
         # Phase 4: inside a container with s6, dispatch via the service
         # manager (s6-svc -t restarts the supervised process). ``--all``
