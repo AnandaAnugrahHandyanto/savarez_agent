@@ -231,12 +231,12 @@ import tempfile, os
 with tempfile.TemporaryDirectory() as tmpdir:
     project = os.path.join(tmpdir, 'testproj')
     fp_path = os.path.join(project, '.hermes', 'code-state', 'fingerprints.json')
-    
+
     # Test save
     files = {'main.py': {'content_hash': 'sha256:abc', 'line_count': 10, 'size_bytes': 100, 'functions': [], 'classes': [], 'imports': []}}
     result = save_fingerprint_file(fp_path, project, files)
     assert os.path.isfile(result), f'Save did not create file: {result}'
-    
+
     # Test load
     data = load_fingerprint_file(fp_path)
     assert data is not None
@@ -261,17 +261,17 @@ with tempfile.TemporaryDirectory() as tmpdir:
     f1 = os.path.join(tmpdir, 'main.py')
     with open(f1, 'w') as f:
         f.write('import os\n\ndef main():\n    pass\n')
-    
+
     # Extract fingerprint
     fp1 = extract_fingerprint(f1, tmpdir, line_count=4, size_bytes=os.path.getsize(f1), imports=None)
-    
+
     # Create changed file (cosmetic only)
     f2 = os.path.join(tmpdir, 'main.py')
     with open(f2, 'w') as f:
         f.write('# Added comment\nimport os\n\ndef main():\n    pass\n')
-    
+
     fp2 = extract_fingerprint(f2, tmpdir, line_count=5, size_bytes=os.path.getsize(f2), imports=None)
-    
+
     # Compare
     result = compare_fingerprints(
         {'files': {'main.py': fp1}},

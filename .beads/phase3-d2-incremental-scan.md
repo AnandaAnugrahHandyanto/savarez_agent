@@ -246,14 +246,14 @@ A critical test must verify byte-for-byte equivalence (excluding timestamps) bet
 
 ```python
 def test_incremental_output_equivalent_to_full(small_project_fixture):
-    """Running --incremental on an unchanged project produces output 
+    """Running --incremental on an unchanged project produces output
     equivalent to a full run (excluding scanned_at timestamps)."""
     # 1. Full scan
     full_output = run_scan_project(target_dir, args=[])
-    
+
     # 2. First incremental (no fingerprints) → same as full
     incr_output = run_scan_project(target_dir, args=['--incremental'])
-    
+
     # 3. Compare excluding timestamps
     assert full_output['total_files'] == incr_output['total_files']
     assert full_output['total_lines'] == incr_output['total_lines']
