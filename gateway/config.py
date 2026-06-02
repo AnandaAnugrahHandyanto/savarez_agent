@@ -234,6 +234,38 @@ class HomeChannel:
         )
 
 
+DEFAULT_SESSION_RESET_NOTIFY_REASONS: tuple[str, ...] = ("idle", "daily", "suspended")
+
+
+def _normalize_reset_notify_reasons(value: Any) -> tuple[str, ...]:
+    """Normalize session_reset.notify_reasons config.
+
+    Missing/null preserves the current default: all known auto-reset reasons
+    produce notices. Operators can set []/"none" to suppress reason-based
+    notices, or omit "suspended" to avoid stopped/interrupted-session chatter
+    while keeping idle/daily reset notifications.
+    """
+    if value is None:
+        return DEFAULT_SESSION_RESET_NOTIFY_REASONS
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if not normalized or normalized == "none":
+            return ()
+        if normalized == "all":
+            return DEFAULT_SESSION_RESET_NOTIFY_REASONS
+        return (normalized,)
+    if isinstance(value, (list, tuple, set)):
+        reasons: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            reason = str(item).strip().lower()
+            if reason:
+                reasons.append(reason)
+        return tuple(reasons)
+    return DEFAULT_SESSION_RESET_NOTIFY_REASONS
+
+
 @dataclass
 class SessionResetPolicy:
     """
@@ -250,6 +282,7 @@ class SessionResetPolicy:
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
     notify: bool = True  # Send a notification to the user when auto-reset occurs
     notify_exclude_platforms: tuple = ("api_server", "webhook")  # Platforms that don't get reset notifications
+    notify_reasons: tuple = DEFAULT_SESSION_RESET_NOTIFY_REASONS  # Auto-reset reasons that get notifications
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -258,6 +291,7 @@ class SessionResetPolicy:
             "idle_minutes": self.idle_minutes,
             "notify": self.notify,
             "notify_exclude_platforms": list(self.notify_exclude_platforms),
+            "notify_reasons": list(self.notify_reasons),
         }
     
     @classmethod
@@ -274,6 +308,7 @@ class SessionResetPolicy:
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
             notify=_coerce_bool(notify, True),
             notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
+            notify_reasons=_normalize_reset_notify_reasons(data.get("notify_reasons")),
         )
 
 

@@ -1118,11 +1118,13 @@ from gateway.config import (
     _BUILTIN_PLATFORM_VALUES,
     GatewayConfig,
     HomeChannel,
+    SessionResetPolicy,
     PlatformConfig,
     load_gateway_config,
 )
 from gateway.session import (
     SessionStore,
+    SessionEntry,
     SessionSource,
     SessionContext,
     build_session_context,
@@ -1779,6 +1781,29 @@ class GatewayRunner:
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+
+    @staticmethod
+    def _should_notify_auto_reset(
+        policy: SessionResetPolicy,
+        source: SessionSource,
+        session_entry: SessionEntry,
+        reset_reason: str,
+    ) -> bool:
+        """Return whether an auto-reset notice should be sent to the user.
+
+        This centralizes the policy gate so all reset reasons, including
+        stopped/interrupted-session (``suspended``) resets, honor the same
+        operator-configurable notification settings.
+        """
+        platform_name = source.platform.value if source.platform else ""
+        had_activity = getattr(session_entry, "reset_had_activity", False)
+        reason = (reset_reason or "idle").strip().lower()
+        return (
+            policy.notify
+            and had_activity
+            and platform_name not in policy.notify_exclude_platforms
+            and reason in policy.notify_reasons
+        )
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -8800,14 +8825,11 @@ class GatewayRunner:
                     platform=source.platform,
                     session_type=getattr(source, 'chat_type', 'dm'),
                 )
-                platform_name = source.platform.value if source.platform else ""
-                had_activity = getattr(session_entry, 'reset_had_activity', False)
-                # Suspended sessions always notify (they were explicitly stopped
-                # or crashed mid-operation) — skip the policy check.
-                should_notify = reset_reason == "suspended" or (
-                    policy.notify
-                    and had_activity
-                    and platform_name not in policy.notify_exclude_platforms
+                should_notify = self._should_notify_auto_reset(
+                    policy=policy,
+                    source=source,
+                    session_entry=session_entry,
+                    reset_reason=reset_reason,
                 )
                 if should_notify:
                     adapter = self.adapters.get(source.platform)

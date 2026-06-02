@@ -513,6 +513,11 @@ session_reset:
   mode: both           # "both", "idle", "daily", or "none"
   idle_minutes: 1440   # Inactivity timeout in minutes (default: 1440 = 24 hours)
   at_hour: 4           # Daily reset hour, 0-23 local time (default: 4 AM)
+  notify: true         # Send a user-facing notice when an auto-reset clears an active session
+  notify_exclude_platforms: [api_server, webhook]
+  notify_reasons: [idle, daily, suspended]
+  # To suppress stopped/interrupted-session notices but keep idle/daily notices:
+  # notify_reasons: [idle, daily]
 
 # When true, group/channel chats use one session per participant when the platform
 # provides a user ID. This is the secure default and prevents users in the same

@@ -30,6 +30,17 @@ def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):
     )
 
 
+def _make_entry_with_activity(had_activity: bool) -> SessionEntry:
+    now = datetime.now()
+    return SessionEntry(
+        session_key="test",
+        session_id="s1",
+        created_at=now,
+        updated_at=now,
+        reset_had_activity=had_activity,
+    )
+
+
 def _make_store(policy=None, tmp_path=None):
     config = GatewayConfig()
     if policy:
@@ -192,16 +203,77 @@ class TestResetPolicyNotify:
         assert policy.notify is True
         assert "api_server" in policy.notify_exclude_platforms
 
+    def test_notify_reasons_defaults(self):
+        policy = SessionResetPolicy()
+        assert policy.notify_reasons == ("idle", "daily", "suspended")
+
+    def test_from_dict_with_notify_reasons_list(self):
+        policy = SessionResetPolicy.from_dict({"notify_reasons": ["idle", "daily"]})
+        assert policy.notify_reasons == ("idle", "daily")
+
+    def test_from_dict_with_notify_reasons_none_string(self):
+        policy = SessionResetPolicy.from_dict({"notify_reasons": "none"})
+        assert policy.notify_reasons == ()
+
+    def test_from_dict_with_notify_reasons_all_string(self):
+        policy = SessionResetPolicy.from_dict({"notify_reasons": "all"})
+        assert policy.notify_reasons == ("idle", "daily", "suspended")
+
     def test_to_dict_roundtrip(self):
         original = SessionResetPolicy(
             mode="idle",
             notify=False,
             notify_exclude_platforms=("api_server",),
+            notify_reasons=("idle", "daily"),
         )
         restored = SessionResetPolicy.from_dict(original.to_dict())
         assert restored.notify == original.notify
         assert restored.notify_exclude_platforms == original.notify_exclude_platforms
+        assert restored.notify_reasons == original.notify_reasons
         assert restored.mode == original.mode
+
+    def test_suspended_respects_notify_false(self):
+        from gateway.run import GatewayRunner
+
+        entry = _make_entry_with_activity(True)
+        policy = SessionResetPolicy(notify=False)
+        assert GatewayRunner._should_notify_auto_reset(
+            policy, _make_source(Platform.DISCORD), entry, "suspended"
+        ) is False
+
+    def test_suspended_respects_excluded_platform(self):
+        from gateway.run import GatewayRunner
+
+        entry = _make_entry_with_activity(True)
+        policy = SessionResetPolicy(notify_exclude_platforms=("discord",))
+        assert GatewayRunner._should_notify_auto_reset(
+            policy, _make_source(Platform.DISCORD), entry, "suspended"
+        ) is False
+
+    def test_suspended_respects_notify_reasons(self):
+        from gateway.run import GatewayRunner
+
+        entry = _make_entry_with_activity(True)
+        policy = SessionResetPolicy(notify_reasons=("idle", "daily"))
+        assert GatewayRunner._should_notify_auto_reset(
+            policy, _make_source(Platform.DISCORD), entry, "suspended"
+        ) is False
+
+    def test_suspended_notifies_by_default_when_active(self):
+        from gateway.run import GatewayRunner
+
+        entry = _make_entry_with_activity(True)
+        assert GatewayRunner._should_notify_auto_reset(
+            SessionResetPolicy(), _make_source(Platform.DISCORD), entry, "suspended"
+        ) is True
+
+    def test_idle_does_not_notify_without_activity(self):
+        from gateway.run import GatewayRunner
+
+        entry = _make_entry_with_activity(False)
+        assert GatewayRunner._should_notify_auto_reset(
+            SessionResetPolicy(), _make_source(Platform.DISCORD), entry, "idle"
+        ) is False
 
 
 # ---------------------------------------------------------------------------

@@ -162,6 +162,14 @@ class TestSessionResetPolicy:
         restored = SessionResetPolicy.from_dict({"notify": "false"})
         assert restored.notify is False
 
+    def test_from_dict_parses_notify_reasons(self):
+        restored = SessionResetPolicy.from_dict({"notify_reasons": ["idle", "daily"]})
+        assert restored.notify_reasons == ("idle", "daily")
+
+    def test_from_dict_empty_notify_reasons_suppresses_reason_notices(self):
+        restored = SessionResetPolicy.from_dict({"notify_reasons": []})
+        assert restored.notify_reasons == ()
+
 
 class TestStreamingConfig:
     def test_defaults_to_auto_transport(self):
@@ -272,6 +280,24 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+
+    def test_bridges_session_reset_notify_reasons_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "session_reset:\n"
+            "  notify_reasons:\n"
+            "    - idle\n"
+            "    - daily\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.notify_reasons == ("idle", "daily")
 
     def test_bridges_group_sessions_per_user_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
