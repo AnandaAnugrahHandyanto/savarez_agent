@@ -248,7 +248,7 @@ class SessionModelPool:
             chosen.session_slots[session_key] = time.monotonic()
             self._session_map[session_key] = chosen.pool_key
 
-            logger.info(
+            logger.debug(
                 "SessionModelPool: assigned session %s -> %s:%s "
                 "(session_slots=%d/%d, aux=%d/%d)",
                 session_key, chosen.provider, chosen.model,
@@ -400,23 +400,6 @@ class SessionModelPool:
                 "SessionModelPool: evicted %d inactive sessions", evicted
             )
         return evicted
-
-    def reconstruct_from_active_sessions(self, active_session_keys: List[str]) -> None:
-        """Rebuild pool state after gateway restart.
-
-        Marks all active sessions as pool-assigned but without a specific model
-        (they'll get reassigned on first message).
-        """
-        with self._lock:
-            self._session_map.clear()
-            self._manual_overrides.clear()
-            for entry in self._entries:
-                entry.session_slots.clear()
-                entry.auxiliary_count = 0
-            logger.info(
-                "SessionModelPool: reconstructed state — %d active sessions will be reassigned",
-                len(active_session_keys),
-            )
 
     def get_pool_stats(self) -> Dict[str, Any]:
         """Return current slot usage for logging/status."""

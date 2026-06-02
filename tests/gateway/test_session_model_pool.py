@@ -215,13 +215,6 @@ class TestSessionSlots:
         result = pool.acquire_session_slot("sess-1")
         assert result is not None
 
-    def test_reconstruct_clears_state(self):
-        pool = self._make_pool()
-        pool.acquire_session_slot("sess-1")
-        pool.acquire_session_slot("sess-2")
-        pool.reconstruct_from_active_sessions(["sess-1"])
-        assert pool.get_pool_stats()["total_sessions"] == 0
-
 
 # ---------------------------------------------------------------------------
 # Strategy tests

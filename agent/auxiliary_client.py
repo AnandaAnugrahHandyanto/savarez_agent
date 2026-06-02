@@ -5310,8 +5310,11 @@ def call_llm(
             try:
                 if _pool and _pool.enabled:
                     _pool.release_auxiliary_slot(final_model or "", resolved_provider or "")
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.error(
+                    "SessionModelPool: FAILED to release auxiliary slot for %s:%s — "
+                    "slot may be leaked: %s", resolved_provider, final_model, _exc,
+                )
 
 
 def extract_content_or_reasoning(response) -> str:
@@ -5388,6 +5391,10 @@ async def async_call_llm(
     """Centralized asynchronous LLM call.
 
     Same as call_llm() but async. See call_llm() for full documentation.
+
+    TODO: SessionModelPool auxiliary slot tracking is not yet integrated
+    here — async auxiliary calls are not throttled. See call_llm() for
+    the synchronous implementation.
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
