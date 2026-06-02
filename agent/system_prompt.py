@@ -186,6 +186,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if toolset
         }
         skills_prompt = _r.build_skills_system_prompt(
+            bound_skills=getattr(agent, "bound_skills", None),
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
         )

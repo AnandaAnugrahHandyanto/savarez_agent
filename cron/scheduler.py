@@ -1655,6 +1655,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # HERMES_HOME. When a workdir is configured, also inject project
             # context files (AGENTS.md / CLAUDE.md / .cursorrules) from there.
             # Without a workdir, keep cwd context discovery disabled.
+            bound_skills=([str(s).strip() for s in job.get("skills") or [] if str(s).strip()] or None),
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
