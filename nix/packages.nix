@@ -54,6 +54,11 @@
         fix-lockfiles = hermesAgent.hermesNpmLib.mkFixLockfiles {
           packages = [ hermesAgent.hermesTui hermesAgent.hermesWeb hermesAgent.hermesDesktop ];
         };
+      } // lib.optionalAttrs pkgs.stdenv.isLinux {
+        # Local browser tools with the Nixpkgs agent-browser CLI and Chromium.
+        browser = hermesAgent.override {
+          withBrowser = true;
+        };
       };
     };
 }
