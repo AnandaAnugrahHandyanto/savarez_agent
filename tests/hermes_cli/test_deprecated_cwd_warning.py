@@ -7,7 +7,11 @@ import pytest
 class TestDeprecatedCwdWarning:
     """Warn when MESSAGING_CWD or TERMINAL_CWD is set in .env."""
 
-    def test_messaging_cwd_triggers_warning(self, monkeypatch, capsys):
+    def test_messaging_cwd_triggers_warning(self, monkeypatch, tmp_path, capsys):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("MESSAGING_CWD=/some/path\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setenv("MESSAGING_CWD", "/some/path")
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
@@ -19,7 +23,11 @@ class TestDeprecatedCwdWarning:
         assert "deprecated" in captured.err.lower()
         assert "config.yaml" in captured.err
 
-    def test_terminal_cwd_triggers_warning_when_config_placeholder(self, monkeypatch, capsys):
+    def test_terminal_cwd_triggers_warning_when_config_placeholder(self, monkeypatch, tmp_path, capsys):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("TERMINAL_CWD=/project\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setenv("TERMINAL_CWD", "/project")
         monkeypatch.delenv("MESSAGING_CWD", raising=False)
 
@@ -42,6 +50,20 @@ class TestDeprecatedCwdWarning:
         captured = capsys.readouterr()
         assert "TERMINAL_CWD" not in captured.err
 
+    def test_no_warning_when_terminal_cwd_only_inherited(self, monkeypatch, tmp_path, capsys):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("# TERMINAL_CWD=/home/jenny\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_CWD", "/home/jenny")
+        monkeypatch.delenv("MESSAGING_CWD", raising=False)
+
+        from hermes_cli.config import warn_deprecated_cwd_env_vars
+        warn_deprecated_cwd_env_vars(config={"terminal": {"cwd": "."}})
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
     def test_no_warning_when_env_clean(self, monkeypatch, capsys):
         monkeypatch.delenv("MESSAGING_CWD", raising=False)
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
@@ -52,7 +74,13 @@ class TestDeprecatedCwdWarning:
         captured = capsys.readouterr()
         assert captured.err == ""
 
-    def test_both_deprecated_vars_warn(self, monkeypatch, capsys):
+    def test_both_deprecated_vars_warn(self, monkeypatch, tmp_path, capsys):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text(
+            "MESSAGING_CWD=/msg/path\nTERMINAL_CWD=/term/path\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setenv("MESSAGING_CWD", "/msg/path")
         monkeypatch.setenv("TERMINAL_CWD", "/term/path")
 
