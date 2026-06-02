@@ -106,6 +106,7 @@ export default function RunsPage() {
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [applyingTaskId, setApplyingTaskId] = useState<string | null>(null);
+  const [appliedTaskId, setAppliedTaskId] = useState<string | null>(null);
   const [executorBusy, setExecutorBusy] = useState(false);
   const [agentRunBusyId, setAgentRunBusyId] = useState<string | null>(null);
   const [handoffStatus, setHandoffStatus] = useState(HANDOFF_STATUSES.includes(initialStatus) ? initialStatus : "");
@@ -218,12 +219,14 @@ export default function RunsPage() {
   const applyPolicy = async (taskId: string) => {
     setApplyingTaskId(taskId);
     setError(null);
+    setAppliedTaskId(null);
     try {
       await api.applyRunTaskExecutionPolicy(taskId, {
         project: project.trim() || "staam",
         task_type: "tests",
         risk_level: "R1",
       });
+      setAppliedTaskId(taskId);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -569,6 +572,36 @@ export default function RunsPage() {
                       >
                         {applyingTaskId === task.task_id ? t.common.loading : "Apply"}
                       </Button>
+                      {appliedTaskId === task.task_id ? (
+                        <span className="text-[11px] text-green-600 dark:text-green-400">
+                          Applied
+                        </span>
+                      ) : null}
+                      {task.status === "failed" ? (
+                        <Button
+                          size="sm"
+                          outlined
+                          disabled={applyingTaskId === task.task_id}
+                          onClick={() => void applyPolicy(task.task_id)}
+                        >
+                          Retry
+                        </Button>
+                      ) : null}
+                      {appliedTaskId === task.task_id ? (
+                        <span className="text-[11px] text-green-600 dark:text-green-400">
+                          Applied
+                        </span>
+                      ) : null}
+                      {task.status === "failed" ? (
+                        <Button
+                          size="sm"
+                          outlined
+                          disabled={applyingTaskId === task.task_id}
+                          onClick={() => void applyPolicy(task.task_id)}
+                        >
+                          Retry
+                        </Button>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
