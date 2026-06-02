@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Route,
   ShieldAlert,
+  X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -382,6 +383,13 @@ function actionPath(action: AlertAction, project: string): string {
   return query ? `${path}?${query}` : path;
 }
 
+function actionWhy(action: AlertAction, alert: OperationAlert): string {
+  if (action.type === 'run_eval') return `Eval baseline missing or stale (source: ${alert.source})`;
+  if (action.type === 'view_routing') return 'Drill into routing weights and demotion rules';
+  return `See detail in ${action.type.replace('view_', '').replace('_', ' ')} page`;
+}
+
+
 export default function OperationsPage() {
   const navigate = useNavigate();
   const { setTitle } = usePageHeader();
@@ -404,6 +412,9 @@ export default function OperationsPage() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionResult, setActionResult] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
+  const [alertFilter, setAlertFilter] = useState<AlertSeverity | "all">("all");
+  const [acknowledgedAlerts, setAcknowledgedAlerts] = useState<Set<string>>(new Set());
+
 
   useEffect(() => {
     setTitle("Operations");
@@ -597,6 +608,15 @@ export default function OperationsPage() {
     }
     navigate(actionPath(alert.action, project.trim() || DEFAULT_PROJECT));
   };
+
+  const acknowledgeAlert = (alertId: string) => {
+    setAcknowledgedAlerts((prev) => {
+      const next = new Set(prev);
+      next.add(alertId);
+      return next;
+    });
+  };
+
 
   return (
     <div className="space-y-4 p-4 lg:p-6">
@@ -976,12 +996,47 @@ export default function OperationsPage() {
               <ShieldAlert className="h-4 w-4" />
               Risk Alerts
             </CardTitle>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {(["all", "critical", "warning", "info"] as const).map((filter) => {
+                const count =
+                  filter === "all"
+                    ? allAlerts.length
+                    : allAlerts.filter((a) => a.severity === filter).length;
+                return (
+                  <button
+                    key={filter}
+                    className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                      alertFilter === filter
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground hover:bg-muted/80"
+                    }`}
+                    onClick={() => setAlertFilter(filter)}
+                  >
+                    {filter === "all" ? `All ${count}` : `${filter} ${count}`}
+                  </button>
+                );
+              })}
+            </div>
           </CardHeader>
           <CardContent>
             {allAlerts.length ? (
               <div className="space-y-2">
-                {allAlerts.slice(0, 12).map((alert) => (
-                  <div key={alert.id} className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-border p-3 text-sm">
+                {allAlerts
+                  .filter((alert) => {
+                    if (acknowledgedAlerts.has(alert.id)) return false;
+                    if (alertFilter === "all") return true;
+                    return alert.severity === alertFilter;
+                  })
+                  .slice(0, 12)
+                  .map((alert) => {
+                    const borderColor =
+                      alert.severity === "critical"
+                        ? "border-l-destructive"
+                        : alert.severity === "warning"
+                          ? "border-l-amber-500"
+                          : "border-l-blue-500";
+                    return (
+                  <div key={alert.id} className={`flex flex-wrap items-start justify-between gap-3 rounded-md border border-border p-3 text-sm border-l-4 ${borderColor}`}>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge tone={severityTone(alert.severity)}>{alert.severity}</Badge>
@@ -991,8 +1046,12 @@ export default function OperationsPage() {
                       <div className="mt-1 text-xs normal-case text-muted-foreground">{alert.detail}</div>
                       <div className="mt-1 text-[11px] normal-case text-muted-foreground">
                         source: {alert.source} · uncertainty: {alert.uncertainty}
+                        <span className="ml-1 text-[11px] italic text-muted-foreground/70">
+                          → {actionWhy(alert.action, alert)}
+                        </span>
                       </div>
                     </div>
+                    <div className="flex items-center gap-2">
                     <Button
                       size="sm"
                       outlined
@@ -1001,13 +1060,26 @@ export default function OperationsPage() {
                     >
                       {alert.action.label}
                     </Button>
+                    <Button
+                      size="sm"
+                      outlined
+                      onClick={() => acknowledgeAlert(alert.id)}
+                      title="Acknowledge and hide this alert"
+                      prefix={<X className="h-3 w-3" />}
+                    />
+                    </div>
                   </div>
-                ))}
+                    );
+                  })}
               </div>
             ) : (
               <div className="flex items-center gap-2 py-8 text-sm normal-case text-muted-foreground">
                 <CheckCircle2 className="h-4 w-4" />
-                No risk alerts from the current contract.
+                {allAlerts.length === 0
+                  ? "No risk alerts from the current contract."
+                  : acknowledgedAlerts.size > 0 && alertFilter === "all"
+                    ? "All alerts acknowledged."
+                    : `No ${alertFilter} alerts.`}
               </div>
             )}
           </CardContent>
