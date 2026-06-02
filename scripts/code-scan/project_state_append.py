@@ -63,12 +63,16 @@ def append_project_state(
             - graph: graph output (summary.total_nodes, summary.total_edges)
             - validation: validation output (issues, warnings)
             - context: context envelope (optional; validation.verdict)
+            - runtime_readiness: (optional) readiness artifact summary
+            - cleanliness: (optional) target cleanliness summary
         project_root: Absolute path to the project root.
 
     Returns:
         Dict with:
             - project_state_recorded: bool
             - ledger_path: str or None
+            - project_state_append_status: "not_attempted" | "success" | "failed"
+            - project_state_append_error: str or None (sanitized error message)
     """
     ledger_path = _find_ledger_path(project_root)
 
@@ -76,18 +80,40 @@ def append_project_state(
         return {
             "project_state_recorded": False,
             "ledger_path": None,
+            "project_state_append_status": "not_attempted",
+            "project_state_append_error": None,
         }
 
     ua_section = _build_ua_section(results)
 
-    # Append — never overwrite
-    with open(ledger_path, "a", encoding="utf-8") as f:
-        f.write(ua_section)
+    try:
+        # Read existing content, normalize EOF, then re-write + append
+        with open(ledger_path, "r", encoding="utf-8") as f:
+            existing = f.read()
 
-    return {
-        "project_state_recorded": True,
-        "ledger_path": ledger_path,
-    }
+        normalized = _normalize_eof(existing)
+
+        with open(ledger_path, "w", encoding="utf-8") as f:
+            f.write(normalized)
+            f.write(ua_section)
+
+        return {
+            "project_state_recorded": True,
+            "ledger_path": ledger_path,
+            "project_state_append_status": "success",
+            "project_state_append_error": None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        # Sanitize error message: keep it short, no paths/tracebacks
+        msg = str(exc)
+        if len(msg) > 200:
+            msg = msg[:200] + "..."
+        return {
+            "project_state_recorded": False,
+            "ledger_path": ledger_path,
+            "project_state_append_status": "failed",
+            "project_state_append_error": msg,
+        }
 
 
 # -----------------------------------------------------------------------
@@ -109,6 +135,11 @@ def _find_ledger_path(project_root: str) -> Optional[str]:
     return None
 
 
+def _normalize_eof(content: str) -> str:
+    """Normalize trailing whitespace so content ends with exactly one ``\\n``."""
+    return content.rstrip("\n") + "\n"
+
+
 def _build_ua_section(results: Dict[str, Any]) -> str:
     """Build a compact, deterministic UA section for the ledger.
 
@@ -122,6 +153,10 @@ def _build_ua_section(results: Dict[str, Any]) -> str:
     - file_count (total files scanned)
     - top 5 languages
     - graph node/edge count
+    - verification_status (from runtime_readiness, if present)
+    - blockers (from runtime_readiness, capped to 3)
+    - target_cleanliness_status (from cleanliness, if present)
+    - unexpected_changes_count (from cleanliness, if present)
     - next recommended action (deterministic heuristic)
     - timestamp
 
@@ -132,6 +167,8 @@ def _build_ua_section(results: Dict[str, Any]) -> str:
     graph = results.get("graph", {})
     validation = results.get("validation", {})
     context = results.get("context", {})
+    runtime_readiness = results.get("runtime_readiness", {})
+    cleanliness = results.get("cleanliness", {})
 
     run_id = manifest.get("run_id", "unknown")
     mode = manifest.get("mode", "unknown")
@@ -174,10 +211,31 @@ def _build_ua_section(results: Dict[str, Any]) -> str:
         f"- top_5_languages: {', '.join(top_5) if top_5 else 'none'}",
         f"- graph_nodes: {node_count}",
         f"- graph_edges: {edge_count}",
-        f"- next_recommended_action: {next_action}",
-        f"- timestamp: {timestamp}",
-        "",
     ]
+
+    # Runtime readiness summary (UA-P1-004)
+    if runtime_readiness:
+        verif_status = runtime_readiness.get("verification_status")
+        if verif_status:
+            lines.append(f"- verification_status: {verif_status}")
+        blockers = runtime_readiness.get("blockers", [])
+        if blockers:
+            # Cap to top 3
+            capped = blockers[:3]
+            lines.append(f"- blockers (top 3): {'; '.join(capped)}")
+
+    # Target cleanliness summary (UA-P1-004)
+    if cleanliness:
+        clean_status = cleanliness.get("target_cleanliness_status")
+        if clean_status:
+            lines.append(f"- target_cleanliness_status: {clean_status}")
+        unexpected_count = cleanliness.get("unexpected_changes_count")
+        if unexpected_count is not None:
+            lines.append(f"- unexpected_changes_count: {unexpected_count}")
+
+    lines.append(f"- next_recommended_action: {next_action}")
+    lines.append(f"- timestamp: {timestamp}")
+    lines.append("")
 
     return "\n".join(lines)
 

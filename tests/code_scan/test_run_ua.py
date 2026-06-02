@@ -441,6 +441,73 @@ class TestProjectStateIntegration:
         assert manifest["project_state_recorded"] is True
         assert manifest["ledger_path"] is not None
 
+    def test_manifest_has_project_state_append_status_success(self, tmp_path: Path):
+        """When ledger exists and append succeeds, project_state_append_status is 'success'."""
+        src = self.PROJECT_STATE_FIXTURES / "with_ledger"
+        target_dir = tmp_path / "with_ledger"
+        shutil.copytree(src, target_dir)
+        out = str(tmp_path / "bundle")
+
+        rc, _, stderr = run_ua(
+            str(target_dir), out, mode="inventory",
+            extra_args=["--record-project-state"],
+        )
+        assert rc == 0, f"append status test failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert manifest["project_state_append_status"] == "success"
+        assert manifest.get("project_state_append_error") is None
+
+    def test_manifest_has_project_state_append_status_not_attempted(self, tmp_path: Path):
+        """When ledger is absent, project_state_append_status is 'not_attempted'."""
+        src = self.PROJECT_STATE_FIXTURES / "without_ledger"
+        target_dir = tmp_path / "without_ledger"
+        shutil.copytree(src, target_dir)
+        out = str(tmp_path / "bundle")
+
+        rc, _, stderr = run_ua(
+            str(target_dir), out, mode="inventory",
+            extra_args=["--record-project-state"],
+        )
+        assert rc == 0, f"not_attempted test failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert manifest["project_state_append_status"] == "not_attempted"
+        assert manifest.get("project_state_append_error") is None
+
+    def test_manifest_has_project_state_append_status_without_opt_in(self, tmp_path: Path):
+        """Without --record-project-state, append_status is 'not_attempted'."""
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="inventory")
+        assert rc == 0, f"no opt-in failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert manifest["project_state_append_status"] == "not_attempted"
+        assert manifest.get("project_state_append_error") is None
+
+    def test_append_failure_does_not_fail_ua_run(self, tmp_path: Path):
+        """If project-state append fails, UA run still succeeds and status records failure."""
+        src = self.PROJECT_STATE_FIXTURES / "with_ledger"
+        target_dir = tmp_path / "with_ledger"
+        shutil.copytree(src, target_dir)
+        # Make the ledger read-only so append will fail
+        ledger = target_dir / ".hermes" / "PROJECT_STATE.md"
+        ledger.chmod(0o444)
+
+        out = str(tmp_path / "bundle")
+        try:
+            rc, stdout, stderr = run_ua(
+                str(target_dir), out, mode="inventory",
+                extra_args=["--record-project-state"],
+            )
+            # UA run should NOT fail
+            assert rc == 0, f"UA run should not fail due to append error: {stderr}"
+            manifest = _load_manifest(out)
+            assert manifest["project_state_append_status"] == "failed"
+            assert "project_state_append_error" in manifest
+            assert manifest["project_state_append_error"] is not None
+            assert len(manifest["project_state_append_error"]) > 0
+        finally:
+            ledger.chmod(0o644)  # restore for cleanup
+
 
 # ── UA-P1-002: Target Cleanliness Hardening ───────────────────────────
 

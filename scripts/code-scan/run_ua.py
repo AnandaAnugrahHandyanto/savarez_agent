@@ -199,6 +199,8 @@ class RunUA:
         self._project_state_status: dict = {
             "project_state_recorded": False,
             "ledger_path": None,
+            "project_state_append_status": "not_attempted",
+            "project_state_append_error": None,
         }
         # Target cleanliness tracking (UA-P1-002)
         self._target_dirty_before: Optional[bool] = None
@@ -390,12 +392,17 @@ class RunUA:
         if artifact_name not in self._missing_artifacts:
             self._missing_artifacts.append(artifact_name)
 
-    def _try_record_project_state(self, manifest: dict) -> None:
+    def _try_record_project_state(self, manifest: dict,
+                                   runtime_readiness: Optional[dict] = None,
+                                   cleanliness: Optional[dict] = None) -> None:
         """Attempt to append a compact UA section to the project-state ledger.
 
         Only runs when a project_root was explicitly provided (opt-in) and
         the project_state_append helper is available.  Updates the internal
         project-state status so the manifest can report it.
+
+        Passes runtime_readiness and cleanliness summaries for inclusion
+        in the ledger (UA-P1-004).
         """
         if not self.project_root or not _HAS_PROJECT_STATE:
             return
@@ -407,6 +414,11 @@ class RunUA:
             "validation": self.validation_data or {},
             "context": self.context_data or {},
         }
+        if runtime_readiness:
+            results["runtime_readiness"] = runtime_readiness
+        if cleanliness:
+            results["cleanliness"] = cleanliness
+
         try:
             status = _append_project_state(results, self.project_root)  # type: ignore[misc]
             self._project_state_status.update(status)
@@ -415,6 +427,8 @@ class RunUA:
             self._project_state_status = {
                 "project_state_recorded": False,
                 "ledger_path": None,
+                "project_state_append_status": "failed",
+                "project_state_append_error": "unexpected error during append",
             }
 
     def _build_manifest(self, run_id: str, *, status: str = "complete",
@@ -471,6 +485,12 @@ class RunUA:
         # Project-state integration (UA-006) — always present, default false
         manifest["project_state_recorded"] = self._project_state_status["project_state_recorded"]
         manifest["ledger_path"] = self._project_state_status["ledger_path"]
+        manifest["project_state_append_status"] = self._project_state_status.get(
+            "project_state_append_status", "not_attempted"
+        )
+        manifest["project_state_append_error"] = self._project_state_status.get(
+            "project_state_append_error"
+        )
         if status == "failed":
             manifest["failure_stage"] = failure_stage or "unknown"
             manifest["error_message"] = error_message or ""
@@ -542,6 +562,42 @@ class RunUA:
             f.write(md_content)
         self.artifact_paths["runtime-readiness.md"] = md_path
 
+    def _readiness_summary(self) -> Optional[dict]:
+        """Build a compact readiness summary for the project-state ledger.
+
+        Returns None if readiness data is unavailable.
+        """
+        if not _HAS_READINESS:
+            return None
+        try:
+            artifact = build_readiness_artifact(self.target_dir)  # type: ignore[misc]
+            return {
+                "verification_status": artifact.get("verification_status", "unknown"),
+                "blockers": artifact.get("blockers", []),
+            }
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _cleanliness_summary(self) -> dict:
+        """Build a compact cleanliness summary for the project-state ledger."""
+        before_set = set(self._target_dirty_files_before)
+        after_set = set(self._target_dirty_files_after)
+        unexpected = sorted(after_set - before_set)
+        return {
+            "target_cleanliness_status": self._cleanliness_status(),
+            "unexpected_changes_count": len(unexpected),
+        }
+
+    def _cleanliness_status(self) -> str:
+        """Derive the cleanliness status string."""
+        if self._target_dirty_before is None or self._target_dirty_after is None:
+            return "unknown"
+        if self._target_dirty_files_after != self._target_dirty_files_before:
+            return "mutated"
+        if self._target_dirty_before:
+            return "preexisting_dirty"
+        return "clean"
+
     # ── mode routing ──────────────────────────────────────────
 
     def run(self) -> dict:
@@ -581,11 +637,21 @@ class RunUA:
             raise
 
         # Opt-in project-state recording (UA-006) — after all artifacts exist
-        self._try_record_project_state(manifest)
+        readiness = self._readiness_summary()
+        cleanliness = self._cleanliness_summary()
+        self._try_record_project_state(manifest,
+                                       runtime_readiness=readiness,
+                                       cleanliness=cleanliness)
         if self.project_root and _HAS_PROJECT_STATE:
             # Update manifest in-place with project-state results, then persist
             manifest["project_state_recorded"] = self._project_state_status["project_state_recorded"]
             manifest["ledger_path"] = self._project_state_status["ledger_path"]
+            manifest["project_state_append_status"] = self._project_state_status.get(
+                "project_state_append_status", "not_attempted"
+            )
+            manifest["project_state_append_error"] = self._project_state_status.get(
+                "project_state_append_error"
+            )
             self._build_manifest_into_existing(manifest)
 
         return manifest

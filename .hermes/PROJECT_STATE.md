@@ -138,3 +138,29 @@ Committed: `24356edcd` | Tests: 80 passed
 - Reviewer verdict: PASS; non-blocking unused-import note only.
 - Handoff: `.hermes/handoffs/2026-06-01-2348-ua-p1-003-complete.md`.
 - Approval gate: JC pre-approved sequential autonomous commit/push for UA-P1-003/004/005 if all gates pass. No merge, deploy, or production mutation performed.
+
+## UA Phase 1 Hardening — UA-P1-004 Completion Checkpoint
+- Timestamp: 2026-06-02T00:09:05Z.
+- Source plan package: `/home/jarrad/work/plans/ua-phase1-execution`.
+- Executed bead: `UA-P1-004 - Project-State Integration Hardening`.
+- Live branch: `feat/ua-001-run-bundle` tracking `jc-fork/feat/ua-001-run-bundle`.
+- Base commit before bead: `65a7c3253 feat(code-scan): add runtime readiness artifacts`.
+- Changed in-scope files:
+  - `scripts/code-scan/project_state_append.py`
+  - `scripts/code-scan/run_ua.py`
+  - `tests/code_scan/test_project_state_append.py`
+  - `tests/code_scan/test_run_ua.py`
+- Known out-of-scope dirty files preserved/excluded:
+  - `tests/tools/test_skills_sync.py`
+  - `tools/skills_sync.py`
+- Coder RED evidence: `test_run_ua.py` failed for missing `project_state_append_status`; `test_project_state_append.py` failed for missing `_normalize_eof`.
+- Hermes focused verification: `python -m pytest tests/code_scan/test_project_state_append.py tests/code_scan/test_run_ua.py -q` — PASS, `81 passed in 16.27s`.
+- Hermes full code-scan verification: `python -m pytest tests/code_scan -q` — PASS, `530 passed in 102.87s (0:01:42)`.
+- Compile check: `python -m py_compile scripts/code-scan/project_state_append.py scripts/code-scan/run_ua.py` — PASS.
+- Direct ledger readback: append returned success; existing content preserved; runtime blockers capped to 3; cleanliness status/count recorded; full JSON not embedded.
+- Diff hygiene: scoped `git diff --check` — PASS after narrow trailing-whitespace fix.
+- Added-lines secret scan: PASS.
+- Diff artifact: `/tmp/ua-p1-004-diff.patch` — 549 lines / 24013 bytes.
+- Reviewer verdict: PASS; non-blocking coverage/code-quality notes only.
+- Handoff: `.hermes/handoffs/2026-06-02-0009-ua-p1-004-complete.md`.
+- Approval gate: JC pre-approved sequential autonomous commit/push for UA-P1-003/004/005 if all gates pass. No merge, deploy, or production mutation performed.

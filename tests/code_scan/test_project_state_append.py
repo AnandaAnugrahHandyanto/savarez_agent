@@ -8,7 +8,7 @@ TDD phases:
 import copy
 import os
 import shutil
-import tempfile
+import stat
 import sys
 from pathlib import Path
 
@@ -27,6 +27,7 @@ from project_state_append import (  # noqa: E402
     append_project_state,
     _build_ua_section,
     _find_ledger_path,
+    _normalize_eof,
 )
 
 # ---------------------------------------------------------------------------
@@ -350,3 +351,180 @@ class TestBuildUASection:
         section = _build_ua_section(results)
         assert isinstance(section, str)
         assert len(section) > 0
+
+
+# ===================================================================
+# UA-P1-004: RED PHASE — new requirements must fail before implementation
+# ===================================================================
+
+class TestEOFNormalization:
+    """UA-P1-004: EOF whitespace must be normalized before append."""
+
+    def test_normalize_eof_multiple_trailing_newlines(self):
+        """Content ending with multiple newlines should end with exactly one."""
+        content = "hello\n\n\n"
+        result = _normalize_eof(content)
+        assert result == "hello\n"
+
+    def test_normalize_eof_already_single_newline(self):
+        """Content that already ends with one newline should be unchanged."""
+        content = "hello\n"
+        result = _normalize_eof(content)
+        assert result == "hello\n"
+
+    def test_normalize_eof_no_trailing_newline(self):
+        """Content without trailing newline should get one."""
+        content = "hello"
+        result = _normalize_eof(content)
+        assert result == "hello\n"
+
+    def test_normalize_eof_only_whitespace(self):
+        """Content with blank lines at end should normalize to one newline."""
+        content = "hello\n\n\n\n"
+        result = _normalize_eof(content)
+        assert result == "hello\n"
+
+    def test_eof_normalization_applied_during_append(self, tmp_with_ledger, fixture_ledger_bytes):
+        """append_project_state should normalize EOF before appending.
+
+        This ensures that existing content ending with multiple blank lines
+        gets normalized to exactly one newline before the new section is appended."""
+        ledger_path = str(tmp_with_ledger / ".hermes" / PROJECT_STATE_LEDGER_NAME)
+        # Add multiple trailing newlines to simulate messy EOF
+        with open(ledger_path, "a", encoding="utf-8") as f:
+            f.write("\n\n\n")
+
+        original_content = Path(ledger_path).read_text()
+        # Verify it currently has extra trailing newlines
+        assert original_content.endswith("\n\n\n\n"), \
+            f"Expected 4 trailing newlines, got content ending with: {repr(original_content[-10:])}"
+
+        results = _make_result_dict()
+        append_project_state(results, str(tmp_with_ledger))
+
+        new_content = Path(ledger_path).read_text()
+        # After append, the transition between old content and new section should
+        # have exactly one blank line (EOF normalized, then blank line prepended to section)
+        # The original content's trailing blank lines should be normalized away
+        assert "def456" in new_content, "UA run_id should appear after append"
+
+
+class TestRuntimeReadinessSummary:
+    """UA-P1-004: Runtime readiness summary fields should be recorded."""
+
+    def test_verification_status_in_section(self):
+        """verification_status from runtime_readiness should appear in section."""
+        results = _make_result_dict()
+        results["runtime_readiness"] = {
+            "verification_status": "verification_blocked",
+            "blockers": ["go command not found", "docker unavailable"],
+        }
+        section = _build_ua_section(results)
+        assert "verification_status" in section
+        assert "verification_blocked" in section
+
+    def test_top_blockers_capped_to_three(self):
+        """Blockers should be listed but capped to 3."""
+        results = _make_result_dict()
+        results["runtime_readiness"] = {
+            "verification_status": "verification_blocked",
+            "blockers": ["block1", "block2", "block3", "block4", "block5"],
+        }
+        section = _build_ua_section(results)
+        # Should contain the blocker heading
+        assert "blockers" in section
+        # block1, block2, block3 should be present
+        assert "block1" in section
+        assert "block2" in section
+        assert "block3" in section
+        # block4 and block5 should NOT appear (capped to 3)
+        assert "block4" not in section
+        assert "block5" not in section
+
+    def test_blockers_absent_when_none(self):
+        """No blockers should not produce a blockers field."""
+        results = _make_result_dict()
+        results["runtime_readiness"] = {
+            "verification_status": "verification_ready",
+            "blockers": [],
+        }
+        section = _build_ua_section(results)
+        assert "verification_status" in section
+        assert "blockers" not in section
+
+    def test_runtime_readiness_in_ledger(self, tmp_with_ledger):
+        """When runtime_readiness is provided, it should appear in the ledger."""
+        results = _make_result_dict()
+        results["runtime_readiness"] = {
+            "verification_status": "verification_ready",
+            "blockers": [],
+        }
+        append_project_state(results, str(tmp_with_ledger))
+        content = Path(_find_ledger_path(str(tmp_with_ledger))).read_text()
+        assert "verification_status" in content
+        assert "verification_ready" in content
+
+
+class TestCleanlinessSummary:
+    """UA-P1-004: Target cleanliness summary fields should be recorded."""
+
+    def test_cleanliness_status_in_section(self):
+        """target_cleanliness_status from cleanliness should appear in section."""
+        results = _make_result_dict()
+        results["cleanliness"] = {
+            "target_cleanliness_status": "clean",
+            "unexpected_changes_count": 0,
+        }
+        section = _build_ua_section(results)
+        assert "target_cleanliness_status" in section
+        assert "clean" in section
+
+    def test_unexpected_changes_count_in_section(self):
+        """unexpected_changes_count should appear in section."""
+        results = _make_result_dict()
+        results["cleanliness"] = {
+            "target_cleanliness_status": "mutated",
+            "unexpected_changes_count": 2,
+        }
+        section = _build_ua_section(results)
+        assert "unexpected_changes_count" in section
+        assert "2" in section
+
+
+class TestNonFatalAppendErrors:
+    """UA-P1-004: Append errors must not crash, must record status + error."""
+
+    def test_append_status_success_on_success(self, tmp_with_ledger):
+        """Successful append should return project_state_append_status: success."""
+        results = _make_result_dict()
+        status = append_project_state(results, str(tmp_with_ledger))
+        assert status["project_state_append_status"] == "success", \
+            f"Expected 'success', got {status.get('project_state_append_status')}"
+
+    def test_append_status_not_attempted_without_ledger(self, tmp_without_ledger):
+        """When no ledger exists, status should be not_attempted."""
+        results = _make_result_dict()
+        status = append_project_state(results, str(tmp_without_ledger))
+        assert status["project_state_append_status"] == "not_attempted", \
+            f"Expected 'not_attempted', got {status.get('project_state_append_status')}"
+        assert status.get("project_state_append_error") is None
+
+    def test_append_status_failed_on_exception(self, tmp_path):
+        """When append raises, status should be 'failed' with sanitized error."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        hermes = project_dir / ".hermes"
+        hermes.mkdir()
+        ledger = hermes / "PROJECT_STATE.md"
+        ledger.write_text("# Existing\n")
+        ledger.chmod(0o444)  # read-only — append will fail
+
+        try:
+            results = _make_result_dict()
+            status = append_project_state(results, str(project_dir))
+            assert status["project_state_append_status"] == "failed"
+            assert "project_state_append_error" in status
+            assert status["project_state_append_error"] is not None
+            assert len(status["project_state_append_error"]) > 0
+        finally:
+            ledger.chmod(0o644)  # restore for cleanup
