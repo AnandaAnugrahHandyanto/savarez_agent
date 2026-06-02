@@ -649,8 +649,37 @@ def _save_enabled_set(enabled: set) -> None:
     save_config(config)
 
 
+def _get_staged_set() -> set:
+    """Read the staged plugins list from config.yaml.
+
+    Plugins in ``plugins.staged`` were discovered during config migration
+    but have not been explicitly approved by the operator. They do not
+    load until moved to ``plugins.enabled`` via ``hermes plugins enable``.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        plugins_cfg = config.get("plugins", {})
+        if not isinstance(plugins_cfg, dict):
+            return set()
+        staged = plugins_cfg.get("staged", [])
+        return set(staged) if isinstance(staged, list) else set()
+    except Exception:
+        return set()
+
+
+def _save_staged_set(staged: set) -> None:
+    """Write the staged plugins list to config.yaml."""
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    if "plugins" not in config:
+        config["plugins"] = {}
+    config["plugins"]["staged"] = sorted(staged)
+    save_config(config)
+
+
 def cmd_enable(name: str) -> None:
-    """Add a plugin to the enabled allow-list (and remove it from disabled)."""
+    """Add a plugin to the enabled allow-list (and remove from disabled and staged)."""
     from rich.console import Console
 
     console = Console()
@@ -661,6 +690,7 @@ def cmd_enable(name: str) -> None:
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
+    staged = _get_staged_set()
 
     if name in enabled and name not in disabled:
         console.print(f"[dim]Plugin '{name}' is already enabled.[/dim]")
@@ -668,8 +698,10 @@ def cmd_enable(name: str) -> None:
 
     enabled.add(name)
     disabled.discard(name)
+    staged.discard(name)
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
+    _save_staged_set(staged)
     console.print(
         f"[green]✓[/green] Plugin [bold]{name}[/bold] enabled. "
         "Takes effect on next session."
@@ -866,7 +898,80 @@ def cmd_list(args: Any | None = None) -> None:
     console.print("[dim]Compact view:[/dim] hermes plugins list --plain --no-bundled")
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")
     console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
+    console.print("[dim]Audit staged:[/dim] hermes plugins audit")
     console.print("[dim]Plugins are opt-in by default — only 'enabled' plugins load.[/dim]")
+
+
+def cmd_audit(args: Any | None = None) -> None:
+    """Review plugins that were discovered but not explicitly approved.
+
+    Lists plugins in ``plugins.staged`` — these were found on disk during
+    config migration but have not been enabled by the operator. Staged
+    plugins do not load until explicitly approved via ``hermes plugins enable``.
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    staged = _get_staged_set()
+    enabled = _get_enabled_set()
+    disabled = _get_disabled_set()
+
+    if getattr(args, "json", False):
+        payload = {
+            "staged": sorted(staged),
+            "enabled": sorted(enabled),
+            "disabled": sorted(disabled),
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    if not staged:
+        console.print("[green]✓[/green] No staged plugins awaiting review.")
+        console.print(
+            "[dim]All plugins in ~/.hermes/plugins/ are either enabled or were "
+            "installed after the staging gate was introduced.[/dim]"
+        )
+        return
+
+    console.print()
+    console.print(
+        f"[yellow]⚠ {len(staged)} plugin(s) staged — they will not load until "
+        f"explicitly enabled.[/yellow]"
+    )
+    console.print()
+
+    table = Table(title="Staged Plugins (awaiting operator review)", show_lines=False)
+    table.add_column("Name", style="bold")
+    table.add_column("Status")
+    table.add_column("Version", style="dim")
+    table.add_column("Description")
+    table.add_column("Source", style="dim")
+
+    entries = _discover_all_plugins()
+    staged_entries = [
+        (name, ver, desc, src, _dir)
+        for name, ver, desc, src, _dir in entries
+        if name in staged
+    ]
+
+    for name, version, description, source, _dir in staged_entries:
+        table.add_row(name, "[yellow]staged[/yellow]", str(version), description, source)
+
+    # Also show staged names that weren't found on disk (orphaned entries)
+    found_names = {e[0] for e in staged_entries}
+    for name in sorted(staged):
+        if name not in found_names:
+            table.add_row(name, "[red]staged (missing)[/red]", "—", "Not found on disk", "unknown")
+
+    console.print(table)
+    console.print()
+    console.print("[dim]To approve a plugin:[/dim] hermes plugins enable <name>")
+    console.print(
+        "[dim]Staged plugins cannot load until explicitly approved. "
+        "This prevents silent trust-envelope expansion.[/dim]"
+    )
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -1682,6 +1787,8 @@ def plugins_command(args) -> None:
         cmd_disable(args.name)
     elif action in {"list", "ls"}:
         cmd_list(args)
+    elif action == "audit":
+        cmd_audit(args)
     elif action is None:
         cmd_toggle()
     else:

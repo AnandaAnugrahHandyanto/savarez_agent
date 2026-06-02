@@ -4329,14 +4329,18 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     else:
                         print("  ✓ Removed unused compression.summary_* keys")
 
-    # ── Version 20 → 21: plugins are now opt-in; grandfather existing user plugins ──
+    # ── Version 20 → 21: plugins are now opt-in; stage existing user plugins ──
     # The loader now requires plugins to appear in ``plugins.enabled`` before
     # loading. Existing installs had all discovered plugins loading by default
     # (minus anything in ``plugins.disabled``). To avoid silently breaking
-    # those setups on upgrade, populate ``plugins.enabled`` with the set of
-    # currently-installed user plugins that aren't already disabled.
+    # those sets, discovered plugins are written to ``plugins.staged`` instead
+    # of ``plugins.enabled``. The operator must explicitly approve them via
+    # ``hermes plugins enable <name>`` or ``hermes plugins audit``.
     #
-    # Bundled plugins (shipped in the repo itself) are NOT grandfathered —
+    # This prevents code paths (e.g. kanban workers) that can write to
+    # ~/.hermes/plugins/ from silently expanding the trust envelope.
+    #
+    # Bundled plugins (shipped in the repo itself) are NOT staged —
     # they ship off for everyone, including existing users, so any user who
     # wants one has to opt in explicitly.
     if current_ver < 21:
@@ -4352,7 +4356,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             disabled_set = set(disabled)
 
             # Scan ``$HERMES_HOME/plugins/`` for currently installed user plugins.
-            grandfathered: List[str] = []
+            staged: List[str] = []
             try:
                 user_plugins_dir = get_hermes_home() / "plugins"
                 if user_plugins_dir.is_dir():
@@ -4372,25 +4376,36 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         name = manifest.get("name") or child.name
                         if name in disabled_set:
                             continue
-                        grandfathered.append(name)
+                        staged.append(name)
             except Exception:
-                grandfathered = []
+                staged = []
 
-            plugins_cfg["enabled"] = grandfathered
+            # Write to staged, NOT enabled — operator must explicitly approve.
+            plugins_cfg["staged"] = staged
+            # Ensure "enabled" exists as empty list so loader doesn't
+            # fall back to legacy behavior.
+            if "enabled" not in plugins_cfg:
+                plugins_cfg["enabled"] = []
             config["plugins"] = plugins_cfg
             save_config(config)
             results["config_added"].append(
-                f"plugins.enabled (opt-in allow-list, {len(grandfathered)} grandfathered)"
+                f"plugins.staged (trust-envelope gate, {len(staged)} plugin(s) awaiting review)"
             )
             if not quiet:
-                if grandfathered:
+                if staged:
                     print(
-                        f"  ✓ Plugins now opt-in: grandfathered "
-                        f"{len(grandfathered)} existing plugin(s) into plugins.enabled"
+                        f"\n  ⚠ SECURITY: {len(staged)} plugin(s) found in ~/.hermes/plugins/ "
+                        f"require operator review before loading."
+                    )
+                    for _p in staged:
+                        print(f"    - {_p}")
+                    print(
+                        f"  Run 'hermes plugins audit' to review, or "
+                        f"'hermes plugins enable <name>' to approve.\n"
                     )
                 else:
                     print(
-                        "  ✓ Plugins now opt-in: no existing plugins to grandfather. "
+                        "  ✓ Plugins now opt-in: no untracked plugins found. "
                         "Use `hermes plugins enable <name>` to activate."
                     )
 

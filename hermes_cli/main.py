@@ -13661,6 +13661,22 @@ Examples:
     )
     plugins_disable.add_argument("name", help="Plugin name to disable")
 
+    plugins_audit = plugins_subparsers.add_parser(
+        "audit",
+        help="Review staged plugins awaiting operator approval",
+        description=(
+            "List plugins discovered during config migration that have not been "
+            "explicitly enabled. Staged plugins do not load until approved via "
+            "'hermes plugins enable <name>'. This prevents silent trust-envelope "
+            "expansion from automated processes (e.g. kanban workers)."
+        ),
+    )
+    plugins_audit.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON",
+    )
+
     def cmd_plugins(args):
         from hermes_cli.plugins_cmd import plugins_command
 
