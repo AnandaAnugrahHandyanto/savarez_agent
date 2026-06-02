@@ -50,6 +50,20 @@ impl AppMode {
     }
 }
 
+/// Returns true when the args request a forced installer UI (repair/reinstall)
+/// via `--reinstall` or `--repair`, which overrides the macOS launcher
+/// fast-path so a broken install can be repaired. Arg-iterator generic so it's
+/// unit-testable, mirroring `AppMode::from_args`. Independent of mode selection:
+/// these flags never flip Install<->Update.
+pub fn force_setup_from_args<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .any(|a| a.as_ref() == "--reinstall" || a.as_ref() == "--repair")
+}
+
 /// Process-wide install state, shared across Tauri commands.
 ///
 /// The bootstrap is a one-shot, single-tenant process — we only need one
@@ -88,9 +102,7 @@ pub fn run() {
     // Escape hatch: `--reinstall`/`--repair` forces the installer UI even when
     // Hermes is already installed, so users can re-run setup to repair a broken
     // install instead of the launcher fast path silently relaunching the app.
-    let force_setup = std::env::args()
-        .skip(1)
-        .any(|a| a == "--reinstall" || a == "--repair");
+    let force_setup = force_setup_from_args(std::env::args().skip(1));
     tracing::info!(?mode, force_setup, "Hermes installer starting");
 
     tauri::Builder::default()
@@ -175,7 +187,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::AppMode;
+    use super::{force_setup_from_args, AppMode};
 
     #[test]
     fn bare_args_are_install() {
@@ -188,6 +200,32 @@ mod tests {
         assert_eq!(AppMode::from_args(["--update"]), AppMode::Update);
         assert_eq!(
             AppMode::from_args(["--something", "--update", "--else"]),
+            AppMode::Update
+        );
+    }
+
+    #[test]
+    fn reinstall_and_repair_flags_force_setup() {
+        assert!(force_setup_from_args(["--reinstall"]));
+        assert!(force_setup_from_args(["--repair"]));
+        assert!(force_setup_from_args(["--foo", "--repair", "--bar"]));
+    }
+
+    #[test]
+    fn bare_or_unrelated_args_do_not_force_setup() {
+        assert!(!force_setup_from_args(Vec::<String>::new()));
+        assert!(!force_setup_from_args(["--foo", "bar"]));
+        // --update must not be mistaken for a force-setup flag.
+        assert!(!force_setup_from_args(["--update"]));
+    }
+
+    #[test]
+    fn force_setup_flags_do_not_affect_mode_selection() {
+        // The repair flags must never flip Install<->Update.
+        assert_eq!(AppMode::from_args(["--reinstall"]), AppMode::Install);
+        assert_eq!(AppMode::from_args(["--repair"]), AppMode::Install);
+        assert_eq!(
+            AppMode::from_args(["--update", "--reinstall"]),
             AppMode::Update
         );
     }
