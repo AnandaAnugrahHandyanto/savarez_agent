@@ -31,6 +31,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
+import { ActiveEnvelopePanel } from "@/components/ActiveEnvelopePanel";
 import { ArtifactWorkspaceBrowser } from "@/components/ArtifactWorkspaceBrowser";
 import { MissionBriefsPanel } from "@/components/MissionBriefsPanel";
 import { MissionPacketsPanel } from "@/components/MissionPacketsPanel";
@@ -1425,6 +1426,7 @@ export default function MissionControlPage() {
           </div>
         )}
 
+        <ActiveEnvelopePanel />
         {missionBriefsEnabled && <MissionBriefsPanel />}
         <ArtifactWorkspaceBrowser />
         <ProjectRoomsPanel />
