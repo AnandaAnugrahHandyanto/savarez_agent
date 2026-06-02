@@ -211,6 +211,8 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  listMissionControlArtifacts: () =>
+    fetchJSON<MissionControlArtifactListResponse>("/api/mission-control/artifacts", { cache: "no-store" }),
   listMissionBriefs: () =>
     fetchJSON<MissionBriefListResponse>("/api/mission-control/mission-briefs", { cache: "no-store" }),
   getMissionBrief: (briefId: string) =>
@@ -928,6 +930,33 @@ export interface MissionControlPacketDetailResponse {
 
 export interface MissionControlPacketCreateResponse {
   packet: MissionControlPacket;
+}
+
+export interface MissionControlArtifact {
+  source_type: string;
+  record_id: string;
+  title: string;
+  project: string;
+  status: string;
+  kind: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  archived_at?: string | null;
+  counts: Record<string, number>;
+  linked_ids: Record<string, string[]>;
+  source_ref_count: number;
+  flags: Record<string, unknown>;
+  warnings: string[];
+  trusted_for_execution: false;
+  inert_context_only: true;
+  untrusted: true;
+}
+
+export interface MissionControlArtifactListResponse {
+  generated_at: string;
+  source: string;
+  items: MissionControlArtifact[];
+  warnings: string[];
 }
 
 export interface MissionControlCodexPromptPacketCreate {
