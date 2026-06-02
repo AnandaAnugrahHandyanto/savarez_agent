@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import sys
 import signal
 import tempfile
@@ -1131,6 +1132,7 @@ from gateway.session import (
     is_shared_multi_user_session,
 )
 from gateway.delivery import DeliveryRouter
+from gateway.status_card import format_hermes_status_card
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -1285,6 +1287,103 @@ def _build_media_placeholder(event) -> str:
         else:
             parts.append(f"[User sent a file: {url}]")
     return "\n".join(parts)
+
+
+def _status_git_short_sha() -> str | None:
+    """Best-effort git short SHA for the running Hermes checkout."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--short=7", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1.0,
+            check=False,
+        )
+        sha = (proc.stdout or "").strip()
+        return sha or None
+    except Exception:
+        return None
+
+
+def _status_gateway_uptime_seconds() -> int | None:
+    """Best-effort uptime for the current gateway process."""
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "etimes=", "-p", str(os.getpid())],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1.0,
+            check=False,
+        )
+        raw = (proc.stdout or "").strip()
+        return int(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _status_system_uptime_seconds() -> int | None:
+    """Best-effort system uptime across macOS/Linux."""
+    try:
+        if sys.platform == "darwin":
+            proc = subprocess.run(
+                ["sysctl", "-n", "kern.boottime"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+            match = re.search(r"sec\s*=\s*(\d+)", proc.stdout or "")
+            if match:
+                return max(0, int(time.time()) - int(match.group(1)))
+        uptime_path = Path("/proc/uptime")
+        if uptime_path.exists():
+            return int(float(uptime_path.read_text(encoding="utf-8").split()[0]))
+    except Exception:
+        return None
+    return None
+
+
+def _status_model_label(config: dict) -> str:
+    model_cfg = config.get("model", {}) if isinstance(config, dict) else {}
+    if isinstance(model_cfg, dict):
+        provider = str(model_cfg.get("provider") or "").strip()
+        model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+        if provider and model:
+            return f"{provider}/{model}"
+        return model or provider or "unknown"
+    if isinstance(model_cfg, str) and model_cfg.strip():
+        return model_cfg.strip()
+    return "unknown"
+
+
+def _status_context_limit(config: dict) -> int | None:
+    model_cfg = config.get("model", {}) if isinstance(config, dict) else {}
+    if isinstance(model_cfg, dict):
+        raw = model_cfg.get("context_length") or model_cfg.get("context_window")
+        try:
+            return int(raw) if raw else None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _status_fallback_labels(config: dict) -> list[str]:
+    labels: list[str] = []
+    try:
+        for entry in get_fallback_chain(config):
+            provider = str(entry.get("provider") or "").strip()
+            model = str(entry.get("model") or "").strip()
+            if provider and model:
+                labels.append(f"{provider}/{model}")
+            elif model:
+                labels.append(model)
+    except Exception:
+        return []
+    return labels
 
 
 def _format_duration(seconds: float) -> str:
@@ -10299,63 +10398,63 @@ class GatewayRunner:
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
 
-        connected_platforms = [p.value for p in self.adapters.keys()]
-
-        # Check if there's an active agent
         session_key = session_entry.session_key
-        is_running = session_key in self._running_agents
 
         # Count pending /queue follow-ups (slot + overflow).
         adapter = self.adapters.get(source.platform) if source else None
         queue_depth = self._queue_depth(session_key, adapter=adapter)
 
-        title = None
-        # Pull token totals from the SQLite session DB rather than the
-        # in-memory SessionStore.  The agent's per-turn token deltas are
-        # persisted into sessions_db (run_agent.py), not into SessionEntry,
-        # so session_entry.total_tokens is always 0.  SessionDB is the
-        # single source of truth; reading it here keeps /status accurate
-        # without duplicating token writes into two stores.
-        db_total_tokens = 0
+        cfg = _load_gateway_runtime_config()
+        session_row: dict[str, Any] = {}
         if self._session_db:
             try:
-                title = self._session_db.get_session_title(session_entry.session_id)
+                session_row = self._session_db.get_session(session_entry.session_id) or {}
             except Exception:
-                title = None
-            try:
-                row = self._session_db.get_session(session_entry.session_id)
-                if row:
-                    db_total_tokens = (
-                        (row.get("input_tokens") or 0)
-                        + (row.get("output_tokens") or 0)
-                        + (row.get("cache_read_tokens") or 0)
-                        + (row.get("cache_write_tokens") or 0)
-                        + (row.get("reasoning_tokens") or 0)
-                    )
-            except Exception:
-                db_total_tokens = 0
+                session_row = {}
 
-        lines = [
-            t("gateway.status.header"),
-            "",
-            t("gateway.status.session_id", session_id=session_entry.session_id),
-        ]
-        if title:
-            lines.append(t("gateway.status.title", title=title))
-        lines.extend([
-            t("gateway.status.created", timestamp=session_entry.created_at.strftime('%Y-%m-%d %H:%M')),
-            t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime('%Y-%m-%d %H:%M')),
-            t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
-            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
-        ])
-        if queue_depth:
-            lines.append(t("gateway.status.queued", count=queue_depth))
-        lines.extend([
-            "",
-            t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
-        ])
+        input_tokens = int(session_row.get("input_tokens") or 0)
+        output_tokens = int(session_row.get("output_tokens") or 0)
+        cache_read_tokens = int(session_row.get("cache_read_tokens") or 0)
+        cache_write_tokens = int(session_row.get("cache_write_tokens") or 0)
+        context_tokens = int(session_row.get("last_prompt_tokens") or 0) or input_tokens or None
 
-        return "\n".join(lines)
+        running_processes = 0
+        try:
+            from tools.process_registry import process_registry
+            running_processes = len([
+                p for p in process_registry.list_sessions()
+                if p.get("status") == "running"
+            ])
+        except Exception:
+            running_processes = 0
+        background_tasks = len([
+            task for task in (getattr(self, "_background_tasks", set()) or set())
+            if hasattr(task, "done") and not task.done()
+        ])
+        active_tasks = len(getattr(self, "_running_agents", {}) or {}) + running_processes + background_tasks
+
+        snapshot = {
+            "version": __import__("hermes_cli").__version__,
+            "commit": _status_git_short_sha(),
+            "gateway_uptime_seconds": _status_gateway_uptime_seconds(),
+            "system_uptime_seconds": _status_system_uptime_seconds(),
+            "model": _status_model_label(cfg),
+            "fallbacks": _status_fallback_labels(cfg),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "estimated_cost_usd": session_row.get("estimated_cost_usd"),
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "context_tokens": context_tokens,
+            "context_limit": _status_context_limit(cfg),
+            "compactions": session_row.get("compression_count", 0),
+            "session_id": session_entry.session_id,
+            "active_tasks": active_tasks,
+            "queue_mode": getattr(self, "_busy_input_mode", "queue"),
+            "queue_depth": queue_depth,
+        }
+
+        return format_hermes_status_card(snapshot)
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
