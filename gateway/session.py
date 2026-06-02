@@ -228,6 +228,58 @@ def _discord_tools_loaded() -> bool:
         return False
 
 
+def _get_last_cron_delivery(source: SessionSource) -> Optional[dict]:
+    """Load the last cron delivery to this channel, if any.
+    
+    Returns a dict with job_id, job_name, session_id, delivered_at, preview
+    if a recent delivery exists (within last 24 hours). Returns None if no
+    recent delivery or any error occurs.
+    """
+    from hermes_constants import get_hermes_home
+    
+    channel_key = f"{source.platform.value}:{source.chat_id}"
+    if source.thread_id:
+        channel_key += f":{source.thread_id}"
+    
+    metadata_file = get_hermes_home() / "cron" / "delivery_metadata.json"
+    if not metadata_file.exists():
+        return None
+    
+    try:
+        with open(metadata_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        channel_data = data.get("channels", {}).get(channel_key)
+        if not channel_data:
+            return None
+        
+        last = channel_data.get("last_delivery")
+        if not last:
+            return None
+        
+        # Only inject if delivered within last 24 hours
+        delivered_at_str = last.get("delivered_at", "")
+        if not delivered_at_str:
+            return None
+        
+        delivered_at = datetime.fromisoformat(delivered_at_str)
+        # Make naive timestamps timezone-aware for comparison
+        now_dt = datetime.now()
+        if delivered_at.tzinfo is None:
+            delivered_at = delivered_at.replace(tzinfo=now_dt.astimezone().tzinfo)
+        else:
+            now_dt = now_dt.astimezone(delivered_at.tzinfo)
+        
+        age_seconds = (now_dt - delivered_at).total_seconds()
+        if age_seconds > 86400:  # 24 hours
+            return None
+        
+        return last
+    except Exception as e:
+        logger.debug("Failed to load cron delivery metadata for %s: %s", channel_key, e)
+        return None
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -417,6 +469,35 @@ def build_session_context_prompt(
     # Note about explicit targeting
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
+
+    # Inject last cron delivery if available (context handoff)
+    try:
+        cron_context = _get_last_cron_delivery(context.source)
+        if cron_context:
+            lines.append("")
+            lines.append("## Recent Scheduled Task Output")
+            lines.append("")
+            job_name = cron_context.get("job_name", "Unknown")
+            delivered_at_iso = cron_context.get("delivered_at", "")
+            if delivered_at_iso:
+                try:
+                    dt = datetime.fromisoformat(delivered_at_iso)
+                    delivered_at_display = dt.strftime("%Y-%m-%d %H:%M")
+                except (ValueError, TypeError):
+                    delivered_at_display = delivered_at_iso
+            else:
+                delivered_at_display = "Unknown"
+            
+            lines.append(f"**Job:** {job_name}")
+            lines.append(f"**Delivered:** {delivered_at_display}")
+            lines.append("")
+            preview = cron_context.get("preview", "").strip()
+            if preview:
+                lines.append(preview)
+                lines.append("")
+            lines.append("*(This was just delivered by a scheduled task. The user may be replying to it.)*")
+    except Exception as e:
+        logger.debug("Failed to inject cron delivery context: %s", e)
 
     return "\n".join(lines)
 
