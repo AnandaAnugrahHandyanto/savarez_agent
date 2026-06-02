@@ -494,7 +494,7 @@ async def test_create_thread_from_message_uses_fluxer_thread_route(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_send_exec_approval_posts_native_buttons_and_tracks_pending(monkeypatch):
+async def test_send_exec_approval_posts_reactions_and_tracks_pending(monkeypatch):
     from gateway.config import PlatformConfig
 
     adapter = FluxerAdapter(
@@ -525,11 +525,17 @@ async def test_send_exec_approval_posts_native_buttons_and_tracks_pending(monkey
     assert "/approve session" in payload["content"]
     assert "/approve always" in payload["content"]
     assert "/deny" in payload["content"]
-    buttons = payload["components"][0]["components"]
-    assert [button["label"] for button in buttons] == ["Allow once", "Session", "Always", "Deny"]
-    assert [button["style"] for button in buttons] == [3, 1, 2, 4]
-    assert len(adapter._pending_component_actions) == 4
-    assert {state["choice"] for state in adapter._pending_component_actions.values()} == {"once", "session", "always", "deny"}
+    assert "components" not in payload
+    assert "React: ✅ approve once" in payload["content"]
+    assert len(adapter._pending_reaction_actions) == 4
+    assert {state["choice"] for state in adapter._pending_reaction_actions.values()} == {"once", "session", "always", "deny"}
+    reaction_calls = adapter._request.await_args_list[1:]
+    assert [call.args for call in reaction_calls] == [
+        ("PUT", "/channels/chan-1/messages/approval-1/reactions/%E2%9C%85/@me"),
+        ("PUT", "/channels/chan-1/messages/approval-1/reactions/%F0%9F%95%92/@me"),
+        ("PUT", "/channels/chan-1/messages/approval-1/reactions/%E2%99%BE%EF%B8%8F/@me"),
+        ("PUT", "/channels/chan-1/messages/approval-1/reactions/%E2%9D%8C/@me"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -581,6 +587,56 @@ async def test_component_interaction_resolves_pending_exec_approval(monkeypatch)
     call = adapter._request.await_args
     assert call is not None
     assert call.args == ("POST", "/interactions/interaction-1/tok-1/callback")
+
+
+@pytest.mark.asyncio
+async def test_reaction_add_resolves_pending_exec_approval(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    adapter = FluxerAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={"base_url": "https://fluxer.example", "bot_token": "app.secret", "allowed_users": "user-1"},
+        )
+    )
+    adapter._pending_exec_approvals["approval-1"] = {
+        "session_key": "session-1",
+        "channel_id": "chan-1",
+        "content": "approval text",
+        "resolved": False,
+    }
+    adapter._pending_reaction_actions["approval-1:🕒"] = {
+        "kind": "exec_approval",
+        "message_id": "approval-1",
+        "session_key": "session-1",
+        "channel_id": "chan-1",
+        "choice": "session",
+    }
+    resolved = []
+    monkeypatch.setattr("tools.approval.resolve_gateway_approval", lambda session_key, choice: resolved.append((session_key, choice)) or 1)
+    adapter._request = AsyncMock(return_value={})
+
+    await adapter._handle_gateway_dispatch(
+        {
+            "op": 0,
+            "t": "MESSAGE_REACTION_ADD",
+            "d": {
+                "channel_id": "chan-1",
+                "message_id": "approval-1",
+                "emoji": {"name": "🕒"},
+                "user_id": "user-1",
+                "user": {"id": "user-1", "bot": False},
+            },
+        }
+    )
+
+    assert resolved == [("session-1", "session")]
+    assert "approval-1" not in adapter._pending_exec_approvals
+    assert "approval-1:🕒" not in adapter._pending_reaction_actions
+    patch_calls = [call for call in adapter._request.await_args_list if call.args[:1] == ("PATCH",)]
+    assert patch_calls
+    assert patch_calls[0].args == ("PATCH", "/channels/chan-1/messages/approval-1")
+    assert "approved for session" in patch_calls[0].kwargs["json"]["content"]
 
 
 @pytest.mark.asyncio
@@ -775,7 +831,7 @@ async def test_thread_create_event_tracks_known_thread_channel(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_send_slash_confirm_posts_native_buttons(monkeypatch):
+async def test_send_slash_confirm_posts_reactions(monkeypatch):
     from gateway.config import PlatformConfig
 
     adapter = FluxerAdapter(
@@ -792,7 +848,7 @@ async def test_send_slash_confirm_posts_native_buttons(monkeypatch):
     )
 
     assert result.success is True
-    call = adapter._request.await_args
+    call = adapter._request.await_args_list[0]
     assert call is not None
     payload = call.kwargs["json"]
     assert "Reload MCP?" in payload["content"]
@@ -800,8 +856,9 @@ async def test_send_slash_confirm_posts_native_buttons(monkeypatch):
     assert "/approve" in payload["content"]
     assert "/always" in payload["content"]
     assert "/cancel" in payload["content"]
-    assert [button["label"] for button in payload["components"][0]["components"]] == ["Approve once", "Always approve", "Cancel"]
-    assert {state["kind"] for state in adapter._pending_component_actions.values()} == {"slash_confirm"}
+    assert "React: ✅ approve once" in payload["content"]
+    assert "components" not in payload
+    assert {state["kind"] for state in adapter._pending_reaction_actions.values()} == {"slash_confirm"}
 
 
 @pytest.mark.asyncio

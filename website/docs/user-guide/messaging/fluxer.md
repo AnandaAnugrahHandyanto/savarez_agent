@@ -32,8 +32,8 @@ Fluxer is not just “another Discord target.” A few platform traits make it e
 | Typing indicator | ✅ | Refreshed while Hermes is working |
 | Message edits | ✅ | Used for progress/stream-style updates where Hermes edits a sent message |
 | Message deletes | ✅ | Gateway cleanup and deleted approval prompts are handled |
-| Reactions | ✅ | General message reactions are preserved as Fluxer events; Hermes does not use reactions for dangerous-command approval. |
-| Buttons/components | Deployment-dependent | Hermes can attach component payloads for deployments that render message components and emit `INTERACTION_CREATE`, but prompts always include slash-command text fallback because hosted/client support may not show buttons. |
+| Reactions | ✅ | Hermes uses Fluxer message reactions for dangerous-command approvals (`✅`, `🕒`, `♾️`, `❌`) because the hosted public message API does not currently expose message components. |
+| Buttons/components | Deployment-dependent | Fluxer's hosted public message API currently does not list a `components` field, so Hermes does not rely on buttons. Approval prompts use reactions plus slash-command text fallback. |
 | Native slash commands | Deployment-dependent | Hermes can translate Fluxer `APPLICATION_COMMAND` interactions if a deployment emits them, but the current hosted API spec does not expose application-command registration routes. Keep `FLUXER_REGISTER_NATIVE_COMMANDS=false` unless your deployment provides those routes. |
 | Message pins | ✅ | Uses Fluxer's `/channels/{id}/messages/pins` routes when the server enables pins |
 | Threads | — | Hosted Fluxer currently exposes reply references, but not Discord-style thread routes in the public API spec. Hermes keeps speculative helpers for deployments that add thread endpoints, but the platform-comparison table does not count this as end-to-end thread support. |

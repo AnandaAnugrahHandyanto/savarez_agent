@@ -52,6 +52,18 @@ _DEFAULT_BACKLOG_BOOTSTRAP_SECONDS = 120
 _MENTION_EVERYONE_RE = re.compile(r"@(everyone|here)\b", re.IGNORECASE)
 _MENTION_ROLE_RE = re.compile(r"<@&\d+>")
 _MENTION_USER_RE = re.compile(r"<@!?\d+>")
+_VARIATION_SELECTOR_16 = "\ufe0f"
+_EXEC_APPROVAL_REACTIONS = (
+    ("✅", "once", "approve once"),
+    ("🕒", "session", "approve for this session"),
+    ("♾️", "always", "always approve"),
+    ("❌", "deny", "deny"),
+)
+_SLASH_CONFIRM_REACTIONS = (
+    ("✅", "once", "approve once"),
+    ("♾️", "always", "always approve"),
+    ("❌", "cancel", "cancel"),
+)
 
 
 def _strip_slash(url: str) -> str:
@@ -326,6 +338,28 @@ def _fluxer_button(*, custom_id: str, label: str, style: int) -> Dict[str, Any]:
     return {"type": 2, "style": style, "custom_id": custom_id[:100], "label": label, "disabled": False}
 
 
+def _normalize_reaction_emoji(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("name") or value.get("emoji") or value.get("id") or ""
+    text = str(value or "").strip()
+    # Fluxer/clients may round-trip text emoji with or without VS16. Compare
+    # both forms so ♾ and ♾️ resolve the same pending approval.
+    return text.replace(_VARIATION_SELECTOR_16, "")
+
+
+def _reaction_choice_map(specs: Any) -> Dict[str, str]:
+    return {_normalize_reaction_emoji(emoji): choice for emoji, choice, _label in specs}
+
+
+def _reaction_emoji_from_event(data: Dict[str, Any]) -> str:
+    return _normalize_reaction_emoji(
+        data.get("emoji")
+        or data.get("emoji_name")
+        or data.get("reaction")
+        or ((data.get("reaction_data") or {}).get("emoji"))
+    )
+
+
 def _directory_channel_type(raw: Any) -> Optional[str]:
     if raw in (0, "0", "text", "guild_text"):
         return "channel"
@@ -451,6 +485,7 @@ class FluxerAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._pending_exec_approvals: Dict[str, Dict[str, Any]] = {}
         self._pending_component_actions: Dict[str, Dict[str, Any]] = {}
+        self._pending_reaction_actions: Dict[str, Dict[str, Any]] = {}
 
     async def connect(self) -> bool:
         if not self.base_url or not self.bot_token:
@@ -588,6 +623,12 @@ class FluxerAdapter(BasePlatformAdapter):
         payload.update(extra)
         return payload
 
+    async def _add_reaction(self, chat_id: str, message_id: str, emoji: str) -> None:
+        await self._request(
+            "PUT",
+            f"/channels/{_quote_id(chat_id)}/messages/{_quote_id(message_id)}/reactions/{_quote_id(emoji)}/@me",
+        )
+
     async def send(
         self,
         chat_id: str,
@@ -656,33 +697,23 @@ class FluxerAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a native-button dangerous-command approval prompt."""
+        """Send a dangerous-command approval prompt with clickable reactions."""
         target_id = str((metadata or {}).get("thread_id") or chat_id)
         cmd_display = command if len(command) <= 3200 else command[:3197] + "..."
+        reaction_hint = " • ".join(f"{emoji} {label}" for emoji, _choice, label in _EXEC_APPROVAL_REACTIONS)
         content = (
             "**Command approval required**\n"
             f"```\n{cmd_display}\n```\n"
             f"Reason: {description}\n\n"
+            f"React: {reaction_hint}\n"
             "Reply with `/approve once`, `/approve session`, `/approve always`, or `/deny`."
         )
-        nonce = uuid.uuid4().hex[:12]
-        button_specs = (
-            ("once", "Allow once", 3),
-            ("session", "Session", 1),
-            ("always", "Always", 2),
-            ("deny", "Deny", 4),
-        )
-        custom_ids = {choice: f"hermes_exec_{nonce}_{choice}" for choice, _label, _style in button_specs}
-        components = _fluxer_component_row([
-            _fluxer_button(custom_id=custom_ids[choice], label=label, style=style)
-            for choice, label, style in button_specs
-        ])
         try:
             self._known_channel_ids.add(target_id)
             data = await self._request(
                 "POST",
                 f"/channels/{_quote_id(target_id)}/messages",
-                json=self._outbound_message_payload(self.format_message(content), components=components),
+                json=self._outbound_message_payload(self.format_message(content)),
             )
             message_id = str(data.get("id") or "")
             if not message_id:
@@ -696,14 +727,15 @@ class FluxerAdapter(BasePlatformAdapter):
                 "resolved": False,
             }
             self._pending_exec_approvals[message_id] = pending
-            for choice, custom_id in custom_ids.items():
-                self._pending_component_actions[custom_id] = {
+            for emoji, choice, _label in _EXEC_APPROVAL_REACTIONS:
+                self._pending_reaction_actions[f"{message_id}:{_normalize_reaction_emoji(emoji)}"] = {
                     "kind": "exec_approval",
                     "message_id": message_id,
                     "session_key": session_key,
                     "channel_id": target_id,
                     "choice": choice,
                 }
+                await self._add_reaction(target_id, message_id, emoji)
             return SendResult(success=True, message_id=message_id, raw_response=data)
         except Exception as exc:
             logger.warning("Fluxer exec approval prompt failed: %s", exc)
@@ -718,32 +750,23 @@ class FluxerAdapter(BasePlatformAdapter):
         confirm_id: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a native-button slash-command confirmation prompt."""
+        """Send a slash-command confirmation prompt with clickable reactions."""
         target_id = str((metadata or {}).get("thread_id") or chat_id)
-        nonce = uuid.uuid4().hex[:12]
-        specs = (
-            ("once", "Approve once", 3),
-            ("always", "Always approve", 2),
-            ("cancel", "Cancel", 4),
-        )
-        custom_ids = {choice: f"hermes_confirm_{nonce}_{choice}" for choice, _label, _style in specs}
-        components = _fluxer_component_row([
-            _fluxer_button(custom_id=custom_ids[choice], label=label, style=style)
-            for choice, label, style in specs
-        ])
         content_message = (message or "").rstrip()
         if not re.search(r"/(?:approve|always|cancel)", content_message, flags=re.IGNORECASE):
             content_message = f"{content_message}\n\n_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
+        reaction_hint = " • ".join(f"{emoji} {label}" for emoji, _choice, label in _SLASH_CONFIRM_REACTIONS)
+        content_message = f"{content_message}\n\nReact: {reaction_hint}"
         content = f"**{title}**\n{content_message}"
         try:
             data = await self._request(
                 "POST",
                 f"/channels/{_quote_id(target_id)}/messages",
-                json=self._outbound_message_payload(self.format_message(content), components=components),
+                json=self._outbound_message_payload(self.format_message(content)),
             )
             message_id = str(data.get("id") or "")
-            for choice, custom_id in custom_ids.items():
-                self._pending_component_actions[custom_id] = {
+            for emoji, choice, _label in _SLASH_CONFIRM_REACTIONS:
+                self._pending_reaction_actions[f"{message_id}:{_normalize_reaction_emoji(emoji)}"] = {
                     "kind": "slash_confirm",
                     "message_id": message_id,
                     "session_key": session_key,
@@ -751,6 +774,8 @@ class FluxerAdapter(BasePlatformAdapter):
                     "channel_id": target_id,
                     "choice": choice,
                 }
+                if message_id:
+                    await self._add_reaction(target_id, message_id, emoji)
             return SendResult(success=True, message_id=message_id or None, raw_response=data)
         except Exception as exc:
             logger.warning("Fluxer slash confirm prompt failed: %s", exc)
@@ -1572,6 +1597,31 @@ class FluxerAdapter(BasePlatformAdapter):
         if interaction_type == 2:
             await self._handle_application_command_interaction(data)
 
+    async def _handle_reaction_add(self, data: Dict[str, Any]) -> None:
+        message_id = str(data.get("message_id") or ((data.get("message") or {}).get("id")) or "")
+        channel_id = str(data.get("channel_id") or ((data.get("channel") or {}).get("id")) or "")
+        emoji = _reaction_emoji_from_event(data)
+        if not message_id or not emoji:
+            return
+        action = self._pending_reaction_actions.get(f"{message_id}:{emoji}")
+        if not action:
+            return
+        user = data.get("user") or ((data.get("member") or {}).get("user") or {})
+        user_id = str(data.get("user_id") or user.get("id") or "")
+        if user.get("bot") or (self.bot_user_id and user_id == str(self.bot_user_id)):
+            return
+        if not self._interaction_user_allowed(user_id):
+            logger.info("Fluxer reaction action ignored for unauthorized user %s", user_id or "<missing>")
+            return
+        action_channel_id = str(action.get("channel_id") or "")
+        if action_channel_id and channel_id and channel_id != action_channel_id:
+            logger.warning("Fluxer reaction action ignored for mismatched channel %s", channel_id)
+            return
+        if action.get("kind") == "exec_approval":
+            await self._resolve_exec_approval_action(action, user_id=user_id)
+        elif action.get("kind") == "slash_confirm":
+            await self._resolve_slash_confirm_action(action, user_id=user_id)
+
     async def _handle_component_interaction(self, data: Dict[str, Any]) -> None:
         interaction_data = data.get("data") or {}
         custom_id = str(interaction_data.get("custom_id") or "")
@@ -1598,8 +1648,8 @@ class FluxerAdapter(BasePlatformAdapter):
         elif action.get("kind") == "slash_confirm":
             await self._resolve_slash_confirm_action(action, user_id=user_id, interaction=data)
 
-    async def _resolve_exec_approval_action(self, action: Dict[str, Any], *, user_id: str, interaction: Dict[str, Any]) -> None:
-        message_id = str(action.get("message_id") or ((interaction.get("message") or {}).get("id")) or "")
+    async def _resolve_exec_approval_action(self, action: Dict[str, Any], *, user_id: str, interaction: Optional[Dict[str, Any]] = None) -> None:
+        message_id = str(action.get("message_id") or (((interaction or {}).get("message") or {}).get("id")) or "")
         pending = self._pending_exec_approvals.pop(message_id, None)
         if not pending or pending.get("resolved"):
             return
@@ -1610,19 +1660,26 @@ class FluxerAdapter(BasePlatformAdapter):
             from tools.approval import resolve_gateway_approval
 
             count = resolve_gateway_approval(session_key, choice)
-            logger.info("Fluxer component resolved %d approval(s) for session %s (choice=%s user=%s)", count, session_key, choice, user_id)
+            logger.info("Fluxer approval action resolved %d approval(s) for session %s (choice=%s user=%s)", count, session_key, choice, user_id)
         except Exception as exc:
             logger.error("Fluxer component approval resolve failed: %s", exc)
         for cid, state in list(self._pending_component_actions.items()):
             if state.get("message_id") == message_id:
                 self._pending_component_actions.pop(cid, None)
+        for rid, state in list(self._pending_reaction_actions.items()):
+            if state.get("message_id") == message_id:
+                self._pending_reaction_actions.pop(rid, None)
         label = {"once": "approved once", "session": "approved for session", "always": "approved permanently", "deny": "denied"}.get(choice, choice)
+        resolved_content = f"{pending.get('content') or 'Command approval required'}\n\nResolved: {label} by <@{user_id}>."
         try:
-            await self._respond_to_interaction(interaction, content=f"{pending.get('content') or 'Command approval required'}\n\nResolved: {label} by <@{user_id}>.", components=[])
+            if interaction:
+                await self._respond_to_interaction(interaction, content=resolved_content, components=[])
+            else:
+                await self.edit_message(str(pending.get("channel_id") or action.get("channel_id") or ""), message_id, resolved_content)
         except Exception as exc:
-            logger.debug("Fluxer component approval response failed: %s", exc)
+            logger.debug("Fluxer approval resolution response failed: %s", exc)
 
-    async def _resolve_slash_confirm_action(self, action: Dict[str, Any], *, user_id: str, interaction: Dict[str, Any]) -> None:
+    async def _resolve_slash_confirm_action(self, action: Dict[str, Any], *, user_id: str, interaction: Optional[Dict[str, Any]] = None) -> None:
         session_key = str(action.get("session_key") or "")
         confirm_id = str(action.get("confirm_id") or "")
         choice = str(action.get("choice") or "cancel")
@@ -1632,8 +1689,16 @@ class FluxerAdapter(BasePlatformAdapter):
             await resolve(session_key, confirm_id, choice)
         except Exception as exc:
             logger.error("Fluxer slash confirm resolve failed: %s", exc)
+        message_id = str(action.get("message_id") or (((interaction or {}).get("message") or {}).get("id")) or "")
+        for rid, state in list(self._pending_reaction_actions.items()):
+            if state.get("message_id") == message_id:
+                self._pending_reaction_actions.pop(rid, None)
         try:
-            await self._respond_to_interaction(interaction, content=f"Slash confirmation: {choice} by <@{user_id}>.", components=[])
+            content = f"Slash confirmation: {choice} by <@{user_id}>."
+            if interaction:
+                await self._respond_to_interaction(interaction, content=content, components=[])
+            elif message_id:
+                await self.edit_message(str(action.get("channel_id") or ""), message_id, content)
         except Exception:
             pass
 
@@ -1705,6 +1770,9 @@ class FluxerAdapter(BasePlatformAdapter):
         if event_name == "INTERACTION_CREATE":
             await self._handle_interaction_create(data)
             return
+        if event_name in {"MESSAGE_REACTION_ADD", "REACTION_ADD", "MESSAGE_REACTION_CREATE"}:
+            await self._handle_reaction_add(data)
+            return
         if event_name in {"THREAD_CREATE", "THREAD_UPDATE", "CHANNEL_CREATE", "CHANNEL_UPDATE"}:
             channel_id = str(data.get("id") or "")
             if channel_id:
@@ -1745,6 +1813,9 @@ class FluxerAdapter(BasePlatformAdapter):
             return
         self._seen_message_ids.discard(message_id)
         pending = self._pending_exec_approvals.pop(message_id, None)
+        for rid, state in list(self._pending_reaction_actions.items()):
+            if state.get("message_id") == message_id:
+                self._pending_reaction_actions.pop(rid, None)
         if not pending or pending.get("resolved"):
             return
         pending["resolved"] = True
