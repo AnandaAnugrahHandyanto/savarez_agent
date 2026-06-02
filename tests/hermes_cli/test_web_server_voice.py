@@ -72,7 +72,7 @@ def test_voice_session_config_uses_phone_call_turn_detection(voice_client):
     assert turn_detection == {
         "type": "semantic_vad",
         "create_response": True,
-        "interrupt_response": True,
+        "interrupt_response": False,
     }
 
 

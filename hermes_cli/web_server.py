@@ -872,12 +872,15 @@ def _voice_session_config(user: str | None = None, mode: str = "solo") -> Dict[s
                 "turn_detection": {
                     # Phone-call behavior: let the Realtime API decide when the
                     # user has semantically finished speaking, then immediately
-                    # generate a spoken response in solo mode and allow barge-in
-                    # interrupts. Meet mode disables auto-response so the UI can
+                    # generate a spoken response in solo mode. Realtime barge-in
+                    # interrupts are disabled for dashboard calls because phone
+                    # speaker echo can be misdetected as user speech, causing the
+                    # assistant to stop itself and restart with audible beeps.
+                    # Meet mode disables auto-response so the UI can
                     # hard-gate speech on the "Hey Rolly" wake phrase.
                     "type": "semantic_vad",
                     "create_response": mode == "solo",
-                    "interrupt_response": True,
+                    "interrupt_response": False,
                 },
             },
             "output": {"voice": voice},

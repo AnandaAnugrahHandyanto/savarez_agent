@@ -94,6 +94,7 @@ export default function VoiceCallPage() {
   const [mode, setMode] = useState<"solo" | "meet">("solo");
   const [callIdDisplay, setCallIdDisplay] = useState(callIdRef.current);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [invitePending, setInvitePending] = useState(false);
   const [voiceTasks, setVoiceTasks] = useState<VoiceTaskResponse[]>([]);
   const [rollyListenState, setRollyListenState] = useState("Always on");
   const handledToolCallsRef = useRef<Set<string>>(new Set());
@@ -479,8 +480,12 @@ export default function VoiceCallPage() {
   }, []);
 
   const requestResponseCreate = useCallback(
-    (reason: string) => {
+    (reason: string, options?: { queueIfActive?: boolean }) => {
       if (responseActiveRef.current) {
+        if (options?.queueIfActive === false) {
+          addLog("system", `Skipped extra voice response while current response is active (${reason}).`);
+          return;
+        }
         pendingResponseCreateRef.current = true;
         addLog("system", `Queued voice response until current response finishes (${reason}).`);
         return;
@@ -528,7 +533,7 @@ export default function VoiceCallPage() {
         });
       }
       persistTranscript("tool", handoff.output, "delegation_handoff", { task_id: handoff.taskId });
-      requestResponseCreate("tool output");
+      requestResponseCreate("tool output", { queueIfActive: false });
     }
   }, [persistTranscript, requestResponseCreate, sendRealtimeEvent]);
 
@@ -559,7 +564,7 @@ export default function VoiceCallPage() {
           },
         });
       }
-      requestResponseCreate("tool output");
+      requestResponseCreate("tool output", { queueIfActive: false });
     },
     [persistTranscript, requestResponseCreate, sendRealtimeEvent],
   );
@@ -659,7 +664,7 @@ export default function VoiceCallPage() {
             output,
           },
         });
-        requestResponseCreate("tool output");
+        requestResponseCreate("tool output", { queueIfActive: false });
         const taskId = typeof result.data?.task_id === "string" ? result.data.task_id : "";
         if (name === "rolly_background" && taskId) {
           rememberVoiceTask(result.data as unknown as VoiceTaskResponse);
@@ -683,7 +688,7 @@ export default function VoiceCallPage() {
             output: `Tool failed: ${message}`,
           },
         });
-        requestResponseCreate("tool output");
+        requestResponseCreate("tool output", { queueIfActive: false });
       }
     },
     [addLog, markWorkFinished, markWorkStarted, persistTranscript, pollVoiceTask, rememberVoiceTask, requestResponseCreate, sendRealtimeEvent, speaker],
@@ -911,6 +916,12 @@ export default function VoiceCallPage() {
 
   const startMeetingInvite = useCallback(async () => {
     setError(null);
+    setInvitePending(true);
+    if (!new URLSearchParams(window.location.search).get("call_id")) {
+      callIdRef.current = `voice-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      setCallIdDisplay(callIdRef.current);
+      setInviteUrl(null);
+    }
     try {
       const resp = await api.createVoiceMeetInvite({ call_id: callIdRef.current, user: speaker });
       setMode("meet");
@@ -922,6 +933,8 @@ export default function VoiceCallPage() {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(`Meet invite unavailable: ${message}`);
       addLog("error", `Meet invite unavailable: ${message}`);
+    } finally {
+      setInvitePending(false);
     }
   }, [addLog, persistTranscript, speaker, startCall]);
 
@@ -979,7 +992,7 @@ export default function VoiceCallPage() {
   }, [requestWakeLock, status]);
 
   const live = status === "live";
-  const busy = status === "requesting" || status === "connecting" || status === "ending";
+  const busy = invitePending || status === "requesting" || status === "connecting" || status === "ending";
   const speakerLabel = getRollyUser(speaker)?.label ?? "No dashboard user selected";
   const transcriptLogs = logs.filter((entry) => entry.kind === "user" || entry.kind === "rolly");
   const eventLogs = logs.filter((entry) => entry.kind !== "user" && entry.kind !== "rolly" && (verboseEvents || !isRealtimeSpeechEvent(entry)));

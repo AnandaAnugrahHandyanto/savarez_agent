@@ -57,6 +57,20 @@ def test_start_meeting_invite_starts_meet_call_path():
     assert "onClick={() => void startCall()}" in source
 
 
+def test_start_meeting_invite_mints_fresh_call_id_before_invite_and_blocks_double_tap():
+    source = (WEB_DIR / "src/pages/VoiceCallPage.tsx").read_text(encoding="utf-8")
+    start = source.index("const startMeetingInvite = useCallback")
+    end = source.index("const toggleMute", start)
+    body = source[start:end]
+
+    assert "const [invitePending, setInvitePending] = useState(false)" in source
+    assert "const busy = invitePending ||" in source
+    assert body.index("setInvitePending(true)") < body.index("api.createVoiceMeetInvite")
+    assert body.index("callIdRef.current = `voice-${Date.now()}-${Math.random().toString(16).slice(2)}`") < body.index("api.createVoiceMeetInvite")
+    assert "setCallIdDisplay(callIdRef.current)" in body
+    assert "setInvitePending(false)" in body
+
+
 def test_meet_transcripts_use_active_call_mode_not_stale_react_state():
     source = (WEB_DIR / "src/pages/VoiceCallPage.tsx").read_text(encoding="utf-8")
 
