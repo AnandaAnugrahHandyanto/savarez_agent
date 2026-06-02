@@ -214,6 +214,7 @@ class HonchoMemoryProvider(MemoryProvider):
         self._dialectic_cadence = 1  # backwards-compat fallback; wizard writes 2 on new configs
         self._dialectic_depth = 1   # how many .chat() calls per dialectic cycle (1-3)
         self._dialectic_depth_levels: list[str] | None = None  # per-pass reasoning levels
+        self._reasoning_tool_enabled: bool = True  # expose/call Honcho LLM-backed reasoning tool
         self._reasoning_heuristic: bool = True  # scale base level by query length
         self._reasoning_level_cap: str = "high"  # ceiling for auto-selected level
         self._last_context_turn = -999
@@ -320,6 +321,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 self._dialectic_cadence = int(raw.get("dialecticCadence", 1))
                 self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
                 self._dialectic_depth_levels = cfg.dialectic_depth_levels
+                self._reasoning_tool_enabled = bool(raw.get("reasoningToolEnabled", True))
                 self._reasoning_heuristic = cfg.reasoning_heuristic
                 if cfg.reasoning_level_cap in self._LEVEL_ORDER:
                     self._reasoning_level_cap = cfg.reasoning_level_cap
@@ -587,6 +589,17 @@ class HonchoMemoryProvider(MemoryProvider):
         if not self._manager or not self._session_key:
             if not self._config:
                 return ""
+            # tools-only mode without session yet still returns a minimal block
+            if self._recall_mode == "tools":
+                tools_text = (
+                    "# Honcho Memory\n"
+                    "Active (tools-only mode). Use honcho_profile, honcho_search, "
+                    "honcho_context, and honcho_conclude tools to access user memory."
+                )
+                if self._reasoning_tool_enabled:
+                    tools_text = tools_text.replace("honcho_context", "honcho_reasoning, honcho_context")
+                return tools_text
+            return ""
 
         # ----- B1: adapt text based on recall_mode -----
         if self._recall_mode == "context":
@@ -597,24 +610,23 @@ class HonchoMemoryProvider(MemoryProvider):
                 "managed automatically."
             )
         elif self._recall_mode == "tools":
+            tool_list = "honcho_profile for a quick factual snapshot, honcho_search for raw excerpts, honcho_context for raw peer context, "
+            if self._reasoning_tool_enabled:
+                tool_list += "honcho_reasoning for synthesized answers, "
             header = (
                 "# Honcho Memory\n"
-                "Active (tools-only mode). Use honcho_profile for a quick factual snapshot, "
-                "honcho_search for raw excerpts, honcho_context for raw peer context, "
-                "honcho_reasoning for synthesized answers (pass reasoning_level "
-                "minimal/low/medium/high/max — you pick the depth per call), "
+                f"Active (tools-only mode). Use {tool_list}"
                 "honcho_conclude to save facts about the user. "
                 "No automatic context injection — you must use tools to access memory."
             )
         else:  # hybrid
+            tool_list = "Use honcho_profile for a quick factual snapshot, honcho_search for raw excerpts, honcho_context for raw peer context, "
+            if self._reasoning_tool_enabled:
+                tool_list += "honcho_reasoning for synthesized answers, "
             header = (
                 "# Honcho Memory\n"
                 "Active (hybrid mode). Relevant context is auto-injected AND memory tools are available. "
-                "Use honcho_profile for a quick factual snapshot, "
-                "honcho_search for raw excerpts, honcho_context for raw peer context, "
-                "honcho_reasoning for synthesized answers (pass reasoning_level "
-                "minimal/low/medium/high/max — you pick the depth per call), "
-                "honcho_conclude to save facts about the user."
+                f"{tool_list}honcho_conclude to save facts about the user."
             )
 
         return header
@@ -1292,6 +1304,8 @@ class HonchoMemoryProvider(MemoryProvider):
             return []
         if self._recall_mode == "context":
             return []
+        if not self._reasoning_tool_enabled:
+            return [s for s in ALL_TOOL_SCHEMAS if s.get("name") != "honcho_reasoning"]
         return list(ALL_TOOL_SCHEMAS)
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
@@ -1337,6 +1351,8 @@ class HonchoMemoryProvider(MemoryProvider):
                 return json.dumps({"result": result})
 
             elif tool_name == "honcho_reasoning":
+                if not self._reasoning_tool_enabled:
+                    return tool_error("Honcho reasoning is disabled: no working LLM provider is configured.")
                 query = args.get("query", "")
                 if not query:
                     return tool_error("Missing required parameter: query")
