@@ -71,6 +71,7 @@ class LedgerEventType(str, Enum):
     router_agent_selected = "router.agent_selected"
     user_acknowledged = "user.acknowledged"
     user_overrode = "user.overrode"
+    unknown = "unknown"
 
     @staticmethod
     def from_legacy_event(event_name: str | None) -> "LedgerEventType":
