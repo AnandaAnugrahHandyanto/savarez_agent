@@ -1,0 +1,85 @@
+"""Regression tests for dashboard Meet-mode voice behavior."""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WEB_DIR = REPO_ROOT / "web"
+
+
+def test_meet_wake_detection_accepts_direct_rolly_address():
+    if not shutil.which("node"):
+        pytest.skip("node is not installed")
+    if not (WEB_DIR / "node_modules" / "typescript").exists():
+        pytest.skip("web TypeScript dependency is not installed")
+
+    script = r"""
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const webDir = process.argv[1];
+const ts = require(path.join(webDir, 'node_modules', 'typescript'));
+const source = fs.readFileSync(path.join(webDir, 'src/lib/voiceMeet.ts'), 'utf8');
+const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
+const module = { exports: {} };
+vm.runInNewContext(compiled, { module, exports: module.exports, RegExp, String });
+const { isRollyWakePhrase } = module.exports;
+const cases = [
+  ['Hey Rolly, summarize this', true],
+  ['hey rowley can you hear me', true],
+  ['Rolly, can you hear me?', true],
+  ['Rollie should we ship?', true],
+  ['Hey, can you hear me?', false],
+  ['we should ask rolly later', false]
+];
+const failures = cases.filter(([text, expected]) => isRollyWakePhrase(text) !== expected);
+if (failures.length) {
+  console.error(JSON.stringify(failures));
+  process.exit(1);
+}
+"""
+    result = subprocess.run(["node", "-e", script, str(WEB_DIR)], text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.fixture()
+def voice_client(monkeypatch, _isolate_hermes_home):
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    import hermes_cli.web_server as web_server
+
+    client = TestClient(web_server.app)
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    return client, web_server
+
+
+def test_voice_call_endpoint_passes_meet_mode(voice_client, monkeypatch):
+    client, web_server = voice_client
+    seen = {}
+
+    def fake_create_call(sdp, user=None, mode="solo"):
+        seen.update({"sdp": sdp, "user": user, "mode": mode})
+        return "answer-sdp"
+
+    monkeypatch.setattr(web_server, "_create_openai_realtime_call", fake_create_call)
+
+    resp = client.post(
+        "/api/voice/call?mode=meet",
+        data="offer-sdp",
+        headers={"Content-Type": "application/sdp", "X-Rolly-User": "deniz"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.text == "answer-sdp"
+    assert seen == {"sdp": "offer-sdp", "user": "deniz", "mode": "meet"}
+    assert resp.headers["content-type"].startswith("application/sdp")

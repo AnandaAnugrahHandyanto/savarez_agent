@@ -792,12 +792,14 @@ def _voice_session_config(user: str | None = None, mode: str = "solo") -> Dict[s
         "model": model,
         "instructions": (
             "You are Rolly, the concise AI ops and dev colleague for MIX/Suelio. "
-            f"You are speaking with dashboard user: {speaker}. Use that identity for context and attribution. "
+            f"You are speaking with dashboard user: {speaker}. Use that identity for context and attribution, "
+            "but do not address them by raw dashboard username unless it sounds natural in speech. "
             "Session-start context pack follows; treat it as useful but possibly stale.\n"
             f"{context_pack}\n"
             f"{mode_instruction}"
             f"{rate_instruction}"
             "This is a live phone-call style conversation: speak naturally, briefly, and do not mention implementation details. "
+            "Do not give mic/headset/echo troubleshooting unless the user asks or a system error indicates a problem. "
             "Spoken responses should usually fit 10-15 seconds. If more exists, give the short answer first and offer to continue. "
             "Call transcript events, tool calls/results, timestamps, elapsed time, and an end-call marker are saved to local JSONL for later improvement. "
             "Prefer fast lookup tools (context_lookup, memory_lookup, kanban_lookup, brain_lookup, session_lookup) for context. "
@@ -1008,6 +1010,8 @@ async def create_voice_meet_invite(payload: VoiceMeetInviteRequest, request: Req
     call_id = re.sub(r"[^A-Za-z0-9_.-]", "_", payload.call_id).strip("._")
     if not call_id:
         raise HTTPException(status_code=400, detail="Missing call_id")
+    if _voice_call_has_ended(call_id):
+        raise HTTPException(status_code=409, detail="Cannot create meet invite for ended voice call")
     user = payload.user or _voice_auth_context(request) or "unknown dashboard user"
     _voice_ensure_state_session(call_id, user, mode="meet")
     base = os.getenv("HERMES_DASHBOARD_PUBLIC_URL") or str(request.base_url).rstrip("/")

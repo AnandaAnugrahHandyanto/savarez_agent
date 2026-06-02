@@ -3,6 +3,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { api, type VoiceTaskResponse, type VoiceToolRequest } from "@/lib/api";
 import { getRollyUser, getRollyUserSlug } from "@/lib/rollyIdentity";
+import { isRollyWakePhrase } from "@/lib/voiceMeet";
 
 type CallStatus = "idle" | "requesting" | "connecting" | "live" | "ending" | "error";
 
@@ -41,16 +42,6 @@ function formatClock(timestamp: string): string {
 function formatElapsed(ms: number | null): string {
   if (ms === null) return "+0.0s";
   return `+${(ms / 1000).toFixed(1)}s`;
-}
-
-function isRollyWakePhrase(text: string): boolean {
-  const normalized = text
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[^a-z\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return /\bhey\s+(?:rolly|rollie|rowley|rowly|rowy|roley|rally)\b/.test(normalized);
 }
 
 export default function VoiceCallPage() {
@@ -104,6 +95,12 @@ export default function VoiceCallPage() {
   const meetInvokedRef = useRef(false);
   const userSpeakingRef = useRef(false);
   const responseActiveRef = useRef(false);
+
+  useEffect(() => {
+    if (status !== "idle") return;
+    meetInvokedRef.current = false;
+    setRollyListenState(mode === "meet" ? "Silent until “Hey Rolly”" : "Always on");
+  }, [mode, status]);
   const pendingResponseCreateRef = useRef(false);
   const activeWorkRef = useRef<Map<string, string>>(new Map());
   const pendingHandoffsRef = useRef<Array<{ toolCallId: string; taskId: string; output: string }>>([]);

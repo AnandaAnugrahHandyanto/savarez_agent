@@ -58,6 +58,8 @@ def test_voice_session_config_uses_phone_call_turn_detection(voice_client):
 
     config = web_server._voice_session_config(user="deniz")
     assert "dashboard user: deniz" in config["instructions"]
+    assert "do not address them by raw dashboard username" in config["instructions"]
+    assert "Do not give mic/headset/echo troubleshooting" in config["instructions"]
     assert config["audio"]["output"]["voice"] == "cedar"
     tool_names = [tool["name"] for tool in config["tools"]]
     assert "context_lookup" in tool_names
@@ -388,6 +390,30 @@ def test_voice_invite_returns_share_url_when_enabled(voice_client, monkeypatch):
     assert body["call_id"] == "voice-call"
     assert "mode=meet" in body["invite_url"]
     assert "call_id=voice-call" in body["invite_url"]
+
+
+def test_voice_invite_rejects_ended_call(voice_client, monkeypatch):
+    client, _web_server = voice_client
+    monkeypatch.setenv("HERMES_VOICE_MEET_INVITES", "1")
+
+    end_resp = client.post(
+        "/api/voice/transcript",
+        json={
+            "call_id": "ended-invite-call",
+            "role": "system",
+            "text": "ended",
+            "event_type": "call_end",
+            "user": "deniz",
+        },
+    )
+    assert end_resp.status_code == 200
+
+    resp = client.post(
+        "/api/voice/meet/invite",
+        json={"call_id": "ended-invite-call", "user": "deniz"},
+    )
+
+    assert resp.status_code == 409
 
 
 def test_voice_call_end_marks_task_and_sends_single_post_call_notification(voice_client, monkeypatch):
