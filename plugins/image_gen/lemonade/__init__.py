@@ -11,7 +11,11 @@ Models are from the lemonade collection:
 Features:
 - Local image generation via lemonade server (sd-cpp / Stable Diffusion)
 - Configurable inference steps, CFG scale, and seed
-- Base64 output saved to ``$HERMES_HOME/cache/images/``
+- Optional auth via ``LEMONADE_API_KEY`` (only sent when set; the default
+  stock lemonade server is unauthenticated)
+- Base64 or URL output both cached locally under
+  ``$HERMES_HOME/cache/images/`` so the gateway never has to refetch
+  an expired URL
 
 Lemonade server runs on ``localhost:13305`` by default and exposes an
 OpenAI-compatible ``/v1/images/generations`` endpoint.
@@ -26,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -48,18 +53,21 @@ logger = logging.getLogger(__name__)
 _MODELS: Dict[str, Dict[str, Any]] = {
     "SD-Turbo": {
         "display": "SD-Turbo",
+        "speed": "~1-3s",
         "strengths": "Fastest, Lite Collection, text-to-image only",
         "steps": 4,
         "cfg_scale": 1.0,
     },
     "Flux-2-Klein-9B-GGUF": {
         "display": "Flux 2 Klein 9B",
+        "speed": "~15-30s",
         "strengths": "Ultra Collection, text-to-image + image editing",
         "steps": 4,
         "cfg_scale": 1.0,
     },
     "Z-Image-Turbo": {
         "display": "Z Image Turbo",
+        "speed": "~3-6s",
         "strengths": "Fast distilled diffusion model, text-to-image",
         "steps": 9,
         "cfg_scale": 1.0,
@@ -69,11 +77,13 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 DEFAULT_MODEL = "SD-Turbo"
 
 # Maps our aspect ratios to WIDTHxHEIGHT dimensions.
-# Default resolution is 512x512; SDXL models work better at 1024.
+# Default resolution is 1024x1024 — works for SDXL-class models (Flux-2,
+# Z-Image) and is still servable from SD-Turbo. Override per-model via
+# ``image_gen.lemonade.size_<aspect>`` in config.yaml if needed.
 _ASPECT_SIZES: Dict[str, str] = {
-    "landscape": "768x512",
-    "square": "512x512",
-    "portrait": "512x768",
+    "landscape": "1024x768",
+    "square": "1024x1024",
+    "portrait": "768x1024",
 }
 
 # ---------------------------------------------------------------------------
@@ -168,6 +178,84 @@ def _resolve_seed() -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
+# URL caching
+# ---------------------------------------------------------------------------
+
+
+# Maximum size we will buffer for a single lemonade image. The default
+# lemonade output is well under 25 MB even at 1024x1024, but cap defensively
+# so a misconfigured server can't fill the disk.
+_URL_CACHE_MAX_BYTES = 25 * 1024 * 1024
+
+# Map of Content-Type → file extension. We deliberately keep this small
+# (mirrors ``agent.image_gen_provider._URL_IMAGE_CONTENT_TYPES``) — the
+# default lemonade server always serves ``image/png`` for SD outputs.
+_URL_CONTENT_TYPES = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/webp": "webp",
+}
+
+
+def _cache_url_bytes(url: str, *, prefix: str) -> Path:
+    """Download ``url`` and write the bytes under ``$HERMES_HOME/cache/images/``.
+
+    Inlined here (rather than depending on ``agent.image_gen_provider``'s
+    :func:`save_url_image` helper) to keep this plugin self-contained —
+    lemonade runs locally so the download endpoint is on ``localhost`` and
+    the wire format is well known.
+
+    Returns the absolute :class:`Path` to the cached file. Raises on any
+    network / HTTP / oversize / non-image-content-type error so callers can
+    fall back to the bare URL.
+    """
+    from agent.image_gen_provider import _images_cache_dir
+
+    response = requests.get(url, timeout=60, stream=True)
+    response.raise_for_status()
+
+    content_type = (
+        (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    )
+    extension = _URL_CONTENT_TYPES.get(content_type, "png")
+
+    import datetime as _dt
+    import uuid as _uuid
+
+    cache_dir = _images_cache_dir()
+    ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    short = _uuid.uuid4().hex[:8]
+    path = cache_dir / f"{prefix}_{ts}_{short}.{extension}"
+
+    bytes_written = 0
+    with path.open("wb") as fh:
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            bytes_written += len(chunk)
+            if bytes_written > _URL_CACHE_MAX_BYTES:
+                fh.close()
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                raise ValueError(
+                    f"Image at {url} exceeds {_URL_CACHE_MAX_BYTES // (1024 * 1024)}MB cap"
+                )
+            fh.write(chunk)
+
+    if bytes_written == 0:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise ValueError(f"Image at {url} returned 0 bytes")
+
+    return path
+
+
+# ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
 
@@ -185,7 +273,7 @@ class LemonadeImageGenProvider(ImageGenProvider):
 
     def is_available(self) -> bool:
         try:
-            import requests  # noqa: F401
+            import requests  # noqa: F401  (also imported at module top)
         except ImportError:
             return False
         return True
@@ -224,17 +312,6 @@ class LemonadeImageGenProvider(ImageGenProvider):
             return error_response(
                 error="Prompt is required and must be a non-empty string",
                 error_type="invalid_argument",
-                provider="lemonade",
-                aspect_ratio=aspect,
-            )
-
-        if not os.environ.get("LEMONADE_API_KEY"):
-            return error_response(
-                error=(
-                    "LEMONADE_API_KEY not set. If the server requires auth, "
-                    "configure it in your .env file."
-                ),
-                error_type="auth_required",
                 provider="lemonade",
                 aspect_ratio=aspect,
             )
@@ -350,7 +427,24 @@ class LemonadeImageGenProvider(ImageGenProvider):
                 )
             image_ref = str(saved_path)
         elif url:
-            image_ref = url
+            # Lemonade's URL output points at a download endpoint on the local
+            # server (typically ``http://localhost:13305/...``). It's not a
+            # signed/expiring link like xAI or OpenAI return, so the bare URL
+            # is normally safe to pass through to the gateway — but we cache
+            # the bytes locally anyway as a belt-and-suspenders measure for
+            # the cases where the server has been shut down by the time the
+            # gateway goes to deliver the image.
+            try:
+                saved_path = _cache_url_bytes(url, prefix=f"lemonade_{model_id}")
+            except Exception as exc:
+                logger.warning(
+                    "Lemonade image URL %s could not be cached (%s); falling back to bare URL.",
+                    url,
+                    exc,
+                )
+                image_ref = url
+            else:
+                image_ref = str(saved_path)
         else:
             return error_response(
                 error="Lemonade response contained neither b64_json nor URL",
