@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { api, type VoiceMeetSignal, type VoiceRoomEvent, type VoiceRoomParticipant, type VoiceTaskResponse, type VoiceToolRequest } from "@/lib/api";
@@ -10,6 +10,9 @@ type CallStatus = "idle" | "requesting" | "connecting" | "live" | "ending" | "er
 type LogKind = "system" | "user" | "rolly" | "tool" | "error";
 
 const VOICE_ACTION_BUTTON_CLASS = "leading-tight text-sm tracking-[0.12em] sm:text-base sm:tracking-[0.2em]";
+const AUTO_SCROLL_NEAR_BOTTOM_PX = 64;
+
+type ScrollColumn = "transcript" | "events";
 
 type WakeLockSentinelLike = EventTarget & {
   release: () => Promise<void>;
@@ -48,6 +51,15 @@ function isRealtimeSpeechEvent(entry: LogEntry): boolean {
   return entry.text === "Realtime API heard speech start." || entry.text === "Realtime API heard speech stop." || entry.text === "Realtime API committed mic audio.";
 }
 
+function isNearScrollBottom(element: HTMLElement): boolean {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_NEAR_BOTTOM_PX;
+}
+
+function scrollColumnToBottom(element: HTMLElement | null): void {
+  if (!element) return;
+  element.scrollTop = element.scrollHeight;
+}
+
 function sharedRoomLog(event: VoiceRoomEvent, localUser: string): { kind: LogKind; text: string } | null {
   const eventUser = event.user || "unknown dashboard user";
   if (eventUser === localUser && event.event_type !== "call_start" && event.event_type !== "call_end") return null;
@@ -80,6 +92,10 @@ export default function VoiceCallPage() {
       elapsedMs: null,
     },
   ]);
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const eventsScrollRef = useRef<HTMLDivElement | null>(null);
+  const [transcriptAtLatest, setTranscriptAtLatest] = useState(true);
+  const [eventsAtLatest, setEventsAtLatest] = useState(true);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const dataRef = useRef<RTCDataChannel | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -1211,6 +1227,35 @@ export default function VoiceCallPage() {
   const speakerLabel = getRollyUser(speaker)?.label ?? "No dashboard user selected";
   const transcriptLogs = logs.filter((entry) => entry.kind === "user" || entry.kind === "rolly");
   const eventLogs = logs.filter((entry) => entry.kind !== "user" && entry.kind !== "rolly" && (verboseEvents || !isRealtimeSpeechEvent(entry)));
+  const lastTranscriptLog = transcriptLogs[transcriptLogs.length - 1];
+  const lastEventLog = eventLogs[eventLogs.length - 1];
+  const lastVoiceTask = voiceTasks[voiceTasks.length - 1];
+  const transcriptLatestKey = lastTranscriptLog?.id ?? "empty-transcript";
+  const eventsLatestKey = `${lastEventLog?.id ?? "empty-events"}:${lastVoiceTask?.task_id ?? "no-task"}:${lastVoiceTask?.updated_at ?? ""}`;
+
+  const updateScrollLock = useCallback((column: ScrollColumn, element: HTMLDivElement | null) => {
+    if (!element) return;
+    const atLatest = isNearScrollBottom(element);
+    if (column === "transcript") setTranscriptAtLatest(atLatest);
+    else setEventsAtLatest(atLatest);
+  }, []);
+
+  const jumpToLatest = useCallback(
+    (column: ScrollColumn) => {
+      const element = column === "transcript" ? transcriptScrollRef.current : eventsScrollRef.current;
+      scrollColumnToBottom(element);
+      updateScrollLock(column, element);
+    },
+    [updateScrollLock],
+  );
+
+  useLayoutEffect(() => {
+    if (transcriptAtLatest) scrollColumnToBottom(transcriptScrollRef.current);
+  }, [transcriptLatestKey, transcriptAtLatest]);
+
+  useLayoutEffect(() => {
+    if (eventsAtLatest) scrollColumnToBottom(eventsScrollRef.current);
+  }, [eventsLatestKey, eventsAtLatest]);
 
   return (
     <main className="flex h-full min-h-0 flex-col gap-4 overflow-auto p-4 lg:p-6">
@@ -1299,10 +1344,17 @@ export default function VoiceCallPage() {
 
       <section className="grid min-h-[24rem] gap-3 xl:grid-cols-[1fr_1fr_20rem]">
         <div className="min-h-0 border border-current/20 bg-black/30 p-3">
-          <Typography className="font-mondwest text-display text-lg uppercase tracking-[0.12em]">
-            Live transcript
-          </Typography>
-          <div className="mt-2 flex max-h-[60vh] flex-col gap-1 overflow-auto pr-1 text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <Typography className="font-mondwest text-display text-lg uppercase tracking-[0.12em]">
+              Live transcript
+            </Typography>
+            {!transcriptAtLatest ? (
+              <button className="text-[0.62rem] uppercase tracking-[0.12em] text-text-secondary underline underline-offset-4 hover:text-midground" onClick={() => jumpToLatest("transcript")} type="button">
+                Jump to latest
+              </button>
+            ) : null}
+          </div>
+          <div ref={transcriptScrollRef} onScroll={(event) => updateScrollLock("transcript", event.currentTarget)} className="mt-2 flex max-h-[60vh] flex-col gap-1 overflow-auto pr-1 text-sm">
             {(transcriptLogs.length ? transcriptLogs : [{ id: "empty-transcript", kind: "system" as LogKind, text: "No spoken transcript yet.", timestamp: new Date().toISOString(), elapsedMs: null }]).map((entry) => (
               <div key={entry.id} className="border border-current/10 bg-background-base/50 px-2 py-1">
                 <div className="text-[0.62rem] uppercase tracking-[0.12em] text-text-secondary">
@@ -1314,10 +1366,17 @@ export default function VoiceCallPage() {
           </div>
         </div>
         <div className="min-h-0 border border-current/20 bg-black/30 p-3">
-          <Typography className="font-mondwest text-display text-lg uppercase tracking-[0.12em]">
-            Events + work
-          </Typography>
-          <div className="mt-2 flex max-h-[60vh] flex-col gap-1 overflow-auto pr-1 text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <Typography className="font-mondwest text-display text-lg uppercase tracking-[0.12em]">
+              Events + work
+            </Typography>
+            {!eventsAtLatest ? (
+              <button className="text-[0.62rem] uppercase tracking-[0.12em] text-text-secondary underline underline-offset-4 hover:text-midground" onClick={() => jumpToLatest("events")} type="button">
+                Jump to latest
+              </button>
+            ) : null}
+          </div>
+          <div ref={eventsScrollRef} onScroll={(event) => updateScrollLock("events", event.currentTarget)} className="mt-2 flex max-h-[60vh] flex-col gap-1 overflow-auto pr-1 text-sm">
             {eventLogs.map((entry) => (
               <div key={entry.id} className="border border-current/10 bg-background-base/50 px-2 py-1">
                 <div className="text-[0.62rem] uppercase tracking-[0.12em] text-text-secondary">

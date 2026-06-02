@@ -110,6 +110,25 @@ def test_voice_page_filters_realtime_noise_until_verbose_and_uses_compact_rows()
     assert "bg-background-base/50 p-3" not in source
 
 
+def test_voice_page_transcript_and_events_stick_to_latest_without_forcing_manual_scroll():
+    source = (WEB_DIR / "src/pages/VoiceCallPage.tsx").read_text(encoding="utf-8")
+
+    assert "const AUTO_SCROLL_NEAR_BOTTOM_PX = 64" in source
+    assert "function isNearScrollBottom(element: HTMLElement): boolean" in source
+    assert "element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_NEAR_BOTTOM_PX" in source
+    assert "const transcriptScrollRef = useRef<HTMLDivElement | null>(null)" in source
+    assert "const eventsScrollRef = useRef<HTMLDivElement | null>(null)" in source
+    assert "const [transcriptAtLatest, setTranscriptAtLatest] = useState(true)" in source
+    assert "const [eventsAtLatest, setEventsAtLatest] = useState(true)" in source
+    assert "if (transcriptAtLatest) scrollColumnToBottom(transcriptScrollRef.current)" in source
+    assert "if (eventsAtLatest) scrollColumnToBottom(eventsScrollRef.current)" in source
+    assert "onScroll={(event) => updateScrollLock(\"transcript\", event.currentTarget)}" in source
+    assert "onScroll={(event) => updateScrollLock(\"events\", event.currentTarget)}" in source
+    assert "!transcriptAtLatest" in source
+    assert "!eventsAtLatest" in source
+    assert source.count("Jump to latest") == 2
+
+
 @pytest.fixture()
 def voice_client(monkeypatch, _isolate_hermes_home):
     try:
