@@ -178,9 +178,20 @@ function DefaultProjectDirSetting() {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
+    // The bridge is only present when running inside Electron. In a Vitest
+    // / Storybook / non-Electron context `window.hermesDesktop` is
+    // undefined, so guard the WHOLE call chain rather than chaining
+    // `?.settings.getDefaultProjectDir().then(...)` (the latter would
+    // short-circuit to `undefined.then(...)` and throw at runtime).
+    const settings = window.hermesDesktop?.settings
+
+    if (!settings) {
+      return
+    }
+
     let alive = true
 
-    void window.hermesDesktop?.settings.getDefaultProjectDir().then(result => {
+    void settings.getDefaultProjectDir().then(result => {
       if (!alive) return
       setDir(result.dir)
       setFallback(result.defaultLabel)
@@ -192,18 +203,20 @@ function DefaultProjectDirSetting() {
   }, [])
 
   const choose = useCallback(async () => {
-    if (!window.hermesDesktop?.settings) return
+    const settings = window.hermesDesktop?.settings
+
+    if (!settings) return
 
     setBusy(true)
 
     try {
-      const picked = await window.hermesDesktop.settings.pickDefaultProjectDir()
+      const picked = await settings.pickDefaultProjectDir()
 
       if (picked.canceled || !picked.dir) {
         return
       }
 
-      const result = await window.hermesDesktop.settings.setDefaultProjectDir(picked.dir)
+      const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
       notify({ durationMs: 2_000, kind: 'success', message: 'Default project directory updated' })
     } catch (err) {
@@ -214,10 +227,14 @@ function DefaultProjectDirSetting() {
   }, [])
 
   const clear = useCallback(async () => {
+    const settings = window.hermesDesktop?.settings
+
+    if (!settings) return
+
     setBusy(true)
 
     try {
-      await window.hermesDesktop?.settings.setDefaultProjectDir(null)
+      await settings.setDefaultProjectDir(null)
       setDir(null)
     } catch (err) {
       notifyError(err, 'Could not clear default directory')

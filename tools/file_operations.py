@@ -1112,7 +1112,11 @@ class ShellFileOperations(FileOperations):
             "        else:\n"
             "            print('is a directory: ' + str(p), file=sys.stderr); sys.exit(2)\n"
             "    else:\n"
-            "        p.unlink(missing_ok=True)\n"
+            # NOTE: avoid ``unlink(missing_ok=True)`` — that kwarg lands in
+            # Python 3.8 and the remote interpreter (docker/ssh) may still
+            # be 3.7 on older distros. The FileNotFoundError handler below
+            # covers the same case and works back to 3.4.
+            "        p.unlink()\n"
             "except FileNotFoundError:\n"
             "    pass\n"
             "except Exception as exc:\n"
