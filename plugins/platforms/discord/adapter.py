@@ -893,8 +893,8 @@ class DiscordAdapter(BasePlatformAdapter):
             # Start the bot in background
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
 
-            # Wait for ready
-            await asyncio.wait_for(self._ready_event.wait(), timeout=30)
+            # Wait for ready — increased timeout to handle network flakiness
+            await asyncio.wait_for(self._ready_event.wait(), timeout=120)
 
             self._running = True
             return True
@@ -1111,7 +1111,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
 
             if sync_policy == "bulk":
-                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
+                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=120)
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
                 return
 

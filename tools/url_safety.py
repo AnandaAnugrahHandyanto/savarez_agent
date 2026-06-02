@@ -81,6 +81,12 @@ _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# 198.18.0.0/15 (Benchmark Testing, RFC 2544) — explicitly allowed as this
+# is the internal IP range used by Stash/Surge transparent proxies for
+# DNS hijacking. Users of these proxies have already accepted this network
+# as part of their proxy setup, so it's safe to allow.
+_STASH_PROXY_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+
 # ---------------------------------------------------------------------------
 # Global toggle: allow private/internal IP resolution
 # ---------------------------------------------------------------------------
@@ -153,10 +159,17 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     # by their embedded IPv4 address, not as IPv6
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         embedded_ip = ip.ipv4_mapped
+        # Allow Stash/Surge transparent proxy network even when IPv4-mapped
+        if embedded_ip in _STASH_PROXY_NETWORK:
+            return False
         return (embedded_ip.is_private or embedded_ip.is_loopback or
                 embedded_ip.is_link_local or embedded_ip.is_reserved or
                 embedded_ip.is_multicast or embedded_ip.is_unspecified or
                 embedded_ip in _CGNAT_NETWORK)
+
+    # Allow Stash/Surge transparent proxy network
+    if ip in _STASH_PROXY_NETWORK:
+        return False
 
     # Standard IPv4/IPv6 address checking
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:

@@ -4714,7 +4714,7 @@ class BasePlatformAdapter(ABC):
         if _len(content) <= max_length:
             return [content]
 
-        INDICATOR_RESERVE = 10   # room for " (XX/XX)"
+        INDICATOR_RESERVE = 16   # room for " (XXXX/XXXX)" — support up to 9999 chunks
         FENCE_CLOSE = "\n```"
 
         chunks: List[str] = []

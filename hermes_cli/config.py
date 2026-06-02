@@ -4883,7 +4883,7 @@ def _expand_env_vars(obj):
     if isinstance(obj, str):
         return re.sub(
             r"\${([^}]+)}",
-            lambda m: os.environ.get(m.group(1), m.group(0)),
+            lambda m: get_env_value(m.group(1)) or m.group(0),
             obj,
         )
     if isinstance(obj, dict):
@@ -4982,22 +4982,36 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     After migration the root-level keys are removed so they can't cause
     confusion on subsequent loads.
     """
-    # Only act if there are root-level keys to migrate
-    has_root = any(config.get(k) for k in ("provider", "base_url", "context_length"))
-    if not has_root:
-        return config
-
     config = dict(config)
+
+    # Auto-correct common typo: api_base -> base_url
+    if "api_base" in config:
+        config["base_url"] = config.pop("api_base")
+    if "model" in config and isinstance(config["model"], dict) and "api_base" in config["model"]:
+        config["model"]["base_url"] = config["model"].pop("api_base")
+
+    # Runtime environment overrides take precedence over config file
+    runtime_provider = get_env_value("HERMES_INFERENCE_PROVIDER")
+    runtime_base_url = get_env_value("OPENAI_BASE_URL")
+
     model = config.get("model")
     if not isinstance(model, dict):
         model = {"default": model} if model else {}
         config["model"] = model
 
-    for key in ("provider", "base_url", "context_length"):
-        root_val = config.get(key)
-        if root_val and not model.get(key):
-            model[key] = root_val
-        config.pop(key, None)
+    if runtime_provider:
+        model["provider"] = runtime_provider
+    if runtime_base_url:
+        model["base_url"] = runtime_base_url
+
+    # Only act if there are root-level keys to migrate
+    has_root = any(config.get(k) for k in ("provider", "base_url", "context_length"))
+    if has_root:
+        for key in ("provider", "base_url", "context_length"):
+            root_val = config.get(key)
+            if root_val and not model.get(key):
+                model[key] = root_val
+            config.pop(key, None)
 
     return config
 
@@ -5990,7 +6004,7 @@ def set_config_value(key: str, value: str):
         'GITHUB_TOKEN', 'HONCHO_API_KEY',
     ]
     
-    if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
+    if '.' not in key and (key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH')):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
