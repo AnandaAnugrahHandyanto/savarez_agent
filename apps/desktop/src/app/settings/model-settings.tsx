@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { useTranslations } from '@/locales'
 import { Button } from '@/components/ui/button'
 import {
   Select,
@@ -25,17 +26,19 @@ interface AuxTaskMeta {
   label: string
 }
 
-const AUX_TASKS: readonly AuxTaskMeta[] = [
-  { key: 'vision', label: 'Vision', hint: 'Image analysis' },
-  { key: 'web_extract', label: 'Web extract', hint: 'Page summarization' },
-  { key: 'compression', label: 'Compression', hint: 'Context compaction' },
-  { key: 'session_search', label: 'Session search', hint: 'Recall queries' },
-  { key: 'skills_hub', label: 'Skills hub', hint: 'Skill search' },
-  { key: 'approval', label: 'Approval', hint: 'Smart auto-approve' },
-  { key: 'mcp', label: 'MCP', hint: 'MCP tool routing' },
-  { key: 'title_generation', label: 'Title gen', hint: 'Session titles' },
-  { key: 'curator', label: 'Curator', hint: 'Skill-usage review' }
-]
+function buildAuxTasks(ms: ReturnType<typeof useTranslations>['modelSettings']): AuxTaskMeta[] {
+  return [
+    { key: 'vision', label: ms.auxVision, hint: ms.auxVisionDesc },
+    { key: 'web_extract', label: ms.auxWebExtract, hint: ms.auxWebExtractDesc },
+    { key: 'compression', label: ms.auxCompression, hint: ms.auxCompressionDesc },
+    { key: 'session_search', label: ms.auxSessionSearch, hint: ms.auxSessionSearchDesc },
+    { key: 'skills_hub', label: ms.auxSkillsHub, hint: ms.auxSkillsHubDesc },
+    { key: 'approval', label: ms.auxApproval, hint: ms.auxApprovalDesc },
+    { key: 'mcp', label: ms.auxMcp, hint: ms.auxMcpDesc },
+    { key: 'title_generation', label: ms.auxTitleGen, hint: ms.auxTitleGenDesc },
+    { key: 'curator', label: ms.auxCurator, hint: ms.auxCuratorDesc }
+  ]
+}
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
 
@@ -45,6 +48,8 @@ interface ModelSettingsProps {
 }
 
 export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
+  const { modelSettings, common } = useTranslations()
+  const auxTasks = useMemo(() => buildAuxTasks(modelSettings), [modelSettings])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
@@ -198,7 +203,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   }, [mainModel, refresh])
 
   if (loading && !mainModel) {
-    return <LoadingState label="Loading model configuration..." />
+    return <LoadingState label={modelSettings.loading} />
   }
 
   return (
@@ -207,15 +212,15 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         <SectionHeading
           icon={Sparkles}
           meta={mainModel ? `${mainModel.provider} / ${mainModel.model}` : undefined}
-          title="Main model"
+          title={modelSettings.mainModel}
         />
         <p className="mb-3 text-xs text-muted-foreground">
-          Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.
+          {modelSettings.mainModelDesc}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <Select onValueChange={setSelectedProvider} value={selectedProvider}>
             <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-              <SelectValue placeholder="Provider" />
+              <SelectValue placeholder={modelSettings.provider} />
             </SelectTrigger>
             <SelectContent>
               {providerOptions.map(provider => (
@@ -227,7 +232,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           </Select>
           <Select onValueChange={setSelectedModel} value={selectedModel}>
             <SelectTrigger className={cn('min-w-60', CONTROL_TEXT)}>
-              <SelectValue placeholder="Model" />
+              <SelectValue placeholder={modelSettings.model} />
             </SelectTrigger>
             <SelectContent>
               {(selectedProviderModels.length ? selectedProviderModels : []).map(model => (
@@ -239,7 +244,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           </Select>
           <Button disabled={!selectedProvider || !selectedModel || applying} onClick={() => void applyMainModel()} size="sm">
             {applying ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
-            {applying ? 'Applying...' : 'Apply'}
+            {applying ? modelSettings.applying : common.apply}
           </Button>
         </div>
         {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
@@ -247,21 +252,21 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
       <section>
         <div className="mb-2.5 flex items-center justify-between">
-          <SectionHeading icon={Cpu} title="Auxiliary models" />
+          <SectionHeading icon={Cpu} title={modelSettings.auxiliaryModels} />
           <Button
             disabled={!mainModel || applying}
             onClick={() => void resetAuxiliaryModels()}
             size="sm"
             variant="outline"
           >
-            Reset all to main
+            {modelSettings.resetAllToMain}
           </Button>
         </div>
         <p className="mb-2 text-xs text-muted-foreground">
-          Helper tasks run on the main model by default. Assign a dedicated model to any task to override.
+          {modelSettings.auxiliaryDesc}
         </p>
         <div className="divide-y divide-border/40">
-          {AUX_TASKS.map(meta => {
+          {auxTasks.map(meta => {
             const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
             const isAuto = !current || !current.provider || current.provider === 'auto'
             const isEditing = editingAuxTask === meta.key
@@ -277,7 +282,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         size="sm"
                         variant="ghost"
                       >
-                        Set to main
+                        {modelSettings.setToMain}
                       </Button>
                       <Button
                         disabled={!providers.length || applying}
@@ -285,7 +290,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         size="sm"
                         variant="outline"
                       >
-                        Change
+                        {common.change}
                       </Button>
                     </div>
                   )
@@ -298,7 +303,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         value={auxDraft.provider}
                       >
                         <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                          <SelectValue placeholder="Provider" />
+                          <SelectValue placeholder={modelSettings.provider} />
                         </SelectTrigger>
                         <SelectContent>
                           {providerOptions.map(provider => (
@@ -313,7 +318,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         value={auxDraft.model}
                       >
                         <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                          <SelectValue placeholder="Model" />
+                          <SelectValue placeholder={modelSettings.model} />
                         </SelectTrigger>
                         <SelectContent>
                           {(auxDraftProviderModels.length ? auxDraftProviderModels : []).map(model => (
@@ -328,17 +333,17 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         onClick={() => void applyAuxiliaryDraft(meta.key)}
                         size="sm"
                       >
-                        {applying ? 'Applying...' : 'Apply'}
+                        {applying ? modelSettings.applying : common.apply}
                       </Button>
                       <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
-                        Cancel
+                        {modelSettings.cancel}
                       </Button>
                     </div>
                   )
                 }
                 description={
                   <span className="font-mono text-[0.68rem]">
-                    {isAuto ? 'auto · use main model' : `${current.provider} · ${current.model || '(provider default)'}`}
+                    {isAuto ? modelSettings.autoUseMain : `${current.provider} · ${current.model || modelSettings.providerDefault}`}
                   </span>
                 }
                 key={meta.key}

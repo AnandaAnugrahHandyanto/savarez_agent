@@ -1,44 +1,56 @@
 import type { ReactNode } from 'react'
 
+import { useTranslations } from '@/locales'
+
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
-const COMMON_COMMANDS: [string, string][] = [
-  ['/help', 'full list of commands + hotkeys'],
-  ['/clear', 'start a new session'],
-  ['/resume', 'resume a prior session'],
-  ['/details', 'control transcript detail level'],
-  ['/copy', 'copy selection or last assistant message'],
-  ['/quit', 'exit hermes']
-]
+function getCommonCommands(t: ReturnType<typeof useTranslations>): [string, string][] {
+  const h = t.helpHint
+  return [
+    ['/help', h.helpFullList],
+    ['/clear', h.clearSession],
+    ['/resume', h.resumeSession],
+    ['/details', h.detailsLevel],
+    ['/copy', h.copyMessage],
+    ['/quit', h.exitHermes]
+  ]
+}
 
-const HOTKEYS: [string, string][] = [
-  ['@', 'reference files, folders, urls, git'],
-  ['/', 'slash command palette'],
-  ['?', 'this quick help (delete to dismiss)'],
-  ['Enter', 'send · Shift+Enter for newline'],
-  ['Cmd/Ctrl+K', 'send next queued turn'],
-  ['Cmd/Ctrl+L', 'redraw'],
-  ['Esc', 'close popover · cancel run'],
-  ['↑ / ↓', 'cycle popover / history']
-]
+function getHotkeys(t: ReturnType<typeof useTranslations>): [string, string][] {
+  const h = t.helpHint
+  return [
+    ['@', h.refFiles],
+    ['/', h.slashPalette],
+    ['?', h.quickHelp],
+    ['Enter', h.sendNewline],
+    ['Cmd/Ctrl+K', h.sendQueued],
+    ['Cmd/Ctrl+L', h.redraw],
+    ['Esc', h.closeCancel],
+    ['↑ / ↓', h.cycleHistory]
+  ]
+}
 
 export function HelpHint() {
+  const t = useTranslations()
+  const commonCommands = getCommonCommands(t)
+  const hotkeys = getHotkeys(t)
+
   return (
     <div className={COMPLETION_DRAWER_CLASS} data-slot="composer-completion-drawer" data-state="open" role="dialog">
-      <Section title="Common commands">
-        {COMMON_COMMANDS.map(([key, desc]) => (
+      <Section title={t.helpHint.commonCommands}>
+        {commonCommands.map(([key, desc]) => (
           <Row description={desc} key={key} keyLabel={key} mono />
         ))}
       </Section>
 
-      <Section title="Hotkeys">
-        {HOTKEYS.map(([key, desc]) => (
+      <Section title={t.helpHint.hotkeys}>
+        {hotkeys.map(([key, desc]) => (
           <Row description={desc} key={key} keyLabel={key} />
         ))}
       </Section>
 
       <p className="px-2.5 py-1 text-xs text-muted-foreground/80">
-        <span className="font-mono text-foreground/80">/help</span> opens the full panel · backspace dismisses
+        <span className="font-mono text-foreground/80">/help</span> {t.helpHint.helpPanelHint}
       </p>
     </div>
   )

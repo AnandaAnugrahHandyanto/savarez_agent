@@ -35,6 +35,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { cn } from '@/lib/utils'
+import { t, useTranslations } from '@/locales'
 import {
   $pinnedSessionIds,
   $sidebarAgentsGrouped,
@@ -67,22 +68,24 @@ import { VirtualSessionList } from './virtual-session-list'
 
 const VIRTUALIZE_THRESHOLD = 25
 
-const SIDEBAR_NAV: SidebarNavItem[] = [
-  {
-    id: 'new-session',
-    label: 'New session',
-    icon: props => <Codicon name="robot" {...props} />,
-    action: 'new-session'
-  },
-  {
-    id: 'skills',
-    label: 'Skills & Tools',
-    icon: props => <Codicon name="symbol-misc" {...props} />,
-    route: SKILLS_ROUTE
-  },
-  { id: 'messaging', label: 'Messaging', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
-  { id: 'artifacts', label: 'Artifacts', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
-]
+function getSidebarNav(t: ReturnType<typeof useTranslations>): SidebarNavItem[] {
+  return [
+    {
+      id: 'new-session',
+      label: t.sidebar.newSession,
+      icon: props => <Codicon name="robot" {...props} />,
+      action: 'new-session'
+    },
+    {
+      id: 'skills',
+      label: t.sidebar.skillsAndTools,
+      icon: props => <Codicon name="symbol-misc" {...props} />,
+      route: SKILLS_ROUTE
+    },
+    { id: 'messaging', label: t.sidebar.messaging, icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
+    { id: 'artifacts', label: t.sidebar.artifacts, icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
+  ]
+}
 
 const WORKSPACE_PAGE = 5
 const WS_ID_PREFIX = 'workspace:'
@@ -157,7 +160,7 @@ function workspaceGroupsFor(sessions: SessionInfo[]): SidebarSessionGroup[] {
   for (const session of sessions) {
     const path = session.cwd?.trim() || ''
     const id = path || '__no_workspace__'
-    const label = baseName(path) || path || 'No workspace'
+    const label = baseName(path) || path || t().sidebar.noWorkspace
 
     const group = groups.get(id) ?? { id, label, path: path || null, sessions: [] }
     group.sessions.push(session)
@@ -216,6 +219,7 @@ export function ChatSidebar({
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
   const workingSessionIds = useStore($workingSessionIds)
+  const t = useTranslations()
   const [agentOrderIds, setAgentOrderIds] = useState<string[]>([])
   const [workspaceOrderIds, setWorkspaceOrderIds] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -410,7 +414,7 @@ export function ChatSidebar({
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
-              {SIDEBAR_NAV.map(item => {
+              {getSidebarNav(t).map(item => {
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =
@@ -455,16 +459,16 @@ export function ChatSidebar({
             <div className="flex items-center gap-1.5 rounded-md border border-transparent bg-transparent px-2 transition-colors focus-within:border-(--ui-stroke-tertiary)">
               <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="search" size="0.75rem" />
               <input
-                aria-label="Search sessions"
+                aria-label={t.sidebar.searchSessions}
                 className="h-6 min-w-0 flex-1 bg-transparent text-[0.8125rem] text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-none"
                 onChange={event => setSearchQuery(event.target.value)}
-                placeholder="Search sessions…"
+                placeholder={t.sidebar.searchSessions}
                 type="text"
                 value={searchQuery}
               />
               {searchQuery && (
                 <button
-                  aria-label="Clear search"
+                  aria-label={t.sidebar.clearSearch}
                   className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground"
                   onClick={() => setSearchQuery('')}
                   type="button"
@@ -482,10 +486,10 @@ export function ChatSidebar({
             contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
             emptyState={
               <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
-                No sessions match “{trimmedQuery}”.
+                {t.sidebar.noMatch.replace('{query}', trimmedQuery)}
               </div>
             }
-            label="Results"
+            label={t.sidebar.results}
             labelMeta={String(searchResults.length)}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
+import { useTranslations } from '@/locales'
 import { Archive, Globe, Info, KeyRound, Wrench } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
@@ -15,7 +16,7 @@ import { OverlayView } from '../overlays/overlay-view'
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
 import { ConfigSettings } from './config-settings'
-import { SEARCH_PLACEHOLDER, SECTIONS } from './constants'
+import { getSearchPlaceholder, getSections } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeysSettings } from './keys-settings'
 import { McpSettings } from './mcp-settings'
@@ -23,7 +24,7 @@ import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsQueryKey, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
-  ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
+  ...getSections().map(s => `config:${s.id}` as SettingsViewId),
   'gateway',
   'keys',
   'mcp',
@@ -32,6 +33,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
 ]
 
 export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
+  const t = useTranslations()
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
 
   const [queries, setQueries] = useState<Record<SettingsQueryKey, string>>({
@@ -62,12 +64,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
       URL.revokeObjectURL(url)
       triggerHaptic('success')
     } catch (err) {
-      notifyError(err, 'Export failed')
+      notifyError(err, t.settings.exportFailed)
     }
   }
 
   const resetConfig = async () => {
-    if (!window.confirm('Reset all settings to Hermes defaults?')) {
+    if (!window.confirm(t.settings.resetConfirm)) {
       return
     }
 
@@ -76,7 +78,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
       triggerHaptic('success')
       onConfigSaved?.()
     } catch (err) {
-      notifyError(err, 'Reset failed')
+      notifyError(err, t.settings.resetFailed)
     }
   }
 
@@ -97,13 +99,13 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
 
   return (
     <OverlayView
-      closeLabel="Close settings"
+      closeLabel={t.settings.closeSettings}
       headerContent={
         <OverlaySearchInput
           containerClassName="w-[min(36rem,calc(100vw-32rem))] min-w-80"
           inputRef={searchInputRef}
           onChange={setQuery}
-          placeholder={SEARCH_PLACEHOLDER[queryKey]}
+          placeholder={t.settings.searchSettings}
           value={query}
         />
       }
@@ -111,7 +113,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
     >
       <OverlaySplitLayout>
         <OverlaySidebar>
-          {SECTIONS.map(s => {
+          {getSections().map(s => {
             const view = `config:${s.id}` as SettingsViewId
 
             return (
@@ -128,36 +130,36 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           <OverlayNavItem
             active={activeView === 'gateway'}
             icon={Globe}
-            label="Gateway"
+            label={t.settings.gateway}
             onClick={() => setActiveView('gateway')}
           />
           <OverlayNavItem
             active={activeView === 'keys'}
             icon={KeyRound}
-            label="API Keys"
+            label={t.settings.apiKeys}
             onClick={() => setActiveView('keys')}
           />
           <OverlayNavItem
             active={activeView === 'mcp'}
             icon={Wrench}
-            label="MCP"
+            label={t.settings.mcp}
             onClick={() => setActiveView('mcp')}
           />
           <OverlayNavItem
             active={activeView === 'sessions'}
             icon={Archive}
-            label="Archived Chats"
+            label={t.settings.archivedChats}
             onClick={() => setActiveView('sessions')}
           />
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
             active={activeView === 'about'}
             icon={Info}
-            label="About"
+            label={t.settings.about}
             onClick={() => setActiveView('about')}
           />
           <div className="mt-auto flex items-center gap-1 pt-2">
-            <OverlayIconButton onClick={() => void exportConfig()} title="Export config">
+            <OverlayIconButton onClick={() => void exportConfig()} title={t.settings.exportConfig}>
               <IconDownload className="size-3.5" />
             </OverlayIconButton>
             <OverlayIconButton
@@ -165,7 +167,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
                 triggerHaptic('open')
                 importInputRef.current?.click()
               }}
-              title="Import config"
+              title={t.settings.importConfig}
             >
               <IconUpload className="size-3.5" />
             </OverlayIconButton>
@@ -175,7 +177,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
                 triggerHaptic('warning')
                 void resetConfig()
               }}
-              title="Reset to defaults"
+              title={t.settings.resetToDefaults}
             >
               <IconRefresh className="size-3.5" />
             </OverlayIconButton>

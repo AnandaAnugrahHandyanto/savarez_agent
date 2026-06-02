@@ -13,10 +13,11 @@ import {
   saveHermesConfig
 } from '@/hermes'
 import { cn } from '@/lib/utils'
+import { useTranslations } from '@/locales'
 import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
-import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
+import { CONTROL_TEXT, EMPTY_SELECT_VALUE, getFieldDescriptions, getFieldLabels, getSections } from './constants'
 import { enumOptionsFor, getNested, includesQuery, prettyName, setNested } from './helpers'
 import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
@@ -37,9 +38,12 @@ function ConfigField({
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
 }) {
-  const label = FIELD_LABELS[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
+  const labels = getFieldLabels()
+  const descriptions = getFieldDescriptions()
+  const tr = useTranslations()
+  const label = labels[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
   const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
-  const rawDescription = (FIELD_DESCRIPTIONS[schemaKey] ?? schema.description ?? '').trim()
+  const rawDescription = (descriptions[schemaKey] ?? schema.description ?? '').trim()
   const normalizedDesc = normalize(rawDescription)
 
   const description =
@@ -54,7 +58,7 @@ function ConfigField({
   if (schema.type === 'boolean') {
     return row(
       <div className="flex items-center justify-end gap-3">
-        <span className="text-xs text-muted-foreground">{value ? 'On' : 'Off'}</span>
+        <span className="text-xs text-muted-foreground">{value ? tr.common.on : tr.common.off}</span>
         <Switch checked={Boolean(value)} onCheckedChange={onChange} />
       </div>
     )
@@ -77,8 +81,8 @@ function ConfigField({
               {option
                 ? (optionLabels?.[option] ?? prettyName(option))
                 : schemaKey === 'display.personality'
-                  ? 'None'
-                  : '(none)'}
+                  ? tr.common.none
+                  : `(${tr.common.none})`}
             </SelectItem>
           ))}
         </SelectContent>
@@ -98,7 +102,7 @@ function ConfigField({
             onChange(n)
           }
         }}
-        placeholder="Not set"
+        placeholder={tr.common.notSet}
         type="number"
         value={value === undefined || value === null ? '' : String(value)}
       />
@@ -117,7 +121,7 @@ function ConfigField({
               .filter(Boolean)
           )
         }
-        placeholder="comma-separated values"
+        placeholder={tr.settings.commaSeparated}
         value={Array.isArray(value) ? value.join(', ') : String(value ?? '')}
       />
     )
@@ -134,7 +138,7 @@ function ConfigField({
             /* keep last valid */
           }
         }}
-        placeholder="Not set"
+        placeholder={tr.common.notSet}
         spellCheck={false}
         value={JSON.stringify(value, null, 2)}
       />,
@@ -156,7 +160,7 @@ function ConfigField({
       <Input
         className={cn('h-8', CONTROL_TEXT)}
         onChange={e => onChange(e.target.value)}
-        placeholder="Not set"
+        placeholder={tr.common.notSet}
         value={String(value ?? '')}
       />
     ),
@@ -183,6 +187,8 @@ export function ConfigSettings({
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const saveVersionRef = useRef(0)
   const [saveVersion, setSaveVersion] = useState(0)
+  const tr = useTranslations()
+  const sections = getSections()
 
   useEffect(() => {
     let cancelled = false
@@ -196,7 +202,7 @@ export function ConfigSettings({
         setDefaults(d)
         setSchema(s.fields)
       })
-      .catch(err => notifyError(err, 'Settings failed to load'))
+      .catch(err => notifyError(err, tr.settings.settingsFailedToLoad))
 
     return () => void (cancelled = true)
   }, [])
@@ -240,7 +246,7 @@ export function ConfigSettings({
           }
         } catch (err) {
           if (saveVersionRef.current === v) {
-            notifyError(err, 'Autosave failed')
+            notifyError(err, tr.settings.autosaveFailed)
           }
         }
       })()
@@ -261,7 +267,7 @@ export function ConfigSettings({
     }
 
     return new Map(
-      SECTIONS.map(s => [s.id, s.keys.flatMap(k => (schema[k] ? [[k, schema[k]] as [string, ConfigFieldSchema]] : []))])
+      sections.map(s => [s.id, s.keys.flatMap(k => (schema[k] ? [[k, schema[k]] as [string, ConfigFieldSchema]] : []))])
     )
   }, [schema])
 
@@ -274,7 +280,7 @@ export function ConfigSettings({
 
     const seen = new Set<string>()
 
-    return SECTIONS.flatMap(s =>
+    return sections.flatMap(s =>
       s.keys.flatMap(k => {
         if (seen.has(k) || !schema[k]) {
           return []
@@ -309,9 +315,9 @@ export function ConfigSettings({
     reader.onload = () => {
       try {
         updateConfig(JSON.parse(String(reader.result)))
-        notify({ kind: 'success', title: 'Config imported', message: 'Saving…' })
+        notify({ kind: 'success', title: tr.settings.configImported, message: tr.settings.savingConfig })
       } catch (err) {
-        notifyError(err, 'Invalid config JSON')
+        notifyError(err, tr.settings.invalidConfigJson)
       }
     }
 
@@ -320,7 +326,7 @@ export function ConfigSettings({
   }
 
   if (!config || !schema) {
-    return <LoadingState label="Loading Hermes configuration..." />
+    return <LoadingState label={tr.settings.loadingConfig} />
   }
 
   return (
@@ -332,11 +338,11 @@ export function ConfigSettings({
       )}
       {query.trim() && (
         <div className="mb-4 text-xs text-muted-foreground">
-          {fields.length} result{fields.length === 1 ? '' : 's'}
+          {tr.settings.resultCount.replace('{n}', String(fields.length))}
         </div>
       )}
       {fields.length === 0 ? (
-        <EmptyState description="Try a different search term or choose another section." title="No matching settings" />
+        <EmptyState description={tr.settings.noMatchingSettingsHint} title={tr.settings.noMatchingSettings} />
       ) : (
         <div className="divide-y divide-border/40">
           {fields.map(([key, field]) => (

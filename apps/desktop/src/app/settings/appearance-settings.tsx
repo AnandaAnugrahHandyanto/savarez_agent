@@ -1,13 +1,14 @@
 import { useStore } from '@nanostores/react'
 
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Palette } from '@/lib/icons'
+import { Check, Globe, Palette } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $language, LANGUAGES, setLanguage, type Language, useTranslations } from '@/locales'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
 
-import { MODE_OPTIONS } from './constants'
+import { getModeOptions } from './constants'
 import { prettyName } from './helpers'
 import { Pill, SectionHeading, SettingsContent } from './primitives'
 
@@ -55,30 +56,32 @@ export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const activeTheme = availableThemes.find(t => t.name === themeName)
+  const tr = useTranslations()
+  const currentLang = useStore($language)
+  const a = tr.appearance
 
   return (
     <SettingsContent>
       <div className="space-y-5">
         <div>
-          <SectionHeading icon={Palette} title="Appearance" />
+          <SectionHeading icon={Palette} title={a.title} />
           <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and
-            chat surface styling.
+            {a.description}
           </p>
         </div>
 
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Color Mode</div>
+              <div className="text-sm font-medium">{a.colorMode}</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Pick a fixed mode or let Hermes follow your system setting.
+                {a.colorModeDesc}
               </div>
             </div>
             <Pill>{prettyName(mode)}</Pill>
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
-            {MODE_OPTIONS.map(({ id, label, description, icon: Icon }) => {
+            {getModeOptions().map(({ id, label, description, icon: Icon }) => {
               const active = mode === id
 
               return (
@@ -117,25 +120,25 @@ export function AppearanceSettings() {
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Tool Call Display</div>
+              <div className="text-sm font-medium">{a.toolCallDisplay}</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Product hides raw tool payloads; Technical shows full input/output.
+                {a.toolCallDisplayDesc}
               </div>
             </div>
-            <Pill>{toolViewMode === 'technical' ? 'Technical' : 'Product'}</Pill>
+            <Pill>{toolViewMode === 'technical' ? a.technical : a.product}</Pill>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             {(
               [
                 {
                   id: 'product',
-                  label: 'Product',
-                  description: 'Human-friendly tool activity with concise summaries.'
+                  label: a.product,
+                  description: a.productDesc
                 },
                 {
                   id: 'technical',
-                  label: 'Technical',
-                  description: 'Include raw tool args/results and low-level details.'
+                  label: a.technical,
+                  description: a.technicalDesc
                 }
               ] as const
             ).map(option => {
@@ -174,9 +177,9 @@ export function AppearanceSettings() {
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Theme</div>
+              <div className="text-sm font-medium">{a.theme}</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Desktop palettes only. The selected mode is applied on top.
+                {a.themeDesc}
               </div>
             </div>
             {activeTheme && <Pill>{activeTheme.label}</Pill>}
@@ -210,6 +213,51 @@ export function AppearanceSettings() {
                     </div>
                     {active && (
                       <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground">
+                        <Check className="size-3.5" />
+                      </span>
+                    )}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </section>
+
+        {/* Language Switcher */}
+        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">Language / 语言</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {currentLang === 'zh' ? '切换界面显示语言' : 'Switch the interface display language'}
+              </div>
+            </div>
+            <Pill>{LANGUAGES[currentLang].flag} {LANGUAGES[currentLang].label}</Pill>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {(Object.entries(LANGUAGES) as [Language, { label: string; flag: string }][]).map(([lang, info]) => {
+              const active = currentLang === lang
+
+              return (
+                <button
+                  className={cn(
+                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover)',
+                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
+                  )}
+                  key={lang}
+                  onClick={() => {
+                    triggerHaptic('crisp')
+                    setLanguage(lang)
+                  }}
+                  type="button"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">{info.flag}</span>
+                      <span className="text-[length:var(--conversation-text-font-size)] font-medium">{info.label}</span>
+                    </div>
+                    {active && (
+                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
                         <Check className="size-3.5" />
                       </span>
                     )}

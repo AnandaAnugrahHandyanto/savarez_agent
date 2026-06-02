@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ArrowUp, Pencil, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { t as getT, useTranslations } from '@/locales'
 import type { QueuedPromptEntry } from '@/store/composer-queue'
 
 interface QueuePanelProps {
@@ -16,9 +17,10 @@ interface QueuePanelProps {
 }
 
 const entryPreview = (entry: QueuedPromptEntry) =>
-  entry.text.trim() || (entry.attachments.length > 0 ? 'Attachment-only turn' : 'Empty turn')
+  entry.text.trim() || (entry.attachments.length > 0 ? getT().composer.attachmentOnly : getT().composer.emptyTurn)
 
 export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendNow }: QueuePanelProps) {
+  const t = useTranslations()
   const [collapsed, setCollapsed] = useState(false)
 
   if (entries.length === 0) {
@@ -33,7 +35,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
         type="button"
       >
         <DisclosureCaret className="shrink-0" open={!collapsed} size="0.875rem" />
-        <span className="truncate">{entries.length} Queued</span>
+        <span className="truncate">{t.composer.queued.replace('{n}', String(entries.length))}</span>
       </button>
 
       {!collapsed && (
@@ -61,12 +63,12 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                     <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
                       {attachmentsCount > 0 && (
                         <span>
-                          {attachmentsCount} attachment{attachmentsCount === 1 ? '' : 's'}
+                          {attachmentsCount} {t.composer.attachments}
                         </span>
                       )}
                       {isEditing && (
                         <span className="text-[color-mix(in_srgb,var(--dt-composer-ring)_78%,var(--muted-foreground))]">
-                          Editing in composer
+                          {t.composer.editingInComposer}
                         </span>
                       )}
                     </div>
@@ -81,35 +83,35 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                   )}
                 >
                   <Button
-                    aria-label="Edit queued turn"
+                    aria-label={t.composer.editQueued}
                     className="h-5 w-5 rounded-md"
                     disabled={Boolean(editingId) && !isEditing}
                     onClick={() => onEdit(entry)}
                     size="icon-xs"
-                    title="Edit queued turn"
+                    title={t.composer.editQueued}
                     type="button"
                     variant="ghost"
                   >
                     <Pencil size={11} />
                   </Button>
                   <Button
-                    aria-label="Send queued turn now"
+                    aria-label={t.composer.sendQueuedNow}
                     className="h-5 w-5 rounded-md"
                     disabled={busy || isEditing}
                     onClick={() => onSendNow(entry.id)}
                     size="icon-xs"
-                    title="Send queued turn now"
+                    title={t.composer.sendQueuedNow}
                     type="button"
                     variant="ghost"
                   >
                     <ArrowUp size={11} />
                   </Button>
                   <Button
-                    aria-label="Delete queued turn"
+                    aria-label={t.composer.deleteQueued}
                     className="h-5 w-5 rounded-md"
                     onClick={() => onDelete(entry.id)}
                     size="icon-xs"
-                    title="Delete queued turn"
+                    title={t.composer.deleteQueued}
                     type="button"
                     variant="ghost"
                   >

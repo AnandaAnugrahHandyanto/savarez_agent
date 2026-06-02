@@ -15,6 +15,7 @@ import {
 } from '@/hermes'
 import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { t, useTranslations } from '@/locales'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -27,16 +28,19 @@ interface MessagingViewProps extends React.ComponentProps<'section'> {
 
 type EditMap = Record<string, Record<string, string>>
 
-const STATE_LABELS: Record<string, string> = {
-  connected: 'Connected',
-  connecting: 'Connecting',
-  disabled: 'Disabled',
-  fatal: 'Error',
-  gateway_stopped: 'Messaging gateway stopped',
-  not_configured: 'Needs setup',
-  pending_restart: 'Restart needed',
-  retrying: 'Retrying',
-  startup_failed: 'Startup failed'
+function getStateLabels(): Record<string, string> {
+  const tm = t().messaging
+  return {
+    connected: tm.connected,
+    connecting: tm.connecting,
+    disabled: tm.disabled,
+    fatal: tm.error,
+    gateway_stopped: tm.gatewayStopped,
+    not_configured: tm.needsSetup,
+    pending_restart: tm.restartNeeded,
+    retrying: tm.retrying,
+    startup_failed: tm.startupFailed
+  }
 }
 
 const PLATFORM_TINTS: Record<string, string> = {
@@ -69,12 +73,18 @@ const PILL_TONE: Record<StatusTone, string> = {
   bad: 'bg-destructive/10 text-destructive'
 }
 
-const HINT_BY_STATE: Record<string, string> = {
-  pending_restart: 'Restart the gateway from the status bar to apply this change.',
-  gateway_stopped: 'Start the gateway from the status bar to connect.'
+function getHintByState(): Record<string, string> {
+  const tm = t().messaging
+  return {
+    pending_restart: tm.restartForChange,
+    gateway_stopped: tm.startToConnect
+  }
 }
 
-const stateLabel = (state?: null | string) => (state ? STATE_LABELS[state] || state.replace(/_/g, ' ') : 'Unknown')
+const stateLabel = (state?: null | string) => {
+  const labels = getStateLabels()
+  return state ? labels[state] || state.replace(/_/g, ' ') : 'Unknown'
+}
 
 function stateTone({ enabled, state }: MessagingPlatformInfo): StatusTone {
   if (!enabled) {
@@ -99,104 +109,107 @@ const trimEdits = (edits: Record<string, string>): Record<string, string> =>
       .filter(([, v]) => v)
   )
 
-const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: string; placeholder?: string }> = {
-  TELEGRAM_BOT_TOKEN: {
-    label: 'Bot token',
-    help: 'Create a bot with @BotFather, then paste the token it gives you.',
-    placeholder: '123456:ABC...'
-  },
-  TELEGRAM_ALLOWED_USERS: {
-    label: 'Allowed Telegram user IDs',
-    help: 'Recommended. Comma-separated numeric IDs from @userinfobot. Without this, anyone can DM your bot.'
-  },
-  TELEGRAM_PROXY: {
-    label: 'Proxy URL',
-    help: 'Only needed on networks where Telegram is blocked.',
-    advanced: true
-  },
-  DISCORD_BOT_TOKEN: {
-    label: 'Bot token',
-    help: 'Create an application in the Discord Developer Portal, add a bot, then paste its token.'
-  },
-  DISCORD_ALLOWED_USERS: {
-    label: 'Allowed Discord user IDs',
-    help: 'Recommended. Comma-separated Discord user IDs.'
-  },
-  DISCORD_REPLY_TO_MODE: {
-    label: 'Reply style',
-    help: 'first, all, or off.',
-    advanced: true
-  },
-  SLACK_BOT_TOKEN: {
-    label: 'Slack bot token',
-    help: 'Starts with xoxb-. Found under OAuth & Permissions after installing your Slack app.',
-    placeholder: 'xoxb-...'
-  },
-  SLACK_APP_TOKEN: {
-    label: 'Slack app token',
-    help: 'Starts with xapp-. Required for Socket Mode.',
-    placeholder: 'xapp-...'
-  },
-  SLACK_ALLOWED_USERS: {
-    label: 'Allowed Slack user IDs',
-    help: 'Recommended. Comma-separated Slack user IDs.'
-  },
-  MATTERMOST_URL: {
-    label: 'Server URL',
-    placeholder: 'https://mattermost.example.com'
-  },
-  MATTERMOST_TOKEN: {
-    label: 'Bot token'
-  },
-  MATTERMOST_ALLOWED_USERS: {
-    label: 'Allowed user IDs',
-    help: 'Recommended. Comma-separated Mattermost user IDs.'
-  },
-  MATRIX_HOMESERVER: {
-    label: 'Homeserver URL',
-    placeholder: 'https://matrix.org'
-  },
-  MATRIX_ACCESS_TOKEN: {
-    label: 'Access token'
-  },
-  MATRIX_USER_ID: {
-    label: 'Bot user ID',
-    placeholder: '@hermes:example.org'
-  },
-  MATRIX_ALLOWED_USERS: {
-    label: 'Allowed Matrix user IDs',
-    help: 'Recommended. Comma-separated user IDs in @user:server format.'
-  },
-  SIGNAL_HTTP_URL: {
-    label: 'Signal bridge URL',
-    placeholder: 'http://127.0.0.1:8080',
-    help: 'URL of a running signal-cli REST bridge.'
-  },
-  SIGNAL_ACCOUNT: {
-    label: 'Phone number',
-    help: 'The number registered with your signal-cli bridge.'
-  },
-  SIGNAL_ALLOWED_USERS: {
-    label: 'Allowed Signal users',
-    help: 'Recommended. Comma-separated Signal identifiers.'
-  },
-  WHATSAPP_ENABLED: {
-    label: 'Enable WhatsApp bridge',
-    help: 'Set automatically by the toggle below. Leave alone unless you know you need it.',
-    advanced: true
-  },
-  WHATSAPP_MODE: {
-    label: 'Bridge mode',
-    advanced: true
-  },
-  WHATSAPP_ALLOWED_USERS: {
-    label: 'Allowed WhatsApp users',
-    help: 'Recommended. Comma-separated phone numbers or WhatsApp IDs.'
+function getFieldCopy(): Record<string, { advanced?: boolean; help?: string; label: string; placeholder?: string }> {
+  const tm = t().messaging
+  return {
+    TELEGRAM_BOT_TOKEN: {
+      label: tm.botToken,
+      help: tm.createBot,
+      placeholder: '123456:ABC...'
+    },
+    TELEGRAM_ALLOWED_USERS: {
+      label: tm.allowedTgUsers,
+      help: tm.allowedTgUsersDesc
+    },
+    TELEGRAM_PROXY: {
+      label: tm.proxyUrl,
+      help: tm.proxyDesc,
+      advanced: true
+    },
+    DISCORD_BOT_TOKEN: {
+      label: tm.botToken,
+      help: tm.createDiscordApp
+    },
+    DISCORD_ALLOWED_USERS: {
+      label: tm.allowedDiscordUsers,
+      help: tm.allowedDiscordUsersDesc
+    },
+    DISCORD_REPLY_TO_MODE: {
+      label: tm.replyStyle,
+      help: tm.replyStyleDesc,
+      advanced: true
+    },
+    SLACK_BOT_TOKEN: {
+      label: tm.slackBotToken,
+      help: tm.slackBotTokenDesc,
+      placeholder: 'xoxb-...'
+    },
+    SLACK_APP_TOKEN: {
+      label: tm.slackAppToken,
+      help: tm.slackAppTokenDesc,
+      placeholder: 'xapp-...'
+    },
+    SLACK_ALLOWED_USERS: {
+      label: tm.allowedSlackUsers,
+      help: tm.allowedSlackUsersDesc
+    },
+    MATTERMOST_URL: {
+      label: tm.serverUrl,
+      placeholder: 'https://mattermost.example.com'
+    },
+    MATTERMOST_TOKEN: {
+      label: tm.botToken
+    },
+    MATTERMOST_ALLOWED_USERS: {
+      label: tm.allowedUsers,
+      help: tm.allowedUsersDesc
+    },
+    MATRIX_HOMESERVER: {
+      label: tm.homeserverUrl,
+      placeholder: 'https://matrix.org'
+    },
+    MATRIX_ACCESS_TOKEN: {
+      label: tm.accessToken
+    },
+    MATRIX_USER_ID: {
+      label: tm.botUserId,
+      placeholder: '@hermes:example.org'
+    },
+    MATRIX_ALLOWED_USERS: {
+      label: tm.allowedMatrixUsers,
+      help: tm.allowedMatrixUsersDesc
+    },
+    SIGNAL_HTTP_URL: {
+      label: tm.signalBridgeUrl,
+      placeholder: 'http://127.0.0.1:8080',
+      help: tm.signalBridgeDesc
+    },
+    SIGNAL_ACCOUNT: {
+      label: tm.phoneNumber,
+      help: tm.phoneNumberDesc
+    },
+    SIGNAL_ALLOWED_USERS: {
+      label: tm.allowedSignalUsers,
+      help: tm.allowedSignalUsersDesc
+    },
+    WHATSAPP_ENABLED: {
+      label: tm.enableWhatsapp,
+      help: tm.enableWhatsappDesc,
+      advanced: true
+    },
+    WHATSAPP_MODE: {
+      label: tm.bridgeMode,
+      advanced: true
+    },
+    WHATSAPP_ALLOWED_USERS: {
+      label: tm.allowedWhatsappUsers,
+      help: tm.allowedWhatsappUsersDesc
+    }
   }
 }
 
 function fieldCopy(field: MessagingEnvVarInfo) {
-  const copy = FIELD_COPY[field.key] || {}
+  const copy = getFieldCopy()[field.key] || {}
 
   return {
     label: copy.label || field.prompt || field.key,
@@ -207,6 +220,7 @@ function fieldCopy(field: MessagingEnvVarInfo) {
 }
 
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
+  const { messaging: tm } = useTranslations()
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
@@ -225,14 +239,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       setPlatforms(result.platforms)
     } catch (err) {
       if (!silent) {
-        notifyError(err, 'Messaging platforms failed to load')
+        notifyError(err, tm.platformsFailed)
       }
     } finally {
       if (!silent) {
         setRefreshing(false)
       }
     }
-  }, [])
+  }, [tm])
 
   useEffect(() => {
     void refreshPlatforms()
@@ -304,8 +318,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       )
       notify({
         kind: 'success',
-        title: enabled ? `${platform.name} enabled` : `${platform.name} disabled`,
-        message: 'Restart the gateway for this change to take effect.'
+        title: enabled ? tm.platformEnabled.replace('{name}', platform.name) : tm.platformDisabled.replace('{name}', platform.name),
+        message: tm.restartForEffect
       })
     } catch (err) {
       notifyError(err, `Failed to update ${platform.name}`)
@@ -329,8 +343,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       await refreshPlatforms()
       notify({
         kind: 'success',
-        title: `${platform.name} setup saved`,
-        message: 'Restart the gateway to reconnect with the new credentials.'
+        title: tm.setupSaved.replace('{name}', platform.name),
+        message: tm.setupSavedDesc
       })
     } catch (err) {
       notifyError(err, `Failed to save ${platform.name}`)
@@ -352,7 +366,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      notify({ kind: 'success', title: `${key} cleared`, message: `${platform.name} setup was updated.` })
+      notify({ kind: 'success', title: tm.keyCleared.replace('{key}', key), message: tm.keyUpdated.replace('{name}', platform.name) })
     } catch (err) {
       notifyError(err, `Failed to clear ${key}`)
     } finally {
@@ -364,12 +378,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     <PageSearchShell
       {...props}
       onSearchChange={setQuery}
-      searchPlaceholder="Search messaging..."
+      searchPlaceholder={tm.searchMessaging}
       searchTrailingAction={null}
       searchValue={query}
     >
       {!platforms ? (
-        <PageLoader label="Loading messaging platforms..." />
+        <PageLoader label={tm.loadingPlatforms} />
       ) : (
         <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
           <aside className="min-h-0 overflow-y-auto border-b border-(--ui-stroke-tertiary) p-2 lg:border-b-0 lg:border-r">
@@ -472,6 +486,7 @@ function PlatformDetail({
   platform: MessagingPlatformInfo
   saving: string | null
 }) {
+  const { messaging: tm, common } = useTranslations()
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const hasEdits = Object.keys(trimEdits(edits)).length > 0
@@ -495,9 +510,9 @@ function PlatformDetail({
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <StatePill tone={stateTone(platform)}>{stateLabel(platform.state)}</StatePill>
                 <SetupPill active={platform.configured}>
-                  {platform.configured ? 'Credentials set' : 'Needs setup'}
+                  {platform.configured ? tm.credentialsSet : tm.needsSetup}
                 </SetupPill>
-                {!platform.gateway_running && <SetupPill active={false}>Messaging gateway stopped</SetupPill>}
+                {!platform.gateway_running && <SetupPill active={false}>{tm.gatewayStopped}</SetupPill>}
               </div>
               <PlatformHint platform={platform} />
             </div>
@@ -511,14 +526,14 @@ function PlatformDetail({
           )}
 
           <section>
-            <SectionTitle>Get your credentials</SectionTitle>
+            <SectionTitle>{tm.getCredentials}</SectionTitle>
             <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
               {introCopy(platform)}
             </p>
             <div className="mt-3">
               <Button asChild size="sm" variant="outline">
                 <a href={platform.docs_url} rel="noreferrer" target="_blank">
-                  Open setup guide
+                  {tm.openSetupGuide}
                   <ExternalLink className="size-3.5" />
                 </a>
               </Button>
@@ -526,7 +541,7 @@ function PlatformDetail({
           </section>
 
           <section>
-            <SectionTitle>Required</SectionTitle>
+            <SectionTitle>{common.required}</SectionTitle>
             <div className="mt-3 space-y-4">
               {requiredFields.length > 0 ? (
                 requiredFields.map(field => (
@@ -541,7 +556,7 @@ function PlatformDetail({
                 ))
               ) : (
                 <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                  This platform does not need a token here. Use the setup guide above, then enable it below.
+                  {tm.noTokenNeeded}
                 </p>
               )}
             </div>
@@ -549,7 +564,7 @@ function PlatformDetail({
 
           {optionalFields.length > 0 && (
             <section>
-              <SectionTitle>Recommended</SectionTitle>
+              <SectionTitle>{common.recommended}</SectionTitle>
               <div className="mt-3 space-y-4">
                 {optionalFields.map(field => (
                   <MessagingField
@@ -572,7 +587,7 @@ function PlatformDetail({
                 onClick={() => setShowAdvanced(value => !value)}
                 type="button"
               >
-                <span>Advanced ({hiddenCount})</span>
+                <span>{tm.advancedCount.replace('{count}', String(hiddenCount))}</span>
                 <DisclosureCaret open={showAdvanced} size="0.875rem" />
               </button>
               {showAdvanced && (
@@ -598,21 +613,21 @@ function PlatformDetail({
         <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
           <label className="flex shrink-0 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2.5 py-1.5 text-[length:var(--conversation-text-font-size)]">
             <Switch
-              aria-label={platform.enabled ? `Disable ${platform.name}` : `Enable ${platform.name}`}
+              aria-label={platform.enabled ? tm.disableName.replace('{name}', platform.name) : tm.enableName.replace('{name}', platform.name)}
               checked={platform.enabled}
               disabled={saving === `enabled:${platform.id}`}
               onCheckedChange={onToggle}
             />
             <span className="text-xs font-medium text-muted-foreground">
-              {platform.enabled ? 'Enabled' : 'Disabled'}
+              {platform.enabled ? common.enabled : common.disabled}
             </span>
           </label>
 
           <div className="ml-auto flex items-center gap-2">
-            {hasEdits && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
+            {hasEdits && <span className="text-xs text-muted-foreground">{tm.unsavedChanges}</span>}
             <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
               <Save />
-              {isSavingEnv ? 'Saving...' : 'Save changes'}
+              {isSavingEnv ? common.saving : common.save}
             </Button>
           </div>
         </div>
@@ -673,6 +688,7 @@ function MessagingField({
   onEdit: (key: string, value: string) => void
   saving: string | null
 }) {
+  const { messaging: tm } = useTranslations()
   const copy = fieldCopy(field)
 
   return (
@@ -681,19 +697,19 @@ function MessagingField({
         <label className="text-sm font-medium text-foreground" htmlFor={`messaging-field-${field.key}`}>
           {copy.label}
         </label>
-        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">Saved</span>}
+        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">{tm.savedStatus}</span>}
       </div>
       <div className="flex items-center gap-2">
         <Input
           className="h-9 rounded-lg font-mono text-sm"
           id={`messaging-field-${field.key}`}
           onChange={event => onEdit(field.key, event.target.value)}
-          placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}
+          placeholder={field.is_set ? field.redacted_value || tm.replaceCurrent : copy.placeholder}
           type={field.is_password ? 'password' : 'text'}
           value={edits[field.key] || ''}
         />
         {field.url && (
-          <Button asChild size="icon-sm" title="Open docs" variant="ghost">
+          <Button asChild size="icon-sm" title={tm.openDocs} variant="ghost">
             <a href={field.url} rel="noreferrer" target="_blank">
               <ExternalLink className="size-3.5" />
             </a>
@@ -721,11 +737,13 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
+  const hints = getHintByState()
+
   if (!platform.enabled || platform.state === 'connected') {
     return null
   }
 
-  const hint = HINT_BY_STATE[platform.state || ''] || (platform.gateway_running ? null : HINT_BY_STATE.gateway_stopped)
+  const hint = hints[platform.state || ''] || (platform.gateway_running ? null : hints.gateway_stopped)
 
   return hint ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p> : null
 }
