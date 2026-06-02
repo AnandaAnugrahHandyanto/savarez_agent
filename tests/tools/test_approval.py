@@ -440,6 +440,85 @@ class TestHermesConfigWriteProtection:
         assert dangerous is False
 
 
+class TestHermesConfigPerlAwkInPlace:
+    """Sibling follow-up to #14639 / the sed-in-place pairing: `sed -i` is not
+    the only standard in-place editor that mutates ~/.hermes/config.yaml (or
+    .env) directly and so bypasses the redirection/tee/cp patterns. `perl -i`
+    (also `-pi`, `-i.bak`) and `awk -i inplace` / `gawk -i inplace` reach the
+    same security file via the same in-place-write path. Gating only `sed`
+    leaves the write_file/patch deny unpaired theater. These pin the remaining
+    in-place editors against the config/env files."""
+
+    def test_perl_in_place(self):
+        # The gap: perl -i mutates the file directly, like sed -i.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/manual/off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
+    def test_perl_combined_pi_flag(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -pi -e 's/manual/off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_perl_in_place_with_backup_suffix_on_env(self):
+        # -i.bak (backup suffix) must still be caught, against .env.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i.bak -pe 's/x/y/' ~/.hermes/.env"
+        )
+        assert dangerous is True
+
+    def test_awk_in_place(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "awk -i inplace '{print}' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
+    def test_gawk_in_place_on_env(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "gawk -i inplace '{print}' ~/.hermes/.env"
+        )
+        assert dangerous is True
+
+    def test_custom_hermes_home(self):
+        # HERMES_HOME override form must be covered like the sed pairing.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/x/y/' $HERMES_HOME/config.yaml"
+        )
+        assert dangerous is True
+
+    # --- No-regression negatives ---
+
+    def test_perl_without_in_place_safe(self):
+        # No -i flag, no config path — the new in-place pattern must not trip.
+        # (`perl -e` is independently gated by the -e/-c script pattern, so use
+        # a read-only invocation to isolate the in-place pairing.)
+        dangerous, key, desc = detect_dangerous_command("perl --version")
+        assert dangerous is False
+
+    def test_perl_in_place_non_sensitive_path_safe(self):
+        # In-place edit of a scratch file is not the security file.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/x/y/' /tmp/scratch.yaml"
+        )
+        assert dangerous is False
+
+    def test_read_only_awk_on_config_safe(self):
+        # awk without -i inplace only reads; must not trip.
+        dangerous, key, desc = detect_dangerous_command(
+            "awk '{print}' ~/.hermes/config.yaml"
+        )
+        assert dangerous is False
+
+    def test_cat_config_safe(self):
+        # Reading config is not a write.
+        dangerous, key, desc = detect_dangerous_command("cat ~/.hermes/config.yaml")
+        assert dangerous is False
+
+
 class TestFindExecFullPathRm:
     """Detect find -exec with full-path rm bypasses."""
 

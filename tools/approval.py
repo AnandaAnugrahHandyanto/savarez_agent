@@ -443,6 +443,14 @@ DANGEROUS_PATTERNS = [
     # the terminal side is not an open door. See #14639.
     (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
     (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
+    # Same in-place-edit escalation as the sed pairing above, reached through
+    # the other standard in-place editors `sed -i` does not cover: `perl -i`
+    # (also `-pi`, `-i.bak`) and `awk -i inplace` / `gawk -i inplace`. Each
+    # mutates ~/.hermes/config.yaml (or .env) directly, and the mtime-keyed
+    # config cache reloads it mid-session — so gating only `sed` leaves the
+    # write_file/patch deny unpaired. Sibling follow-up to #14639.
+    (rf'\bperl\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl -i)"),
+    (rf'\b(?:g?awk)\s+-i\s+inplace\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (awk -i inplace)"),
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
