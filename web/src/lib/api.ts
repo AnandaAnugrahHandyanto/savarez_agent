@@ -211,6 +211,26 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  listMissionBriefs: () =>
+    fetchJSON<MissionBriefListResponse>("/api/mission-control/mission-briefs", { cache: "no-store" }),
+  getMissionBrief: (briefId: string) =>
+    fetchJSON<MissionBriefDetailResponse>(`/api/mission-control/mission-briefs/${encodeURIComponent(briefId)}`, { cache: "no-store" }),
+  createMissionBrief: (body: MissionBriefCreate) =>
+    fetchJSON<MissionBriefCreateResponse>("/api/mission-control/mission-briefs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  updateMissionBrief: (briefId: string, body: MissionBriefUpdate) =>
+    fetchJSON<MissionBriefCreateResponse>(`/api/mission-control/mission-briefs/${encodeURIComponent(briefId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  archiveMissionBrief: (briefId: string) =>
+    fetchJSON<MissionBriefCreateResponse>(`/api/mission-control/mission-briefs/${encodeURIComponent(briefId)}`, {
+      method: "DELETE",
+    }),
   listProjectRooms: () =>
     fetchJSON<ProjectRoomsResponse>("/api/mission-control/project-rooms", { cache: "no-store" }),
   createProjectRoom: (body: ProjectRoomCreate) =>
@@ -933,6 +953,55 @@ export interface MissionControlBlockFlagPacketCreate {
   reason: string;
   source_refs?: string[];
   author?: string;
+}
+
+export interface MissionBrief {
+  id: string;
+  title: string;
+  summary: string;
+  references: string[];
+  status: "active" | "archived";
+  author: string;
+  created_at: string;
+  updated_at: string;
+  archived_at?: string | null;
+  trusted_for_execution: false;
+  inert_context_only: true;
+}
+
+export interface MissionBriefSummary {
+  id: string;
+  title: string;
+  summary: string;
+  status: "active" | "archived";
+  reference_count: number;
+  created_at: string;
+  updated_at: string;
+  archived_at?: string | null;
+  trusted_for_execution: false;
+  inert_context_only: true;
+}
+
+export interface MissionBriefListResponse {
+  items: MissionBriefSummary[];
+  warnings: string[];
+}
+
+export interface MissionBriefDetailResponse {
+  brief: MissionBrief;
+}
+
+export interface MissionBriefCreate {
+  title: string;
+  summary?: string;
+  references?: string[];
+  author?: string;
+}
+
+export type MissionBriefUpdate = Partial<MissionBriefCreate>;
+
+export interface MissionBriefCreateResponse {
+  brief: MissionBrief;
 }
 
 export interface ProjectRoom {

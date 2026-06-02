@@ -2864,6 +2864,28 @@ def _project_room_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail="Project Rooms error")
 
 
+def _mission_briefs_enabled() -> bool:
+    config = load_config()
+    return cfg_get(config, "dashboard", "mission_briefs_enabled", default=False) is True
+
+
+def _require_mission_briefs_enabled() -> None:
+    if not _mission_briefs_enabled():
+        raise HTTPException(status_code=404, detail="Mission Briefs disabled")
+
+
+def _mission_brief_error(exc: Exception) -> HTTPException:
+    from hermes_cli.mission_briefs import MissionBriefError
+
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail="Mission Brief not found")
+    if isinstance(exc, MissionBriefError):
+        if str(exc) == "Invalid brief id":
+            return HTTPException(status_code=404, detail="Mission Brief not found")
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail="Mission Brief error")
+
+
 @app.get("/api/mission-control/packets")
 async def get_mission_control_packets():
     from hermes_cli.mission_control import list_packets
@@ -2924,6 +2946,58 @@ async def post_mission_control_block_flag_packet(body: Dict[str, Any]):
     except Exception as exc:
         create_rejection_audit(dict(body), str(exc), packet_kind="block_flag")
         raise _mission_control_packet_error(exc) from exc
+
+
+@app.get("/api/mission-control/mission-briefs")
+async def get_mission_briefs():
+    _require_mission_briefs_enabled()
+    from hermes_cli.mission_briefs import list_briefs
+
+    return list_briefs()
+
+
+@app.post("/api/mission-control/mission-briefs")
+async def post_mission_brief(body: Dict[str, Any]):
+    _require_mission_briefs_enabled()
+    from hermes_cli.mission_briefs import create_brief
+
+    try:
+        return {"brief": create_brief(dict(body))}
+    except Exception as exc:
+        raise _mission_brief_error(exc) from exc
+
+
+@app.get("/api/mission-control/mission-briefs/{brief_id}")
+async def get_mission_brief(brief_id: str):
+    _require_mission_briefs_enabled()
+    from hermes_cli.mission_briefs import get_brief
+
+    try:
+        return get_brief(brief_id)
+    except Exception as exc:
+        raise _mission_brief_error(exc) from exc
+
+
+@app.put("/api/mission-control/mission-briefs/{brief_id}")
+async def put_mission_brief(brief_id: str, body: Dict[str, Any]):
+    _require_mission_briefs_enabled()
+    from hermes_cli.mission_briefs import update_brief
+
+    try:
+        return update_brief(brief_id, dict(body))
+    except Exception as exc:
+        raise _mission_brief_error(exc) from exc
+
+
+@app.delete("/api/mission-control/mission-briefs/{brief_id}")
+async def delete_mission_brief(brief_id: str):
+    _require_mission_briefs_enabled()
+    from hermes_cli.mission_briefs import archive_brief
+
+    try:
+        return archive_brief(brief_id)
+    except Exception as exc:
+        raise _mission_brief_error(exc) from exc
 
 
 @app.get("/api/mission-control/project-rooms")
