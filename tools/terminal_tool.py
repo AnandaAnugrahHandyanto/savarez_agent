@@ -1045,6 +1045,8 @@ def _get_env_config() -> Dict[str, Any]:
         default_cwd = os.getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
+    elif env_type == "kubernetes":
+        default_cwd = "/workspace"
     else:
         default_cwd = "/root"
 
@@ -1066,7 +1068,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in {"modal", "docker", "singularity", "daytona"} and cwd:
+    elif env_type in {"modal", "docker", "singularity", "daytona", "kubernetes"} and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -1094,6 +1096,22 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        "kubernetes_namespace": os.getenv("TERMINAL_KUBERNETES_NAMESPACE", ""),
+        "kubernetes_pod_service_account": os.getenv(
+            "TERMINAL_KUBERNETES_POD_SA", "hermes-session-noperms"
+        ),
+        "kubernetes_image_pull_secrets": _parse_env_var(
+            "TERMINAL_KUBERNETES_PULL_SECRETS", "[]", json.loads, "valid JSON"
+        ),
+        "kubernetes_image": os.getenv("TERMINAL_KUBERNETES_IMAGE", "ubuntu:22.04"),
+        # k8s sessions are ephemeral by default (isolation sandbox); opt in to
+        # a retained per-task PVC with TERMINAL_KUBERNETES_PERSISTENT=true.
+        "kubernetes_persistent": os.getenv(
+            "TERMINAL_KUBERNETES_PERSISTENT", "false"
+        ).lower() in {"true", "1", "yes"},
+        "kubernetes_active_deadline_seconds": _parse_env_var(
+            "TERMINAL_KUBERNETES_ACTIVE_DEADLINE_SECONDS", "14400"
+        ),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
@@ -1283,10 +1301,72 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             timeout=timeout,
         )
 
+    elif env_type == "kubernetes":
+        import os as _os
+        from tools.environments.kubernetes import (
+            DirectProvisioner as _DirectProvisioner,
+            KubernetesEnvironment as _KubernetesEnvironment,
+            Resources as _K8sResources,
+        )
+
+        namespace = cc.get("kubernetes_namespace") or _os.getenv(
+            "HERMES_POD_NAMESPACE"
+        )
+        if not namespace:
+            try:
+                with open(
+                    "/var/run/secrets/kubernetes.io/serviceaccount/namespace",
+                    encoding="utf-8",
+                ) as fh:
+                    namespace = fh.read().strip()
+            except OSError:
+                raise ValueError(
+                    "kubernetes backend: namespace not found. Set "
+                    "TERMINAL_KUBERNETES_NAMESPACE or run in-cluster."
+                )
+
+        from kubernetes import config as _k8s_config
+        from kubernetes.client import CoreV1Api as _CoreV1Api
+
+        # In-cluster first (production: SA token). Fall back to the local
+        # kubeconfig so the backend also works for an out-of-cluster agent
+        # (dev / the external-kubeconfig topology) pointed at any cluster.
+        try:
+            _k8s_config.load_incluster_config()
+        except _k8s_config.ConfigException:
+            _k8s_config.load_kube_config()
+        _core_api = _CoreV1Api()
+        provisioner = _DirectProvisioner(
+            namespace=namespace,
+            pod_service_account=cc.get("kubernetes_pod_service_account")
+            or "hermes-session-noperms",
+            owner_pod_name=_os.getenv("HERMES_POD_NAME", ""),
+            owner_pod_uid=_os.getenv("HERMES_POD_UID", ""),
+            image_pull_secrets=cc.get("kubernetes_image_pull_secrets") or [],
+            active_deadline_seconds=int(cc.get("kubernetes_active_deadline_seconds", 14400)),
+            api=_core_api,
+        )
+        # k8s sessions default to EPHEMERAL (isolation sandbox); persistence is
+        # opt-in via TERMINAL_KUBERNETES_PERSISTENT, NOT the shared
+        # container_persistent default (which is True for docker/daytona).
+        k8s_persistent = cc.get("kubernetes_persistent", False)
+        return _KubernetesEnvironment(
+            provisioner=provisioner,
+            task_id=task_id,
+            persistent=k8s_persistent,
+            image=image,
+            cwd=cwd,
+            timeout=timeout,
+            resources=_K8sResources(
+                cpu=int(cpu), memory_mib=memory, disk_mib=disk
+            ),
+            api=_core_api,
+        )
+
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'ssh', or 'kubernetes'"
         )
 
 
@@ -1835,6 +1915,8 @@ def terminal_tool(
             image = overrides.get("modal_image") or config["modal_image"]
         elif env_type == "daytona":
             image = overrides.get("daytona_image") or config["daytona_image"]
+        elif env_type == "kubernetes":
+            image = overrides.get("kubernetes_image") or config["kubernetes_image"]
         else:
             image = ""
 
@@ -1911,7 +1993,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona"}:
+                        if env_type in {"docker", "singularity", "modal", "daytona", "kubernetes"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -1926,6 +2008,11 @@ def terminal_tool(
                                 "docker_extra_args": config.get("docker_extra_args", []),
                                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
                                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+                                "kubernetes_namespace": config.get("kubernetes_namespace", ""),
+                                "kubernetes_pod_service_account": config.get("kubernetes_pod_service_account", "hermes-session-noperms"),
+                                "kubernetes_image_pull_secrets": config.get("kubernetes_image_pull_secrets", []),
+                                "kubernetes_persistent": config.get("kubernetes_persistent", False),
+                                "kubernetes_active_deadline_seconds": config.get("kubernetes_active_deadline_seconds", 14400),
                             }
 
                         local_config = None
@@ -2463,6 +2550,15 @@ def check_terminal_requirements() -> bool:
         elif env_type == "daytona":
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
+
+        elif env_type == "kubernetes":
+            if importlib.util.find_spec("kubernetes") is None:
+                logger.error(
+                    "kubernetes backend selected but the 'kubernetes' client "
+                    "is not installed: pip install kubernetes"
+                )
+                return False
+            return True
 
         else:
             logger.error(

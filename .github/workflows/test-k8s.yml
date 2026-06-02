@@ -1,0 +1,68 @@
+name: K8s backend (kind)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/environments/kubernetes.py'
+      - 'tools/terminal_tool.py'
+      - 'tests/integration/test_kubernetes_terminal.py'
+      - '.github/workflows/test-k8s.yml'
+      - 'pyproject.toml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tools/environments/kubernetes.py'
+      - 'tools/terminal_tool.py'
+      - 'tests/integration/test_kubernetes_terminal.py'
+      - '.github/workflows/test-k8s.yml'
+      - 'pyproject.toml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-k8s-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv pip install -e ".[all,dev,kubernetes]"
+
+      - name: Create kind cluster
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3  # v1.12.0
+        with:
+          cluster_name: hermes-k8s-ci
+
+      - name: Pre-load the session image into kind
+        run: |
+          docker pull ubuntu:22.04
+          kind load docker-image ubuntu:22.04 --name hermes-k8s-ci
+
+      - name: Run K8s backend integration tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/integration/test_kubernetes_terminal.py \
+            -v -m integration -o addopts="" --tb=short
+        env:
+          HERMES_K8S_KIND_TEST: "1"
+          HERMES_K8S_KIND_IMAGE: "ubuntu:22.04"
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
