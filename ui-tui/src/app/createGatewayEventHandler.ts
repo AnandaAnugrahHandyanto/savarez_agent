@@ -19,11 +19,9 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
-import { getUiState, patchUiState } from './uiStore.js'
+import { getUiState, patchUiState, statusFromBusy } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
-
-const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
 const applySkin = (s: GatewaySkin) =>
   patchUiState({
@@ -682,6 +680,40 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         setStatus('secret input needed')
 
         return
+      case 'prompt.expire': {
+        // Server-side _block timed out waiting for an answer.  The Python
+        // agent thread has already resumed on an empty string; if we don't
+        // tear the overlay down here it stays mounted, swallows keystrokes,
+        // and looks like garbage as the next assistant turn streams in.
+        // Match by request_id so a late expiry can't clobber a different
+        // prompt that opened in the meantime.
+        const { kind, request_id } = ev.payload
+        const ov = getOverlayState()
+        let cleared = false
+
+        if (kind === 'clarify' && ov.clarify?.requestId === request_id) {
+          patchOverlayState({ clarify: null })
+          cleared = true
+        } else if (kind === 'sudo' && ov.sudo?.requestId === request_id) {
+          patchOverlayState({ sudo: null })
+          cleared = true
+        } else if (kind === 'secret' && ov.secret?.requestId === request_id) {
+          patchOverlayState({ secret: null })
+          cleared = true
+        }
+
+        if (cleared) {
+          // The request event set a prompt-specific status ("waiting for
+          // input…" / "sudo password needed" / "secret input needed").
+          // Nothing else resets it once the prompt is gone, so the bar would
+          // keep claiming we're waiting while the agent streams. Snap it back
+          // to the real busy/ready state.
+          setStatus(statusFromBusy())
+          sys(`prompt timed out — ${kind} request cancelled`)
+        }
+
+        return
+      }
 
       case 'background.complete':
         dropBgTask(ev.payload.task_id)

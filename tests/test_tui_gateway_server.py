@@ -3217,6 +3217,47 @@ def test_clear_pending_without_sid_clears_all():
             server._answers.pop(key, None)
 
 
+def test_clear_pending_removes_entry_so_late_respond_cannot_revive():
+    """_clear_pending must POP _pending, not just set the empty answer.
+
+    Otherwise a user response that lands after interrupt/shutdown cleared the
+    prompt can acquire _pending_lock, find the still-pending entry, overwrite
+    the empty answer with real input, and return ok — reviving a prompt that
+    was meant to be cancelled. (Copilot review on PR #35987.)
+    """
+    ev = threading.Event()
+    server._pending["rid-clear"] = ("sid_clear", ev)
+    server._pending_prompt_payloads["rid-clear"] = ("clarify.request", {})
+    server._answers.pop("rid-clear", None)
+    try:
+        server._clear_pending("sid_clear")
+
+        # Entry must be gone from _pending (and its payload), with the empty
+        # answer staged and the blocked thread released.
+        assert ev.is_set()
+        assert server._answers.get("rid-clear") == ""
+        assert "rid-clear" not in server._pending
+        assert "rid-clear" not in server._pending_prompt_payloads
+
+        # A late response for the cleared request must now be rejected (4009),
+        # NOT silently accepted (which would overwrite the empty answer).
+        resp = server.handle_request(
+            {
+                "id": "x",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-clear", "answer": "too late"},
+            }
+        )
+        assert resp and resp.get("error"), f"late respond should 4009, got {resp!r}"
+        assert resp["error"].get("code") == 4009
+        # The empty answer staged by the clear must survive intact.
+        assert server._answers.get("rid-clear") == ""
+    finally:
+        server._pending.pop("rid-clear", None)
+        server._pending_prompt_payloads.pop("rid-clear", None)
+        server._answers.pop("rid-clear", None)
+
+
 def test_respond_unpacks_sid_tuple_correctly():
     """After the (sid, Event) tuple change, _respond must still work."""
     ev = threading.Event()
@@ -5410,3 +5451,213 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         assert requeued["session_id"] == "proc_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
+
+
+# ---------------------------------------------------------------------------
+# _block must emit a `prompt.expire` event when it times out without an
+# answer.  Without it, the TUI overlay (the (1-N) choice box) sits forever
+# capturing keystrokes while the assistant resumes streaming below it —
+# user reports "shit just overflows and I can't escape out".
+# ---------------------------------------------------------------------------
+
+
+def test_block_emits_prompt_expire_on_timeout(monkeypatch):
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+
+    # 50ms timeout so we don't make the suite wait — _block.timeout=300 in
+    # real callers, but the path under test is the same.
+    answer = server._block(
+        "clarify.request",
+        "sid_xyz",
+        {"question": "ok?", "choices": ["yes", "no"]},
+        timeout=0.05,
+    )
+
+    # Agent gets empty string — proves we resumed on timeout.
+    assert answer == ""
+
+    kinds = [e[0] for e in emitted]
+    assert "clarify.request" in kinds, f"expected clarify.request, got {kinds}"
+    assert "prompt.expire" in kinds, (
+        "CRITICAL: _block timed out without emitting prompt.expire — "
+        "the client overlay will stay mounted and capture keystrokes "
+        "until the next message clears it"
+    )
+
+    expire = next(e for e in emitted if e[0] == "prompt.expire")
+    # _emit signature: (event, sid, payload)
+    assert expire[1] == "sid_xyz"
+    payload = expire[2]
+    assert payload["kind"] == "clarify"
+    assert "request_id" in payload and payload["request_id"]
+
+
+def test_block_does_not_emit_prompt_expire_when_answered(monkeypatch):
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+
+    # Set the answer from another thread while _block is waiting.
+    def _answer_after_delay():
+        # Wait until the pending entry exists, then resolve it.
+        for _ in range(100):
+            if server._pending:
+                rid = next(iter(server._pending))
+                server._answers[rid] = "yes"
+                server._pending[rid][1].set()
+                return
+            time.sleep(0.005)
+
+    threading.Thread(target=_answer_after_delay, daemon=True).start()
+
+    answer = server._block(
+        "clarify.request",
+        "sid_xyz",
+        {"question": "ok?", "choices": ["yes", "no"]},
+        timeout=2,
+    )
+
+    assert answer == "yes"
+    kinds = [e[0] for e in emitted]
+    assert "prompt.expire" not in kinds, (
+        "regression: prompt.expire fired even though the user answered — "
+        "would race-clear the overlay AFTER the legitimate answer"
+    )
+
+
+def test_block_emit_prompt_expire_kind_matches_event_prefix(monkeypatch):
+    """sudo/secret prompts also need expire — kind is derived from the
+    event name (`sudo.request` → `sudo`)."""
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+
+    server._block("sudo.request", "sid_x", {}, timeout=0.05)
+    server._block("secret.request", "sid_x", {"prompt": "p", "env_var": "X"}, timeout=0.05)
+
+    expires = [e for e in emitted if e[0] == "prompt.expire"]
+    kinds = [e[2]["kind"] for e in expires]
+    assert "sudo" in kinds
+    assert "secret" in kinds
+
+
+def test_block_no_expire_when_answer_lands_in_timeout_race(monkeypatch):
+    """Race guard (Copilot review on PR #35987): _respond() can set
+    _answers[rid] + ev.set() AFTER ev.wait() already returned False
+    (timeout) but BEFORE _block reaches its finally. The answer is
+    genuinely accepted — _block returns it — so prompt.expire must NOT
+    fire, or it would clear the overlay out from under a real answer.
+
+    We simulate the exact interleaving by patching Event.wait to return
+    False (timeout) while injecting the answer into _answers just before
+    returning, mimicking a _respond() that landed in the gap.
+    """
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+
+    real_wait = threading.Event.wait
+
+    def racing_wait(self, timeout=None):
+        # Find the rid this event belongs to and inject an answer, then
+        # report a timeout — exactly the lost-wakeup ordering.
+        for rid, (_sid, ev) in list(server._pending.items()):
+            if ev is self:
+                server._answers[rid] = "late-but-accepted"
+                break
+        return False  # pretend we timed out
+
+    monkeypatch.setattr(threading.Event, "wait", racing_wait)
+
+    answer = server._block(
+        "clarify.request",
+        "sid_race",
+        {"question": "ok?", "choices": ["yes", "no"]},
+        timeout=0.01,
+    )
+
+    # The accepted answer must be returned to the agent...
+    assert answer == "late-but-accepted"
+    # ...and NO expiry should have been emitted despite the False wait.
+    kinds = [e[0] for e in emitted]
+    assert "prompt.expire" not in kinds, (
+        "race regression: prompt.expire fired even though an answer was "
+        "set during the timeout window — overlay would be cleared out "
+        "from under a legitimate late answer"
+    )
+
+
+def test_block_respond_race_is_atomic_under_lock(monkeypatch):
+    """Stress the _respond-vs-timeout interleaving Copilot flagged: a
+    response that reads _pending then gets preempted before writing
+    _answers must not allow _block to pop and emit a false prompt.expire.
+    The _pending_lock makes the two mutually exclusive. Run many short-
+    timeout blocks with a concurrent responder racing the deadline and
+    assert the full invariant per round: whenever the response succeeded
+    (status ok) the answer was delivered AND no prompt.expire fired for
+    that request; whenever it failed (4009) the answer was empty (an
+    expiry there is legitimate). Each round uses a unique sid+rid so
+    expiries can be mapped back to the round that produced them.
+    """
+    import concurrent.futures
+
+    # Records every prompt.expire as (request_id, sid) so we can map an
+    # expiry back to the exact round/request it fired for.
+    expiries = []
+
+    def tracking_emit(event, sid, payload=None):
+        if event == "prompt.expire" and payload:
+            expiries.append((payload.get("request_id"), sid))
+
+    monkeypatch.setattr(server, "_emit", tracking_emit)
+
+    results = {"respond_ok": 0, "respond_late": 0}
+
+    def one_round(i):
+        sid = f"sid_race_{i}"
+        captured: dict[str, str | None] = {"rid": None}
+
+        # responder thread: wait until the prompt is pending, then respond
+        # right around the deadline to maximize interleaving.
+        def responder():
+            for _ in range(200):
+                with server._pending_lock:
+                    rid = next((k for k, (s, _e) in server._pending.items() if s == sid), None)
+                if rid:
+                    captured["rid"] = rid
+                    return server.handle_request(
+                        {"id": "x", "method": "clarify.respond",
+                         "params": {"request_id": rid, "answer": f"ans{i}"}}
+                    )
+                time.sleep(0.0005)
+            return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(responder)
+            ans = server._block("clarify.request", sid, {"q": "?"}, timeout=0.02)
+            resp = fut.result(timeout=5)
+
+        rid = captured["rid"]
+        # Expiries that fired for THIS round's request (or session).
+        round_expiries = [e for e in expiries if e[1] == sid or (rid is not None and e[0] == rid)]
+
+        respond_succeeded = bool(resp and resp.get("result"))
+        if respond_succeeded:
+            results["respond_ok"] += 1
+            # CRITICAL invariant: a successful respond must deliver the answer
+            # AND must NOT have produced a prompt.expire for this request. This
+            # is the race the lock closes — a regression that fires expiry while
+            # still returning the answer fails HERE (the old test missed it).
+            assert ans == f"ans{i}", f"round {i}: respond ok but answer lost ({ans!r})"
+            assert not round_expiries, (
+                f"round {i}: respond succeeded but a false prompt.expire fired "
+                f"for it: {round_expiries}"
+            )
+        else:
+            results["respond_late"] += 1
+            # respond came after the pop → 4009; answer must be empty and an
+            # expiry for this round is legitimate (the prompt really timed out).
+            assert ans == "", f"round {i}: respond failed but got answer {ans!r}"
+
+    for i in range(40):
+        one_round(i)
+
+    assert results["respond_ok"] > 0, "test never exercised the respond-wins path"

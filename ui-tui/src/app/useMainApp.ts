@@ -33,11 +33,11 @@ import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
-import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { $overlayState, getOverlayState, patchOverlayState } from './overlayStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
-import { $uiState, getUiState, patchUiState } from './uiStore.js'
+import { $uiState, getUiState, patchUiState, statusFromBusy } from './uiStore.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
 import { useInputHandlers } from './useInputHandlers.js'
@@ -582,6 +582,21 @@ export function useMainApp(gw: GatewayClient) {
 
       rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
         if (!r) {
+          // RPC failed — most often "no pending clarify request" because the
+          // server-side _block already timed out.  The prompt.expire event
+          // SHOULD have torn the overlay down already, but in case it didn't
+          // (transport hiccup, stale entry, etc.) we MUST clear it here or
+          // the user is stuck looking at a dead prompt that captures every
+          // keystroke.  Better to lose the optional turn-trail line than
+          // leave a zombie overlay anchored over the composer.
+          if (getOverlayState().clarify?.requestId === clarify.requestId) {
+            patchOverlayState({ clarify: null })
+            // The clarify.request set status to 'waiting for input…'; with the
+            // overlay now dismissed nothing else resets it, so the bar would
+            // keep claiming we're waiting. Snap back to the real busy/ready.
+            patchUiState({ status: statusFromBusy() })
+          }
+
           return
         }
 
@@ -594,12 +609,23 @@ export function useMainApp(gw: GatewayClient) {
             tools: [buildToolTrailLine('clarify', clarify.question)]
           })
           appendMessage({ role: 'user', text: answer })
-          patchUiState({ status: 'running…' })
         } else {
           sys('prompt cancelled')
         }
 
-        patchOverlayState({ clarify: null })
+        // Guard BOTH the overlay clear AND the status update by request id:
+        // _respond() sets the server event (unblocking the agent) BEFORE this
+        // RPC response is delivered, so the agent can emit a fresh
+        // clarify.request before this callback runs. Clearing the overlay would
+        // wipe that new prompt, and setting status to 'running…' would clobber
+        // its prompt-specific status. Only touch UI for the request we own.
+        // (Same guard the failure path above uses.)
+        if (getOverlayState().clarify?.requestId === clarify.requestId) {
+          patchOverlayState({ clarify: null })
+          if (answer) {
+            patchUiState({ status: 'running…' })
+          }
+        }
       })
     },
     [appendMessage, overlay.clarify, rpc, sys]
@@ -838,7 +864,8 @@ export function useMainApp(gw: GatewayClient) {
   slashRef.current = slash
 
   const respondWith = useCallback(
-    (method: string, params: Record<string, unknown>, done: () => void) => rpc(method, params).then(r => r && done()),
+    (method: string, params: Record<string, unknown>, done: () => void, onFail?: () => void) =>
+      rpc(method, params).then(r => (r ? done() : onFail?.())),
     [rpc]
   )
 
@@ -858,10 +885,33 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      return respondWith('sudo.respond', { password: pw, request_id: overlay.sudo.requestId }, () => {
-        patchOverlayState({ sudo: null })
-        patchUiState({ status: 'running…' })
-      })
+      const requestId = overlay.sudo.requestId
+
+      return respondWith(
+        'sudo.respond',
+        { password: pw, request_id: requestId },
+        () => {
+          // Guard by request id: the server event fires before this RPC
+          // resolves, so the agent may have opened a fresh sudo prompt before
+          // this callback runs — only clear the one we submitted.
+          if (getOverlayState().sudo?.requestId === requestId) {
+            patchOverlayState({ sudo: null })
+            patchUiState({ status: 'running…' })
+          }
+        },
+        // RPC failed — usually "no pending sudo request" because the
+        // server-side _block already timed out. prompt.expire SHOULD have
+        // cleared the overlay; clear it here too in case that event was
+        // missed, or the user is stuck on a dead password prompt.
+        () => {
+          if (getOverlayState().sudo?.requestId === requestId) {
+            patchOverlayState({ sudo: null })
+            // Reset the 'sudo password needed' status the request set, same
+            // reasoning as the clarify fallback above.
+            patchUiState({ status: statusFromBusy() })
+          }
+        }
+      )
     },
     [overlay.sudo, respondWith]
   )
@@ -872,10 +922,30 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      return respondWith('secret.respond', { request_id: overlay.secret.requestId, value }, () => {
-        patchOverlayState({ secret: null })
-        patchUiState({ status: 'running…' })
-      })
+      const requestId = overlay.secret.requestId
+
+      return respondWith(
+        'secret.respond',
+        { request_id: requestId, value },
+        () => {
+          // Guard by request id — see answerSudo above (the server event fires
+          // before this RPC resolves, so a fresh secret prompt may already be
+          // mounted).
+          if (getOverlayState().secret?.requestId === requestId) {
+            patchOverlayState({ secret: null })
+            patchUiState({ status: 'running…' })
+          }
+        },
+        // Same dead-prompt guard as sudo — see answerSudo above.
+        () => {
+          if (getOverlayState().secret?.requestId === requestId) {
+            patchOverlayState({ secret: null })
+            // Reset the 'secret input needed' status the request set, same
+            // reasoning as the clarify/sudo fallbacks above.
+            patchUiState({ status: statusFromBusy() })
+          }
+        }
+      )
     },
     [overlay.secret, respondWith]
   )

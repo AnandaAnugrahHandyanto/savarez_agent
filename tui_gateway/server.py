@@ -121,6 +121,11 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
+# Serializes the prompt-lifecycle critical sections so a response landing in
+# the timeout window can't race the expiry decision. Guards _pending /
+# _answers transitions in _respond(), _block()'s finally, and _clear_pending().
+# See _block() for the race it closes (Copilot review on PR #35987).
+_pending_lock = threading.Lock()
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -845,13 +850,44 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     _pending[rid] = (sid, ev)
     payload["request_id"] = rid
     _pending_prompt_payloads[rid] = (event, dict(payload))
+    answered = False
     try:
         _emit(event, sid, payload)
-        ev.wait(timeout=timeout)
+        answered = ev.wait(timeout=timeout)
     finally:
-        _pending.pop(rid, None)
-        _pending_prompt_payloads.pop(rid, None)
-    return _answers.pop(rid, "")
+        # Decide expiry atomically with respond/clear. Without the lock there
+        # is a lost-wakeup race: _respond() can read _pending, get preempted
+        # before writing _answers, then _block pops _pending and sees
+        # `rid not in _answers` → emits a false prompt.expire even though the
+        # response is about to be accepted. Holding _pending_lock across the
+        # pop + answer check makes the two paths mutually exclusive: either
+        # _respond writes the answer first (we see it, suppress expiry) or we
+        # pop first (_respond then finds no _pending entry → 4009, never
+        # writes a stale answer). _emit is kept OUTSIDE the lock (it does
+        # transport I/O and must not block the lock).
+        with _pending_lock:
+            _pending.pop(rid, None)
+            _pending_prompt_payloads.pop(rid, None)
+            should_expire = not answered and rid not in _answers
+
+        # If the wait timed out without anyone calling _respond the client
+        # overlay (clarify/sudo/secret prompt) is still mounted and capturing
+        # keystrokes — the agent thread is about to resume on an empty answer,
+        # so we MUST tell the client to tear the prompt down or the UI is
+        # stuck until the next message.
+        if should_expire:
+            try:
+                _emit(
+                    "prompt.expire",
+                    sid,
+                    {"request_id": rid, "kind": event.split(".", 1)[0]},
+                )
+            except Exception:
+                # _emit can theoretically throw if the transport vanished
+                # mid-shutdown; expiry is best-effort.
+                pass
+    with _pending_lock:
+        return _answers.pop(rid, "")
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -863,10 +899,21 @@ def _clear_pending(sid: str | None = None) -> None:
     sessions sharing the same tui_gateway process.  When *sid* is
     None, every pending prompt is released (used during shutdown).
     """
-    for rid, (owner_sid, ev) in list(_pending.items()):
-        if sid is None or owner_sid == sid:
-            _answers[rid] = ""
-            ev.set()
+    # Same lock as _respond / _block so releasing a prompt can't race the
+    # timeout-expiry decision. Pop _pending (and its payload) while holding the
+    # lock, not just _answers/ev — otherwise a user response that lands before
+    # the blocked thread runs its finally can acquire the lock, find the entry
+    # still pending, overwrite the empty answer, and return ok, reviving a
+    # prompt that interrupt/shutdown meant to cancel. Removing it makes a later
+    # _respond get 4009 instead. _block's own finally pop is then a harmless
+    # no-op (pop(rid, None)), and it still returns the empty answer we staged.
+    with _pending_lock:
+        for rid, (owner_sid, ev) in list(_pending.items()):
+            if sid is None or owner_sid == sid:
+                _answers[rid] = ""
+                _pending.pop(rid, None)
+                _pending_prompt_payloads.pop(rid, None)
+                ev.set()
 
 
 # ── Agent factory ────────────────────────────────────────────────────
@@ -4766,12 +4813,17 @@ def _(rid, params: dict) -> dict:
 
 def _respond(rid, params, key):
     r = params.get("request_id", "")
-    entry = _pending.get(r)
-    if not entry:
-        return _err(rid, 4009, f"no pending {key} request")
-    _, ev = entry
-    _answers[r] = params.get(key, "")
-    ev.set()
+    # Atomic with _block()'s timeout pop: take the lock so we can't write an
+    # answer for a request that _block has already popped + expired (which
+    # would leave a stale _answers entry), and so _block can't pop between our
+    # membership check and our write.
+    with _pending_lock:
+        entry = _pending.get(r)
+        if not entry:
+            return _err(rid, 4009, f"no pending {key} request")
+        _, ev = entry
+        _answers[r] = params.get(key, "")
+        ev.set()
     return _ok(rid, {"status": "ok"})
 
 

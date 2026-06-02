@@ -1113,4 +1113,138 @@ describe('createGatewayEventHandler', () => {
       vi.useRealTimers()
     }
   })
+
+  // ─── prompt.expire ────────────────────────────────────────────────
+  // The TUI overlay (clarify/sudo/secret) lives in overlayStore until
+  // someone clears it. If the user never answers, server-side _block
+  // times out after ~5 min and emits prompt.expire so the client tears
+  // the box down — otherwise the (1-N) choice box stays anchored over
+  // the composer, capturing every keystroke, while the assistant turn
+  // streams text below it. (User-reported bug: "shit just overflows
+  // and i cant escape out cause the choice box doesnt go away".)
+
+  it('clears a stale clarify overlay when server emits prompt.expire', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { choices: ['yes', 'no'], question: 'continue?', request_id: 'rid-clarify-1' },
+      type: 'clarify.request'
+    } as any)
+    expect(getOverlayState().clarify).toMatchObject({ requestId: 'rid-clarify-1' })
+
+    onEvent({ payload: { kind: 'clarify', request_id: 'rid-clarify-1' }, type: 'prompt.expire' } as any)
+    expect(getOverlayState().clarify).toBeNull()
+  })
+
+  it('clears a stale sudo overlay when server emits prompt.expire', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { request_id: 'rid-sudo-1' }, type: 'sudo.request' } as any)
+    expect(getOverlayState().sudo).toMatchObject({ requestId: 'rid-sudo-1' })
+
+    onEvent({ payload: { kind: 'sudo', request_id: 'rid-sudo-1' }, type: 'prompt.expire' } as any)
+    expect(getOverlayState().sudo).toBeNull()
+  })
+
+  it('ignores prompt.expire whose request_id does not match the current overlay', () => {
+    // A late expiry for a stale request must NOT clobber a fresh prompt
+    // that opened in the meantime (rare race, but the only safe rule).
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { choices: ['yes', 'no'], question: 'second q?', request_id: 'rid-clarify-2' },
+      type: 'clarify.request'
+    } as any)
+
+    onEvent({ payload: { kind: 'clarify', request_id: 'rid-clarify-stale' }, type: 'prompt.expire' } as any)
+    expect(getOverlayState().clarify).toMatchObject({ requestId: 'rid-clarify-2' })
+  })
+
+  it('clears a stale secret overlay when server emits prompt.expire', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { env_var: 'OPENAI_API_KEY', prompt: 'enter key', request_id: 'rid-secret-1' },
+      type: 'secret.request'
+    } as any)
+    expect(getOverlayState().secret).toMatchObject({ requestId: 'rid-secret-1' })
+
+    onEvent({ payload: { kind: 'secret', request_id: 'rid-secret-1' }, type: 'prompt.expire' } as any)
+    expect(getOverlayState().secret).toBeNull()
+  })
+
+  it('resets the prompt-specific status when an expiry clears a mounted overlay', () => {
+    // The request set status to "waiting for input…"; after expiry nothing
+    // else resets it, so the bar would lie while the agent streams. Expiry
+    // must snap status back to busy/ready.
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { choices: ['a', 'b'], question: 'q?', request_id: 'rid-status-1' },
+      type: 'clarify.request'
+    } as any)
+    expect(getUiState().status).toBe('waiting for input…')
+
+    onEvent({ payload: { kind: 'clarify', request_id: 'rid-status-1' }, type: 'prompt.expire' } as any)
+    // busy defaults false in a fresh ui state → 'ready'
+    expect(getUiState().status).toBe('ready')
+  })
+
+  it('does not emit a system line for a no-op (stale) prompt.expire', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { choices: ['a'], question: 'q?', request_id: 'rid-live' },
+      type: 'clarify.request'
+    } as any)
+
+    // Expiry for a DIFFERENT request id — nothing should be cleared and no
+    // "timed out" line should be surfaced.
+    onEvent({ payload: { kind: 'clarify', request_id: 'rid-gone' }, type: 'prompt.expire' } as any)
+
+    expect(ctx.system.sys).not.toHaveBeenCalledWith(expect.stringContaining('timed out'))
+    expect(getOverlayState().clarify).toMatchObject({ requestId: 'rid-live' })
+  })
+
+  it('surfaces the timeout system line when a matching expiry clears the overlay', () => {
+    // Positive counterpart to the no-op test above: a prompt.expire that
+    // actually clears a mounted overlay MUST surface the user-visible
+    // "prompt timed out — <kind> request cancelled" line, naming the kind.
+    // Without this, a regression that dropped the sys(...) call would still
+    // pass the negative (stale-expire) test.
+    const cases: Array<{ kind: string; request: any; rid: string }> = [
+      {
+        kind: 'clarify',
+        rid: 'rid-line-clarify',
+        request: { payload: { choices: ['a'], question: 'q?', request_id: 'rid-line-clarify' }, type: 'clarify.request' }
+      },
+      { kind: 'sudo', rid: 'rid-line-sudo', request: { payload: { request_id: 'rid-line-sudo' }, type: 'sudo.request' } },
+      {
+        kind: 'secret',
+        rid: 'rid-line-secret',
+        request: {
+          payload: { env_var: 'OPENAI_API_KEY', prompt: 'enter key', request_id: 'rid-line-secret' },
+          type: 'secret.request'
+        }
+      }
+    ]
+
+    for (const { kind, rid, request } of cases) {
+      const appended: Msg[] = []
+      const ctx = buildCtx(appended)
+      const onEvent = createGatewayEventHandler(ctx)
+
+      onEvent(request as any)
+      onEvent({ payload: { kind, request_id: rid }, type: 'prompt.expire' } as any)
+
+      expect(ctx.system.sys).toHaveBeenCalledWith(`prompt timed out — ${kind} request cancelled`)
+    }
+  })
 })
