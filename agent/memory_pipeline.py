@@ -676,8 +676,8 @@ class DeepConsolidationEngine(ConsolidationEngine):
         schema_desc = []
         for r in rows:
             schema_desc.append(
-                f"[{r["domain"]}] (conf={r["confidence"]:.2f}) "
-                f"{r["content"][:200]}"
+                f"[{r['domain']}] (conf={r['confidence']:.2f}) "
+                f"{r['content'][:200]}"
             )
         _nl = chr(10)
         prompt = (
@@ -1629,6 +1629,16 @@ class SleepScheduler:
                     self._last_sleep_duration_s, 2),
             }
 
+    def reset(self) -> None:
+        """Reset accumulated salience and activity timer.
+
+        Called during session switches so that salience does not bleed
+        across session boundaries.
+        """
+        with self._lock:
+            self._accumulated_salience = 0.0
+            self._last_activity = time.time()
+
 
 # ===========================================================================
 # Helper: salience-to-engram-strength mapping
@@ -1803,6 +1813,9 @@ class MemoryPipeline:
         db_path = self._config.get("db_path") or None
         self._state = PipelineState(db_path=db_path)
 
+        # LLM client for deep consolidation (from kwargs or config)
+        self._llm_client = kwargs.get("llm_client") or self._config.get("llm_client")
+
         self._init_core_layers()
         self._init_plugin_layers()
 
@@ -1931,6 +1944,10 @@ class MemoryPipeline:
             )
             self._scheduler._state = self._state
             self._scheduler._session_id = self._session_id
+
+    def set_llm_client(self, llm_client) -> None:
+        """Set or replace the LLM client for deep consolidation."""
+        self._llm_client = llm_client
 
     def shutdown(self) -> None:
         """Flush and close pipeline state."""
@@ -2284,6 +2301,15 @@ class MemoryPipeline:
                         self._state, args.get("query", ""), result,
                         engrams=self._engrams)
 
+            # Layer 5: observe outcome for prediction error feedback
+            if self._feedback and name == "fact_store":
+                action = args.get("action", "")
+                if action in ("search", "probe"):
+                    try:
+                        self._feedback.observe_outcome(self._state, result[:500])
+                    except Exception as e:
+                        logger.debug('post_tool_call observe_outcome failed: %s', e)
+
             # Layer 6: record co-activation from search results
             if self._activation and name == "fact_store":
                 query = args.get("query", "")
@@ -2334,6 +2360,14 @@ class MemoryPipeline:
         fact_id = self._parse_fact_id(result)
         if fact_id is None:
             return
+
+        # 3b. Register engram with fact_id key so retrieval can find it
+        if self._engrams and self._state:
+            try:
+                ref = f"fact:{fact_id}"
+                self._engrams.strengthen(self._state, ref, delta=0.0)
+            except Exception as e:
+                logger.debug('post_tool_call engram fact_id register failed: %s', e)
 
         # 4. Append to current episode
         if self._episodic:

@@ -215,10 +215,15 @@ class MemoryStore:
         pipeline_salience = 1.0
         emotional_valence = 0.0
         surprise_score = 0.0
+        trust = self.default_trust
         if metadata:
             pipeline_salience = float(metadata.get("pipeline_salience", 1.0))
             emotional_valence = float(metadata.get("pipeline_emotion", 0.0))
             surprise_score = float(metadata.get("pipeline_novelty", 0.0))
+            importance = float(metadata.get("pipeline_importance", 0.0))
+            # Boost trust_score for high-importance content
+            if importance > 0.5:
+                trust = min(1.0, self.default_trust + (importance - 0.5) * 0.4)
 
         with self._lock:
             content = content.strip()
@@ -233,7 +238,7 @@ class MemoryStore:
                                        event_time)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (content, category, tags, self.default_trust,
+                    (content, category, tags, trust,
                      pipeline_salience, emotional_valence, surprise_score,
                      event_time),
                 )
