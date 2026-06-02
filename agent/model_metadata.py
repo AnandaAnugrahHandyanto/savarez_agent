@@ -1140,6 +1140,33 @@ def _model_name_suggests_minimax_m3(model: str) -> bool:
     return "minimax-m3" in model.lower()
 
 
+def _model_name_suggests_qwen3_6_plus(model: str) -> bool:
+    """Return True if the model name looks like a Qwen 3.6-Plus variant.
+
+    Catches ``qwen3.6-plus``, ``qwen/qwen3.6-plus``, ``dashscope/qwen3.6-plus``,
+    and similar prefixed forms.  Used as a guard against stale cache entries
+    seeded by pre-catalog builds that resolved qwen3.6-plus via the generic
+    ``qwen`` catch-all (131,072) before the ``qwen3.6-plus`` (1M) entry was
+    added to DEFAULT_CONTEXT_LENGTHS on 2026-05-17.
+    """
+    return "qwen3.6-plus" in model.lower()
+
+
+def _model_name_suggests_grok_4_fast_or_4_20(model: str) -> bool:
+    """Return True if the model name looks like a Grok 4-fast or 4.20 variant.
+
+    Catches ``grok-4-fast``, ``grok-4-fast-reasoning``,
+    ``grok-4.20-0309-reasoning``, ``grok-4.20-multi-agent-0309``, and similar
+    slugs.  Used as a guard against stale cache entries seeded before the
+    ``grok-4-fast`` (2M) and ``grok-4.20`` (2M) entries were added to
+    DEFAULT_CONTEXT_LENGTHS on 2026-04-10.  Prior to that, these slugs fell
+    through to the DEFAULT_FALLBACK_CONTEXT (256,000) or, via a custom
+    endpoint probe, could have been persisted at an even lower tier value.
+    """
+    lower = model.lower()
+    return "grok-4-fast" in lower or "grok-4.20" in lower
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
@@ -1560,6 +1587,31 @@ def get_model_context_length(
             elif cached <= 204_800 and _model_name_suggests_minimax_m3(model):
                 logger.info(
                     "Dropping stale MiniMax-M3 cache entry %s@%s -> %s (pre-catalog value); "
+                    "re-resolving via hardcoded defaults",
+                    model, base_url, f"{cached:,}",
+                )
+                _invalidate_cached_context_length(model, base_url)
+            # Invalidate stale ≤131,072 cache entries for qwen3.6-plus.  The
+            # ``qwen3.6-plus`` (1M) entry was added to DEFAULT_CONTEXT_LENGTHS on
+            # 2026-05-17; prior to that, qwen3.6-plus slugs resolved via the
+            # generic ``qwen`` catch-all (131,072) and that value was persisted.
+            # qwen3.6-plus is 1M, so any sub-262K cached value is a pre-catalog
+            # leftover — drop it and fall through to the hardcoded default.
+            elif cached <= 131_072 and _model_name_suggests_qwen3_6_plus(model):
+                logger.info(
+                    "Dropping stale qwen3.6-plus cache entry %s@%s -> %s (pre-catalog value); "
+                    "re-resolving via hardcoded defaults",
+                    model, base_url, f"{cached:,}",
+                )
+                _invalidate_cached_context_length(model, base_url)
+            # Invalidate stale ≤256,000 cache entries for grok-4-fast and grok-4.20.
+            # These 2M-context models were added to DEFAULT_CONTEXT_LENGTHS on
+            # 2026-04-10; prior to that, they fell through to the DEFAULT_FALLBACK_CONTEXT
+            # (256,000) or lower probe tiers, and that value could have been persisted.
+            # Any sub-512K cached value for these slugs is a pre-catalog leftover.
+            elif cached <= 256_000 and _model_name_suggests_grok_4_fast_or_4_20(model):
+                logger.info(
+                    "Dropping stale grok-4-fast/grok-4.20 cache entry %s@%s -> %s (pre-catalog value); "
                     "re-resolving via hardcoded defaults",
                     model, base_url, f"{cached:,}",
                 )
