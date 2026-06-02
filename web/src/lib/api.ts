@@ -1481,6 +1481,26 @@ export interface PluginManifestResponse {
   source: string;
 }
 
+export interface PluginSetupEnvVar {
+  key: string;
+  prompt: string;
+  description: string;
+  url?: string | null;
+  password: boolean;
+  tools?: string[];
+  is_set: boolean;
+  redacted_value?: string | null;
+}
+
+export interface PluginWebProvider {
+  name: string;
+  display_name?: string;
+  available?: boolean;
+  supports_search?: boolean;
+  supports_extract?: boolean;
+  supports_crawl?: boolean;
+}
+
 export interface HubAgentPluginRow {
   name: string;
   version: string;
@@ -1495,6 +1515,8 @@ export interface HubAgentPluginRow {
   auth_required: boolean;
   auth_command: string;
   user_hidden: boolean;
+  setup_env?: PluginSetupEnvVar[];
+  web_providers?: PluginWebProvider[];
 }
 
 export interface PluginsHubProviders {
@@ -1502,6 +1524,10 @@ export interface PluginsHubProviders {
   memory_options: Array<{ name: string; description: string }>;
   context_engine: string;
   context_options: Array<{ name: string; description: string }>;
+  web_search_backend?: string;
+  web_extract_backend?: string;
+  web_backend?: string;
+  web_options?: PluginWebProvider[];
 }
 
 export interface PluginsHubResponse {
@@ -1537,4 +1563,7 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+  web_search_backend?: string;
+  web_extract_backend?: string;
+  web_backend?: string;
 }
