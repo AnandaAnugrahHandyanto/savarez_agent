@@ -486,6 +486,7 @@ async def _send_via_adapter(
          the runner weakref is ``None``).
       3. A descriptive error explaining both options.
     """
+    platform_name = platform.value if hasattr(platform, "value") else str(platform)
     runner = None
     try:
         from gateway.run import _gateway_runner_ref
@@ -500,8 +501,76 @@ async def _send_via_adapter(
             adapter = None
         if adapter is not None:
             try:
-                metadata = {"thread_id": thread_id} if thread_id else None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                # WeCom (& potentially other reply-based platforms): the
+                # adapter's send/send_document methods auto-detect a
+                # reply_req_id via _last_chat_req_ids and route through
+                # _send_reply_request, which consumes the reply slot that
+                # the gateway needs for its own response delivery.  Clear
+                # the reply context temporarily so the adapter falls
+                # through to proactive sends; restore afterwards so the
+                # gateway's own response isn't affected.
+                saved_req_id = None
+                if (
+                    hasattr(adapter, "_last_chat_req_ids")
+                    and chat_id in adapter._last_chat_req_ids
+                ):
+                    saved_req_id = adapter._last_chat_req_ids.pop(chat_id)
+
+                try:
+                    # Deliver media files first (if any), then text as caption.
+                    # Only adapters that expose send_document / send_image_file are
+                    # supported; otherwise an explicit error is returned so the
+                    # caller knows media was not silently dropped.
+                    if media_files:
+                        import os as _os
+                        for media_path, is_voice in media_files:
+                            if not media_path or not _os.path.isfile(media_path):
+                                continue
+                            ext = _os.path.splitext(media_path)[1].lower()
+                            if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+                                if hasattr(adapter, "send_image_file"):
+                                    result = await adapter.send_image_file(
+                                        chat_id=chat_id,
+                                        image_path=media_path,
+                                        caption=None,
+                                    )
+                                else:
+                                    return {
+                                        "error": (
+                                            f"Platform '{platform_name}' adapter "
+                                            f"does not support send_image_file"
+                                        ),
+                                    }
+                            else:
+                                if hasattr(adapter, "send_document"):
+                                    result = await adapter.send_document(
+                                        chat_id=chat_id,
+                                        file_path=media_path,
+                                        caption=None,
+                                    )
+                                else:
+                                    return {
+                                        "error": (
+                                            f"Platform '{platform_name}' adapter "
+                                            f"does not support send_document"
+                                        ),
+                                    }
+                            if not result.success:
+                                return {"error": f"Media send failed ({media_path}): {result.error}"}
+
+                    # Send text message (or skip if media-only with no text)
+                    if chunk:
+                        metadata = {"thread_id": thread_id} if thread_id else None
+                        result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                    else:
+                        return {"success": True, "message_id": "media-only"}
+
+                finally:
+                    # Restore reply context so the gateway's own response
+                    # delivery can still reply to the original message.
+                    if saved_req_id is not None:
+                        adapter._last_chat_req_ids[chat_id] = saved_req_id
+
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -510,7 +579,6 @@ async def _send_via_adapter(
                 return {"success": True, "message_id": result.message_id}
             return {"error": f"Adapter send failed: {result.error}"}
 
-    platform_name = platform.value if hasattr(platform, "value") else str(platform)
     entry = None
     try:
         from gateway.platform_registry import platform_registry
@@ -733,11 +801,32 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- WeCom: route through the live gateway adapter (WeCom only allows
+    #     one WebSocket connection — creating a standalone sender would
+    #     fail with errcode 846609 "aibot websocket not subscribed"). ---
+    if platform == Platform.WECOM and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_via_adapter(
+                Platform.WECOM,
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else None,
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and wecom; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -745,7 +834,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and wecom"
         )
 
     last_result = None
@@ -1512,8 +1601,14 @@ async def _send_dingtalk(extra, chat_id, message):
         return _error(f"DingTalk send failed: {e}")
 
 
-async def _send_wecom(extra, chat_id, message):
-    """Send via WeCom using the adapter's WebSocket send pipeline."""
+async def _send_wecom(extra, chat_id, message, media_files=None):
+    """Send via WeCom using the adapter's WebSocket send pipeline.
+
+    When ``media_files`` is provided, each file is sent using
+    ``adapter.send_document()`` (or send_image_file for images). The text
+    ``message`` is delivered as a follow-up markdown caption.
+    """
+    media_files = media_files or []
     try:
         from gateway.platforms.wecom import WeComAdapter, check_wecom_requirements
         if not check_wecom_requirements():
@@ -1529,10 +1624,32 @@ async def _send_wecom(extra, chat_id, message):
         if not connected:
             return _error(f"WeCom: failed to connect - {adapter.fatal_error_message or 'unknown error'}")
         try:
-            result = await adapter.send(chat_id, message)
-            if not result.success:
-                return _error(f"WeCom send failed: {result.error}")
-            return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
+            # Send media files first, then text as caption
+            if media_files:
+                for media_path, is_voice in media_files:
+                    if not media_path:
+                        continue
+                    # Detect image vs document by extension
+                    ext = os.path.splitext(media_path)[1].lower()
+                    if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+                        result = await adapter.send_image_file(
+                            chat_id=chat_id, image_path=media_path, caption=None,
+                        )
+                    else:
+                        result = await adapter.send_document(
+                            chat_id=chat_id, file_path=media_path, caption=None,
+                        )
+                    if not result.success:
+                        return _error(f"WeCom media send failed: {result.error}")
+
+            # Send text message (as markdown)
+            if message:
+                result = await adapter.send(chat_id, message)
+                if not result.success:
+                    return _error(f"WeCom send failed: {result.error}")
+                return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
+
+            return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": "media-only"}
         finally:
             await adapter.disconnect()
     except Exception as e:
