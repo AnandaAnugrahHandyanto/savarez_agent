@@ -215,3 +215,75 @@ class TestWebSocketHostOriginGuard:
             },
         ):
             pass
+
+    @pytest.mark.parametrize("origin", ["file://", "null", "app://hermes", "hermes://desktop"])
+    def test_authenticated_desktop_origins_are_accepted_on_explicit_non_loopback_bind(
+        self,
+        monkeypatch,
+        origin,
+    ):
+        from fastapi.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "100.64.0.10", raising=False)
+        monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "100.64.0.10:9119",
+                "Origin": origin,
+            },
+        ):
+            pass
+
+    def test_desktop_origin_still_requires_session_token(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "100.64.0.10", raising=False)
+        monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                "/api/events?token=&channel=security-test",
+                headers={
+                    "Host": "100.64.0.10:9119",
+                    "Origin": "file://",
+                },
+            ):
+                pass
+
+        assert exc.value.code == 4401
+
+    def test_http_origin_still_rejected_on_explicit_non_loopback_bind(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "100.64.0.10", raising=False)
+        monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                url,
+                headers={
+                    "Host": "100.64.0.10:9119",
+                    "Origin": "http://evil.example",
+                },
+            ):
+                pass
+
+        assert exc.value.code == 4403
