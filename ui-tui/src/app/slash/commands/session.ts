@@ -93,12 +93,20 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['switch'],
-    help: 'switch between live TUI sessions',
+    aliases: ['switch', 'session', 'resume'],
+    help: 'browse, switch, or resume sessions',
     name: 'sessions',
     run: (arg, ctx) => {
-      if (arg.trim().toLowerCase() === 'new') {
+      const trimmed = arg.trim()
+
+      if (trimmed.toLowerCase() === 'new') {
         return ctx.session.newLiveSession()
+      }
+
+      // `/resume <id|title>` (and `/sessions <id>`) jump straight to a prior
+      // session; bare opens the unified Sessions overlay (live + resumable).
+      if (trimmed) {
+        return ctx.session.resumeById(trimmed)
       }
 
       patchOverlayState({ sessions: true })
