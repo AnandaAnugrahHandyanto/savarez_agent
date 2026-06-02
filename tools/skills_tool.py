@@ -375,6 +375,35 @@ def _is_gateway_surface() -> bool:
 def _get_terminal_backend_name() -> str:
     return str(os.getenv("TERMINAL_ENV", "local")).strip().lower() or "local"
 
+# --- ai-skills-library: skill-dir-containerize patch ------------------------
+# Under a containerized terminal backend, skills are bind-mounted at
+# <container_base>/skills/<rel> (see credential_files.get_skills_directory_mount),
+# not at their host path. Report the container path so the model builds
+# sandbox-valid paths. Host/local backends are unaffected.
+_CONTAINER_BACKENDS = {"docker", "modal", "singularity", "daytona", "vercel_sandbox"}
+
+
+def _containerize_skill_dir(skill_dir, backend, container_base: str = "/root/.hermes"):
+    if not skill_dir or backend not in _CONTAINER_BACKENDS:
+        return str(skill_dir) if skill_dir else None
+    sd = Path(skill_dir)
+    base = container_base.rstrip("/")
+    try:
+        return f"{base}/skills/{sd.relative_to(SKILLS_DIR)}".rstrip("/")
+    except ValueError:
+        pass
+    try:
+        from agent.skill_utils import get_external_skills_dirs
+        for idx, ext in enumerate(get_external_skills_dirs()):
+            try:
+                return f"{base}/external_skills/{idx}/{sd.relative_to(ext)}".rstrip("/")
+            except ValueError:
+                continue
+    except ImportError:
+        pass
+    return str(skill_dir)
+# --- end patch --------------------------------------------------------------
+
 
 def _is_env_var_persisted(
     var_name: str, env_snapshot: Dict[str, str] | None = None
@@ -1387,7 +1416,7 @@ def skill_view(
             "related_skills": related_skills,
             "content": rendered_content,
             "path": rel_path,
-            "skill_dir": str(skill_dir) if skill_dir else None,
+            "skill_dir": _containerize_skill_dir(skill_dir, backend),
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
             if linked_files

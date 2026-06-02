@@ -52,9 +52,26 @@ logger = logging.getLogger(__name__)
 # (HERMES_HOME env var changes) are always respected.  The old module-level
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
+#
+# NOTE: signature intentionally takes no args — per-user sub-directory
+# resolution lives inside MemoryStore (see _user_dir), so existing callers and
+# tests that monkeypatch get_memory_dir keep working unchanged.
 def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
+    """Return the profile-scoped (shared) memories directory."""
     return get_hermes_home() / "memories"
+
+
+def _slug_user_id(user_id: Optional[str]) -> Optional[str]:
+    """Map a gateway user_id to a filesystem-safe per-user sub-directory name.
+
+    Returns None for empty/unusable ids, in which case the caller falls back to
+    the shared base ``memories/`` directory — i.e. exactly the legacy
+    single-store behavior (CLI / cron / heartbeat have no user_id).
+    """
+    if not user_id:
+        return None
+    slug = re.sub(r"[^A-Za-z0-9_-]", "_", str(user_id)).strip("._-")
+    return slug[:128] if slug else None
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -115,30 +132,60 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        user_id: Optional[str] = None,
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
+        # Read-only team baseline (spec-managed memories/USER.md). Only layered
+        # in for real per-user stores; empty for the shared/legacy store.
+        self.baseline_user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Per-user scoping: a truthy user_id routes reads/writes into a
+        # memories/{slug}/ sub-directory; None/empty falls back to the shared
+        # base directory (legacy single-store behavior — CLI/cron/heartbeat).
+        self._user_id = user_id
+        self._user_slug = _slug_user_id(user_id)
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
+    def _base_dir(self) -> Path:
+        """Shared profile-level memories dir (holds the team baseline USER.md)."""
+        return get_memory_dir()
+
+    def _user_dir(self) -> Path:
+        """This store's directory: per-user sub-dir when scoped, else the base."""
+        base = get_memory_dir()
+        return base / self._user_slug if self._user_slug else base
+
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        mem_dir = get_memory_dir()
-        mem_dir.mkdir(parents=True, exist_ok=True)
+        user_dir = self._user_dir()
+        user_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        self.memory_entries = self._read_file(user_dir / "MEMORY.md")
+        self.user_entries = self._read_file(user_dir / "USER.md")
+        # Layer the read-only team baseline in only for real per-user stores.
+        # For the shared/legacy store the base USER.md *is* user_entries, so a
+        # separate baseline would double-inject it.
+        if self._user_slug:
+            self.baseline_user_entries = self._read_file(self._base_dir() / "USER.md")
+        else:
+            self.baseline_user_entries = []
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
+        self.baseline_user_entries = list(dict.fromkeys(self.baseline_user_entries))
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", self.memory_entries),
-            "user": self._render_block("user", self.user_entries),
+            "user": self._render_user_snapshot(),
         }
 
     @staticmethod
@@ -175,9 +222,8 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
+    def _path_for(self, target: str) -> Path:
+        mem_dir = self._user_dir()
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
@@ -193,7 +239,7 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
+        self._user_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
@@ -386,6 +432,24 @@ class MemoryStore:
         if message:
             resp["message"] = message
         return resp
+
+    def _render_user_snapshot(self) -> str:
+        """Render the USER block: read-only team baseline + this user's profile.
+
+        For the shared/legacy store (no user_id) baseline_user_entries is empty,
+        so this is byte-for-byte the old single-block behavior.
+        """
+        user_block = self._render_block("user", self.user_entries)
+        if not self.baseline_user_entries:
+            return user_block
+
+        separator = "═" * 46
+        content = ENTRY_DELIMITER.join(self.baseline_user_entries)
+        baseline_block = (
+            f"{separator}\nUSER PROFILE — team baseline (read-only)\n"
+            f"{separator}\n{content}"
+        )
+        return "\n\n".join(b for b in (baseline_block, user_block) if b)
 
     def _render_block(self, target: str, entries: List[str]) -> str:
         """Render a system prompt block with header and usage indicator."""

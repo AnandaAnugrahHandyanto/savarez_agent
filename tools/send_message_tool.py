@@ -142,6 +142,21 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+            },
+            "buttons": {
+                "type": "array",
+                "description": "button-callbacks-patch: buttons param — Optional list of interactive buttons to render with the message (Slack only). Each item: {text, style?, value?, url?, callback?:{type,...}}.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "style": {"type": "string"},
+                        "value": {"type": "string"},
+                        "url": {"type": "string"},
+                        "callback": {"type": "object"}
+                    },
+                    "required": ["text"]
+                }
             }
         },
         "required": []
@@ -172,6 +187,8 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    # button-callbacks-patch: extract buttons
+    buttons = args.get("buttons")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -297,6 +314,8 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                # button-callbacks-patch: pass buttons
+                buttons=buttons,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -536,7 +555,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, buttons=None):  # button-callbacks-patch: pass buttons
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -743,7 +762,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     for chunk in chunks:
         if platform == Platform.SLACK:
             # ai-skills-library-slack-thread-reply-patch: forward thread_id
-            result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id)
+            result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id, buttons=buttons)  # button-callbacks-patch
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -1164,7 +1183,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         return _error(f"Discord send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message, thread_id=None, media_files=None):
+async def _send_slack(token, chat_id, message, thread_id=None, media_files=None, buttons=None):  # button-callbacks-patch: _send_slack sig
     """Send via Slack Web API.
 
     ai-skills-library-slack-thread-reply-patch: when thread_id (a Slack
@@ -1223,6 +1242,19 @@ async def _send_slack(token, chat_id, message, thread_id=None, media_files=None)
             # when a thread_ts is supplied (target form slack:CHANNEL:THREAD_TS).
             if thread_id:
                 payload["thread_ts"] = thread_id
+            # button-callbacks-patch: build blocks
+            if buttons:
+                try:
+                    from gateway.platforms.slack_buttons import _coerce_buttons, build_actions_block
+                    specs = _coerce_buttons(buttons)
+                    if specs:
+                        _blocks = []
+                        if message and message.strip():
+                            _blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": message[:2900]}})
+                        _blocks.append(build_actions_block(specs))
+                        payload["blocks"] = _blocks
+                except Exception:
+                    pass  # graceful degradation: send without blocks
             async with session.post(url, headers=json_headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):

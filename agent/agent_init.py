@@ -946,6 +946,10 @@ def init_agent(
                 agent._memory_store = MemoryStore(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
+                    # Per-user file memory: scopes MEMORY.md/USER.md into
+                    # memories/{user_id}/ for gateway sessions. None (CLI/cron/
+                    # heartbeat) falls back to the shared base dir = legacy.
+                    user_id=getattr(agent, "_user_id", None),
                 )
                 agent._memory_store.load_from_disk()
         except Exception:

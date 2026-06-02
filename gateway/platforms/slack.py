@@ -48,6 +48,13 @@ from gateway.platforms.base import (
     safe_url_for_log,
     cache_document_from_bytes,
 )
+from gateway.platforms.slack_buttons import (
+    BUTTON_ACTION_PREFIX,
+    build_actions_block,
+    decode_callback,
+    fallback_text,
+    parse_buttons,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -321,6 +328,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
         self._approval_resolved: Dict[str, bool] = {}
+        # message_ts of interactive-button messages already clicked once, so a
+        # rapid second click can't fire a duplicate agent turn.
+        self._button_clicked: set = set()
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set = set()
@@ -681,6 +691,12 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
 
+            # Register a single regex handler for agent-rendered interactive
+            # buttons (action_id "hermes_btn::<idx>"; see slack_buttons.py).
+            self._app.action(re.compile(r"^" + re.escape(BUTTON_ACTION_PREFIX)))(
+                self._handle_button_action
+            )
+
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
             _apply_slack_proxy(self._handler.client, proxy_url)
@@ -778,11 +794,22 @@ class SlackAdapter(BasePlatformAdapter):
                     slash_ctx, content,
                 )
 
+            # Extract interactive button markup (a ```buttons block).  The
+            # surrounding text is sent as ordinary mrkdwn; the buttons are
+            # posted as a trailing Block Kit message in the same thread.  A
+            # missing/malformed block leaves ``content`` untouched.
+            content, buttons = parse_buttons(content)
+
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
 
-            # Split long messages, preserving code block boundaries
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            # Split long messages, preserving code block boundaries.  Only a
+            # buttons-only reply skips the text post; every other path behaves
+            # exactly as before so existing Slack sends are unaffected.
+            if buttons and not formatted.strip():
+                chunks = []
+            else:
+                chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
@@ -804,6 +831,17 @@ class SlackAdapter(BasePlatformAdapter):
                         kwargs["reply_broadcast"] = True
 
                 last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+
+            # Post the interactive buttons as a trailing message.
+            if buttons:
+                btn_kwargs = {
+                    "channel": chat_id,
+                    "text": fallback_text(buttons),
+                    "blocks": [build_actions_block(buttons)],
+                }
+                if thread_ts:
+                    btn_kwargs["thread_ts"] = thread_ts
+                last_result = await self._get_client(chat_id).chat_postMessage(**btn_kwargs)
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -2573,6 +2611,129 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
 
         # (approval state already consumed by atomic pop above)
+
+    async def _handle_button_action(self, ack, body, action) -> None:
+        """Handle a click on an agent-rendered interactive button.
+
+        The button's ``value`` is fed back into the conversation as a synthetic
+        user message, triggering a fresh agent turn.  Link buttons (no value)
+        are handled natively by Slack and only need an ack.
+        """
+        await ack()
+
+        value = action.get("value", "")
+        message = body.get("message", {}) or {}
+        msg_ts = message.get("ts", "")
+        channel_id = (body.get("channel") or {}).get("id", "")
+        user = body.get("user") or {}
+        user_id = user.get("id", "")
+        user_name = user.get("name") or user.get("username") or "unknown"
+
+        # Link buttons carry no value — Slack already opened the URL.
+        if not value:
+            return
+
+        # One agent turn per buttons message: drop rapid duplicate clicks.
+        if msg_ts:
+            if msg_ts in self._button_clicked:
+                return
+            self._button_clicked.add(msg_ts)
+            if len(self._button_clicked) > 5000:
+                for old in list(self._button_clicked)[:2500]:
+                    self._button_clicked.discard(old)
+
+        # Authorize the clicker.  Button clicks bypass the normal inbound auth
+        # flow, so enforce SLACK_ALLOWED_USERS here too (mirrors approvals).
+        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and user_id not in allowed_ids:
+                logger.warning(
+                    "[Slack] Unauthorized button click by %s (%s) — ignoring",
+                    user_name, user_id,
+                )
+                return
+
+        # button-callbacks-patch: typed-callback short-circuit
+        # If the button value encodes a cb: callback, handle it
+        # deterministically without routing through the LLM.
+        cb = decode_callback(value)
+        if cb is not None:
+            thread_ts = message.get("thread_ts") or msg_ts or None
+            await self._mark_button_chosen(channel_id, msg_ts, message, action, user_name)
+            try:
+                if cb.get("type") == "notify" and cb.get("to") and cb.get("msg"):
+                    notify_msg = str(cb["msg"]).replace("{clicker}", "<@" + user_id + ">")
+                    to_id = str(cb["to"]).strip()
+                    # Use conversations.open to get/create the DM channel
+                    # for the target user (U-type IDs require this).
+                    client = self._get_client(channel_id)
+                    if to_id.startswith("U") or to_id.startswith("W"):
+                        open_result = await client.conversations_open(users=to_id)
+                        dm_channel = (open_result.get("channel") or {}).get("id", to_id)
+                    else:
+                        dm_channel = to_id
+                    await client.chat_postMessage(
+                        channel=dm_channel,
+                        text=notify_msg,
+                        mrkdwn=True,
+                    )
+            except Exception as e:  # pragma: no cover
+                logger.warning("[Slack] button callback failed: %s", e)
+            return
+
+        # Continue in the originating thread.
+        thread_ts = message.get("thread_ts") or msg_ts or None
+
+        # Best-effort visual feedback: strip the buttons and note the choice.
+        await self._mark_button_chosen(channel_id, msg_ts, message, action, user_name)
+
+        display_name = (
+            await self._resolve_user_name(user_id, chat_id=channel_id)
+            if user_id else user_name
+        )
+        chat_type = "dm" if channel_id.startswith("D") else "group"
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_name=channel_id,
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=display_name,
+            thread_id=thread_ts,
+        )
+        msg_event = MessageEvent(
+            text=value,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=body,
+            message_id=msg_ts or None,
+            reply_to_message_id=thread_ts,
+        )
+        await self.handle_message(msg_event)
+
+    async def _mark_button_chosen(
+        self, channel_id, msg_ts, message, action, user_name,
+    ) -> None:
+        """Remove the actions block and append a selection note (best-effort)."""
+        if not msg_ts:
+            return
+        label = (action.get("text") or {}).get("text") or action.get("value", "")
+        blocks = [
+            b for b in message.get("blocks", []) if b.get("type") != "actions"
+        ]
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"✅ {user_name} chose: {label}"}],
+        })
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=f"Selected: {label}",
+                blocks=blocks,
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("[Slack] Failed to update button message: %s", e)
 
     # ----- Thread context fetching -----
 
