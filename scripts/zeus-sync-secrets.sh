@@ -11,7 +11,7 @@ TMP="$(mktemp)"
 cleanup() { rm -f "$TMP"; }
 trap cleanup EXIT
 
-mkdir -p "$HERMES_HOME"
+mkdir -p "$HERMES_HOME" "${HERMES_HOME}/logs"
 chmod 700 "$HERMES_HOME"
 
 if [[ ! -f "$BOOTSTRAP" ]]; then
@@ -21,8 +21,11 @@ if [[ ! -f "$BOOTSTRAP" ]]; then
   exit 0
 fi
 
+# Exportamos para que el helper Python los lea sin pasarlos por argv.
 # shellcheck disable=SC1090
+set -a
 source "$BOOTSTRAP"
+set +a
 
 if [[ -z "${INFISICAL_CLIENT_ID:-}" || -z "${INFISICAL_CLIENT_SECRET:-}" ]]; then
   echo "[zeus-secrets] INFISICAL_CLIENT_ID/SECRET vacíos; se mantiene runtime-secrets.env mínimo." >&2
@@ -38,26 +41,6 @@ fi
 
 export INFISICAL_API_URL="${INFISICAL_API_URL:-${INFISICAL_SITE_URL%/}/api}"
 SITE="${INFISICAL_SITE_URL:-http://100.68.195.19:8080}"
-
-INFISICAL_BIN="$(command -v infisical || true)"
-if [[ -z "$INFISICAL_BIN" ]]; then
-  echo "[zeus-secrets] infisical CLI no encontrado en PATH." >&2
-  exit 1
-fi
-
-TOKEN="$("$INFISICAL_BIN" login \
-  --method=universal-auth \
-  --client-id="$INFISICAL_CLIENT_ID" \
-  --client-secret="$INFISICAL_CLIENT_SECRET" \
-  --domain="$SITE" \
-  --silent --plain 2>/dev/null || true)"
-
-if [[ -z "$TOKEN" ]]; then
-  echo "[zeus-secrets] No se pudo obtener token universal-auth; revisa credenciales/proyecto." >&2
-  exit 1
-fi
-
-export INFISICAL_TOKEN="$TOKEN"
 
 if [[ -z "${INFISICAL_PROJECT_ID:-}" ]]; then
   echo "[zeus-secrets] Falta INFISICAL_PROJECT_ID (UUID del proyecto en Infisical UI, no el Identity ID)." >&2
@@ -76,9 +59,72 @@ if [[ "${INFISICAL_PROJECT_ID}" == "${INFISICAL_IDENTITY_ID:-}" ]]; then
   exit 1
 fi
 
-EXPORT_ARGS=(export --format=dotenv --domain="$SITE" --env="${INFISICAL_ENV:-prod}" --projectId="$INFISICAL_PROJECT_ID")
+if ! python3 - "$TMP" >"${HERMES_HOME}/logs/infisical-sync.log" 2>&1 <<'PY'
+import json
+import os
+import sys
+import urllib.parse
+import urllib.request
 
-if ! "$INFISICAL_BIN" "${EXPORT_ARGS[@]}" >"$TMP" 2>"${HERMES_HOME}/logs/infisical-sync.log"; then
+out_path = sys.argv[1]
+site = os.environ.get('INFISICAL_SITE_URL', 'http://100.68.195.19:8080').rstrip('/')
+project_id = os.environ['INFISICAL_PROJECT_ID']
+environment = os.environ.get('INFISICAL_ENV', 'prod')
+
+def request_json(req):
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.load(response)
+
+login_payload = json.dumps({
+    'clientId': os.environ['INFISICAL_CLIENT_ID'],
+    'clientSecret': os.environ['INFISICAL_CLIENT_SECRET'],
+}).encode('utf-8')
+login_req = urllib.request.Request(
+    site + '/api/v1/auth/universal-auth/login',
+    data=login_payload,
+    headers={'Content-Type': 'application/json'},
+    method='POST',
+)
+token = request_json(login_req).get('accessToken')
+if not token:
+    raise SystemExit('[zeus-secrets] Respuesta universal-auth sin accessToken')
+params = urllib.parse.urlencode({
+    'projectId': project_id,
+    'workspaceId': project_id,
+    'environment': environment,
+    'secretPath': '/',
+    'recursive': 'true',
+    'include_imports': 'true',
+    'secretValue': 'true',
+    'expandSecretReferences': 'true',
+})
+list_req = urllib.request.Request(
+    site + '/api/v4/secrets?' + params,
+    headers={'Authorization': 'Bearer ' + token},
+    method='GET',
+)
+body = request_json(list_req)
+items = []
+for secret in body.get('secrets', []):
+    items.append(secret)
+for imported in body.get('imports', []):
+    items.extend(imported.get('secrets', []))
+seen = set()
+with open(out_path, 'w', encoding='utf-8') as handle:
+    for item in items:
+        key = item.get('secretKey')
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        value = item.get('secretValue', '')
+        # Keep each dotenv entry single-line. JSON credentials should already be
+        # normalized in Infisical; this guard prevents multiline values from
+        # corrupting EnvironmentFile parsing.
+        if isinstance(value, str) and '\n' in value:
+            value = value.replace('\r\n', '\n').replace('\r', '\n').replace('\n', r'\n')
+        handle.write(f'{key}={value}\n')
+PY
+then
   echo "[zeus-secrets] export falló; ver ${HERMES_HOME}/logs/infisical-sync.log" >&2
   exit 1
 fi
@@ -97,6 +143,7 @@ fi
 python3 - "$OUTPUT" <<'PY'
 from pathlib import Path
 from urllib.parse import urlparse, unquote, quote
+import shlex
 import sys
 path = Path(sys.argv[1])
 values = {}
@@ -156,7 +203,7 @@ for k in order:
     if k in seen or k not in values:
         continue
     seen.add(k)
-    lines.append(f"{k}={values[k]}")
+    lines.append(f"{k}={shlex.quote(values[k])}")
 path.write_text('\n'.join(lines) + '\n')
 PY
 chmod 600 "$OUTPUT"
