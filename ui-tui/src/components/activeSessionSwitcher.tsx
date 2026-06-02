@@ -323,6 +323,11 @@ export function ActiveSessionSwitcher({
   // session that was hidden while live reappears in history once it closes —
   // without re-querying the DB. Only refreshed on a full (includeHistory) load.
   const rawHistoryRef = useRef<SessionListItem[]>([])
+  // Mirror the displayed lists so the async poll can re-anchor the selection to
+  // the *same* row (by session id) after live sessions appear/disappear, rather
+  // than keeping a now-stale flat index.
+  const itemsRef = useRef<SessionActiveItem[]>([])
+  const historyDisplayRef = useRef<SessionListItem[]>([])
   const { stdout } = useStdout()
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
   const promptColumns = Math.max(20, width - 11)
@@ -363,26 +368,58 @@ export function ActiveSessionSwitcher({
 
         const next = r.sessions ?? []
 
+        // Surface a garbled session.list rather than silently blanking the
+        // resumable section; keep the last good raw history so a transient RPC
+        // failure doesn't wipe it.
+        let histError = ''
+
         if (includeHistory) {
-          rawHistoryRef.current = asRpcResult<SessionListResponse>(histRaw)?.sessions ?? []
+          const parsedHist = asRpcResult<SessionListResponse>(histRaw)
+
+          if (parsedHist) {
+            rawHistoryRef.current = parsedHist.sessions ?? []
+          } else {
+            histError = 'invalid response: session.list'
+          }
         }
 
         const hist = resumableHistory(rawHistoryRef.current, next)
         const initializeSelection = !initialSelectionAppliedRef.current
         initialSelectionAppliedRef.current = true
         const maxSel = next.length + hist.length // == total - 1 (new row is index 0)
+
         setItems(next)
         setHistory(hist)
-        setSel(s =>
-          initializeSelection
-            ? // Land on the current live session (shifted +1 past the pinned
-              // new row); with no live sessions, start on the new row itself.
-              next.length
-              ? Math.min(currentSessionSelectionIndex(next, currentSessionId) + 1, maxSel)
-              : 0
-            : Math.max(0, Math.min(s, maxSel))
-        )
-        setErr('')
+        // Re-anchor selection to the same row by identity (the live list can
+        // grow/shrink between polls, which would otherwise drift a flat index).
+        setSel(s => {
+          if (initializeSelection) {
+            // Land on the current live session (shifted +1 past the pinned new
+            // row); with no live sessions, start on the new row itself.
+            return next.length ? Math.min(currentSessionSelectionIndex(next, currentSessionId) + 1, maxSel) : 0
+          }
+
+          if (s <= 0) {
+            return 0 // "+ new" row
+          }
+
+          const prevItems = itemsRef.current
+          const prevHist = historyDisplayRef.current
+          const clamp = () => Math.max(0, Math.min(s, maxSel))
+
+          if (s - 1 < prevItems.length) {
+            const id = prevItems[s - 1]?.id
+            const i = id ? next.findIndex(x => x.id === id) : -1
+
+            return i >= 0 ? i + 1 : clamp()
+          }
+
+          const id = prevHist[s - 1 - prevItems.length]?.id
+          const i = id ? hist.findIndex(x => x.id === id) : -1
+
+          return i >= 0 ? 1 + next.length + i : clamp()
+        })
+        setErr(histError)
         setLoading(false)
 
         return next
@@ -395,6 +432,11 @@ export function ActiveSessionSwitcher({
     },
     [currentSessionId, gw]
   )
+
+  useEffect(() => {
+    itemsRef.current = items
+    historyDisplayRef.current = history
+  }, [items, history])
 
   useEffect(() => {
     void load()
