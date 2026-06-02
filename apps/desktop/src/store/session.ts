@@ -81,11 +81,9 @@ export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($curren
 
 export const setCurrentCwd = (next: Updater<string>) => {
   updateAtom($currentCwd, next)
-  const value = $currentCwd.get().trim()
-
-  if (value) {
-    persistString(WORKSPACE_CWD_KEY, value)
-  }
+  // Keep localStorage in sync with the atom: a real folder is remembered, an
+  // empty cwd clears the key (|| null → removeItem).
+  persistString(WORKSPACE_CWD_KEY, $currentCwd.get().trim() || null)
 }
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)

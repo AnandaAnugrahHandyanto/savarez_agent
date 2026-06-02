@@ -67,7 +67,7 @@ export function ProjectTree({
 
       onNodeOpenChange(id, node.isOpen)
 
-      if (node.isOpen && node.data?.children === undefined) {
+      if (node.isOpen && node.data?.isDirectory && node.data.children === undefined) {
         void onLoadChildren(id)
       }
     },
