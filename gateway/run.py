@@ -5942,6 +5942,16 @@ class GatewayRunner:
                     platform.value, attempt,
                 )
 
+                # Adapter is created with platform resources that need explicit
+                # cleanup (aiohttp sessions, poll tasks, sqlite3 connections via
+                # ResponseStore). Track whether the success path took ownership
+                # of it — if not, the finally clause must release those
+                # resources or the gateway leaks fds on every failed reconnect
+                # attempt and hits ulimit -n within hours. See issue: gateway
+                # gateway hits [Errno 24] Too many open files after sustained
+                # reconnect failures (port collision, DNS blip, etc).
+                adapter = None
+                adapter_owned = False
                 try:
                     adapter = self._create_adapter(platform, platform_config)
                     if not adapter:
@@ -5962,6 +5972,7 @@ class GatewayRunner:
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
                         self.adapters[platform] = adapter
+                        adapter_owned = True  # ownership transferred to self.adapters
                         self._sync_voice_mode_state_to_adapter(adapter)
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
@@ -6015,6 +6026,9 @@ class GatewayRunner:
                         # `not fatal_error_retryable` branch above, so anything
                         # reaching here is by definition retryable.
                 except Exception as e:
+                    # Connection raised mid-flight (timeout, DNS, etc). The
+                    # adapter was constructed but never made it into
+                    # self.adapters — let the finally clause release it.
                     self._update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying",
@@ -6031,6 +6045,14 @@ class GatewayRunner:
                     # A raised exception during reconnect (connect timeout, DNS
                     # resolution failure, etc.) is inherently transient — keep
                     # retrying at the backoff cap rather than auto-pausing.
+
+                finally:
+                    # Release any adapter that the success path did NOT take
+                    # ownership of. Without this, every failed reconnect leaks
+                    # the adapter's resources (sqlite3 fds, aiohttp sessions,
+                    # child processes) and the gateway hits ulimit -n in hours.
+                    if adapter is not None and not adapter_owned:
+                        await self._safe_adapter_disconnect(adapter, platform)
 
             # Check every 10 seconds for platforms that need reconnection
             for _ in range(10):
