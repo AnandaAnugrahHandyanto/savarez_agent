@@ -1,18 +1,17 @@
-"""Regression tests for subagent timeout diagnostic dump (issue #14726).
+"""Regression tests for subagent timeout diagnostic dumps (issue #14726).
 
-When delegate_task's child subagent times out without having made any API
-call, a structured diagnostic file is written under
-``~/.hermes/logs/subagent-timeout-<sid>-<ts>.log``. This gives users a
-concrete artifact to inspect (worker thread stack, system prompt size,
-tool schema bytes, credential pool state, etc.) instead of the previous
-opaque "subagent timed out" error.
+When delegate_task's child subagent times out, a structured diagnostic file is
+written under ``~/.hermes/logs/subagent-timeout-<sid>-<ts>.log``. This gives
+users a concrete artifact to inspect (worker thread stack, system prompt size,
+tool schema bytes, credential pool state, bounded interrupt cleanup, etc.)
+instead of an opaque "subagent timed out" error.
 
 These tests pin:
 - the diagnostic writer's output format and content
-- the timeout branch in _run_single_child only dumps when api_calls == 0
+- the timeout branch in _run_single_child dumps for every timeout
 - the error message surfaces the diagnostic path
-- api_calls > 0 timeouts do NOT write a dump (the old "stuck on slow API
-  call" explanation still applies)
+- api_calls > 0 timeouts keep the slow-call explanation while still writing a
+  diagnostic artifact for cleanup/stack observability
 """
 from __future__ import annotations
 
@@ -81,6 +80,11 @@ class _StubChild:
         self._hang.set()
 
 
+class _IgnoringInterruptChild(_StubChild):
+    def interrupt(self):
+        pass
+
+
 # ── _dump_subagent_timeout_diagnostic ──────────────────────────────────
 
 class TestDumpSubagentTimeoutDiagnostic:
@@ -138,8 +142,10 @@ class TestDumpSubagentTimeoutDiagnostic:
         assert "system_prompt_bytes:" in content
         assert "tool_schema_count: 2" in content
         assert "tool_schema_bytes:" in content
-        # Activity summary
+        # Activity summary + cleanup observability
         assert "api_call_count: 0" in content
+        assert "Cleanup after timeout" in content
+        assert "interrupt_status: unknown" in content
         # Worker stack
         assert "Worker thread stack at timeout" in content
         # The thread is parked inside _hang.wait → cond.wait → waiter.acquire
@@ -201,6 +207,56 @@ class TestDumpSubagentTimeoutDiagnostic:
         content = Path(path).read_text()
         assert "<worker thread already exited>" in content
 
+    def test_redacts_free_form_diagnostic_values(self, hermes_home):
+        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
+
+        child = _StubChild()
+        query_secret = "api_" + "key=plain-secret"
+        child.base_url = (
+            "https://user:super-secret-token@example.test/v1?"
+            f"{query_secret}&ok=1"
+        )
+        provider_secret = "sk-" + "provider1234567890abcdef"
+        activity_secret = "sk-" + "activity1234567890abcdef"
+        goal_secret = "sk-" + "goal1234567890abcdef"
+        child.provider = f"OPENAI_API_KEY={provider_secret}"
+
+        def _summary():
+            return {
+                "api_call_count": 0,
+                "auth_header": f"Authorization: Bearer {activity_secret}",
+            }
+
+        child.get_activity_summary = _summary
+        path = _dump_subagent_timeout_diagnostic(
+            child=child,
+            task_index=0,
+            timeout_seconds=300.0,
+            duration_seconds=300.0,
+            worker_thread=None,
+            goal=f"debug with OPENAI_API_KEY={goal_secret}",
+            cleanup_error=(
+                "failed fetching https://example.test/cb?"
+                + "refresh_" + "tok" + "en=plain-cleanup-secret"
+            ),
+        )
+        content = Path(path).read_text()
+
+        for raw_secret in (
+            provider_secret,
+            activity_secret,
+            goal_secret,
+            "super-secret-token",
+            "plain-secret",
+            "plain-cleanup-secret",
+        ):
+            assert raw_secret not in content
+
+        assert "api_key=***" in content
+        assert "refresh_token=***" in content
+        assert "https://user:***@example.test" in content
+
+
     def test_returns_none_on_unwritable_logs_dir(self, tmp_path, monkeypatch):
         # Point HERMES_HOME at an unwritable path so logs/ can't be created
         # (simulates permission-denied). Helper must not raise.
@@ -231,8 +287,8 @@ class TestDumpSubagentTimeoutDiagnostic:
 # ── _run_single_child timeout branch wiring ───────────────────────────
 
 class TestRunSingleChildTimeoutDump:
-    """The timeout branch in _run_single_child must emit the diagnostic
-    dump when api_calls == 0, and must NOT emit it when api_calls > 0."""
+    """The timeout branch in _run_single_child must emit a diagnostic dump
+    for both 0-call and nonzero-call timeouts, and report cleanup status."""
 
     def _invoke_with_short_timeout(self, child, monkeypatch):
         """Run _run_single_child with a tiny timeout to force the timeout branch."""
@@ -257,6 +313,7 @@ class TestRunSingleChildTimeoutDump:
         assert result["status"] == "timeout"
         assert result["api_calls"] == 0
         assert result["diagnostic_path"] is not None
+        assert result["cleanup_status"] == "worker_exited_after_interrupt"
         dump_path = Path(result["diagnostic_path"])
         assert dump_path.is_file()
         assert dump_path.parent == hermes_home / "logs"
@@ -265,20 +322,41 @@ class TestRunSingleChildTimeoutDump:
         assert "without making any API call" in result["error"]
         assert "Diagnostic:" in result["error"]
         assert str(dump_path) in result["error"]
+        content = dump_path.read_text()
+        assert "Worker thread stack at timeout" in content
+        # The worker exits during cleanup, so the stack must have been captured
+        # before interrupting rather than after the thread had already stopped.
+        assert "run_conversation" in content
+        assert "<worker thread already exited>" not in content
 
-    def test_nonzero_api_calls_skips_dump_and_uses_old_message(self, hermes_home, monkeypatch):
+    def test_worker_still_running_after_interrupt_is_reported(self, hermes_home, monkeypatch):
+        child = _IgnoringInterruptChild(api_call_count=2, hang_seconds=10.0)
+        try:
+            result = self._invoke_with_short_timeout(child, monkeypatch)
+
+            assert result["status"] == "timeout"
+            assert result["cleanup_status"] == "worker_still_running_after_interrupt"
+            dump_path = Path(result["diagnostic_path"])
+            content = dump_path.read_text()
+            assert "worker_still_running_after_interrupt" in content
+            assert "worker_alive_after_interrupt: True" in content
+            assert "run_conversation" in content
+        finally:
+            child._hang.set()
+
+    def test_nonzero_api_calls_writes_dump_and_keeps_slow_call_message(self, hermes_home, monkeypatch):
         child = _StubChild(api_call_count=5, hang_seconds=10.0)
         result = self._invoke_with_short_timeout(child, monkeypatch)
 
         assert result["status"] == "timeout"
         assert result["api_calls"] == 5
-        # No diagnostic file should be written for timeouts that made
-        # actual API calls — the old generic "stuck on slow call" message
-        # still applies.
-        assert result.get("diagnostic_path") is None
+        assert result["cleanup_status"] == "worker_exited_after_interrupt"
+        assert result.get("diagnostic_path") is not None
+        dump_path = Path(result["diagnostic_path"])
+        assert dump_path.is_file()
+        assert dump_path.parent == hermes_home / "logs"
+        assert "api_call_count: 5" in dump_path.read_text()
+        assert "worker_exited_after_interrupt" in dump_path.read_text()
         assert "stuck on a slow API call" in result["error"]
-        # And no subagent-timeout-* file should exist under logs/
-        logs_dir = hermes_home / "logs"
-        if logs_dir.is_dir():
-            dumps = list(logs_dir.glob("subagent-timeout-*.log"))
-            assert dumps == []
+        assert "Diagnostic:" in result["error"]
+        assert str(dump_path) in result["error"]
