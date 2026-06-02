@@ -176,6 +176,26 @@ class _FakeResponsesStream:
         return self._final_response
 
 
+class _RaisingResponsesStream:
+    def __init__(self, *, events, iter_error):
+        self._events = list(events)
+        self._iter_error = iter_error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        for event in self._events:
+            yield event
+        raise self._iter_error
+
+    def get_final_response(self):
+        raise AssertionError("stream iteration should recover before final response")
+
+
 class _FakeCreateStream:
     def __init__(self, events):
         self._events = list(events)
@@ -447,6 +467,38 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
     assert calls["stream"] == 2
     assert calls["create"] == 1
     assert response.output[0].content[0].text == "create fallback ok"
+
+
+def test_run_codex_stream_recovers_when_sdk_parser_crashes_on_none_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+    done_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="backfilled stream ok")],
+    )
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _RaisingResponsesStream(
+            events=[SimpleNamespace(type="response.output_item.done", item=done_item)],
+            iter_error=TypeError("'NoneType' object is not iterable"),
+        )
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("create fallback should not be used")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=_fake_create,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert calls == {"stream": 1, "create": 0}
+    assert response.output[0].content[0].text == "backfilled stream ok"
 
 
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
