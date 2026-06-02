@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, List, Optional, Any, Tuple, Set
 
 logger = logging.getLogger(__name__)
 
@@ -829,36 +829,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 # This replaces the older DISCORD_IGNORE_NO_MENTION logic
                 # with bot-aware filtering that works correctly when multiple
                 # agents share a channel.
-                if not isinstance(message.channel, discord.DMChannel) and message.mentions:
-                    _self_mentioned = (
-                        self._client.user is not None
-                        and self._client.user in message.mentions
-                    )
-                    _other_bots_mentioned = any(
-                        m.bot and m != self._client.user
-                        for m in message.mentions
-                    )
-                    # If other bots are mentioned but we're not → not for us
-                    if _other_bots_mentioned and not _self_mentioned:
-                        return
-                    # If humans are mentioned but we're not → not for us
-                    # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
-                    # EXCEPT in free-response channels where the bot should
-                    # answer regardless of who is mentioned.
-                    _ignore_no_mention = os.getenv(
-                        "DISCORD_IGNORE_NO_MENTION", "true"
-                    ).lower() in {"true", "1", "yes"}
-                    if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
-                        _channel_id = str(message.channel.id)
-                        _parent_id = None
-                        if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                            _parent_id = str(message.channel.parent_id)
-                        _free_channels = adapter_self._discord_free_response_channels()
-                        _channel_ids = {_channel_id}
-                        if _parent_id:
-                            _channel_ids.add(_parent_id)
-                        if "*" not in _free_channels and not (_channel_ids & _free_channels):
-                            return
+                if adapter_self._should_ignore_discord_mention_routing(message):
+                    return
 
                 await self._handle_message(message, role_authorized=_role_authorized)
 
@@ -3857,26 +3829,6 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
-    def _discord_mention_role_ids(self) -> set[str]:
-        """Return role IDs that should wake the bot like an explicit bot mention."""
-        raw = self.config.extra.get("mention_roles")
-        if raw is None:
-            raw = os.getenv("DISCORD_MENTION_ROLES", "")
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        s = str(raw).strip() if raw is not None else ""
-        if s:
-            return {part.strip() for part in s.split(",") if part.strip()}
-        return set()
-
-    def _message_mentions_configured_role(self, message) -> bool:
-        """Return True when a message mentions a configured wake role."""
-        role_ids = self._discord_mention_role_ids()
-        if not role_ids:
-            return False
-        role_mentions = getattr(message, "role_mentions", None) or []
-        return any(str(getattr(role, "id", "")) in role_ids for role in role_mentions)
-
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
 
@@ -3954,6 +3906,78 @@ class DiscordAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+    def _discord_mention_role_ids(self) -> Set[str]:
+        """Return role IDs that count as explicit Discord bot invocations."""
+        raw = self.config.extra.get("mention_roles")
+        if raw is None:
+            raw = os.getenv("DISCORD_MENTION_ROLES", "")
+        if raw is None:
+            return set()
+        if isinstance(raw, (list, tuple, set)):
+            values = raw
+        else:
+            values = str(raw).split(",")
+        return {_clean_discord_id(str(role_id)) for role_id in values if str(role_id).strip()}
+
+    def _message_mentions_configured_role(self, message: DiscordMessage) -> bool:
+        """Return True when a Discord message mentions a configured invocation role."""
+        mention_roles = self._discord_mention_role_ids()
+        if not mention_roles:
+            return False
+        role_mentions = getattr(message, "role_mentions", None) or []
+        for role in role_mentions:
+            if _clean_discord_id(str(getattr(role, "id", ""))) in mention_roles:
+                return True
+        content = getattr(message, "content", "") or ""
+        return any(f"<@&{role_id}>" in content for role_id in mention_roles)
+
+    def _should_ignore_discord_mention_routing(self, message: Any) -> bool:
+        """Return whether the pre-dispatch mention router should drop a message.
+
+        This protects multi-agent channels: if the message mentions another bot
+        (or only human users) and not this bot, ignore it before normal dispatch.
+        Configured role mentions are an explicit invocation of this bot and must
+        bypass this router, even when Discord also populates ``message.mentions``
+        with humans affected by the role ping.
+        """
+        dm_channel_cls = getattr(discord, "DMChannel", None)
+        if dm_channel_cls is not None and isinstance(message.channel, dm_channel_cls):
+            return False
+        if not getattr(message, "mentions", None):
+            return False
+        if self._message_mentions_configured_role(message):
+            return False
+
+        client_user = getattr(self._client, "user", None)
+        _self_mentioned = client_user is not None and client_user in message.mentions
+        _other_bots_mentioned = any(
+            getattr(m, "bot", False) and m != client_user
+            for m in message.mentions
+        )
+        # If other bots are mentioned but we're not → not for us.
+        if _other_bots_mentioned and not _self_mentioned:
+            return True
+
+        # If humans are mentioned but we're not → not for us (preserves old
+        # DISCORD_IGNORE_NO_MENTION=true behavior), except in free-response
+        # channels where the bot should answer regardless of who is mentioned.
+        _ignore_no_mention = os.getenv(
+            "DISCORD_IGNORE_NO_MENTION", "true"
+        ).lower() in {"true", "1", "yes"}
+        if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
+            _channel_id = str(message.channel.id)
+            _parent_id = None
+            if hasattr(message.channel, "parent_id") and message.channel.parent_id:
+                _parent_id = str(message.channel.parent_id)
+            _free_channels = self._discord_free_response_channels()
+            _channel_ids = {_channel_id}
+            if _parent_id:
+                _channel_ids.add(_parent_id)
+            if "*" not in _free_channels and not (_channel_ids & _free_channels):
+                return True
+
+        return False
 
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
@@ -4776,6 +4800,7 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+        role_mention_prefix = False
 
         snapshot_attachments = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
@@ -4793,7 +4818,7 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
         if self._message_mentions_configured_role(message):
-            mention_prefix = True
+            role_mention_prefix = True
             for role_id in self._discord_mention_role_ids():
                 normalized_content = normalized_content.replace(f"<@&{role_id}>", "").strip()
             message.content = normalized_content
@@ -4845,7 +4870,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+                if self._client.user not in message.mentions and not mention_prefix and not role_mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
@@ -6507,9 +6532,10 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
     ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
     ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
-    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
-    ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
-    ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``).
+    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_MENTION_ROLES``,
+    ``DISCORD_HISTORY_BACKFILL``, ``DISCORD_HISTORY_BACKFILL_LIMIT``,
+    ``DISCORD_ALLOW_MENTION_*``, ``DISCORD_REPLY_TO_MODE``,
+    ``DISCORD_THREAD_REQUIRE_MENTION``).
     Rather than rewrite ~50 call sites inside the adapter to read from
     ``PlatformConfig.extra`` instead, this hook keeps the existing
     env-driven model and merely owns the YAML→env translation here, next to
@@ -6567,6 +6593,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         if isinstance(ntc, list):
             ntc = ",".join(str(v) for v in ntc)
         os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+    # mention_roles: role IDs that count as explicit bot invocation mentions
+    mr = discord_cfg.get("mention_roles")
+    if mr is not None and not os.getenv("DISCORD_MENTION_ROLES"):
+        if isinstance(mr, list):
+            mr = ",".join(str(v) for v in mr)
+        os.environ["DISCORD_MENTION_ROLES"] = str(mr)
     # history_backfill: recover missed channel messages for shared sessions
     # when require_mention is active.  Fetches messages between bot turns
     # and prepends them to the user message for context.

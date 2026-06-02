@@ -359,7 +359,7 @@ def make_fake_thread(thread_id: int = THREAD_ID, name: str = "test-thread", pare
 
 def make_discord_message(
     *, content: str = "hello", author=None, channel=None, mentions=None,
-    attachments=None, message_id: int = None,
+    role_mentions=None, attachments=None, message_id: int = None,
 ):
     if message_id is None:
         message_id = _next_message_id()
@@ -371,13 +371,15 @@ def make_discord_message(
         channel = make_fake_text_channel()
     if mentions is None:
         mentions = []
+    if role_mentions is None:
+        role_mentions = []
     if attachments is None:
         attachments = []
 
     return SimpleNamespace(
         id=message_id, content=content, author=author, channel=channel,
         guild=getattr(channel, "guild", None),
-        mentions=mentions, attachments=attachments,
+        mentions=mentions, role_mentions=role_mentions, attachments=attachments,
         type=getattr(discord, "MessageType", SimpleNamespace()).default,
         reference=None, created_at=datetime.now(timezone.utc),
         create_thread=AsyncMock(),

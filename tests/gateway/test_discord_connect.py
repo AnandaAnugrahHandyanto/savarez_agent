@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -78,6 +79,28 @@ def _speed_up_command_sync_mutation_pacing(monkeypatch):
         "_command_sync_mutation_interval_seconds",
         lambda self: 0.0,
     )
+
+
+def test_apply_yaml_config_bridges_mention_roles_to_env(monkeypatch):
+    monkeypatch.delenv("DISCORD_MENTION_ROLES", raising=False)
+
+    discord_platform._apply_yaml_config(
+        {},
+        {"mention_roles": [123456, "789012"]},
+    )
+
+    assert os.environ["DISCORD_MENTION_ROLES"] == "123456,789012"
+
+
+def test_apply_yaml_config_preserves_env_mention_roles(monkeypatch):
+    monkeypatch.setenv("DISCORD_MENTION_ROLES", "configured-in-env")
+
+    discord_platform._apply_yaml_config(
+        {},
+        {"mention_roles": [123456]},
+    )
+
+    assert os.environ["DISCORD_MENTION_ROLES"] == "configured-in-env"
 
 
 class FakeTree:

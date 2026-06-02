@@ -5,6 +5,7 @@ Covers the fix for slash commands not being recognized when sent via
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -62,6 +63,45 @@ class TestMentionStrippedCommandDispatch:
         # mock setup means no send call either.
         response = get_response_text(discord_adapter)
         assert response is None or "/new" not in response
+
+    async def test_role_mention_configured_as_invocation(self, discord_adapter):
+        """Configured role mention in a server channel invokes the bot."""
+        role_id = 123456
+        discord_adapter.config.extra["mention_roles"] = [str(role_id)]
+        msg = make_discord_message(
+            content=f"<@&{role_id}> /help",
+            mentions=[],
+            role_mentions=[SimpleNamespace(id=role_id)],
+        )
+        await dispatch(discord_adapter, msg)
+        response = get_response_text(discord_adapter)
+        assert response is not None
+        assert "/new" in response
+
+    async def test_role_mention_not_dropped_by_human_mention_prefilter(self, discord_adapter):
+        """Configured role mentions must survive the pre-_handle_message mention router.
+
+        Discord can include humans in ``message.mentions`` when a role is pinged.
+        The multi-agent prefilter must not treat that as "the user is talking to
+        someone else" when the role itself is configured as a bot invocation.
+        """
+        role_id = 123456
+        discord_adapter.config.extra["mention_roles"] = [str(role_id)]
+        human_mentioned_by_role = SimpleNamespace(id=22222, bot=False)
+        msg = make_discord_message(
+            content=f"<@&{role_id}> /help",
+            mentions=[human_mentioned_by_role],
+            role_mentions=[SimpleNamespace(id=role_id)],
+        )
+
+        assert discord_adapter._should_ignore_discord_mention_routing(msg) is False
+
+    async def test_human_mention_still_dropped_by_prefilter(self, discord_adapter):
+        """A plain human mention is still ignored when it is not for this bot."""
+        human = SimpleNamespace(id=22222, bot=False)
+        msg = make_discord_message(content="<@22222> hello", mentions=[human])
+
+        assert discord_adapter._should_ignore_discord_mention_routing(msg) is True
 
     async def test_no_mention_in_channel_dropped(self, discord_adapter):
         """Message without @mention in server channel → silently dropped."""
