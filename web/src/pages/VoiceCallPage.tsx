@@ -436,7 +436,8 @@ export default function VoiceCallPage() {
       duration_ms: durationMs,
       pending_saves_at_end: pendingTranscriptSavesRef.current.length,
       log_entries: logs.length,
-      status_at_end: statusAtEnd,
+      status_before_end: statusAtEnd,
+      status_at_end: "ending",
       reason,
     });
     if (dataRef.current) {
@@ -533,19 +534,23 @@ export default function VoiceCallPage() {
         });
       }
       persistTranscript("tool", handoff.output, "delegation_handoff", { task_id: handoff.taskId });
-      requestResponseCreate("tool output", { queueIfActive: false });
+      requestResponseCreate(
+        handoff.toolCallId.startsWith("handoff:") ? "background handoff" : "tool output",
+        handoff.toolCallId.startsWith("handoff:") ? undefined : { queueIfActive: false },
+      );
     }
   }, [persistTranscript, requestResponseCreate, sendRealtimeEvent]);
 
   const queueOrSendToolOutput = useCallback(
     (toolCallId: string, output: string, taskId = "foreground") => {
+      const isBackgroundHandoff = toolCallId.startsWith("handoff:");
       if (userSpeakingRef.current) {
         pendingHandoffsRef.current.push({ toolCallId, taskId, output });
         setPendingHandoffs(pendingHandoffsRef.current.length);
         persistTranscript("system", "Queued Rolly result until user stops speaking.", "handoff_queued", { task_id: taskId });
         return;
       }
-      if (toolCallId.startsWith("handoff:")) {
+      if (isBackgroundHandoff) {
         sendRealtimeEvent({
           type: "conversation.item.create",
           item: {
@@ -564,7 +569,10 @@ export default function VoiceCallPage() {
           },
         });
       }
-      requestResponseCreate("tool output", { queueIfActive: false });
+      requestResponseCreate(
+        isBackgroundHandoff ? "background handoff" : "tool output",
+        isBackgroundHandoff ? undefined : { queueIfActive: false },
+      );
     },
     [persistTranscript, requestResponseCreate, sendRealtimeEvent],
   );
@@ -586,7 +594,7 @@ export default function VoiceCallPage() {
           if (task.status === "complete") {
             const output = task.result || "Background Rolly task completed.";
             addLog("tool", `${taskId} complete\n${output.slice(0, 700)}`);
-            persistTranscript("tool", output, "delegation_result", { task_id: taskId, session_id: task.session_id });
+            persistTranscript("tool", output, "delegation_handoff", { task_id: taskId, session_id: task.session_id });
             queueOrSendToolOutput(`handoff:${taskId}`, output, taskId);
             return;
           }
