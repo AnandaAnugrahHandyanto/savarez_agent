@@ -337,10 +337,10 @@ class TestEdgeCases:
         paths, _ = _extract("File at /tmp/my file.png here")
         assert paths == []
 
-    def test_windows_path_not_matched(self):
-        """Windows-style paths should not match."""
+    def test_windows_path_matched(self):
+        """Windows-style paths should now match."""
         paths, _ = _extract("See C:\\Users\\test\\image.png")
-        assert paths == []
+        assert paths == ["C:\\Users\\test\\image.png"]
 
     def test_relative_path_not_matched(self):
         """Relative paths like ./image.png should not match."""
