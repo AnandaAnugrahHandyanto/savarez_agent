@@ -40,6 +40,7 @@ import os
 import socket as _socket
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -351,6 +352,9 @@ class ResponseStore:
     if the on-disk path is unavailable.
     """
 
+    _pool_lock = threading.RLock()
+    _connection_pool: Dict[str, "_ResponseStoreConnection"] = {}
+
     def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str = None):
         self._max_size = max_size
         if db_path is None:
@@ -359,47 +363,88 @@ class ResponseStore:
                 db_path = str(get_hermes_home() / "response_store.db")
             except Exception:
                 db_path = ":memory:"
-        self._db_path: Optional[str] = db_path if db_path != ":memory:" else None
-        try:
-            self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        except Exception:
-            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
-            self._db_path = None
-        # Use shared WAL-fallback helper so response_store.db degrades
-        # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same filesystem
-        # issue addressed for state.db/kanban.db — see
-        # hermes_state._WAL_INCOMPAT_MARKERS).
-        from hermes_state import apply_wal_with_fallback
-        apply_wal_with_fallback(self._conn, db_label="response_store.db")
-        self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS responses (
-                response_id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                accessed_at REAL NOT NULL
-            )"""
-        )
-        self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS conversations (
-                name TEXT PRIMARY KEY,
-                response_id TEXT NOT NULL
-            )"""
-        )
-        self._conn.commit()
-        # response_store.db contains conversation history (tool payloads,
-        # prompts, results). Tighten to owner-only after creation so other
-        # local users on a shared box can't read it. Run once at __init__
-        # rather than after every commit — chmod-on-every-write is wasted
-        # syscalls on a hot path.
-        self._tighten_file_permissions()
+        self._closed = False
+        self._pool_key = self._pool_key_for(db_path)
+        self._shared = self._acquire_connection(db_path, self._pool_key)
+        self._conn = self._shared.conn
+        self._db_path = self._shared.db_path
 
-    def _tighten_file_permissions(self) -> None:
-        """Force owner-only permissions on the DB and SQLite sidecars."""
-        if not self._db_path:
+    @classmethod
+    def _pool_key_for(cls, db_path: str) -> Optional[str]:
+        """Return the process-local pool key for persistent stores."""
+        if db_path == ":memory:":
+            return None
+        try:
+            return str(Path(db_path).expanduser().resolve(strict=False))
+        except Exception:
+            return str(db_path)
+
+    @classmethod
+    def _acquire_connection(
+        cls, db_path: str, pool_key: Optional[str]
+    ) -> "_ResponseStoreConnection":
+        with cls._pool_lock:
+            if pool_key:
+                shared = cls._connection_pool.get(pool_key)
+                if shared is not None and not shared.closed:
+                    shared.ref_count += 1
+                    return shared
+
+            shared = cls._open_connection(db_path)
+            shared.ref_count = 1
+            cls._initialize_connection(shared)
+            if pool_key and shared.db_path is not None:
+                cls._connection_pool[pool_key] = shared
+            return shared
+
+    @staticmethod
+    def _open_connection(db_path: str) -> "_ResponseStoreConnection":
+        stored_db_path: Optional[str] = db_path if db_path != ":memory:" else None
+        try:
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+        except Exception:
+            conn = sqlite3.connect(":memory:", check_same_thread=False)
+            stored_db_path = None
+        return _ResponseStoreConnection(conn=conn, db_path=stored_db_path)
+
+    @classmethod
+    def _initialize_connection(cls, shared: "_ResponseStoreConnection") -> None:
+        with shared.lock:
+            # Use shared WAL-fallback helper so response_store.db degrades
+            # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same filesystem
+            # issue addressed for state.db/kanban.db — see
+            # hermes_state._WAL_INCOMPAT_MARKERS).
+            from hermes_state import apply_wal_with_fallback
+            apply_wal_with_fallback(shared.conn, db_label="response_store.db")
+            shared.conn.execute(
+                """CREATE TABLE IF NOT EXISTS responses (
+                    response_id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    accessed_at REAL NOT NULL
+                )"""
+            )
+            shared.conn.execute(
+                """CREATE TABLE IF NOT EXISTS conversations (
+                    name TEXT PRIMARY KEY,
+                    response_id TEXT NOT NULL
+                )"""
+            )
+            shared.conn.commit()
+            # response_store.db contains conversation history (tool payloads,
+            # prompts, results). Tighten to owner-only after creation so other
+            # local users on a shared box can't read it. Run once at __init__
+            # rather than after every commit — chmod-on-every-write is wasted
+            # syscalls on a hot path.
+            cls._tighten_file_permissions_for(shared.db_path)
+
+    @staticmethod
+    def _tighten_file_permissions_for(db_path: Optional[str]) -> None:
+        if not db_path:
             return
         for candidate in (
-            Path(self._db_path),
-            Path(f"{self._db_path}-wal"),
-            Path(f"{self._db_path}-shm"),
+            Path(db_path),
+            Path(f"{db_path}-wal"),
+            Path(f"{db_path}-shm"),
         ):
             try:
                 if candidate.exists():
@@ -411,88 +456,143 @@ class ResponseStore:
                     exc_info=True,
                 )
 
+    def _ensure_open(self) -> "_ResponseStoreConnection":
+        if self._closed or self._shared.closed:
+            raise sqlite3.ProgrammingError("ResponseStore connection is closed")
+        return self._shared
+
+    def _tighten_file_permissions(self) -> None:
+        """Force owner-only permissions on the DB and SQLite sidecars."""
+        self._tighten_file_permissions_for(self._db_path)
+
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""
-        row = self._conn.execute(
-            "SELECT data FROM responses WHERE response_id = ?", (response_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        self._conn.execute(
-            "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
-            (time.time(), response_id),
-        )
-        self._conn.commit()
+        shared = self._ensure_open()
+        with shared.lock:
+            row = self._conn.execute(
+                "SELECT data FROM responses WHERE response_id = ?", (response_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute(
+                "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
+                (time.time(), response_id),
+            )
+            self._conn.commit()
         return json.loads(row[0])
 
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
-        self._conn.execute(
-            "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
-            (response_id, json.dumps(data, default=str), time.time()),
-        )
-        # Evict oldest entries beyond max_size
-        count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
-        if count > self._max_size:
-            # Collect IDs that will be evicted
-            evict_ids = [
-                row[0]
-                for row in self._conn.execute(
-                    "SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?",
-                    (count - self._max_size,),
-                ).fetchall()
-            ]
-            if evict_ids:
-                placeholders = ",".join("?" for _ in evict_ids)
-                # Clear conversation mappings pointing to evicted responses
-                self._conn.execute(
-                    f"DELETE FROM conversations WHERE response_id IN ({placeholders})",
-                    evict_ids,
-                )
-                # Delete evicted responses
-                self._conn.execute(
-                    f"DELETE FROM responses WHERE response_id IN ({placeholders})",
-                    evict_ids,
-                )
-        self._conn.commit()
+        shared = self._ensure_open()
+        with shared.lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
+                (response_id, json.dumps(data, default=str), time.time()),
+            )
+            # Evict oldest entries beyond max_size
+            count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
+            if count > self._max_size:
+                # Collect IDs that will be evicted
+                evict_ids = [
+                    row[0]
+                    for row in self._conn.execute(
+                        "SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?",
+                        (count - self._max_size,),
+                    ).fetchall()
+                ]
+                if evict_ids:
+                    placeholders = ",".join("?" for _ in evict_ids)
+                    # Clear conversation mappings pointing to evicted responses
+                    self._conn.execute(
+                        f"DELETE FROM conversations WHERE response_id IN ({placeholders})",
+                        evict_ids,
+                    )
+                    # Delete evicted responses
+                    self._conn.execute(
+                        f"DELETE FROM responses WHERE response_id IN ({placeholders})",
+                        evict_ids,
+                    )
+            self._conn.commit()
 
     def delete(self, response_id: str) -> bool:
         """Remove a response from the store. Returns True if found and deleted."""
-        # Clear conversation mappings pointing to this response
-        self._conn.execute(
-            "DELETE FROM conversations WHERE response_id = ?", (response_id,)
-        )
-        cursor = self._conn.execute(
-            "DELETE FROM responses WHERE response_id = ?", (response_id,)
-        )
-        self._conn.commit()
-        return cursor.rowcount > 0
+        shared = self._ensure_open()
+        with shared.lock:
+            # Clear conversation mappings pointing to this response
+            self._conn.execute(
+                "DELETE FROM conversations WHERE response_id = ?", (response_id,)
+            )
+            cursor = self._conn.execute(
+                "DELETE FROM responses WHERE response_id = ?", (response_id,)
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
 
     def get_conversation(self, name: str) -> Optional[str]:
         """Get the latest response_id for a conversation name."""
-        row = self._conn.execute(
-            "SELECT response_id FROM conversations WHERE name = ?", (name,)
-        ).fetchone()
-        return row[0] if row else None
+        shared = self._ensure_open()
+        with shared.lock:
+            row = self._conn.execute(
+                "SELECT response_id FROM conversations WHERE name = ?", (name,)
+            ).fetchone()
+            return row[0] if row else None
 
     def set_conversation(self, name: str, response_id: str) -> None:
         """Map a conversation name to its latest response_id."""
-        self._conn.execute(
-            "INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)",
-            (name, response_id),
-        )
-        self._conn.commit()
+        shared = self._ensure_open()
+        with shared.lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)",
+                (name, response_id),
+            )
+            self._conn.commit()
 
     def close(self) -> None:
-        """Close the database connection."""
+        """Release this store's reference to the shared database connection."""
+        if self._closed:
+            return
+        self._closed = True
+        shared = self._shared
+        with self._pool_lock:
+            shared.ref_count -= 1
+            if shared.ref_count > 0:
+                self._conn = None
+                return
+            if self._pool_key and self._connection_pool.get(self._pool_key) is shared:
+                self._connection_pool.pop(self._pool_key, None)
+        with shared.lock:
+            if not shared.closed:
+                try:
+                    shared.conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except Exception:
+                    pass
+                try:
+                    shared.conn.close()
+                except Exception:
+                    pass
+                shared.closed = True
+        self._conn = None
+
+    def __del__(self) -> None:
         try:
-            self._conn.close()
+            self.close()
         except Exception:
             pass
 
     def __len__(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()
-        return row[0] if row else 0
+        shared = self._ensure_open()
+        with shared.lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()
+            return row[0] if row else 0
+
+
+class _ResponseStoreConnection:
+    def __init__(self, conn: sqlite3.Connection, db_path: Optional[str]):
+        self.conn = conn
+        self.db_path = db_path
+        self.lock = threading.RLock()
+        self.ref_count = 0
+        self.closed = False
 
 
 # ---------------------------------------------------------------------------
@@ -4084,6 +4184,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
+        if self._response_store is None or getattr(self._response_store, "_closed", False):
+            self._response_store = ResponseStore()
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
@@ -4204,6 +4306,9 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        if self._response_store is not None:
+            self._response_store.close()
+            self._response_store = None
         logger.info("[%s] API server stopped", self.name)
 
     async def send(
