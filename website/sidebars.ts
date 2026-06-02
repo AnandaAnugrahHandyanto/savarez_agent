@@ -200,6 +200,8 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/devops/devops-kanban-orchestrator',
                     'user-guide/skills/bundled/devops/devops-kanban-worker',
                     'user-guide/skills/bundled/devops/devops-webhook-subscriptions',
+                    'user-guide/skills/bundled/devops/devops-wordpress-migrations-and-deploys',
+                    'user-guide/skills/bundled/devops/devops-wordpress-wpcli-ops',
                   ],
                 },
                 {
@@ -307,6 +309,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/productivity/productivity-ocr-and-documents',
                     'user-guide/skills/bundled/productivity/productivity-powerpoint',
                     'user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline',
+                    'user-guide/skills/bundled/productivity/productivity-woocommerce-store-ops',
                   ],
                 },
                 {
@@ -365,6 +368,8 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/software-development/software-development-subagent-driven-development',
                     'user-guide/skills/bundled/software-development/software-development-systematic-debugging',
                     'user-guide/skills/bundled/software-development/software-development-test-driven-development',
+                    'user-guide/skills/bundled/software-development/software-development-wordpress-project-router',
+                    'user-guide/skills/bundled/software-development/software-development-wordpress-project-triage',
                     'user-guide/skills/bundled/software-development/software-development-writing-plans',
                   ],
                 },

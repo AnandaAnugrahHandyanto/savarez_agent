@@ -26,6 +26,13 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 <tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
 </table>
 
+Hermes also ships with **bundled domain skills** for real operator workflows, including a new WordPress/WooCommerce cluster for repo triage, WP-CLI operations, migrations, deploys, and store maintenance.
+
+Example prompts:
+- `Inspect this WordPress repo and tell me if it's a plugin, theme, or full site.`
+- `Use WP-CLI to inspect the active plugins and cron state on this WordPress install.`
+- `Help me migrate this WooCommerce site from staging to production with a rollback plan.`
+
 ---
 
 ## Quick Install

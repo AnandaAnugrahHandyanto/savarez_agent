@@ -69,6 +69,8 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`kanban-orchestrator`](/user-guide/skills/bundled/devops/devops-kanban-orchestrator) | Decomposition playbook + anti-temptation rules for an orchestrator profile routing work through Kanban. The "don't do the work yourself" rule and the basic lifecycle are auto-injected into every kanban worker's system prompt; this skill... | `devops/kanban-orchestrator` |
 | [`kanban-worker`](/user-guide/skills/bundled/devops/devops-kanban-worker) | Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper det... | `devops/kanban-worker` |
 | [`webhook-subscriptions`](/user-guide/skills/bundled/devops/devops-webhook-subscriptions) | Webhook subscriptions: event-driven agent runs. | `devops/webhook-subscriptions` |
+| [`wordpress-migrations-and-deploys`](/user-guide/skills/bundled/devops/devops-wordpress-migrations-and-deploys) | Use when moving, deploying, syncing, backing up, or rolling back a WordPress site across local, staging, and production environments. | `devops/wordpress-migrations-and-deploys` |
+| [`wordpress-wpcli-ops`](/user-guide/skills/bundled/devops/devops-wordpress-wpcli-ops) | Use when operating or inspecting a WordPress install with WP-CLI for safe runtime changes, diagnostics, cleanup, and verification. | `devops/wordpress-wpcli-ops` |
 
 ## dogfood
 
@@ -149,6 +151,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`ocr-and-documents`](/user-guide/skills/bundled/productivity/productivity-ocr-and-documents) | Extract text from PDFs/scans (pymupdf, marker-pdf). | `productivity/ocr-and-documents` |
 | [`powerpoint`](/user-guide/skills/bundled/productivity/productivity-powerpoint) | Create, read, edit .pptx decks, slides, notes, templates. | `productivity/powerpoint` |
 | [`teams-meeting-pipeline`](/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline) | Operate the Teams meeting summary pipeline via Hermes CLI — summarize meetings, inspect pipeline status, replay jobs, manage Microsoft Graph subscriptions. | `productivity/teams-meeting-pipeline` |
+| [`woocommerce-store-ops`](/user-guide/skills/bundled/productivity/productivity-woocommerce-store-ops) | Use when operating or validating a WooCommerce store for catalog changes, order inspection, merchandising sanity checks, and extension-aware verification. | `productivity/woocommerce-store-ops` |
 
 ## red-teaming
 
@@ -192,6 +195,8 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`subagent-driven-development`](/user-guide/skills/bundled/software-development/software-development-subagent-driven-development) | Execute plans via delegate_task subagents (2-stage review). | `software-development/subagent-driven-development` |
 | [`systematic-debugging`](/user-guide/skills/bundled/software-development/software-development-systematic-debugging) | 4-phase root cause debugging: understand bugs before fixing. | `software-development/systematic-debugging` |
 | [`test-driven-development`](/user-guide/skills/bundled/software-development/software-development-test-driven-development) | TDD: enforce RED-GREEN-REFACTOR, tests before code. | `software-development/test-driven-development` |
+| [`wordpress-project-router`](/user-guide/skills/bundled/software-development/software-development-wordpress-project-router) | Use when a request might involve WordPress, WooCommerce, a theme, a plugin, or site operations and you need to route to the right specialized skill first. | `software-development/wordpress-project-router` |
+| [`wordpress-project-triage`](/user-guide/skills/bundled/software-development/software-development-wordpress-project-triage) | Use when inspecting an unfamiliar WordPress repo, site, plugin, or theme so you can map boundaries, tooling, risks, and validation surfaces before editing. | `software-development/wordpress-project-triage` |
 | [`writing-plans`](/user-guide/skills/bundled/software-development/software-development-writing-plans) | Write implementation plans: bite-sized tasks, paths, code. | `software-development/writing-plans` |
 
 ## yuanbao
