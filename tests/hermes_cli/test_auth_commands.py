@@ -312,6 +312,50 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
 
 
+def test_auth_add_xai_oauth_persists_provider_state(tmp_path, monkeypatch):
+    """hermes auth add xai-oauth must set active_provider so setup detects the provider."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    access_token = "xai-test-access-token"
+    monkeypatch.setattr(
+        "hermes_cli.auth._xai_oauth_loopback_login",
+        lambda **kwargs: {
+            "tokens": {
+                "access_token": access_token,
+                "refresh_token": "xai-refresh-token",
+                "id_token": "",
+                "token_type": "Bearer",
+            },
+            "discovery": {"token_endpoint": "https://auth.x.ai/token"},
+            "redirect_uri": "http://127.0.0.1:7777/callback",
+            "base_url": "https://api.x.ai/v1",
+            "last_refresh": "2026-06-02T10:00:00Z",
+            "source": "oauth-loopback",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "xai-oauth"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        timeout = None
+        no_browser = False
+        manual_paste = False
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["active_provider"] == "xai-oauth"
+    assert payload["providers"]["xai-oauth"]["tokens"]["access_token"] == access_token
+    entries = payload["credential_pool"]["xai-oauth"]
+    entry = next(item for item in entries if item["source"] == "loopback_pkce")
+    assert entry["source"] == "loopback_pkce"
+    assert entry["refresh_token"] == "xai-refresh-token"
+
+
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent pool auto-seeding from host env vars and file-backed sources
