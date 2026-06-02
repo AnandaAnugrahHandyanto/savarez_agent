@@ -3730,10 +3730,11 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
       ``sessions_dir`` through; on-disk transcript / request-dump
       cleanup runs at the CLI/agent layer on the next prune pass.
 
-    The response carries the actual deleted count plus the list of
-    IDs that were removed, so the dashboard can both surface the
-    count in a toast and prune its in-memory list without a second
-    round-trip.
+    The response carries the actual deleted count, so the dashboard
+    can surface it in a toast. The IDs that were removed are not
+    echoed back because the client already knows what it asked to
+    delete (unknown IDs are silently skipped — see contract above)
+    and can prune its in-memory list directly from the request.
     """
     # Enforce a hard cap so a runaway/typo'd selection can't lock the
     # DB writer for an extended window. The dashboard pages 20 rows

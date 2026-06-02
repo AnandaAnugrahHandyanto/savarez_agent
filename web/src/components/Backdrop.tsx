@@ -13,9 +13,12 @@ import fillerBgUrl from "@nous-research/ui/assets/filler-bg0.webp";
  *
  *   z-1   bg = `var(--background-base)`, mix-blend-mode driven by
  *         `--component-backdrop-bg-blend-mode` (default `difference`).
- *         LENS_0-style dark themes keep `difference`; LENS_5I-style light
- *         themes override to `multiply` so the bg paints as-is before the
- *         FG inversion layer flips the whole page.
+ *         Both LENS_0-style dark themes and the LENS_5I-style Nous Blue
+ *         light theme keep `difference` here — the canvas is flipped by
+ *         the z-200 FG inversion layer, not by changing this blend mode.
+ *         The CSS var is exposed as a hook so future presets can override
+ *         it (e.g. `multiply` to paint the bg as-is before inversion)
+ *         without touching this component.
  *   z-2   bundled filler-bg WebP, inverted, opacity 0.033, difference
  *   z-99  warm top-left vignette (`var(--warm-glow)`), opacity 0.22, lighten
  *   z-200 FG inversion = `var(--foreground)` (opaque white in LENS_5I,
