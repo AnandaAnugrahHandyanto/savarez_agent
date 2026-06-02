@@ -29,7 +29,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -1468,6 +1468,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         )
         _job_workdir = None
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
+    _used_auth_fallback = False
     if _job_workdir:
         os.environ["TERMINAL_CWD"] = _job_workdir
         logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
@@ -1494,13 +1495,14 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
-        _cfg = {}
+        _cfg: dict[str, Any] = {}
         try:
             import yaml
             _cfg_path = str(_get_hermes_home() / "config.yaml")
             if os.path.exists(_cfg_path):
                 with open(_cfg_path, encoding="utf-8") as _f:
-                    _cfg = yaml.safe_load(_f) or {}
+                    _loaded_cfg = yaml.safe_load(_f) or {}
+                _cfg = _loaded_cfg if isinstance(_loaded_cfg, dict) else {}
                 _cfg = _expand_env_vars(_cfg)
                 _model_cfg = _cfg.get("model", {})
                 if not job.get("model"):
@@ -1565,6 +1567,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
+            _used_auth_fallback = False
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
             logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
@@ -1581,6 +1584,9 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     if entry.get("api_key"):
                         fb_kwargs["explicit_api_key"] = entry["api_key"]
                     runtime = resolve_runtime_provider(**fb_kwargs)
+                    if runtime.get("model"):
+                        model = str(runtime.get("model") or model)
+                    _used_auth_fallback = True
                     logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
                     break
                 except Exception as fb_exc:
@@ -1591,7 +1597,31 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+        fallback_model: Any = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+        if runtime.get("model"):
+            model = str(runtime.get("model") or model)
+
+        # Capability gate: when a cron run is forced onto a degraded/local
+        # fallback, refuse jobs that declare or infer a task type above the
+        # active model's configured capability.  This prevents autonomous crons
+        # from attempting risky code/deploy work under a weak fallback driver.
+        try:
+            from agent.task_gating import evaluate_task_capability, infer_cron_task_type
+            _task_type = infer_cron_task_type(job, prompt)
+            _decision = evaluate_task_capability(
+                task_type=_task_type,
+                provider=str(runtime.get("source") or runtime.get("provider") or ""),
+                model=model,
+                config=dict(_cfg) if isinstance(_cfg, dict) else {},
+                degraded=bool(_used_auth_fallback),
+            )
+            if not _decision.allowed:
+                raise RuntimeError(f"Cron capability gate blocked job: {_decision.reason}")
+        except RuntimeError:
+            raise
+        except Exception as _gate_exc:
+            logger.warning("Job '%s': capability gate check failed open: %s", job_id, _gate_exc)
+
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:
@@ -1661,6 +1691,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
+            request_overrides=runtime.get("request_overrides") or {},
         )
         
         # Run the agent with an *inactivity*-based timeout: the job can run
