@@ -222,6 +222,11 @@ class TestCmdUpdateBranchFallback:
         assert npm_calls[:2] == [
             (repo_flags, PROJECT_ROOT),
             (update_flags, PROJECT_ROOT / "ui-tui"),
+            (
+                ["/usr/bin/npm", "run", "build"],
+                PROJECT_ROOT / "ui-tui" / "packages" / "hermes-ink",
+            ),
+            (["/usr/bin/npm", "run", "build"], PROJECT_ROOT / "ui-tui"),
         ]
         if len(npm_calls) > 2:
             # Only the web/ install is left in subprocess.run; the build moved
