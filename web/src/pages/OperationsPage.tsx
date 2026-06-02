@@ -1109,6 +1109,7 @@ export default function OperationsPage() {
                 <Route className="h-4 w-4" />
                 Routing Explanation
               </CardTitle>
+              <Badge tone="secondary" className="text-[10px]">advisory only</Badge>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <div className="grid gap-3">
@@ -1119,17 +1120,40 @@ export default function OperationsPage() {
                   </div>
                 </div>
                 <div className="rounded-md border border-border p-3">
-                  <div className="text-xs text-muted-foreground">Candidate order</div>
+                  <div className="text-xs text-muted-foreground">Candidate order (by effectiveness)</div>
                   <div className="mt-2 flex flex-wrap gap-1">
                     {(routing?.preview?.candidate_agents ?? []).length ? (
-                      routing?.preview?.candidate_agents.map((agentId, index) => (
-                        <span key={agentId} className="bg-muted px-1.5 py-0.5 font-mono text-[10px] normal-case text-muted-foreground">
-                          #{index + 1} {agentId}
-                        </span>
-                      ))
+                      routing?.preview?.candidate_agents.map((agentId, index) => {
+                        const eff = effectiveness.find((e) => e.agent_id === agentId);
+                        return (
+                          <span key={agentId} className="bg-muted px-1.5 py-0.5 font-mono text-[10px] normal-case text-muted-foreground">
+                            #{index + 1} {agentId}
+                            {eff ? ` (${Math.round(eff.effectiveness_score || 0)}/100)` : ""}
+                          </span>
+                        );
+                      })
                     ) : (
                       <span className="text-xs normal-case text-muted-foreground">unknown</span>
                     )}
+                  </div>
+                  <div className="mt-1.5 space-y-1">
+                    {(routing?.preview?.candidate_agents ?? []).map((agentId) => {
+                      const eff = effectiveness.find((e) => e.agent_id === agentId);
+                      if (!eff) return null;
+                      const needsDemotion = (eff.timeout_rate ?? 0) >= 30 || (eff.failed_rate ?? 0) >= 30;
+                      return (
+                        <div key={agentId} className="flex items-center gap-2 text-[10px] text-muted-foreground/70">
+                          <span className="font-mono">{agentId}</span>
+                          <span>timeout {Math.round(eff.timeout_rate || 0)}%</span>
+                          <span>fail {Math.round(eff.failed_rate || 0)}%</span>
+                          {needsDemotion ? (
+                            <span className="text-amber-500" title="High failure/timeout rate. Consider lowering routing weight.">
+                              demotion suggested
+                            </span>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
                 <div className="rounded-md border border-border p-3">
@@ -1139,6 +1163,9 @@ export default function OperationsPage() {
                   </div>
                   <div className="mt-1 text-[11px] normal-case text-muted-foreground">
                     {routing?.reroute?.reason ?? "No routing preview loaded."}
+                  </div>
+                  <div className="mt-1">
+                    <Badge tone="secondary" className="text-[9px]">suggestion only</Badge>
                   </div>
                 </div>
               </div>
@@ -1224,7 +1251,14 @@ export default function OperationsPage() {
                       onClick={() => handleAlertAction(alert)}
                       disabled={busyAction !== null}
                     >
-                      {alert.action.label}
+                      {alert.action.type.startsWith("view_") ? (
+                        <span className="inline-flex items-center gap-1">
+                          {alert.action.label}
+                          <span className="text-[9px] opacity-50">advisory</span>
+                        </span>
+                      ) : (
+                        alert.action.label
+                      )}
                     </Button>
                     <Button
                       size="sm"

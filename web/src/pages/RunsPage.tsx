@@ -550,6 +550,14 @@ export default function RunsPage() {
                     {task.agents.join(", ") || task.latest_agent_id || "-"} · {startedLabel(task.latest_started_at)}
                   </div>
                   <div className="text-xs">{task.reason}</div>
+                  {(task as any).classification ? (
+                    <div className="mt-1 flex items-center gap-1.5 text-[10px]">
+                      <span className="text-muted-foreground">Trigger:</span>
+                      <Badge tone={classificationTone((task as any).classification)} className="text-[10px]">
+                        {(task as any).classification}
+                      </Badge>
+                    </div>
+                  ) : null}
                   <div className="mt-2 text-xs text-muted-foreground">
                     <span className="font-medium text-foreground">{t.runs.suggestedAction}: </span>
                     {task.suggested_action}
@@ -560,6 +568,11 @@ export default function RunsPage() {
                         <Badge tone={task.execution_policy.requires_human_approval ? "warning" : "secondary"}>
                           {task.execution_policy.action}
                         </Badge>
+                        {task.execution_policy.requires_human_approval ? (
+                          <span className="text-[9px] text-amber-500">requires approval</span>
+                        ) : (
+                          <span className="text-[9px] text-muted-foreground/50">auto-apply</span>
+                        )}
                         <span className="font-mono text-muted-foreground">
                           {task.execution_policy.next_agent_id || "manual"} / {task.execution_policy.next_model_ref || "none"}
                         </span>
