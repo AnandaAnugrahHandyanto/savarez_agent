@@ -265,9 +265,9 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "stepfun": "step-3.5-flash",
     "kimi-coding-cn": "kimi-k2-turbo-preview",
     "gmi": "google/gemini-3.1-flash-lite-preview",
-    "minimax": "MiniMax-M2.7",
-    "minimax-oauth": "MiniMax-M2.7-highspeed",
-    "minimax-cn": "MiniMax-M2.7",
+    "minimax": "MiniMax-M3",
+    "minimax-oauth": "MiniMax-M3",
+    "minimax-cn": "MiniMax-M3",
     "anthropic": "claude-haiku-4-5-20251001",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
@@ -473,14 +473,28 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
 def _to_openai_base_url(base_url: str) -> str:
     """Normalize an Anthropic-style base URL to OpenAI-compatible format.
 
-    Some providers (MiniMax, MiniMax-CN) expose an ``/anthropic`` endpoint for
-    the Anthropic Messages API and a separate ``/v1`` endpoint for OpenAI chat
-    completions.  The auxiliary client uses the OpenAI SDK, so it must hit the
-    ``/v1`` surface.  Passing the raw ``inference_base_url`` causes requests to
-    land on ``/anthropic/chat/completions`` — a 404.
+    Most providers that ship a ``/anthropic`` base URL also expose a sibling
+    ``/v1`` endpoint, and the auxiliary client uses the OpenAI SDK so it must
+    hit the ``/v1`` surface.  Passing the raw URL would land requests on
+    ``/anthropic/chat/completions`` — a 404.
+
+    Exception — MiniMax (``api.minimaxi.com``, ``api.minimax.io``): for
+    M-series models the ``/v1`` endpoint returns 404 on
+    ``/v1/chat/completions``; only the ``/anthropic`` Anthropic Messages
+    surface is supported.  Preserve the original URL so the downstream
+    :func:`_maybe_wrap_anthropic` chokepoint can detect it via
+    :func:`_endpoint_speaks_anthropic_messages` and route through the
+    Anthropic SDK.  See #17387.
     """
     url = str(base_url or "").strip().rstrip("/")
     if url.endswith("/anthropic"):
+        if "minimaxi.com" in url or "minimax.io" in url:
+            logger.debug(
+                "Auxiliary client: preserving MiniMax /anthropic base URL %s "
+                "— _maybe_wrap_anthropic will route through Anthropic SDK",
+                url,
+            )
+            return url
         # ZAI (open.bigmodel.cn) uses /api/anthropic for Anthropic wire
         # but /api/paas/v4 for OpenAI wire — the generic /v1 rewrite is wrong.
         if "open.bigmodel.cn" in url or "bigmodel" in url:
