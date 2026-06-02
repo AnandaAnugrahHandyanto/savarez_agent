@@ -1205,6 +1205,7 @@ DEFAULT_CONFIG = {
             "extra_body": {},
         },
         "title_generation": {
+            "enabled": True,
             "provider": "auto",
             "model": "",
             "base_url": "",
