@@ -91,9 +91,13 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     # Media flags — all None except explicit payload
     msg.photo = photo
     msg.video = None
+    msg.video_note = None
+    msg.animation = None
     msg.audio = None
     msg.voice = None
     msg.sticker = None
+    msg.contact = None
+    msg.poll = None
     msg.document = document
     msg.media_group_id = media_group_id
     # Chat / user
@@ -118,8 +122,18 @@ def _make_update(msg):
 
 def _make_video(file_obj=None):
     video = MagicMock()
+    video.file_size = 1024
     video.get_file = AsyncMock(return_value=file_obj or _make_file_obj(b"video-bytes"))
     return video
+
+
+def _make_audio(file_obj=None):
+    audio = MagicMock()
+    audio.file_size = 1024
+    audio.file_name = "clip.mp3"
+    audio.mime_type = "audio/mpeg"
+    audio.get_file = AsyncMock(return_value=file_obj or _make_file_obj(b"audio-bytes"))
+    return audio
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +188,56 @@ class TestDocumentTypeDetection:
         await adapter._handle_media_message(update, MagicMock())
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.DOCUMENT
+
+
+class TestTelegramStructuredMediaSummaries:
+    @pytest.mark.asyncio
+    async def test_contact_message_is_summarized_as_text(self, adapter):
+        msg = _make_message()
+        msg.contact = SimpleNamespace(
+            first_name="Ada",
+            last_name="Lovelace",
+            phone_number="+155****4567",
+            user_id=4242,
+            vcard=None,
+        )
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.TEXT
+        assert "Telegram contact" in event.text
+        assert "Ada Lovelace" in event.text
+        assert "+155****4567" in event.text
+        assert "4242" in event.text
+
+    @pytest.mark.asyncio
+    async def test_poll_message_is_summarized_as_text(self, adapter):
+        msg = _make_message()
+        msg.poll = SimpleNamespace(
+            question="Pick lunch",
+            options=[
+                SimpleNamespace(text="Pizza", voter_count=2),
+                SimpleNamespace(text="Sushi", voter_count=1),
+            ],
+            total_voter_count=3,
+            is_closed=False,
+            is_anonymous=True,
+            type="regular",
+            allows_multiple_answers=False,
+        )
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.TEXT
+        assert "Telegram poll" in event.text
+        assert "Pick lunch" in event.text
+        assert "Pizza — 2" in event.text
+        assert "Sushi — 1" in event.text
+        assert "total votes: 3" in event.text
 
 
 # ---------------------------------------------------------------------------
@@ -336,18 +400,35 @@ class TestDocumentDownloadBlock:
         assert event.media_types == ["application/pdf"]
 
     @pytest.mark.asyncio
-    async def test_missing_filename_and_mime_rejected(self, adapter):
+    async def test_missing_filename_and_mime_cached_as_generic_document(self, adapter):
         doc = _make_document(file_name=None, mime_type=None, file_size=100)
         msg = _make_message(document=doc)
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
         event = adapter.handle_message.call_args[0][0]
-        assert "Unsupported" in event.text
+        assert event.message_type == MessageType.DOCUMENT
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["application/octet-stream"]
+        assert "Unsupported" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_unknown_extension_cached_as_generic_document(self, adapter):
+        doc = _make_document(file_name="mystery.xyzzy", mime_type=None, file_size=100)
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls and event.media_urls[0].endswith("mystery.xyzzy")
+        assert event.media_types == ["application/octet-stream"]
+        assert "Unsupported" not in (event.text or "")
 
     @pytest.mark.asyncio
     async def test_unicode_decode_error_handled(self, adapter):
-        """Binary bytes that aren't valid UTF-8 in a .txt — content not injected but file still cached."""
+        """Binary-ish .txt bytes get a replacement-decoded preview and the file is cached."""
         binary = bytes(range(128, 256))  # not valid UTF-8
         file_obj = _make_file_obj(binary)
         doc = _make_document(
@@ -362,8 +443,9 @@ class TestDocumentDownloadBlock:
         # File should still be cached
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
-        # Content NOT injected — text should be empty (no caption set)
-        assert "[Content of" not in (event.text or "")
+        # Invalid UTF-8/UTF-16 should still give the model visible context.
+        assert "[Content of binary.txt]" in (event.text or "")
+        assert "�" in (event.text or "")
 
     @pytest.mark.asyncio
     async def test_text_injection_capped(self, adapter):
@@ -413,6 +495,64 @@ class TestVideoDownloadBlock:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    @pytest.mark.asyncio
+    async def test_video_note_is_cached_as_video(self, adapter):
+        file_obj = _make_file_obj(b"fake-round-video")
+        file_obj.file_path = "videos/round.mp4"
+        msg = _make_message()
+        msg.video_note = _make_video(file_obj)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    @pytest.mark.asyncio
+    async def test_animation_is_cached_as_video(self, adapter):
+        file_obj = _make_file_obj(b"fake-gif-video")
+        file_obj.file_path = "animations/dance.mp4"
+        msg = _make_message()
+        msg.animation = _make_video(file_obj)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    @pytest.mark.asyncio
+    async def test_audio_file_too_big_gets_clear_user_message(self, adapter):
+        audio = _make_audio()
+        audio.get_file = AsyncMock(side_effect=RuntimeError("File is too big"))
+        msg = _make_message()
+        msg.audio = audio
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert "couldn't download" in event.text
+        assert "20 MB" in event.text
+        assert event.media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_video_file_too_big_gets_clear_user_message(self, adapter):
+        video = _make_video()
+        video.get_file = AsyncMock(side_effect=RuntimeError("File is too big"))
+        msg = _make_message()
+        msg.video = video
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert "couldn't download" in event.text
+        assert "20 MB" in event.text
+        assert event.media_urls == []
 
     @pytest.mark.asyncio
     async def test_mp4_document_is_treated_as_video(self, adapter):

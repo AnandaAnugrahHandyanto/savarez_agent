@@ -129,6 +129,25 @@ async def test_edit_failure_falls_back_to_fresh_send(adapter):
 
 
 @pytest.mark.asyncio
+async def test_edit_flood_control_does_not_send_fresh_status(adapter):
+    """Flooded status edits must not create fresh bubbles that extend flood wait."""
+    adapter.send.return_value = SendResult(success=True, message_id="100")
+    adapter.edit_message.return_value = SendResult(
+        success=False, error="flood_control:13", retryable=True,
+    )
+
+    await adapter.send_or_update_status("chat-1", "lifecycle", "step 1")
+    result = await adapter.send_or_update_status("chat-1", "lifecycle", "step 2")
+
+    assert result.success is False
+    assert "flood_control" in result.error
+    adapter.send.assert_awaited_once()
+    adapter.edit_message.assert_awaited_once()
+    # Keep the cached id so the next calm update edits the same bubble.
+    assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
+
+
+@pytest.mark.asyncio
 async def test_distinct_status_keys_do_not_collide(adapter):
     """A different status_key gets its own message; the original isn't touched."""
     adapter.send.side_effect = [

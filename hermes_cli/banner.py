@@ -210,6 +210,38 @@ def check_via_pypi() -> Optional[int]:
         return 1 if latest != VERSION else 0
 
 
+def _git_ref(repo_dir: Path, ref: str) -> Optional[str]:
+    """Resolve a git ref without network access, returning None on failure."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", ref],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            rev = result.stdout.strip()
+            return rev or None
+    except Exception:
+        pass
+    return None
+
+
+def _local_git_cache_rev(repo_dir: Path) -> Optional[str]:
+    """Return a cache key for the local checkout state.
+
+    The update badge is cached for several hours.  If ``hermes update`` or a
+    manual git pull moves HEAD, a cache keyed only by embedded build revision
+    can keep reporting an old "N commits behind" value even though the checkout
+    is already current.  Include the current checkout and local origin/main refs
+    so local updates invalidate stale cache entries without requiring network.
+    """
+    head = _git_ref(repo_dir, "HEAD")
+    if not head:
+        return None
+    origin_main = _git_ref(repo_dir, "refs/remotes/origin/main") or _git_ref(repo_dir, "origin/main")
+    return f"git:{repo_dir}:{head}:{origin_main or ''}"
+
+
 def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
 
@@ -224,19 +256,36 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    repo_dir: Optional[Path] = None
 
-    # Read cache — invalidate if the embedded rev OR installed version has
-    # changed since the last check. The version guard matters for pip installs:
-    # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
-    # changes VERSION but leaves rev unchanged (both None), and without this
-    # the stale "behind" count would survive the upgrade for up to 6h. See #34491.
+    if embedded_rev:
+        cache_rev = embedded_rev
+    else:
+        # Prefer the running code's location over the profile-scoped path.
+        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
+        # Path(__file__) always resolves to the actual installed checkout.
+        repo_candidate = Path(__file__).parent.parent.resolve()
+        if not (repo_candidate / ".git").exists():
+            repo_candidate = hermes_home / "hermes-agent"
+        if (repo_candidate / ".git").exists():
+            repo_dir = repo_candidate
+            cache_rev = _local_git_cache_rev(repo_dir)
+        else:
+            cache_rev = f"pypi:{VERSION}"
+
+    # Read cache — invalidate if the embedded build revision, local git state,
+    # or installed version changed since the last check. The version guard
+    # matters for pip installs: `check_via_pypi()` compares against VERSION, so
+    # a package upgrade changes VERSION even when no git revision is present.
+    # The richer git-state rev also prevents a successful git update from
+    # leaving a stale "commits behind" badge around for the full cache TTL.
     now = time.time()
     try:
-        if cache_file.exists():
+        if cache_rev and cache_file.exists():
             cached = json.loads(cache_file.read_text())
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
+                and cached.get("rev") == cache_rev
                 and cached.get("ver") == VERSION
             ):
                 return cached.get("behind")
@@ -246,20 +295,17 @@ def check_for_updates() -> Optional[int]:
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
+        if repo_dir is None:
             behind = check_via_pypi()
         else:
             behind = _check_via_local_git(repo_dir)
+            # Fetching may advance origin/main; store the post-fetch state so the
+            # next invocation can use cache when nothing local has moved.
+            cache_rev = _local_git_cache_rev(repo_dir) or cache_rev
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            json.dumps({"ts": now, "behind": behind, "rev": cache_rev, "ver": VERSION})
         )
     except Exception:
         pass

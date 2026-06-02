@@ -17,9 +17,8 @@ def test_version_string_no_v_prefix():
 
 
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
-    """When cache is fresh, check_for_updates should return cached value without calling git."""
-    from hermes_cli.banner import check_for_updates
-    from hermes_cli import __version__
+    """When cache is fresh for the current git state, return cached value."""
+    import hermes_cli.banner as banner
 
     # Create a fake git repo and fresh cache
     repo_dir = tmp_path / "hermes-agent"
@@ -27,14 +26,38 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}))
+    cache_file.write_text(
+        json.dumps({"ts": time.time(), "behind": 3, "rev": "git-state", "ver": banner.VERSION})
+    )
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run") as mock_run:
-        result = check_for_updates()
+    with patch.object(banner, "_local_git_cache_rev", return_value="git-state"), \
+         patch.object(banner, "_check_via_local_git") as mock_check:
+        result = banner.check_for_updates()
 
     assert result == 3
-    mock_run.assert_not_called()
+    mock_check.assert_not_called()
+
+
+def test_check_for_updates_ignores_stale_git_cache(tmp_path, monkeypatch):
+    """A fresh cache from an older HEAD must not survive a local git update."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 283, "rev": "old-git-state"}))
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch.object(banner, "_local_git_cache_rev", return_value="new-git-state"), \
+         patch.object(banner, "_check_via_local_git", return_value=0) as mock_check:
+        result = banner.check_for_updates()
+
+    assert result == 0
+    mock_check.assert_called_once()
+    assert json.loads(cache_file.read_text())["rev"] == "new-git-state"
 
 
 def test_check_for_updates_invalidates_on_version_change(tmp_path, monkeypatch):
@@ -93,7 +116,7 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
         result = check_for_updates()
 
     assert result == 5
-    assert mock_run.call_count == 2  # git fetch + git rev-list
+    assert mock_run.call_count >= 2  # cache key rev-parse(s), git fetch, git rev-list
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):

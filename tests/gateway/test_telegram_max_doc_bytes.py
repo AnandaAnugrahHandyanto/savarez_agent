@@ -54,3 +54,24 @@ def test_max_doc_bytes_empty_base_url_keeps_default():
         PlatformConfig(enabled=True, token="***", extra={"base_url": ""}),
     )
     assert adapter._max_doc_bytes == 20 * 1024 * 1024
+
+
+def test_concurrent_updates_defaults_to_parallel_processing(monkeypatch):
+    monkeypatch.delenv("HERMES_TELEGRAM_CONCURRENT_UPDATES", raising=False)
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={}))
+    assert adapter._resolve_concurrent_updates() == 32
+
+
+def test_concurrent_updates_can_be_disabled():
+    adapter = TelegramAdapter(
+        PlatformConfig(enabled=True, token="***", extra={"concurrent_updates": "off"})
+    )
+    assert adapter._resolve_concurrent_updates() is False
+
+
+def test_concurrent_updates_prefers_explicit_extra_over_env(monkeypatch):
+    monkeypatch.setenv("HERMES_TELEGRAM_CONCURRENT_UPDATES", "64")
+    adapter = TelegramAdapter(
+        PlatformConfig(enabled=True, token="***", extra={"concurrent_updates": "7"})
+    )
+    assert adapter._resolve_concurrent_updates() == 7

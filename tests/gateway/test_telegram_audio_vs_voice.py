@@ -16,16 +16,31 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 
-def _make_runner(stt_enabled: bool = True) -> "GatewayRunner":  # type: ignore[name-defined]
+def _make_runner(
+    stt_enabled: bool = True,
+    *,
+    auto_transcribe_audio_attachments: bool = False,
+) -> "GatewayRunner":  # type: ignore[name-defined]
     from gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
-    runner.config = GatewayConfig(stt_enabled=stt_enabled)
+    runner.config = GatewayConfig(
+        stt_enabled=stt_enabled,
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                token="fake-token",
+                extra={
+                    "auto_transcribe_audio_attachments": auto_transcribe_audio_attachments,
+                },
+            )
+        },
+    )
     runner.adapters = {}
     runner._model = "test-model"
     runner._base_url = ""
@@ -134,6 +149,28 @@ async def test_audio_attachment_context_note_format():
     assert "audio file attachment" in result.lower()
     # Should NOT contain the voice-message transcription wrapper text
     assert "voice message" not in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_audio_attachment_transcribed_when_config_enabled():
+    """Telegram audio attachments should be STT-capable when explicitly opted in."""
+    runner = _make_runner(stt_enabled=True, auto_transcribe_audio_attachments=True)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
+    event = _audio_event("/tmp/meeting.m4a")
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "meeting notes", "provider": "whisper"},
+    ) as mock_transcribe:
+        result = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+    mock_transcribe.assert_called_once_with("/tmp/meeting.m4a")
+    assert "meeting notes" in result
+    assert "audio file attachment" not in result.lower()
 
 
 # ---------------------------------------------------------------------------

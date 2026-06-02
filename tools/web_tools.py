@@ -122,36 +122,64 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
-def _get_backend() -> str:
-    """Determine which web backend to use (shared fallback).
+_SUPPORTED_WEB_BACKENDS = ("parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai")
+_LEGACY_BACKEND_ORDER = ("firecrawl", "parallel", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai")
 
-    Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
-    Falls back to whichever API key is present for users who configured
-    keys manually without running setup.
+
+def _parse_backend_order(value: Any) -> List[str]:
+    """Parse a configured backend order from a list or comma-separated string."""
+    if isinstance(value, str):
+        raw_items = re.split(r"[,\s]+", value)
+    elif isinstance(value, (list, tuple)):
+        raw_items = value
+    else:
+        raw_items = []
+
+    order: List[str] = []
+    seen = set()
+    for item in raw_items:
+        backend = str(item or "").lower().strip()
+        if backend in _SUPPORTED_WEB_BACKENDS and backend not in seen:
+            order.append(backend)
+            seen.add(backend)
+    return order
+
+
+def _get_backend_order() -> List[str]:
+    """Return the ordered backend preference list.
+
+    ``web.backend_order`` or ``HERMES_WEB_BACKEND_ORDER`` enables runtime
+    fallback across multiple configured providers. If no order is configured,
+    preserve the historical single-backend behavior for explicit
+    ``web.backend`` values and the legacy auto-discovery order otherwise.
     """
-    configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
-        return configured
-
-    # Fallback for manual / legacy config — pick the highest-priority
-    # available backend. Firecrawl also counts as available when the managed
-    # tool gateway is configured for Nous subscribers.
-    # Free-tier backends (searxng / brave-free / ddgs) trail the paid ones so
-    # existing paid setups are unaffected.
-    backend_candidates = (
-        ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
-        ("parallel", _has_env("PARALLEL_API_KEY")),
-        ("tavily", _has_env("TAVILY_API_KEY")),
-        ("exa", _has_env("EXA_API_KEY")),
-        ("searxng", _has_env("SEARXNG_URL")),
-        ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
-        ("ddgs", _ddgs_package_importable()),
+    web_config = _load_web_config()
+    configured_order = _parse_backend_order(
+        web_config.get("backend_order")
+        or web_config.get("fallback_order")
+        or os.getenv("HERMES_WEB_BACKEND_ORDER", "")
     )
-    for backend, available in backend_candidates:
-        if available:
-            return backend
+    if configured_order:
+        return configured_order
 
-    return "firecrawl"  # default (backward compat)
+    configured = (web_config.get("backend") or "").lower().strip()
+    if configured in _SUPPORTED_WEB_BACKENDS:
+        return [configured]
+
+    return list(_LEGACY_BACKEND_ORDER)
+
+
+def _get_available_backend_order() -> List[str]:
+    """Return configured backend order filtered to currently configured backends."""
+    return [backend for backend in _get_backend_order() if _is_backend_available(backend)]
+
+
+def _get_backend() -> str:
+    """Determine the first currently usable web backend."""
+    for backend in _get_available_backend_order():
+        return backend
+    order = _get_backend_order()
+    return order[0] if order else "firecrawl"
 
 
 def _get_search_backend() -> str:
@@ -724,6 +752,28 @@ def clean_base64_images(text: str) -> str:
     return cleaned_text
 
 
+
+def _extract_results_have_content(results: Any) -> bool:
+    """Return True if an extract provider produced any non-empty page content."""
+    if isinstance(results, dict):
+        if results.get("success") is False:
+            return False
+        candidate_results = results.get("results")
+        if candidate_results is None:
+            candidate_results = results.get("data")
+        return _extract_results_have_content(candidate_results)
+    if not isinstance(results, list):
+        return False
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        for key in ("content", "markdown", "text", "html", "raw_content"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return True
+    return False
+
+
 # ─── Exa / Parallel inline helpers — moved into plugins ──────────────────────
 # After PR #25182, the exa client + search/extract and parallel client +
 # search/extract helpers all live in their respective plugins:
@@ -818,40 +868,90 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
-        # now live as plugins; the dispatcher is just a registry lookup +
-        # delegation. Sync only — every provider's search() is sync.
+        # Dispatch through the web search registry, but preserve this user's
+        # configured runtime fallback order (for example Tavily → Exa →
+        # local Firecrawl). Providers now live in plugins; the fallback loop
+        # resolves providers by name instead of calling old inline helpers.
         _ensure_web_plugins_loaded()
         from agent.web_search_registry import (
             get_active_search_provider,
             get_provider as _wsp_get_provider,
         )
 
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
-            provider = get_active_search_provider()
+        fallback_errors = []
+        preferred_backend = _get_search_backend()
+        available_backend_order = _get_available_backend_order()
+        backend_order = []
+        if preferred_backend:
+            backend_order.append(preferred_backend)
+        backend_order.extend(
+            backend for backend in available_backend_order
+            if backend not in backend_order
+        )
+        if not backend_order:
+            backend_order = [_get_backend()]
+        debug_call_data["backend_order"] = backend_order
 
-        if provider is None:
-            response_data = {
-                "success": False,
-                "error": (
-                    "No web search provider configured. "
-                    "Run `hermes tools` to set one up."
-                ),
-            }
-        else:
-            logger.info(
-                "Web search via %s: '%s' (limit: %d)",
-                provider.name, query, limit,
-            )
+        tried_providers = set()
+        for backend in backend_order:
+            provider = _wsp_get_provider(backend) if backend else None
+            if provider is None or not provider.supports_search():
+                fallback_errors.append(f"{backend}: no registered search provider")
+                continue
+            if provider.name in tried_providers:
+                continue
+            tried_providers.add(provider.name)
+            try:
+                logger.info(
+                    "Web search via %s: '%s' (limit: %d)",
+                    provider.name, query, limit,
+                )
+                response_data = provider.search(query, limit)
+                if response_data.get("success") is False:
+                    raise RuntimeError(response_data.get("error") or f"{provider.name} search failed")
+
+                results_count = len(response_data.get("data", {}).get("web", []))
+                logger.info("Web search backend=%s returned %d result(s)", provider.name, results_count)
+                debug_call_data["backend"] = provider.name
+                debug_call_data["fallback_errors"] = fallback_errors
+                debug_call_data["results_count"] = results_count
+                result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+                debug_call_data["final_response_size"] = len(result_json)
+                _debug.log_call("web_search_tool", debug_call_data)
+                _debug.save()
+                return result_json
+            except Exception as backend_error:
+                if len(backend_order) == 1:
+                    raise
+                message = f"{provider.name}: {backend_error}"
+                logger.warning("Web search backend failed; trying next backend if available: %s", message)
+                fallback_errors.append(message)
+
+        # Last resort: preserve upstream's active-provider resolution path for
+        # typo/unregistered backend names where an available provider exists.
+        provider = get_active_search_provider()
+        if provider is not None and provider.name not in tried_providers and provider.supports_search():
+            logger.info("Web search via fallback active provider %s: '%s' (limit: %d)", provider.name, query, limit)
             response_data = provider.search(query, limit)
+            if response_data.get("success") is False:
+                raise RuntimeError(response_data.get("error") or f"{provider.name} search failed")
+            debug_call_data["backend"] = provider.name
+            debug_call_data["fallback_errors"] = fallback_errors
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
 
-        debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+        response_data = {
+            "success": False,
+            "error": (
+                "No web search provider configured. "
+                "Run `hermes tools` to set one up."
+                + ((" Fallback errors: " + "; ".join(fallback_errors)) if fallback_errors else "")
+            ),
+        }
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
         debug_call_data["final_response_size"] = len(result_json)
         _debug.log_call("web_search_tool", debug_call_data)
@@ -942,75 +1042,93 @@ async def web_extract_tool(
             else:
                 safe_urls.append(url)
 
-        # Dispatch only safe URLs to the configured backend
+        extract_backend = _get_extract_backend()
+        if extract_backend in ("searxng", "brave-free", "ddgs"):
+            label = {"searxng": "SearXNG", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[extract_backend]
+            return json.dumps({
+                "success": False,
+                "error": f"{label} is a search-only backend and cannot extract URL content. "
+                         "Set web.extract_backend to firecrawl, tavily, exa, or parallel.",
+            }, ensure_ascii=False)
+
+        # Dispatch only safe URLs to the configured backends, in preference order.
         if not safe_urls:
             results = []
         else:
-            backend = _get_extract_backend()
-
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
-            # registry lookup + delegation. Some providers' extract() is
-            # async (parallel, firecrawl), others sync (exa, tavily) — we
-            # detect coroutine functions and await; sync functions run
-            # inline (the policy gate, SSRF re-check, etc. live inside the
-            # provider itself for the firecrawl per-URL loop).
+            # Dispatch through plugin providers while preserving configured
+            # runtime fallback order. Some providers' extract() is async
+            # (parallel, firecrawl), others sync (exa, tavily), so dispatch
+            # adapts per provider.
             _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,
             )
-
-            provider = _wsp_get_provider(backend) if backend else None
-            if provider is None or not provider.supports_extract():
-                # When the configured name IS registered but doesn't support
-                # extract (search-only providers like brave-free / ddgs /
-                # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
-                if provider is not None and not provider.supports_extract():
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                f"{provider.display_name} is a search-only "
-                                "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
-                provider = get_active_extract_provider()
-                if provider is None:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
-
-            logger.info(
-                "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
-            )
-
-            # Async-or-sync dispatch: parallel + firecrawl have async
-            # extract(); exa + tavily are sync.
             import inspect
-            if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
+
+            fallback_errors = []
+            available_backend_order = _get_available_backend_order()
+            backend_order = []
+            if extract_backend:
+                backend_order.append(extract_backend)
+            backend_order.extend(
+                backend for backend in available_backend_order
+                if backend not in backend_order
+            )
+            if not backend_order:
+                backend_order = [_get_backend()]
+            debug_call_data["backend_order"] = backend_order
+            results = []
+
+            tried_providers = set()
+            for backend in backend_order:
+                provider = _wsp_get_provider(backend) if backend else None
+                if provider is None:
+                    fallback_errors.append(f"{backend}: no registered extract provider")
+                    continue
+                if not provider.supports_extract():
+                    fallback_errors.append(f"{provider.name}: does not support extract")
+                    continue
+                if provider.name in tried_providers:
+                    continue
+                tried_providers.add(provider.name)
+                try:
+                    logger.info("Web extract via %s: %d URL(s)", provider.name, len(safe_urls))
+                    if inspect.iscoroutinefunction(provider.extract):
+                        candidate_results = await provider.extract(safe_urls, format=format)
+                    else:
+                        candidate_results = await asyncio.to_thread(
+                            provider.extract, safe_urls, format=format
+                        )
+                    if not _extract_results_have_content(candidate_results):
+                        raise RuntimeError(f"{provider.name} returned no extracted content")
+                    results = candidate_results
+                    debug_call_data["backend"] = provider.name
+                    debug_call_data["fallback_errors"] = fallback_errors
+                    break
+                except Exception as backend_error:
+                    if len(backend_order) == 1:
+                        raise
+                    message = f"{provider.name}: {backend_error}"
+                    logger.warning("Web extract backend failed; trying next backend if available: %s", message)
+                    fallback_errors.append(message)
             else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
-                )
+                provider = get_active_extract_provider()
+                if provider is not None and provider.name not in tried_providers and provider.supports_extract():
+                    logger.info("Web extract via fallback active provider %s: %d URL(s)", provider.name, len(safe_urls))
+                    if inspect.iscoroutinefunction(provider.extract):
+                        results = await provider.extract(safe_urls, format=format)
+                    else:
+                        results = await asyncio.to_thread(provider.extract, safe_urls, format=format)
+                    if not _extract_results_have_content(results):
+                        raise RuntimeError(f"{provider.name} returned no extracted content")
+                    debug_call_data["backend"] = provider.name
+                    debug_call_data["fallback_errors"] = fallback_errors
+                else:
+                    raise RuntimeError(
+                        "All configured web extraction backends failed: "
+                        + ("; ".join(fallback_errors) if fallback_errors else "no extract provider configured")
+                    )
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:
@@ -1153,14 +1271,8 @@ async def web_extract_tool(
 
 # Convenience function to check Firecrawl credentials
 def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
-    configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
-        return _is_backend_available(configured)
-    return any(
-        _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
-    )
+    """Check whether at least one configured web backend is available."""
+    return bool(_get_available_backend_order())
 
 
 def check_auxiliary_model() -> bool:

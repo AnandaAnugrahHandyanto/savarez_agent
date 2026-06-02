@@ -12065,6 +12065,11 @@ def main():
         action="store_true",
         help="Kill ALL gateway processes across all profiles before restarting",
     )
+    gateway_restart.add_argument(
+        "--force",
+        action="store_true",
+        help="Restart even if active gateway agent runs are in progress",
+    )
 
     # gateway status
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
