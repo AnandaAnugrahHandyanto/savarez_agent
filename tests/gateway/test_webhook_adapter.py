@@ -500,6 +500,51 @@ class TestRateLimiting:
 
 class TestBodySize:
 
+    def test_adapter_app_uses_configured_client_max_size(self):
+        """The aiohttp app must allow bodies up to configured max_body_bytes."""
+        routes = {"big": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes, max_body_bytes=2_000_000)
+
+        app = adapter._create_app()
+
+        assert app._client_max_size == 2_000_001
+
+    @pytest.mark.asyncio
+    async def test_payload_above_aiohttp_default_below_configured_cap_is_accepted(self):
+        """Configured caps above aiohttp's 1MiB default must be honored."""
+        routes = {"big": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes, max_body_bytes=1_200_000)
+        adapter.handle_message = AsyncMock()
+
+        app = adapter._create_app()
+        async with TestClient(TestServer(app)) as cli:
+            payload = b'{"data":"' + (b"x" * 1_100_000) + b'"}'
+            resp = await cli.post(
+                "/webhooks/big",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 202
+            adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_payload_exactly_at_configured_cap_is_accepted(self):
+        """max_body_bytes is an inclusive cap; exactly-at-limit payloads pass."""
+        routes = {"big": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        payload = b'{"data":"' + (b"x" * 256) + b'"}'
+        adapter = _make_adapter(routes=routes, max_body_bytes=len(payload))
+        adapter.handle_message = AsyncMock()
+
+        app = adapter._create_app()
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/big",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 202
+            adapter.handle_message.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_oversized_payload_rejected(self):
         """Content-Length > max_body_bytes returns 413."""
