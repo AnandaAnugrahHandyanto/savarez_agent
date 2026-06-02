@@ -58,6 +58,24 @@ export interface OAuthProvidersResponse {
   providers: OAuthProvider[]
 }
 
+export interface CustomProviderModelsResponse {
+  ok: boolean
+  models: string[]
+  message?: string
+  probed_url?: null | string
+  resolved_base_url?: string
+  suggested_base_url?: null | string
+  used_fallback?: boolean
+}
+
+export interface CustomProviderSaveResponse {
+  ok: boolean
+  name: string
+  slug: string
+  base_url: string
+  model: string
+}
+
 export type OAuthStartResponse =
   | {
       auth_url: string

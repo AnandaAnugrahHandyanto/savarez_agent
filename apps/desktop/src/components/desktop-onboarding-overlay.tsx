@@ -29,9 +29,11 @@ import {
   copyExternalCommand,
   type OnboardingContext,
   type OnboardingFlow,
+  fetchOnboardingCustomProviderModels,
   recheckExternalSignin,
   refreshOnboarding,
   saveOnboardingApiKey,
+  saveOnboardingCustomProvider,
   setOnboardingCode,
   setOnboardingMode,
   setOnboardingModel,
@@ -414,11 +416,36 @@ function ProviderRow({ onSelect, provider }: { onSelect: (provider: OAuthProvide
 function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingContext }) {
   const [option, setOption] = useState<ApiKeyOption>(API_KEY_OPTIONS[0])
   const [value, setValue] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [providerName, setProviderName] = useState('')
+  const [model, setModel] = useState('')
+  const [models, setModels] = useState<string[]>([])
+  const [loadingModels, setLoadingModels] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
   const isLocal = option.envKey === 'OPENAI_BASE_URL'
-  const canSave = value.trim().length >= (isLocal ? 1 : MIN_KEY_LENGTH)
+  const canSave = isLocal ? value.trim().length > 0 && model.trim().length > 0 : value.trim().length >= MIN_KEY_LENGTH
+
+  const fetchModels = async () => {
+    if (!isLocal || !value.trim() || loadingModels) {
+      return
+    }
+
+    setLoadingModels(true)
+    setError(null)
+    const result = await fetchOnboardingCustomProviderModels(value, apiKey)
+    if (result.models.length > 0) {
+      setModels(result.models)
+      setModel(current => current || result.models[0])
+      if (result.resolved_base_url && result.resolved_base_url !== value.trim()) {
+        setValue(result.resolved_base_url)
+      }
+    } else {
+      setError(result.message || 'Could not fetch models. Enter a model id manually.')
+    }
+    setLoadingModels(false)
+  }
 
   const submit = async () => {
     if (!canSave || saving) {
@@ -427,10 +454,16 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
 
     setSaving(true)
     setError(null)
-    const result = await saveOnboardingApiKey(option.envKey, value, option.name, ctx)
+    const result = isLocal
+      ? await saveOnboardingCustomProvider({ apiKey, baseUrl: value, model, name: providerName }, ctx)
+      : await saveOnboardingApiKey(option.envKey, value, option.name, ctx)
 
     if (result.ok) {
       setValue('')
+      setApiKey('')
+      setProviderName('')
+      setModel('')
+      setModels([])
     } else {
       setError(result.message ?? 'Could not save credential.')
     }
@@ -462,6 +495,10 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
             onClick={() => {
               setOption(o)
               setValue('')
+              setApiKey('')
+              setProviderName('')
+              setModel('')
+              setModels([])
               setError(null)
             }}
             type="button"
@@ -480,16 +517,68 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
           <p className="text-sm leading-6 text-muted-foreground">{option.description}</p>
           {option.docsUrl ? <DocsLink href={option.docsUrl}>Get a key</DocsLink> : null}
         </div>
-        <Input
-          autoComplete="off"
-          autoFocus
-          className="font-mono"
-          onChange={e => setValue(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submit()}
-          placeholder={option.placeholder || 'Paste API key'}
-          type={isLocal ? 'text' : 'password'}
-          value={value}
-        />
+        {isLocal ? (
+          <>
+            <Input
+              autoComplete="off"
+              autoFocus
+              className="font-mono"
+              onChange={e => setValue(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && void fetchModels()}
+              placeholder={option.placeholder || 'http://127.0.0.1:8000/v1'}
+              type="text"
+              value={value}
+            />
+            <Input
+              autoComplete="off"
+              className="font-mono"
+              onChange={e => setApiKey(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && void fetchModels()}
+              placeholder="Paste API key (optional for local endpoints)"
+              type="password"
+              value={apiKey}
+            />
+            <Input
+              autoComplete="off"
+              onChange={e => setProviderName(e.target.value)}
+              placeholder="Provider name"
+              type="text"
+              value={providerName}
+            />
+            <div className="flex gap-2">
+              <Input
+                autoComplete="off"
+                className="font-mono"
+                list="custom-provider-models"
+                onChange={e => setModel(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && void submit()}
+                placeholder="Select or enter a model id"
+                type="text"
+                value={model}
+              />
+              <datalist id="custom-provider-models">
+                {models.map(m => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
+              <Button disabled={!value.trim() || loadingModels} onClick={() => void fetchModels()} type="button" variant="outline">
+                {loadingModels ? <Loader2 className="size-4 animate-spin" /> : null}
+                Models
+              </Button>
+            </div>
+          </>
+        ) : (
+          <Input
+            autoComplete="off"
+            autoFocus
+            className="font-mono"
+            onChange={e => setValue(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && void submit()}
+            placeholder={option.placeholder || 'Paste API key'}
+            type="password"
+            value={value}
+          />
+        )}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>
 

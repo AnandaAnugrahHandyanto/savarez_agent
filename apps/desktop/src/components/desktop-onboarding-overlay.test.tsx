@@ -69,4 +69,16 @@ describe('onboarding Picker', () => {
     expect(screen.queryByText('Other sign-in options')).toBeNull()
     expect(screen.queryByText('Recommended')).toBeNull()
   })
+
+  it('collects endpoint, API key, and default model for custom providers', () => {
+    setProviders([])
+    render(<Picker ctx={ctx} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Local \/ custom endpoint/i }))
+
+    expect(screen.getByPlaceholderText('http://127.0.0.1:8000/v1')).toBeTruthy()
+    expect(screen.getByPlaceholderText('Paste API key (optional for local endpoints)')).toBeTruthy()
+    expect(screen.getByPlaceholderText('Provider name')).toBeTruthy()
+    expect(screen.getByPlaceholderText('Select or enter a model id')).toBeTruthy()
+  })
 })
