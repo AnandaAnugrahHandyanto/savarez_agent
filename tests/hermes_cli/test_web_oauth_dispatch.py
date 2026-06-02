@@ -20,6 +20,7 @@ The fix:
 These tests pin the corrected behavior.
 """
 import asyncio
+import json
 import time
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -302,6 +303,84 @@ def test_minimax_dashboard_poller_accepts_absolute_ms_expired_in():
     assert captured_state["access_token"] == "access"
     assert 1790 <= captured_state["expires_in"] <= 1810
     assert datetime.fromisoformat(captured_state["expires_at"]).year < 9999
+
+
+def test_codex_dashboard_login_persists_active_runtime_provider(tmp_path, monkeypatch):
+    """Desktop Codex OAuth should leave runtime resolution ready, not just logged in."""
+    from hermes_cli import web_server as ws
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "model:\n  default: gpt-5.3-codex\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+
+    session_id = "codex-dashboard-runtime-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "openai-codex",
+        "flow": "device_code",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+    }
+
+    class _FakeResponse:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, url, **kwargs):
+            if url.endswith("/api/accounts/deviceauth/usercode"):
+                return _FakeResponse({
+                    "user_code": "CODE-1234",
+                    "device_auth_id": "device-auth-id",
+                    "interval": "3",
+                })
+            if url.endswith("/api/accounts/deviceauth/token"):
+                return _FakeResponse({
+                    "authorization_code": "authorization-code",
+                    "code_verifier": "code-verifier",
+                })
+            if url.endswith("/oauth/token"):
+                return _FakeResponse({
+                    "access_token": "codex-access-token",
+                    "refresh_token": "codex-refresh-token",
+                })
+            raise AssertionError(f"unexpected POST {url}")
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    monkeypatch.setattr(ws.time, "sleep", lambda seconds: None)
+
+    try:
+        ws._codex_full_login_worker(session_id)
+
+        assert ws._oauth_sessions[session_id]["status"] == "approved"
+        auth_store = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+        assert auth_store["active_provider"] == "openai-codex"
+
+        runtime = resolve_runtime_provider(requested=None)
+        assert runtime["provider"] == "openai-codex"
+        assert runtime["api_key"] == "codex-access-token"
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
 
 
 def test_anthropic_pkce_branch_still_works():

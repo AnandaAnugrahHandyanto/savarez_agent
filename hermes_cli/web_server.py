@@ -3729,12 +3729,20 @@ def _codex_full_login_worker(session_id: str) -> None:
         if not access_token:
             raise RuntimeError("token exchange did not return access_token")
 
-        from hermes_cli.auth import _save_codex_tokens
+        from hermes_cli.auth import _save_codex_tokens, _update_config_for_provider
 
         _save_codex_tokens({
             "access_token": access_token,
             "refresh_token": refresh_token,
         })
+
+        # Saving tokens makes OAuth look connected, but chat still needs a
+        # selected runtime provider.
+        base_url = (
+            os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+            or DEFAULT_CODEX_BASE_URL
+        )
+        _update_config_for_provider("openai-codex", base_url)
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: openai-codex login completed (session=%s)", session_id)
