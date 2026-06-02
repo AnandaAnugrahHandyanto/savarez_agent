@@ -8,6 +8,8 @@ const {
   ipcMain,
   nativeImage,
   nativeTheme,
+  net: electronNet,
+  protocol,
   safeStorage,
   session,
   shell,
@@ -363,6 +365,48 @@ app.setAboutPanelOptions({
   applicationName: APP_NAME,
   copyright: 'Copyright © 2026 Nous Research'
 })
+
+// Custom scheme for streaming local media (video/audio) into the renderer.
+// Reading large media through `readFileDataUrl` failed: it base64-loads the
+// whole file into memory and is hard-capped at DATA_URL_READ_MAX_BYTES (16 MB),
+// so any non-trivial video silently refused to load. Streaming via a protocol
+// handler removes the size cap and gives the <video> element seekable,
+// range-aware playback. Must be registered before the app is ready.
+const MEDIA_PROTOCOL = 'hermes-media'
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: MEDIA_PROTOCOL,
+    privileges: {
+      bypassCSP: true,
+      secure: true,
+      standard: true,
+      stream: true,
+      supportFetchAPI: true
+    }
+  }
+])
+
+function registerMediaProtocol() {
+  protocol.handle(MEDIA_PROTOCOL, async request => {
+    let resolvedPath
+    try {
+      const url = new URL(request.url)
+      const filePath = decodeURIComponent(url.pathname.replace(/^\/+/, ''))
+      ;({ resolvedPath } = await resolveReadableFileForIpc(filePath, { purpose: 'Media stream' }))
+    } catch {
+      return new Response('Media not found', { status: 404 })
+    }
+
+    // Delegate to Electron's net stack on a file:// URL — it resolves the
+    // content-type and honors Range requests so seeking works. Forward the
+    // renderer's headers (notably Range) and skip custom-protocol re-entry.
+    return electronNet.fetch(pathToFileURL(resolvedPath).toString(), {
+      bypassCustomProtocolHandlers: true,
+      headers: request.headers
+    })
+  })
+}
 
 let mainWindow = null
 let hermesProcess = null
@@ -3654,6 +3698,7 @@ app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
   }
   installMediaPermissions()
+  registerMediaProtocol()
   ensureWslWindowsFonts()
   createWindow()
 

@@ -67,7 +67,12 @@ import { VirtualSessionList } from './virtual-session-list'
 const VIRTUALIZE_THRESHOLD = 25
 
 const SIDEBAR_NAV: SidebarNavItem[] = [
-  { id: 'new-session', label: 'New agent', icon: props => <Codicon name="robot" {...props} />, action: 'new-session' },
+  {
+    id: 'new-session',
+    label: 'New session',
+    icon: props => <Codicon name="robot" {...props} />,
+    action: 'new-session'
+  },
   { id: 'skills', label: 'Skills', icon: props => <Codicon name="symbol-misc" {...props} />, route: SKILLS_ROUTE },
   { id: 'messaging', label: 'Messaging', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
   { id: 'artifacts', label: 'Artifacts', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
@@ -149,6 +154,8 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreSessions: () => void
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
+  onArchiveSession: (sessionId: string) => void
+  onNewSessionInWorkspace: (path: null | string) => void
 }
 
 export function ChatSidebar({
@@ -156,7 +163,9 @@ export function ChatSidebar({
   onNavigate,
   onLoadMoreSessions,
   onResumeSession,
-  onDeleteSession
+  onDeleteSession,
+  onArchiveSession,
+  onNewSessionInWorkspace
 }: ChatSidebarProps) {
   const sidebarOpen = useStore($sidebarOpen)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
@@ -328,6 +337,7 @@ export function ChatSidebar({
             dndSensors={dndSensors}
             emptyState={<SidebarPinnedEmptyState />}
             label="Pinned"
+            onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onReorder={handlePinnedDragEnd}
             onResumeSession={onResumeSession}
@@ -361,9 +371,9 @@ export function ChatSidebar({
             groups={agentsGrouped ? agentGroups : undefined}
             headerAction={
               <Button
-                aria-label={agentsGrouped ? 'Show agents as a single list' : 'Group agents by workspace'}
+                aria-label={agentsGrouped ? 'Show sessions as a single list' : 'Group sessions by workspace'}
                 className={cn(
-                  'cursor-pointer text-(--ui-text-tertiary) opacity-0 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100 group-hover/section:opacity-100',
+                  'cursor-pointer text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
                   agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
                 )}
                 onClick={event => {
@@ -372,15 +382,17 @@ export function ChatSidebar({
                   setSidebarAgentsGrouped(!agentsGrouped)
                 }}
                 size="icon-xs"
-                title={agentsGrouped ? 'Ungroup agents' : 'Group by workspace'}
+                title={agentsGrouped ? 'Ungroup sessions' : 'Group by workspace'}
                 variant="ghost"
               >
                 <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
               </Button>
             }
-            label="Agents"
+            label="Sessions"
             labelMeta={countLabel(agentSessions.length, knownSessionTotal)}
+            onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
+            onNewSessionInWorkspace={onNewSessionInWorkspace}
             onReorder={handleAgentDragEnd}
             onResumeSession={onResumeSession}
             onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
@@ -472,7 +484,9 @@ interface SidebarSessionsSectionProps {
   workingSessionIdSet: Set<string>
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
+  onArchiveSession: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
+  onNewSessionInWorkspace?: (path: null | string) => void
   pinned: boolean
   rootClassName?: string
   contentClassName?: string
@@ -496,7 +510,9 @@ function SidebarSessionsSection({
   workingSessionIdSet,
   onResumeSession,
   onDeleteSession,
+  onArchiveSession,
   onTogglePin,
+  onNewSessionInWorkspace,
   pinned,
   rootClassName,
   contentClassName,
@@ -518,6 +534,7 @@ function SidebarSessionsSection({
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
       isWorking: workingSessionIdSet.has(session.id),
+      onArchive: () => onArchiveSession(session.id),
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(session.id),
       onResume: () => onResumeSession(session.id),
@@ -551,9 +568,19 @@ function SidebarSessionsSection({
   } else if (groups?.length) {
     const groupNodes = groups.map(group =>
       dndActive ? (
-        <SortableSidebarWorkspaceGroup group={group} key={group.id} renderRows={renderSessionList} />
+        <SortableSidebarWorkspaceGroup
+          group={group}
+          key={group.id}
+          onNewSession={onNewSessionInWorkspace}
+          renderRows={renderSessionList}
+        />
       ) : (
-        <SidebarWorkspaceGroup group={group} key={group.id} renderRows={renderSessionList} />
+        <SidebarWorkspaceGroup
+          group={group}
+          key={group.id}
+          onNewSession={onNewSessionInWorkspace}
+          renderRows={renderSessionList}
+        />
       )
     )
 
@@ -568,6 +595,7 @@ function SidebarSessionsSection({
     inner = (
       <VirtualSessionList
         activeSessionId={activeSessionId}
+        onArchiveSession={onArchiveSession}
         onDeleteSession={onDeleteSession}
         onResumeSession={onResumeSession}
         onTogglePin={onTogglePin}
@@ -610,6 +638,7 @@ function SidebarSessionsSection({
 interface SidebarWorkspaceGroupProps extends React.ComponentProps<'div'> {
   group: SidebarSessionGroup
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
+  onNewSession?: (path: null | string) => void
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
@@ -618,6 +647,7 @@ interface SidebarWorkspaceGroupProps extends React.ComponentProps<'div'> {
 function SidebarWorkspaceGroup({
   group,
   renderRows,
+  onNewSession,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -646,6 +676,21 @@ function SidebarWorkspaceGroup({
           className="text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
           open={open}
         />
+        {onNewSession && (
+          <span
+            aria-label={`New session in ${group.label}`}
+            className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
+            onClick={event => {
+              event.preventDefault()
+              event.stopPropagation()
+              onNewSession(group.path)
+            }}
+            role="button"
+            title={`New session in ${group.label}`}
+          >
+            <Codicon name="add" size="0.75rem" />
+          </span>
+        )}
         {reorderable && (
           <span
             {...dragHandleProps}
@@ -687,6 +732,7 @@ function SidebarWorkspaceGroup({
 interface SortableWorkspaceProps {
   group: SidebarSessionGroup
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
+  onNewSession?: (path: null | string) => void
 }
 
 function SortableSidebarWorkspaceGroup(props: SortableWorkspaceProps) {
@@ -702,6 +748,7 @@ interface SortableSessionRowProps {
   isPinned: boolean
   isSelected: boolean
   isWorking: boolean
+  onArchive: () => void
   onDelete: () => void
   onPin: () => void
   onResume: () => void
