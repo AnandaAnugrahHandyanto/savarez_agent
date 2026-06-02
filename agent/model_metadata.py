@@ -1768,7 +1768,19 @@ def get_model_context_length(
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
-            return ctx
+            # models.dev currently reports MiniMax-M3's max output (512K)
+            # as the context window for the China endpoint. MiniMax docs and
+            # our curated defaults treat M3 as a 1M-context model; preserve
+            # the curated value so stale 204,800 cache entries re-resolve
+            # correctly instead of being replaced by the underreported 512K.
+            if ctx < 1_000_000 and _model_name_suggests_minimax_m3(model):
+                logger.info(
+                    "Ignoring models.dev context=%s for MiniMax-M3 %r via %s; "
+                    "falling through to hardcoded defaults",
+                    f"{ctx:,}", model, effective_provider,
+                )
+            else:
+                return ctx
 
     # 6. OpenRouter live API metadata — provider-unaware fallback.
     # Only consulted when the provider is unknown (no effective_provider),
