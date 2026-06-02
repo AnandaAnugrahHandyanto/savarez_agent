@@ -540,9 +540,15 @@ def _pr_publish_guard_report(command: str, cwd: str | None = None) -> dict:
     report["head"] = head_arg
 
     if head_arg in {"main", "master"} or head_arg == base:
-        report["problems"].append(
-            f"refusing to create a PR from integration branch {head_arg!r}"
-        )
+        if mode == "block":
+            report["problems"].append(
+                f"refusing to create a PR from integration branch {head_arg!r}"
+            )
+        else:
+            report["problems"].append(
+                f"GitHub PR publish from integration branch {head_arg!r}; "
+                "warn mode requires explicit approval before continuing"
+            )
 
     base_ref = _resolve_git_ref(repo_root, [f"origin/{base}", f"upstream/{base}", base])
     head_ref = _resolve_git_ref(repo_root, [head_arg, f"origin/{head_arg}", f"fork/{head_arg}"])
@@ -647,6 +653,24 @@ def _pr_publish_requires_approval_result(report: dict) -> dict:
             "surface. Re-run from CLI/gateway approval mode, set "
             "HERMES_EXEC_ASK=1, set HERMES_PR_PUBLISH_GUARD=off, or create "
             "the PR yourself."
+        ),
+    }
+
+
+def _pr_publish_guard_cron_result(report: dict) -> dict:
+    if _get_cron_approval_mode() == "approve":
+        return {"approved": True, "message": None, "pr_publish_guard": report}
+    return {
+        "approved": False,
+        "pattern_key": _PR_PUBLISH_GUARD_KEY,
+        "description": report.get("description") or _PR_PUBLISH_GUARD_KEY,
+        "pr_publish_guard": report,
+        "message": (
+            f"BLOCKED: GitHub PR creation requires approval "
+            f"({report.get('description') or _PR_PUBLISH_GUARD_KEY}) but "
+            "cron jobs run without a user present to approve it. To allow "
+            "PR creation from this trusted cron profile, set "
+            "approvals.cron_mode: approve in config.yaml."
         ),
     }
 
@@ -1311,6 +1335,8 @@ def check_dangerous_command(command: str, env_type: str,
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
     if pr_guard.get("applies") and pr_guard.get("action") == "warn":
+        if env_var_enabled("HERMES_CRON_SESSION"):
+            return _pr_publish_guard_cron_result(pr_guard)
         if not is_cli and not is_gateway and not is_ask:
             return _pr_publish_requires_approval_result(pr_guard)
         session_key = get_current_session_key()
@@ -1612,10 +1638,10 @@ def check_all_command_guards(command: str, env_type: str,
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
-        if pr_guard.get("applies") and pr_guard.get("action") == "warn":
-            return _pr_publish_requires_approval_result(pr_guard)
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
+            if pr_guard.get("applies") and pr_guard.get("action") == "warn":
+                return _pr_publish_guard_cron_result(pr_guard)
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
@@ -1630,6 +1656,8 @@ def check_all_command_guards(command: str, env_type: str,
                             "approvals.cron_mode: approve in config.yaml."
                         ),
                     }
+        if pr_guard.get("applies") and pr_guard.get("action") == "warn":
+            return _pr_publish_requires_approval_result(pr_guard)
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---

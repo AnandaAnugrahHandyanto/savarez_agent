@@ -78,6 +78,7 @@ def _clean_state():
         "HERMES_INTERACTIVE",
         "HERMES_GATEWAY_SESSION",
         "HERMES_EXEC_ASK",
+        "HERMES_CRON_SESSION",
         "HERMES_YOLO_MODE",
         "HERMES_PR_PUBLISH_GUARD",
         "HERMES_PR_GUARD_MAX_FILES",
@@ -171,6 +172,52 @@ class TestGhPrPublishGuard:
         assert result["pr_publish_guard"]["mode"] == "warn"
         assert result["pr_publish_guard"]["changed_file_count"] == 1
 
+    def test_warn_mode_cron_deny_blocks_without_pending_approval(self):
+        os.environ["HERMES_PR_PUBLISH_GUARD"] = "warn"
+        os.environ["HERMES_CRON_SESSION"] = "1"
+        tmp, repo = _make_pr_repo()
+        try:
+            with patch("tools.approval._get_cron_approval_mode", return_value="deny"):
+                result = check_all_command_guards(
+                    "gh pr create --title 'Small fix' --body 'Body' --base main",
+                    "local",
+                    cwd=str(repo),
+                )
+        finally:
+            tmp.cleanup()
+
+        assert result["approved"] is False
+        assert result["pattern_key"] == "GitHub PR publish scope"
+        assert result.get("status") != "approval_required"
+        assert "cron_mode" in result["message"]
+        assert result["pr_publish_guard"]["mode"] == "warn"
+
+    def test_warn_mode_cron_approve_allows_without_pending_approval(self):
+        os.environ["HERMES_PR_PUBLISH_GUARD"] = "warn"
+        os.environ["HERMES_CRON_SESSION"] = "1"
+        tmp, repo = _make_pr_repo()
+        try:
+            with patch("tools.approval._get_cron_approval_mode", return_value="approve"):
+                combined = check_all_command_guards(
+                    "gh pr create --title 'Small fix' --body 'Body' --base main",
+                    "local",
+                    cwd=str(repo),
+                )
+                legacy = check_dangerous_command(
+                    "gh pr create --title 'Small fix' --body 'Body' --base main",
+                    "local",
+                    cwd=str(repo),
+                )
+        finally:
+            tmp.cleanup()
+
+        assert combined["approved"] is True
+        assert legacy["approved"] is True
+        assert combined.get("status") != "approval_required"
+        assert legacy.get("status") != "approval_required"
+        assert combined["pr_publish_guard"]["mode"] == "warn"
+        assert legacy["pr_publish_guard"]["mode"] == "warn"
+
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
     def test_warn_mode_cli_prompts_with_diff_summary(self, mock_tirith):
         os.environ["HERMES_PR_PUBLISH_GUARD"] = "warn"
@@ -193,6 +240,27 @@ class TestGhPrPublishGuard:
         assert "1 file(s)" in cb.call_args[0][1]
         assert cb.call_args[1]["allow_permanent"] is False
         mock_tirith.assert_called_once()
+
+    def test_warn_mode_integration_branch_message_is_not_hard_refusal(self):
+        os.environ["HERMES_PR_PUBLISH_GUARD"] = "warn"
+        tmp, repo = _make_pr_repo()
+        try:
+            _git(repo, "checkout", "main")
+            (repo / "main-change.txt").write_text("main change\n")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "main branch change")
+            result = check_all_command_guards(
+                "gh pr create --title 'Main change' --body 'Body' --base main",
+                "local",
+                cwd=str(repo),
+            )
+        finally:
+            tmp.cleanup()
+
+        assert result["approved"] is False
+        assert "integration branch" in result["description"]
+        assert "warn mode requires explicit approval" in result["description"]
+        assert "refusing to create" not in result["description"]
 
     def test_block_mode_blocks_oversized_even_with_session_yolo(self):
         os.environ["HERMES_PR_PUBLISH_GUARD"] = "block"
