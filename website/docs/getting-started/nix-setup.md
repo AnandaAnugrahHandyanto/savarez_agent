@@ -53,6 +53,13 @@ The default package doesn't include messaging platform libraries — they were m
 nix profile install github:NousResearch/hermes-agent#messaging
 ```
 
+For local browser tools on Linux, install the `browser` variant. It adds the
+Nixpkgs `agent-browser` CLI and Chromium, avoiding runtime browser downloads:
+
+```bash
+nix profile install github:NousResearch/hermes-agent#browser
+```
+
 For all optional extras (voice, all providers, all platforms):
 
 ```bash
@@ -341,6 +348,7 @@ Quick reference for the most common things Nix users want to customize:
 | Use Podman instead of Docker | `container.backend` | `"podman"` |
 | Share state between host CLI and container | `container.hostUsers` | `[ "sidbin" ]` |
 | Make extra tools available to the agent | `extraPackages` | `[ pkgs.pandoc pkgs.imagemagick ]` |
+| Enable local browser tools | `enableBrowser` | `true` |
 | Use a custom base image | `container.image` | `"ubuntu:24.04"` |
 | Override the hermes package | `package` | `inputs.hermes-agent.packages.${system}.default.override { ... }` |
 | Change state directory | `stateDir` | `"/opt/hermes"` |
@@ -800,6 +808,7 @@ nix build .#checks.x86_64-linux.entry-points-sync  # pyproject.toml ↔ Nix pack
 nix build .#checks.x86_64-linux.cli-commands        # gateway/config subcommands
 nix build .#checks.x86_64-linux.managed-guard       # HERMES_MANAGED blocks mutation
 nix build .#checks.x86_64-linux.bundled-skills      # skills present in package
+nix build .#checks.x86_64-linux.browser-runtime     # agent-browser + Chromium
 nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves user keys
 ```
 
@@ -813,6 +822,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `cli-commands` | `hermes --help` exposes `gateway` and `config` subcommands |
 | `managed-guard` | `HERMES_MANAGED=true hermes config set ...` prints the NixOS error |
 | `bundled-skills` | Skills directory exists, contains SKILL.md files, `HERMES_BUNDLED_SKILLS` is set in wrapper |
+| `browser-runtime` | Browser variant adds `agent-browser`, configures Nixpkgs Chromium, and keeps the default package lightweight |
 | `config-roundtrip` | 7 merge scenarios: fresh install, Nix override, user key preservation, mixed merge, MCP additive merge, nested deep merge, idempotency |
 
 </details>
@@ -827,6 +837,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 |---|---|---|---|
 | `enable` | `bool` | `false` | Enable the hermes-agent service |
 | `package` | `package` | `hermes-agent` | The hermes-agent package to use |
+| `enableBrowser` | `bool` | `false` | Include the Nixpkgs `agent-browser` CLI and Chromium for local browser tools |
 | `user` | `str` | `"hermes"` | System user |
 | `group` | `str` | `"hermes"` | System group |
 | `createUser` | `bool` | `true` | Auto-create user/group |
