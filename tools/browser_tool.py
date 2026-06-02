@@ -435,6 +435,15 @@ _cached_allow_private_urls: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
 _agent_browser_resolved = False
 
+# AgentCookie support. AgentCookie exposes a Chrome profile directory plus an
+# optional plaintext cookie sidecar DB. Hermes passes the profile to
+# agent-browser's persistent-profile flag for local Chromium sessions and makes
+# the sidecar path available to the spawned browser process via env.
+_DEFAULT_AGENTCOOKIE_PROFILE_DIR = "~/.agentcookie/chrome-profile"
+_DEFAULT_AGENTCOOKIE_PLAIN_COOKIES = "~/.agentcookie/cookies-plain.db"
+_cached_agentcookie_config: Optional[Dict[str, Any]] = None
+_agentcookie_config_resolved = False
+
 # Lightpanda engine support — cached like _get_cloud_provider().
 # agent-browser v0.25.3+ supports ``--engine lightpanda`` natively.
 _cached_browser_engine: Optional[str] = None
@@ -681,6 +690,154 @@ def _get_browser_engine() -> str:
     return _cached_browser_engine
 
 
+def _expand_agentcookie_path(value: Any, default: str) -> str:
+    """Normalize AgentCookie path-like config values."""
+    text = str(value or default).strip() or default
+    return os.path.expandvars(os.path.expanduser(text))
+
+
+def _get_agentcookie_config() -> Dict[str, Any]:
+    """Return AgentCookie integration settings.
+
+    Config path:
+
+    ``browser.agentcookie.enabled``
+        Enables the integration. Disabled by default so browser auth behavior
+        does not change for existing installs.
+
+    ``browser.agentcookie.profile_dir``
+        Persistent Chrome profile directory passed to agent-browser via
+        ``--profile`` for local Chromium sessions.
+
+    ``browser.agentcookie.plain_cookies_db``
+        Plain-cookie sidecar DB path exported as ``AGENTCOOKIE_PLAIN_COOKIES``
+        for the spawned agent-browser/Chrome process.
+
+    Env overrides:
+    ``HERMES_AGENTCOOKIE_ENABLED``/``AGENTCOOKIE_ENABLED``,
+    ``HERMES_AGENTCOOKIE_PROFILE_DIR``/``AGENTCOOKIE_PROFILE_DIR``, and
+    ``HERMES_AGENTCOOKIE_PLAIN_COOKIES``/``AGENTCOOKIE_PLAIN_COOKIES``.
+    """
+    global _cached_agentcookie_config, _agentcookie_config_resolved
+    if _agentcookie_config_resolved and _cached_agentcookie_config is not None:
+        return dict(_cached_agentcookie_config)
+
+    enabled = False
+    profile_dir: Any = _DEFAULT_AGENTCOOKIE_PROFILE_DIR
+    plain_cookies_db: Any = _DEFAULT_AGENTCOOKIE_PLAIN_COOKIES
+
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+        agentcookie_cfg = {}
+        if isinstance(browser_cfg, dict):
+            agentcookie_cfg = browser_cfg.get("agentcookie", {})
+
+        if isinstance(agentcookie_cfg, dict):
+            if "enabled" in agentcookie_cfg:
+                enabled = is_truthy_value(agentcookie_cfg.get("enabled"))
+            profile_dir = agentcookie_cfg.get("profile_dir", profile_dir)
+            plain_cookies_db = agentcookie_cfg.get(
+                "plain_cookies_db",
+                agentcookie_cfg.get("plain_cookies", plain_cookies_db),
+            )
+        elif agentcookie_cfg:
+            enabled = is_truthy_value(agentcookie_cfg)
+    except Exception as e:
+        logger.debug("Could not read browser.agentcookie from config: %s", e)
+
+    enabled_env = (
+        os.environ.get("HERMES_AGENTCOOKIE_ENABLED")
+        or os.environ.get("AGENTCOOKIE_ENABLED")
+    )
+    if enabled_env is not None and str(enabled_env).strip() != "":
+        enabled = is_truthy_value(enabled_env)
+
+    profile_env = (
+        os.environ.get("HERMES_AGENTCOOKIE_PROFILE_DIR")
+        or os.environ.get("AGENTCOOKIE_PROFILE_DIR")
+    )
+    if profile_env:
+        profile_dir = profile_env
+
+    plain_env = (
+        os.environ.get("HERMES_AGENTCOOKIE_PLAIN_COOKIES")
+        or os.environ.get("AGENTCOOKIE_PLAIN_COOKIES")
+    )
+    if plain_env:
+        plain_cookies_db = plain_env
+
+    _cached_agentcookie_config = {
+        "enabled": enabled,
+        "profile_dir": _expand_agentcookie_path(
+            profile_dir,
+            _DEFAULT_AGENTCOOKIE_PROFILE_DIR,
+        ),
+        "plain_cookies_db": _expand_agentcookie_path(
+            plain_cookies_db,
+            _DEFAULT_AGENTCOOKIE_PLAIN_COOKIES,
+        ),
+    }
+    _agentcookie_config_resolved = True
+    return dict(_cached_agentcookie_config)
+
+
+def _agentcookie_applies_to_backend(session_info: Dict[str, Any], engine: str) -> bool:
+    """Return True for local Chrome/Chromium launches that can use AgentCookie."""
+    if session_info.get("cdp_url"):
+        # CDP/cloud sessions are already attached to an existing browser; do
+        # not pass local profile or plaintext-cookie sidecar state into them.
+        return False
+    if _is_camofox_mode():
+        # Camofox manages its own browser profile/session isolation.
+        return False
+    return (engine or "auto").strip().lower() != "lightpanda"
+
+
+def _apply_agentcookie_env(
+    browser_env: Dict[str, str],
+    session_info: Dict[str, Any],
+    engine: str,
+) -> None:
+    """Inject AgentCookie sidecar env for local Chrome/Chromium subprocesses."""
+    # Start from a clean child env. The parent may use these vars to configure
+    # Hermes, but agent-browser should only see cookie sidecar state when this
+    # specific backend is allowed to use it.
+    for name in (
+        "HERMES_AGENTCOOKIE_ENABLED",
+        "AGENTCOOKIE_ENABLED",
+        "HERMES_AGENTCOOKIE_PROFILE_DIR",
+        "AGENTCOOKIE_PROFILE_DIR",
+        "HERMES_AGENTCOOKIE_PLAIN_COOKIES",
+        "AGENTCOOKIE_PLAIN_COOKIES",
+    ):
+        browser_env.pop(name, None)
+
+    if not _agentcookie_applies_to_backend(session_info, engine):
+        return
+    cfg = _get_agentcookie_config()
+    if not cfg.get("enabled"):
+        return
+    plain_cookies_db = str(cfg.get("plain_cookies_db") or "").strip()
+    if plain_cookies_db:
+        browser_env["AGENTCOOKIE_PLAIN_COOKIES"] = plain_cookies_db
+
+
+def _agentcookie_backend_args(session_info: Dict[str, Any], engine: str) -> List[str]:
+    """Return args needed for AgentCookie local Chrome profile reuse."""
+    if not _agentcookie_applies_to_backend(session_info, engine):
+        return []
+    cfg = _get_agentcookie_config()
+    if not cfg.get("enabled"):
+        return []
+    profile_dir = str(cfg.get("profile_dir") or "").strip()
+    if not profile_dir:
+        return []
+    return ["--profile", profile_dir]
+
+
 def _should_inject_engine(engine: str) -> bool:
     """Return True when the engine flag should be added to agent-browser commands.
 
@@ -853,12 +1010,18 @@ def _run_chrome_fallback_command(
         cmd_prefix = [_npx_bin, "agent-browser"]
     else:
         cmd_prefix = [browser_cmd]
-    base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
+    tmp_session_info = {"session_name": tmp_session}
+    base_args = (
+        cmd_prefix
+        + _agentcookie_backend_args(tmp_session_info, "chrome")
+        + ["--engine", "chrome", "--session", tmp_session, "--json"]
+    )
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
     browser_env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
     browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
+    _apply_agentcookie_env(browser_env, tmp_session_info, "chrome")
 
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
         browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
@@ -1941,6 +2104,16 @@ def _run_browser_command(
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
 
+    # Resolve the requested engine before backend args so AgentCookie can stay
+    # scoped to local Chrome/Chromium launches only.
+    configured_engine = _get_browser_engine()
+    engine = _engine_override or configured_engine
+    agentcookie_engine = engine
+    if _engine_override == "auto" and configured_engine == "lightpanda":
+        # Internal probes of an existing Lightpanda daemon pass no --engine flag;
+        # do not mistake that for a new Chrome launch.
+        agentcookie_engine = configured_engine
+
     # Build the command with the appropriate backend flag.
     # Cloud mode: --cdp <websocket_url> connects to Browserbase.
     # Local mode: --session <name> launches a local headless Chromium.
@@ -1951,14 +2124,17 @@ def _run_browser_command(
         # --session creates a local browser instance and silently ignores --cdp.
         backend_args = ["--cdp", session_info["cdp_url"]]
     else:
-        # Local mode — launch a headless Chromium instance
-        backend_args = ["--session", session_info["session_name"]]
+        # Local mode — launch a browser instance. AgentCookie is only forwarded
+        # when that local backend is Chrome/Chromium, not Lightpanda/Camofox.
+        backend_args = _agentcookie_backend_args(session_info, agentcookie_engine) + [
+            "--session",
+            session_info["session_name"],
+        ]
 
     # Lightpanda engine injection (local mode only, agent-browser v0.25.3+).
     # Use the resolved session backend rather than global cloud-provider state:
     # hybrid private-URL routing can create a local sidecar while a cloud
     # provider remains configured for public URLs.
-    engine = _engine_override or _get_browser_engine()
     if engine != "auto" and not _is_camofox_mode() and not session_info.get("cdp_url"):
         backend_args += ["--engine", engine]
 
@@ -1997,6 +2173,7 @@ def _run_browser_command(
         # used during CLI discovery.
         browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
+        _apply_agentcookie_env(browser_env, session_info, agentcookie_engine)
 
         # Tell the agent-browser daemon to self-terminate after being idle
         # for our configured inactivity timeout.  This is the daemon-side
@@ -3521,6 +3698,7 @@ def cleanup_all_browsers() -> None:
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
+    global _cached_agentcookie_config, _agentcookie_config_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
@@ -3529,6 +3707,8 @@ def cleanup_all_browsers() -> None:
     _cached_chromium_installed = None
     _cached_browser_engine = None
     _browser_engine_resolved = False
+    _cached_agentcookie_config = None
+    _agentcookie_config_resolved = False
 
 # ============================================================================
 # Requirements Check

@@ -383,6 +383,29 @@ See the MCP guide for the practical setup:
 
 If you do **not** set any cloud credentials and don't use `/browser connect`, Hermes can still use the browser tools through a local Chromium install driven by `agent-browser`.
 
+#### AgentCookie profile reuse
+
+If you use [AgentCookie](https://agentcookie.dev/) to maintain a reusable Chrome login profile, enable Hermes' local `agent-browser` integration:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  agentcookie:
+    enabled: true
+    profile_dir: ~/.agentcookie/chrome-profile
+    plain_cookies_db: ~/.agentcookie/cookies-plain.db
+```
+
+When enabled, Hermes passes `--profile <profile_dir>` to local `agent-browser` Chrome/Chromium sessions and exports `AGENTCOOKIE_PLAIN_COOKIES=<plain_cookies_db>` to the spawned local Chrome process. This only changes local Chrome-backed agent-browser sessions; Lightpanda, Camofox, cloud, and CDP sessions attach to different browser backends and do not receive AgentCookie profile or sidecar settings.
+
+Equivalent environment overrides:
+
+```bash
+HERMES_AGENTCOOKIE_ENABLED=true
+HERMES_AGENTCOOKIE_PROFILE_DIR=~/.agentcookie/chrome-profile
+HERMES_AGENTCOOKIE_PLAIN_COOKIES=~/.agentcookie/cookies-plain.db
+```
+
 ### Optional Environment Variables
 
 ```bash

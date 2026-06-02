@@ -945,6 +945,14 @@ DEFAULT_CONFIG = {
         "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        # AgentCookie profile reuse for local agent-browser Chromium sessions.
+        # When enabled, Hermes passes --profile <profile_dir> and exports
+        # AGENTCOOKIE_PLAIN_COOKIES to the spawned browser process.
+        "agentcookie": {
+            "enabled": False,
+            "profile_dir": "~/.agentcookie/chrome-profile",
+            "plain_cookies_db": "~/.agentcookie/cookies-plain.db",
+        },
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
         # Active only when a CDP-capable backend is attached (Browserbase or
         # local Chrome via /browser connect). See
