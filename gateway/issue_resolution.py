@@ -1743,6 +1743,99 @@ async def _load_pr_review_suggestion_stats(
     return summarize_review_suggestions(reviews, comments)
 
 
+async def _load_resolved_review_comment_ids(
+    repo: str,
+    pr: PullRequestMetadata,
+) -> set[int]:
+    owner, name = repo.split("/", 1)
+    query = """
+query($owner:String!, $repo:String!, $number:Int!) {
+  repository(owner:$owner, name:$repo) {
+    pullRequest(number:$number) {
+      reviewThreads(first:100) {
+        nodes {
+          isResolved
+          comments(first:20) {
+            nodes {
+              databaseId
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+    try:
+        result = await _run(
+            [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={query}",
+                "-F",
+                f"owner={owner}",
+                "-F",
+                f"repo={name}",
+                "-F",
+                f"number={pr.number}",
+            ],
+            check=False,
+        )
+    except Exception as exc:  # pragma: no cover - defensive fallback for mocked callers.
+        logger.warning(
+            "GitHub PR %s resolved thread lookup failed: %s",
+            pr.number,
+            exc,
+        )
+        return set()
+    if result.returncode != 0:
+        logger.warning(
+            "GitHub PR %s resolved thread lookup failed: %s",
+            pr.number,
+            result.stderr.strip(),
+        )
+        return set()
+
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        logger.warning(
+            "GitHub PR %s resolved thread lookup returned invalid JSON",
+            pr.number,
+        )
+        return set()
+
+    threads = (
+        payload.get("data", {})
+        .get("repository", {})
+        .get("pullRequest", {})
+        .get("reviewThreads", {})
+        .get("nodes", [])
+    )
+    if not isinstance(threads, list):
+        return set()
+
+    resolved_ids: set[int] = set()
+    for thread in threads:
+        if not isinstance(thread, dict) or not thread.get("isResolved"):
+            continue
+        comments = thread.get("comments", {}).get("nodes", [])
+        if not isinstance(comments, list):
+            continue
+        for comment in comments:
+            if not isinstance(comment, dict):
+                continue
+            try:
+                comment_id = int(comment.get("databaseId") or 0)
+            except (TypeError, ValueError):
+                comment_id = 0
+            if comment_id > 0:
+                resolved_ids.add(comment_id)
+    return resolved_ids
+
+
 async def _load_pr_review_records(
     repo: str,
     pr: PullRequestMetadata,
@@ -1828,8 +1921,15 @@ async def _filter_unresolved_inline_comments(
     """
     unresolved: list[dict[str, Any]] = []
     changed_lines_cache: dict[str, dict[str, set[int]]] = {}
+    resolved_comment_ids = await _load_resolved_review_comment_ids(repo, pr)
 
     for comment in comments:
+        try:
+            comment_id = int(comment.get("id") or 0)
+        except (TypeError, ValueError):
+            comment_id = 0
+        if comment_id in resolved_comment_ids:
+            continue
         if not _review_record_is_inline(comment):
             if _review_record_matches_head(comment, pr.head_ref_oid):
                 unresolved.append(comment)
@@ -2585,15 +2685,38 @@ def _record_kanban_task_audit_sync(
     from hermes_cli import kanban_db
 
     with kanban_db.connect(board=run.kanban_board) as conn:
-        kanban_db.record_task_event(
-            conn,
-            run.kanban_task_id or "",
-            kind,
-            payload,
-            run_id=run.id,
-        )
+        record_task_event = getattr(kanban_db, "record_task_event", None)
+        if callable(record_task_event):
+            record_task_event(
+                conn,
+                run.kanban_task_id or "",
+                kind,
+                payload,
+                run_id=run.id,
+            )
+        else:
+            append_event = getattr(kanban_db, "_append_event", None)
+            write_txn = getattr(kanban_db, "write_txn", None)
+            if callable(append_event) and callable(write_txn):
+                with write_txn(conn):
+                    append_event(
+                        conn,
+                        run.kanban_task_id or "",
+                        kind,
+                        payload,
+                        run_id=run.id,
+                    )
         if comment:
-            kanban_db.add_audit_comment(conn, run.kanban_task_id or "", comment)
+            add_audit_comment = getattr(kanban_db, "add_audit_comment", None)
+            if callable(add_audit_comment):
+                add_audit_comment(conn, run.kanban_task_id or "", comment)
+            else:
+                kanban_db.add_comment(
+                    conn,
+                    run.kanban_task_id or "",
+                    author="hermes-audit",
+                    body=comment,
+                )
         if complete_task_flag:
             kanban_db.complete_task(
                 conn,

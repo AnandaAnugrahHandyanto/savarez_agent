@@ -2006,3 +2006,82 @@ async def test_pr_review_metadata_loader_ignores_inline_comment_cleared_by_later
     assert stats.total_suggestions_count == 0
 
 
+@pytest.mark.asyncio
+async def test_pr_review_metadata_loader_ignores_comments_on_resolved_threads(monkeypatch):
+    pr = PullRequestMetadata(
+        number=328,
+        url="https://github.com/m0nklabs/cryptotrader/pull/328",
+        head_ref_name="hermes/manual-merge-gatekeeper-20260602",
+        head_ref_oid="newsha",
+    )
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/328/reviews"]:
+            return CompletedProcess(command, 0, stdout="[]", stderr="")
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/328/comments"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "id": 3342785532,
+                            "user": {"login": "github-code-quality[bot]"},
+                            "commit_id": "oldsha",
+                            "original_commit_id": "oldsha",
+                            "path": "scripts/merge_routing.py",
+                            "original_line": 298,
+                            "body": "This statement is unreachable.",
+                        }
+                    ]
+                ),
+                stderr="",
+            )
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/328/commits"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps([
+                    {"sha": "oldsha"},
+                    {"sha": "newsha"},
+                ]),
+                stderr="",
+            )
+        if command[:3] == ["gh", "api", "graphql"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "data": {
+                            "repository": {
+                                "pullRequest": {
+                                    "reviewThreads": {
+                                        "nodes": [
+                                            {
+                                                "isResolved": True,
+                                                "comments": {
+                                                    "nodes": [
+                                                        {"databaseId": 3342785532}
+                                                    ]
+                                                },
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+
+    stats = await _load_pr_review_suggestion_stats("m0nklabs/cryptotrader", pr)
+
+    assert stats.copilot_review_detected is False
+    assert stats.total_suggestions_count == 0
+
+
