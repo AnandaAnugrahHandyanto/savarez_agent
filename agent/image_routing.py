@@ -284,6 +284,52 @@ def _lookup_supports_vision(
     return bool(caps.supports_vision)
 
 
+def _is_known_vision_capable_model_name(model: str) -> bool:
+    """Heuristic: does the model slug name a known vision-capable family?
+
+    Used as a backstop for custom/proxy providers whose ``api_mode``
+    (anthropic_messages / chat_completions) confirms the wire protocol
+    can carry images, but where models.dev has no entry for the proxy's
+    opaque resource ID and the user hasn't set ``model.supports_vision``.
+
+    Recognises substrings present in modern vision-capable family names:
+    Claude 3+ (Opus/Sonnet/Haiku), GPT-4o, GPT-5, GPT-4 Turbo Vision,
+    Gemini 1.5+/2/3, Llama 3.2/3.3 Vision, Pixtral, Qwen-VL, etc. The
+    list is conservative and additive — false negatives are recoverable
+    (the user gets the legacy aux-LLM text fallback) but false positives
+    silently inject pixels into a text-only model.
+    """
+    if not isinstance(model, str):
+        return False
+    m = model.strip().lower()
+    if not m:
+        return False
+    # Anthropic Claude 3+ are all vision-capable. The proxy id may carry
+    # the family name in any of these forms, so substring-match.
+    if "claude-3" in m or "claude-4" in m or "claude-5" in m:
+        return True
+    if "opus" in m or "sonnet" in m or "haiku" in m:
+        return True
+    # OpenAI GPT-4o family + GPT-5+ multimodal
+    if "gpt-4o" in m or "gpt-4-vision" in m or "gpt-4-turbo" in m:
+        return True
+    if "gpt-5" in m or "gpt-6" in m or "o3" in m or "o4" in m:
+        return True
+    # Gemini 1.5+ all vision; older 1.0 not (rarely seen)
+    if "gemini-1.5" in m or "gemini-2" in m or "gemini-3" in m:
+        return True
+    if "gemini-pro-vision" in m or "gemini-flash" in m:
+        return True
+    # Open-weight vision families
+    if "pixtral" in m or "llama-3.2" in m or "llama-3.3" in m:
+        return True
+    if "qwen2-vl" in m or "qwen2.5-vl" in m or "qwen3-vl" in m:
+        return True
+    if "molmo" in m or "internvl" in m or "minicpm-v" in m:
+        return True
+    return False
+
+
 def decide_image_input_mode(
     provider: str,
     model: str,
@@ -313,6 +359,30 @@ def decide_image_input_mode(
 
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
+        return "native"
+    if supports is False:
+        # Hard miss from override or models.dev — caller asked for text.
+        return "text"
+
+    # supports is None — unknown to models.dev and no user override. This
+    # is the common path for custom/proxy providers (Palantir Foundry,
+    # self-hosted vLLM, branded aggregators) where the provider id is
+    # arbitrary. Fall back to (a) wire-protocol awareness from the
+    # active provider's ``api_mode``, plus (b) a substring check on the
+    # model slug for known vision families. Both must agree to upgrade
+    # to native, so a model name that contains "gpt-4o" still routes to
+    # text if the wire is something exotic that doesn't carry images.
+    try:
+        from agent.auxiliary_client import _read_main_api_mode
+        wire = _read_main_api_mode()
+    except Exception:
+        wire = ""
+    wire_carries_images = wire in {
+        "anthropic_messages", "anthropic",
+        "chat_completions", "openai",
+        "responses", "openai_responses",
+    }
+    if wire_carries_images and _is_known_vision_capable_model_name(model):
         return "native"
     return "text"
 

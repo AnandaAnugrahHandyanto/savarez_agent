@@ -1676,6 +1676,54 @@ def _read_main_provider() -> str:
     return ""
 
 
+def _read_main_api_mode() -> str:
+    """Read the active main provider's wire-protocol mode.
+
+    Returns one of ``"anthropic_messages"``, ``"chat_completions"``,
+    ``"responses"``, etc. — whatever the resolved provider declares in
+    config.yaml under ``providers.<slug>.api_mode`` /
+    ``custom_providers[].api_mode``. Falls back to "" when the active
+    provider has no explicit api_mode (which is what aggregator/canonical
+    providers like ``openai``/``anthropic``/``openrouter`` set, since
+    those are pinned to one wire by their adapter).
+
+    Used by image-routing decisions that need to know the wire protocol
+    behind the active provider id (e.g. a Palantir Foundry custom
+    provider with ``api_mode: anthropic_messages`` should be treated as
+    Anthropic-native for vision purposes — the model is a Claude Opus
+    even though the provider id is ``palantir-claude47``).
+    """
+    override = _RUNTIME_MAIN_API_MODE
+    if isinstance(override, str) and override.strip():
+        return override.strip().lower()
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        prov = _read_main_provider()
+        if not prov:
+            return ""
+        # custom: scheme — ``custom:openrouter`` etc. — strip prefix and
+        # consult ``custom_providers:`` list.
+        if prov.startswith("custom:"):
+            slug = prov[len("custom:"):]
+            for cp in cfg.get("custom_providers") or []:
+                if not isinstance(cp, dict):
+                    continue
+                cp_slug = str(cp.get("slug") or cp.get("name") or "").strip().lower()
+                if cp_slug == slug:
+                    return str(cp.get("api_mode") or "").strip().lower()
+            return ""
+        # Keyed providers under ``providers:`` — palantir-claude47, etc.
+        prv = cfg.get("providers") or {}
+        if isinstance(prv, dict):
+            entry = prv.get(prov) or prv.get(prov.lower())
+            if isinstance(entry, dict):
+                return str(entry.get("api_mode") or "").strip().lower()
+    except Exception:
+        pass
+    return ""
+
+
 # Process-local override set by AIAgent at session/turn start. Single-threaded
 # per turn — no lock needed. Cleared by ``clear_runtime_main()``.
 _RUNTIME_MAIN_PROVIDER: str = ""
