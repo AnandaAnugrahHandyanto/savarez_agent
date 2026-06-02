@@ -38,6 +38,16 @@ from hermes_cli.auth import (
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _clear_aux_runtime_main():
+    """Keep process-local auxiliary runtime overrides from leaking across full-suite order."""
+    from agent.auxiliary_client import clear_runtime_main
+
+    clear_runtime_main()
+    yield
+    clear_runtime_main()
+
+
 def _setup_hermes_auth(
     hermes_home: Path,
     *,

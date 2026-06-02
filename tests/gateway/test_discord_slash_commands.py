@@ -632,8 +632,8 @@ class _FakeTextChannel:
         return _empty()
 
 
-class _FakeThreadChannel(_discord_mod.Thread):
-    """isinstance(ch, discord.Thread) → True."""
+class _FakeThreadChannel:
+    """Thread stand-in; tests patch discord.Thread to this class below."""
 
     def __init__(self, channel_id=200, name="existing-thread", guild_name="TestGuild", parent_id=100):
         # Don't call super().__init__ — mock Thread is just an empty type
@@ -649,6 +649,9 @@ class _FakeThreadChannel(_discord_mod.Thread):
             yield  # pragma: no cover — make this an async generator
 
         return _empty()
+
+
+_discord_mod.Thread = _FakeThreadChannel
 
 
 def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza"):

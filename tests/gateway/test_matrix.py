@@ -731,13 +731,10 @@ class TestMatrixRequirements:
         monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
         monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
-        from gateway.platforms.matrix import check_matrix_requirements
-        try:
-            import mautrix  # noqa: F401
-            assert check_matrix_requirements() is True
-        except ImportError:
-            with patch("tools.lazy_deps.ensure", side_effect=ImportError("mautrix unavailable")):
-                assert check_matrix_requirements() is False
+        from gateway.platforms import matrix as matrix_mod
+        with patch.dict("sys.modules", _make_fake_mautrix()), \
+             patch("tools.lazy_deps.feature_missing", return_value=()):
+            assert matrix_mod.check_matrix_requirements() is True
 
     def test_check_requirements_without_creds(self, monkeypatch):
         monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
@@ -770,14 +767,10 @@ class TestMatrixRequirements:
         monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
 
         from gateway.platforms import matrix as matrix_mod
-        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
-            # Still needs mautrix itself to be importable
-            try:
-                import mautrix  # noqa: F401
-                assert matrix_mod.check_matrix_requirements() is True
-            except ImportError:
-                with patch("tools.lazy_deps.ensure", side_effect=ImportError("mautrix unavailable")):
-                    assert matrix_mod.check_matrix_requirements() is False
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
+             patch.dict("sys.modules", _make_fake_mautrix()), \
+             patch("tools.lazy_deps.feature_missing", return_value=()):
+            assert matrix_mod.check_matrix_requirements() is True
 
     def test_check_requirements_encryption_true_with_e2ee_deps(self, monkeypatch):
         """MATRIX_ENCRYPTION=true should pass if E2EE deps are available."""
@@ -786,13 +779,10 @@ class TestMatrixRequirements:
         monkeypatch.setenv("MATRIX_ENCRYPTION", "true")
 
         from gateway.platforms import matrix as matrix_mod
-        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
-            try:
-                import mautrix  # noqa: F401
-                assert matrix_mod.check_matrix_requirements() is True
-            except ImportError:
-                with patch("tools.lazy_deps.ensure", side_effect=ImportError("mautrix unavailable")):
-                    assert matrix_mod.check_matrix_requirements() is False
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
+             patch.dict("sys.modules", _make_fake_mautrix()), \
+             patch("tools.lazy_deps.feature_missing", return_value=()):
+            assert matrix_mod.check_matrix_requirements() is True
 
     def test_check_e2ee_deps_requires_asyncpg(self, monkeypatch):
         """E2EE deps check must reject when asyncpg is missing — even if olm is present.
@@ -931,11 +921,17 @@ class TestMatrixAccessTokenAuth:
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
         from gateway.platforms import matrix as matrix_mod
+        fake_types = fake_mautrix_mods["mautrix.types"]
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
-                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
-                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
-                        assert await adapter.connect() is True
+                with patch.multiple(
+                    matrix_mod,
+                    EventType=fake_types.EventType,
+                    TrustState=fake_types.TrustState,
+                ):
+                    with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                        with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                            assert await adapter.connect() is True
 
         mock_client.whoami.assert_awaited_once()
         assert adapter._user_id == "@bot:example.org"
@@ -1155,11 +1151,17 @@ class TestMatrixDeviceId:
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
         from gateway.platforms import matrix as matrix_mod
+        fake_types = fake_mautrix_mods["mautrix.types"]
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
-                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
-                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
-                        assert await adapter.connect() is True
+                with patch.multiple(
+                    matrix_mod,
+                    EventType=fake_types.EventType,
+                    TrustState=fake_types.TrustState,
+                ):
+                    with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                        with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                            assert await adapter.connect() is True
 
         # The configured device_id should override the whoami device_id.
         # In mautrix, the adapter sets client.device_id directly.
@@ -1204,10 +1206,12 @@ class TestMatrixPasswordLoginDeviceId:
 
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
 
+        from gateway.platforms import matrix as matrix_mod
         with patch.dict("sys.modules", fake_mautrix_mods):
-            with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
-                with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
-                    assert await adapter.connect() is True
+            with patch.object(matrix_mod, "EventType", fake_mautrix_mods["mautrix.types"].EventType):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        assert await adapter.connect() is True
 
         mock_client.login.assert_awaited_once()
         assert adapter._device_id == "STABLE_PW_DEVICE"

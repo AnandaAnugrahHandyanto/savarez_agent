@@ -209,10 +209,16 @@ class TestAcpExecAskGate:
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
+        from tools import approval as approval_mod
         from tools.approval import check_all_command_guards
 
+        monkeypatch.setattr(approval_mod, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval_mod, "_get_approval_mode", lambda: "manual")
+        approval_mod._session_approved.clear()
+        approval_mod._permanent_approved.clear()
         called_with = []
 
         def fake_cb(command, description, *, allow_permanent=True):

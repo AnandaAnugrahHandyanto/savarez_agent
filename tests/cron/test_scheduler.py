@@ -501,8 +501,8 @@ class TestDeliverResultWrapping:
         )
         return media_file.resolve()
 
-    def test_delivery_wraps_content_with_header_and_footer(self):
-        """Delivered content should include task name header and agent-invisible note."""
+    def test_delivery_wraps_content_with_header_and_management_note_before_payload(self):
+        """Delivered content should include header and keep framework note before payload."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -527,7 +527,8 @@ class TestDeliverResultWrapping:
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
-
+        assert sent_content.index("To stop or manage this job") < sent_content.index("Here is today's summary.")
+        assert sent_content.endswith("Here is today's summary.")
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""
         from gateway.config import Platform

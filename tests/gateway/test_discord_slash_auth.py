@@ -102,17 +102,27 @@ def _isolate_discord_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _stub_discord_permissions(monkeypatch):
-    """Pin discord.Permissions to a plain stand-in so tests can assert the
-    bitfield value regardless of whether real discord.py or a sibling test
-    module's MagicMock is loaded."""
+def _stub_discord_test_types(monkeypatch):
+    """Pin discord.py classes used only for isinstance checks to plain stand-ins.
+
+    Real discord.py channel classes require internal state in their constructors;
+    these tests only need objects that satisfy the adapter's isinstance checks.
+    """
     import discord
 
     class _Perm:
         def __init__(self, value=0, **_):
             self.value = value
 
+    class _DMChannel:
+        pass
+
+    class _Thread:
+        pass
+
     monkeypatch.setattr(discord, "Permissions", _Perm)
+    monkeypatch.setattr(discord, "DMChannel", _DMChannel, raising=False)
+    monkeypatch.setattr(discord, "Thread", _Thread, raising=False)
 
 
 @pytest.fixture

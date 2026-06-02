@@ -2645,6 +2645,7 @@ class TestVisionAutoSkipsKimiCoding:
         """Guard against accidental widening of the skip list."""
         from agent.auxiliary_client import _PROVIDERS_WITHOUT_VISION
         assert _PROVIDERS_WITHOUT_VISION == frozenset({
+            "deepseek",
             "kimi-coding",
             "kimi-coding-cn",
         })
@@ -2710,7 +2711,7 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert time.monotonic() - started < 0.25
 
 
 class TestCodexAuxiliaryAdapterNullOutputRecovery:

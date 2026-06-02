@@ -171,6 +171,7 @@ model:
 model:
   provider: anthropic
   default: claude-sonnet-4-6
+  supports_vision: true
 """)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         _fresh_modules()

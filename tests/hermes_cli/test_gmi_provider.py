@@ -31,6 +31,15 @@ from agent.model_metadata import get_model_context_length
 
 @pytest.fixture(autouse=True)
 def _clear_provider_env(monkeypatch):
+    from agent.auxiliary_client import (
+        _reset_aux_unhealthy_cache,
+        clear_runtime_main,
+        shutdown_cached_clients,
+    )
+
+    clear_runtime_main()
+    shutdown_cached_clients()
+    _reset_aux_unhealthy_cache()
     for key in (
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
@@ -43,6 +52,10 @@ def _clear_provider_env(monkeypatch):
         "GMI_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
+    yield
+    clear_runtime_main()
+    shutdown_cached_clients()
+    _reset_aux_unhealthy_cache()
 
 
 class TestGmiAliases:
@@ -260,20 +273,51 @@ class TestGmiModelMetadata:
 
 class TestGmiAuxiliary:
     def test_resolve_provider_client_uses_gmi_aux_default(self, monkeypatch):
-        monkeypatch.setenv("GMI_API_KEY", "gmi-test-key")
+        from hermes_cli.auth import PROVIDER_REGISTRY, ProviderConfig
 
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_openai.return_value = object()
+        monkeypatch.setenv("GMI_API_KEY", "gmi-test-key")
+        # Full-suite runs may leave provider registry/custom-provider state
+        # mutated in-process. Pin the canonical built-in GMI registry entry so
+        # this test exercises the generic API-key-provider branch it is meant
+        # to cover, instead of an unrelated named-custom-provider branch.
+        monkeypatch.setitem(
+            PROVIDER_REGISTRY,
+            "gmi",
+            ProviderConfig(
+                id="gmi",
+                name="GMI Cloud",
+                auth_type="api_key",
+                inference_base_url="https://api.gmi-serving.com/v1",
+                api_key_env_vars=("GMI_API_KEY",),
+                base_url_env_var="GMI_BASE_URL",
+            ),
+        )
+
+        def fake_gmi_credentials(provider_id):
+            assert provider_id == "gmi"
+            return {
+                "provider": provider_id,
+                "api_key": "gmi-test-key",
+                "base_url": "https://api.gmi-serving.com/v1",
+                "source": "GMI_API_KEY",
+            }
+
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            side_effect=fake_gmi_credentials,
+        ):
             client, model = resolve_provider_client("gmi")
 
         assert client is not None
         assert model == "google/gemini-3.1-flash-lite-preview"
-        assert mock_openai.call_args.kwargs["api_key"] == "gmi-test-key"
-        assert mock_openai.call_args.kwargs["base_url"] == "https://api.gmi-serving.com/v1"
+        assert str(getattr(client, "api_key", "")) == "gmi-test-key"
+        assert str(getattr(client, "base_url", "")).rstrip("/") == "https://api.gmi-serving.com/v1"
         # GMI profile declares default_headers with a HermesAgent User-Agent
-        # for traffic attribution. The generic profile-fallback branch in
-        # resolve_provider_client should carry it through to the OpenAI client.
-        headers = mock_openai.call_args.kwargs.get("default_headers", {})
+        # for traffic attribution. Assert the resolved client carries it,
+        # instead of coupling the test to a specific constructor call. Full-suite
+        # order can legitimately wrap or reuse client construction paths, but
+        # the behavior contract is the final configured client.
+        headers = getattr(client, "default_headers", {}) or {}
         assert headers.get("User-Agent", "").startswith("HermesAgent/")
 
     def test_gmi_profile_declares_hermes_user_agent(self):
