@@ -78,6 +78,59 @@ async def test_inbound_yields_then_ends_on_close():
     assert task.done()
 
 
+async def test_inbound_queue_bounded_drops_oldest(caplog):
+    clock = VirtualClock()
+    transport = AiortcStreamingTransport(
+        MEDIA_16K, clock=clock, outbound_sink=RecordingSink(), inbound_maxsize=2
+    )
+
+    frames = [make_frame(i) for i in range(5)]
+    with caplog.at_level("WARNING"):
+        for f in frames:
+            await transport.push_inbound(f)
+
+    # Queue is bounded: never exceeds the configured maxsize.
+    assert transport._inbound.qsize() <= 2
+
+    # Drain after close: the OLDEST frames were dropped — only a suffix of the
+    # most-recent frames survives (close itself drops one more to fit the
+    # sentinel, so we assert a suffix rather than an exact count).
+    await transport.close()
+    received: list[AudioFrame] = []
+    async def drain() -> None:
+        async for f in transport.inbound():
+            received.append(f)
+    await asyncio.wait_for(drain(), timeout=1.0)
+    # Oldest frames (0,1,2) were dropped; survivors are a tail of the pushed list.
+    assert received  # at least one frame survived
+    assert received == frames[len(frames) - len(received):]
+    assert frames[0] not in received
+    assert frames[1] not in received
+
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+async def test_close_sentinel_never_dropped():
+    clock = VirtualClock()
+    transport = AiortcStreamingTransport(
+        MEDIA_16K, clock=clock, outbound_sink=RecordingSink(), inbound_maxsize=2
+    )
+
+    # Fill the queue to the bound WITHOUT draining.
+    await transport.push_inbound(make_frame(0))
+    await transport.push_inbound(make_frame(1))
+
+    # Close enqueues the None sentinel even though the queue is full.
+    await transport.close()
+
+    # Draining must terminate (sentinel present) — a short timeout fails fast on hang.
+    received: list[AudioFrame] = []
+    async def drain() -> None:
+        async for f in transport.inbound():
+            received.append(f)
+    await asyncio.wait_for(drain(), timeout=1.0)
+
+
 async def test_transport_media_property():
     transport = AiortcStreamingTransport(MEDIA_16K, clock=VirtualClock(), outbound_sink=RecordingSink())
     assert transport.media is MEDIA_16K
@@ -417,9 +470,53 @@ async def test_build_streaming_pipeline_fake():
     await pipe.aclose()
 
 
-async def test_build_streaming_pipeline_real_not_implemented():
-    with pytest.raises(NotImplementedError):
-        build_streaming_pipeline({}, cognitive="real")
+async def test_build_streaming_pipeline_real_wiring():
+    from gateway.calls.native.streaming.fakes import (
+        FakeBrain,
+        FakeSTT,
+        FakeTTS,
+        FakeTurnDetection,
+    )
+
+    clock = VirtualClock()
+    turns = FakeTurnDetection([])
+    stt = FakeSTT()
+    tts = FakeTTS(VirtualClock())
+    pipe = build_streaming_pipeline(
+        {},
+        cognitive="real",
+        turn_detector=turns,
+        stt=stt,
+        tts=tts,
+        brain_factory=lambda: FakeBrain(VirtualClock(), text="hi"),
+        clock=clock,
+    )
+    assert pipe.is_streaming is True
+    assert pipe._session.turns is turns
+    assert pipe._session.stt is stt
+    assert pipe._session.tts is tts
+    assert pipe._session.clock is clock
+
+
+async def test_real_brain_factory_default_resolves_without_invoking():
+    from gateway.calls.native.streaming.brain import HermesSyncBrain
+    from gateway.calls.native.streaming.fakes import (
+        FakeSTT,
+        FakeTTS,
+        FakeTurnDetection,
+    )
+
+    pipe = build_streaming_pipeline(
+        {},
+        cognitive="real",
+        turn_detector=FakeTurnDetection([]),
+        stt=FakeSTT(),
+        tts=FakeTTS(VirtualClock()),
+        clock=VirtualClock(),
+    )
+    bf = pipe._session.brain_factory
+    brain = bf()
+    assert isinstance(brain, HermesSyncBrain)
 
 
 # ---------------------------------------------------------------------------

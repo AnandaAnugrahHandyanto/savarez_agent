@@ -56,7 +56,12 @@ class AudioUtteranceAccumulator:
         self._last_voice_time: float | None = None
         self._processing = False
 
-    async def accept_pcm16(self, pcm16: bytes, *, now: float | None = None) -> None:
+    async def accept_pcm16(
+        self, pcm16: bytes, *, now: float | None = None, sample_rate: int | None = None
+    ) -> None:
+        # sample_rate is accepted for call-site uniformity with _DirectFeedAccumulator and
+        # intentionally ignored here (turn-based handles rate downstream in flush()).
+        _ = sample_rate
         if self._processing:
             return
         current_time = time.monotonic() if now is None else now

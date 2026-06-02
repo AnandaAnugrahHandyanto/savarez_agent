@@ -25,12 +25,15 @@ No ``time.*`` / ``asyncio.sleep`` appears here: all timing is the injected
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .clock import Clock
 from .types import AudioFrame, FlushResult, MediaFormat
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "AiortcStreamingTransport",
@@ -83,13 +86,19 @@ class AiortcStreamingTransport:
         *,
         clock: Clock,
         outbound_sink: OutboundSink,
+        inbound_maxsize: int = 100,
     ) -> None:
         self._media = media
         self._clock = clock
         self._outbound_sink: OutboundSink = outbound_sink
         # Barge-in drop hook is a SEPARATE field (B2), not a sink attribute.
         self._outbound_drop: Any | None = None
-        self._inbound: asyncio.Queue[AudioFrame | None] = asyncio.Queue()
+        # Bounded inbound queue with drop-oldest back-pressure (mirrors the
+        # outbound track): under slow STT the queue can't grow without limit.
+        # The ``None`` close sentinel is NEVER dropped (would hang ``inbound()``).
+        self._inbound: asyncio.Queue[AudioFrame | None] = asyncio.Queue(
+            maxsize=inbound_maxsize
+        )
         self._pending: list[AudioFrame] = []
         self._closed = False
 
@@ -109,7 +118,15 @@ class AiortcStreamingTransport:
         return self._media
 
     async def push_inbound(self, frame: AudioFrame) -> None:
-        await self._inbound.put(frame)
+        # Drop-oldest back-pressure: we manage capacity ourselves so the put is
+        # non-blocking (a slow consumer never stalls the producer).
+        if self._inbound.full():
+            try:
+                self._inbound.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            logger.warning("inbound queue full; dropped oldest frame")
+        self._inbound.put_nowait(frame)
 
     def inbound(self) -> AsyncIterator[AudioFrame]:
         return self._inbound_gen()
@@ -144,7 +161,14 @@ class AiortcStreamingTransport:
     async def close(self) -> None:
         if not self._closed:
             self._closed = True
-            await self._inbound.put(None)
+            # The sentinel must ALWAYS be enqueued (dropping it hangs inbound()).
+            # If the queue is full, drop one oldest frame to make room.
+            if self._inbound.full():
+                try:
+                    self._inbound.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            self._inbound.put_nowait(None)
 
 
 # ---------------------------------------------------------------------------
@@ -291,12 +315,18 @@ def build_streaming_pipeline(
     cognitive: str = "fake",
     clock: Clock | None = None,
     sink: OutboundSink | None = None,
+    brain_factory: Any = None,
+    turn_detector: Any = None,
+    stt: Any = None,
+    tts: Any = None,
 ) -> StreamingPipeline:
     """Wire a StreamingPipeline for the engine.
 
     ``cognitive="fake"`` (Slice 6 default) builds deterministic Fake cognitive
-    ports on a VirtualClock. ``cognitive="real"`` raises NotImplementedError
-    (lands in Slice 7).
+    ports on a VirtualClock. ``cognitive="real"`` (Slice 7) wires the real local
+    cognitive ports (turn detection, Whisper STT, Piper TTS) and the Hermes brain
+    via an injected-backend seam: each port is injectable for tests, defaulting to
+    its real builder when omitted.
 
     ``sink`` (B3): when ``None`` (the live engine path) the transport is built
     with a module-level no-op sink — frames buffer harmlessly until ``start()``
@@ -304,9 +334,52 @@ def build_streaming_pipeline(
     recording sink to inspect emitted frames.
     """
     if cognitive == "real":
-        raise NotImplementedError(
-            "cognitive='real' streaming ports land in Slice 7; "
-            "Slice 6 ships the pure-asyncio core with cognitive='fake'."
+        # Lazy imports stay inside this branch so the module imports in CI
+        # without pipecat/whisper/piper installed (the real builders pull them).
+        from .brain import HermesSyncBrain, build_call_agent_factory
+        from .clock import MonotonicClock
+        from .interruption import InterruptionPolicy
+        from .local_tts import build_piper_tts
+        from .local_turn_detection import build_local_turn_detector
+        from .local_whisper_stt import build_local_whisper_stt
+        from .session import StreamingCallSession
+        from .tracer import StreamingCallTracer
+        from .types import StreamingCallContext
+
+        clk: Clock = clock or MonotonicClock()
+        media = MediaFormat(sample_rate=16000, channels=1, frame_ms=20)
+        call_id = "streaming-real"
+        ctx = StreamingCallContext(
+            call_id=call_id,
+            contact_id="real-contact",
+            session_id="real-session",
+            media=media,
+        )
+
+        turns = turn_detector or build_local_turn_detector(media, call_id=call_id)
+        stt_port = stt or build_local_whisper_stt(media, call_id=call_id)
+        tts_port = tts or build_piper_tts(media, clock=clk, call_id=call_id)
+        bf = brain_factory or (
+            lambda: HermesSyncBrain(build_call_agent_factory())
+        )
+
+        outbound_sink: OutboundSink = _noop_sink if sink is None else sink
+        transport = AiortcStreamingTransport(
+            media, clock=clk, outbound_sink=outbound_sink
+        )
+        session = StreamingCallSession(
+            ctx,
+            transport=transport,
+            stt=stt_port,
+            turns=turns,
+            tts=tts_port,
+            brain_factory=bf,
+            policy=InterruptionPolicy(),
+            tracer=StreamingCallTracer(call_id),
+            clock=clk,
+        )
+        return StreamingPipeline(
+            media=media, session=session, transport=transport, clock=clk
         )
     if cognitive != "fake":
         raise ValueError(f"unknown cognitive mode: {cognitive!r}")

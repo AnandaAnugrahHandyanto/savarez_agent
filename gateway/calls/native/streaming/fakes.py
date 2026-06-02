@@ -10,7 +10,7 @@ import asyncio
 from collections.abc import AsyncIterator
 
 from .cancellation import CancellationScope
-from .clock import VirtualClock
+from .clock import Clock, VirtualClock
 from .types import (
     AudioFrame,
     BrainEvent,
@@ -264,7 +264,7 @@ class FakeBrain:
 
     def __init__(
         self,
-        clock: VirtualClock,
+        clock: Clock,
         text: str,
         delay_ms: int = 0,
     ) -> None:
