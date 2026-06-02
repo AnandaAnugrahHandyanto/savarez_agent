@@ -15,20 +15,23 @@ logger = logging.getLogger(__name__)
 
 # XML tarzı açılış/kapanış etiketleri
 _REASONING_TAG_RE = re.compile(
-    r"<(think|thought|reasoning|chain-of-thought|inner-monologue)[^>]*>.*?</\1>",
+    r"<(think|thinking|thought|reasoning|chain-of-thought|inner-monologue)[^>]*>.*?</\1>",
     re.DOTALL | re.IGNORECASE
 )
+
 _REASONING_TAG_SELF_CLOSE_RE = re.compile(
-    r"<(think|thought|reasoning|chain-of-thought|inner-monologue)[^>]*/>",
+    r"<(think|thinking|thought|reasoning|chain-of-thought|inner-monologue)[^>]*/>",
     re.DOTALL | re.IGNORECASE
 )
+
 # Köşeli parantez tarzı açılış/kapanış etiketleri (GLM 5.1)
 _REASONING_TAG_BRACKET_RE = re.compile(
-    r"\[(think|thought|reasoning|chain-of-thought|inner-monologue)\][^\[]*\[/\1\]",
+    r"\[(think|thinking|thought|reasoning|chain-of-thought|inner-monologue)\][^\[]*\[/\1\]",
     re.DOTALL | re.IGNORECASE
 )
+
 _REASONING_TAG_BRACKET_SELF_CLOSE_RE = re.compile(
-    r"\[(think|thought|reasoning|chain-of-thought|inner-monologue)/\]",
+    r"\[(think|thinking|thought|reasoning|chain-of-thought|inner-monologue)/\]",
     re.DOTALL | re.IGNORECASE
 )
 # Markdown kod bloklarını temizle
