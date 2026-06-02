@@ -94,10 +94,13 @@ try:
         CreateImageRequestBody,
         CreateMessageRequest,
         CreateMessageRequestBody,
+        DeleteMessageRequest,
         GetChatRequest,
         GetMessageRequest,
         GetMessageResourceRequest,
         P2ImMessageMessageReadV1,
+        PatchMessageRequest,
+        PatchMessageRequestBody,
         ReplyMessageRequest,
         ReplyMessageRequestBody,
         UpdateMessageRequest,
@@ -1360,8 +1363,10 @@ def check_feishu_requirements() -> bool:
             CreateFileRequest, CreateFileRequestBody,
             CreateImageRequest, CreateImageRequestBody,
             CreateMessageRequest, CreateMessageRequestBody,
+            DeleteMessageRequest,
             GetChatRequest, GetMessageRequest, GetMessageResourceRequest,
             P2ImMessageMessageReadV1,
+            PatchMessageRequest, PatchMessageRequestBody,
             ReplyMessageRequest, ReplyMessageRequestBody,
             UpdateMessageRequest, UpdateMessageRequestBody,
         )
@@ -1382,10 +1387,13 @@ def check_feishu_requirements() -> bool:
             "CreateImageRequestBody": CreateImageRequestBody,
             "CreateMessageRequest": CreateMessageRequest,
             "CreateMessageRequestBody": CreateMessageRequestBody,
+            "DeleteMessageRequest": DeleteMessageRequest,
             "GetChatRequest": GetChatRequest,
             "GetMessageRequest": GetMessageRequest,
             "GetMessageResourceRequest": GetMessageResourceRequest,
             "P2ImMessageMessageReadV1": P2ImMessageMessageReadV1,
+            "PatchMessageRequest": PatchMessageRequest,
+            "PatchMessageRequestBody": PatchMessageRequestBody,
             "ReplyMessageRequest": ReplyMessageRequest,
             "ReplyMessageRequestBody": ReplyMessageRequestBody,
             "UpdateMessageRequest": UpdateMessageRequest,
@@ -1765,6 +1773,23 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
 
+    @staticmethod
+    def _build_card_payload(content: str, *, cursor: str = "", finalize: bool = False) -> str:
+        """Build an interactive card JSON payload from markdown content."""
+        display = content
+        if cursor and not finalize:
+            display += cursor
+        card = {
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True},
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": display},
+                ],
+            },
+        }
+        return json.dumps(card, ensure_ascii=False)
+
     async def send(
         self,
         chat_id: str,
@@ -1776,13 +1801,21 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        use_card = (metadata or {}).get("use_card", False)
+        logger.info("[Feishu] send() called: use_card=%s chat_id=%s content_len=%d", use_card, chat_id, len(content))
+
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
+                if use_card:
+                    msg_type = "interactive"
+                    payload = self._build_card_payload(chunk)
+                    logger.info("[Feishu] Sending interactive card: payload_len=%d", len(payload))
+                else:
+                    msg_type, payload = self._build_outbound_payload(chunk)
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -1829,19 +1862,62 @@ class FeishuAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Edit a previously sent Feishu text/post message."""
+        """Edit a previously sent Feishu text/post/interactive message.
+
+        For interactive cards (use_card=True), uses the dedicated PATCH
+        endpoint (im/v1/messages/{message_id}/patch) instead of the text
+        update endpoint.  When PATCH fails, falls back to delete‑and‑resend
+        so the stream consumer can continue editing the replacement card."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        use_card = (metadata or {}).get("use_card", False)
+        logger.info("[Feishu] edit_message() called: use_card=%s message_id=%s content_len=%d finalize=%s", use_card, message_id, len(content), finalize)
+
         content = self.format_message(content)
         try:
-            msg_type, payload = self._build_outbound_payload(content)
+            if use_card:
+                # ── Interactive card path: use PATCH (not UPDATE) ──
+                payload = self._build_card_payload(content, finalize=finalize)
+                logger.info("[Feishu] Patching interactive card: payload_len=%d message_id=%s", len(payload), message_id)
+
+                # Build PatchMessageRequest (no msg_type — the endpoint is card-only)
+                patch_body = PatchMessageRequestBody.builder().content(payload).build()
+                patch_request = (PatchMessageRequest.builder()
+                                 .message_id(message_id)
+                                 .request_body(patch_body)
+                                 .build())
+                response = await asyncio.to_thread(self._client.im.v1.message.patch, patch_request)
+                result = self._finalize_send_result(response, "card patch failed")
+
+                if result.success:
+                    result.message_id = message_id
+                    return result
+
+                # Patch failed — fall back to delete‑and‑resend
+                logger.warning("[Feishu] Card patch failed (error=%s), falling back to delete-and-resend", result.error)
+                try:
+                    await self.delete_message(chat_id, message_id)
+                except Exception as del_exc:
+                    logger.debug("[Feishu] Delete stale card %s failed (best-effort): %s", message_id, del_exc)
+
+                # Send a fresh card and return its id so the consumer can continue
+                send_result = await self.send(chat_id, content, metadata=metadata)
+                if send_result.success and send_result.message_id:
+                    send_result.message_id = str(send_result.message_id)
+                    return send_result
+                return SendResult(success=False, error=f"card patch+resend failed: {result.error}")
+
+            else:
+                # ── Text/post path: use UPDATE (existing behavior) ──
+                msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+            if not result.success and not use_card and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
@@ -1856,6 +1932,25 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def delete_message(
+        self, chat_id: str, message_id: str,
+    ) -> bool:
+        """Delete a previously sent Feishu message (best-effort)."""
+        if not self._client:
+            return False
+        try:
+            request = DeleteMessageRequest.builder().message_id(message_id).build()
+            response = await asyncio.to_thread(self._client.im.v1.message.delete, request)
+            result = self._finalize_send_result(response, "delete failed")
+            if result.success:
+                logger.debug("[Feishu] Deleted message %s", message_id)
+                return True
+            logger.debug("[Feishu] Delete message %s failed: %s", message_id, result.error)
+            return False
+        except Exception as exc:
+            logger.debug("[Feishu] Delete message %s error: %s", message_id, exc)
+            return False
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -2804,12 +2899,22 @@ class FeishuAdapter(BasePlatformAdapter):
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
 
-        synthetic_text = f"/card {action_tag}"
-        if action_value:
-            try:
-                synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
-            except Exception:
-                pass
+        # If the button value contains a "text" field that looks like a
+        # command (starts with "/"), route it directly instead of wrapping
+        # in a /card envelope.  This makes panel buttons execute their
+        # embedded command (e.g. "/model openai/gpt-5.4") immediately.
+        embedded_text = ""
+        if isinstance(action_value, dict):
+            embedded_text = str(action_value.get("text", "") or "").strip()
+        if embedded_text.startswith("/"):
+            synthetic_text = embedded_text
+        else:
+            synthetic_text = f"/card {action_tag}"
+            if action_value:
+                try:
+                    synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
+                except Exception:
+                    pass
 
         sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
         sender_profile = await self._resolve_sender_profile(sender_id)

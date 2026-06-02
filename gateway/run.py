@@ -8148,7 +8148,7 @@ class GatewayRunner:
                             if output:
                                 from agent.redact import redact_sensitive_text
                                 output = redact_sensitive_text(output)
-                            return output if output else "Command returned no output."
+                            return output  # 空输出 = 静默，不发消息
                         except asyncio.TimeoutError:
                             return "Quick command timed out (30s)."
                         except Exception as e:
@@ -16464,6 +16464,12 @@ class GatewayRunner:
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
 
+        # Feishu: enable card-based streaming for richer UI
+        if source.platform == Platform.FEISHU:
+            if _thread_metadata is None:
+                _thread_metadata = {}
+            _thread_metadata["use_card"] = True
+
         if _streaming_enabled:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
@@ -17295,6 +17301,7 @@ class GatewayRunner:
             _status_thread_metadata: Optional[Dict[str, Any]] = {
                 "thread_id": _progress_thread_id,
                 "reply_to_message_id": event_message_id,
+                "use_card": True,
             }
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
@@ -17455,11 +17462,17 @@ class GatewayRunner:
                             transport=_scfg.transport or "edit",
                             chat_type=getattr(source, "chat_type", "") or "",
                         )
+                        # Ensure use_card is set for Feishu even when metadata is None
+                        _effective_metadata = _status_thread_metadata
+                        if source.platform == Platform.FEISHU:
+                            if _effective_metadata is None:
+                                _effective_metadata = {}
+                            _effective_metadata["use_card"] = True
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata=_status_thread_metadata,
+                            metadata=_effective_metadata,
                             on_new_message=(
                                 (lambda: progress_queue.put(("__reset__",)))
                                 if progress_queue is not None
