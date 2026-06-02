@@ -3232,6 +3232,33 @@ class TestPtyWebSocket:
                 pass
         assert exc.value.code == 4401
 
+    def test_remote_desktop_file_origin_allowed_after_token(self, monkeypatch):
+        """Packaged Desktop uses file:// origin for remote /api/ws.
+
+        Test remote only probes REST, but Save and reconnect opens the browser
+        WebSocket from Electron's renderer. Non-loopback, token-authenticated
+        Desktop sessions must therefore accept file:// origins after token auth.
+        """
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "bound_host",
+            "ubuntu-server.tailf31bf8.ts.net",
+            raising=False,
+        )
+        monkeypatch.setattr(self.ws_module.app.state, "auth_required", False, raising=False)
+        headers = {
+            "host": "ubuntu-server.tailf31bf8.ts.net:9119",
+            "origin": "file://",
+        }
+
+        with self.client.websocket_connect(
+            f"/api/ws?token={self.token}", headers=headers
+        ) as conn:
+            ready = conn.receive_json()
+
+        assert ready["method"] == "event"
+        assert ready["params"]["type"] == "gateway.ready"
+
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(
             self.ws_module,
