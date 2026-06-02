@@ -521,7 +521,10 @@ async def test_send_exec_approval_posts_native_buttons_and_tracks_pending(monkey
     assert "rm -rf /important" in payload["content"]
     assert "Command approval required" in payload["content"]
     assert "⚠️" not in payload["content"]
-    assert "/approve" not in payload["content"]
+    assert "/approve once" in payload["content"]
+    assert "/approve session" in payload["content"]
+    assert "/approve always" in payload["content"]
+    assert "/deny" in payload["content"]
     buttons = payload["components"][0]["components"]
     assert [button["label"] for button in buttons] == ["Allow once", "Session", "Always", "Deny"]
     assert [button["style"] for button in buttons] == [3, 1, 2, 4]
@@ -793,8 +796,10 @@ async def test_send_slash_confirm_posts_native_buttons(monkeypatch):
     assert call is not None
     payload = call.kwargs["json"]
     assert "Reload MCP?" in payload["content"]
-    assert "Text fallback" not in payload["content"]
-    assert "/approve" not in payload["content"]
+    assert "Text fallback" in payload["content"]
+    assert "/approve" in payload["content"]
+    assert "/always" in payload["content"]
+    assert "/cancel" in payload["content"]
     assert [button["label"] for button in payload["components"][0]["components"]] == ["Approve once", "Always approve", "Cancel"]
     assert {state["kind"] for state in adapter._pending_component_actions.values()} == {"slash_confirm"}
 

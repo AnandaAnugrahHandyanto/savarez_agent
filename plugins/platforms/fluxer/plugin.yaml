@@ -6,8 +6,10 @@ description: >
   Fluxer gateway adapter for Hermes Agent. Native Fluxer integration using
   Fluxer's bot REST API for outbound messages, Gateway WebSocket events for
   inbound dispatches, message edits, reactions, pins, reply references,
-  media delivery, and channel-directory enumeration. Component buttons,
-  native slash commands, and Discord-style threads are deployment-dependent.
+  media delivery, and channel-directory enumeration. Component buttons are
+  deployment-dependent and approval prompts include visible slash-command
+  fallback text; native slash commands and Discord-style threads are also
+  deployment-dependent.
 author: Hermes Agent
 requires_env:
   - name: FLUXER_BOT_TOKEN

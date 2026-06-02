@@ -33,7 +33,7 @@ Fluxer is not just “another Discord target.” A few platform traits make it e
 | Message edits | ✅ | Used for progress/stream-style updates where Hermes edits a sent message |
 | Message deletes | ✅ | Gateway cleanup and deleted approval prompts are handled |
 | Reactions | ✅ | General message reactions are preserved as Fluxer events; Hermes does not use reactions for dangerous-command approval. |
-| Buttons/components | ✅ | Used for dangerous-command approvals and destructive slash confirmations on Fluxer deployments that accept message components and emit `INTERACTION_CREATE`. |
+| Buttons/components | Deployment-dependent | Hermes can attach component payloads for deployments that render message components and emit `INTERACTION_CREATE`, but prompts always include slash-command text fallback because hosted/client support may not show buttons. |
 | Native slash commands | Deployment-dependent | Hermes can translate Fluxer `APPLICATION_COMMAND` interactions if a deployment emits them, but the current hosted API spec does not expose application-command registration routes. Keep `FLUXER_REGISTER_NATIVE_COMMANDS=false` unless your deployment provides those routes. |
 | Message pins | ✅ | Uses Fluxer's `/channels/{id}/messages/pins` routes when the server enables pins |
 | Threads | — | Hosted Fluxer currently exposes reply references, but not Discord-style thread routes in the public API spec. Hermes keeps speculative helpers for deployments that add thread endpoints, but the platform-comparison table does not count this as end-to-end thread support. |
@@ -159,8 +159,8 @@ Set `FLUXER_FREE_RESPONSE_CHANNELS` for additional channels where Hermes should 
 
 Hermes keeps Fluxer native-interaction support guarded and deployment-aware:
 
-- if a Fluxer deployment accepts `components`, Hermes sends action rows/buttons for dangerous-command approvals and slash confirmations;
-- dangerous-command approval prompts are button-first: `Allow once`, `Session`, `Always`, and `Deny` buttons are shown without emoji-reaction instructions or slash-command text in the Fluxer prompt;
+- if a Fluxer deployment accepts `components`, Hermes also attaches action rows/buttons for dangerous-command approvals and slash confirmations;
+- dangerous-command approval prompts include visible text fallback commands (`/approve once`, `/approve session`, `/approve always`, `/deny`) so hosted/client builds that do not render components remain usable;
 - if a deployment emits `INTERACTION_CREATE` with `type=3` / `MESSAGE_COMPONENT`, Hermes resolves the matching pending action;
 - if a deployment emits `INTERACTION_CREATE` with `type=2` / `APPLICATION_COMMAND`, Hermes translates it into normal slash text such as `/model gpt-5.5`.
 
@@ -180,16 +180,16 @@ FLUXER_NATIVE_COMMAND_GUILDS=123456789012345678,234567890123456789
 
 ## Dangerous-command approvals
 
-On deployments with component support, Hermes can show native dangerous-command approval buttons:
+On deployments with component support, Hermes can also attach native dangerous-command approval buttons:
 
-| Button | Meaning |
-|---|---|
-| Allow once | approve once |
-| Session | approve for this session |
-| Always | always allow this command pattern |
-| Deny | deny |
+| Button | Text fallback | Meaning |
+| --- | --- | --- |
+| Allow once | `/approve once` | approve only the waiting command |
+| Session | `/approve session` | allow matching commands for this session |
+| Always | `/approve always` | persist the approval pattern |
+| Deny | `/deny` | deny |
 
-Fluxer approval is button-only in the prompt; Hermes does not ask users to approve with emoji reactions or by typing slash commands. If the approval prompt is deleted before it is resolved, Hermes fails closed and denies the pending approval.
+Hermes always includes the text fallback in Fluxer approval prompts because hosted/client builds may accept the message while not rendering component buttons. Emoji reactions are not approval controls. If the approval prompt is deleted before it is resolved, Hermes fails closed and denies the pending approval.
 
 ## Media, voice, and streaming
 
@@ -273,6 +273,6 @@ The plugin registers a standalone sender, so cron delivery also works when the c
 
 **The bot ignores channel messages** — In non-home channels, address it directly (`Hermes, ...` or a real bot mention), add the channel to `FLUXER_FREE_RESPONSE_CHANNELS`, or set `FLUXER_REQUIRE_MENTION=false`.
 
-**Dangerous-command buttons do nothing** — Make sure the clicking user's Fluxer ID is in `FLUXER_ALLOWED_USERS` or `FLUXER_ALLOW_ALL_USERS=true` is set for a private/dev setup. Bot clicks are ignored. Emoji reactions are not approval controls.
+**Dangerous-command approval text fallback is needed** — Some Fluxer hosted/client builds accept component payloads but do not render buttons. Use `/approve once`, `/approve session`, `/approve always`, or `/deny` from the prompt text. If buttons are visible, they are optional shortcuts.
 
 **Reconnects / heartbeat warnings** — The adapter responds to server heartbeat requests and sends regular heartbeats. Fresh `4009 Heartbeat timeout` warnings usually mean the deployment closed the WebSocket before the bot could identify/heartbeat; check network path, `FLUXER_GATEWAY_URL`, and server logs.

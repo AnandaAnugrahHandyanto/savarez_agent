@@ -663,7 +663,7 @@ class FluxerAdapter(BasePlatformAdapter):
             "**Command approval required**\n"
             f"```\n{cmd_display}\n```\n"
             f"Reason: {description}\n\n"
-            "Choose one of the approval buttons below."
+            "Reply with `/approve once`, `/approve session`, `/approve always`, or `/deny`."
         )
         nonce = uuid.uuid4().hex[:12]
         button_specs = (
@@ -731,12 +731,9 @@ class FluxerAdapter(BasePlatformAdapter):
             _fluxer_button(custom_id=custom_ids[choice], label=label, style=style)
             for choice, label, style in specs
         ])
-        content_message = re.sub(
-            r"\n*_Text fallback: reply `/(?:approve|always|cancel)`[^\n]*_\s*$",
-            "",
-            message or "",
-            flags=re.IGNORECASE,
-        ).rstrip()
+        content_message = (message or "").rstrip()
+        if not re.search(r"/(?:approve|always|cancel)", content_message, flags=re.IGNORECASE):
+            content_message = f"{content_message}\n\n_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
         content = f"**{title}**\n{content_message}"
         try:
             data = await self._request(
