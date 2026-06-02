@@ -1637,14 +1637,29 @@ class DiscordAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Edit a previously sent Discord message."""
+        """Edit a previously sent Discord message.
+
+        Streaming/edit consumers pass ``metadata={'thread_id': ...}`` for
+        Discord thread replies.  Match ``send()`` routing so progressive edits
+        target the thread message, not the parent channel.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
-            channel = self._client.get_channel(int(chat_id))
+            thread_id = None
+            if metadata and metadata.get("thread_id"):
+                thread_id = metadata["thread_id"]
+
+            target_id = thread_id or chat_id
+            channel = self._client.get_channel(int(target_id))
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+                channel = await self._client.fetch_channel(int(target_id))
+            if not channel:
+                target_kind = "Thread" if thread_id else "Channel"
+                return SendResult(success=False, error=f"{target_kind} {target_id} not found")
+
             msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
