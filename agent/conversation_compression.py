@@ -658,8 +658,47 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
         """Return a smaller data URL, or None if shrink can't help."""
         if not isinstance(url, str) or not url.startswith("data:"):
             return None
-        if len(url) <= target_bytes:
-            # This specific image wasn't the oversized one.
+        # Pre-fix, this gate was ``len(url) <= target_bytes`` only.
+        # A tall full-page screenshot (e.g. 1200×12000 at 0.06 MB) passes
+        # the byte check but exceeds Anthropic's 8000px dimension cap,
+        # and once baked into immutable history the session is
+        # bricked on every subsequent replay (#25837, #37677). Now
+        # we ALSO decode the image and check dimensions. If either
+        # ceiling is exceeded, attempt the resize. If Pillow is
+        # unavailable the dimension decode fails and we fall back to
+        # the byte-only gate (the existing pre-fix behaviour, which
+        # is at least no worse than the regression we're fixing).
+        decode_error: Exception | None = None
+        dim_exceeds = False
+        try:
+            from tools.vision_tools import _image_exceeds_dimension as _dim_check
+        except ImportError:
+            _dim_check = None  # type: ignore
+        if _dim_check is not None:
+            try:
+                import base64 as _b64_dim
+                _header, _, _data = url.partition(",")
+                _raw = _b64_dim.b64decode(_data)
+                import io as _io
+                from PIL import Image as _PILImage  # type: ignore
+                with _PILImage.open(_io.BytesIO(_raw)) as _img:
+                    _w, _h = _img.size
+                if _dim_check(_w, _h):
+                    dim_exceeds = True
+            except ImportError:
+                # No Pillow: dimension check isn't possible, but
+                # _resize_image_for_vision also depends on Pillow so
+                # the resize itself will be a no-op below. Defer to
+                # the byte-only gate in that case.
+                pass
+            except Exception as exc:
+                # Corrupt image or decode failure: record it but
+                # don't bail; the byte check below is the fallback.
+                decode_error = exc
+        if not dim_exceeds and len(url) <= target_bytes:
+            # Neither ceiling was tripped (or dimension check was
+            # unavailable and bytes are fine). This specific image
+            # wasn't the oversized one.
             return None
         try:
             header, _, data = url.partition(",")

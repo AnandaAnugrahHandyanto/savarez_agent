@@ -330,6 +330,19 @@ _EMBED_TARGET_BYTES = 4 * 1024 * 1024
 # rejects an image, we downscale to this target and retry once.
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
 
+# Anthropic also enforces a per-image **pixel-dimension** ceiling of 8000
+# on the longest side. A tall full-page screenshot (e.g. 1200×12000) can
+# be well under 5 MB yet vastly over 8000px, and once baked into history
+# it brick the session on every subsequent replay (the 400 is
+# non-retryable and history is immutable). Pre-fix, every guard in
+# ``vision_tools.py`` and ``conversation_compression.py`` reasoned about
+# bytes only — the 8000px message was never classified as
+# ``image_too_large`` and the shrink/retry path never fired (#25837,
+# #37677). 7900 = 8000 - 100px headroom for the resize math to stay
+# under Anthropic's hard limit even after a re-encode passes through
+# PIL's Lanczos resampler.
+_MAX_IMAGE_DIMENSION = 7900
+
 
 def _is_image_size_error(error: Exception) -> bool:
     """Detect if an API error is related to image or payload size."""
@@ -339,6 +352,32 @@ def _is_image_size_error(error: Exception) -> bool:
         "request_too_large", "image_url", "invalid_request",
         "exceeds", "size limit",
     ))
+
+
+def _image_exceeds_dimension(width: int, height: int,
+                              max_dim: int = _MAX_IMAGE_DIMENSION) -> bool:
+    """True if either axis of an image exceeds the provider's pixel cap.
+
+    Anthropic rejects any image with longest side > 8000 px with a
+    non-retryable 400. Pre-fix, the embed-time check in
+    ``vision_tools.py`` only compared base64 byte length against
+    ``_EMBED_TARGET_BYTES``, so a 1200×12000 PNG (≈ 0.06 MB) passed
+    every guard and was baked into immutable history. This helper
+    makes the pixel cap explicit so the embed-time and reactive-recover
+    paths can both check it. Pillow is a soft dependency, so this
+    helper takes pre-decoded ``(width, height)`` ints — the caller is
+    responsible for the decode.
+
+    ``max_dim`` is parameterised for the rare provider that uses a
+    different cap; defaults to Anthropic's 7900 (8000 - 100px
+    headroom).
+    """
+    if width <= 0 or height <= 0:
+        # 0×N / N×0 is a corrupt image; treat as exceeding so the
+        # caller falls back to a non-vision path rather than embedding
+        # something the provider will reject.
+        return True
+    return max(width, height) > max_dim
 
 
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
@@ -351,6 +390,51 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
 
     Returns the base64 data URL string.
     """
+    # PILLOW-AVAILABILITY-DEPENDENT pre-cap: Anthropic rejects any image with
+    # longest side > 8000 px with a non-retryable 400, regardless of base64
+    # byte size. A 1200×12000 PNG at 0.06 MB passes the byte check below
+    # but is unrecoverable once baked into immutable history (#25837,
+    # #37677). Decode the dimensions FIRST, pre-cap the longest side to
+    # ``_MAX_IMAGE_DIMENSION`` (7900, 100px headroom under Anthropic's
+    # hard 8000 cap) preserving aspect ratio, then continue with the
+    # byte-sizing pass. This must run before the byte fast-path so a
+    # tiny-but-tall image is caught even though it wouldn't trigger the
+    # byte-based resize. If Pillow is unavailable the decode fails
+    # silently and we fall through to the byte sizing — the reactive
+    # recovery in conversation_compression.try_shrink_image_parts_in_messages
+    # (and the embed-time dimension check added in the matching fix in
+    # this PR) is the safety net for that case.
+    _precap_path: Optional[Path] = None
+    try:
+        from PIL import Image as _PILImage_pre  # type: ignore
+        with _PILImage_pre.open(image_path) as _dim_probe:
+            _w, _h = _dim_probe.size
+        if _image_exceeds_dimension(_w, _h):
+            scale = _MAX_IMAGE_DIMENSION / max(_w, _h)
+            new_w = max(int(_w * scale), 1)
+            new_h = max(int(_h * scale), 1)
+            logger.info(
+                "Image %dx%d exceeds %dpx cap, pre-resizing to %dx%d "
+                "before byte-sizing pass",
+                _w, _h, _MAX_IMAGE_DIMENSION, new_w, new_h,
+            )
+            import tempfile as _tf
+            _precap_path = Path(_tf.NamedTemporaryFile(
+                prefix="hermes_precap_", suffix=".png", delete=False,
+            ).name)
+            with _PILImage_pre.open(image_path) as _img:
+                _img = _img.resize((new_w, new_h), _PILImage_pre.LANCZOS)
+                # Preserve mime if it was PNG; otherwise convert to RGB JPEG.
+                _fmt = "PNG" if (mime_type or "").endswith("png") else "JPEG"
+                if _fmt == "JPEG" and _img.mode in {"RGBA", "P"}:
+                    _img = _img.convert("RGB")
+                _img.save(str(_precap_path), format=_fmt)
+            image_path = _precap_path
+    except ImportError:
+        pass
+    except Exception as _exc:
+        logger.debug("pre-cap decode failed for %s: %s", image_path, _exc)
+
     # Quick file-size estimate: base64 expands by ~4/3, plus data URL header.
     # Skip the expensive full-read + encode if Pillow can resize directly.
     file_size = image_path.stat().st_size
@@ -359,6 +443,11 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
         # Small enough — just encode directly.
         data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         if len(data_url) <= max_base64_bytes:
+            if _precap_path is not None:
+                try:
+                    Path(_precap_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
             return data_url
     else:
         data_url = None  # defer full encode; try Pillow resize first
@@ -392,6 +481,26 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     # Convert RGBA to RGB for JPEG output
     if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
         img = img.convert("RGB")
+
+    # Pre-cap pixel dimensions BEFORE the byte-sizing loop. Anthropic
+    # rejects any image with longest side > 8000 px with a non-retryable
+    # 400, regardless of base64 byte size — a 1200×12000 PNG at 0.06 MB
+    # passes the byte check but is unrecoverable once baked into
+    # history (#25837, #37677). Scale the longest side to
+    # ``_MAX_IMAGE_DIMENSION`` (7900, with 100px headroom under
+    # Anthropic's hard 8000 cap) and the shorter side proportionally,
+    # preserving aspect ratio. Only fires when the image is actually
+    # over the cap, so normal small images are untouched.
+    if _image_exceeds_dimension(img.width, img.height):
+        scale = _MAX_IMAGE_DIMENSION / max(img.width, img.height)
+        new_w = max(int(img.width * scale), 1)
+        new_h = max(int(img.height * scale), 1)
+        logger.info(
+            "Image %dx%d exceeds %dpx cap, pre-resizing to %dx%d before "
+            "byte-sizing pass",
+            img.width, img.height, _MAX_IMAGE_DIMENSION, new_w, new_h,
+        )
+        img = img.resize((new_w, new_h), Image.LANCZOS)
 
     # Strategy: halve dimensions until base64 fits, up to 4 rounds.
     # For JPEG, also try reducing quality at each size step.
@@ -666,6 +775,46 @@ async def _vision_analyze_native(
         image_data_url = _image_to_base64_data_url(
             temp_image_path, mime_type=detected_mime_type,
         )
+
+        # Proactive pixel-dimension cap: Anthropic rejects any image with
+        # longest side > 8000 px with a non-retryable 400, regardless of
+        # base64 byte size. A 1200×12000 PNG at 0.06 MB passes the byte
+        # check below but is unrecoverable once baked into immutable
+        # history (#25837, #37677). Decode the image dimensions and
+        # resize if either axis exceeds the cap. Done BEFORE the byte
+        # check so a tiny-but-tall image is caught even though it
+        # wouldn't trigger the byte-based resize. If Pillow is
+        # unavailable, we skip the dimension check — the reactive
+        # recovery in conversation_compression will still catch it
+        # after a provider 400 (assuming the error_classifier has the
+        # dimension pattern, which the matching fix in this PR adds).
+        try:
+            from PIL import Image as _PILImage  # type: ignore
+            with _PILImage.open(temp_image_path) as _dim_img:
+                _w, _h = _dim_img.size
+            if _image_exceeds_dimension(_w, _h):
+                logger.info(
+                    "Embed-time dimension check: %dx%d exceeds %dpx cap, "
+                    "resizing before bake-in", _w, _h, _MAX_IMAGE_DIMENSION,
+                )
+                image_data_url = _resize_image_for_vision(
+                    temp_image_path, mime_type=detected_mime_type,
+                    max_base64_bytes=_MAX_BASE64_BYTES,
+                )
+        except ImportError:
+            logger.debug(
+                "Pillow not installed — skipping embed-time dimension "
+                "check; relying on reactive recovery in "
+                "conversation_compression.try_shrink_image_parts_in_messages"
+            )
+        except Exception as _dim_exc:
+            # Decode failure → image is corrupt; fall through and let
+            # the byte check + the API call itself produce the clearer
+            # error.
+            logger.debug(
+                "Embed-time dimension check failed to decode %s: %s",
+                temp_image_path, _dim_exc,
+            )
 
         # Proactive embed cap: this image gets baked into conversation
         # history and re-sent on every subsequent turn.  Anthropic rejects
