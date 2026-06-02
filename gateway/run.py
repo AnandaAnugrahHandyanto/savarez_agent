@@ -2521,38 +2521,38 @@ class GatewayRunner:
         return None
 
     def _mark_pool_override(self, session_key: str) -> None:
-    """Mark a session as manually overridden in the pool.
+        """Mark a session as manually overridden in the pool.
 
-    Called after ``_release_pool_slot`` so the pool knows not to
-    reassign a model on the next turn.
-    """
-    try:
-        from gateway.session_model_pool import get_session_model_pool as _get_pool
-        _p = _get_pool(_load_gateway_config())
-        if _p:
-            _p.mark_manual_override(session_key)
-    except Exception as _exc:
-        logger.debug("SessionModelPool: failed to mark override for %s: %s", session_key, _exc)
+        Called after ``_release_pool_slot`` so the pool knows not to
+        reassign a model on the next turn.
+        """
+        try:
+            from gateway.session_model_pool import get_session_model_pool as _get_pool
+            _p = _get_pool(_load_gateway_config())
+            if _p:
+                _p.mark_manual_override(session_key)
+        except Exception as _exc:
+            logger.debug("SessionModelPool: failed to mark override for %s: %s", session_key, _exc)
 
     def _release_pool_slot(self, session_key: str) -> None:
-    """Release a pool-assigned slot for a session (if one exists).
+        """Release a pool-assigned slot for a session (if one exists).
 
-    Centralizes the release pattern used in 3 places: session reset,
-    /model override, in-place model switch, and any other override path.
-    Thread-safe: acquires ``_pool_assigned_models_lock`` internally.
-    """
-    try:
-        with self._pool_assigned_models_lock:
-            _old_pool = self._pool_assigned_models.pop(session_key, None)
-        if _old_pool:
-            from gateway.session_model_pool import get_session_model_pool as _get_pool
-            # The singleton ignores config after first init; pass {}
-            # to avoid unnecessary disk I/O via _load_gateway_config().
-            _p = _get_pool({})
-            if _p:
-                _p.release_session_slot(session_key)
-    except Exception as _exc:
-        logger.debug("SessionModelPool: failed to release slot for %s: %s", session_key, _exc)
+        Centralizes the release pattern used in 3 places: session reset,
+        /model override, in-place model switch, and any other override path.
+        Thread-safe: acquires ``_pool_assigned_models_lock`` internally.
+        """
+        try:
+            with self._pool_assigned_models_lock:
+                _old_pool = self._pool_assigned_models.pop(session_key, None)
+            if _old_pool:
+                from gateway.session_model_pool import get_session_model_pool as _get_pool
+                # The singleton ignores config after first init; pass {}
+                # to avoid unnecessary disk I/O via _load_gateway_config().
+                _p = _get_pool({})
+                if _p:
+                    _p.release_session_slot(session_key)
+        except Exception as _exc:
+            logger.debug("SessionModelPool: failed to release slot for %s: %s", session_key, _exc)
 
 
     def _resolve_session_agent_runtime(
@@ -8827,6 +8827,14 @@ class GatewayRunner:
                 self._pending_model_notes.pop(session_key, None)
             # Release pool-assigned slot for the reset session.
             self._release_pool_slot(session_key)
+            # Clear manual override so the pool can reassign on next turn.
+            try:
+                from gateway.session_model_pool import get_session_model_pool as _get_pool_rst
+                _p_rst = _get_pool_rst(_load_gateway_config())
+                if _p_rst:
+                    _p_rst.clear_manual_override(session_key)
+            except Exception as _exc:
+                logger.debug("SessionModelPool: failed to clear override for %s: %s", session_key, _exc)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (

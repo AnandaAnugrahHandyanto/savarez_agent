@@ -559,7 +559,7 @@ def _get_session_model_pool():
         from gateway.session_model_pool import get_session_model_pool
         _aux_pool_cache = get_session_model_pool({})
     except Exception:
-        pass
+        _aux_pool_cache = None
     return _aux_pool_cache
 
 
