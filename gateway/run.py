@@ -2520,6 +2520,25 @@ class GatewayRunner:
                 return None
         return None
 
+    def _release_pool_slot(self, session_key: str) -> None:
+    """Release a pool-assigned slot for a session (if one exists).
+
+    Centralizes the release pattern used in 4 places: session reset,
+    /model override, in-place model switch, and any other override path.
+    Thread-safe: acquires ``_pool_assigned_models_lock`` internally.
+    """
+    try:
+        with self._pool_assigned_models_lock:
+            _old_pool = self._pool_assigned_models.pop(session_key, None)
+        if _old_pool:
+            from gateway.session_model_pool import get_session_model_pool as _get_pool
+            _p = _get_pool(_load_gateway_config())
+            if _p:
+                _p.release_session_slot(session_key)
+    except Exception as _exc:
+        logger.debug("SessionModelPool: failed to release slot for %s: %s", session_key, _exc)
+
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -8790,16 +8809,7 @@ class GatewayRunner:
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
             # Release pool-assigned slot for the reset session.
-            try:
-                with self._pool_assigned_models_lock:
-                    _old_pool = self._pool_assigned_models.pop(session_key, None)
-                if _old_pool:
-                    from gateway.session_model_pool import get_session_model_pool as _get_pool
-                    _p = _get_pool(_load_gateway_config())
-                    if _p:
-                        _p.release_session_slot(session_key)
-            except Exception:
-                pass
+            self._release_pool_slot(session_key)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -11012,18 +11022,7 @@ class GatewayRunner:
 
                         # Release pool-assigned slot for this session if one
                         # exists — the manual override takes precedence.
-                        try:
-                            if hasattr(_self, "_pool_assigned_models"):
-                                with _self._pool_assigned_models_lock:
-                                    _old_pool = _self._pool_assigned_models.pop(_session_key, None)
-                                if _old_pool:
-                                    from gateway.session_model_pool import get_session_model_pool as _get_pool
-                                    _p_cfg = _load_gateway_config()
-                                    _p = _get_pool(_p_cfg)
-                                    if _p:
-                                        _p.release_session_slot(_session_key)
-                        except Exception:
-                            pass
+                        self._release_pool_slot(_session_key)
 
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
@@ -11181,16 +11180,7 @@ class GatewayRunner:
 
         # Release pool-assigned slot for this session if one exists —
         # the manual override takes precedence.
-        try:
-            with self._pool_assigned_models_lock:
-                _old_pool = self._pool_assigned_models.pop(session_key, None)
-            if _old_pool:
-                from gateway.session_model_pool import get_session_model_pool as _get_pool
-                _p = _get_pool(_load_gateway_config())
-                if _p:
-                    _p.release_session_slot(session_key)
-        except Exception:
-            pass
+        self._release_pool_slot(session_key)
 
         # Mark this session as manually overridden so the pool won't
         # try to reassign it on the next turn.

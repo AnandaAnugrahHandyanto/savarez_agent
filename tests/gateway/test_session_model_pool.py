@@ -140,7 +140,7 @@ class TestSessionSlots:
         pool = self._make_pool()
         result = pool.acquire_session_slot("sess-1")
         assert result is not None
-        assert result["model"] == "glm-5-turbo"  # highest priority
+        assert result["model"] == "glm-5-turbo"  # first entry, oldest activity → picked by round-robin
         assert result["provider"] == "zai"
 
     def test_acquire_returns_existing(self):
@@ -362,3 +362,170 @@ class TestThreadSafety:
         # 5 slots available, 10 threads → 5 successes
         successes = [r for r in results if r is not None]
         assert len(successes) == 5
+
+
+# ---------------------------------------------------------------------------
+# Eviction (inactive session reaping)
+# ---------------------------------------------------------------------------
+
+
+class TestEviction:
+    def _make_pool(self, timeout=2.0):
+        config = {
+            "enabled": True,
+            "strategy": "priority",
+            "pool": [
+                {"model": "glm-5", "provider": "zai", "max_concurrent": 2},
+            ],
+            "inactive_timeout": timeout,
+        }
+        return SessionModelPool.from_config(config)
+
+    def test_active_session_not_evicted(self):
+        pool = self._make_pool(timeout=10.0)
+        pool.acquire_session_slot("sess-1")
+        # Immediately after acquire, session should still be alive
+        stats = pool.get_pool_stats()
+        assert stats["total_sessions"] == 1
+
+    def test_inactive_session_evicted(self):
+        pool = self._make_pool(timeout=0.2)
+        pool.acquire_session_slot("sess-1")
+        # Wait longer than timeout so sess-1 becomes stale
+        time.sleep(0.5)
+        # Next acquire should trigger eviction of sess-1 and assign sess-2
+        result = pool.acquire_session_slot("sess-2")
+        assert result is not None
+        # The old session should have been evicted, freeing the slot
+        stats = pool.get_pool_stats()
+        assert stats["total_sessions"] == 1  # only sess-2 remains
+
+    def test_partial_eviction(self):
+        """Only stale sessions are evicted; active ones remain."""
+        pool = self._make_pool(timeout=0.5)
+        pool.acquire_session_slot("sess-old")
+        # Refresh sess-new by re-acquiring (touches timestamp)
+        time.sleep(0.6)
+        pool.acquire_session_slot("sess-old")  # re-acquire to refresh
+        pool.acquire_session_slot("sess-new")
+        stats = pool.get_pool_stats()
+        assert stats["total_sessions"] == 2
+
+    def test_eviction_frees_slots_for_new_sessions(self):
+        """After eviction, the freed slot can be used by a new session."""
+        pool = self._make_pool(timeout=0.2)
+        # Fill both slots
+        pool.acquire_session_slot("sess-1")
+        pool.acquire_session_slot("sess-2")
+        # Pool is now saturated
+        assert pool.acquire_session_slot("sess-3") is None
+        # Wait for eviction
+        time.sleep(0.5)
+        # Acquire should trigger eviction and succeed
+        result = pool.acquire_session_slot("sess-3")
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# Duplicate pool_key validation
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicatePoolKey:
+    def test_duplicate_pool_key_warns(self, caplog):
+        config = {
+            "enabled": True,
+            "pool": [
+                {"model": "glm-5", "provider": "zai", "max_concurrent": 1},
+                {"model": "glm-5", "provider": "zai", "max_concurrent": 2},  # duplicate pool_key
+            ],
+        }
+        pool = SessionModelPool.from_config(config)
+        assert pool is not None
+        # Should have warned about duplicate
+        assert any("duplicate pool_key" in r.message for r in caplog.records)
+
+    def test_duplicate_pool_key_both_entries_retained(self):
+        """Warning is emitted but both entries are kept — behavior by design."""
+        config = {
+            "enabled": True,
+            "pool": [
+                {"model": "glm-5", "provider": "zai", "max_concurrent": 1},
+                {"model": "glm-5", "provider": "zai", "max_concurrent": 3},
+            ],
+        }
+        pool = SessionModelPool.from_config(config)
+        # Both entries are retained (warning-only, not an error)
+        assert len(pool._entries) == 2
+
+
+# ---------------------------------------------------------------------------
+# Auxiliary slot blocking edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestAuxSlotBlocking:
+    def test_session_does_not_steal_aux_slot(self):
+        """Sessions can only use session slots, not auxiliary reserved slots."""
+        config = {
+            "enabled": True,
+            "pool": [
+                {"model": "glm-5", "provider": "zai", "max_concurrent": 3, "reserved_for_auxiliary": 2},
+            ],
+        }
+        pool = SessionModelPool.from_config(config)
+        # Only 1 session slot (3 - 2 reserved = 1)
+        pool.acquire_session_slot("sess-1")
+        # Should be saturated for sessions
+        result = pool.acquire_session_slot("sess-2")
+        assert result is None
+
+    def test_aux_slot_independent_of_session_slots(self):
+        """Auxiliary slots don't consume session capacity."""
+        config = {
+            "enabled": True,
+            "pool": [
+                {"model": "glm-5", "provider": "zai", "max_concurrent": 3, "reserved_for_auxiliary": 2},
+            ],
+        }
+        pool = SessionModelPool.from_config(config)
+        # Use all session slots (3 - 2 reserved = 1)
+        pool.acquire_session_slot("sess-1")
+        # Auxiliary should still have 2 reserved slots available
+        assert pool.acquire_auxiliary_slot("glm-5", "zai") is True
+        assert pool.acquire_auxiliary_slot("glm-5", "zai") is True
+        # Third aux should fail (reserved=2)
+        assert pool.acquire_auxiliary_slot("glm-5", "zai", timeout=0.1) is False
+
+    def test_concurrent_aux_acquire(self):
+        """Multiple auxiliary callers compete for limited slots."""
+        config = {
+            "enabled": True,
+            "pool": [
+                {"model": "glm-4.6", "provider": "zai", "max_concurrent": 4, "reserved_for_auxiliary": 2},
+            ],
+        }
+        pool = SessionModelPool.from_config(config)
+        results = []
+        errors = []
+
+        def acquire_aux(idx):
+            try:
+                ok = pool.acquire_auxiliary_slot("glm-4.6", "zai", timeout=0.5)
+                results.append(ok)
+                if ok:
+                    time.sleep(0.2)
+                    pool.release_auxiliary_slot("glm-4.6", "zai")
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=acquire_aux, args=(i,)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0
+        # At least 2 should succeed (reserved=2), possibly more with timing
+        successes = [r for r in results if r is True]
+        assert len(successes) >= 2

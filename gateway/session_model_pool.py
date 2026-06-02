@@ -159,13 +159,26 @@ class SessionModelPool:
             logger.warning("session_model_pool has no valid entries — disabled")
             return None
 
+        # Warn on duplicate pool keys — two entries sharing the same
+        # provider:model would share state unpredictably.
+        _seen_keys: Dict[str, str] = {}
+        for _entry in entries:
+            _key = _entry.pool_key
+            if _key in _seen_keys:
+                logger.warning(
+                    "session_model_pool: duplicate pool_key '%s' (%s and %s). "
+                    "Only the last entry will be used for slot tracking.",
+                    _key, _seen_keys[_key], _entry.model,
+                )
+            _seen_keys[_key] = _entry.model
+
         strategy = config.get("strategy", "round-robin")
         if strategy not in ("round-robin", "least-loaded", "priority"):
             logger.warning("Unknown strategy '%s' — defaulting to round-robin", strategy)
             strategy = "round-robin"
 
         inactive_timeout = config.get("inactive_timeout", 1800)
-        if not isinstance(inactive_timeout, int) or inactive_timeout < 0:
+        if not isinstance(inactive_timeout, (int, float)) or inactive_timeout < 0:
             inactive_timeout = 1800
 
         logger.info(
