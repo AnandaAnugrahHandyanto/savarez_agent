@@ -67,9 +67,12 @@ workspace:
 |---------|-------------|
 | `/guide` | Multi-agent workspace guide (suitable for pinning) |
 | `/agent_status` | Registered agent roster with capabilities and cost |
-| `/summon @agent [task]` | Invocation guidance for a specific agent |
-| `/swarm @a @b [task]` | Multi-agent dispatch guidance |
-| `/route @agent [task]` | Routing guidance — which topic/target |
+| `/summon @agent [task]` | Show agent details with inline buttons to dispatch, route, checklist, or cancel |
+| `/swarm @a @b [task]` | Multi-agent fanout with confirmation buttons; results route to Multi-Agent Room |
+| `/route @agent [task]` | Routing guidance — which topic/target, plus quick action buttons |
+| `/checklist [title]` | Create a persistent emulated checklist with toggle buttons |
+| `/say <text>` / `/tts <text>` | Generate and send a Telegram voice/TTS reply when a TTS backend is configured |
+| `/voice_status` | Show Telegram voice/TTS mode with quick controls |
 | `/whereami` | Current topic routing diagnostics |
 | `/agents` | Active sessions, processes, async jobs |
 | `/status` | Session info |
@@ -98,12 +101,19 @@ Use `@alias` in any Telegram message to invoke a specific agent:
 @all check status
 ```
 
-Hermes parses `@mentions` in incoming messages and injects agent context.
-Multi-agent fanout (`@codex @glm refactor this`) dispatches guidance via
-`/swarm`.
+Hermes parses leading `@mentions` in incoming Telegram messages before the
+normal LLM conversation loop. Known aliases are routed to the workspace router:
 
-**Note:** For true bot-to-bot delegation, each agent must be a separate
-Telegram bot present in the group. Hermes can @mention them in topic posts.
+- Single-agent messages (`@codex fix tests`) dispatch that agent and deliver the
+  result to the agent's configured topic lane.
+- Multi-agent messages (`@codex @glm review this`) fan out and deliver results
+  to the Multi-Agent Room topic.
+- `@all status` expands to every enabled registered agent.
+- Unknown Telegram usernames are ignored and fall through as normal chat.
+
+The router currently invokes local CLIs when available (`codex`, `glm`, `bm
+quick`). If a CLI is missing, Telegram receives an explicit unsupported/needs
+setup response instead of a fake result.
 
 ## Per-Topic Safety Controls
 
@@ -133,12 +143,17 @@ stt:
 ```
 
 Use `/voice on` in Telegram to enable voice input. Use `/voice tts` to have
-replies spoken. The `voice` agent alias routes voice-specific tasks.
+replies spoken. Use `/say <text>` or `/tts <text>` for one-shot spoken replies.
+`/voice_status` shows the current mode and adds quick inline buttons. The
+`voice` agent alias routes voice-specific tasks.
 
 ## Image & Document Ingestion
 
-Images and documents sent to the **#media** topic (thread 16) are handled by
-Hermes's media message handler. The channel prompt shapes the response:
+Images and documents sent to the **#media** topic (thread 16), and dev
+artifacts sent to **#dev-logs** (thread 15), are handled by Hermes's media
+message handler. The gateway now adds lane-aware inline buttons in those topics
+for Analyze, OCR/Summarize, Route to dev-logs, and Add to checklist actions.
+The channel prompt still shapes the underlying agent response:
 
 ```yaml
 telegram:
@@ -147,6 +162,14 @@ telegram:
 ```
 
 For dev artifacts (logs, diffs, screenshots), use **#dev-logs** (thread 15).
+
+## Checklist Buttons
+
+Native Telegram Bot API checklists are currently business-account gated, so
+Hermes emulates checklists with ordinary messages plus inline keyboard buttons.
+Checklist JSON is persisted under `$HERMES_HOME/checklists/`, scoped by
+chat/thread/user metadata, and survives gateway restarts. Buttons toggle items
+between done/undone and update the original Telegram message.
 
 ## Inline Mode
 

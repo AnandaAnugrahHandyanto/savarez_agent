@@ -102,6 +102,8 @@ def run_diagnostics(token: str) -> None:
 
     # --- Workspace topics ---
     print("## Workspace Topic Registry")
+    topics = {}
+    drift = []
     try:
         from gateway.topic_registry import load_topic_registry, check_topic_drift
         topics = load_topic_registry()
@@ -121,6 +123,21 @@ def run_diagnostics(token: str) -> None:
             print(_check("No workspace drift detected", True))
     except Exception as e:
         print(f"❌ Could not check workspace topics: {e}")
+    print()
+
+    # --- Workspace feature modules ---
+    print("## Workspace Feature Modules")
+    try:
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        required_commands = {"guide", "agent_status", "summon", "swarm", "route", "checklist", "say", "tts", "voice_status"}
+        missing_commands = sorted(required_commands - set(GATEWAY_KNOWN_COMMANDS))
+        for module_name in ("gateway.workspace_router", "gateway.workspace_keyboards", "gateway.checklist_store"):
+            __import__(module_name)
+            print(_check(f"{module_name} importable", True))
+        print(_check("Workspace Telegram commands registered", not missing_commands,
+                     f"missing: {', '.join(missing_commands)}" if missing_commands else ""))
+    except Exception as e:
+        print(f"❌ Workspace feature module check failed: {e}")
     print()
 
     # --- BotFather inline mode checklist ---
