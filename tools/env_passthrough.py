@@ -45,6 +45,25 @@ def _get_allowed() -> set[str]:
 _config_passthrough: frozenset[str] | None = None
 
 
+_MINIMUM_HERMES_PROVIDER_ENV_BLOCKLIST = frozenset({
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_API_BASE",
+    "OPENAI_ORG_ID",
+    "OPENAI_ORGANIZATION",
+    "OPENROUTER_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "LLM_MODEL",
+    "GOOGLE_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "MISTRAL_API_KEY",
+    "GROQ_API_KEY",
+    "AWS_BEARER_TOKEN_BEDROCK",
+})
+
+
 def _is_hermes_provider_credential(name: str) -> bool:
     """True if ``name`` is a Hermes-managed provider credential (API key,
     token, or similar) per ``_HERMES_PROVIDER_ENV_BLOCKLIST``.
@@ -62,9 +81,15 @@ def _is_hermes_provider_credential(name: str) -> bool:
     """
     try:
         from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
-    except Exception:
-        return False
-    return name in _HERMES_PROVIDER_ENV_BLOCKLIST
+    except Exception as e:
+        logger.warning(
+            "env passthrough: provider credential blocklist import failed; "
+            "using built-in minimum blocklist for %r: %s",
+            name,
+            e,
+        )
+        return name in _MINIMUM_HERMES_PROVIDER_ENV_BLOCKLIST
+    return name in (_HERMES_PROVIDER_ENV_BLOCKLIST | _MINIMUM_HERMES_PROVIDER_ENV_BLOCKLIST)
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
@@ -159,5 +184,4 @@ def get_all_passthrough() -> frozenset[str]:
 def clear_env_passthrough() -> None:
     """Reset the skill-scoped allowlist (e.g. on session reset)."""
     _get_allowed().clear()
-
 

@@ -1,6 +1,7 @@
 """Tests for tools.env_passthrough — skill and config env var passthrough."""
 
 import os
+import builtins
 import pytest
 import yaml
 
@@ -228,3 +229,35 @@ class TestTerminalIntegration:
         # Arbitrary skill-specific var
         register_env_passthrough(["MY_SKILL_CUSTOM_CONFIG"])
         assert is_env_passthrough("MY_SKILL_CUSTOM_CONFIG")
+
+    def test_provider_blocklist_import_failure_fails_closed(self, monkeypatch):
+        """Provider credentials stay blocked if the dynamic blocklist import fails."""
+        from tools.code_execution_tool import _scrub_child_env
+
+        real_import = builtins.__import__
+
+        def fail_local_environment_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "tools.environments.local":
+                raise ImportError("synthetic blocklist import failure")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", fail_local_environment_import)
+
+        assert _ep_mod._is_hermes_provider_credential("OPENAI_API_KEY")
+
+        register_env_passthrough(["OPENAI_API_KEY", "TENOR_API_KEY"])
+        assert not is_env_passthrough("OPENAI_API_KEY")
+        assert is_env_passthrough("TENOR_API_KEY")
+
+        child_env = _scrub_child_env(
+            {
+                "OPENAI_API_KEY": "synthetic-provider-secret",
+                "TENOR_API_KEY": "synthetic-skill-secret",
+                "PATH": "/usr/bin",
+            },
+            is_passthrough=is_env_passthrough,
+            is_windows=False,
+        )
+        assert "OPENAI_API_KEY" not in child_env
+        assert child_env["TENOR_API_KEY"] == "synthetic-skill-secret"
+        assert child_env["PATH"] == "/usr/bin"
