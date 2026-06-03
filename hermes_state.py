@@ -923,9 +923,11 @@ class SessionDB:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, cwd, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT OR IGNORE INTO sessions
+                   (id, source, user_id, model, model_config,
+                    system_prompt, parent_session_id, cwd, started_at,
+                    input_tokens, output_tokens)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)""",
                 (
                     session_id,
                     source,
