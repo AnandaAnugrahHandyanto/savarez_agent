@@ -33,6 +33,14 @@ def test_load_prefill_messages_expands_env_var_path(monkeypatch, gateway_home):
     assert gateway_run.GatewayRunner._load_prefill_messages() == prefill
 
 
+def test_resolve_gateway_model_expands_env_var_template(monkeypatch, gateway_home):
+    _write_config(gateway_home, "model: ${GW_MODEL}\n")
+    monkeypatch.setenv("GW_MODEL", "gpt-5.5")
+
+    assert gateway_run._resolve_gateway_model() == "gpt-5.5"
+    assert gateway_run._resolve_gateway_model({"model": "${GW_MODEL}"}) == "gpt-5.5"
+
+
 @pytest.mark.parametrize(
     ("config_body", "env_name", "env_value", "loader_name", "expected"),
     [
