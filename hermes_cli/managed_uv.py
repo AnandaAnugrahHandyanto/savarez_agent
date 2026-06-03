@@ -110,8 +110,14 @@ def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> b
         print(f"  → Rebuilding venv (old Python may lack FTS5)...")
         shutil.rmtree(venv_dir, ignore_errors=True)
 
+    # Pass --clear so uv replaces the directory even when shutil.rmtree above
+    # couldn't fully delete it. On Windows the running interpreter often lives
+    # inside the very venv we're rebuilding, locking python.exe; rmtree then
+    # leaves a half-deleted shell (pyvenv.cfg gone, Scripts/python.exe stays)
+    # and uv venv without --clear aborts with "A directory already exists",
+    # which bricks the install (issue #37881).
     result = subprocess.run(
-        [uv_bin, "venv", str(venv_dir), "--python", python_version],
+        [uv_bin, "venv", str(venv_dir), "--python", python_version, "--clear"],
         capture_output=True,
         text=True,
         check=False,
