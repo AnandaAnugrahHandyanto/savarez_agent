@@ -202,6 +202,23 @@ def _inject_context_hermes_home(env: dict) -> None:
         pass
 
 
+def _inject_session_context_env(env: dict) -> None:
+    """Bridge explicitly-bound gateway session ContextVars into subprocess env.
+
+    An explicitly empty value is meaningful: it clears any stale session value
+    inherited from os.environ or a previous shell snapshot.
+    """
+    try:
+        from gateway.session_context import _UNSET, _VAR_MAP
+
+        for var_name, var in _VAR_MAP.items():
+            value = var.get()
+            if value is not _UNSET:
+                env[var_name] = "" if value is None else str(value)
+    except Exception:
+        pass
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -225,6 +242,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             sanitized[key] = value
 
     _inject_context_hermes_home(sanitized)
+    _inject_session_context_env(sanitized)
 
     # Per-profile HOME isolation for background processes (same as _make_run_env).
     from hermes_constants import get_subprocess_home
@@ -336,16 +354,8 @@ def _make_run_env(env: dict) -> dict:
     if _profile_home:
         run_env["HOME"] = _profile_home
 
-    # Inject ContextVar-based session vars into subprocess env.
-    # ContextVars don't propagate to child processes, so we bridge them here.
-    try:
-        from gateway.session_context import _UNSET, _VAR_MAP
-        for var_name, var in _VAR_MAP.items():
-            value = var.get()
-            if value is not _UNSET and value:
-                run_env[var_name] = value
-    except Exception:
-        pass
+    # ContextVars don't propagate to child processes, so bridge them here.
+    _inject_session_context_env(run_env)
 
     return run_env
 

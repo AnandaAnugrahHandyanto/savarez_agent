@@ -89,6 +89,40 @@ class TestWrapCommand:
 
         assert "exit 126" in wrapped
 
+    def test_session_context_overlay_runs_after_snapshot_source(self):
+        """Explicit empty session vars must override stale snapshot values."""
+        from gateway.session_context import (
+            _UNSET,
+            _VAR_MAP,
+            clear_session_vars,
+            set_session_vars,
+        )
+
+        tokens = set_session_vars(
+            platform="mattermost",
+            chat_id="trading_channel",
+            thread_id="",
+            session_key="mattermost:trading",
+            message_id="trading_top_post",
+        )
+        try:
+            env = _TestableEnv()
+            env._snapshot_ready = True
+            wrapped = env._wrap_command("echo hello", "/tmp")
+        finally:
+            clear_session_vars(tokens)
+            for var in _VAR_MAP.values():
+                var.set(_UNSET)
+
+        lines = wrapped.splitlines()
+        source_idx = next(i for i, line in enumerate(lines) if line.startswith("source "))
+        thread_idx = lines.index("export HERMES_SESSION_THREAD_ID=''")
+        eval_idx = lines.index("eval 'echo hello'")
+
+        assert source_idx < thread_idx < eval_idx
+        assert "export HERMES_SESSION_CHAT_ID=trading_channel" in lines
+        assert "export HERMES_SESSION_KEY=mattermost:trading" in lines
+
 
 class TestExtractCwdFromOutput:
     def test_happy_path(self):

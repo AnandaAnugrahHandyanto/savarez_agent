@@ -403,3 +403,80 @@ class TestSanePathIncludesHomebrew:
             result = _make_run_env({})
         # Should keep existing PATH unchanged
         assert result["PATH"] == "/usr/bin:/bin"
+
+
+class TestSessionEnvBridge:
+    def test_make_run_env_explicit_empty_context_clears_stale_process_env(self):
+        """Explicit empty ContextVars must not inherit stale process env values."""
+        from gateway.session_context import (
+            _UNSET,
+            _VAR_MAP,
+            clear_session_vars,
+            set_session_vars,
+        )
+        from tools.environments.local import _make_run_env
+
+        stale_env = {
+            "PATH": "/usr/bin:/bin",
+            "HERMES_SESSION_PLATFORM": "mattermost",
+            "HERMES_SESSION_CHAT_ID": "ekum_fantasy_channel",
+            "HERMES_SESSION_THREAD_ID": "ekum_fantasy_thread",
+            "HERMES_SESSION_MESSAGE_ID": "ekum_fantasy_post",
+        }
+        tokens = set_session_vars(
+            platform="mattermost",
+            chat_id="trading_channel",
+            thread_id="",
+            session_key="mattermost:trading",
+            message_id="trading_top_post",
+        )
+        try:
+            with patch.dict(os.environ, stale_env, clear=True):
+                result = _make_run_env({})
+        finally:
+            clear_session_vars(tokens)
+            for var in _VAR_MAP.values():
+                var.set(_UNSET)
+
+        assert result["HERMES_SESSION_PLATFORM"] == "mattermost"
+        assert result["HERMES_SESSION_CHAT_ID"] == "trading_channel"
+        assert result["HERMES_SESSION_THREAD_ID"] == ""
+        assert result["HERMES_SESSION_MESSAGE_ID"] == "trading_top_post"
+        assert result["HERMES_SESSION_KEY"] == "mattermost:trading"
+
+    def test_sanitize_subprocess_env_explicit_empty_context_clears_stale_env(self):
+        """Background subprocess env must use the same session overlay as foreground."""
+        from gateway.session_context import (
+            _UNSET,
+            _VAR_MAP,
+            clear_session_vars,
+            set_session_vars,
+        )
+        from tools.environments.local import _sanitize_subprocess_env
+
+        stale_env = {
+            "PATH": "/usr/bin:/bin",
+            "HERMES_SESSION_PLATFORM": "mattermost",
+            "HERMES_SESSION_CHAT_ID": "ekum_fantasy_channel",
+            "HERMES_SESSION_THREAD_ID": "ekum_fantasy_thread",
+            "HERMES_SESSION_MESSAGE_ID": "ekum_fantasy_post",
+        }
+        tokens = set_session_vars(
+            platform="mattermost",
+            chat_id="trading_channel",
+            thread_id="",
+            session_key="mattermost:trading",
+            message_id="trading_top_post",
+        )
+        try:
+            result = _sanitize_subprocess_env(stale_env)
+        finally:
+            clear_session_vars(tokens)
+            for var in _VAR_MAP.values():
+                var.set(_UNSET)
+
+        assert result["HERMES_SESSION_PLATFORM"] == "mattermost"
+        assert result["HERMES_SESSION_CHAT_ID"] == "trading_channel"
+        assert result["HERMES_SESSION_THREAD_ID"] == ""
+        assert result["HERMES_SESSION_MESSAGE_ID"] == "trading_top_post"
+        assert result["HERMES_SESSION_KEY"] == "mattermost:trading"
