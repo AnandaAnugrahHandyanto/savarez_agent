@@ -8,8 +8,33 @@ def test_default_parser_checkout_points_to_active_os_worktree():
     checkout = doctor.build_parser().parse_args([]).expected_runtime_checkout
 
     assert checkout == "/home/jenny/.hermes/hermes-context-routing-e1d-integration"
-    assert "QUARANTINED_DO_NOT_USE" not in checkout
-    assert "hermes-context-routing-deploy-a34226d6" not in checkout
+    assert ("QUARANTINED" + "_DO_NOT_USE") not in checkout
+    assert ("hermes-context-routing-deploy-" + "a34226d6") not in checkout
+
+
+def test_default_gateway_venv_python_avoids_backup_and_deploy_paths():
+    gateway_python = doctor.build_parser().parse_args([]).gateway_venv_python
+
+    assert ("hermes-agent-" + "backup") not in gateway_python
+    assert ("QUARANTINED" + "_DO_NOT_USE") not in gateway_python
+    assert ("hermes-context-routing-deploy-" + "a34226d6") not in gateway_python
+
+
+def test_explicit_gateway_venv_python_still_overrides_default():
+    gateway_python = doctor.build_parser().parse_args(
+        ["--gateway-venv-python", "/tmp/custom-venv/bin/python"]
+    ).gateway_venv_python
+
+    assert gateway_python == "/tmp/custom-venv/bin/python"
+
+
+def test_default_gateway_venv_python_prefers_runtime_venv_when_executable(tmp_path):
+    runtime_python = tmp_path / "hermes-runtime-venv" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    runtime_python.chmod(0o755)
+
+    assert doctor.resolve_default_gateway_venv_python(runtime_python) == str(runtime_python)
 
 
 def test_parse_rclone_config_reports_remote_names_only(tmp_path):

@@ -25,7 +25,7 @@ from typing import Any
 DEFAULT_EXPECTED_CHECKOUT = "/home/jenny/.hermes/hermes-context-routing-e1d-integration"
 DEFAULT_HERMES_HOME = "/home/jenny/.hermes"
 DEFAULT_AI_OPS_BRAIN = "/home/jenny/ai-ops-brain"
-DEFAULT_GATEWAY_VENV_PYTHON = "/home/jenny/.hermes/hermes-agent-backup/venv/bin/python"
+DEFAULT_RUNTIME_VENV_PYTHON = "/home/jenny/.hermes/hermes-runtime-venv/bin/python"
 DEFAULT_SERVICE = "hermes-gateway.service"
 STALE_ACTIVE_FOREGROUND_SECONDS = 6 * 60 * 60
 
@@ -59,6 +59,15 @@ def _same_path(left: str | None, right: str | None) -> bool:
     return str(Path(left).expanduser().resolve(strict=False)) == str(
         Path(right).expanduser().resolve(strict=False)
     )
+
+
+def resolve_default_gateway_venv_python(
+    runtime_venv_python: str | Path = DEFAULT_RUNTIME_VENV_PYTHON,
+) -> str:
+    candidate = Path(runtime_venv_python).expanduser()
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return sys.executable
 
 
 def parse_systemctl_show(output: str) -> dict[str, str | None]:
@@ -114,10 +123,11 @@ def get_proc_cwd(pid: str | int | None) -> str | None:
 
 
 def resolve_module_paths(
-    python_executable: str = DEFAULT_GATEWAY_VENV_PYTHON,
+    python_executable: str | None = None,
     modules: tuple[str, ...] = ("hermes_cli.main", "gateway.run"),
     cwd: str | None = None,
 ) -> dict[str, str | None]:
+    python_executable = python_executable or resolve_default_gateway_venv_python()
     code = (
         "import importlib.util, json; "
         f"mods={modules!r}; "
@@ -720,7 +730,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-runtime-checkout", default=DEFAULT_EXPECTED_CHECKOUT)
     parser.add_argument("--hermes-home", default=DEFAULT_HERMES_HOME)
     parser.add_argument("--ai-ops-brain", default=DEFAULT_AI_OPS_BRAIN)
-    parser.add_argument("--gateway-venv-python", default=DEFAULT_GATEWAY_VENV_PYTHON)
+    parser.add_argument("--gateway-venv-python", default=resolve_default_gateway_venv_python())
     parser.add_argument("--service", default=DEFAULT_SERVICE)
     parser.add_argument("--hermes-bin", default=None)
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of text.")
