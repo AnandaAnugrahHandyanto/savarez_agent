@@ -3604,44 +3604,6 @@
       h("div", { className: "hermes-kanban-deps-row" },
         h("span", { className: "hermes-kanban-deps-label" }, tx(t, "children", "Children:")),
         h("div", { className: "hermes-kanban-deps-chips" },
-          (links.parents || []).length === 0
-            ? h("span", { className: "hermes-kanban-deps-empty" }, tx(t, "none", "none"))
-            : (links.parents || []).map(function (id) {
-                return h("span", { key: id, className: "hermes-kanban-dep-chip" },
-                  id,
-                  h("button", {
-                    type: "button",
-                    className: "hermes-kanban-dep-chip-x",
-                    onClick: function () { props.onRemoveParent(id); },
-                    title: tx(t, "removeDependency", "Remove dependency"),
-                  }, "×"),
-                );
-              }),
-        ),
-      ),
-      h("div", { className: "hermes-kanban-deps-row" },
-        h(Select, Object.assign({
-          value: newParent,
-          className: "h-7 text-xs flex-1",
-        }, selectChangeHandler(setNewParent)),
-          h(SelectOption, { value: "" }, tx(t, "addChild", "— add child —")),
-          candidatesFor(parentExclude).map(function (tk) {
-            return h(SelectOption, { key: tk.id, value: tk.id },
-              `${tk.id} — ${(tk.title || "").slice(0, 50)}`);
-          }),
-        ),
-        h(Button, {
-          onClick: function () {
-            if (!newParent) return;
-            props.onAddParent(newParent).then(function () { setNewParent(""); });
-          },
-          disabled: !newParent,
-          size: "sm",
-        }, "+ child"),
-      ),
-      h("div", { className: "hermes-kanban-deps-row" },
-        h("span", { className: "hermes-kanban-deps-label" }, tx(t, "parents", "Parents:")),
-        h("div", { className: "hermes-kanban-deps-chips" },
           (links.children || []).length === 0
             ? h("span", { className: "hermes-kanban-deps-empty" }, tx(t, "none", "none"))
             : (links.children || []).map(function (id) {
@@ -3662,7 +3624,7 @@
           value: newChild,
           className: "h-7 text-xs flex-1",
         }, selectChangeHandler(setNewChild)),
-          h(SelectOption, { value: "" }, tx(t, "addParent", "— add parent —")),
+          h(SelectOption, { value: "" }, tx(t, "addChild", "— add child —")),
           candidatesFor(childExclude).map(function (tk) {
             return h(SelectOption, { key: tk.id, value: tk.id },
               `${tk.id} — ${(tk.title || "").slice(0, 50)}`);
@@ -3674,6 +3636,44 @@
             props.onAddChild(newChild).then(function () { setNewChild(""); });
           },
           disabled: !newChild,
+          size: "sm",
+        }, "+ child"),
+      ),
+      h("div", { className: "hermes-kanban-deps-row" },
+        h("span", { className: "hermes-kanban-deps-label" }, tx(t, "parents", "Parents:")),
+        h("div", { className: "hermes-kanban-deps-chips" },
+          (links.parents || []).length === 0
+            ? h("span", { className: "hermes-kanban-deps-empty" }, tx(t, "none", "none"))
+            : (links.parents || []).map(function (id) {
+                return h("span", { key: id, className: "hermes-kanban-dep-chip" },
+                  id,
+                  h("button", {
+                    type: "button",
+                    className: "hermes-kanban-dep-chip-x",
+                    onClick: function () { props.onRemoveParent(id); },
+                    title: tx(t, "removeDependency", "Remove dependency"),
+                  }, "×"),
+                );
+              }),
+        ),
+      ),
+      h("div", { className: "hermes-kanban-deps-row" },
+        h(Select, Object.assign({
+          value: newParent,
+          className: "h-7 text-xs flex-1",
+        }, selectChangeHandler(setNewParent)),
+          h(SelectOption, { value: "" }, tx(t, "addParent", "— add parent —")),
+          candidatesFor(parentExclude).map(function (tk) {
+            return h(SelectOption, { key: tk.id, value: tk.id },
+              `${tk.id} — ${(tk.title || "").slice(0, 50)}`);
+          }),
+        ),
+        h(Button, {
+          onClick: function () {
+            if (!newParent) return;
+            props.onAddParent(newParent).then(function () { setNewParent(""); });
+          },
+          disabled: !newParent,
           size: "sm",
         }, "+ parent"),
       ),
