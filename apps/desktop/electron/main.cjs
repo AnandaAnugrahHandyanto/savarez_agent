@@ -26,6 +26,7 @@ const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
+const connectionRegistry = require('./connection-registry.cjs')
 const {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -3041,16 +3042,6 @@ function buildGatewayWsUrl(baseUrl, token) {
   return `${wsScheme}://${parsed.host}${prefix}/api/ws?token=${encodeURIComponent(token)}`
 }
 
-function tokenPreview(value) {
-  const raw = String(value || '')
-
-  if (!raw) {
-    return null
-  }
-
-  return raw.length <= 8 ? 'set' : `...${raw.slice(-6)}`
-}
-
 function encryptDesktopSecret(value) {
   return encryptDesktopSecretStrict(value, safeStorage)
 }
@@ -3082,17 +3073,14 @@ function readDesktopConnectionConfig() {
     return connectionConfigCache
   }
 
-  let config = { mode: 'local', remote: {} }
+  let config = connectionRegistry.migrateDesktopConnectionConfig({ mode: 'local', remote: {} })
 
   try {
     const raw = fs.readFileSync(DESKTOP_CONNECTION_CONFIG_PATH, 'utf8')
     const parsed = JSON.parse(raw)
 
     if (parsed && typeof parsed === 'object') {
-      config = {
-        mode: parsed.mode === 'remote' ? 'remote' : 'local',
-        remote: parsed.remote && typeof parsed.remote === 'object' ? parsed.remote : {}
-      }
+      config = connectionRegistry.migrateDesktopConnectionConfig(parsed)
     }
   } catch {
     // Missing or malformed connection settings should fall back to local.
@@ -3104,49 +3092,25 @@ function readDesktopConnectionConfig() {
 }
 
 function writeDesktopConnectionConfig(config) {
+  const migratedConfig = connectionRegistry.migrateDesktopConnectionConfig(config)
   fs.mkdirSync(path.dirname(DESKTOP_CONNECTION_CONFIG_PATH), { recursive: true })
-  fs.writeFileSync(DESKTOP_CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2))
-  connectionConfigCache = config
+  fs.writeFileSync(DESKTOP_CONNECTION_CONFIG_PATH, JSON.stringify(migratedConfig, null, 2))
+  connectionConfigCache = migratedConfig
 }
 
 function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig()) {
-  const remoteToken = decryptDesktopSecret(config.remote?.token)
-
-  return {
-    mode: config.mode === 'remote' ? 'remote' : 'local',
-    remoteUrl: String(config.remote?.url || ''),
-    remoteTokenPreview: tokenPreview(remoteToken),
-    remoteTokenSet: Boolean(remoteToken),
+  return connectionRegistry.sanitizeDesktopConnectionConfig(config, {
+    decryptDesktopSecret,
     envOverride: Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
-  }
+  })
 }
 
 function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnectionConfig(), options = {}) {
-  const persistToken = options.persistToken !== false
-  const mode = input.mode === 'remote' ? 'remote' : 'local'
-  const remoteUrl = String(input.remoteUrl ?? existing.remote?.url ?? '').trim()
-  const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
-  const existingToken = existing.remote?.token
-  const nextRemote = {
-    url: remoteUrl,
-    token: incomingToken
-      ? persistToken
-        ? encryptDesktopSecret(incomingToken)
-        : { encoding: 'plain', value: incomingToken }
-      : existingToken
-  }
-
-  if (mode === 'remote') {
-    nextRemote.url = normalizeRemoteBaseUrl(remoteUrl)
-
-    if (!decryptDesktopSecret(nextRemote.token)) {
-      throw new Error('Remote gateway session token is required.')
-    }
-  } else if (remoteUrl) {
-    nextRemote.url = normalizeRemoteBaseUrl(remoteUrl)
-  }
-
-  return { mode, remote: nextRemote }
+  return connectionRegistry.coerceDesktopConnectionConfig(input, existing, {
+    decryptDesktopSecret,
+    encryptDesktopSecret,
+    persistToken: options.persistToken
+  })
 }
 
 function resolveRemoteBackend() {
@@ -3173,12 +3137,13 @@ function resolveRemoteBackend() {
   }
 
   const config = readDesktopConnectionConfig()
+  const activeConnection = connectionRegistry.getActiveConnection(config)
 
-  if (config.mode !== 'remote') {
+  if (activeConnection.mode !== 'remote') {
     return null
   }
 
-  const token = decryptDesktopSecret(config.remote?.token)
+  const token = decryptDesktopSecret(activeConnection.token)
 
   if (!token) {
     throw new Error(
@@ -3187,7 +3152,7 @@ function resolveRemoteBackend() {
     )
   }
 
-  const baseUrl = normalizeRemoteBaseUrl(config.remote?.url)
+  const baseUrl = normalizeRemoteBaseUrl(activeConnection.baseUrl)
 
   return {
     baseUrl,
@@ -3200,11 +3165,12 @@ function resolveRemoteBackend() {
 
 async function testDesktopConnectionConfig(input = {}) {
   const config = coerceDesktopConnectionConfig(input, readDesktopConnectionConfig(), { persistToken: false })
+  const activeConnection = connectionRegistry.getActiveConnection(config)
   const remote =
-    config.mode === 'remote'
+    activeConnection.mode === 'remote'
       ? {
-          baseUrl: normalizeRemoteBaseUrl(config.remote.url),
-          token: decryptDesktopSecret(config.remote.token)
+          baseUrl: normalizeRemoteBaseUrl(activeConnection.baseUrl),
+          token: decryptDesktopSecret(activeConnection.token)
         }
       : resolveRemoteBackend() || (await startHermes())
   const status = await fetchJson(`${remote.baseUrl}/api/status`, remote.token, { timeoutMs: 8_000 })

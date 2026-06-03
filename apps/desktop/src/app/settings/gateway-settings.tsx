@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import type { DesktopConnectionConfig, DesktopConnectionMode } from '@/global'
 import { AlertCircle, Check, FileText, Globe, Loader2, Monitor } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -9,17 +10,24 @@ import { notify, notifyError } from '@/store/notifications'
 import { CONTROL_TEXT } from './constants'
 import { EmptyState, ListRow, LoadingState, Pill, SettingsContent } from './primitives'
 
-type Mode = 'local' | 'remote'
+type Mode = DesktopConnectionMode
 
-interface GatewaySettingsState {
-  envOverride: boolean
-  mode: Mode
-  remoteTokenPreview: string | null
-  remoteTokenSet: boolean
-  remoteUrl: string
-}
+type GatewaySettingsState = DesktopConnectionConfig
 
 const EMPTY_STATE: GatewaySettingsState = {
+  schemaVersion: 2,
+  activeConnectionId: 'local',
+  connections: [
+    {
+      id: 'local',
+      name: 'Local gateway',
+      kind: 'hermes-dashboard',
+      mode: 'local',
+      baseUrl: '',
+      tokenPreview: null,
+      tokenSet: false
+    }
+  ],
   envOverride: false,
   mode: 'local',
   remoteTokenPreview: null,

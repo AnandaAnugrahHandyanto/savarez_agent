@@ -159,16 +159,31 @@ export interface HermesWindowState {
   windowButtonPosition: { x: number; y: number } | null
 }
 
+export type DesktopConnectionMode = 'local' | 'remote'
+
+export interface DesktopConnectionRegistryEntry {
+  id: string
+  name: string
+  kind: 'hermes-dashboard'
+  mode: DesktopConnectionMode
+  baseUrl: string
+  tokenPreview: string | null
+  tokenSet: boolean
+}
+
 export interface DesktopConnectionConfig {
+  schemaVersion: 2
+  activeConnectionId: string
+  connections: DesktopConnectionRegistryEntry[]
   envOverride: boolean
-  mode: 'local' | 'remote'
+  mode: DesktopConnectionMode
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
   remoteUrl: string
 }
 
 export interface DesktopConnectionConfigInput {
-  mode: 'local' | 'remote'
+  mode: DesktopConnectionMode
   remoteToken?: string
   remoteUrl?: string
 }
