@@ -9,7 +9,7 @@
  * The two are persisted independently. Shift+X toggles light/dark.
  */
 
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 
@@ -148,6 +148,45 @@ function renderedModeFor(colors: DesktopThemeColors, mode: 'light' | 'dark'): 'l
 
 // ─── CSS application ────────────────────────────────────────────────────────
 
+// Throttled titlebar IPC: the OS titlebar overlay repaints are expensive, so
+// coalesce calls within a 100ms window to avoid triggering a paint on every
+// style recalculation.
+let lastTitlebarIpcAt = 0
+let pendingTitlebarTheme: { background: string; foreground: string } | null = null
+let titlebarIpcTimer: ReturnType<typeof setTimeout> | null = null
+
+function flushTitlebarTheme() {
+  if (pendingTitlebarTheme) {
+    window.hermesDesktop?.setTitleBarTheme?.(pendingTitlebarTheme)
+    lastTitlebarIpcAt = Date.now()
+    pendingTitlebarTheme = null
+  }
+
+  titlebarIpcTimer = null
+}
+
+function setTitleBarThemeThrottled(colors: { background: string; foreground: string }) {
+  const now = Date.now()
+
+  if (now - lastTitlebarIpcAt >= 100) {
+    // Flush any pending, then send immediately
+    if (titlebarIpcTimer) {
+      clearTimeout(titlebarIpcTimer)
+      titlebarIpcTimer = null
+    }
+
+    window.hermesDesktop?.setTitleBarTheme?.(colors)
+    lastTitlebarIpcAt = now
+  } else {
+    // Coalesce into the next flush
+    pendingTitlebarTheme = colors
+
+    if (!titlebarIpcTimer) {
+      titlebarIpcTimer = setTimeout(flushTitlebarTheme, 100 - (now - lastTitlebarIpcAt))
+    }
+  }
+}
+
 // Per-mode mix knobs. Light/dark fallbacks live in styles.css `:root` /
 // `:root.dark`; setting them inline keeps active-skin overrides surviving
 // the boot-time paint.
@@ -216,7 +255,7 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     root.style.setProperty(k, v)
   }
 
-  window.hermesDesktop?.setTitleBarTheme?.({
+  setTitleBarThemeThrottled({
     background: c.background,
     foreground: c.foreground
   })
@@ -276,7 +315,35 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const resolvedMode = resolveMode(mode, systemDark)
   const activeTheme = useMemo(() => deriveTheme(themeName, resolvedMode), [themeName, resolvedMode])
 
-  useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
+  // Schedule CSS variable application via requestAnimationFrame to batch
+  // multiple style property writes into a single layout/paint cycle.  Without
+  // this, every call to applyTheme triggers 20+ independent style recalculations
+  // that cascade through color-mix() consumers, causing a visible flash.
+  const scheduledThemeRef = useRef<{ theme: DesktopTheme; mode: 'light' | 'dark' } | null>(null)
+  const rafIdRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    scheduledThemeRef.current = { theme: activeTheme, mode: resolvedMode }
+
+    if (rafIdRef.current === null) {
+      rafIdRef.current = requestAnimationFrame(() => {
+        rafIdRef.current = null
+        const pending = scheduledThemeRef.current
+        scheduledThemeRef.current = null
+
+        if (pending) {
+          applyTheme(pending.theme, pending.mode)
+        }
+      })
+    }
+
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+    }
+  }, [activeTheme, resolvedMode])
 
   const setTheme = useCallback((name: string) => {
     const next = normalizeSkin(name)

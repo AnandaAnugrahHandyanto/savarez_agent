@@ -184,8 +184,24 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
 
   try {
     const status = await bridge.check()
-    $updateStatus.set(status)
-    maybeNotifyUpdateAvailable(status)
+    const prev = $updateStatus.get()
+
+    // Only update the store when the status actually changed to avoid
+    // triggering unnecessary React re-renders via useStore subscriptions.
+    // A naive $updateStatus.set(status) on every 30-minute poll tick would
+    // cascade through every component reading the store, causing style
+    // recalculations that manifest as a visible flash.
+    if (
+      status?.behind !== prev?.behind ||
+      status?.supported !== prev?.supported ||
+      status?.error !== prev?.error ||
+      status?.currentSha !== prev?.currentSha ||
+      status?.targetSha !== prev?.targetSha
+    ) {
+      $updateStatus.set(status)
+      maybeNotifyUpdateAvailable(status)
+    }
+
     // The update check pulls the latest hermes_cli + bundled package metadata
     // into place. Re-read the running version so About reflects the now-fresh
     // checkout rather than the one captured at process start.
