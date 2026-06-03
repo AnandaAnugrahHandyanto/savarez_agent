@@ -504,6 +504,75 @@ describe('assistant-ui streaming renderer', () => {
     expect(viewport.scrollTop).toBe(1_200)
   })
 
+  it('holds the viewport at bottom when content transiently shrinks while armed', async () => {
+    const { container } = render(<StreamingHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+
+    let measured = 2_000
+
+    const minHeightOf = () => {
+      const raw = content.style.minHeight
+
+      return raw.endsWith('px') ? Number.parseFloat(raw) : 0
+    }
+
+    const effectiveHeight = () => Math.max(measured, minHeightOf())
+
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 600 })
+    Object.defineProperty(content, 'scrollHeight', {
+      configurable: true,
+      get: effectiveHeight
+    })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: effectiveHeight
+    })
+
+    let rawTop = 0
+
+    const clamp = () => {
+      const max = Math.max(0, effectiveHeight() - 600)
+      rawTop = Math.max(0, Math.min(rawTop, max))
+    }
+
+    Object.defineProperty(viewport, 'scrollTop', {
+      configurable: true,
+      get: () => rawTop,
+      set: (value: number) => {
+        rawTop = value
+        clamp()
+      }
+    })
+
+    await wait(80)
+
+    await act(async () => {
+      for (const observer of resizeObservers) {
+        observer.trigger(2_000)
+      }
+    })
+    await wait(0)
+
+    viewport.scrollTop = viewport.scrollHeight
+    expect(viewport.scrollTop).toBe(1_400)
+
+    measured = 1_700
+
+    await act(async () => {
+      clamp()
+
+      for (const observer of resizeObservers) {
+        observer.trigger(1_700)
+      }
+    })
+    await wait(0)
+
+    expect(content.style.minHeight).toBe('2000px')
+    expect(viewport.scrollTop).toBe(1_400)
+  })
+
   it('honors the first upward wheel scroll even when a programmatic bottom-pin scroll event is still pending', async () => {
     const { container } = render(<StreamingHarness />)
 

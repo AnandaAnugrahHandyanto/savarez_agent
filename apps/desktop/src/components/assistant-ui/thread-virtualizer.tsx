@@ -239,6 +239,12 @@ function useThreadScrollAnchor({
   const programmaticScrollPendingRef = useRef(0)
   const prevSessionKeyRef = useRef(sessionKey)
   const prevGroupCountRef = useRef(0)
+  // High-water mark of the content height within the current turn. Shiki /
+  // Streamdown can temporarily replace a code or patch block with shorter
+  // laid-out DOM; a real browser clamps scrollTop upward before any rAF pin can
+  // run. Reserving the high-water mark as min-height keeps the scroller from
+  // shrinking while the user is parked at the bottom.
+  const contentHwmRef = useRef(0)
 
   const pinToBottom = useCallback(() => {
     const el = scrollerRef.current
@@ -258,6 +264,14 @@ function useThreadScrollAnchor({
   const jumpToBottom = useCallback(() => {
     stickyBottomRef.current = true
 
+    const content = scrollerRef.current?.firstElementChild as HTMLElement | null
+
+    if (content) {
+      content.style.minHeight = ''
+    }
+
+    contentHwmRef.current = 0
+
     if (groupCount > 0) {
       virtualizer.scrollToIndex(groupCount - 1, { align: 'end', behavior: 'auto' })
     }
@@ -267,7 +281,7 @@ function useThreadScrollAnchor({
         pinToBottom()
       }
     })
-  }, [groupCount, pinToBottom, stickyBottomRef, virtualizer])
+  }, [groupCount, pinToBottom, scrollerRef, stickyBottomRef, virtualizer])
 
   useEffect(() => () => setThreadScrolledUp(false), [])
 
@@ -283,6 +297,14 @@ function useThreadScrollAnchor({
     const disarm = () => {
       stickyBottomRef.current = false
       programmaticScrollPendingRef.current = 0
+
+      const content = el.firstElementChild as HTMLElement | null
+
+      if (content) {
+        content.style.minHeight = ''
+      }
+
+      contentHwmRef.current = 0
     }
 
     const onScroll = () => {
@@ -367,27 +389,45 @@ function useThreadScrollAnchor({
       return undefined
     }
 
+    const content = el.firstElementChild as HTMLElement | null
     let pinRafScheduled = false
+
     const schedulePin = () => {
       if (pinRafScheduled || !stickyBottomRef.current) {
         return
       }
+
       pinRafScheduled = true
       requestAnimationFrame(() => {
         pinRafScheduled = false
+
         if (stickyBottomRef.current) {
           pinToBottom()
         }
       })
     }
 
-    const observer = new ResizeObserver(schedulePin)
+    const observer = new ResizeObserver(() => {
+      // Keep content height monotonic within a turn while armed. Set min-height
+      // before scheduling the bottom pin so a transient code-block shrink
+      // cannot make the browser clamp scrollTop upward.
+      if (content && stickyBottomRef.current) {
+        const measured = content.scrollHeight
+
+        if (measured > contentHwmRef.current) {
+          contentHwmRef.current = measured
+          content.style.minHeight = `${measured}px`
+        }
+      }
+
+      schedulePin()
+    })
 
     // Observe ONLY the content (firstElementChild), not the scroller `el`
     // itself. Resizes of the viewport/scroller (window resize, devtools
     // panel toggle) shouldn't trigger a pin — only content growth should.
-    if (el.firstElementChild) {
-      observer.observe(el.firstElementChild)
+    if (content) {
+      observer.observe(content)
     }
 
     return () => observer.disconnect()
