@@ -4178,7 +4178,7 @@ class SessionDB:
                        WHERE section=? AND is_active=1
                        {"AND id!=?" if exclude_id else ""}
                        ORDER BY
-                          (access_count + 1.0) / ((1.0 + (CAST(? AS REAL) - last_accessed) / 86400.0) ** 0.5) ASC,
+                          (access_count + 1.0) / SQRT(1.0 + (CAST(? AS REAL) - last_accessed) / 86400.0) ASC,
                           last_accessed ASC,
                           id ASC
                        LIMIT 1""",
