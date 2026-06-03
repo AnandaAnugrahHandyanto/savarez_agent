@@ -1,4 +1,6 @@
 import atexit
+import base64
+import binascii
 import concurrent.futures
 import contextvars
 import copy
@@ -7,6 +9,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -28,6 +31,28 @@ from tui_gateway.transport import (
 )
 
 logger = logging.getLogger(__name__)
+
+_IMAGE_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+_IMAGE_UPLOAD_MIME_EXTENSIONS = {
+    "image/bmp": ".bmp",
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/tiff": ".tiff",
+    "image/webp": ".webp",
+    "image/x-icon": ".ico",
+}
+_IMAGE_UPLOAD_EXTENSIONS = {
+    ".bmp",
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".tif",
+    ".tiff",
+    ".webp",
+}
 
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
@@ -426,6 +451,79 @@ def _image_meta(path: Path) -> dict:
     except Exception:
         pass
     return meta
+
+
+def _uploaded_image_basename(filename: str) -> str:
+    return re.split(r"[/\\]+", filename or "image")[-1] or "image"
+
+
+def _safe_uploaded_image_name(filename: str, ext: str) -> str:
+    stem = Path(_uploaded_image_basename(filename)).stem or "image"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or "image"
+    return f"{safe[:80]}{ext}"
+
+
+def _upload_image_extension(filename: str, mime_type: str) -> str | None:
+    ext = Path(_uploaded_image_basename(filename)).suffix.lower()
+    if ext in _IMAGE_UPLOAD_EXTENSIONS:
+        return ext
+    mime = (mime_type or "").split(";", 1)[0].strip().lower()
+    return _IMAGE_UPLOAD_MIME_EXTENSIONS.get(mime)
+
+
+def _decode_uploaded_image(data_base64: str) -> bytes:
+    raw = data_base64.split(",", 1)[1] if data_base64.startswith("data:") and "," in data_base64 else data_base64
+    if not raw:
+        raise ValueError("image data required")
+    if len(raw) > ((_IMAGE_UPLOAD_MAX_BYTES + 2) // 3) * 4:
+        raise ValueError("image too large")
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("invalid image data") from exc
+    if not data:
+        raise ValueError("image data required")
+    if len(data) > _IMAGE_UPLOAD_MAX_BYTES:
+        raise ValueError("image too large")
+    return data
+
+
+def _verified_uploaded_image_extension(data: bytes, filename: str, mime_type: str) -> str:
+    requested = _upload_image_extension(filename, mime_type)
+    signatures = [
+        (b"\x89PNG\r\n\x1a\n", ".png"),
+        (b"\xff\xd8\xff", ".jpg"),
+        (b"GIF87a", ".gif"),
+        (b"GIF89a", ".gif"),
+        (b"BM", ".bmp"),
+        (b"II*\x00", ".tiff"),
+        (b"MM\x00*", ".tiff"),
+        (b"\x00\x00\x01\x00", ".ico"),
+    ]
+    detected = next((ext for magic, ext in signatures if data.startswith(magic)), None)
+    if detected is None and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        detected = ".webp"
+    if detected is None:
+        raise ValueError("invalid image data")
+    if requested in {".jpeg", ".jpg"} and detected == ".jpg":
+        return requested
+    if requested in {".tif", ".tiff"} and detected == ".tiff":
+        return requested
+    if requested and requested == detected:
+        return requested
+    return detected
+
+
+def _save_uploaded_image(session: dict, data: bytes, filename: str, mime_type: str) -> Path:
+    ext = _verified_uploaded_image_extension(data, filename, mime_type)
+
+    session["image_counter"] = session.get("image_counter", 0) + 1
+    img_dir = _hermes_home / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = _safe_uploaded_image_name(filename, ext)
+    img_path = img_dir / f"upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}_{safe_name}"
+    img_path.write_bytes(data)
+    return img_path
 
 
 def _ok(rid, result: dict) -> dict:
@@ -4558,6 +4656,36 @@ def _(rid, params: dict) -> dict:
             **_image_meta(img_path),
         },
     )
+
+
+@method("image.upload")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+
+    data_base64 = str(params.get("data_base64", "") or "").strip()
+    filename = str(params.get("filename", "image") or "image")
+    mime_type = str(params.get("mime_type", "") or "")
+
+    try:
+        data = _decode_uploaded_image(data_base64)
+        image_path = _save_uploaded_image(session, data, filename, mime_type)
+        session.setdefault("attached_images", []).append(str(image_path))
+        return _ok(
+            rid,
+            {
+                "attached": True,
+                "path": str(image_path),
+                "count": len(session["attached_images"]),
+                "text": f"[User attached image: {image_path.name}]",
+                **_image_meta(image_path),
+            },
+        )
+    except ValueError as exc:
+        return _err(rid, 4016, str(exc))
+    except Exception as exc:
+        return _err(rid, 5027, str(exc))
 
 
 @method("image.attach")

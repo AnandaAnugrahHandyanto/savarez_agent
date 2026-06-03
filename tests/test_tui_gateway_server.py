@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import sys
@@ -2499,6 +2500,99 @@ def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
     assert resp["result"]["path"] == str(screenshot)
     assert resp["result"]["remainder"] == ""
     assert len(server._sessions["sid"]["attached_images"]) == 1
+
+
+def test_image_upload_writes_image_under_gateway_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["sid"] = _session()
+
+    payload = base64.b64encode(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+    ).decode("ascii")
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.upload",
+            "params": {
+                "session_id": "sid",
+                "data_base64": payload,
+                "filename": r"C:\Users\alice\Desktop\Screenshot 2026-06-03 at 10.22.11 AM.png",
+                "mime_type": "image/png",
+            },
+        }
+    )
+
+    uploaded_path = Path(resp["result"]["path"])
+    assert resp["result"]["attached"] is True
+    assert uploaded_path.parent == tmp_path / "images"
+    assert uploaded_path.name.endswith("Screenshot_2026-06-03_at_10.22.11_AM.png")
+    assert "Users" not in uploaded_path.name
+    assert uploaded_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert server._sessions["sid"]["attached_images"] == [str(uploaded_path)]
+
+
+def test_image_upload_rejects_non_image_bytes(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["sid"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.upload",
+            "params": {
+                "session_id": "sid",
+                "data_base64": base64.b64encode(b"not an image").decode("ascii"),
+                "filename": "not-image.png",
+                "mime_type": "image/png",
+            },
+        }
+    )
+
+    assert resp["error"]["message"] == "invalid image data"
+    assert server._sessions["sid"]["attached_images"] == []
+
+
+def test_image_upload_rejects_svg(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["sid"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.upload",
+            "params": {
+                "session_id": "sid",
+                "data_base64": base64.b64encode(b"<svg><script /></svg>").decode("ascii"),
+                "filename": "diagram.svg",
+                "mime_type": "image/svg+xml",
+            },
+        }
+    )
+
+    assert resp["error"]["message"] == "invalid image data"
+    assert server._sessions["sid"]["attached_images"] == []
+
+
+def test_image_upload_rejects_oversized_encoded_payload(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["sid"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.upload",
+            "params": {
+                "session_id": "sid",
+                "data_base64": "A" * (((server._IMAGE_UPLOAD_MAX_BYTES + 2) // 3) * 4 + 1),
+                "filename": "huge.png",
+                "mime_type": "image/png",
+            },
+        }
+    )
+
+    assert resp["error"]["message"] == "image too large"
+    assert server._sessions["sid"]["attached_images"] == []
 
 
 def test_commands_catalog_surfaces_quick_commands(monkeypatch):
