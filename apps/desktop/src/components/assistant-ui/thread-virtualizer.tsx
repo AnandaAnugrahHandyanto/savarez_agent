@@ -192,6 +192,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
   // fold. See `apps/desktop/scripts/measure-jump.mjs` for the repro
   // (distFromBottom 0 → 49 within one frame, sticking forever).
   const programmaticScrollPendingRef = useRef(0)
+  const programmaticAnchorScrollPendingRef = useRef(0)
   const prevSessionKeyRef = useRef(sessionKey)
   const prevGroupCountRef = useRef(0)
 
@@ -222,6 +223,58 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     })
   }, [groupCount, pinToBottom, virtualizer])
 
+  const captureReadingAnchor = useCallback(() => {
+    const el = scrollerRef.current
+
+    if (!el || armedRef.current) {
+      return null
+    }
+
+    const top = el.scrollTop
+    const virtualItems = virtualizer.getVirtualItems()
+
+    const item =
+      virtualItems.find(candidate => candidate.end >= top + 1) ||
+      virtualItems.find(candidate => candidate.start >= top) ||
+      virtualItems[0]
+
+    if (!item) {
+      return null
+    }
+
+    return {
+      index: item.index,
+      offset: top - item.start
+    }
+  }, [scrollerRef, virtualizer])
+
+  const restoreReadingAnchor = useCallback(
+    (anchor: { index: number; offset: number } | null) => {
+      const el = scrollerRef.current
+
+      if (!anchor || !el || armedRef.current) {
+        return
+      }
+
+      const item = virtualizer.getVirtualItems().find(candidate => candidate.index === anchor.index)
+
+      if (!item) {
+        return
+      }
+
+      const nextTop = Math.max(0, item.start + anchor.offset)
+
+      if (Math.abs(el.scrollTop - nextTop) < 1) {
+        return
+      }
+
+      programmaticAnchorScrollPendingRef.current += 1
+      el.scrollTop = nextTop
+      lastTopRef.current = el.scrollTop
+    },
+    [scrollerRef, virtualizer]
+  )
+
   useEffect(() => () => setThreadScrolledUp(false), [])
 
   // Track at-bottom state, dim composer when scrolled up, disarm on user
@@ -247,6 +300,16 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
       // Without this guard the post-pin scrollTop gets misread as the
       // user scrolling up, disarming sticky-bottom permanently and
       // leaving the just-submitted message below the fold.
+      if (programmaticAnchorScrollPendingRef.current > 0) {
+        programmaticAnchorScrollPendingRef.current -= 1
+        lastTopRef.current = top
+        const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
+        armedRef.current = atBottom
+        setThreadScrolledUp(!atBottom)
+
+        return
+      }
+
       if (programmaticScrollPendingRef.current > 0) {
         programmaticScrollPendingRef.current -= 1
         lastTopRef.current = top
@@ -307,21 +370,30 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
       return undefined
     }
 
-    let pinRafScheduled = false
-    const schedulePin = () => {
-      if (pinRafScheduled || !armedRef.current) {
+    let scrollRafScheduled = false
+
+    const scheduleScrollReconcile = () => {
+      if (scrollRafScheduled) {
         return
       }
-      pinRafScheduled = true
+
+      const anchor = captureReadingAnchor()
+
+      scrollRafScheduled = true
       requestAnimationFrame(() => {
-        pinRafScheduled = false
+        scrollRafScheduled = false
+
         if (armedRef.current) {
           pinToBottom()
+
+          return
         }
+
+        restoreReadingAnchor(anchor)
       })
     }
 
-    const observer = new ResizeObserver(schedulePin)
+    const observer = new ResizeObserver(scheduleScrollReconcile)
 
     observer.observe(el)
 
@@ -330,7 +402,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     }
 
     return () => observer.disconnect()
-  }, [enabled, pinToBottom, scrollerRef])
+  }, [captureReadingAnchor, enabled, pinToBottom, restoreReadingAnchor, scrollerRef])
 
   // Jump to bottom on session change OR when an empty thread first gets
   // content. Both share the same intent and the same effect.
@@ -367,6 +439,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     if (!enabled) {
       return
     }
+
     if (groupCount > prevGroupCountForLayoutRef.current && armedRef.current) {
       pinToBottom()
       requestAnimationFrame(() => {
@@ -375,6 +448,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
         }
       })
     }
+
     prevGroupCountForLayoutRef.current = groupCount
   }, [enabled, groupCount, pinToBottom])
 

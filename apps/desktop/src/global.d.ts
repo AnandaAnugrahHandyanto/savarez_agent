@@ -32,6 +32,10 @@ declare global {
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }
+      profiles: {
+        list: () => Promise<DesktopProfilesState>
+        switch: (name: string) => Promise<DesktopProfilesState>
+      }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
@@ -141,6 +145,7 @@ export interface HermesConnection {
   isFullscreen: boolean
   mode?: 'local' | 'remote'
   nativeOverlayWidth: number
+  profile?: string
   source?: 'env' | 'local' | 'settings'
   token: string
   wsUrl: string
@@ -177,6 +182,20 @@ export interface DesktopConnectionTestResult {
   baseUrl: string
   ok: boolean
   version: string | null
+}
+
+export interface DesktopProfileInfo {
+  active: boolean
+  isDefault: boolean
+  model: string | null
+  name: string
+  path: string
+  provider: string | null
+}
+
+export interface DesktopProfilesState {
+  active: string
+  profiles: DesktopProfileInfo[]
 }
 
 export interface DesktopBootProgress {

@@ -38,24 +38,26 @@ import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
 import { dragHasAttachments, droppedFileInlineRef, insertInlineRefsIntoEditor } from '@/app/chat/composer/inline-refs'
 import {
+  captureComposerSelection,
   composerPlainText,
+  type ComposerSelectionSnapshot,
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
+  restoreComposerSelection,
   RICH_INPUT_SLOT
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
-import { DirectiveContent } from '@/components/assistant-ui/directive-text'
-import { UserMessageText } from '@/components/assistant-ui/user-message-text'
-import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
+import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText } from '@/components/assistant-ui/markdown-text'
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
 import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
+import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
@@ -868,6 +870,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const rootRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
+  const lastEditorSelectionRef = useRef<ComposerSelectionSnapshot | null>(null)
   const dragDepthRef = useRef(0)
   const [dragActive, setDragActive] = useState(false)
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
@@ -899,6 +902,15 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
   const requestEditFocus = useCallback(() => {
     setFocusRequestId(id => id + 1)
+  }, [])
+
+  const rememberEditorSelection = useCallback(() => {
+    const editor = editorRef.current
+    const selection = editor ? captureComposerSelection(editor) : null
+
+    if (selection) {
+      lastEditorSelectionRef.current = selection
+    }
   }, [])
 
   const appendExternalText = useCallback(
@@ -937,9 +949,12 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       editor &&
       (editor.childNodes.length === 0 || (document.activeElement !== editor && composerPlainText(editor) !== draft))
     ) {
+      const selection = captureComposerSelection(editor) || lastEditorSelectionRef.current
       renderComposerContents(editor, draft)
 
-      if (document.activeElement === editor) {
+      if (restoreComposerSelection(editor, selection)) {
+        lastEditorSelectionRef.current = selection
+      } else if (document.activeElement === editor) {
         placeCaretEnd(editor)
       }
     }
@@ -1187,6 +1202,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     }
 
     syncDraftFromEditor(editor)
+    rememberEditorSelection()
     window.setTimeout(refreshTrigger, 0)
   }
 
@@ -1202,6 +1218,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     event.preventDefault()
     document.execCommand('insertText', false, pastedText)
     syncDraftFromEditor(event.currentTarget)
+    rememberEditorSelection()
   }
 
   const submitEdit = (editor: HTMLDivElement) => {
@@ -1291,6 +1308,8 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   }
 
   const handleKeyUp = () => {
+    rememberEditorSelection()
+
     // If this keyup belongs to a key the open trigger popover already consumed
     // in keydown (Arrow/Enter/Tab/Escape), skip the refresh. Those keys never
     // edit text, and for Escape the keydown already closed the menu — a refresh
@@ -1350,14 +1369,23 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               contentEditable
               data-placeholder="Edit message"
               data-slot={RICH_INPUT_SLOT}
-              onBlur={() => window.setTimeout(closeTrigger, 80)}
+              onBlur={() => {
+                rememberEditorSelection()
+                window.setTimeout(closeTrigger, 80)
+              }}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
-              onFocus={() => markActiveComposer('edit')}
+              onFocus={() => {
+                markActiveComposer('edit')
+                window.requestAnimationFrame(rememberEditorSelection)
+              }}
               onInput={handleInput}
               onKeyDown={handleKeyDown}
               onKeyUp={handleKeyUp}
-              onMouseUp={refreshTrigger}
+              onMouseUp={() => {
+                rememberEditorSelection()
+                refreshTrigger()
+              }}
               onPaste={handlePaste}
               ref={editorRef}
               role="textbox"

@@ -58,10 +58,13 @@ import { useVoiceRecorder } from './hooks/use-voice-recorder'
 import { dragHasAttachments, droppedFileInlineRef, insertInlineRefsIntoEditor } from './inline-refs'
 import { QueuePanel } from './queue-panel'
 import {
+  captureComposerSelection,
   composerPlainText,
+  type ComposerSelectionSnapshot,
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
+  restoreComposerSelection,
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { SkinSlashPopover } from './skin-slash-popover'
@@ -123,6 +126,7 @@ export function ChatBar({
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
+  const lastEditorSelectionRef = useRef<ComposerSelectionSnapshot | null>(null)
   const previousBusyRef = useRef(busy)
   const drainingQueueRef = useRef(false)
   // Set when the user explicitly interrupts the running turn via the Stop
@@ -161,6 +165,15 @@ export function ChatBar({
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)
     markActiveComposer('main')
+  }, [])
+
+  const rememberEditorSelection = useCallback(() => {
+    const editor = editorRef.current
+    const selection = editor ? captureComposerSelection(editor) : null
+
+    if (selection) {
+      lastEditorSelectionRef.current = selection
+    }
   }, [])
 
   const requestMainFocus = useCallback(() => {
@@ -237,7 +250,12 @@ export function ChatBar({
     const editor = editorRef.current
 
     if (editor && document.activeElement !== editor && composerPlainText(editor) !== draft) {
+      const selection = captureComposerSelection(editor) || lastEditorSelectionRef.current
       renderComposerContents(editor, draft)
+
+      if (restoreComposerSelection(editor, selection)) {
+        lastEditorSelectionRef.current = selection
+      }
     }
   }, [draft])
 
@@ -416,6 +434,7 @@ export function ChatBar({
     const nextDraft = composerPlainText(event.currentTarget)
     draftRef.current = nextDraft
     aui.composer().setText(nextDraft)
+    rememberEditorSelection()
   }
 
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
@@ -481,6 +500,7 @@ export function ChatBar({
       aui.composer().setText(nextDraft)
     }
 
+    rememberEditorSelection()
     window.setTimeout(refreshTrigger, 0)
   }
 
@@ -629,6 +649,8 @@ export function ChatBar({
   }
 
   const handleEditorKeyUp = () => {
+    rememberEditorSelection()
+
     // If this keyup belongs to a key the open trigger popover already consumed
     // in keydown (Arrow/Enter/Tab/Escape), skip the refresh. Those keys never
     // edit text, and for Escape the keydown already closed the menu — a refresh
@@ -1082,8 +1104,8 @@ export function ChatBar({
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
         aria-label="Message"
-        autoCorrect="off"
         autoCapitalize="off"
+        autoCorrect="off"
         className={cn(
           'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
@@ -1094,14 +1116,23 @@ export function ChatBar({
         contentEditable={!disabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
-        onBlur={() => window.setTimeout(closeTrigger, 80)}
+        onBlur={() => {
+          rememberEditorSelection()
+          window.setTimeout(closeTrigger, 80)
+        }}
         onDragOver={handleInputDragOver}
         onDrop={handleInputDrop}
-        onFocus={() => markActiveComposer('main')}
+        onFocus={() => {
+          markActiveComposer('main')
+          window.requestAnimationFrame(rememberEditorSelection)
+        }}
         onInput={handleEditorInput}
         onKeyDown={handleEditorKeyDown}
         onKeyUp={handleEditorKeyUp}
-        onMouseUp={refreshTrigger}
+        onMouseUp={() => {
+          rememberEditorSelection()
+          refreshTrigger()
+        }}
         onPaste={handlePaste}
         ref={editorRef}
         role="textbox"

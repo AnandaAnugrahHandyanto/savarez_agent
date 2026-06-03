@@ -210,6 +210,7 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'profile.json')
 // Branch we track for self-update. The GUI work has merged to main, so this
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
@@ -470,6 +471,7 @@ let bootstrapAbortController = null
 // of re-adopting the install we're repairing. Cleared once a bootstrap runs.
 let forceBootstrapRepair = false
 let connectionConfigCache = null
+let activeDesktopProfileName = null
 const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
@@ -1683,6 +1685,178 @@ function writeDefaultProjectDir(dir) {
     rememberLog(`[settings] write default project dir failed: ${error.message}`)
   }
 }
+
+const DEFAULT_PROFILE_NAME = 'default'
+
+function normalizeDesktopProfileName(name) {
+  const raw = String(name || '').trim().toLowerCase()
+  return raw || DEFAULT_PROFILE_NAME
+}
+
+function desktopProfilesRoot() {
+  return path.join(HERMES_HOME, 'profiles')
+}
+
+function desktopProfilePath(name) {
+  const normalized = normalizeDesktopProfileName(name)
+
+  if (normalized === DEFAULT_PROFILE_NAME) {
+    return HERMES_HOME
+  }
+
+  return path.join(desktopProfilesRoot(), normalized)
+}
+
+function isValidDesktopProfileName(name) {
+  const normalized = normalizeDesktopProfileName(name)
+
+  if (normalized === DEFAULT_PROFILE_NAME) {
+    return true
+  }
+
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(normalized)) {
+    return false
+  }
+
+  return normalized !== '.' && normalized !== '..' && !normalized.includes('/') && !normalized.includes('\\')
+}
+
+function desktopProfileExists(name) {
+  const normalized = normalizeDesktopProfileName(name)
+  return normalized === DEFAULT_PROFILE_NAME || directoryExists(desktopProfilePath(normalized))
+}
+
+function readStickyHermesProfileName() {
+  try {
+    const name = fs.readFileSync(path.join(HERMES_HOME, 'active_profile'), 'utf8').trim()
+    return name || DEFAULT_PROFILE_NAME
+  } catch {
+    return DEFAULT_PROFILE_NAME
+  }
+}
+
+function readDesktopProfileName() {
+  const envName = process.env.HERMES_DESKTOP_PROFILE
+  if (envName && isValidDesktopProfileName(envName) && desktopProfileExists(envName)) {
+    return normalizeDesktopProfileName(envName)
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DESKTOP_PROFILE_CONFIG_PATH, 'utf8'))
+    if (parsed && isValidDesktopProfileName(parsed.active) && desktopProfileExists(parsed.active)) {
+      return normalizeDesktopProfileName(parsed.active)
+    }
+  } catch {
+    // Missing / unreadable / malformed -> fall through to Hermes' sticky
+    // profile so desktop and CLI start from the same agent by default.
+  }
+
+  const sticky = readStickyHermesProfileName()
+  return isValidDesktopProfileName(sticky) && desktopProfileExists(sticky) ? normalizeDesktopProfileName(sticky) : DEFAULT_PROFILE_NAME
+}
+
+function writeDesktopProfileName(name) {
+  const normalized = normalizeDesktopProfileName(name)
+
+  try {
+    fs.mkdirSync(path.dirname(DESKTOP_PROFILE_CONFIG_PATH), { recursive: true })
+    fs.writeFileSync(
+      DESKTOP_PROFILE_CONFIG_PATH,
+      JSON.stringify({ active: normalized, updatedAt: new Date().toISOString() }, null, 2) + '\n',
+      'utf8'
+    )
+  } catch (error) {
+    rememberLog(`[profiles] write desktop profile config failed: ${error.message}`)
+  }
+
+  try {
+    const stickyPath = path.join(HERMES_HOME, 'active_profile')
+    if (normalized === DEFAULT_PROFILE_NAME) {
+      fs.rmSync(stickyPath, { force: true })
+    } else {
+      fs.writeFileSync(stickyPath, `${normalized}\n`, 'utf8')
+    }
+  } catch (error) {
+    rememberLog(`[profiles] write sticky active_profile failed: ${error.message}`)
+  }
+}
+
+function readProfileConfigSummary(profilePath) {
+  let model = null
+  let provider = null
+
+  try {
+    const raw = fs.readFileSync(path.join(profilePath, 'config.yaml'), 'utf8')
+    const modelBlock = raw.match(/^model:\s*\n((?:[ \t]+.*\n?)*)/m)?.[1] || ''
+    model = modelBlock.match(/^[ \t]+default:\s*['"]?([^'"\n]+)['"]?/m)?.[1]?.trim() || null
+    provider = modelBlock.match(/^[ \t]+provider:\s*['"]?([^'"\n]+)['"]?/m)?.[1]?.trim() || null
+  } catch {
+    // Profile config is optional for display; switching still works.
+  }
+
+  return { model, provider }
+}
+
+function listDesktopProfiles() {
+  const names = new Set([DEFAULT_PROFILE_NAME])
+
+  try {
+    for (const entry of fs.readdirSync(desktopProfilesRoot(), { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      if (isValidDesktopProfileName(entry.name)) {
+        names.add(normalizeDesktopProfileName(entry.name))
+      }
+    }
+  } catch {
+    // A user may not have named profiles yet.
+  }
+
+  const active = desktopProfileExists(activeDesktopProfileName) ? activeDesktopProfileName : DEFAULT_PROFILE_NAME
+
+  return {
+    active,
+    profiles: [...names]
+      .sort((a, b) => {
+        if (a === DEFAULT_PROFILE_NAME) return -1
+        if (b === DEFAULT_PROFILE_NAME) return 1
+        return a.localeCompare(b)
+      })
+      .map(name => {
+        const profilePath = desktopProfilePath(name)
+        const summary = readProfileConfigSummary(profilePath)
+
+        return {
+          active: name === active,
+          isDefault: name === DEFAULT_PROFILE_NAME,
+          name,
+          path: profilePath,
+          ...summary
+        }
+      })
+  }
+}
+
+function switchDesktopProfile(name) {
+  const normalized = normalizeDesktopProfileName(name)
+
+  if (!isValidDesktopProfileName(normalized) || !desktopProfileExists(normalized)) {
+    throw new Error(`Hermes profile '${name}' does not exist.`)
+  }
+
+  if (normalized === activeDesktopProfileName) {
+    return listDesktopProfiles()
+  }
+
+  activeDesktopProfileName = normalized
+  writeDesktopProfileName(activeDesktopProfileName)
+  rememberLog(`[profiles] switching desktop profile to ${activeDesktopProfileName}`)
+  resetHermesConnection()
+  setTimeout(() => mainWindow?.reload(), 150)
+
+  return listDesktopProfiles()
+}
+
+activeDesktopProfileName = readDesktopProfileName()
 
 function createPythonBackend(root, label, dashboardArgs, options = {}) {
   const python = findPythonForRoot(root)
@@ -3271,6 +3445,7 @@ async function startHermes() {
         source: remote.source,
         token: remote.token,
         wsUrl: remote.wsUrl,
+        profile: activeDesktopProfileName,
         logs: hermesLog.slice(-80),
         ...getWindowState()
       }
@@ -3283,10 +3458,11 @@ async function startHermes() {
     await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
     const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
     const hermesCwd = resolveHermesCwd()
+    const activeHermesHome = desktopProfilePath(activeDesktopProfileName)
     const webDist = resolveWebDist()
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
-    rememberLog(`Starting Hermes backend via ${backend.label}`)
+    rememberLog(`Starting Hermes backend via ${backend.label} (profile: ${activeDesktopProfileName})`)
 
     hermesProcess = spawn(backend.command, backend.args, {
       cwd: hermesCwd,
@@ -3300,7 +3476,7 @@ async function startHermes() {
         // Mismatch would split config / sessions / .env / logs across two
         // directories. install.ps1 sets HERMES_HOME via setx; the desktop
         // can't reliably do that, so we set it inline for every spawn.
-        HERMES_HOME,
+        HERMES_HOME: activeHermesHome,
         ...backend.env,
         HERMES_DASHBOARD_SESSION_TOKEN: token,
         HERMES_DASHBOARD_TUI: '1',
@@ -3375,6 +3551,7 @@ async function startHermes() {
       source: 'local',
       token,
       wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(token)}`,
+      profile: activeDesktopProfileName,
       logs: hermesLog.slice(-80),
       ...getWindowState()
     }
@@ -3521,6 +3698,8 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async () => startHermes())
+ipcMain.handle('hermes:profiles:list', async () => listDesktopProfiles())
+ipcMain.handle('hermes:profiles:switch', async (_event, name) => switchDesktopProfile(name))
 ipcMain.handle('hermes:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
   // reset connection state so the next startHermes() call restarts the
