@@ -1036,3 +1036,72 @@ class TestReadProcessCmdlinePsFallback:
         )
         result = status._read_process_cmdline(12345)
         assert "hermes_cli/main.py" in result
+
+
+class TestRespawnStormBreaker:
+    def test_no_storm_under_threshold(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for _ in range(5):
+            result = status.record_start_and_check_storm(max_starts=5, window_s=120)
+            assert result is None
+
+    def test_storm_detected_over_threshold(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        result = None
+        for _ in range(7):
+            result = status.record_start_and_check_storm(max_starts=5, window_s=120)
+        assert result is not None
+        assert result.count >= 6
+        assert result.backoff_s > 0
+
+    def test_old_starts_pruned_outside_window(self, tmp_path, monkeypatch):
+        import time
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        log_path = tmp_path / "gateway-starts.log"
+        old_ts = time.time() - 10000
+        log_path.write_text("\n".join(f"{old_ts:.6f}" for _ in range(10)) + "\n")
+
+        result = status.record_start_and_check_storm(max_starts=5, window_s=120)
+        assert result is None
+
+    def test_breaker_respects_custom_window(self, tmp_path, monkeypatch):
+        # A low custom max_starts must be honored: with max_starts=2, the 3rd
+        # start within the window should trip the breaker.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        result = None
+        for _ in range(3):
+            result = status.record_start_and_check_storm(max_starts=2, window_s=120)
+        assert result is not None
+        assert result.count >= 3
+        assert result.window_s == 120
+        assert result.backoff_s > 0
+
+    def test_starts_log_written_atomically(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for _ in range(5):
+            status.record_start_and_check_storm(max_starts=5, window_s=120)
+
+        # The atomic rename must leave no leftover temp file behind.
+        leftovers = list(tmp_path.glob("*.tmp"))
+        assert leftovers == []
+
+        log_path = tmp_path / "gateway-starts.log"
+        assert log_path.exists()
+        # Every non-empty line must be a valid float timestamp.
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            float(line)  # raises ValueError if the log is corrupt
+
+
+class TestLaunchdPlistRespawnGovernance:
+    def test_plist_has_throttle_interval(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli.gateway import generate_launchd_plist
+
+        plist = generate_launchd_plist()
+        assert "<key>ThrottleInterval</key>" in plist
+        assert "<key>ExitTimeOut</key>" in plist
+        assert "<key>KeepAlive</key>" in plist

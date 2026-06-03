@@ -228,6 +228,22 @@ _ensure_telegram_mock()
 _ensure_discord_mock()
 
 
+@pytest.fixture(autouse=True)
+def _disable_telegram_polling_heartbeat(monkeypatch):
+    """Disable the always-on Telegram polling heartbeat in gateway tests.
+
+    ``TelegramAdapter.connect()`` spawns ``_polling_heartbeat_loop`` in
+    polling mode. Many gateway tests globally patch ``asyncio.sleep`` to a
+    no-op (or a fast fake) to drive time-based logic deterministically;
+    with the heartbeat live, that turns ``await asyncio.sleep(INTERVAL)``
+    into a tight CPU-spinning loop that never yields control. Setting the
+    interval env var to ``0`` makes ``connect()`` skip spawning the loop
+    entirely (the ``_hb > 0`` guard). Tests that exercise the heartbeat
+    directly override this via ``monkeypatch.setenv`` to a positive value.
+    """
+    monkeypatch.setenv("HERMES_TELEGRAM_HEARTBEAT_INTERVAL", "0")
+
+
 # ---------------------------------------------------------------------------
 # Plugin-adapter anti-pattern guard
 # ---------------------------------------------------------------------------
