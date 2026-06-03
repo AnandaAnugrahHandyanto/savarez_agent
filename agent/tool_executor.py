@@ -1084,6 +1084,28 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_terminal', function_args, tool_duration, result=function_result)}")
+        elif function_name == "interactive_prompt":
+            def _execute(next_args: dict) -> Any:
+                from tools.interactive_prompt_tool import interactive_prompt_tool as _ip_tool
+                return _ip_tool(
+                    question=next_args.get("question", ""),
+                    options=next_args.get("options", []),
+                    display_type=next_args.get("display_type", "buttons"),
+                    timeout_seconds=float(next_args.get("timeout_seconds", 900)),
+                    auth_policy=next_args.get("auth_policy", "session_owner_only"),
+                    callback=getattr(agent, "interactive_prompt_callback", None),
+                )
+            function_result, function_args = _run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('interactive_prompt', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):

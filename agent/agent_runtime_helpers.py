@@ -1887,6 +1887,20 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 ),
                 next_args,
             )
+    elif function_name == "interactive_prompt":
+        def _execute(next_args: dict) -> Any:
+            from tools.interactive_prompt_tool import interactive_prompt_tool as _ip_tool
+            return _finish_agent_tool(
+                _ip_tool(
+                    question=next_args.get("question", ""),
+                    options=next_args.get("options", []),
+                    display_type=next_args.get("display_type", "buttons"),
+                    timeout_seconds=float(next_args.get("timeout_seconds", 900)),
+                    auth_policy=next_args.get("auth_policy", "session_owner_only"),
+                    callback=getattr(agent, "interactive_prompt_callback", None),
+                ),
+                next_args,
+            )
     elif function_name == "delegate_task":
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
