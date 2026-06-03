@@ -3,6 +3,18 @@ import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
+import { UI_LANGUAGE } from './config/env.js'
+
+// Initialize i18n and branding system early
+import { initI18nAndBranding, type LanguageCode } from './lib/branding.js'
+
+// Determine language: env var > auto-detect
+const language: LanguageCode = (
+  UI_LANGUAGE && ['en', 'zh', 'ja', 'ko', 'de', 'es', 'fr'].includes(UI_LANGUAGE)
+    ? UI_LANGUAGE as LanguageCode
+    : undefined
+)
+initI18nAndBranding(language)
 
 if (!process.stdin.isTTY) {
   console.log('hermes-tui: no TTY')

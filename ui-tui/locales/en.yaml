@@ -1,0 +1,37 @@
+# English translations for Hermes Agent TUI
+# This is the default language file
+
+# Brand strings
+brand:
+  name: "Hermes Agent"
+  welcome: "Type your message or /help for commands."
+  goodbye: "Goodbye! ⚕"
+  help_header: "(^_^)? Commands"
+
+# UI placeholders
+placeholders:
+  - "Ask me anything…"
+  - "Try \"explain this codebase\""
+  - "Try \"write a test for…\""
+  - "Try \"refactor the auth module\""
+  - "Try \"/help\" for commands"
+  - "Try \"fix the lint errors\""
+  - "Try \"how does the config loader work?\""
+
+# Status messages
+status:
+  background_task_singular: "background task running"
+  background_task_plural: "background tasks running"
+  interrupt: "Ctrl+C to interrupt…"
+
+# Language names (for language selector)
+language:
+  name: "English"
+  native_name: "English"
+  auto: "Follow system language"
+
+# Settings
+settings:
+  language: "Language"
+  appearance: "Appearance"
+  theme: "Theme"

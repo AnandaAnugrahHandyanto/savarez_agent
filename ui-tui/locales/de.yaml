@@ -1,0 +1,37 @@
+# Deutsche Übersetzung for Hermes Agent TUI
+# German translations
+
+# Brand strings
+brand:
+  name: "Hermes Agent"
+  welcome: "Geben Sie Ihre Nachricht ein oder /help für Befehle."
+  goodbye: "Auf Wiedersehen！⚕"
+  help_header: "(^_^)? Befehle"
+
+# UI placeholders
+placeholders:
+  - "Fragen Sie mich Anything…"
+  - "Versuchen Sie \"Erklären Sie diese Codebasis\""
+  - "Versuchen Sie \"Schreiben Sie einen Test für…\""
+  - "Versuchen Sie \"Refactoring des Auth-Moduls\""
+  - "Versuchen Sie \"/help\" für Befehle"
+  - "Versuchen Sie \"Beheben Sie die Lint-Fehler\""
+  - "Versuchen Sie \"Wie funktioniert der Config-Loader?\""
+
+# Status messages
+status:
+  background_task_singular: "Hintergrundtask läuft"
+  background_task_plural: "Hintergroundtasks laufen"
+  interrupt: "Strg+C zum Unterbrechen…"
+
+# Language names (for language selector)
+language:
+  name: "Deutsch"
+  native_name: "Deutsch"
+  auto: "Systemsprache folgen"
+
+# Settings
+settings:
+  language: "Sprache"
+  appearance: "Erscheinungsbild"
+  theme: "Design"

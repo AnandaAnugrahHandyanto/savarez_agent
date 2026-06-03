@@ -1029,6 +1029,16 @@ def _launch_tui(resume_session_id: Optional[str] = None, tui_dev: bool = False):
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
+    # Set UI language from config
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        language = cfg.get("display", {}).get("language", "")
+        if language and language in ("en", "zh", "ja", "ko", "de", "es", "fr"):
+            env["HERMES_TUI_LANGUAGE"] = language
+    except Exception:
+        pass  # Fallback to auto-detection in TUI
+
     argv, cwd = _make_tui_argv(tui_dir, tui_dev)
     try:
         code = subprocess.call(argv, cwd=str(cwd), env=env)

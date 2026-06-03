@@ -1,0 +1,37 @@
+# Traducción al español for Hermes Agent TUI
+# Spanish translations
+
+# Brand strings
+brand:
+  name: "Hermes Agent"
+  welcome: "Escribe tu mensaje o /help para ver comandos."
+  goodbye: "¡Adiós！⚕"
+  help_header: "(^_^)? Comandos"
+
+# UI placeholders
+placeholders:
+  - "Pregúntame cualquier cosa…"
+  - "Prueba \"explica este código\""
+  - "Prueba \"escribe una prueba para…\""
+  - "Prueba \"refactorizar el módulo de autenticación\""
+  - "Prueba \"/help\" para comandos"
+  - "Prueba \"corrige los errores de lint\""
+  - "Prueba \"¿cómo funciona el cargador de configuración?\""
+
+# Status messages
+status:
+  background_task_singular: "tarea en segundo plano ejecutándose"
+  background_task_plural: "tareas en segundo plano ejecutándose"
+  interrupt: "Ctrl+C para interrumpir…"
+
+# Language names (for language selector)
+language:
+  name: "Español"
+  native_name: "Español"
+  auto: "Seguir idioma del sistema"
+
+# Settings
+settings:
+  language: "Idioma"
+  appearance: "Apariencia"
+  theme: "Tema"

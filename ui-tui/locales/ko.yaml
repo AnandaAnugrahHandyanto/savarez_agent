@@ -1,0 +1,37 @@
+# 한국어 번역 for Hermes Agent TUI
+# Korean translations
+
+# Brand strings
+brand:
+  name: "Hermes Agent"
+  welcome: "메시지를 입력하거나 /help로 명령어를 확인하세요."
+  goodbye: "안녕히 가세요！⚕"
+  help_header: "(^_^)? 명령어"
+
+# UI placeholders
+placeholders:
+  - "무엇이든 물어보세요…"
+  - "\"이 코드베이스를 설명해\" 시도"
+  - "\"…에 대한 테스트 작성\" 시도"
+  - "\"인증 모듈 리팩토링\" 시도"
+  - "명령어는 \"/help\" 시도"
+  - "\"lint 오류 수정\" 시도"
+  - "\"구성 로더는 어떻게 작동하나요?\" 시도"
+
+# Status messages
+status:
+  background_task_singular: "개의 백그라운드 작업 실행 중"
+  background_task_plural: "개의 백그라운드 작업 실행 중"
+  interrupt: "중단하려면 Ctrl+C…"
+
+# Language names (for language selector)
+language:
+  name: "한국어"
+  native_name: "한국어"
+  auto: "시스템 언어 따르기"
+
+# Settings
+settings:
+  language: "언어"
+  appearance: "모양"
+  theme: "테마"

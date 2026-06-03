@@ -1,0 +1,37 @@
+# 简体中文翻译 for Hermes Agent TUI
+# Simplified Chinese translations
+
+# Brand strings
+brand:
+  name: "Hermes Agent"
+  welcome: "输入您的消息或输入 /help 查看命令。"
+  goodbye: "再见！⚕"
+  help_header: "(^_^)? 命令"
+
+# UI placeholders
+placeholders:
+  - "问我任何问题…"
+  - "试试 \"解释这个代码库\""
+  - "试试 \"为…编写测试\""
+  - "试试 \"重构认证模块\""
+  - "试试 \"/help\" 查看命令"
+  - "试试 \"修复 lint 错误\""
+  - "试试 \"配置加载器是如何工作的？\""
+
+# Status messages
+status:
+  background_task_singular: "个后台任务正在运行"
+  background_task_plural: "个后台任务正在运行"
+  interrupt: "按 Ctrl+C 中断…"
+
+# Language names (for language selector)
+language:
+  name: "简体中文"
+  native_name: "简体中文"
+  auto: "跟随系统语言"
+
+# Settings
+settings:
+  language: "语言"
+  appearance: "外观"
+  theme: "主题"

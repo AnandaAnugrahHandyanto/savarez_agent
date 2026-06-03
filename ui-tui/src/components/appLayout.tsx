@@ -9,6 +9,7 @@ import { $uiState } from '../app/uiStore.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import type { Theme } from '../theme.js'
 import type { DetailsMode } from '../types.js'
+import { t, getBackgroundTaskText } from '../lib/i18n.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
@@ -169,7 +170,7 @@ const ComposerPane = memo(function ComposerPane({
 
       {ui.bgTasks.size > 0 && (
         <Text color={ui.theme.color.dim}>
-          {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running
+          {getBackgroundTaskText(ui.bgTasks.size)}
         </Text>
       )}
 
@@ -224,7 +225,7 @@ const ComposerPane = memo(function ComposerPane({
                 onChange={composer.updateInput}
                 onPaste={composer.handleTextPaste}
                 onSubmit={composer.submit}
-                placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                placeholder={composer.empty ? PLACEHOLDER : ui.busy ? t('status.interrupt', 'Ctrl+C to interrupt…') : ''}
                 value={composer.input}
               />
 

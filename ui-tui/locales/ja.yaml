@@ -1,0 +1,37 @@
+# 日本語翻訳 for Hermes Agent TUI
+# Japanese translations
+
+# Brand strings
+brand:
+  name: "Hermes Agent"
+  welcome: "メッセージを入力するか /help でコマンドを表示"
+  goodbye: "さようなら！⚕"
+  help_header: "(^_^)? コマンド"
+
+# UI placeholders
+placeholders:
+  - "何でも聞いて…"
+  - "「このコードベースを説明」と入力してみて"
+  - "「…のテストを書く」と入力してみて"
+  - "「認証モジュールをリファクタリング」と入力してみて"
+  - "「/help」でコマンドを表示"
+  - "「lint エラーを修正」と入力してみて"
+  - "「設定ローダーはどのように動作しますか？」と入力してみて"
+
+# Status messages
+status:
+  background_task_singular: "つのバックグラウンドタスクが実行中"
+  background_task_plural: "つのバックグラウンドタスクが実行中"
+  interrupt: "Ctrl+C で中断…"
+
+# Language names (for language selector)
+language:
+  name: "日本語"
+  native_name: "日本語"
+  auto: "システム言語に従う"
+
+# Settings
+settings:
+  language: "言語"
+  appearance: "外観"
+  theme: "テーマ"

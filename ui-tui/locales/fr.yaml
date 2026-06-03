@@ -1,0 +1,37 @@
+# Traduction française for Hermes Agent TUI
+# French translations
+
+# Brand strings
+brand:
+  name: "Hermes Agent"
+  welcome: "Tapez votre message ou /help pour les commandes."
+  goodbye: "Au revoir！⚕"
+  help_header: "(^_^)? Commandes"
+
+# UI placeholders
+placeholders:
+  - "Posez-moi n'importe quelle question…"
+  - "Essayez \"expliquer ce code\""
+  - "Essayez \"écrire un test pour…\""
+  - "Essayez \"refactoriser le module d'authentification\""
+  - "Essayez \"/help\" pour les commandes"
+  - "Essayez \"corriger les erreurs de lint\""
+  - "Essayez \"comment fonctionne le chargeur de configuration ?\""
+
+# Status messages
+status:
+  background_task_singular: "tâche en arrière-plan en cours d'exécution"
+  background_task_plural: "tâches en arrière-plan en cours d'exécution"
+  interrupt: "Ctrl+C pour interrompre…"
+
+# Language names (for language selector)
+language:
+  name: "Français"
+  native_name: "Français"
+  auto: "Suivre la langue du système"
+
+# Settings
+settings:
+  language: "Langue"
+  appearance: "Apparence"
+  theme: "Thème"

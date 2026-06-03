@@ -78,7 +78,7 @@ function mix(a: string, b: string, t: number) {
 
 // ── Defaults ─────────────────────────────────────────────────────────
 
-const BRAND: ThemeBrand = {
+const DEFAULT_BRAND: ThemeBrand = {
   name: 'Hermes Agent',
   icon: '⚕',
   prompt: '❯',
@@ -87,6 +87,20 @@ const BRAND: ThemeBrand = {
   tool: '┊',
   helpHeader: '(^_^)? Commands'
 }
+
+// Get localized brand information (imported dynamically to avoid circular deps)
+let getLocalizedBrand: (() => ThemeBrand) | null = null
+
+export function initLocalizedBrand(getter: () => ThemeBrand) {
+  getLocalizedBrand = getter
+}
+
+function getBrand(): ThemeBrand {
+  return getLocalizedBrand ? getLocalizedBrand() : DEFAULT_BRAND
+}
+
+// Backwards compatible export
+export const BRAND = DEFAULT_BRAND
 
 export const DARK_THEME: Theme = {
   color: {
@@ -130,7 +144,7 @@ export const DARK_THEME: Theme = {
     shellDollar: '#4dabf7'
   },
 
-  brand: BRAND,
+  brand: getBrand(),
 
   bannerLogo: '',
   bannerHero: ''
@@ -173,7 +187,7 @@ export const LIGHT_THEME: Theme = {
     shellDollar: '#1565C0'
   },
 
-  brand: BRAND,
+  brand: getBrand(),
 
   bannerLogo: '',
   bannerHero: ''
@@ -255,10 +269,10 @@ export function fromSkin(
       name: branding.agent_name ?? d.brand.name,
       icon: d.brand.icon,
       prompt: branding.prompt_symbol ?? d.brand.prompt,
-      welcome: branding.welcome ?? d.brand.welcome,
-      goodbye: branding.goodbye ?? d.brand.goodbye,
+      welcome: branding.welcome ?? getBrand().welcome,
+      goodbye: branding.goodbye ?? getBrand().goodbye,
       tool: toolPrefix || d.brand.tool,
-      helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader)
+      helpHeader: branding.help_header ?? (helpHeader || getBrand().helpHeader)
     },
 
     bannerLogo,
