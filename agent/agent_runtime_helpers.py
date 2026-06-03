@@ -1683,6 +1683,19 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             pass
         return result
 
+    # Deferred tool_search promotion + blocking (feature-flagged). When the
+    # feature is off, agent._deferred_tool_state is None and both checks are
+    # no-ops, so dispatch is byte-for-byte identical to before.
+    if function_name == "tool_search":
+        from tools import deferred_tool_search as _dts
+        return _dts.handle_tool_search_call(agent, function_args)
+    _deferred_state = getattr(agent, "_deferred_tool_state", None)
+    if _deferred_state is not None:
+        from tools import deferred_tool_search as _dts
+        _dts_block = _dts.block_message(function_name, _deferred_state)
+        if _dts_block is not None:
+            return _dts_block
+
     if function_name == "todo":
         from tools.todo_tool import todo_tool as _todo_tool
         return _finish_agent_tool(
