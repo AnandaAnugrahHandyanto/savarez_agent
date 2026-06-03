@@ -245,12 +245,32 @@
     } catch (_e) { return null; }
   }
 
-  function writeCardPath(taskId) {
+  function readReturnToBoardPath() {
     try {
       const url = new URL(window.location.href);
-      url.pathname = taskId ? `/kanban/cards/${encodeURIComponent(taskId)}` : "/kanban";
+      const ret = url.searchParams.get("return");
+      if (ret === "/kanban/list" || ret === "/kanban/priority") return ret;
+    } catch (_e) { /* ignore */ }
+    return "/kanban";
+  }
+
+  function writeCardPath(taskId, returnPath) {
+    try {
+      const url = new URL(window.location.href);
+      if (taskId) {
+        url.pathname = `/kanban/cards/${encodeURIComponent(taskId)}`;
+        if (returnPath === "/kanban/list" || returnPath === "/kanban/priority") {
+          url.searchParams.set("return", returnPath);
+        } else {
+          url.searchParams.delete("return");
+        }
+      } else {
+        url.pathname = readReturnToBoardPath();
+        url.searchParams.delete("return");
+      }
       url.searchParams.delete("task");
       window.history.pushState({}, "", url.toString());
+      window.dispatchEvent(new PopStateEvent("popstate"));
     } catch (_e) { /* ignore */ }
   }
 
@@ -549,8 +569,8 @@
     const openTask = useCallback(function (taskId) {
       if (!taskId) return;
       setSelectedTaskId(taskId);
-      writeCardPath(taskId);
-    }, []);
+      writeCardPath(taskId, isPriorityListRoute ? "/kanban/list" : "/kanban");
+    }, [isPriorityListRoute]);
     const closeTask = useCallback(function () {
       setSelectedTaskId(null);
       writeCardPath(null);
@@ -2302,7 +2322,9 @@
     if (!boardData || !boardData.columns) return [];
     const tasks = [];
     for (const col of boardData.columns) {
-      for (const task of col.tasks || []) tasks.push(task);
+      for (const task of col.tasks || []) {
+        if (task && task.status !== "done" && task.status !== "archived") tasks.push(task);
+      }
     }
     return tasks.sort(function (a, b) {
       const ap = Number(a.priority || 0);
