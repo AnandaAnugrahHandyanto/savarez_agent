@@ -40,6 +40,12 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# WhatsApp JIDs — @lid (opaque user IDs) and @s.whatsapp.net (standard user
+# JIDs).  The live WhatsAppAdapter and Baileys bridge both accept these
+# natively, so _parse_target_ref should recognise them as explicit targets
+# instead of letting them fall through to the generic numeric / channel-name
+# resolution paths (which silently route to the home channel or crash).
+_WHATSAPP_JID_RE = re.compile(r"^\s*(\d+@(?:lid|s\.whatsapp\.net))\s*$")
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
 # resolution which has no way to resolve a raw address.
@@ -399,6 +405,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _EMAIL_TARGET_RE.fullmatch(target_ref)
         if match:
             return target_ref.strip(), None, True
+    if platform_name == "whatsapp":
+        match = _WHATSAPP_JID_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:

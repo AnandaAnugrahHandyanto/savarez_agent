@@ -1156,6 +1156,28 @@ class TestParseTargetRefE164:
         assert chat_id == "+15551234567"
         assert is_explicit is True
 
+    def test_whatsapp_lid_jid_is_explicit(self):
+        """@lid JIDs (WhatsApp opaque user IDs) must be recognised as explicit targets."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "12345@lid")
+        assert chat_id == "12345@lid"
+        assert is_explicit is True
+
+    def test_whatsapp_s_jid_is_explicit(self):
+        """@s.whatsapp.net JIDs (standard WhatsApp user JIDs) must be recognised."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "919900123456@s.whatsapp.net")
+        assert chat_id == "919900123456@s.whatsapp.net"
+        assert is_explicit is True
+
+    def test_whatsapp_jid_with_whitespace(self):
+        """Leading/trailing whitespace around JIDs is tolerated."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "  5511999888777@lid  ")
+        assert chat_id == "5511999888777@lid"
+        assert is_explicit is True
+
+    def test_whatsapp_non_numeric_jid_rejected(self):
+        """JIDs with non-numeric user parts are not matched by the WhatsApp regex."""
+        assert _parse_target_ref("whatsapp", "abc@lid")[2] is False
+
     def test_signal_bare_digits_still_work(self):
         """Bare digit strings continue to match the generic numeric branch."""
         chat_id, _, is_explicit = _parse_target_ref("signal", "15551234567")
