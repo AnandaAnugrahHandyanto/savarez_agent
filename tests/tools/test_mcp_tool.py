@@ -1258,6 +1258,35 @@ class TestShutdown:
 
         assert len(_servers) == 0
 
+    def test_orphan_cleanup_does_not_signal_own_process_group(self, monkeypatch):
+        """MCP cleanup must not killpg() Hermes' own process group."""
+        import signal
+        import tools.mcp_tool as mcp_mod
+        import gateway.status as gateway_status
+
+        current_pgid = 4242
+        child_pid = 99999
+        kill_calls = []
+        killpg_calls = []
+
+        monkeypatch.setattr(mcp_mod.os, "getpgrp", lambda: current_pgid)
+        monkeypatch.setattr(mcp_mod.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+        monkeypatch.setattr(mcp_mod.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+        monkeypatch.setattr(mcp_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(gateway_status, "_pid_exists", lambda _pid: False)
+
+        with mcp_mod._lock:
+            mcp_mod._orphan_stdio_pids.clear()
+            mcp_mod._stdio_pids.clear()
+            mcp_mod._stdio_pgids.clear()
+            mcp_mod._orphan_stdio_pids.add(child_pid)
+            mcp_mod._stdio_pgids[child_pid] = current_pgid
+
+        mcp_mod._kill_orphaned_mcp_children(include_active=False)
+
+        assert killpg_calls == []
+        assert kill_calls == [(child_pid, signal.SIGTERM)]
+
     def test_shutdown_is_parallel(self):
         """Multiple servers are shut down in parallel via asyncio.gather."""
         import tools.mcp_tool as mcp_mod

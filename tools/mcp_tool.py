@@ -3855,15 +3855,31 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
         pgid = pgids.get(pid)
         killpg = getattr(os, "killpg", None)
         if pgid is not None and killpg is not None:
+            current_pgid = None
             try:
-                killpg(pgid, sig)
-                return
-            except (ProcessLookupError, PermissionError, OSError) as exc:
-                # Pgroup gone (all members exited) or refused — fall back to
-                # the per-pid path so we still try the direct child if alive.
+                current_pgid = os.getpgrp()
+            except (AttributeError, OSError):
+                current_pgid = None
+            if pgid != current_pgid:
+                try:
+                    killpg(pgid, sig)
+                    return
+                except (ProcessLookupError, PermissionError, OSError) as exc:
+                    # Pgroup gone (all members exited) or refused — fall back to
+                    # the per-pid path so we still try the direct child if alive.
+                    logger.debug(
+                        "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
+                        pgid, sig, server_name, exc,
+                    )
+            else:
+                # Some stdio MCP children inherit Hermes' own process group
+                # (observed with npx/FastMCP wrappers on macOS).  killpg() on
+                # that pgid signals Hermes itself and can raise KeyboardInterrupt
+                # during atexit cleanup after an otherwise successful chat.
+                # Fall back to the direct child PID in this unsafe case.
                 logger.debug(
-                    "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
-                    pgid, sig, server_name, exc,
+                    "Skipping killpg(%d, %d) for MCP server '%s' because it matches Hermes' process group; using kill(pid)",
+                    pgid, sig, server_name,
                 )
         try:
             os.kill(pid, sig)
