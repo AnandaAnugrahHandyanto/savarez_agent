@@ -1748,15 +1748,25 @@ def list_authenticated_providers(
                 if not display_name:
                     display_name = raw_name
                 slug = custom_provider_slug(display_name)
+                discover_models = entry.get("discover_models", True)
+                if isinstance(discover_models, str):
+                    discover_models = discover_models.lower() not in {"false", "no", "0"}
                 groups[group_key] = {
                     "slug": slug,
                     "name": display_name,
                     "api_url": api_url,
                     "api_key": api_key,
                     "models": [],
+                    "discover_models": bool(discover_models),
                 }
-            elif api_key and not groups[group_key].get("api_key"):
-                groups[group_key]["api_key"] = api_key
+            else:
+                discover_models = entry.get("discover_models", True)
+                if isinstance(discover_models, str):
+                    discover_models = discover_models.lower() not in {"false", "no", "0"}
+                if discover_models is False:
+                    groups[group_key]["discover_models"] = False
+                if api_key and not groups[group_key].get("api_key"):
+                    groups[group_key]["api_key"] = api_key
 
             # The singular ``model:`` field only holds the currently
             # active model. Hermes's own writer (main.py::_save_custom_provider)
@@ -1845,7 +1855,11 @@ def list_authenticated_providers(
             # - Without an api_key AND no explicit models, fall through to
             #   live discovery so bare-endpoint custom providers (local
             #   llama.cpp / Ollama servers) still appear populated.
-            should_probe = bool(api_url) and (bool(api_key) or not grp["models"])
+            should_probe = (
+                bool(api_url)
+                and grp.get("discover_models", True)
+                and (bool(api_key) or not grp["models"])
+            )
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models

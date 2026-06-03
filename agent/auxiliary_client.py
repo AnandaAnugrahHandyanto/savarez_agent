@@ -300,6 +300,7 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
 # describe as having no image_in capability. Vision lives on the separate
 # Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
+    "deepseek",
     "kimi-coding",
     "kimi-coding-cn",
 })
@@ -3575,7 +3576,13 @@ def resolve_provider_client(
         if original_provider and original_provider != provider:
             custom_entry = _get_named_custom_provider(original_provider)
         if custom_entry is None:
-            custom_entry = _get_named_custom_provider(provider)
+            try:
+                from hermes_cli.auth import PROVIDER_REGISTRY as _provider_registry_for_custom_guard
+                is_builtin_provider = provider in _provider_registry_for_custom_guard
+            except ImportError:
+                is_builtin_provider = False
+            if not is_builtin_provider:
+                custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
             custom_base = custom_entry.get("base_url", "").strip()
             custom_key = custom_entry.get("api_key", "").strip()

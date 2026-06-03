@@ -259,6 +259,40 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
+def _is_user_temp_path(path: str) -> bool:
+    """Return True for per-user temp roots that may live under /private/var.
+
+    macOS exposes pytest/tempfile workspaces under /var/folders, whose realpath
+    is /private/var/folders.  That is not the same risk class as system-owned
+    /private/var/db, /private/var/log, or service state.  Keep the broad
+    /private/var guard, but explicitly allow the user temp subtree.
+    """
+    normalized = os.path.normpath(os.path.expanduser(path))
+    return normalized.startswith(("/private/var/folders/", "/var/folders/"))
+
+
+def _relative_path_stays_within_live_workspace(filepath: str, resolved: str, task_id: str = "default") -> bool:
+    """Return True when a relative write resolves inside the live terminal cwd.
+
+    For relative paths, the live terminal cwd is the user's active workspace; if
+    the resolved target stays inside that workspace, do not treat the macOS temp
+    root itself as a system-write target. Absolute paths are handled separately
+    by the user-temp exception or the sensitive-path deny list.
+    """
+    try:
+        if Path(filepath).expanduser().is_absolute():
+            return False
+        live = _get_live_tracking_cwd(task_id)
+        if not live:
+            return False
+        workspace = Path(live).expanduser().resolve()
+        target = Path(resolved).expanduser().resolve()
+        target.relative_to(workspace)
+        return True
+    except Exception:
+        return False
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -270,15 +304,12 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
-        return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
-    # this file.
+    # this file. Check this before broad temp-path allowances so tests and
+    # profile-scoped config paths remain protected even under macOS /private/var
+    # pytest workspaces.
     hermes_config = _get_hermes_config_resolved()
     if hermes_config and (resolved == hermes_config or normalized == hermes_config):
         return (
@@ -286,6 +317,15 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
         )
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        if resolved.startswith(prefix) or normalized.startswith(prefix):
+            if _is_user_temp_path(resolved) or _is_user_temp_path(normalized):
+                return None
+            if _relative_path_stays_within_live_workspace(filepath, resolved, task_id):
+                return None
+            return _err
+    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+        return _err
     return None
 
 

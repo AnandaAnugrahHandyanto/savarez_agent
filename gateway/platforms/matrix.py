@@ -105,6 +105,27 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
 
+
+def _matrix_event_type(name: str, fallback: str) -> Any:
+    """Return a mautrix EventType value, tolerating degraded import stubs."""
+    return getattr(EventType, name, fallback)
+
+
+def _matrix_trust_state(name: str, fallback: int) -> Any:
+    """Return a mautrix TrustState value, tolerating degraded import stubs."""
+    return getattr(TrustState, name, fallback)
+
+
+def _matrix_room_preset(name: str, fallback: str) -> Any:
+    """Return a mautrix RoomCreatePreset value, tolerating degraded import stubs."""
+    return getattr(RoomCreatePreset, name, fallback)
+
+
+def _matrix_presence_state(name: str, fallback: str) -> Any:
+    """Return a mautrix PresenceState value, tolerating degraded import stubs."""
+    return getattr(PresenceState, name, fallback)
+
+
 logger = logging.getLogger(__name__)
 
 _MATRIX_BANG_COMMAND_RE = re.compile(
@@ -855,8 +876,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
                 # Accept unverified devices so senders share Megolm
                 # session keys with us automatically.
-                olm.share_keys_min_trust = TrustState.UNVERIFIED
-                olm.send_keys_min_trust = TrustState.UNVERIFIED
+                olm.share_keys_min_trust = _matrix_trust_state("UNVERIFIED", 0)
+                olm.send_keys_min_trust = _matrix_trust_state("UNVERIFIED", 0)
 
                 await olm.load()
 
@@ -972,8 +993,8 @@ class MatrixAdapter(BasePlatformAdapter):
         # Without this the INVITE handler below never fires.
         client.add_dispatcher(MembershipEventDispatcher)
 
-        client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message)
-        client.add_event_handler(EventType.REACTION, self._on_reaction)
+        client.add_event_handler(_matrix_event_type("ROOM_MESSAGE", "m.room.message"), self._on_room_message)
+        client.add_event_handler(_matrix_event_type("REACTION", "m.reaction"), self._on_reaction)
         client.add_event_handler(IntEvt.INVITE, self._on_invite)
 
         # Initial sync to catch up, then start background sync.
@@ -1105,7 +1126,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 event_id = await asyncio.wait_for(
                     self._client.send_message_event(
                         RoomID(chat_id),
-                        EventType.ROOM_MESSAGE,
+                        _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                         msg_content,
                     ),
                     timeout=45,
@@ -1120,7 +1141,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         event_id = await asyncio.wait_for(
                             self._client.send_message_event(
                                 RoomID(chat_id),
-                                EventType.ROOM_MESSAGE,
+                                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                                 msg_content,
                             ),
                             timeout=45,
@@ -1153,7 +1174,7 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 name_evt = await self._client.get_state_event(
                     RoomID(chat_id),
-                    EventType.ROOM_NAME,
+                    _matrix_event_type("ROOM_NAME", "m.room.name"),
                 )
                 if name_evt and hasattr(name_evt, "name") and name_evt.name:
                     name = name_evt.name
@@ -1210,7 +1231,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             event_id = await self._client.send_message_event(
                 RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
+                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                 msg_content,
             )
             return SendResult(success=True, message_id=str(event_id))
@@ -1468,7 +1489,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             event_id = await self._client.send_message_event(
                 RoomID(room_id),
-                EventType.ROOM_MESSAGE,
+                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                 msg_content,
             )
             return SendResult(success=True, message_id=str(event_id))
@@ -2188,7 +2209,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             resp_event_id = await self._client.send_message_event(
                 RoomID(room_id),
-                EventType.REACTION,
+                _matrix_event_type("REACTION", "m.reaction"),
                 content,
             )
             logger.debug("Matrix: sent reaction %s to %s", emoji, event_id)
@@ -2500,10 +2521,10 @@ class MatrixAdapter(BasePlatformAdapter):
             return None
         try:
             preset_enum = {
-                "private_chat": RoomCreatePreset.PRIVATE,
-                "public_chat": RoomCreatePreset.PUBLIC,
-                "trusted_private_chat": RoomCreatePreset.TRUSTED_PRIVATE,
-            }.get(preset, RoomCreatePreset.PRIVATE)
+                "private_chat": _matrix_room_preset("PRIVATE", "private_chat"),
+                "public_chat": _matrix_room_preset("PUBLIC", "public_chat"),
+                "trusted_private_chat": _matrix_room_preset("TRUSTED_PRIVATE", "trusted_private_chat"),
+            }.get(preset, _matrix_room_preset("PRIVATE", "private_chat"))
             invitees = [UserID(u) for u in (invite or [])]
             room_id = await self._client.create_room(
                 name=name or None,
@@ -2547,9 +2568,9 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
         try:
             presence_map = {
-                "online": PresenceState.ONLINE,
-                "offline": PresenceState.OFFLINE,
-                "unavailable": PresenceState.UNAVAILABLE,
+                "online": _matrix_presence_state("ONLINE", "online"),
+                "offline": _matrix_presence_state("OFFLINE", "offline"),
+                "unavailable": _matrix_presence_state("UNAVAILABLE", "unavailable"),
             }
             await self._client.set_presence(
                 presence=presence_map[state],
@@ -2580,7 +2601,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             event_id = await self._client.send_message_event(
                 RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
+                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                 msg_content,
             )
             return SendResult(success=True, message_id=str(event_id))

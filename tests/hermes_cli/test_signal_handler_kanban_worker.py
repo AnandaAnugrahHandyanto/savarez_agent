@@ -103,6 +103,21 @@ def _is_alive_like_dispatcher(pid: int) -> bool:
                         break
         except (FileNotFoundError, PermissionError, OSError):
             pass
+    elif sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=1,
+            )
+            if result.returncode != 0:
+                return False
+            if result.stdout.strip().startswith("Z"):
+                return False
+        except (OSError, subprocess.SubprocessError):
+            pass
     return True
 
 
