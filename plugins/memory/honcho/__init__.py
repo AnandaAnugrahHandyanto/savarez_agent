@@ -266,10 +266,71 @@ class HonchoMemoryProvider(MemoryProvider):
         atomic_json_write(config_path, existing, mode=0o600)
 
     def get_config_schema(self):
+        # Safe-tier credentials/connection up top; behavior knobs grouped under
+        # the "advanced" tier (editable in Desktop — desktop users may not use
+        # the CLI wizard — but visually separated and confirm-on-change in the UI).
         return [
-            {"key": "api_key", "description": "Honcho API key", "secret": True, "env_var": "HONCHO_API_KEY", "url": "https://app.honcho.dev"},
-            {"key": "baseUrl", "description": "Honcho base URL (for self-hosted)"},
+            {
+                "key": "api_key", "label": "API key", "kind": "secret", "tier": "safe",
+                "secret": True, "env_var": "HONCHO_API_KEY",
+                "description": "Authenticates with Honcho. Falls back to HONCHO_API_KEY.",
+                "url": "https://app.honcho.dev",
+            },
+            {
+                "key": "baseUrl", "label": "Base URL", "kind": "text", "tier": "safe",
+                "description": "Base URL for self-hosted Honcho. Local URLs skip API-key auth.",
+            },
+            {
+                "key": "workspace", "label": "Workspace", "kind": "text", "tier": "safe",
+                "default": "hermes",
+                "description": "Honcho workspace ID. Shared across profiles in the same workspace.",
+            },
+            {
+                "key": "recallMode", "label": "Recall mode", "kind": "select", "tier": "advanced",
+                "default": "hybrid", "choices": ["hybrid", "context", "tools"],
+                "description": "How memory is recalled. hybrid: inject + tools; context: inject only; tools: tools only. Changes agent behavior.",
+            },
+            {
+                "key": "dialecticCadence", "label": "Dialectic cadence", "kind": "number", "tier": "advanced",
+                "default": "3",
+                "description": "Turns between automatic dialectic reasoning calls. Higher = fewer LLM calls. Changes agent behavior.",
+            },
         ]
+
+    def read_config(self, hermes_home: str):
+        """Read current Honcho config via the plugin's own resolution.
+
+        Routes through ``HonchoClientConfig.from_global_config()`` so host-keyed
+        blocks (``hosts.<host>.apiKey``), camelCase keys, multi-file resolution,
+        and the HONCHO_API_KEY env fallback are all honored — none of which the
+        generic conventional reader understands. The api_key value is never
+        returned, only its set-state.
+        """
+        import os as _os
+
+        try:
+            from plugins.memory.honcho.client import HonchoClientConfig
+            cfg = HonchoClientConfig.from_global_config()
+        except Exception:
+            cfg = None
+
+        api_key_set = bool(
+            (cfg and cfg.api_key) or _os.environ.get("HONCHO_API_KEY")
+        )
+        base_url = (cfg.base_url if cfg else "") or ""
+        workspace = (cfg.workspace_id if cfg else "") or "hermes"
+        recall_mode = (cfg.recall_mode if cfg else "") or "hybrid"
+        # dialectic cadence isn't a HonchoClientConfig field; read from raw block.
+        raw = (cfg.raw if cfg else {}) or {}
+        cadence = raw.get("dialecticCadence", "3")
+
+        return {
+            "api_key": {"value": "", "is_set": api_key_set},
+            "baseUrl": {"value": str(base_url), "is_set": bool(base_url)},
+            "workspace": {"value": str(workspace), "is_set": bool(workspace)},
+            "recallMode": {"value": str(recall_mode), "is_set": bool(recall_mode)},
+            "dialecticCadence": {"value": str(cadence), "is_set": cadence not in (None, "")},
+        }
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
         """Run the full Honcho setup wizard after provider selection."""
