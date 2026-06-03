@@ -3396,66 +3396,62 @@ class TestPtyWebSocket:
         assert "channel=abc-123" in url
         assert "token=" in url
 
-    def test_pub_broadcasts_to_events_subscribers(self, monkeypatch):
-        """Frame written to /api/pub is rebroadcast verbatim to every
-        /api/events subscriber on the same channel."""
-        import time
+    def test_pub_forwards_frames_to_channel_broadcast(self, monkeypatch):
+        """Frame written to /api/pub is handed to the broadcast layer."""
         from urllib.parse import urlencode
         from hermes_cli import web_server as ws_mod
 
+        captured: list[tuple[str, str]] = []
+
+        async def fake_broadcast(app, channel: str, payload: str) -> None:
+            captured.append((channel, payload))
+
+        monkeypatch.setattr(ws_mod, "_broadcast_event", fake_broadcast)
+
         qs = urlencode({"token": self.token, "channel": "broadcast-test"})
         pub_path = f"/api/pub?{qs}"
-        sub_path = f"/api/events?{qs}"
 
-        with self.client.websocket_connect(sub_path) as sub:
-            # Wait for the subscriber to be registered on the server side.
-            # websocket_connect returns when ws.accept() completes, but the
-            # server adds us to ``_event_channels`` in a follow-up await,
-            # so a publish immediately after connect can race ahead of the
-            # subscriber registration and the message is dropped.
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline:
-                if ws_mod.app.state.event_channels.get("broadcast-test"):
-                    break
-                time.sleep(0.01)
-            else:
-                raise AssertionError(
-                    "subscriber did not register on channel within 5s"
-                )
+        with self.client.websocket_connect(pub_path) as pub:
+            pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
 
-            with self.client.websocket_connect(pub_path) as pub:
-                pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
-                # Yield control so the server-side broadcast handler can
-                # process the frame.  TestClient runs the ASGI app in a
-                # background thread; a small sleep gives that thread time
-                # to call _broadcast_event before we start blocking on
-                # receive_text().  Without this, under heavy CI load the
-                # receive can race the broadcast and hang until
-                # pytest-timeout kills us.
-                import queue, threading
-                recv_q: queue.Queue = queue.Queue()
+        assert captured == [
+            (
+                "broadcast-test",
+                '{"type":"tool.start","payload":{"tool_id":"t1"}}',
+            )
+        ]
 
-                def _recv():
-                    try:
-                        recv_q.put(sub.receive_text())
-                    except Exception as exc:
-                        recv_q.put(exc)
+    @pytest.mark.asyncio
+    async def test_broadcast_event_sends_to_registered_subscribers(self):
+        """The broadcast layer fans one payload out to every channel subscriber."""
+        from hermes_cli import web_server as ws_mod
 
-                t = threading.Thread(target=_recv, daemon=True)
-                t.start()
-                try:
-                    received = recv_q.get(timeout=10.0)
-                except queue.Empty:
-                    raise AssertionError(
-                        "broadcast not received within 10s — server likely "
-                        "dropped the frame silently (see _broadcast_event "
-                        "except Exception: pass)"
-                    )
-                if isinstance(received, Exception):
-                    raise received
+        class FakeSubscriber:
+            def __init__(self):
+                self.sent: list[str] = []
 
-        assert "tool.start" in received
-        assert '"tool_id":"t1"' in received
+            async def send_text(self, payload: str) -> None:
+                self.sent.append(payload)
+
+        first = FakeSubscriber()
+        second = FakeSubscriber()
+        event_channels, _event_lock = ws_mod._get_event_state(ws_mod.app)
+        original = dict(event_channels)
+        try:
+            event_channels.clear()
+            event_channels["broadcast-test"] = {first, second}
+
+            await ws_mod._broadcast_event(
+                ws_mod.app,
+                "broadcast-test",
+                '{"type":"tool.start","payload":{"tool_id":"t1"}}',
+            )
+        finally:
+            event_channels.clear()
+            event_channels.update(original)
+
+        assert first.sent == ['{"type":"tool.start","payload":{"tool_id":"t1"}}']
+        assert second.sent == ['{"type":"tool.start","payload":{"tool_id":"t1"}}']
 
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect
@@ -3647,4 +3643,3 @@ class TestValidateProviderCredential:
     def test_empty_value_rejected(self):
         data = self._post("OPENAI_API_KEY", "   ").json()
         assert data["ok"] is False
-

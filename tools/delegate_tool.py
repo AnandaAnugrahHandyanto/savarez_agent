@@ -259,9 +259,9 @@ def _extract_output_tail(
             break
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
-        content = msg.get("content") or ""
+        content = msg.get("content", "")
         if not isinstance(content, str):
-            content = str(content)
+            content = _stringify_tool_content(content)
         is_error = _looks_like_error_output(content)
         tool_name = pending_call_by_id.get(msg.get("tool_call_id") or "", "tool")
         # Preserve line structure so the overlay's wrapped scroll region can
@@ -299,6 +299,11 @@ def _stringify_tool_content(content: Any) -> str:
                     parts.append(text)
         if parts:
             return "\n".join(parts)
+    if isinstance(content, (dict, list)):
+        try:
+            return json.dumps(content, ensure_ascii=False)
+        except (TypeError, ValueError):
+            pass
     try:
         return str(content)
     except Exception:
@@ -1692,7 +1697,7 @@ def _run_single_child(
                         content = _stringify_tool_content(content)
                     is_error = _looks_like_error_output(content)
                     result_meta = {
-                        "result_bytes": len(content),
+                        "result_bytes": len(content.encode("utf-8", errors="replace")),
                         "status": "error" if is_error else "ok",
                     }
                     # Match by tool_call_id for parallel calls
