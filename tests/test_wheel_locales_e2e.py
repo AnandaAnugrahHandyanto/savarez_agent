@@ -34,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.integration
+@pytest.mark.timeout(300)  # overrides the global --timeout=30; cold-CI wheel build + venv + pip can exceed it
 def test_installed_wheel_renders_i18n_strings(tmp_path):
     # 1. Build the wheel from the current tree.
     wheel_dir = tmp_path / "wheel"
@@ -91,6 +92,7 @@ def test_installed_wheel_renders_i18n_strings(tmp_path):
 
 
 @pytest.mark.integration
+@pytest.mark.timeout(300)  # overrides the global --timeout=30; cold-CI sdist build can exceed it
 def test_built_sdist_ships_locale_catalogs(tmp_path):
     """The sdist must carry locales/ too.
 
@@ -119,9 +121,16 @@ def test_built_sdist_ships_locale_catalogs(tmp_path):
         # hermes_agent-0.15.1/locales/en.yaml — match on the suffix.
         catalogs = [m for m in tf.getnames() if "/locales/" in m and m.endswith(".yaml")]
 
-    assert len(catalogs) >= 16, (
-        f"sdist shipped {len(catalogs)} locale catalogs, expected >=16 — "
-        "check `graft locales` in MANIFEST.in"
+    # Compare against the canonical language list rather than a hardcoded floor
+    # so adding/removing a catalog updates the guard automatically and a dropped
+    # catalog (not just a fully-empty graft) trips it.
+    from agent.i18n import SUPPORTED_LANGUAGES
+
+    expected = len(SUPPORTED_LANGUAGES)
+    assert len(catalogs) == expected, (
+        f"sdist shipped {len(catalogs)} locale catalogs, expected {expected} "
+        f"({len(SUPPORTED_LANGUAGES)} supported languages) — check `graft "
+        "locales` in MANIFEST.in"
     )
     assert any(m.endswith("/locales/en.yaml") for m in catalogs), (
         f"sdist missing locales/en.yaml; shipped: {catalogs[:5]}"
