@@ -116,14 +116,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Qwen
     "qwen": 131072,
     # MiniMax (lowercase — lookup lowercases model names at line 973)
-    "minimax-m1-256k": 1000000,
-    "minimax-m1-128k": 1000000,
-    "minimax-m1-80k": 1000000,
-    "minimax-m1-40k": 1000000,
-    "minimax-m1": 1000000,
-    "minimax-m2.5": 1048576,
     "minimax-m2.7": 1048576,
-    "minimax": 1048576,
+    "minimax-m3": 524288,
+    "minimax": 524288,
     # GLM
     "glm": 202752,
     # Kimi

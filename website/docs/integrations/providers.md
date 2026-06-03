@@ -147,11 +147,11 @@ hermes chat --provider kimi-coding --model kimi-for-coding
 # Requires: KIMI_API_KEY in ~/.hermes/.env
 
 # MiniMax (global endpoint)
-hermes chat --provider minimax --model MiniMax-M2.7
+hermes chat --provider minimax --model MiniMax-M3
 # Requires: MINIMAX_API_KEY in ~/.hermes/.env
 
 # MiniMax (China endpoint)
-hermes chat --provider minimax-cn --model MiniMax-M2.7
+hermes chat --provider minimax-cn --model MiniMax-M3
 # Requires: MINIMAX_CN_API_KEY in ~/.hermes/.env
 
 # Alibaba Cloud / DashScope (Qwen models)
