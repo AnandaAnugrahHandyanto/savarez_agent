@@ -46,6 +46,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
+    from agent.redact import redact_sensitive_text
+except ImportError:
+    def redact_sensitive_text(text: str, **_kw: object) -> str:  # type: ignore[misc]
+        """Stub when agent.redact is unavailable (e.g. standalone tests)."""
+        return text
+
+try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
 except ImportError:
@@ -531,10 +538,15 @@ else:
 
 
 def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> Dict[str, Any]:
-    """OpenAI-style error envelope."""
+    """OpenAI-style error envelope.
+
+    The *message* is passed through ``redact_sensitive_text(force=True)``
+    so that provider credential material or internal paths never cross the
+    HTTP boundary, even when the upstream exception string contains them.
+    """
     return {
         "error": {
-            "message": message,
+            "message": redact_sensitive_text(str(message), force=True),
             "type": err_type,
             "param": param,
             "code": code,
@@ -1985,7 +1997,7 @@ class APIServerAdapter(BasePlatformAdapter):
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             if err_msg:
-                response_headers["X-Hermes-Error"] = err_msg[:200]
+                response_headers["X-Hermes-Error"] = redact_sensitive_text(str(err_msg[:200]), force=True)
 
         return web.json_response(response_data, headers=response_headers)
 
@@ -2562,7 +2574,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     agent_error = result["error"]
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
-                agent_error = str(e)
+                agent_error = redact_sensitive_text(str(e), force=True)
 
             # Close the message item if it was opened
             final_response_text = "".join(final_text_parts) or final_response_text
@@ -2717,7 +2729,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # get a TransferEncodingError from incomplete chunked encoding.
             import traceback as _tb
             _persist_incomplete_if_needed()
-            agent_error = _tb.format_exc()
+            agent_error = redact_sensitive_text(_tb.format_exc(), force=True)
             try:
                 failed_env = _envelope("failed")
                 failed_env["output"] = list(emitted_items)
@@ -3097,7 +3109,7 @@ class APIServerAdapter(BasePlatformAdapter):
             jobs = _cron_list(include_disabled=include_disabled)
             return web.json_response({"jobs": jobs})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": redact_sensitive_text(str(e), force=True)}, status=500)
 
     async def _handle_create_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs — create a new cron job."""
@@ -3146,7 +3158,7 @@ class APIServerAdapter(BasePlatformAdapter):
             job = _cron_create(**kwargs)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": redact_sensitive_text(str(e), force=True)}, status=500)
 
     async def _handle_get_job(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs/{job_id} — get a single cron job."""
@@ -3165,7 +3177,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": redact_sensitive_text(str(e), force=True)}, status=500)
 
     async def _handle_update_job(self, request: "web.Request") -> "web.Response":
         """PATCH /api/jobs/{job_id} — update a cron job."""
@@ -3198,7 +3210,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": redact_sensitive_text(str(e), force=True)}, status=500)
 
     async def _handle_delete_job(self, request: "web.Request") -> "web.Response":
         """DELETE /api/jobs/{job_id} — delete a cron job."""
@@ -3217,7 +3229,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"ok": True})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": redact_sensitive_text(str(e), force=True)}, status=500)
 
     async def _handle_pause_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/pause — pause a cron job."""
@@ -3236,7 +3248,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": redact_sensitive_text(str(e), force=True)}, status=500)
 
     async def _handle_resume_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/resume — resume a paused cron job."""
@@ -3255,7 +3267,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": redact_sensitive_text(str(e), force=True)}, status=500)
 
     async def _handle_run_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/run — trigger immediate execution."""
@@ -3274,7 +3286,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": redact_sensitive_text(str(e), force=True)}, status=500)
 
     # ------------------------------------------------------------------
     # Output extraction helper
@@ -3752,12 +3764,12 @@ class APIServerAdapter(BasePlatformAdapter):
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "error": error_msg,
+                        "error": redact_sensitive_text(str(error_msg), force=True),
                     })
                     self._set_run_status(
                         run_id,
                         "failed",
-                        error=error_msg,
+                        error=redact_sensitive_text(str(error_msg), force=True),
                         last_event="run.failed",
                     )
                 else:
@@ -3796,7 +3808,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._set_run_status(
                     run_id,
                     "failed",
-                    error=str(exc),
+                    error=redact_sensitive_text(str(exc), force=True),
                     last_event="run.failed",
                 )
                 try:
