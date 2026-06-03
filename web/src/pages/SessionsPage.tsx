@@ -62,6 +62,31 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     cron: { icon: Clock, color: "text-warning" },
   };
 
+function sessionDisplayTitle(session: SessionInfo): string {
+  if (session.title && session.title !== "Untitled") return session.title;
+  return "Untitled legacy session";
+}
+
+function sessionSourceLabel(session: SessionInfo): string {
+  return session.source ?? "unknown";
+}
+
+function sessionBindingLabel(session: SessionInfo): string {
+  if (!session.source || session.source === "local" || session.source === "cli") {
+    return "legacy-default";
+  }
+  return "unknown";
+}
+
+function sessionWorkspaceLabel(): string {
+  return "unknown";
+}
+
+function sessionStatusLabel(session: SessionInfo): string {
+  if (session.ended_at) return "closed";
+  return session.is_active ? "active" : "stale";
+}
+
 function formatUptime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return "-";
   if (seconds < 60) return `${Math.floor(seconds)}s`;
@@ -335,6 +360,7 @@ function SessionRow({
     : null) ?? { icon: Globe, color: "text-muted-foreground" };
   const SourceIcon = sourceInfo.icon;
   const hasTitle = session.title && session.title !== "Untitled";
+  const displayTitle = sessionDisplayTitle(session);
 
   return (
     <div
@@ -358,10 +384,10 @@ function SessionRow({
                 className={`text-sm truncate pr-2 ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
               >
                 {hasTitle
-                  ? session.title
+                  ? displayTitle
                   : session.preview
                     ? session.preview.slice(0, 60)
-                    : t.sessions.untitledSession}
+                    : displayTitle}
               </span>
               {session.is_active && (
                 <Badge tone="success" className="text-[10px] shrink-0">
@@ -389,13 +415,22 @@ function SessionRow({
               <span className="text-border">&#183;</span>
               <span>{timeAgo(session.last_active)}</span>
             </div>
+            <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+              <span>Source: {sessionSourceLabel(session)}</span>
+              <span className="text-border">&#183;</span>
+              <span>Binding: {sessionBindingLabel(session)}</span>
+              <span className="text-border">&#183;</span>
+              <span>Workspace: {sessionWorkspaceLabel()}</span>
+              <span className="text-border">&#183;</span>
+              <span>Status: {sessionStatusLabel(session)}</span>
+            </div>
             {snippet && <SnippetHighlight snippet={snippet} />}
           </div>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
           <Badge tone="outline" className="text-[10px]">
-            {session.source ?? "local"}
+            Source: {sessionSourceLabel(session)}
           </Badge>
           {resumeInChatEnabled && (
             <Button
@@ -873,7 +908,7 @@ export default function SessionsPage() {
               >
                 <div className="flex flex-col gap-1 min-w-0 w-full">
                   <span className="font-medium text-sm truncate">
-                    {s.title ?? t.common.untitled}
+                    {sessionDisplayTitle(s)}
                   </span>
 
                   <span className="text-xs text-muted-foreground truncate">
@@ -882,6 +917,13 @@ export default function SessionsPage() {
                     </span>{" "}
                     · {s.message_count} {t.common.msgs} ·{" "}
                     {timeAgo(s.last_active)}
+                  </span>
+
+                  <span className="text-[10px] text-muted-foreground truncate">
+                    Source: {sessionSourceLabel(s)} <span className="text-border">&#183;</span>{" "}
+                    Binding: {sessionBindingLabel(s)} <span className="text-border">&#183;</span>{" "}
+                    Workspace: {sessionWorkspaceLabel()} <span className="text-border">&#183;</span>{" "}
+                    Status: {sessionStatusLabel(s)}
                   </span>
 
                   {s.preview && (
@@ -896,7 +938,7 @@ export default function SessionsPage() {
                   className="text-[10px] shrink-0 self-start sm:self-center"
                 >
                   <Database className="mr-1 h-3 w-3" />
-                  {s.source ?? "local"}
+                  Source: {sessionSourceLabel(s)}
                 </Badge>
               </div>
             ))}
