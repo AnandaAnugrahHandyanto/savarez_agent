@@ -1400,6 +1400,52 @@ def _compact_str(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
 
+_SECRET_FIELD_FRAGMENTS = (
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "api_key",
+    "apikey",
+    "authorization",
+    "credential",
+)
+
+
+def _is_secret_field(key: Any) -> bool:
+    lowered = str(key).lower()
+    return any(fragment in lowered for fragment in _SECRET_FIELD_FRAGMENTS)
+
+
+def _public_metadata(value: Any) -> Any:
+    """Recursively drop secret-bearing fields from dashboard entity payloads."""
+    if isinstance(value, dict):
+        return {
+            str(key): _public_metadata(item)
+            for key, item in value.items()
+            if not _is_secret_field(key)
+        }
+    if isinstance(value, list):
+        return [_public_metadata(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _conversation_id(platform: str, chat_id: str, thread_id: str = "") -> str:
+    parts = [platform, chat_id]
+    if thread_id:
+        parts.append(thread_id)
+    return ":".join(parts)
+
+
+def _read_json_file(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def _configured_topic_labels(platform: str) -> Dict[str, str]:
     if platform != "telegram":
         return {}
@@ -1434,6 +1480,213 @@ def _configured_topic_labels(platform: str) -> Dict[str, str]:
             if thread_id and name:
                 labels[f"{chat_id}:{thread_id}"] = name
     return labels
+
+
+def _configured_telegram_groups() -> List[Dict[str, Any]]:
+    try:
+        config = load_config()
+    except Exception:
+        return []
+
+    candidates: List[Dict[str, Any]] = []
+    platforms = config.get("platforms") if isinstance(config, dict) else None
+    telegram_platform = (platforms or {}).get("telegram") if isinstance(platforms, dict) else None
+    extra = (telegram_platform or {}).get("extra") if isinstance(telegram_platform, dict) else None
+    if isinstance(extra, dict):
+        candidates.extend(group for group in (extra.get("group_topics") or []) if isinstance(group, dict))
+
+    legacy = config.get("telegram") if isinstance(config, dict) else None
+    if isinstance(legacy, dict):
+        candidates.extend(group for group in (legacy.get("group_topics") or []) if isinstance(group, dict))
+
+    return candidates
+
+
+def _merge_conversation(
+    conversations: Dict[str, Dict[str, Any]],
+    row: Dict[str, Any],
+) -> None:
+    conv_id = _compact_str(row.get("id"))
+    if not conv_id:
+        return
+    existing = conversations.get(conv_id)
+    if existing is None:
+        row.setdefault("source", [])
+        row.setdefault("session_ids", [])
+        conversations[conv_id] = _public_metadata(row)
+        return
+
+    existing_sources = set(existing.get("source") or [])
+    for source in row.get("source") or []:
+        existing_sources.add(source)
+    existing["source"] = sorted(existing_sources)
+
+    session_ids = list(existing.get("session_ids") or [])
+    for session_id in row.get("session_ids") or []:
+        if session_id and session_id not in session_ids:
+            session_ids.append(session_id)
+    existing["session_ids"] = session_ids
+
+    # Prefer configured topic labels over stale cache/session labels. Fill only
+    # missing fields otherwise so the first source keeps display precedence.
+    if "config" in (row.get("source") or []):
+        for key in ("name", "display_label", "chat_name", "thread_id", "type"):
+            if row.get(key):
+                existing[key] = row[key]
+    for key, value in row.items():
+        if key not in existing and value not in (None, "", []):
+            existing[key] = _public_metadata(value)
+
+
+def _configured_topic_conversations() -> Dict[str, Dict[str, Any]]:
+    conversations: Dict[str, Dict[str, Any]] = {}
+    for group in _configured_telegram_groups():
+        chat_id = _compact_str(group.get("chat_id"))
+        if not chat_id:
+            continue
+        chat_name = _compact_str(group.get("name") or group.get("chat_name")) or "Telegram"
+        for topic in group.get("topics") or []:
+            if not isinstance(topic, dict):
+                continue
+            thread_id = _compact_str(topic.get("thread_id"))
+            name = _compact_str(topic.get("name"))
+            if not thread_id or not name:
+                continue
+            conv_id = _conversation_id("telegram", chat_id, thread_id)
+            _merge_conversation(conversations, {
+                "id": conv_id,
+                "platform": "telegram",
+                "chat_id": chat_id,
+                "chat_name": chat_name,
+                "thread_id": thread_id,
+                "name": name,
+                "display_label": f"{chat_name} / {name}",
+                "type": "topic",
+                "source": ["config"],
+                "session_ids": [],
+            })
+    return conversations
+
+
+def _channel_directory_conversations() -> Dict[str, Dict[str, Any]]:
+    directory_path = get_hermes_home() / "channel_directory.json"
+    raw = _read_json_file(directory_path)
+    if not isinstance(raw, dict):
+        return {}
+    platforms = raw.get("platforms")
+    if not isinstance(platforms, dict):
+        return {}
+
+    conversations: Dict[str, Dict[str, Any]] = {}
+    for platform, channels in platforms.items():
+        if not isinstance(channels, list):
+            continue
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            raw_id = _compact_str(channel.get("id"))
+            if not raw_id:
+                continue
+            chat_id, sep, thread_id = raw_id.partition(":")
+            conv_id = _conversation_id(_compact_str(platform), chat_id, thread_id if sep else "")
+            channel_type = _compact_str(channel.get("type")) or ("topic" if thread_id else "chat")
+            name = _compact_str(channel.get("name")) or raw_id
+            _merge_conversation(conversations, {
+                "id": conv_id,
+                "platform": _compact_str(platform),
+                "chat_id": chat_id,
+                "thread_id": thread_id,
+                "name": name.rsplit(" / ", 1)[-1] if thread_id else name,
+                "display_label": name,
+                "type": "topic" if thread_id else channel_type,
+                "source": ["channel_directory"],
+                "session_ids": [],
+            })
+    return conversations
+
+
+def _session_conversations() -> Dict[str, Dict[str, Any]]:
+    sessions_file = get_hermes_home() / "sessions" / "sessions.json"
+    raw = _read_json_file(sessions_file)
+    if not isinstance(raw, dict):
+        return {}
+
+    conversations: Dict[str, Dict[str, Any]] = {}
+    for entry in raw.values():
+        if not isinstance(entry, dict):
+            continue
+        origin = entry.get("origin")
+        if not isinstance(origin, dict):
+            continue
+        platform = _compact_str(origin.get("platform"))
+        chat_id = _compact_str(origin.get("chat_id"))
+        thread_id = _compact_str(origin.get("thread_id"))
+        if not platform or not chat_id:
+            continue
+        metadata = _session_origin_metadata(origin) or {}
+        display_label = _compact_str(metadata.get("display_label")) or chat_id
+        name = _compact_str(metadata.get("chat_topic")) if thread_id else ""
+        if not name:
+            name = _compact_str(origin.get("chat_name") or origin.get("user_name")) or display_label
+        conv_id = _conversation_id(platform, chat_id, thread_id)
+        session_id = _compact_str(entry.get("session_id"))
+        _merge_conversation(conversations, {
+            "id": conv_id,
+            "platform": platform,
+            "chat_id": chat_id,
+            "chat_name": _compact_str(origin.get("chat_name")),
+            "thread_id": thread_id,
+            "name": name,
+            "display_label": display_label,
+            "type": "topic" if thread_id else (_compact_str(origin.get("chat_type")) or "chat"),
+            "source": ["sessions"],
+            "session_ids": [session_id] if session_id else [],
+        })
+    return conversations
+
+
+def _dashboard_conversations() -> List[Dict[str, Any]]:
+    conversations: Dict[str, Dict[str, Any]] = {}
+    for source_rows in (
+        _configured_topic_conversations(),
+        _channel_directory_conversations(),
+        _session_conversations(),
+    ):
+        for row in source_rows.values():
+            _merge_conversation(conversations, row)
+    for row in conversations.values():
+        row["source"] = sorted(set(row.get("source") or []))
+        row["session_ids"] = sorted(row.get("session_ids") or [])
+    return sorted(
+        conversations.values(),
+        key=lambda row: (_compact_str(row.get("platform")), _compact_str(row.get("display_label") or row.get("name"))),
+    )
+
+
+def _dashboard_projects() -> List[Dict[str, Any]]:
+    projects: Dict[str, Dict[str, Any]] = {}
+    for conversation in _dashboard_conversations():
+        platform = _compact_str(conversation.get("platform"))
+        chat_id = _compact_str(conversation.get("chat_id"))
+        thread_id = _compact_str(conversation.get("thread_id"))
+        if platform != "telegram" or not chat_id or not thread_id:
+            continue
+        # Project identity starts from explicit configured topic anchors. This
+        # intentionally avoids broad markdown/session inference.
+        if "config" not in (conversation.get("source") or []):
+            continue
+        project_id = f"project:{platform}:{chat_id}:{thread_id}"
+        projects[project_id] = {
+            "id": project_id,
+            "name": _compact_str(conversation.get("name")) or _compact_str(conversation.get("display_label")),
+            "conversation_id": conversation["id"],
+            "platform": platform,
+            "chat_id": chat_id,
+            "topic_id": thread_id,
+            "display_label": conversation.get("display_label"),
+            "source": "telegram_topic",
+        }
+    return sorted(projects.values(), key=lambda row: _compact_str(row.get("name")))
 
 
 def _session_origin_metadata(origin: Dict[str, Any]) -> Optional[Dict[str, str]]:
@@ -6059,6 +6312,53 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
     return profiles
 
 
+def _dashboard_gateway_summary() -> Dict[str, Any]:
+    running = get_running_pid() is not None
+    runtime = read_runtime_status() or {}
+    state = runtime.get("gateway_state") if isinstance(runtime, dict) else None
+    if running and state in (None, "stopped"):
+        state = "running"
+    platforms = runtime.get("platforms") if isinstance(runtime, dict) else {}
+    if not isinstance(platforms, dict):
+        platforms = {}
+    return {
+        "running": running,
+        "state": state or ("running" if running else "stopped"),
+        "platforms": _public_metadata(platforms),
+        "updated_at": runtime.get("updated_at") if isinstance(runtime, dict) else None,
+    }
+
+
+def _dashboard_agent_rows() -> List[Dict[str, Any]]:
+    from hermes_cli import profiles as profiles_mod
+
+    try:
+        profiles = [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
+    except Exception:
+        _log.exception("Dashboard entity API failed to list profiles; using directory fallback")
+        profiles = _fallback_profile_dicts(profiles_mod)
+
+    gateway = _dashboard_gateway_summary()
+    agents: List[Dict[str, Any]] = []
+    for profile in profiles:
+        name = _compact_str(profile.get("name"))
+        if not name:
+            continue
+        agents.append(_public_metadata({
+            "id": f"profile:{name}",
+            "kind": "hermes-profile",
+            "name": name,
+            "profile": name,
+            "is_default": bool(profile.get("is_default")),
+            "model": profile.get("model"),
+            "provider": profile.get("provider"),
+            "has_env": bool(profile.get("has_env")),
+            "skill_count": profile.get("skill_count"),
+            "gateway": gateway,
+        }))
+    return sorted(agents, key=lambda row: (not row.get("is_default"), _compact_str(row.get("name"))))
+
+
 def _resolve_profile_dir(name: str) -> Path:
     """Validate ``name`` and resolve to its directory or raise an HTTPException."""
     from hermes_cli import profiles as profiles_mod
@@ -6085,6 +6385,21 @@ async def list_profiles_endpoint():
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
+
+
+@app.get("/api/agents")
+async def get_agents_endpoint():
+    return {"agents": _dashboard_agent_rows()}
+
+
+@app.get("/api/conversations")
+async def get_conversations_endpoint():
+    return {"conversations": _dashboard_conversations()}
+
+
+@app.get("/api/projects")
+async def get_projects_endpoint():
+    return {"projects": _dashboard_projects()}
 
 
 @app.post("/api/profiles")

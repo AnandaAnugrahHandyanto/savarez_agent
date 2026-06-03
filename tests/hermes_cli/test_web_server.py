@@ -328,6 +328,130 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_get_agents_exposes_profiles_without_secrets(self, monkeypatch):
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {
+            "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+            "api_key": "raw-secret-token",
+            "platforms": {
+                "telegram": {
+                    "enabled": True,
+                    "token": "raw-telegram-token",
+                }
+            },
+        })
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {"telegram": {"connected": True, "token": "raw-token"}},
+            "updated_at": "2026-06-03T12:00:00+00:00",
+        })
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: 12345)
+
+        resp = self.client.get("/api/agents")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["agents"]
+        default_agent = next(agent for agent in data["agents"] if agent["profile"] == "default")
+        assert default_agent["id"] == "profile:default"
+        assert default_agent["kind"] == "hermes-profile"
+        assert default_agent["gateway"]["running"] is True
+        assert default_agent["gateway"]["state"] == "running"
+        serialized = json.dumps(data).lower()
+        assert "raw-secret-token" not in serialized
+        assert "raw-telegram-token" not in serialized
+        assert "raw-token" not in serialized
+        assert "token" not in serialized
+
+    def test_get_conversations_maps_configured_topic_11648(self, tmp_path, monkeypatch):
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(web_server, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(web_server, "load_config", lambda: {
+            "platforms": {
+                "telegram": {
+                    "extra": {
+                        "group_topics": [
+                            {
+                                "chat_id": "-1003828321118",
+                                "name": "Dolly Main Projects",
+                                "topics": [{"thread_id": "11648", "name": "Vw AI render"}],
+                            }
+                        ]
+                    }
+                }
+            }
+        })
+        (tmp_path / "channel_directory.json").write_text(json.dumps({
+            "updated_at": "2026-06-03T12:00:00+00:00",
+            "platforms": {
+                "telegram": [
+                    {"id": "-1003828321118:11648", "name": "Dolly Main Projects / stale", "type": "group"}
+                ]
+            },
+        }))
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        (sessions_dir / "sessions.json").write_text(json.dumps({
+            "agent:main:telegram:group:-1003828321118:11648": {
+                "session_id": "20260603_112850_fad38416",
+                "profile": "default",
+                "origin": {
+                    "platform": "telegram",
+                    "chat_id": "-1003828321118",
+                    "chat_name": "Dolly Main Projects",
+                    "chat_type": "group",
+                    "thread_id": "11648",
+                    "chat_topic": None,
+                    "token": "raw-session-token",
+                },
+            }
+        }))
+
+        resp = self.client.get("/api/conversations")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        topic = next(c for c in data["conversations"] if c["id"] == "telegram:-1003828321118:11648")
+        assert topic["name"] == "Vw AI render"
+        assert topic["display_label"] == "Dolly Main Projects / Vw AI render"
+        assert topic["platform"] == "telegram"
+        assert topic["thread_id"] == "11648"
+        assert topic["type"] == "topic"
+        assert topic["session_ids"] == ["20260603_112850_fad38416"]
+        assert "raw-session-token" not in json.dumps(data)
+
+    def test_get_projects_promotes_known_topic_anchor(self, tmp_path, monkeypatch):
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(web_server, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(web_server, "load_config", lambda: {
+            "platforms": {
+                "telegram": {
+                    "extra": {
+                        "group_topics": [
+                            {
+                                "chat_id": "-1003828321118",
+                                "name": "Dolly Main Projects",
+                                "topics": [{"thread_id": "11648", "name": "Vw AI render"}],
+                            }
+                        ]
+                    }
+                }
+            }
+        })
+
+        resp = self.client.get("/api/projects")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        project = next(p for p in data["projects"] if p["topic_id"] == "11648")
+        assert project["id"] == "project:telegram:-1003828321118:11648"
+        assert project["name"] == "Vw AI render"
+        assert project["conversation_id"] == "telegram:-1003828321118:11648"
+        assert project["source"] == "telegram_topic"
+
     def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
         """Session rows without persisted cwd must not inherit TERMINAL_CWD.
 
