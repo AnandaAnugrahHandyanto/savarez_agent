@@ -36,6 +36,7 @@ import {
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
+import { isImeCompositionKey } from '@/app/chat/composer/ime'
 import { dragHasAttachments, droppedFileInlineRef, insertInlineRefsIntoEditor } from '@/app/chat/composer/inline-refs'
 import {
   composerPlainText,
@@ -1239,6 +1240,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (isImeCompositionKey(event)) {
+      return
+    }
+
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
