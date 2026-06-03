@@ -145,6 +145,58 @@ class TestRebuildVenv:
             result = rebuild_venv(uv_bin, venv_dir)
             assert result is False
 
+    def test_uv_venv_called_with_clear_flag(self, tmp_path):
+        """uv venv must be invoked with --clear so a half-deleted venv on
+        Windows (locked python.exe leaves residue) is replaced rather than
+        rejected with "A directory already exists" — regression for #37881.
+        """
+        venv_dir = tmp_path / "venv"
+        uv_bin = str(tmp_path / "bin" / "uv")
+
+        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
+             patch("hermes_cli.managed_uv.shutil.rmtree"):
+            mock_run.return_value = MagicMock(returncode=1, stderr="ignored")
+            from hermes_cli.managed_uv import rebuild_venv
+            rebuild_venv(uv_bin, venv_dir)
+
+            venv_calls = [c for c in mock_run.call_args_list if c.args[0][1] == "venv"]
+            assert len(venv_calls) == 1, "expected exactly one `uv venv` invocation"
+            cmd = venv_calls[0].args[0]
+            assert "--clear" in cmd, f"`uv venv` missing --clear flag: {cmd}"
+
+    def test_rebuild_succeeds_when_rmtree_leaves_residue(self, tmp_path):
+        """Models the Windows brick scenario from #37881: the existing venv
+        cannot be fully removed (running interpreter locks files), so
+        shutil.rmtree silently leaves a residual directory. rebuild_venv must
+        still succeed because --clear lets uv replace the leftover.
+        """
+        venv_dir = tmp_path / "venv"
+        venv_dir.mkdir()
+        (venv_dir / "leftover_binary").write_text("locked stub")
+        uv_bin = str(tmp_path / "bin" / "uv")
+
+        def noop_rmtree(_path, ignore_errors=False):
+            # Simulate Windows: rmtree(ignore_errors=True) eats the lock error
+            # and returns; the directory survives.
+            return None
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock(returncode=0)
+            if cmd[1] == "venv":
+                bin_dir = venv_dir / "bin"
+                bin_dir.mkdir(parents=True, exist_ok=True)
+                (bin_dir / "python").write_text("#!/bin/sh\necho Python 3.11.0")
+            elif "--version" in cmd:
+                m.stdout = "Python 3.11.0"
+            return m
+
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
+             patch("hermes_cli.managed_uv.shutil.rmtree", side_effect=noop_rmtree), \
+             patch("hermes_cli.managed_uv.platform.system", return_value="Linux"):
+            from hermes_cli.managed_uv import rebuild_venv
+            result = rebuild_venv(uv_bin, venv_dir)
+            assert result is True
+
 
 # ---------------------------------------------------------------------------
 # update_managed_uv
