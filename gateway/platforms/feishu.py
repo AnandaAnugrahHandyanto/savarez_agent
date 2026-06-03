@@ -1344,9 +1344,9 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
                 logger.error("[Feishu] WS connect failed: %s", exc)
                 raise
 
-            # Start background tasks on *this* loop
+            # _connect() already starts _receive_message_loop internally.
+            # Just start the ping loop and keep the loop alive.
             loop.create_task(ws_client._ping_loop())
-            loop.create_task(ws_client._receive_message_loop())
 
             # Keep the loop alive until disconnect is requested
             while getattr(ws_client, "_conn", None) is not None:
