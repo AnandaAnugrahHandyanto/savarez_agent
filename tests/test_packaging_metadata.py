@@ -78,6 +78,22 @@ def test_manifest_includes_bundled_skills():
     assert "graft optional-skills" in manifest
 
 
+def test_locale_catalogs_ship_in_both_wheel_and_sdist():
+    """Locale catalogs must reach installed wheels and sdists.
+
+    ``agent.i18n`` falls back to ``sysconfig.get_path("data") / "locales"``
+    outside a source checkout. If the wheel drops these YAML files, installed
+    Hermes surfaces raw i18n keys such as ``gateway.model.switched``.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = data["tool"]["setuptools"].get("data-files", {})
+
+    assert data_files.get("locales") == ["locales/*.yaml"]
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft locales" in manifest
+
+
 def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     """Regression test for #34034 / #28149.
 
