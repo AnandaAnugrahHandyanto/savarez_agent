@@ -546,21 +546,29 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
               value={providerName}
             />
             <div className="flex gap-2">
-              <Input
-                autoComplete="off"
-                className="font-mono"
-                list="custom-provider-models"
-                onChange={e => setModel(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && void submit()}
-                placeholder="Select or enter a model id"
-                type="text"
-                value={model}
-              />
-              <datalist id="custom-provider-models">
-                {models.map(m => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
+              {models.length > 0 ? (
+                <select
+                  className="h-10 flex-1 rounded-md border border-input bg-background px-3 py-2 font-mono text-sm ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  onChange={e => setModel(e.target.value)}
+                  value={model}
+                >
+                  {models.map(m => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <Input
+                  autoComplete="off"
+                  className="font-mono"
+                  onChange={e => setModel(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && void submit()}
+                  placeholder="Select or enter a model id"
+                  type="text"
+                  value={model}
+                />
+              )}
               <Button disabled={!value.trim() || loadingModels} onClick={() => void fetchModels()} type="button" variant="outline">
                 {loadingModels ? <Loader2 className="size-4 animate-spin" /> : null}
                 Models

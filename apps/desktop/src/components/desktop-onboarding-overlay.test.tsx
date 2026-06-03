@@ -9,6 +9,7 @@ import type { OAuthProvider } from '@/types/hermes'
 import { DesktopOnboardingOverlay, Picker } from './desktop-onboarding-overlay'
 
 const getGlobalModelOptions = vi.fn()
+const listCustomProviderModels = vi.fn()
 
 class ResizeObserverMock {
   observe = vi.fn()
@@ -23,7 +24,8 @@ vi.mock('@/hermes', async importOriginal => {
 
   return {
     ...actual,
-    getGlobalModelOptions: () => getGlobalModelOptions()
+    getGlobalModelOptions: () => getGlobalModelOptions(),
+    listCustomProviderModels: (baseUrl: string, apiKey?: string) => listCustomProviderModels(baseUrl, apiKey)
   }
 })
 
@@ -81,6 +83,7 @@ afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
   getGlobalModelOptions.mockReset()
+  listCustomProviderModels.mockReset()
   $desktopOnboarding.set({
     configured: null,
     flow: { status: 'idle' },
@@ -137,6 +140,33 @@ describe('onboarding Picker', () => {
     expect(screen.getByPlaceholderText('Paste API key (optional for local endpoints)')).toBeTruthy()
     expect(screen.getByPlaceholderText('Provider name')).toBeTruthy()
     expect(screen.getByPlaceholderText('Select or enter a model id')).toBeTruthy()
+  })
+
+  it('shows the selected custom model while keeping every probed model in the dropdown', async () => {
+    listCustomProviderModels.mockResolvedValue({
+      models: ['codex-auto-review', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.5'],
+      resolved_base_url: 'https://api.volcanowei.org/v1'
+    })
+    setProviders([])
+    render(<Picker ctx={ctx} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Local \/ custom endpoint/i }))
+    fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8000/v1'), {
+      target: { value: 'https://api.volcanowei.org/v1' }
+    })
+    fireEvent.change(screen.getByPlaceholderText('Paste API key (optional for local endpoints)'), {
+      target: { value: 'sk-test' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
+
+    await waitFor(() => expect(listCustomProviderModels).toHaveBeenCalledWith('https://api.volcanowei.org/v1', 'sk-test'))
+
+    const modelSelect = screen.getByDisplayValue('codex-auto-review') as HTMLSelectElement
+    expect(modelSelect.value).toBe('codex-auto-review')
+    expect(screen.getByRole('option', { name: 'codex-auto-review' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'gpt-5.3-codex' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'gpt-5.4' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'gpt-5.5' })).toBeTruthy()
   })
 
   it('scopes the confirmation model picker to the newly configured custom provider', async () => {
