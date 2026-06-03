@@ -1260,8 +1260,13 @@ def build_skills_system_prompt(
             "\n"
         )
 
-        # Use TOON-lite compact encoding when configured
-        if bool(cfg_get(load_config(), "context", "compact_format", default=False)):
+        # Use skill routing table when configured (compact intent→skill mapping)
+        if bool(cfg_get(load_config(), "skills", "routing_table", default=False)):
+            from agent.skill_router import format_skills_routing_table as _rtr
+            _router_block = _rtr(skills_by_category, category_descriptions)
+            if _router_block:
+                result += _router_block
+        elif bool(cfg_get(load_config(), "context", "compact_format", default=False)):
             result += _toon_skills_index(skills_by_category, category_descriptions)
             result += "\n\nOnly proceed without loading a skill if genuinely none are relevant to the task."
         else:
