@@ -860,6 +860,16 @@
           after = [ "network-online.target" ];
           wants = [ "network-online.target" ];
 
+          restartTriggers = [
+            configFile
+            envFileContent
+            (builtins.toJSON cfg.mcpServers)
+            (builtins.toJSON cfg.extraArgs)
+            "${toString cfg.extraPlugins}"
+            "${toString cfg.extraPythonPackages}"
+            "${toString cfg.extraDependencyGroups}"
+          ];
+
           environment = {
             HOME = cfg.stateDir;
             HERMES_HOME = "${cfg.stateDir}/.hermes";
@@ -922,6 +932,16 @@
             ++ lib.optional (cfg.container.backend == "docker") "docker.service";
           wants = [ "network-online.target" ];
           requires = lib.optional (cfg.container.backend == "docker") "docker.service";
+
+          restartTriggers = [
+            configFile
+            envFileContent
+            (builtins.toJSON cfg.mcpServers)
+            (builtins.toJSON cfg.extraArgs)
+            "${toString cfg.extraPlugins}"
+            "${toString cfg.extraPythonPackages}"
+            "${toString cfg.extraDependencyGroups}"
+          ];
 
           preStart = ''
             # Stable symlinks — container references these, not store paths directly
