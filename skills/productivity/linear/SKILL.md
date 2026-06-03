@@ -49,9 +49,28 @@ python3 "$SCRIPT" list-teams
 python3 "$SCRIPT" get-issue ENG-42
 python3 "$SCRIPT" get-document 38359beef67c      # fetch a doc by slugId from the URL
 python3 "$SCRIPT" raw 'query { viewer { name } }'
+
+# Create/update issues with label and assignee by NAME (resolved to UUIDs for you)
+python3 "$SCRIPT" create-issue --team ENG --title "Fix login bug" --label bug --label p1 --assignee "Jane Doe" --priority 1
+python3 "$SCRIPT" update-issue ENG-42 --label regression,ui --assignee me   # add labels, assign to yourself
+python3 "$SCRIPT" list-labels --team ENG          # discover valid label names
+python3 "$SCRIPT" list-users                      # discover valid assignee names
 ```
 
-All subcommands: `whoami`, `list-teams`, `list-projects`, `list-states`, `list-issues`, `get-issue`, `search-issues`, `create-issue`, `update-issue`, `update-status`, `add-comment`, `list-documents`, `get-document`, `search-documents`, `raw`. Run with `--help` for flags.
+Resolution details:
+- **Case-insensitive, whitespace-trimmed.** Assignees match by name, displayName, full email, or
+  email local-part; `--assignee me` resolves to the authenticated user.
+- **Multiple labels:** repeat `--label` or comma-separate (`--label bug --label p1` or `--label bug,p1`).
+- **`update-issue --label` is additive:** `issueUpdate` overwrites the whole label set, so the command
+  reads the issue's current labels first and appends (deduped) — it never silently drops labels you
+  didn't mention. Labels are team-scoped, so the team is inferred from the issue (or pass `--team`).
+- **Safe on large workspaces:** label/user lookups paginate past the 250-per-page cap, so a name is
+  never falsely reported missing.
+- **Ambiguity is surfaced, not guessed:** if a name matches more than one label/user the command
+  exits with the candidates instead of picking one. Deactivated users are not assignable.
+- On any miss the command exits non-zero and points you at `list-labels` / `list-users`.
+
+All subcommands: `whoami`, `list-teams`, `list-projects`, `list-states`, `list-labels`, `list-users`, `list-issues`, `get-issue`, `search-issues`, `create-issue`, `update-issue`, `update-status`, `add-comment`, `list-documents`, `get-document`, `search-documents`, `raw`. Run with `--help` for flags.
 
 Use the script when: you want a quick answer without crafting GraphQL. Use curl when: you need a query the script doesn't wrap, or you want to compose filters inline.
 

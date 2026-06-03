@@ -9,6 +9,8 @@ Commands:
   list-teams                              List all teams
   list-projects [--team KEY]              List projects (optionally filter by team)
   list-states [--team KEY]                List workflow states
+  list-labels [--team KEY]                List labels (optionally filter by team)
+  list-users                              List workspace members (for --assignee)
   list-issues [filters]                   List issues
     --team KEY                            Filter by team key (e.g. ENG)
     --status NAME                         Filter by workflow state name
@@ -22,10 +24,14 @@ Commands:
     --team KEY                            Required
     --description DESC
     --priority 0-4                        0=none, 1=urgent, 4=low
-    --label NAME
-    --assignee NAME
+    --label NAME                          Repeatable / comma-separated for several
+    --assignee NAME                       Name, email, or 'me'
     --parent IDENTIFIER                   Parent issue ID for sub-issues
-  update-issue <IDENTIFIER> [options]     Update existing issue (same options as create)
+  update-issue <IDENTIFIER> [options]     Update existing issue
+    --title / --description / --priority
+    --label NAME                          Added to existing labels; repeatable / comma-separated
+    --assignee NAME                       Name, email, or 'me'
+    --team KEY                            Scope --label lookup (else inferred from issue)
   update-status <IDENTIFIER> <STATE>      Move issue to workflow state (by state name)
   add-comment <IDENTIFIER> <body>         Add comment to issue
 
@@ -120,15 +126,167 @@ def cmd_list_teams(_args: argparse.Namespace) -> None:
     emit(gql(q).get("teams", {}).get("nodes", []))
 
 
+def _paginate(query: str, path: list[str], variables: dict[str, Any] | None = None,
+              page_size: int = 250) -> list[dict]:
+    """Collect every node from a Relay-style connection, following cursors.
+
+    The query must accept `$first: Int!` and `$after: String` and select, at the
+    given `path`, both `nodes` and `pageInfo { hasNextPage endCursor }`. This is
+    what makes name resolution correct on workspaces larger than one page (250) —
+    a single-page fetch would silently miss labels/users past the cap.
+    """
+    out: list[dict] = []
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    while True:
+        base = dict(variables or {})
+        base["first"] = page_size
+        base["after"] = cursor
+        node: Any = gql(query, base)
+        for key in path:
+            node = (node or {}).get(key, {})
+        out.extend(node.get("nodes", []))
+        info = node.get("pageInfo") or {}
+        cursor = info.get("endCursor")
+        # Stop on last page, a missing cursor, or a repeat (defensive against loops).
+        if not info.get("hasNextPage") or not cursor or cursor in seen_cursors:
+            break
+        seen_cursors.add(cursor)
+    return out
+
+
 def _resolve_team_id(key_or_name: str) -> str | None:
-    """Map a team key (ENG) or name to UUID."""
-    q = "query { teams(first: 100) { nodes { id key name } } }"
-    teams = gql(q).get("teams", {}).get("nodes", [])
-    kl = key_or_name.lower()
-    for t in teams:
+    """Map a team key (ENG) or name to UUID. Team keys/names are unique."""
+    q = """query($first: Int!, $after: String) {
+      teams(first: $first, after: $after) {
+        nodes { id key name } pageInfo { hasNextPage endCursor }
+      }
+    }"""
+    kl = key_or_name.strip().lower()
+    for t in _paginate(q, ["teams"]):
         if t["key"].lower() == kl or t["name"].lower() == kl:
             return t["id"]
     return None
+
+
+def _find_labels(name: str, team_id: str | None = None) -> list[dict]:
+    """Return every label whose name matches (case-insensitive, trimmed).
+
+    When team_id is given we filter server-side to that team; otherwise we search
+    all labels visible to the caller. More than one result means the name is
+    ambiguous (e.g. the same label name in different teams).
+    """
+    if not name or not name.strip():
+        return []
+    target = name.strip().lower()
+    if team_id:
+        # Team.labels is guaranteed to exist; the root labels connection is
+        # `issueLabels` (there is no root `labels`).
+        q = """query($teamId: String!, $first: Int!, $after: String) {
+          team(id: $teamId) {
+            labels(first: $first, after: $after) {
+              nodes { id name } pageInfo { hasNextPage endCursor }
+            }
+          }
+        }"""
+        labels = _paginate(q, ["team", "labels"], {"teamId": team_id})
+    else:
+        q = """query($first: Int!, $after: String) {
+          issueLabels(first: $first, after: $after) {
+            nodes { id name } pageInfo { hasNextPage endCursor }
+          }
+        }"""
+        labels = _paginate(q, ["issueLabels"])
+    return [lbl for lbl in labels if (lbl.get("name") or "").strip().lower() == target]
+
+
+def _find_users(name: str) -> list[dict]:
+    """Return every user matching name, displayName, full email, or email
+    local-part (case-insensitive, trimmed). Each node carries `active` so the
+    caller can refuse to assign deactivated members."""
+    if not name or not name.strip():
+        return []
+    target = name.strip().lower()
+    q = """query($first: Int!, $after: String) {
+      users(first: $first, after: $after) {
+        nodes { id name displayName email active } pageInfo { hasNextPage endCursor }
+      }
+    }"""
+    matches: list[dict] = []
+    for user in _paginate(q, ["users"]):
+        fields = {(user.get("name") or "").lower(), (user.get("displayName") or "").lower()}
+        email = (user.get("email") or "").lower()
+        if target in fields and target:
+            matches.append(user)
+        elif email and (email == target or email.split("@", 1)[0] == target):
+            matches.append(user)
+    return matches
+
+
+def _label_tokens(values: list[str] | None) -> list[str]:
+    """Flatten repeated --label flags and comma-separated values into names."""
+    out: list[str] = []
+    for value in values or []:
+        out.extend(tok.strip() for tok in value.split(",") if tok.strip())
+    return out
+
+
+def _resolve_label_id_or_exit(name: str, team_id: str | None, list_hint: str) -> str:
+    """Resolve one label name to a UUID, or print a precise error and exit.
+
+    Tries the team-scoped lookup first, then falls back to a workspace-wide
+    search. Exits with the candidate list when a name is ambiguous.
+    """
+    matches = _find_labels(name, team_id)
+    if not matches and team_id:
+        matches = _find_labels(name)  # workspace-wide fallback
+    # Collapse exact-duplicate ids (same label seen twice) before counting.
+    unique = {m["id"]: m for m in matches}
+    if not unique:
+        sys.stderr.write(f"Label not found: '{name}'\n")
+        sys.stderr.write(f"Hint: run 'linear_api.py list-labels{list_hint}' to see available labels.\n")
+        sys.exit(1)
+    if len(unique) > 1:
+        sys.stderr.write(f"Label '{name}' is ambiguous — {len(unique)} matches across teams:\n")
+        for m in unique.values():
+            sys.stderr.write(f"  - {m['id']}\n")
+        sys.stderr.write("Hint: pass --team to scope the lookup to one team.\n")
+        sys.exit(1)
+    return next(iter(unique))
+
+
+def _resolve_assignee_id_or_exit(name: str) -> str:
+    """Resolve --assignee (a name, email, or 'me') to a user UUID, or exit.
+
+    Only active users are assignable: if a name matches solely deactivated
+    members, that's an error rather than a silent assignment. Ambiguous names
+    exit with the candidate list.
+    """
+    if name.strip().lower() == "me":
+        viewer = gql("query { viewer { id } }").get("viewer") or {}
+        if not viewer.get("id"):
+            sys.stderr.write("Could not resolve 'me' to the current user.\n")
+            sys.exit(1)
+        return viewer["id"]
+    matches = _find_users(name)
+    active = [u for u in matches if u.get("active")]
+    if matches and not active:
+        sys.stderr.write(f"Assignee '{name}' matches only deactivated user(s).\n")
+        sys.stderr.write("Hint: assign an active member, or reactivate them in Linear.\n")
+        sys.exit(1)
+    unique = {u["id"]: u for u in active}
+    if not unique:
+        sys.stderr.write(f"Assignee not found: '{name}'\n")
+        sys.stderr.write("Hint: run 'linear_api.py list-users' to see available users.\n")
+        sys.exit(1)
+    if len(unique) > 1:
+        sys.stderr.write(f"Assignee '{name}' is ambiguous — {len(unique)} matches:\n")
+        for u in unique.values():
+            label = u.get("email") or u.get("displayName") or u.get("name") or u["id"]
+            sys.stderr.write(f"  - {label}\n")
+        sys.stderr.write("Hint: use a full email address to disambiguate.\n")
+        sys.exit(1)
+    return next(iter(unique))
 
 
 def cmd_list_projects(args: argparse.Namespace) -> None:
@@ -229,7 +387,15 @@ def cmd_create_issue(args: argparse.Namespace) -> None:
         inp["priority"] = args.priority
     if args.parent:
         inp["parentId"] = args.parent
-    # TODO: label + assignee name->id lookup (omitted for v1 brevity)
+    label_ids: list[str] = []
+    for token in _label_tokens(args.label):
+        label_id = _resolve_label_id_or_exit(token, tid, f" --team {args.team}")
+        if label_id not in label_ids:
+            label_ids.append(label_id)
+    if label_ids:
+        inp["labelIds"] = label_ids
+    if args.assignee:
+        inp["assigneeId"] = _resolve_assignee_id_or_exit(args.assignee)
 
     q = """mutation($input: IssueCreateInput!) {
       issueCreate(input: $input) {
@@ -247,6 +413,34 @@ def cmd_update_issue(args: argparse.Namespace) -> None:
         inp["description"] = args.description
     if args.priority is not None:
         inp["priority"] = args.priority
+    if args.label:
+        # issueUpdate REPLACES the whole label set, so fetch the issue's current
+        # labels (and team) up front and append to them — we never silently drop
+        # labels the caller didn't mention. Labels are team-scoped, so resolve
+        # within the issue's team (or an explicit --team), falling back to a
+        # workspace-wide search.
+        issue = gql(
+            "query($id: String!) { issue(id: $id) { team { id } labels { nodes { id } } } }",
+            {"id": args.identifier},
+        ).get("issue")
+        if not issue:
+            sys.stderr.write(f"Issue not found: {args.identifier}\n")
+            sys.exit(1)
+        if args.team:
+            team_id = _resolve_team_id(args.team)
+            if not team_id:
+                sys.stderr.write(f"Team not found: {args.team}\n")
+                sys.exit(1)
+        else:
+            team_id = (issue.get("team") or {}).get("id")
+        label_ids = [lbl["id"] for lbl in (issue.get("labels") or {}).get("nodes", [])]
+        for token in _label_tokens(args.label):
+            label_id = _resolve_label_id_or_exit(token, team_id, " --team <KEY>")
+            if label_id not in label_ids:
+                label_ids.append(label_id)
+        inp["labelIds"] = label_ids
+    if args.assignee:
+        inp["assigneeId"] = _resolve_assignee_id_or_exit(args.assignee)
     if not inp:
         sys.stderr.write("No update fields provided.\n")
         sys.exit(1)
@@ -282,6 +476,38 @@ def cmd_update_status(args: argparse.Namespace) -> None:
       }
     }"""
     emit(gql(q, {"id": args.identifier, "stateId": match["id"]}).get("issueUpdate"))
+
+
+def cmd_list_labels(args: argparse.Namespace) -> None:
+    if args.team:
+        tid = _resolve_team_id(args.team)
+        if not tid:
+            sys.stderr.write(f"Team not found: {args.team}\n")
+            sys.exit(1)
+        q = """query($teamId: String!, $first: Int!, $after: String) {
+          team(id: $teamId) {
+            labels(first: $first, after: $after) {
+              nodes { id name color } pageInfo { hasNextPage endCursor }
+            }
+          }
+        }"""
+        emit(_paginate(q, ["team", "labels"], {"teamId": tid}))
+    else:
+        q = """query($first: Int!, $after: String) {
+          issueLabels(first: $first, after: $after) {
+            nodes { id name color } pageInfo { hasNextPage endCursor }
+          }
+        }"""
+        emit(_paginate(q, ["issueLabels"]))
+
+
+def cmd_list_users(_args: argparse.Namespace) -> None:
+    q = """query($first: Int!, $after: String) {
+      users(first: $first, after: $after) {
+        nodes { id name displayName email active } pageInfo { hasNextPage endCursor }
+      }
+    }"""
+    emit(_paginate(q, ["users"]))
 
 
 def cmd_add_comment(args: argparse.Namespace) -> None:
@@ -370,6 +596,13 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--team")
     ls.set_defaults(func=cmd_list_states)
 
+    ll = sub.add_parser("list-labels")
+    ll.add_argument("--team")
+    ll.set_defaults(func=cmd_list_labels)
+
+    lu = sub.add_parser("list-users")
+    lu.set_defaults(func=cmd_list_users)
+
     li = sub.add_parser("list-issues")
     li.add_argument("--team")
     li.add_argument("--status")
@@ -392,8 +625,8 @@ def build_parser() -> argparse.ArgumentParser:
     ci.add_argument("--team", required=True)
     ci.add_argument("--description")
     ci.add_argument("--priority", type=int, choices=[0, 1, 2, 3, 4])
-    ci.add_argument("--label")
-    ci.add_argument("--assignee")
+    ci.add_argument("--label", action="append", help="Label name; repeat or comma-separate for several")
+    ci.add_argument("--assignee", help="Name, email, or 'me'")
     ci.add_argument("--parent")
     ci.set_defaults(func=cmd_create_issue)
 
@@ -402,6 +635,9 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--title")
     ui.add_argument("--description")
     ui.add_argument("--priority", type=int, choices=[0, 1, 2, 3, 4])
+    ui.add_argument("--label", action="append", help="Label name to add; repeat or comma-separate for several")
+    ui.add_argument("--assignee", help="Name, email, or 'me'")
+    ui.add_argument("--team", help="Scope --label lookup; inferred from the issue if omitted")
     ui.set_defaults(func=cmd_update_issue)
 
     us = sub.add_parser("update-status")
