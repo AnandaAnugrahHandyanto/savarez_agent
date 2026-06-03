@@ -456,10 +456,93 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     except Exception:
         pass
 
+    # Manifest, conflicts, and blocked/threat evidence are computed over the
+    # FULL block set so optional context slicing (below) can never hide a
+    # blocked finding from the internal manifest/logs.
     resolved = resolve_instruction_blocks(instruction_blocks)
     agent._instruction_surface_manifest = resolved.manifest
     agent._instruction_surface_conflicts = resolved.conflicts
-    return render_resolved_surface(resolved)
+
+    # ── Optional context slicing (disabled by default) ────────────────
+    # Selection happens only here — at initial system-prompt build and the
+    # compression/invalidate rebuild boundary — never mid-turn, so the
+    # upstream prefix cache stays stable across a session.  When the
+    # ``context_slicing.enabled`` flag is off (the default) this path is
+    # byte-for-byte equivalent to rendering ``resolved`` directly.
+    agent._context_slice_decision = None
+    try:
+        render_surface = _maybe_slice_surface(agent, instruction_blocks, resolved)
+    except Exception:
+        # Fail safe: any slicing error degrades to the full prompt.
+        render_surface = resolved
+        agent._context_slice_decision = None
+    return render_resolved_surface(render_surface)
+
+
+def _context_slice_inputs(agent: Any, instruction_blocks: list) -> tuple[str, str | None, Any]:
+    """Gather session-stable selection inputs for context slicing.
+
+    Never uses the current per-turn user message.  Inputs come from explicit
+    optional agent attributes (when a future card wires them) and otherwise
+    fall back to the already-assembled, session-stable hard-contract blocks
+    (Kanban/tool guidance and the caller system_message) as the task-signal
+    source.
+    """
+    active_file = getattr(agent, "_context_slice_active_file", None) or os.getenv("HERMES_ACTIVE_FILE") or None
+    loaded_skills = getattr(agent, "_context_slice_loaded_skills", None) or ()
+    explicit = getattr(agent, "_context_slice_task_text", None)
+    if explicit:
+        return str(explicit), active_file, loaded_skills
+    parts: List[str] = []
+    for block in instruction_blocks:
+        bid = getattr(block, "id", "")
+        labels = getattr(block, "labels", frozenset()) or frozenset()
+        if bid in {"tool.guidance", "caller.system_message"} or ("kanban" in labels):
+            content = getattr(block, "content", "") or ""
+            if content:
+                parts.append(content)
+    return "\n".join(parts), active_file, loaded_skills
+
+
+def _maybe_slice_surface(agent: Any, instruction_blocks: list, resolved):
+    """Return a possibly-sliced resolved surface; ``resolved`` unchanged when off.
+
+    Reads the disabled-by-default flag, derives selection signals, and drops
+    only optional bulky low-risk surfaces (skill index, project/context files).
+    Hard-contract and blocked/threat blocks are always retained.  The internal
+    decision manifest is stored on ``agent._context_slice_decision`` (no raw
+    secret values, never injected into the user-visible prompt).
+    """
+    from agent.context_slicer import (
+        is_context_slicing_enabled,
+        resolve_slice_budget,
+        select_render_block_ids,
+    )
+
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+    except Exception:
+        cfg = {}
+    if not is_context_slicing_enabled(cfg):
+        return resolved
+
+    task_text, active_file, loaded_skills = _context_slice_inputs(agent, instruction_blocks)
+    decision = select_render_block_ids(
+        instruction_blocks,
+        task_body=task_text,
+        loaded_skills=loaded_skills,
+        active_file=active_file,
+        budget=resolve_slice_budget(cfg),
+    )
+    agent._context_slice_decision = decision.summary()
+    if not decision.dropped:
+        # Nothing dropped — render the original full surface to preserve the
+        # exact block order and keep the prompt-cache prefix stable.
+        return resolved
+    keep = set(decision.selected)
+    render_blocks = [block for block in instruction_blocks if block.id in keep]
+    return resolve_instruction_blocks(render_blocks)
 
 
 def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str:
