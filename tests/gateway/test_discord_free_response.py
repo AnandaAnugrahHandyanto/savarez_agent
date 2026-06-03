@@ -226,8 +226,9 @@ async def test_discord_free_response_in_threads(adapter, monkeypatch):
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello from thread"
     assert event.source.chat_id == "456"
-    assert event.source.thread_id == "456"
     assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "456"
+    assert event.source.parent_chat_id is None
 
 
 @pytest.mark.asyncio
@@ -244,8 +245,9 @@ async def test_discord_forum_threads_are_handled_as_threads(adapter, monkeypatch
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello from forum post"
-    assert event.source.chat_id == "456"
+    assert event.source.chat_id == "222"
     assert event.source.thread_id == "456"
+    assert event.source.parent_chat_id == "222"
     assert event.source.chat_type == "thread"
     assert event.source.chat_name == "Hermes Server / support-forum / Can Hermes reply here?"
 
@@ -325,7 +327,9 @@ async def test_discord_forum_parent_in_free_response_list_allows_forum_thread(ad
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "allowed from forum thread"
-    assert event.source.chat_id == "333"
+    assert event.source.chat_id == "222"
+    assert event.source.parent_chat_id == "222"
+    assert event.source.thread_id == "333"
 
 
 @pytest.mark.asyncio

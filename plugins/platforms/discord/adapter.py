@@ -3468,12 +3468,14 @@ class DiscordAdapter(BasePlatformAdapter):
         is_dm = isinstance(interaction.channel, discord.DMChannel)
         is_thread = isinstance(interaction.channel, discord.Thread)
         thread_id = None
+        parent_channel_id = None
 
         if is_dm:
             chat_type = "dm"
         elif is_thread:
             chat_type = "thread"
             thread_id = str(interaction.channel_id)
+            parent_channel_id = self._get_parent_channel_id(interaction.channel)
         else:
             chat_type = "group"
 
@@ -3488,13 +3490,15 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
         source = self.build_source(
-            chat_id=str(interaction.channel_id),
+            chat_id=parent_channel_id if is_thread and parent_channel_id else str(interaction.channel_id),
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=str(interaction.guild.id) if getattr(interaction, "guild", None) else None,
+            parent_chat_id=parent_channel_id,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -3569,18 +3573,20 @@ class DiscordAdapter(BasePlatformAdapter):
         _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
 
+        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
+        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         source = self.build_source(
-            chat_id=thread_id,
+            chat_id=_parent_id or thread_id,
             chat_name=chat_name,
             chat_type="thread",
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=str(interaction.guild.id) if getattr(interaction, "guild", None) else None,
+            parent_chat_id=_parent_id or None,
         )
 
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(
@@ -4657,7 +4663,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Build source
         guild = getattr(message, "guild", None)
         source = self.build_source(
-            chat_id=str(effective_channel.id),
+            chat_id=parent_channel_id if is_thread and parent_channel_id else str(effective_channel.id),
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(message.author.id),
