@@ -16414,6 +16414,8 @@ class GatewayRunner:
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
                 return
+            if event_type == "lifecycle" and not interim_assistant_messages_enabled:
+                return
             prepared_message = _prepare_gateway_status_message(
                 source.platform,
                 event_type,

@@ -204,6 +204,22 @@ class ManyProgressLinesAgent:
         }
 
 
+class LifecycleStatusAgent:
+    def __init__(self, **kwargs):
+        self.status_callback = kwargs.get("status_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        assert self.status_callback is not None
+        self.status_callback("lifecycle", "📦 Preflight compression: test")
+        time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class DelayedInterimAgent:
     def __init__(self, **kwargs):
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
@@ -807,6 +823,20 @@ async def test_run_agent_suppresses_interim_commentary_when_disabled(monkeypatch
 
     assert result.get("already_sent") is not True
     assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_lifecycle_status_when_interim_disabled(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        LifecycleStatusAgent,
+        session_id="sess-lifecycle-status-disabled",
+        config_data={"display": {"interim_assistant_messages": False}},
+    )
+
+    assert result.get("already_sent") is not True
+    assert not any("Preflight compression" in call["content"] for call in adapter.sent)
 
 
 @pytest.mark.asyncio
