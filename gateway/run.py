@@ -3881,7 +3881,15 @@ class GatewayRunner:
                 continue
 
             source = entry.origin
-            adapter = self._resolve_adapter(event)
+            # Build a minimal MessageEvent so _resolve_adapter can match by
+            # adapter_instance_id when multi-app Feishu is configured.
+            _tmp_event = MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+            adapter = self._resolve_adapter(_tmp_event)
             if adapter is None:
                 logger.debug(
                     "Skipping auto-resume for %s: adapter not ready for %s",
