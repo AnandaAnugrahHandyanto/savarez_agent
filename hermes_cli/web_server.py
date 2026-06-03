@@ -7638,6 +7638,168 @@ async def rescan_dashboard_plugins():
     return {"ok": True, "count": len(plugins)}
 
 
+_KANBAN_TODO_STATUSES = {"triage", "todo", "scheduled", "ready"}
+_KANBAN_VIEWER_STATUSES = _KANBAN_TODO_STATUSES | {"running", "review", "blocked", "done", "archived"}
+
+
+def _kanban_viewer_status(status: str) -> str:
+    if status in _KANBAN_TODO_STATUSES:
+        return "todo"
+    return status
+
+
+def _kanban_empty_counts() -> Dict[str, int]:
+    return {"todo": 0, "running": 0, "review": 0, "done": 0, "blocked": 0}
+
+
+def _kanban_counts(tasks: List[Any]) -> Dict[str, int]:
+    counts = _kanban_empty_counts()
+    for task in tasks:
+        status = _kanban_viewer_status(getattr(task, "status", ""))
+        if status in counts:
+            counts[status] += 1
+    return counts
+
+
+def _kanban_event_message(kind: str, payload: Any) -> str:
+    if isinstance(payload, dict):
+        for key in ("message", "note", "reason", "summary", "result", "error"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+    return kind
+
+
+def _kanban_event_payload(event: Any) -> Dict[str, Any]:
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    return {
+        "id": event.id,
+        "kind": event.kind,
+        "payload": payload,
+        "message": _kanban_event_message(event.kind, payload),
+        "created_at": event.created_at,
+    }
+
+
+def _kanban_task_progress(task: Any, recent_events: List[Dict[str, Any]]) -> Optional[int]:
+    if task.status == "done":
+        return 100
+    for event in recent_events:
+        payload = event.get("payload")
+        if isinstance(payload, dict):
+            value = payload.get("progress") or payload.get("percent")
+            if isinstance(value, (int, float)):
+                return max(0, min(100, int(round(value))))
+    return None
+
+
+def _kanban_task_payload(kb: Any, conn: Any, task: Any) -> Dict[str, Any]:
+    parents = kb.parent_ids(conn, task.id)
+    children = kb.child_ids(conn, task.id)
+    comments = kb.list_comments(conn, task.id)
+    recent_events = [_kanban_event_payload(event) for event in kb.list_events(conn, task.id)[-5:]]
+    recent_events.reverse()
+    updated_at = max(
+        [value for value in [task.completed_at, task.started_at, task.last_heartbeat_at, task.created_at] if value]
+        or [task.created_at]
+    )
+    return {
+        "id": task.id,
+        "title": task.title,
+        "body": task.body,
+        "assignee": task.assignee,
+        "status": _kanban_viewer_status(task.status),
+        "raw_status": task.status,
+        "priority": task.priority,
+        "created_by": task.created_by,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "updated_at": updated_at,
+        "workspace_kind": task.workspace_kind,
+        "workspace_path": task.workspace_path,
+        "branch_name": task.branch_name,
+        "claim_expires": task.claim_expires,
+        "tenant": task.tenant,
+        "result": task.result,
+        "last_failure_error": task.last_failure_error,
+        "current_run_id": task.current_run_id,
+        "session_id": task.session_id,
+        "parents": parents,
+        "children": children,
+        "comments_count": len(comments),
+        "recent_events": recent_events,
+        "progress": _kanban_task_progress(task, recent_events),
+    }
+
+
+@app.get("/api/kanban/boards")
+async def get_kanban_boards():
+    """Return kanban boards with viewer-friendly live task counts."""
+    from hermes_cli import kanban_db as kb
+
+    boards: List[Dict[str, Any]] = []
+    for board in kb.list_boards(include_archived=False):
+        slug = board.get("slug") or "default"
+        with kb.connect_closing(board=slug) as conn:
+            tasks = kb.list_tasks(conn, include_archived=False)
+            counts = _kanban_counts(tasks)
+        boards.append({
+            **board,
+            "counts": counts,
+            "total_tasks": sum(counts.values()),
+        })
+    return {"boards": boards}
+
+
+@app.get("/api/kanban/tasks")
+async def get_kanban_tasks(
+    board: str = "default",
+    status: Optional[str] = None,
+    assignee: Optional[str] = None,
+    tenant: Optional[str] = None,
+    session_id: Optional[str] = None,
+):
+    """Return a compact kanban-viewer task payload for one board."""
+    from hermes_cli import kanban_db as kb
+
+    if status and status not in _KANBAN_VIEWER_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid kanban status filter.")
+
+    try:
+        metadata = kb.read_board_metadata(board)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    db_status = None if status in (None, "todo") else status
+    try:
+        with kb.connect_closing(board=metadata.get("slug") or board) as conn:
+            tasks = kb.list_tasks(
+                conn,
+                assignee=assignee,
+                status=db_status,
+                tenant=tenant,
+                session_id=session_id,
+                include_archived=status == "archived",
+            )
+            if status == "todo":
+                tasks = [task for task in tasks if task.status in _KANBAN_TODO_STATUSES]
+            counts = _kanban_counts(tasks)
+            payload = [_kanban_task_payload(kb, conn, task) for task in tasks]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "board": {
+            "slug": metadata.get("slug") or board,
+            "name": metadata.get("name") or metadata.get("slug") or board,
+            "description": metadata.get("description"),
+        },
+        "counts": counts,
+        "tasks": payload,
+    }
+
+
 class _AgentPluginInstallBody(BaseModel):
     identifier: str
     force: bool = False
