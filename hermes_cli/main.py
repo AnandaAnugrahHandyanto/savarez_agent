@@ -2573,6 +2573,8 @@ def select_provider_and_model(args=None):
         _model_flow_named_custom(config, provider_info)
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
+    elif selected_provider == "claude-cli":
+        _model_flow_claude_cli(config, current_model)
     elif selected_provider == "anthropic":
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
@@ -3625,6 +3627,62 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     _save_model_choice(selected)
     _update_config_for_provider("minimax-oauth", creds["base_url"])
     print(f"\u2713 Using MiniMax model: {selected}")
+
+
+def _model_flow_claude_cli(_config, current_model=""):
+    """Flow for claude-cli provider — uses Claude Code CLI credentials directly.
+
+    Reads from ~/.claude/.credentials.json (or macOS Keychain) without
+    requiring the user to enter any API key.  If no credentials are found,
+    instructs the user to install and log in to Claude Code CLI first.
+    """
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+    )
+
+    print()
+    try:
+        from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
+        creds = read_claude_code_credentials()
+    except Exception:
+        creds = None
+
+    if not creds or not creds.get("accessToken"):
+        print("  No Claude Code credentials found.")
+        print()
+        print("  To use this provider, install Claude Code CLI and log in:")
+        print("    1. Install: https://claude.ai/download")
+        print("    2. Log in:  claude login")
+        print()
+        print("  Then run 'hermes model' again and select this provider.")
+        print()
+        return
+
+    token_valid = is_claude_code_token_valid(creds)
+    if token_valid:
+        print("  Claude Code credentials: ✓ (auto-detected, token valid)")
+    else:
+        print("  Claude Code credentials: found (token may be expired, will refresh automatically)")
+    print()
+
+    try:
+        from providers import get_provider_profile
+        _profile = get_provider_profile("claude-cli")
+        models = list(_profile.fallback_models) if _profile and _profile.fallback_models else []
+    except Exception:
+        models = []
+    if not models:
+        models = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+    selected = _prompt_model_selection(models, current_model=current_model or models[0])
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+    _update_config_for_provider("claude-cli", "https://api.anthropic.com")
+    print(f"Default model set to: {selected} (via Claude Code)")
 
 
 def _model_flow_google_gemini_cli(_config, current_model=""):
