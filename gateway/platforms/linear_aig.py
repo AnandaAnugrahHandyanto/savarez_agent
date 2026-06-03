@@ -43,6 +43,7 @@ DEFAULT_WEBHOOK_PATH = "/linear/aig"
 DEFAULT_GRAPHQL_URL = "https://api.linear.app/graphql"
 DEFAULT_MAX_BODY_BYTES = 1_048_576
 DEFAULT_MAX_SEEN_DELIVERIES = 5000
+DEFAULT_SIGNATURE_TOLERANCE_SECONDS = 60
 
 
 def check_linear_aig_requirements() -> bool:
@@ -64,6 +65,12 @@ class LinearAIGAdapter(BasePlatformAdapter):
         self._health_path = self._normalize_path(extra.get("health_path", "/health"))
         self._graphql_url = str(extra.get("graphql_url", DEFAULT_GRAPHQL_URL))
         self._max_body_bytes = int(extra.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES))
+        self._signature_tolerance_seconds = int(
+            extra.get(
+                "signature_tolerance_seconds",
+                DEFAULT_SIGNATURE_TOLERANCE_SECONDS,
+            )
+        )
         self._webhook_secret_env = str(
             extra.get("webhook_secret_env") or "LINEAR_WEBHOOK_SECRET"
         )
@@ -76,6 +83,10 @@ class LinearAIGAdapter(BasePlatformAdapter):
             or config.api_key
             or extra.get("access_token")
             or ""
+        )
+        self._access_token_is_api_key = bool(
+            (config.api_key and not config.token)
+            or extra.get("auth_scheme") == "api_key"
         )
         self._initial_ack = str(
             extra.get("initial_ack")
@@ -109,6 +120,21 @@ class LinearAIGAdapter(BasePlatformAdapter):
             or os.getenv("LINEAR_OAUTH_TOKEN", "")
             or os.getenv("LINEAR_API_KEY", "")
         )
+
+    def _authorization_header(self) -> str:
+        token = self._resolved_access_token()
+        if not token:
+            return ""
+        if (
+            self._access_token_is_api_key
+            or token.startswith("lin_api_")
+            or (
+                not (self._access_token or os.getenv(self._access_token_env, ""))
+                and os.getenv("LINEAR_API_KEY")
+            )
+        ):
+            return token
+        return f"Bearer {token}"
 
     async def connect(self) -> bool:
         if not AIOHTTP_AVAILABLE:
@@ -234,6 +260,10 @@ class LinearAIGAdapter(BasePlatformAdapter):
         except json.JSONDecodeError:
             return web.json_response({"error": "Cannot parse body"}, status=400)
 
+        if not self._is_fresh_webhook(payload):
+            logger.warning("[linear_aig] Linear webhook timestamp outside tolerance")
+            return web.json_response({"error": "Stale webhook timestamp"}, status=401)
+
         event_type = str(payload.get("type") or "")
         action = str(payload.get("action") or "")
         if event_type and event_type != "AgentSessionEvent":
@@ -347,8 +377,22 @@ class LinearAIGAdapter(BasePlatformAdapter):
         ).strip()
         if not signature:
             return False
+        if signature.startswith("sha256="):
+            signature = signature.removeprefix("sha256=")
         expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
         return hmac.compare_digest(signature, expected)
+
+    def _is_fresh_webhook(self, payload: dict) -> bool:
+        raw_timestamp = payload.get("webhookTimestamp")
+        if raw_timestamp is None:
+            return True
+        try:
+            timestamp_ms = int(raw_timestamp)
+        except (TypeError, ValueError):
+            return False
+        observed_ms = int(time.time() * 1000)
+        tolerance_ms = max(0, self._signature_tolerance_seconds) * 1000
+        return abs(observed_ms - timestamp_ms) <= tolerance_ms
 
     def _delivery_id(
         self,
@@ -443,12 +487,12 @@ class LinearAIGAdapter(BasePlatformAdapter):
         return SendResult(success=False, error="Linear rejected agent activity")
 
     async def _graphql(self, query: str, variables: dict) -> dict:
-        token = self._resolved_access_token()
-        if not token:
+        authorization = self._authorization_header()
+        if not authorization:
             raise RuntimeError("Linear access token is not configured")
         body = {"query": query, "variables": variables}
         headers = {
-            "Authorization": f"Bearer {token}",
+            "Authorization": authorization,
             "Content-Type": "application/json",
         }
         session = self._session

@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -24,6 +25,26 @@ def _make_adapter(**extra):
     return LinearAIGAdapter(config)
 
 
+def test_authorization_header_distinguishes_api_key_and_oauth_token():
+    api_key_adapter = LinearAIGAdapter(
+        PlatformConfig(
+            enabled=True,
+            api_key="lin_api_test_key",
+            extra={"webhook_secret": "linear-secret"},
+        )
+    )
+    assert api_key_adapter._authorization_header() == "lin_api_test_key"
+
+    oauth_adapter = LinearAIGAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="lin_oauth_test_token",
+            extra={"webhook_secret": "linear-secret"},
+        )
+    )
+    assert oauth_adapter._authorization_header() == "Bearer lin_oauth_test_token"
+
+
 def _app(adapter):
     app = web.Application()
     app.router.add_post("/linear/aig", adapter._handle_webhook)
@@ -39,6 +60,7 @@ def _created_payload():
     return {
         "type": "AgentSessionEvent",
         "action": "created",
+        "webhookTimestamp": int(time.time() * 1000),
         "createdAt": "2026-06-03T00:00:00.000Z",
         "actor": {"id": "user-1", "name": "Edgar"},
         "agentSession": {"id": "session-123"},
@@ -67,7 +89,7 @@ async def test_created_webhook_verifies_signature_acks_and_dispatches():
             data=body,
             headers={
                 "Content-Type": "application/json",
-                "Linear-Signature": _signature(body),
+                "Linear-Signature": "sha256=" + _signature(body),
                 "Linear-Delivery": "delivery-1",
             },
         )
@@ -102,6 +124,31 @@ async def test_invalid_signature_is_rejected_before_dispatch():
             headers={"Linear-Signature": "bad"},
         )
         assert response.status == 401
+        adapter._graphql.assert_not_called()
+        adapter.handle_message.assert_not_called()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_webhook_timestamp_is_rejected():
+    adapter = _make_adapter()
+    adapter.handle_message = AsyncMock()
+    adapter._graphql = AsyncMock()
+    payload = _created_payload()
+    payload["webhookTimestamp"] = int((time.time() - 120) * 1000)
+    client = TestClient(TestServer(_app(adapter)))
+    await client.start_server()
+    try:
+        body = json.dumps(payload).encode()
+        response = await client.post(
+            "/linear/aig",
+            data=body,
+            headers={"Linear-Signature": _signature(body)},
+        )
+        assert response.status == 401
+        data = await response.json()
+        assert data["error"] == "Stale webhook timestamp"
         adapter._graphql.assert_not_called()
         adapter.handle_message.assert_not_called()
     finally:
