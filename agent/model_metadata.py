@@ -114,6 +114,11 @@ _ollama_context_cache: Dict[str, Optional[int]] = {}
 _ollama_context_cache_time: Dict[str, float] = {}
 _OLLAMA_CONTEXT_CACHE_TTL = 3600
 
+# Cache for detect_local_server_type — server type never changes during runtime
+_local_server_type_cache: Dict[str, Optional[str]] = {}
+_local_server_type_cache_time: Dict[str, float] = {}
+_LOCAL_SERVER_TYPE_CACHE_TTL = 3600
+
 # Descending tiers for context length probing when the model is unknown.
 # We start at 256K (covers GPT-5.x, many current large-context models) and
 # step down on context-length errors until one works.  Tier[0] is also the
@@ -480,11 +485,23 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     import httpx
 
     normalized = _normalize_base_url(base_url)
+
+    # Check in-memory cache first — server type never changes during a single run
+    cache_key = normalized
+    now = time.time()
+    cached = _local_server_type_cache.get(cache_key)
+    if cached is not None and (now - _local_server_type_cache_time.get(cache_key, 0)) < _LOCAL_SERVER_TYPE_CACHE_TTL:
+        return cached
+    # Negative cache: if we recently detected None, don't re-probe
+    if cache_key in _local_server_type_cache and (now - _local_server_type_cache_time.get(cache_key, 0)) < _LOCAL_SERVER_TYPE_CACHE_TTL:
+        return _local_server_type_cache[cache_key]
+
     server_url = normalized
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
     headers = _auth_headers(api_key)
+    result: Optional[str] = None
 
     try:
         with httpx.Client(timeout=2.0, headers=headers) as client:
@@ -492,45 +509,50 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
             try:
                 r = client.get(f"{server_url}/api/v1/models")
                 if r.status_code == 200:
-                    return "lm-studio"
+                    result = "lm-studio"
             except Exception:
                 pass
             # Ollama exposes /api/tags and responds with {"models": [...]}
             # LM Studio returns {"error": "Unexpected endpoint"} with status 200
             # on this path, so we must verify the response contains "models".
-            try:
-                r = client.get(f"{server_url}/api/tags")
-                if r.status_code == 200:
-                    try:
-                        data = r.json()
-                        if "models" in data:
-                            return "ollama"
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            if result is None:
+                try:
+                    r = client.get(f"{server_url}/api/tags")
+                    if r.status_code == 200:
+                        try:
+                            data = r.json()
+                            if "models" in data:
+                                result = "ollama"
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
-            try:
-                r = client.get(f"{server_url}/v1/props")
-                if r.status_code != 200:
-                    r = client.get(f"{server_url}/props")  # fallback for older builds
-                if r.status_code == 200 and "default_generation_settings" in r.text:
-                    return "llamacpp"
-            except Exception:
-                pass
+            if result is None:
+                try:
+                    r = client.get(f"{server_url}/v1/props")
+                    if r.status_code != 200:
+                        r = client.get(f"{server_url}/props")  # fallback for older builds
+                    if r.status_code == 200 and "default_generation_settings" in r.text:
+                        result = "llamacpp"
+                except Exception:
+                    pass
             # vLLM: /version
-            try:
-                r = client.get(f"{server_url}/version")
-                if r.status_code == 200:
-                    data = r.json()
-                    if "version" in data:
-                        return "vllm"
-            except Exception:
-                pass
+            if result is None:
+                try:
+                    r = client.get(f"{server_url}/version")
+                    if r.status_code == 200:
+                        data = r.json()
+                        if "version" in data:
+                            result = "vllm"
+                except Exception:
+                    pass
     except Exception:
         pass
 
-    return None
+    _local_server_type_cache[cache_key] = result
+    _local_server_type_cache_time[cache_key] = time.time()
+    return result
 
 
 def _iter_nested_dicts(value: Any):
