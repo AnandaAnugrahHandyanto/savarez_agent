@@ -41,9 +41,11 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import profile_contract as contract_mod
 from hermes_cli import profiles as profiles_mod
 
 logger = logging.getLogger(__name__)
@@ -136,6 +138,19 @@ class DecomposeOutcome:
     new_title: Optional[str] = None
 
 
+@dataclass
+class ProfileRoutePolicy:
+    """Roster entry plus contract-derived execution/safety policy."""
+
+    name: str
+    description: str
+    has_description: bool
+    contract: dict | None = None
+    contract_ready: bool = False
+    executable: bool = True
+    non_executable_reason: str = ""
+
+
 def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -214,29 +229,114 @@ def _resolve_default_assignee(cfg: dict) -> str:
         return "default"
 
 
-def _build_roster() -> tuple[list[dict], set[str]]:
-    """Return (roster_for_prompt, valid_assignee_names).
+def _profile_contract_dir(name: str) -> Path:
+    return contract_mod.profile_dir_for(name)
 
-    Each roster entry is ``{name, description, has_description}``. The
-    valid-set is used after the LLM responds to rewrite invalid
-    assignees to the default fallback.
+
+def _load_profile_policy(name: str, description: str, has_description: bool) -> ProfileRoutePolicy:
+    profile_dir = _profile_contract_dir(name)
+    contract_path = profile_dir / contract_mod.CONTRACT_FILENAME
+    contract = contract_mod.read_contract(profile_dir)
+    if contract is None:
+        if contract_path.exists():
+            return ProfileRoutePolicy(
+                name,
+                description,
+                has_description,
+                contract=None,
+                contract_ready=False,
+                executable=False,
+                non_executable_reason=f"contract.yaml present but unreadable at {contract_path}",
+            )
+        # Legacy/non-specialist profiles remain executable if the profile exists.
+        return ProfileRoutePolicy(name, description, has_description)
+
+    errors = contract_mod.validate_contract(contract, name)
+    if errors:
+        return ProfileRoutePolicy(
+            name,
+            description,
+            has_description,
+            contract=contract,
+            contract_ready=False,
+            executable=False,
+            non_executable_reason="invalid contract.yaml: " + "; ".join(errors),
+        )
+
+    dims = contract_mod.assess_autonomy_dimensions(profile_dir)
+    child_supervision = (dims.get("child_supervision_ready") or {}).get("status")
+    if child_supervision != contract_mod.DIM_YES:
+        reasons = (dims.get("child_supervision_ready") or {}).get("reasons") or []
+        return ProfileRoutePolicy(
+            name,
+            description,
+            has_description,
+            contract=contract,
+            contract_ready=True,
+            executable=False,
+            non_executable_reason=(
+                "contract present but child supervision lane is not executable"
+                + (": " + "; ".join(reasons) if reasons else "")
+            ),
+        )
+
+    return ProfileRoutePolicy(
+        name,
+        description,
+        has_description,
+        contract=contract,
+        contract_ready=True,
+        executable=True,
+    )
+
+
+def _build_roster() -> tuple[list[dict], set[str], dict[str, ProfileRoutePolicy]]:
+    """Return (roster_for_prompt, executable_assignee_names, policies_by_name).
+
+    Contract-backed specialists are listed with their machine-readable
+    domain/lane/safety policy, but only profiles with an executable child lane
+    are allowed as assignees. This prevents a wrapper-only/profile-contract-only
+    directory from becoming a live dispatch lane.
     """
     roster: list[dict] = []
     valid: set[str] = set()
+    policies: dict[str, ProfileRoutePolicy] = {}
     try:
         all_profiles = profiles_mod.list_profiles()
     except Exception as exc:
         logger.warning("decompose: failed to list profiles: %s", exc)
-        return roster, valid
+        return roster, valid, policies
     for p in all_profiles:
         desc = (p.description or "").strip()
-        roster.append({
-            "name": p.name,
-            "description": desc or f"(no description; profile named {p.name!r})",
-            "has_description": bool(desc),
-        })
-        valid.add(p.name)
-    return roster, valid
+        policy = _load_profile_policy(
+            p.name,
+            desc or f"(no description; profile named {p.name!r})",
+            bool(desc),
+        )
+        policies[p.name] = policy
+        entry = {
+            "name": policy.name,
+            "description": policy.description,
+            "has_description": policy.has_description,
+            "executable": policy.executable,
+        }
+        if policy.contract:
+            entry.update({
+                "contract_ready": policy.contract_ready,
+                "division": policy.contract.get("division"),
+                "reports_to": policy.contract.get("reports_to"),
+                "domain": policy.contract.get("domain") or [],
+                "child_lane_policy": policy.contract.get("child_lane_policy") or {},
+                "approval_gate_categories": policy.contract.get("approval_gate_categories") or [],
+                "forbidden_autonomy": policy.contract.get("forbidden_autonomy") or [],
+                "evidence_requirements": policy.contract.get("evidence_requirements") or [],
+            })
+        if not policy.executable:
+            entry["non_executable_reason"] = policy.non_executable_reason
+        roster.append(entry)
+        if policy.executable:
+            valid.add(p.name)
+    return roster, valid, policies
 
 
 def _format_roster(roster: list[dict]) -> str:
@@ -244,8 +344,22 @@ def _format_roster(roster: list[dict]) -> str:
         return "  (no profiles installed — decomposer cannot route work)"
     lines = []
     for entry in roster:
-        tag = "" if entry["has_description"] else " ⚠ undescribed"
+        tag_bits = []
+        if not entry["has_description"]:
+            tag_bits.append("undescribed")
+        if not entry.get("executable", True):
+            tag_bits.append("not-executable")
+        tag = "" if not tag_bits else " ⚠ " + ", ".join(tag_bits)
         lines.append(f"  - {entry['name']}{tag}: {entry['description']}")
+        if entry.get("contract_ready"):
+            lines.append(f"      contract.yaml domain: {entry.get('domain')}")
+            lines.append(f"      reports_to: {entry.get('reports_to')}  division: {entry.get('division')}")
+            lines.append(f"      child_lane_policy: {entry.get('child_lane_policy')}")
+            lines.append(f"      approval_gate_categories: {entry.get('approval_gate_categories')}")
+            lines.append(f"      forbidden_autonomy: {entry.get('forbidden_autonomy')}")
+            lines.append(f"      evidence_requirements: {entry.get('evidence_requirements')}")
+        if entry.get("non_executable_reason"):
+            lines.append(f"      DO NOT ASSIGN: {entry['non_executable_reason']}")
     return "\n".join(lines)
 
 
@@ -255,10 +369,11 @@ def _normalize_assignee_choice(
     default_assignee: str,
     valid_names: set[str],
 ) -> str:
-    """Return a valid assignee, falling back to ``default_assignee``.
+    """Return a valid executable assignee, falling back to ``default_assignee``.
 
     Fan-out children and the single-task fallback should share the same
-    routing guarantee: promoted work must not be left unassigned.
+    routing guarantee: promoted work must not be left unassigned or routed to a
+    profile whose contract exists but whose execution lane is not wired.
     """
     if not isinstance(assignee, str) or not assignee.strip():
         return default_assignee
@@ -266,6 +381,73 @@ def _normalize_assignee_choice(
     if chosen not in valid_names:
         return default_assignee
     return chosen
+
+
+def _sanitize_default_assignee(
+    default_assignee: str,
+    *,
+    orchestrator: str,
+    valid_names: set[str],
+) -> str:
+    """Ensure fallback routing never points at a non-executable profile.
+
+    ``_resolve_default_assignee`` can only check whether a profile exists. The
+    contract-aware roster later decides whether that profile is safe to execute.
+    If the configured fallback is wrapper-only/non-executable, use the
+    orchestrator when executable, otherwise any executable profile, and finally
+    keep the original value only as a last resort for legacy empty rosters.
+    """
+    if default_assignee in valid_names:
+        return default_assignee
+    if orchestrator in valid_names:
+        return orchestrator
+    if valid_names:
+        return sorted(valid_names)[0]
+    return default_assignee
+
+
+_APPROVAL_GATE_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("credentials", r"\b(credential|credentials|secret|token|api[-_ ]?key|password|login)\b"),
+    ("public_send", r"\b(public|client[- ]?facing|external|official)\b.*\b(send|message|email|publish|post|disclos)"),
+    ("paid_api", r"\b(paid|cost|billable|subscription|purchase|real money|spend)\b|\bpaid[-_ ]?api\b"),
+    ("finance_trading", r"\b(payment|pay|trade|trading|portfolio|investment|invoice|bank|tax|finance)\b"),
+    ("live_deploy", r"\b(live|production|prod|deploy|merge|push)\b"),
+    ("notion_write", r"\bnotion\b.*\b(write|update|close|closure|mark done|edit)\b|\b(write|update|close|closure)\b.*\bnotion\b"),
+    ("destructive", r"\b(delete|destroy|drop|wipe|purge|irreversible|rotate|revoke|disable)\b"),
+)
+
+
+def _detect_approval_gate(title: str, body: str, policy: ProfileRoutePolicy | None) -> list[str]:
+    """Return obvious approval-gate labels detected from child text.
+
+    This is deliberately conservative and deterministic. It does not replace
+    specialist judgment; it parks children that clearly cross standing Filip/
+    EMA gates before they become executable dispatcher work.
+    """
+    text = f"{title}\n{body}".casefold()
+    hits: list[str] = []
+    for label, pattern in _APPROVAL_GATE_PATTERNS:
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            hits.append(label)
+
+    if policy and policy.contract:
+        for category in policy.contract.get("approval_gate_categories") or []:
+            words = [w for w in re.split(r"[^a-z0-9]+", str(category).casefold()) if len(w) >= 4]
+            if words and any(w in text for w in words):
+                hits.append(f"contract:{category}")
+        for forbidden in policy.contract.get("forbidden_autonomy") or []:
+            words = [w for w in re.split(r"[^a-z0-9]+", str(forbidden).casefold()) if len(w) >= 4]
+            if words and any(w in text for w in words):
+                hits.append(f"forbidden:{forbidden}")
+
+    # Preserve order while deduping.
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for hit in hits:
+        if hit not in seen:
+            seen.add(hit)
+            deduped.append(hit)
+    return deduped
 
 
 def decompose_task(
@@ -295,7 +477,12 @@ def decompose_task(
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
-    roster, valid_names = _build_roster()
+    roster, valid_names, policies = _build_roster()
+    default_assignee = _sanitize_default_assignee(
+        default_assignee,
+        orchestrator=orchestrator,
+        valid_names=valid_names,
+    )
 
     try:
         from agent.auxiliary_client import (  # type: ignore
@@ -411,32 +598,48 @@ def decompose_task(
         if not isinstance(body, str):
             body = ""
         assignee = entry.get("assignee")
+        requested = assignee.strip() if isinstance(assignee, str) else ""
         chosen = _normalize_assignee_choice(
             assignee,
             default_assignee=default_assignee,
             valid_names=valid_names,
         )
-        if (
-            isinstance(assignee, str)
-            and assignee.strip()
-            and assignee.strip() not in valid_names
-        ):
-            logger.info(
-                "decompose: task %s child %d picked unknown assignee %r — "
-                "routing to default_assignee %r",
-                task_id, idx, assignee, default_assignee,
-            )
+        if requested and requested not in valid_names:
+            policy = policies.get(requested)
+            if policy and not policy.executable:
+                logger.info(
+                    "decompose: task %s child %d picked non-executable assignee %r (%s) — "
+                    "routing to default_assignee %r",
+                    task_id, idx, assignee, policy.non_executable_reason, default_assignee,
+                )
+            else:
+                logger.info(
+                    "decompose: task %s child %d picked unknown assignee %r — "
+                    "routing to default_assignee %r",
+                    task_id, idx, assignee, default_assignee,
+                )
         parents = entry.get("parents") or []
         if not isinstance(parents, list):
             parents = []
         # Clean parent indices: drop non-int and out-of-range.
         clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
-        children.append({
+        body_clean = body.strip()
+        gate_hits = _detect_approval_gate(title.strip(), body_clean, policies.get(chosen))
+        child: dict = {
             "title": title.strip()[:200],
-            "body": body.strip(),
+            "body": body_clean,
             "assignee": chosen,
             "parents": clean_parents,
-        })
+        }
+        if gate_hits:
+            approval_text = (
+                "NEEDS FILIP APPROVAL: approve this child task crossing "
+                f"approval gates {', '.join(gate_hits)} before any worker executes it."
+            )
+            child["body"] = approval_text + "\n\n" + body_clean
+            child["initial_status"] = "blocked"
+            child["block_reason"] = approval_text
+        children.append(child)
 
     try:
         with kb.connect_closing() as conn:

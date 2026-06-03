@@ -15,6 +15,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_decompose as decomp
+from hermes_cli import profile_contract as pc
 
 
 @pytest.fixture
@@ -290,6 +291,226 @@ def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
         child = kb.get_task(conn, outcome.child_ids[0])
     # 'made_up' wasn't in roster, so assignee rewritten to 'fallback'
     assert child.assignee == "fallback"
+
+
+def _write_contract_profile(home: Path, name: str, *, standalone_script: bool = True) -> Path:
+    pdir = home / "profiles" / name
+    pdir.mkdir(parents=True, exist_ok=True)
+    contract = pc.default_specialist_contract(
+        name,
+        division="engineering" if name == "gond" else "specialist",
+        domain=[f"{name} contract domain marker"],
+    )
+    # Keep a notion source/path so contract text is rich enough for the decomposer roster.
+    contract["sot_intake"]["sources"].append("notion: test source")
+    contract["sot_intake"]["paths"] = [str(home)]
+    import yaml
+    with open(pdir / pc.CONTRACT_FILENAME, "w", encoding="utf-8") as f:
+        yaml.safe_dump(contract, f, sort_keys=False)
+    if standalone_script:
+        sdir = pdir / "scripts"
+        sdir.mkdir(parents=True, exist_ok=True)
+        (sdir / f"{name}_standalone_orchestrator.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    return pdir
+
+
+def _patch_routing_config(*, orchestrator="fallback", default="fallback"):
+    return patch(
+        "hermes_cli.kanban_decompose._load_config",
+        return_value={"kanban": {"orchestrator_profile": orchestrator, "default_assignee": default}},
+    )
+
+
+def test_roster_prompt_includes_contract_domain_lane_and_safety_data(kanban_home):
+    _write_contract_profile(kanban_home, "gond")
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="route by contract", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Tightened title",
+        "body": "Do the thing.",
+        "assignee": "gond",
+    })
+
+    patches = _patch_list_profiles(["gond", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload) as aux_patch, _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"default_assignee": "fallback"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    client = aux_patch.return_value[0]
+    user_msg = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "gond contract domain marker" in user_msg
+    assert "heavy_lane" in user_msg
+    assert "approval_gate_categories" in user_msg
+    assert "forbidden_autonomy" in user_msg
+
+
+def test_contract_only_specialist_is_not_executable_lane(kanban_home):
+    _write_contract_profile(kanban_home, "wrapperonly", standalone_script=False)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="unsafe wrapper", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test",
+        "tasks": [
+            {"title": "Do wrapper work", "body": "Repo mutation.", "assignee": "wrapperonly", "parents": []},
+        ],
+    })
+
+    patches = _patch_list_profiles(["fallback", "wrapperonly"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"orchestrator_profile": "fallback", "default_assignee": "fallback"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids
+    with kb.connect() as conn:
+        child = kb.get_task(conn, outcome.child_ids[0])
+    assert child is not None
+    assert child.assignee == "fallback"
+
+
+def test_default_assignee_non_executable_contract_profile_is_not_used(kanban_home):
+    _write_contract_profile(kanban_home, "wrapperonly", standalone_script=False)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="default unsafe", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test",
+        "tasks": [
+            {"title": "Do fallback work", "body": "No assignee requested.", "assignee": None, "parents": []},
+        ],
+    })
+
+    patches = _patch_list_profiles(["fallback", "wrapperonly"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), _patch_routing_config(default="wrapperonly"):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        child = kb.get_task(conn, outcome.child_ids[0])
+    assert root is not None
+    assert child is not None
+    assert root.assignee == "fallback"
+    assert child.assignee == "fallback"
+
+
+def test_malformed_contract_profile_is_not_treated_as_legacy_executable(kanban_home):
+    pdir = kanban_home / "profiles" / "broken"
+    pdir.mkdir(parents=True)
+    (pdir / pc.CONTRACT_FILENAME).write_text("not: valid: yaml: [", encoding="utf-8")
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="broken contract", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test",
+        "tasks": [
+            {"title": "Do broken work", "body": "Should not route to broken.", "assignee": "broken", "parents": []},
+        ],
+    })
+
+    patches = _patch_list_profiles(["fallback", "broken"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), _patch_routing_config():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids
+    with kb.connect() as conn:
+        child = kb.get_task(conn, outcome.child_ids[0])
+    assert child is not None
+    assert child.assignee == "fallback"
+
+
+def test_decomposition_readiness_yes_does_not_mask_scheduler_block(kanban_home):
+    _write_contract_profile(kanban_home, "gond")
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setenv("HERMES_HOME", str(kanban_home))
+        row = pc.full_autonomy_readiness(kanban_home / "profiles" / "gond")
+    finally:
+        monkey.undo()
+    assert row["dimensions"]["decomposition_ready"]["status"] == pc.DIM_YES
+    assert row["dimensions"]["scheduler_ready"]["status"] != pc.DIM_YES
+    assert row["full_autonomy_ready"] is False
+
+
+def test_obvious_approval_gate_child_is_blocked_not_ready(kanban_home):
+    _write_contract_profile(kanban_home, "gond")
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="needs decomposition", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test",
+        "tasks": [
+            {
+                "title": "Send public client finance update",
+                "body": "Use paid API, write Notion closure, and live deploy.",
+                "assignee": "gond",
+                "parents": [],
+            },
+        ],
+    })
+
+    patches = _patch_list_profiles(["fallback", "gond"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"orchestrator_profile": "fallback", "default_assignee": "fallback"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids
+    with kb.connect() as conn:
+        child = kb.get_task(conn, outcome.child_ids[0])
+        comments = kb.list_comments(conn, outcome.child_ids[0])
+    assert child is not None
+    assert child.status == "blocked"
+    assert child.assignee == "gond"
+    assert "NEEDS FILIP APPROVAL" in (child.body or "")
+    assert any("approval gate" in c.body.lower() for c in comments)
 
 
 def test_decompose_handles_malformed_llm_json(kanban_home):
