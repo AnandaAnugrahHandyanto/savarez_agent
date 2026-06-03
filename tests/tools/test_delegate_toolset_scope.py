@@ -63,3 +63,44 @@ class TestToolsetIntersection:
         scoped = [t for t in requested if t in parent_toolsets]
 
         assert scoped == []
+
+    def test_explicit_empty_toolsets_gives_no_tools(self):
+        """toolsets=[] must produce zero-tool child (pure-reasoning mode).
+
+        Regression test for the bug fixed in PR #38167: previously,
+        ``if toolsets:`` treated ``[]`` as falsy, so passing an empty
+        list fell through to the parent-inheritance branch and the child
+        inherited all parent tools instead of getting none.
+        """
+        parent = SimpleNamespace(enabled_toolsets=["terminal", "file", "web"])
+
+        # Simulate the logic from _build_child_agent after the fix:
+        # ``if toolsets is not None:`` enters the intersection path
+        # with an empty list → ∩ → empty result
+        parent_toolsets = set(parent.enabled_toolsets)
+        toolsets = []
+        if toolsets is not None:
+            child_toolsets = [t for t in toolsets if t in parent_toolsets]
+        else:
+            child_toolsets = list(parent_toolsets)
+        child_toolsets = _strip_blocked_tools(child_toolsets)
+
+        assert child_toolsets == [], (
+            f"toolsets=[] should give empty child toolset, got {child_toolsets}"
+        )
+
+    def test_none_toolsets_inherits_parent(self):
+        """toolsets=None (default) must inherit parent tools unchanged."""
+        parent = SimpleNamespace(enabled_toolsets=["terminal", "file", "web"])
+
+        parent_toolsets = set(parent.enabled_toolsets)
+        toolsets = None
+        if toolsets is not None:
+            child_toolsets = [t for t in toolsets if t in parent_toolsets]
+        else:
+            child_toolsets = list(parent_toolsets)
+        child_toolsets = _strip_blocked_tools(child_toolsets)
+
+        assert "terminal" in child_toolsets
+        assert "file" in child_toolsets
+        assert "web" in child_toolsets
