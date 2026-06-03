@@ -106,6 +106,7 @@ async def test_gateway_status_command_uses_compact_status_card(monkeypatch):
         updated_at=datetime.now(),
         platform=Platform.TELEGRAM,
         chat_type="dm",
+        last_prompt_tokens=42_000,
     )
 
     runner = object.__new__(GatewayRunner)
@@ -158,8 +159,75 @@ async def test_gateway_status_command_uses_compact_status_card(monkeypatch):
         "🔄 Fallbacks: deepseek/deepseek-v4-pro, deepseek/deepseek-v4-flash",
         "🧮 Tokens: 64k in / 3k out · 💵 Cost: $0.12",
         "🗄️ Cache: 18% hit · 14k read, 0 write",
-        "📚 Context: 64k/1.0m (6%) · 🧹 Compactions: 0",
+        "📚 Context: 42k/1.0m (4%) · 🧹 Compactions: 0",
         "🧵 Session: 20260602_xxx",
         "📌 Tasks: 0 active",
         "🪢 Queue: steer (depth 0)",
     ]
+
+
+@pytest.mark.asyncio
+async def test_gateway_status_context_does_not_use_cumulative_input_tokens(monkeypatch):
+    from gateway.run import GatewayRunner
+    import gateway.run as gateway_run
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="c1",
+        user_name="tester",
+        chat_type="dm",
+    )
+    session_entry = SessionEntry(
+        session_key=build_session_key(source),
+        session_id="20260602_xxx",
+        created_at=datetime.now() - timedelta(hours=1),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        last_prompt_tokens=0,
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+    )
+    runner.adapters = {Platform.TELEGRAM: MagicMock()}
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner._session_db = MagicMock()
+    runner._session_db.get_session_title.return_value = None
+    runner._session_db.get_session.return_value = {
+        "input_tokens": 713_600,
+        "output_tokens": 26_800,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "estimated_cost_usd": 0.0,
+    }
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._background_tasks = set()
+    runner._busy_input_mode = "queue"
+    runner._queue_depth = lambda *_args, **_kwargs: 0
+
+    monkeypatch.setattr(gateway_run, "_status_gateway_uptime_seconds", lambda: 60)
+    monkeypatch.setattr(gateway_run, "_status_system_uptime_seconds", lambda: 60)
+    monkeypatch.setattr(gateway_run, "_status_git_short_sha", lambda: "c6501c0")
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_runtime_config",
+        lambda: {
+            "model": {
+                "provider": "azure-foundry",
+                "default": "gpt-5.5-1",
+                "context_length": 1_000_000,
+            },
+            "fallback_providers": [],
+        },
+    )
+
+    text = await runner._handle_status_command(MessageEvent(text="/status", source=source))
+
+    assert "🧮 Tokens: 713.6k in / 26.8k out" in text
+    assert "📚 Context: unknown · 🧹 Compactions: 0" in text
+    assert "713.6k/1.0m" not in text

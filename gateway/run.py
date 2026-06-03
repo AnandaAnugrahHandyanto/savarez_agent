@@ -10416,7 +10416,14 @@ class GatewayRunner:
         output_tokens = int(session_row.get("output_tokens") or 0)
         cache_read_tokens = int(session_row.get("cache_read_tokens") or 0)
         cache_write_tokens = int(session_row.get("cache_write_tokens") or 0)
-        context_tokens = int(session_row.get("last_prompt_tokens") or 0) or input_tokens or None
+
+        # ``input_tokens`` is cumulative across every API call in the session; it
+        # is not the current prompt size.  Showing it as Context makes long
+        # sessions look much closer to the context limit than they really are.
+        # The gateway session store keeps the last API-reported prompt size for
+        # this purpose, so prefer that value and fall back to unknown rather than
+        # mixing two different metrics.
+        context_tokens = int(getattr(session_entry, "last_prompt_tokens", 0) or 0) or None
 
         running_processes = 0
         try:
