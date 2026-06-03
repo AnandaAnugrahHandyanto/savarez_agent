@@ -268,10 +268,13 @@ def test_dashboard_rolly_chat_passes_board_slug_to_tmux_session():
     bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
     js = bundle.read_text()
 
-    assert "h(CardPromptActions, { task: t, boardSlug: props.boardSlug })" in js
+    assert "h(CardPromptActions, { task: t, boardSlug: props.boardSlug })" not in js
     assert "withBoard(`${API}/tasks/${encodeURIComponent(task.id)}/tmux-session`, props.boardSlug)" in js
     assert "setTerminalReady(!!(d && d.session_exists))" in js
     assert "copyCardPrompt" in js
+    assert "hermes-kanban-card-status-actions" in js
+    assert "hermes-kanban-compact-meta" in js
+    assert "terminalCc" in js and "Details" in js
     assert "h(RollyChatSection, { task: t, boardSlug: props.boardSlug })" not in js
     assert "readPathTaskId() || readUrlParam(\"task\")" in js
     assert "function readReturnToBoardPath()" in js
