@@ -83,7 +83,11 @@ except ImportError:
             f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
         )
 
-WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
+WEB_DIST = (
+    Path(os.environ["HERMES_WEB_DIST"])
+    if "HERMES_WEB_DIST" in os.environ and Path(os.environ["HERMES_WEB_DIST"]).exists()
+    else Path(__file__).parent / "web_dist"
+)
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -126,6 +130,7 @@ app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
+<<<<<<< ours
 # The desktop shell mints the token and injects it via
 # HERMES_DASHBOARD_SESSION_TOKEN so its main process can authenticate the
 # /api calls it makes on the user's behalf; otherwise we generate one fresh
@@ -133,6 +138,21 @@ app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 # injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+=======
+# Generated fresh on every server start — dies when the process exits.
+# Injected into the SPA HTML so only the legitimate web UI can use it.
+#
+# Hermes Desktop compatibility: when the desktop spawns the backend it
+# injects a session token via HERMES_DASHBOARD_SESSION_TOKEN so it can
+# pre-build the WS URL. Prefer the caller-supplied token so the two
+# processes stay in sync; fall back to a fresh secret only when the
+# backend is launched standalone (e.g. `hermes dashboard` from a shell).
+# ---------------------------------------------------------------------------
+_SESSION_TOKEN = (
+    os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN")
+    or secrets.token_urlsafe(32)
+)
+>>>>>>> theirs
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
