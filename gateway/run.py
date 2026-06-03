@@ -734,6 +734,44 @@ def _restart_notification_pending() -> bool:
     return (_hermes_home / ".restart_notify.json").exists()
 
 
+# External (systemd / SIGTERM / `gateway run --replace`) restarts do NOT write
+# the ``.restart_notify.json`` marker — that is only written by the in-band
+# ``/restart`` command. So a fleet bounce used to announce "shutting down" but
+# go silent on recovery (CLAWD-1019). The shutdown path writes this companion
+# marker when it stops with active sessions in flight; the next boot reads it to
+# send the same home-channel "gateway online" message, then clears it (once).
+_GATEWAY_RECOVERY_MARKER = ".gateway_recovery_notify.json"
+
+
+def _recovery_notification_pending() -> bool:
+    """True when an external shutdown stopped with active sessions in flight and
+    the next boot still owes the operator a home-channel "gateway online" message."""
+    return (_hermes_home / _GATEWAY_RECOVERY_MARKER).exists()
+
+
+def _write_recovery_marker(interrupted: int) -> None:
+    """Persist the recovery marker so the next boot announces "gateway online".
+
+    Best-effort: a failure here must never block shutdown.
+    """
+    try:
+        atomic_json_write(
+            _hermes_home / _GATEWAY_RECOVERY_MARKER,
+            {"interrupted": int(interrupted)},
+            indent=None,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("recovery-notify marker write failed: %s", exc)
+
+
+def _clear_recovery_marker() -> None:
+    """Remove the recovery marker so the "gateway online" message fires once."""
+    try:
+        (_hermes_home / _GATEWAY_RECOVERY_MARKER).unlink(missing_ok=True)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("recovery-notify marker clear failed: %s", exc)
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -4337,6 +4375,17 @@ class GatewayRunner:
             await self._send_home_channel_startup_notifications(
                 skip_targets=skip_home_targets,
             )
+            # A /restart supersedes any same-cycle external-recovery marker;
+            # drop it so it can't double-fire on the next boot. (CLAWD-1019)
+            _clear_recovery_marker()
+        elif _recovery_notification_pending():
+            # External (systemd / SIGTERM / `--replace`) restart that interrupted
+            # in-flight work leaves no .restart_notify.json marker, so the branch
+            # above is skipped and the recovery would otherwise be silent.
+            # Announce "gateway online" to the home channel, then clear the
+            # marker so it fires exactly once per restart. (CLAWD-1019)
+            await self._send_home_channel_startup_notifications()
+            _clear_recovery_marker()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -5936,6 +5985,14 @@ class GatewayRunner:
                     _pre_drain_keys.append(_sk)
                 except Exception as _e:
                     logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
+
+            # If this (external) shutdown had active sessions in flight, leave a
+            # durable marker so the NEXT boot announces "gateway online" to the
+            # home channel. The in-band /restart path writes its own
+            # .restart_notify.json and emits its own notification, so skip the
+            # marker there to avoid a double message. (CLAWD-1019)
+            if _pre_drain_keys and not self._restart_requested:
+                _write_recovery_marker(len(_pre_drain_keys))
 
             _drain_started_at = time.monotonic()
             active_agents, timed_out = await self._drain_active_agents(timeout)
