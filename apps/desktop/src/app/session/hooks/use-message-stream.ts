@@ -16,6 +16,7 @@ import {
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { setApprovalRequest } from '@/store/approval'
 import { setClarifyRequest } from '@/store/clarify'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -809,6 +810,26 @@ export function useMessageStream({
             question,
             choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,
             sessionId: sessionId ?? null
+          })
+        }
+      } else if (event.type === 'approval.request') {
+        if (!isActiveEvent) {
+          return
+        }
+
+        // Surface the dangerous-command approval modal. The Python side blocks
+        // in tools/approval.py:_await_gateway_decision on `approval.respond`;
+        // silence denies on timeout, so without this a desktop-only user never
+        // sees the gate and every dangerous command times out. Emitted from
+        // tui_gateway/server.py:578 (register_gateway_notify → approval.request).
+        const command = typeof payload?.command === 'string' ? payload.command : ''
+        const description = typeof payload?.description === 'string' ? payload.description : ''
+
+        if (command) {
+          setApprovalRequest({
+            command,
+            description: description || 'dangerous command',
+            sessionId: explicitSid || sessionId || null
           })
         }
       } else if (event.type === 'error') {
