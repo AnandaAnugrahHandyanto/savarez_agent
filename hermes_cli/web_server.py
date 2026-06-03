@@ -56,6 +56,7 @@ from hermes_cli.config import (
     recommended_update_command_for_method,
     redact_key,
 )
+from agent.redact import redact_sensitive_text
 from gateway.status import get_running_pid, read_runtime_status
 from utils import env_var_enabled
 
@@ -589,6 +590,10 @@ _AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
     "video/webm": ".webm",
 }
 _MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+def _redact_audio_error(error: Any, fallback: str) -> str:
+    return redact_sensitive_text(str(error or fallback), force=True)
 
 
 def _audio_extension_for_mime(mime_type: str) -> str:
@@ -1229,7 +1234,7 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
     if not result.get("success"):
         raise HTTPException(
             status_code=400,
-            detail=result.get("error") or "Transcription failed",
+            detail=_redact_audio_error(result.get("error"), "Transcription failed"),
         )
 
     return {
@@ -1329,7 +1334,7 @@ async def speak_text(payload: TTSSpeakRequest):
     if not result.get("success"):
         raise HTTPException(
             status_code=400,
-            detail=result.get("error") or "Speech synthesis failed",
+            detail=_redact_audio_error(result.get("error"), "Speech synthesis failed"),
         )
 
     file_path = result.get("file_path")
