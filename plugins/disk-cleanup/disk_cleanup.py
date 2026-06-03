@@ -231,7 +231,13 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
         elif cat == "temp" and age > 7:
             auto.append(item)
         elif cat == "cron-output" and age > 14:
-            auto.append(item)
+            # Revalidate stale entries (see #37721).
+            try:
+                rel = p.resolve().relative_to(get_hermes_home())
+                if len(rel.parts) >= 2 and rel.parts[1] == "output":
+                    auto.append(item)
+            except (ValueError, OSError):
+                pass
         elif cat == "research" and age > 30:
             prompt.append(item)
         elif cat == "chrome-profile" and age > 14:
@@ -268,6 +274,20 @@ def quick() -> Dict[str, Any]:
             continue
 
         age = (now - datetime.fromisoformat(item["timestamp"])).days
+
+        # Revalidate the stored category before deleting.  Stale
+        # tracked.json entries from older versions may have classified
+        # cron control-plane state (e.g. jobs.json) as "cron-output".
+        # Current guess_category() restricts cron-output to files
+        # under cron/output/**, so re-check the path at delete time
+        # to avoid wiping live scheduler registry.  See issue #37721.
+        if cat == "cron-output":
+            try:
+                rel = p.resolve().relative_to(get_hermes_home())
+                if not (len(rel.parts) >= 2 and rel.parts[1] == "output"):
+                    cat = None
+            except (ValueError, OSError):
+                cat = None
 
         should_delete = (
             cat == "test"

@@ -223,6 +223,44 @@ class TestTrackForgetQuick:
         for d in ("logs", "memories", "sessions", "cron", "cache"):
             assert (_isolate_env / d).exists(), f"{d}/ should be preserved"
 
+    def test_quick_skips_stale_cron_output_entry_for_jobs_json(self, _isolate_env):
+        """Regression for #37721: stale tracked.json entries must not
+        delete cron control-plane state even if stored category says
+        "cron-output"."""
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cron"
+        cron_dir.mkdir()
+        jobs = cron_dir / "jobs.json"
+        jobs.write_text("[]")
+        # Simulate a stale tracked.json entry from an older version
+        # that classified jobs.json as cron-output.
+        tracked = [{
+            "path": str(jobs),
+            "category": "cron-output",
+            "timestamp": "2020-01-01T00:00:00+00:00",
+            "size": 2,
+        }]
+        dg.save_tracked(tracked)
+        summary = dg.quick()
+        assert summary["deleted"] == 0
+        assert jobs.exists(), "jobs.json must survive quick()"
+
+    def test_quick_deletes_cron_output_subdir(self, _isolate_env):
+        """Files under cron/output/ are still eligible for cleanup."""
+        dg = _load_lib()
+        out_dir = _isolate_env / "cron" / "output"
+        out_dir.mkdir(parents=True)
+        old = out_dir / "old_result.json"
+        old.write_text("{}")
+        dg.track(str(old), "cron-output", silent=True)
+        # Fake an old timestamp
+        tracked = dg.load_tracked()
+        tracked[0]["timestamp"] = "2020-01-01T00:00:00+00:00"
+        dg.save_tracked(tracked)
+        summary = dg.quick()
+        assert summary["deleted"] == 1
+        assert not old.exists()
+
 
 class TestStatus:
     def test_empty_status(self, _isolate_env):
