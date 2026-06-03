@@ -59,7 +59,9 @@ class TestSkillScopedPassthrough:
 
 class TestConfigPassthrough:
     def test_reads_from_config(self, tmp_path, monkeypatch):
-        config = {"terminal": {"env_passthrough": ["MY_CUSTOM_KEY", "ANOTHER_TOKEN"]}}
+        config = {"terminal": {"env_passthrough": [
+            "MY_CUSTOM_KEY", "ANOTHER_TOKEN",
+        ]}}
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.dump(config))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -107,17 +109,25 @@ class TestConfigPassthrough:
 
 
 class TestExecuteCodeIntegration:
-    """Verify that the passthrough is checked in execute_code's env filtering."""
+    """Verify the passthrough is checked in execute_code's env filtering."""
 
     def test_secret_substring_blocked_by_default(self):
         """TENOR_API_KEY should be blocked without passthrough."""
-        _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
-                              "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
-        _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                              "PASSWD", "AUTH")
+        _SAFE_ENV_PREFIXES = (
+            "PATH", "HOME", "USER", "LANG", "LC_", "TERM",
+            "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
+            "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
+        )
+        _SECRET_SUBSTRINGS = (
+            "KEY", "TOKEN", "SECRET", "PASSWORD",
+            "CREDENTIAL", "PASSWD", "AUTH",
+        )
 
-        test_env = {"PATH": "/usr/bin", "TENOR_API_KEY": "test123", "HOME": "/home/user"}
+        test_env = {
+            "PATH": "/usr/bin",
+            "TENOR_API_KEY": "test123",
+            "HOME": "/home/user",
+        }
         child_env = {}
         for k, v in test_env.items():
             if is_env_passthrough(k):
@@ -134,15 +144,23 @@ class TestExecuteCodeIntegration:
 
     def test_passthrough_allows_secret_through(self):
         """TENOR_API_KEY should pass through when registered."""
-        _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
-                              "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
-        _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                              "PASSWD", "AUTH")
+        _SAFE_ENV_PREFIXES = (
+            "PATH", "HOME", "USER", "LANG", "LC_", "TERM",
+            "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
+            "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
+        )
+        _SECRET_SUBSTRINGS = (
+            "KEY", "TOKEN", "SECRET", "PASSWORD",
+            "CREDENTIAL", "PASSWD", "AUTH",
+        )
 
         register_env_passthrough(["TENOR_API_KEY"])
 
-        test_env = {"PATH": "/usr/bin", "TENOR_API_KEY": "test123", "HOME": "/home/user"}
+        test_env = {
+            "PATH": "/usr/bin",
+            "TENOR_API_KEY": "test123",
+            "HOME": "/home/user",
+        }
         child_env = {}
         for k, v in test_env.items():
             if is_env_passthrough(k):
@@ -163,7 +181,10 @@ class TestTerminalIntegration:
     """Verify that the passthrough is checked in terminal's env sanitizers."""
 
     def test_blocklisted_var_blocked_by_default(self):
-        from tools.environments.local import _sanitize_subprocess_env, _HERMES_PROVIDER_ENV_BLOCKLIST
+        from tools.environments.local import (
+            _sanitize_subprocess_env,
+            _HERMES_PROVIDER_ENV_BLOCKLIST,
+        )
 
         # Pick a var we know is in the blocklist
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
@@ -228,3 +249,72 @@ class TestTerminalIntegration:
         # Arbitrary skill-specific var
         register_env_passthrough(["MY_SKILL_CUSTOM_CONFIG"])
         assert is_env_passthrough("MY_SKILL_CUSTOM_CONFIG")
+
+
+class TestFallbackBlocklistOnImportError:
+    """Verify fail-closed behaviour when tools.environments.local is unavailable.
+
+    Simulates an ImportError from the blocklist module and checks that
+    _is_hermes_provider_credential() falls back to the hardcoded minimum
+    blocklist rather than returning False (the old fail-open bug).
+    """
+
+    def _make_import_error_patcher(self, monkeypatch):
+        """Return a side_effect callable that raises ImportError for local.py."""
+        import builtins
+        real_import = builtins.__import__
+
+        def _patched_import(name, *args, **kwargs):
+            if name == "tools.environments.local":
+                raise ImportError("simulated missing module")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _patched_import)
+
+    def test_anthropic_credential_blocked_on_import_error(self, monkeypatch):
+        """ANTHROPIC_TOKEN must be blocked even if local.py fails to import."""
+        self._make_import_error_patcher(monkeypatch)
+        from tools.env_passthrough import _is_hermes_provider_credential
+        assert _is_hermes_provider_credential("ANTHROPIC_TOKEN") is True
+        assert _is_hermes_provider_credential("ANTHROPIC_API_KEY") is True
+
+    def test_openai_credential_blocked_on_import_error(self, monkeypatch):
+        """OPENAI_API_KEY must be blocked even if local.py fails to import."""
+        self._make_import_error_patcher(monkeypatch)
+        from tools.env_passthrough import _is_hermes_provider_credential
+        assert _is_hermes_provider_credential("OPENAI_API_KEY") is True
+        assert _is_hermes_provider_credential("OPENAI_BASE_URL") is True
+
+    def test_exact_match_credentials_blocked_on_import_error(self, monkeypatch):
+        """Exact-match entries in the fallback list must be blocked."""
+        self._make_import_error_patcher(monkeypatch)
+        from tools.env_passthrough import _is_hermes_provider_credential
+        for var in ("GH_TOKEN", "HASS_TOKEN", "EMAIL_PASSWORD",
+                    "LLM_MODEL", "FIRECRAWL_API_KEY", "DAYTONA_API_KEY"):
+            assert _is_hermes_provider_credential(var) is True, (
+                f"{var} should be blocked by fallback exact list"
+            )
+
+    def test_third_party_key_not_blocked_on_import_error(self, monkeypatch):
+        """TENOR_API_KEY is not a Hermes provider credential and must NOT be
+        blocked by the fallback list — skill third-party API keys must still work."""
+        self._make_import_error_patcher(monkeypatch)
+        from tools.env_passthrough import _is_hermes_provider_credential
+        assert _is_hermes_provider_credential("TENOR_API_KEY") is False
+        assert _is_hermes_provider_credential("NOTION_TOKEN") is False
+        assert _is_hermes_provider_credential("MY_SKILL_VAR") is False
+
+    def test_register_env_passthrough_blocked_on_import_error(self, monkeypatch):
+        """register_env_passthrough must refuse Hermes credentials even when
+        the blocklist module import fails (end-to-end fail-closed check)."""
+        self._make_import_error_patcher(monkeypatch)
+        register_env_passthrough(["ANTHROPIC_TOKEN", "OPENAI_API_KEY"])
+        assert not is_env_passthrough("ANTHROPIC_TOKEN")
+        assert not is_env_passthrough("OPENAI_API_KEY")
+
+    def test_third_party_still_registers_on_import_error(self, monkeypatch):
+        """Non-Hermes keys must still register successfully via passthrough
+        even when the blocklist module import fails."""
+        self._make_import_error_patcher(monkeypatch)
+        register_env_passthrough(["TENOR_API_KEY"])
+        assert is_env_passthrough("TENOR_API_KEY")

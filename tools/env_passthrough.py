@@ -44,6 +44,42 @@ def _get_allowed() -> set[str]:
 # Cache for the config-based allowlist (loaded once per process).
 _config_passthrough: frozenset[str] | None = None
 
+# Hardcoded minimum blocklist used as a fail-closed fallback when the
+# authoritative ``_HERMES_PROVIDER_ENV_BLOCKLIST`` from
+# ``tools.environments.local`` cannot be imported (e.g. partial installs,
+# import-time errors).  This must only list env vars that are universally
+# Hermes-managed provider credentials — never third-party keys that a skill
+# legitimately needs.  The live blocklist in local.py is a superset; this
+# set is the safety floor that prevents fail-open on ImportError.
+_FALLBACK_PROVIDER_CREDENTIAL_PREFIXES: tuple[str, ...] = (
+    "ANTHROPIC_",
+    "OPENAI_",
+    "OPENROUTER_",
+    "CLAUDE_CODE_",
+    "GOOGLE_API_",
+    "DEEPSEEK_API_",
+    "MISTRAL_API_",
+    "GROQ_API_",
+    "TOGETHER_API_",
+    "PERPLEXITY_API_",
+    "COHERE_API_",
+    "FIREWORKS_API_",
+    "XAI_API_",
+    "HELICONE_API_",
+    "PARALLEL_API_",
+    "MODAL_TOKEN_",
+    "GITHUB_APP_",
+)
+_FALLBACK_PROVIDER_CREDENTIAL_EXACT: frozenset[str] = frozenset({
+    "GH_TOKEN",
+    "HASS_TOKEN",
+    "EMAIL_PASSWORD",
+    "LLM_MODEL",
+    "FIRECRAWL_API_KEY",
+    "FIRECRAWL_API_URL",
+    "DAYTONA_API_KEY",
+})
+
 
 def _is_hermes_provider_credential(name: str) -> bool:
     """True if ``name`` is a Hermes-managed provider credential (API key,
@@ -59,12 +95,23 @@ def _is_hermes_provider_credential(name: str) -> bool:
     Non-Hermes API keys (TENOR_API_KEY, NOTION_TOKEN, etc.) are NOT
     in the blocklist and remain legitimately registerable — skills that
     wrap third-party APIs still work.
+
+    Fail-closed: if the authoritative blocklist module cannot be imported
+    a hardcoded minimum blocklist is used so that known Hermes provider
+    credentials are still blocked rather than silently allowed through.
     """
     try:
         from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
-    except Exception:
-        return False
-    return name in _HERMES_PROVIDER_ENV_BLOCKLIST
+        return name in _HERMES_PROVIDER_ENV_BLOCKLIST
+    except ImportError:
+        logger.warning(
+            "env passthrough: could not import _HERMES_PROVIDER_ENV_BLOCKLIST "
+            "from tools.environments.local; falling back to hardcoded minimum "
+            "provider credential blocklist (fail-closed).",
+        )
+        if name in _FALLBACK_PROVIDER_CREDENTIAL_EXACT:
+            return True
+        return any(name.startswith(prefix) for prefix in _FALLBACK_PROVIDER_CREDENTIAL_PREFIXES)
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
