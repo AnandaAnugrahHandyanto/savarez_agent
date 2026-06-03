@@ -18020,6 +18020,50 @@ class GatewayRunner:
                 and _interruption_is_fresh
             )
 
+            # Summarize the most recent tool calls so the resumed model knows
+            # what was already attempted and doesn't re-explore from scratch.
+            # Walks back over recent history collecting tool names + brief
+            # arg hints; bounded to avoid bloating the prompt.
+            def _recent_tool_summary(hist: list, limit: int = 12) -> str:
+                if not hist:
+                    return ""
+                names: list[str] = []
+                seen_round: set[str] = set()
+                for row in reversed(hist):
+                    role = row.get("role") if isinstance(row, dict) else None
+                    if role == "assistant":
+                        tcalls = row.get("tool_calls") or []
+                        for tc in tcalls:
+                            try:
+                                fn = (tc.get("function") or {}).get("name") or tc.get("name")
+                            except AttributeError:
+                                fn = None
+                            if not fn:
+                                continue
+                            tag = f"{fn}"
+                            if tag in seen_round:
+                                seen_round.add(tag + "*")
+                            else:
+                                seen_round.add(tag)
+                                names.append(tag)
+                            if len(names) >= limit:
+                                break
+                    if len(names) >= limit:
+                        break
+                if not names:
+                    return ""
+                # Reverse to chronological order for readability.
+                return ", ".join(reversed(names))
+
+            _prior_tools = _recent_tool_summary(agent_history)
+            _prior_tools_line = (
+                f" Tools already executed (most recent first → oldest): "
+                f"{_prior_tools}. Do NOT re-run discovery or re-explore "
+                f"the same files/state — continue from where you left off."
+                if _prior_tools
+                else ""
+            )
+
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 _reason_phrase = (
@@ -18034,7 +18078,7 @@ class GatewayRunner:
                     f"by {_reason_phrase}. The conversation history below is intact. "
                     f"If it contains unfinished tool result(s), process them first and "
                     f"summarize what was accomplished, then address the user's new "
-                    f"message below.]\n\n"
+                    f"message below.{_prior_tools_line}]\n\n"
                     + message
                 )
             elif _has_fresh_tool_tail:
@@ -18043,7 +18087,7 @@ class GatewayRunner:
                     "process the last tool result(s). The conversation history contains "
                     "tool outputs you haven't responded to yet. Please finish processing "
                     "those results and summarize what was accomplished, then address the "
-                    "user's new message below.]\n\n"
+                    f"user's new message below.{_prior_tools_line}]\n\n"
                     + message
                 )
 

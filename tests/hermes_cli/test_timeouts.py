@@ -306,3 +306,67 @@ def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkey
     )
 
     assert agent._compute_non_stream_stale_timeout([]) == 300.0
+
+
+def test_codex_responses_non_stream_wrapper_uses_stream_activity_for_stale_timeout(monkeypatch):
+    """Long Codex drafts stream text inside the non-stream wrapper.
+
+    The wrapper must not abort just because total wall-clock time exceeds the
+    stale timeout while real streamed text is still arriving.
+    """
+    from agent import chat_completion_helpers as helpers
+
+    class FakeTime:
+        now = 0.0
+
+        @classmethod
+        def time(cls):
+            return cls.now
+
+    class FakeThread:
+        def __init__(self, target, daemon=False):
+            self.polls_remaining = 3
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return self.polls_remaining > 0
+
+        def join(self, timeout=None):
+            FakeTime.now += 3.0
+            agent._touch_activity("receiving stream response")
+            self.polls_remaining -= 1
+
+    class FakeAgent:
+        api_mode = "codex_responses"
+        model = "gpt-5.5"
+        _interrupt_requested = False
+
+        def __init__(self):
+            self._last_activity_ts = 0.0
+            self._last_activity_desc = ""
+            self.closed = False
+
+        def _compute_non_stream_stale_timeout(self, messages):
+            return 5.0
+
+        def _touch_activity(self, desc):
+            self._last_activity_ts = FakeTime.time()
+            self._last_activity_desc = desc
+
+        def _create_request_openai_client(self, **kwargs):
+            raise AssertionError("fake thread should not execute target")
+
+        def _close_request_openai_client(self, *args, **kwargs):
+            self.closed = True
+
+        def _emit_status(self, message):
+            raise AssertionError(message)
+
+    agent = FakeAgent()
+    monkeypatch.setattr(helpers.time, "time", FakeTime.time)
+    monkeypatch.setattr(helpers.threading, "Thread", FakeThread)
+
+    assert helpers.interruptible_api_call(agent, {"model": "gpt-5.5"}) is None
+    assert agent.closed is False

@@ -10380,6 +10380,31 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.
+        #
+        # In-flight check: if the running gateway is currently servicing an
+        # agent turn, restarting kills it mid-tool-call and the SIGTERM-drain
+        # → systemd-respawn cycle can interrupt the agent's state multiple
+        # times.  Skip the restart unless the caller explicitly opted in
+        # (``--yes`` or invoked from inside the gateway via ``/update``).
+        if not gateway_mode and not assume_yes:
+            try:
+                from gateway.status import read_runtime_status as _rrs
+                _gw_state = _rrs() or {}
+                _active = int(_gw_state.get("active_agents") or 0)
+            except Exception:
+                _active = 0
+            if _active > 0:
+                print()
+                print(
+                    f"⚠ Gateway is currently running {_active} active agent "
+                    f"turn(s). Skipping auto-restart to avoid interrupting "
+                    f"in-flight work."
+                )
+                print(
+                    "  → Code is updated. Restart manually when idle: "
+                    "`hermes gateway restart` (or rerun `hermes update --yes`)."
+                )
+                return
         try:
             from hermes_cli.gateway import (
                 is_macos,

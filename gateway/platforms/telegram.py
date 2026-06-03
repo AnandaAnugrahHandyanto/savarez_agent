@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Set, Any
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -44,6 +44,12 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+
+    class _MockReplyKeyboardRemove:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+    ReplyKeyboardRemove = _MockReplyKeyboardRemove
     LinkPreviewOptions = None
     Application = Any
     CommandHandler = Any
@@ -117,7 +123,7 @@ def check_telegram_requirements() -> bool:
     so the adapter's class-level type aliases get rebound.
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
-    global InlineKeyboardMarkup, LinkPreviewOptions, Application
+    global InlineKeyboardMarkup, ReplyKeyboardRemove, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
@@ -129,7 +135,7 @@ def check_telegram_requirements() -> bool:
         return False
     try:
         from telegram import Update as _Update, Bot as _Bot, Message as _Message
-        from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
+        from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM, ReplyKeyboardRemove as _RKR
         try:
             from telegram import LinkPreviewOptions as _LPO
         except ImportError:
@@ -149,6 +155,7 @@ def check_telegram_requirements() -> bool:
     Message = _Message
     InlineKeyboardButton = _IKB
     InlineKeyboardMarkup = _IKM
+    ReplyKeyboardRemove = _RKR
     LinkPreviewOptions = _LPO
     Application = _App
     CommandHandler = _CH
@@ -1602,6 +1609,12 @@ class TelegramAdapter(BasePlatformAdapter):
             self._bot = self._app.bot
             
             # Register handlers
+            web_app_filter = getattr(getattr(filters, "StatusUpdate", object()), "WEB_APP_DATA", None)
+            if web_app_filter is not None:
+                self._app.add_handler(TelegramMessageHandler(
+                    web_app_filter,
+                    self._handle_web_app_data
+                ))
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self._handle_text_message
@@ -3243,6 +3256,85 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Health check-in fallback callbacks (hc:field:value) ---
+        if data.startswith("hc:"):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                return
+            try:
+                import datetime as _dt
+                import sqlite3 as _sqlite3
+                parts = data.split(":", 2)
+                if len(parts) != 3:
+                    await query.answer(text="Invalid check-in data.")
+                    return
+                field, value = parts[1], parts[2]
+                if field != "energy":
+                    await query.answer(text="Use the mini app for this field.")
+                    return
+                energy = int(value)
+                if not 1 <= energy <= 10:
+                    raise ValueError("energy must be 1–10")
+                date = _dt.date.today().isoformat()
+                from hermes_constants import get_hermes_home
+                db_path = get_hermes_home() / "health" / "withings_health.db"
+                with _sqlite3.connect(db_path) as conn:
+                    conn.execute(
+                        """CREATE TABLE IF NOT EXISTS daily_checkins (
+                          date TEXT PRIMARY KEY,
+                          logged_at INTEGER NOT NULL,
+                          energy INTEGER CHECK (energy BETWEEN 1 AND 10 OR energy IS NULL),
+                          knee_pain INTEGER CHECK (knee_pain BETWEEN 0 AND 10 OR knee_pain IS NULL),
+                          anxiety INTEGER CHECK (anxiety BETWEEN 0 AND 10 OR anxiety IS NULL),
+                          work_stress INTEGER CHECK (work_stress BETWEEN 0 AND 10 OR work_stress IS NULL),
+                          kid_wakeups INTEGER,
+                          caffeine_after_noon INTEGER CHECK (caffeine_after_noon IN (0,1) OR caffeine_after_noon IS NULL),
+                          alcohol INTEGER CHECK (alcohol IN (0,1) OR alcohol IS NULL),
+                          exercise TEXT,
+                          subjective_bedtime TEXT,
+                          subjective_wake_time TEXT,
+                          notes TEXT,
+                          raw_json TEXT
+                        )"""
+                    )
+                    conn.execute(
+                        """INSERT INTO daily_checkins (date, logged_at, energy, raw_json)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(date) DO UPDATE SET
+                          logged_at=excluded.logged_at,
+                          energy=excluded.energy,
+                          raw_json=excluded.raw_json
+                        """,
+                        (
+                            date,
+                            int(_dt.datetime.now().timestamp()),
+                            energy,
+                            json.dumps({"type": "health_checkin_callback", "energy": energy}, sort_keys=True),
+                        ),
+                    )
+                    conn.commit()
+                await query.answer(text=f"Saved energy {energy}/10")
+                if query.message:
+                    try:
+                        await query.edit_message_reply_markup(reply_markup=None)
+                        await query.message.reply_text(
+                            f"✅ Saved energy {energy}/10 for {date}. "
+                            "You can reply with any extra notes, or use the Mini App next time."
+                        )
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.error("[%s] health check-in callback failed: %s", self.name, exc, exc_info=True)
+                await query.answer(text=f"Could not save: {exc}")
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mm:", "mb", "mx", "mg:")):
@@ -5214,6 +5306,204 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
+
+    async def _handle_web_app_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle Telegram Mini App submissions for the daily health check-in."""
+        msg = self._effective_update_message(update)
+        if not msg:
+            return
+        if not self._should_process_message(msg):
+            return
+
+        wad = getattr(msg, "web_app_data", None)
+        raw_data = getattr(wad, "data", None) if wad else None
+        if not raw_data:
+            return
+
+        try:
+            import datetime as _dt
+            import sqlite3 as _sqlite3
+
+            payload = json.loads(raw_data)
+            if not isinstance(payload, dict) or payload.get("type") != "health_checkin":
+                await msg.reply_text("I received Mini App data, but it was not a health check-in payload.")
+                return
+
+            def _int_range(name: str, low: int, high: int):
+                value = payload.get(name)
+                if value is None or value == "":
+                    return None
+                value = int(value)
+                if not low <= value <= high:
+                    raise ValueError(f"{name} must be between {low} and {high}")
+                return value
+
+            def _yesno(name: str):
+                value = payload.get(name)
+                if value is None or value == "":
+                    return None
+                value = str(value).strip().lower()
+                if value in {"yes", "y", "true", "1"}:
+                    return 1
+                if value in {"no", "n", "false", "0"}:
+                    return 0
+                raise ValueError(f"{name} must be yes/no")
+
+            def _time_or_none(name: str):
+                value = payload.get(name)
+                if not value:
+                    return None
+                value = str(value).strip()
+                if not re.match(r"^\d{2}:\d{2}$", value):
+                    raise ValueError(f"{name} must be HH:MM")
+                return value
+
+            today = _dt.date.today().isoformat()
+            date = str(payload.get("date") or today)
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+                date = today
+
+            exercise = payload.get("exercise")
+            if exercise is not None:
+                exercise = str(exercise).strip().lower()[:80] or None
+
+            exercise_type = payload.get("exercise_type")
+            if exercise_type is not None:
+                exercise_type = str(exercise_type).strip().lower()[:40] or None
+
+            exercise_effort = payload.get("exercise_effort", payload.get("exercise_intensity"))
+            if exercise_effort is not None:
+                exercise_effort = str(exercise_effort).strip().lower()[:40] or None
+
+            # Backward-compatible parsing for older composite submissions.
+            if exercise and (not exercise_type or exercise_type == "none"):
+                if "_" in exercise:
+                    possible_type, possible_effort = exercise.split("_", 1)
+                    exercise_type = possible_type or exercise_type
+                    exercise_effort = exercise_effort or possible_effort
+                else:
+                    exercise_type = exercise
+            if exercise_type == "none":
+                exercise_effort = None
+                exercise = "none"
+            elif exercise_type:
+                exercise = f"{exercise_type}_{exercise_effort}" if exercise_effort else exercise_type
+            notes = payload.get("notes")
+            if notes is not None:
+                notes = str(notes).strip()[:1000] or None
+
+            values = {
+                "energy": _int_range("energy", 1, 10),
+                "knee_pain": _int_range("knee_pain", 0, 10),
+                "anxiety": _int_range("anxiety", 0, 10),
+                "work_stress": _int_range("work_stress", 0, 10),
+                "libido": _int_range("libido", 0, 10),
+                "kid_wakeups": _int_range("kid_wakeups", 0, 20),
+                "caffeine_after_noon": _yesno("caffeine_after_noon"),
+                "alcohol": _yesno("alcohol"),
+                "exercise": exercise,
+                "exercise_type": exercise_type,
+                "exercise_effort": exercise_effort,
+                "subjective_bedtime": _time_or_none("bedtime"),
+                "subjective_wake_time": _time_or_none("wake"),
+                "notes": notes,
+            }
+
+            from hermes_constants import get_hermes_home
+            db_path = get_hermes_home() / "health" / "withings_health.db"
+            now = int(_dt.datetime.now().timestamp())
+            with _sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS daily_checkins (
+                      date TEXT PRIMARY KEY,
+                      logged_at INTEGER NOT NULL,
+                      energy INTEGER CHECK (energy BETWEEN 1 AND 10 OR energy IS NULL),
+                      knee_pain INTEGER CHECK (knee_pain BETWEEN 0 AND 10 OR knee_pain IS NULL),
+                      anxiety INTEGER CHECK (anxiety BETWEEN 0 AND 10 OR anxiety IS NULL),
+                      work_stress INTEGER CHECK (work_stress BETWEEN 0 AND 10 OR work_stress IS NULL),
+                      libido INTEGER CHECK (libido BETWEEN 0 AND 10 OR libido IS NULL),
+                      kid_wakeups INTEGER,
+                      caffeine_after_noon INTEGER CHECK (caffeine_after_noon IN (0,1) OR caffeine_after_noon IS NULL),
+                      alcohol INTEGER CHECK (alcohol IN (0,1) OR alcohol IS NULL),
+                      exercise TEXT,
+                      exercise_type TEXT,
+                      exercise_effort TEXT,
+                      subjective_bedtime TEXT,
+                      subjective_wake_time TEXT,
+                      notes TEXT,
+                      raw_json TEXT
+                    )"""
+                )
+                cols = {row[1] for row in conn.execute("PRAGMA table_info(daily_checkins)")}
+                if "libido" not in cols:
+                    conn.execute("ALTER TABLE daily_checkins ADD COLUMN libido INTEGER CHECK (libido BETWEEN 0 AND 10 OR libido IS NULL)")
+                if "exercise_type" not in cols:
+                    conn.execute("ALTER TABLE daily_checkins ADD COLUMN exercise_type TEXT")
+                if "exercise_effort" not in cols:
+                    conn.execute("ALTER TABLE daily_checkins ADD COLUMN exercise_effort TEXT")
+                conn.execute(
+                    """INSERT INTO daily_checkins
+                    (date, logged_at, energy, knee_pain, anxiety, work_stress, libido, kid_wakeups,
+                     caffeine_after_noon, alcohol, exercise, exercise_type, exercise_effort,
+                     subjective_bedtime, subjective_wake_time, notes, raw_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(date) DO UPDATE SET
+                      logged_at=excluded.logged_at,
+                      energy=COALESCE(excluded.energy, daily_checkins.energy),
+                      knee_pain=COALESCE(excluded.knee_pain, daily_checkins.knee_pain),
+                      anxiety=COALESCE(excluded.anxiety, daily_checkins.anxiety),
+                      work_stress=COALESCE(excluded.work_stress, daily_checkins.work_stress),
+                      libido=COALESCE(excluded.libido, daily_checkins.libido),
+                      kid_wakeups=COALESCE(excluded.kid_wakeups, daily_checkins.kid_wakeups),
+                      caffeine_after_noon=COALESCE(excluded.caffeine_after_noon, daily_checkins.caffeine_after_noon),
+                      alcohol=COALESCE(excluded.alcohol, daily_checkins.alcohol),
+                      exercise=COALESCE(excluded.exercise, daily_checkins.exercise),
+                      exercise_type=COALESCE(excluded.exercise_type, daily_checkins.exercise_type),
+                      exercise_effort=COALESCE(excluded.exercise_effort, daily_checkins.exercise_effort),
+                      subjective_bedtime=COALESCE(excluded.subjective_bedtime, daily_checkins.subjective_bedtime),
+                      subjective_wake_time=COALESCE(excluded.subjective_wake_time, daily_checkins.subjective_wake_time),
+                      notes=COALESCE(excluded.notes, daily_checkins.notes),
+                      raw_json=excluded.raw_json
+                    """,
+                    (
+                        date,
+                        now,
+                        values["energy"],
+                        values["knee_pain"],
+                        values["anxiety"],
+                        values["work_stress"],
+                        values["libido"],
+                        values["kid_wakeups"],
+                        values["caffeine_after_noon"],
+                        values["alcohol"],
+                        values["exercise"],
+                        values["exercise_type"],
+                        values["exercise_effort"],
+                        values["subjective_bedtime"],
+                        values["subjective_wake_time"],
+                        values["notes"],
+                        json.dumps(payload, sort_keys=True),
+                    ),
+                )
+                conn.commit()
+
+            caffeine = "yes" if values["caffeine_after_noon"] == 1 else "no" if values["caffeine_after_noon"] == 0 else "—"
+            alcohol = "yes" if values["alcohol"] == 1 else "no" if values["alcohol"] == 0 else "—"
+            exercise_summary = values['exercise_type'] or values['exercise'] or '—'
+            if values['exercise_effort']:
+                exercise_summary = f"{exercise_summary} ({values['exercise_effort']})"
+            summary = (
+                f"✅ Health check-in saved for {date}\n"
+                f"Energy {values['energy']} · Knee {values['knee_pain']} · "
+                f"Anx {values['anxiety']} · Stress {values['work_stress']} · Libido {values['libido']}\n"
+                f"Kids {values['kid_wakeups']} · Caffeine {caffeine} · "
+                f"Alcohol {alcohol} · Ex {exercise_summary}"
+            )
+            await msg.reply_text(summary, reply_markup=ReplyKeyboardRemove())
+            logger.info("[%s] logged Telegram Mini App health check-in for %s and removed reply keyboard", self.name, date)
+        except Exception as exc:
+            logger.error("[%s] Mini App health check-in failed: %s", self.name, exc, exc_info=True)
+            await msg.reply_text(f"Could not save health check-in: {exc}")
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""

@@ -333,8 +333,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
         agent._codex_stream_last_progress_ts = None
 
     _call_start = time.time()
+    # ``codex_responses`` is implemented as a streaming Responses API call
+    # inside this "non-streaming" wrapper (the wrapper waits for the assembled
+    # final response).  Long drafts can legitimately stream text for several
+    # minutes.  Track the last real Codex stream event separately so the outer
+    # stale detector measures *inactivity* instead of wall-clock duration.
+    _last_codex_stream_activity = _call_start
     agent._touch_activity("waiting for non-streaming API response")
-
     t = threading.Thread(target=_call, daemon=True)
     t.start()
     _poll_count = 0
@@ -450,7 +455,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
             break
 
         # Stale-call detector: kill the connection if no response
-        # arrives within the configured timeout.
+        # arrives within the configured timeout.  For Codex Responses we
+        # receive streamed text inside this wrapper, so treat real stream
+        # activity as progress and only abort after a quiet gap.
+        if agent.api_mode == "codex_responses":
+            activity_desc = getattr(agent, "_last_activity_desc", "")
+            activity_ts = float(getattr(agent, "_last_activity_ts", _call_start) or _call_start)
+            if activity_desc == "receiving stream response" and activity_ts > _last_codex_stream_activity:
+                _last_codex_stream_activity = activity_ts
+            _elapsed = time.time() - _last_codex_stream_activity
+        else:
+            _elapsed = time.time() - _call_start
         if _elapsed > _stale_timeout:
             _est_ctx = estimate_request_context_tokens(api_kwargs)
             _silent_hint: Optional[str] = None
