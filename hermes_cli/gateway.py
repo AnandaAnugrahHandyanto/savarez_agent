@@ -2992,6 +2992,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 # Launchd (macOS)
 # =============================================================================
 
+LAUNCHD_NUMBER_OF_FILES_LIMIT = 4096
+
 
 def get_launchd_label() -> str:
     """Return the launchd service label, scoped per profile."""
@@ -3083,6 +3085,18 @@ def generate_launchd_plist() -> str:
     
     <key>KeepAlive</key>
     <true/>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{LAUNCHD_NUMBER_OF_FILES_LIMIT}</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{LAUNCHD_NUMBER_OF_FILES_LIMIT}</integer>
+    </dict>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
