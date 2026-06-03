@@ -66,6 +66,7 @@ import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persi
 import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
+import { useExternalSessionRefresh } from './session/hooks/use-external-session-refresh'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
 import { useMessageStream } from './session/hooks/use-message-stream'
 import { useModelControls } from './session/hooks/use-model-controls'
@@ -490,6 +491,15 @@ export function DesktopController() {
       void refreshSessions().catch(() => undefined)
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
+
+  useExternalSessionRefresh({
+    activeSessionId,
+    gatewayState,
+    getRuntimeState: runtimeSessionId => sessionStateByRuntimeIdRef.current.get(runtimeSessionId),
+    refreshSessions,
+    selectedStoredSessionId,
+    updateSessionState
+  })
 
   useRouteResume({
     activeSessionId,
