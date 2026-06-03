@@ -14250,8 +14250,9 @@ Examples:
     mcp_add_p.add_argument(
         "--env",
         nargs="*",
+        action="extend",
         default=[],
-        help="Environment variables for stdio servers (KEY=VALUE)",
+        help="Environment variables for stdio servers (KEY=VALUE). Repeat to set multiple: --env A=1 --env B=2",
     )
 
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
