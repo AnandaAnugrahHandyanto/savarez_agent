@@ -503,3 +503,33 @@ Committed: `24356edcd` | Tests: 80 passed
 - Diff artifact: `/tmp/ua-p5-010-diff.patch` (`132` lines, `9518` bytes before this completion ledger append; regenerate before commit if needed).
 - Guardrails: no active-profile skill edits outside this repo; no commit, push, merge, deploy, production mutation, new dependencies, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner calls performed.
 
+## UA Phase 6 Trustworthy Handoff and Security-Review Readiness — UA-P6-000 Baseline Checkpoint
+- Timestamp: 2026-06-03T13:10:32Z.
+- Source plan package: `/home/jarrad/work/plans/ua-phase6-trustworthy-handoff-security-review`.
+- Executed bead: `UA-P6-000 - Baseline Scope Guard and Swarm Ledger Setup`.
+- Branch: `feat/ua-phase6-trustworthy-handoff-security-review`.
+- HEAD/base: `82c21580b4249c14c86f9a48b3fce04f9fe7f067` (`docs(code-scan): close UA phase 5 trust boundaries`).
+- P5-010 closeout: checkpointed and clean before Phase 6 branch/ledger write.
+- Baseline status before ledger write: clean (`## feat/ua-phase6-trustworthy-handoff-security-review (clean before ledger write)`).
+- Approval quote for this baseline: "[JC] lets work on further improving UA the flywheel plan is created. please review the UA - p6 flywheel plan, when sufficent context is loaded execute ua-p6-000-baseline-scope-guard.md"
+- Plan review: Hermes deterministic sanity review PASS — plan exists, target repo exists, 10 P6 beads found, required bead sections and verification blocks present, guardrails present. Reviewer subagent timed out/no-summary, so no reviewer PASS is claimed.
+- Swarm ledger: `.hermes/swarm-runs/2026-06-03-ua-phase6.md`.
+- Handoff: `.hermes/handoffs/2026-06-03-1310-ua-p6-000-baseline-scope-guard.md`.
+- GREEN verification: `python -m pytest tests/code_scan/test_run_bundle.py tests/code_scan/test_build_context_bundle.py tests/code_scan/test_render_report.py tests/code_scan/test_runtime_readiness.py -q` — PASS, `168 passed in 39.06s`.
+- RED: N/A — baseline/scope guard bead only.
+- FULL: deferred to first implementation acceptance gate per P6 plan.
+- Reviewer: N/A for T1 baseline; retry reviewer before accepting T2 implementation beads.
+- Guardrails: JIT-only; no dashboard/UI; no auto-injection; no SQLite/vector store; no tree-sitter/WASM/new runtime dependencies; no LLM/provider calls inside scanner scripts; no PRL/Muster source copying; no active-profile skill edits outside this repo; no commit, push, merge, deploy, or production mutation without separate JC approval.
+- Approval gate: branch-only commit/push approved for UA-P6-000 baseline only. Approval quote: "[JC] I approve a branch-only commit and push for UA-P6-000 baseline on branch `feat/ua-phase6-trustworthy-handoff-security-review` in `/home/jarrad/work/hermes-agent-ua-local`.
+
+Scope includes only:
+- `.hermes/PROJECT_STATE.md`
+- `.hermes/swarm-runs/2026-06-03-ua-phase6.md`
+- `.hermes/handoffs/2026-06-03-1310-ua-p6-000-baseline-scope-guard.md`
+
+Push target: `jc-fork/feat/ua-phase6-trustworthy-handoff-security-review`.
+
+No merge, deploy, production mutation, origin push, main push, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or P6-001+ implementation is approved by this."
+- Approved commit/push scope: `.hermes/PROJECT_STATE.md`, `.hermes/swarm-runs/2026-06-03-ua-phase6.md`, `.hermes/handoffs/2026-06-03-1310-ua-p6-000-baseline-scope-guard.md`.
+- Push target: `jc-fork/feat/ua-phase6-trustworthy-handoff-security-review`; still not approved: merge, deploy, production mutation, origin push, main push, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or P6-001+ implementation.
+- Next gate: `UA-P6-001 - Manifest Reconciliation and Bundle Self-Validation` serial prerequisite; not started and not approved by this baseline checkpoint.
