@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { AlertTriangle, FileText, Loader2, RefreshCw, Wrench } from '@/lib/icons'
@@ -13,6 +14,7 @@ type BusyAction = 'local' | 'repair' | 'retry' | null
 // renders dead — "gateway offline", no composer, only a toast — with no way
 // to retry, repair the install, switch the gateway, or find the logs.
 export function BootFailureOverlay() {
+  const { t } = useTranslation()
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
   const [busy, setBusy] = useState<BusyAction>(null)
@@ -69,10 +71,9 @@ export function BootFailureOverlay() {
             <AlertTriangle className="size-5" />
           </div>
           <div>
-            <h2 className="text-[0.9375rem] font-semibold tracking-tight">Hermes couldn't start</h2>
+            <h2 className="text-[0.9375rem] font-semibold tracking-tight">{t('boot_failure.title')}</h2>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              The background gateway didn't come up. Try one of the recovery steps below — nothing here deletes your
-              chats or settings.
+              {t('boot_failure.desc')}
             </p>
           </div>
         </div>
@@ -86,23 +87,23 @@ export function BootFailureOverlay() {
             <div className="flex flex-wrap gap-2">
               <Button disabled={Boolean(busy)} onClick={() => void retry()}>
                 {busy === 'retry' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                Retry
+                {t('boot_failure.retry')}
               </Button>
               <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="outline">
                 {busy === 'repair' ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
-                Repair install
+                {t('boot_failure.repair')}
               </Button>
               <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
                 {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : null}
-                Use local gateway
+                {t('boot_failure.use_local')}
               </Button>
               <Button onClick={openLogs} variant="ghost">
                 <FileText className="size-4" />
-                Open logs
+                {t('boot_failure.open_logs')}
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
-              Repair re-runs the installer and can take a few minutes on a fresh machine.
+              {t('boot_failure.repair_hint')}
             </p>
           </div>
 
@@ -113,7 +114,7 @@ export function BootFailureOverlay() {
                 onClick={() => setShowLogs(v => !v)}
                 type="button"
               >
-                {showLogs ? 'Hide' : 'Show'} recent logs
+                {showLogs ? t('boot_failure.hide_logs') : t('boot_failure.show_logs')}
               </button>
               {showLogs ? (
                 <pre className="max-h-48 overflow-auto rounded-2xl border border-border bg-secondary/30 p-3 font-mono text-[0.7rem] leading-4 text-muted-foreground">

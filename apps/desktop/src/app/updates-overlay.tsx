@@ -1,10 +1,12 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
+import i18n from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, CheckCircle2, Copy, Loader2, Sparkles, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -21,14 +23,14 @@ import {
 } from '@/store/updates'
 
 const STAGE_LABELS: Record<DesktopUpdateStage, string> = {
-  idle: 'Getting ready…',
-  prepare: 'Getting ready…',
-  fetch: 'Downloading…',
-  pull: 'Almost there…',
-  pydeps: 'Finishing up…',
-  restart: 'Restarting Hermes…',
-  manual: 'Update from your terminal',
-  error: 'Update paused'
+  idle: i18n.t('updates.stage.idle'),
+  prepare: i18n.t('updates.stage.prepare'),
+  fetch: i18n.t('updates.stage.fetch'),
+  pull: i18n.t('updates.stage.pull'),
+  pydeps: i18n.t('updates.stage.pydeps'),
+  restart: i18n.t('updates.stage.restart'),
+  manual: i18n.t('updates.stage.manual'),
+  error: i18n.t('updates.stage.error')
 }
 
 function totalItems(groups: readonly CommitGroup[]) {
@@ -36,6 +38,7 @@ function totalItems(groups: readonly CommitGroup[]) {
 }
 
 export function UpdatesOverlay() {
+  const { t } = useTranslation()
   const open = useStore($updateOverlayOpen)
   const status = useStore($updateStatus)
   const checking = useStore($updateChecking)
@@ -123,9 +126,11 @@ function IdleView({
   onRetryCheck: () => void
   status: DesktopUpdateStatus | null
 }) {
+  const { t } = useTranslation()
+
   if (!status && checking) {
     return (
-      <CenteredStatus icon={<Loader2 className="size-6 animate-spin text-primary" />} title="Looking for updates…" />
+      <CenteredStatus icon={<Loader2 className="size-6 animate-spin text-primary" />} title={t('updates.checking.title')} />
     )
   }
 
@@ -134,11 +139,11 @@ function IdleView({
       <CenteredStatus
         action={
           <Button onClick={onRetryCheck} size="sm">
-            Try again
+            {t('updates.checking.retry')}
           </Button>
         }
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title="Couldn’t check for updates"
+        title={t('updates.checking.error_title')}
       />
     )
   }
@@ -148,12 +153,12 @@ function IdleView({
       <CenteredStatus
         action={
           <Button onClick={onLater} size="sm" variant="outline">
-            Close
+            {t('updates.status.close')}
           </Button>
         }
-        body={status.message ?? 'This version of Hermes can’t update itself from inside the app.'}
+        body={status.message ?? t('updates.status.not_supported')}
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title="Update not available"
+        title={t('updates.status.not_available')}
       />
     )
   }
@@ -163,12 +168,12 @@ function IdleView({
       <CenteredStatus
         action={
           <Button disabled={checking} onClick={onRetryCheck} size="sm">
-            Try again
+            {t('updates.checking.retry')}
           </Button>
         }
-        body="Check your connection and try again."
+        body={t('updates.status.check_connection')}
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title="Couldn’t check for updates"
+        title={t('updates.checking.error_title')}
       />
     )
   }
@@ -178,12 +183,12 @@ function IdleView({
       <CenteredStatus
         action={
           <Button onClick={onLater} size="sm" variant="outline">
-            Close
+            {t('updates.status.close')}
           </Button>
         }
-        body="You’re running the latest version."
+        body={t('updates.status.up_to_date')}
         icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
-        title="You’re all set"
+        title={t('updates.status.all_set')}
       />
     )
   }
@@ -199,9 +204,9 @@ function IdleView({
           <Sparkles className="size-7" />
         </span>
 
-        <DialogTitle className="text-center text-xl">New update available</DialogTitle>
+        <DialogTitle className="text-center text-xl">{t('updates.available.title')}</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          A new version of Hermes is ready to install.
+          {t('updates.available.desc')}
         </DialogDescription>
       </div>
 
@@ -223,20 +228,20 @@ function IdleView({
 
       <div className="grid gap-2">
         <Button className="h-10 text-sm font-semibold" onClick={onInstall} size="default">
-          Update now
+          {t('updates.available.update_now')}
         </Button>
         <button
           className="text-center text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
           onClick={onLater}
           type="button"
         >
-          Maybe later
+          {t('updates.available.maybe_later')}
         </button>
       </div>
 
       {remaining > 0 && (
         <p className="text-center text-xs text-muted-foreground">
-          + {remaining} more change{remaining === 1 ? '' : 's'} included.
+          {t('updates.available.more_changes', { count: remaining })}
         </p>
       )}
     </div>
@@ -244,6 +249,7 @@ function IdleView({
 }
 
 function ManualView({ command, onDone }: { command: string; onDone: () => void }) {
+  const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
 
   const handleCopy = () => {
@@ -260,16 +266,16 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
           <Terminal className="size-7" />
         </span>
 
-        <DialogTitle className="text-center text-xl">Update from your terminal</DialogTitle>
+        <DialogTitle className="text-center text-xl">{t('updates.manual.title')}</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          You installed Hermes from the command line, so updates run there too. Paste this into your terminal:
+          {t('updates.manual.desc')}
         </DialogDescription>
       </div>
 
       <button
-        type="button"
-        onClick={handleCopy}
         className="group flex w-full items-center justify-between gap-3 rounded-xl border border-border/70 bg-muted/30 px-4 py-3 text-left transition-colors hover:border-border hover:bg-muted/50"
+        onClick={handleCopy}
+        type="button"
       >
         <code className="select-all font-mono text-sm text-foreground">
           <span className="text-muted-foreground">$ </span>
@@ -279,23 +285,23 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
           {copied ? (
             <>
               <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-              Copied
+              {t('updates.manual.copied')}
             </>
           ) : (
             <>
               <Copy className="size-3.5" />
-              Copy
+              {t('updates.manual.copy')}
             </>
           )}
         </span>
       </button>
 
       <p className="text-center text-xs text-muted-foreground">
-        Hermes will pick up the new version next time you launch it.
+        {t('updates.manual.footnote')}
       </p>
 
       <Button className="h-10 text-sm font-semibold" onClick={onDone} variant="outline">
-        Done
+        {t('updates.manual.done')}
       </Button>
     </div>
   )
@@ -338,6 +344,8 @@ function ApplyingView({ apply }: { apply: UpdateApplyState }) {
 }
 
 function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss: () => void; onRetry: () => void }) {
+  const { t } = useTranslation()
+
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
@@ -345,22 +353,22 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
           <AlertCircle className="size-7" />
         </span>
 
-        <DialogTitle className="text-center text-xl">Update didn’t finish</DialogTitle>
+        <DialogTitle className="text-center text-xl">{t('updates.error.title')}</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          {message || 'No worries — nothing was lost. You can try again now.'}
+          {message || t('updates.error.default_msg')}
         </DialogDescription>
       </div>
 
       <div className="grid gap-2">
         <Button className="h-10 text-sm font-semibold" onClick={onRetry}>
-          Try again
+          {t('updates.error.retry')}
         </Button>
         <button
           className="text-center text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
           onClick={onDismiss}
           type="button"
         >
-          Not now
+          {t('updates.error.not_now')}
         </button>
       </div>
     </div>

@@ -1,0 +1,227 @@
+{
+  "onboarding": {
+    "header": {
+      "title": "开始使用 Hermes Agent",
+      "subtitle": "选择一个模型提供商即可开始对话。大部分选项只需一键点击。"
+    },
+    "close": "关闭",
+    "preparing": {
+      "installing": "Hermes 正在完成安装。首次启动通常只需不到一分钟。",
+      "starting": "正在启动 Hermes…"
+    },
+    "providers": {
+      "openrouter": {
+        "name": "OpenRouter",
+        "short": "一个密钥，多款模型",
+        "desc": "一个密钥即可接入数百款模型。新安装的首选方案。"
+      },
+      "openai": {
+        "name": "OpenAI",
+        "short": "GPT 系列模型",
+        "desc": "直接访问 OpenAI 模型。"
+      },
+      "gemini": {
+        "name": "Google Gemini",
+        "short": "Gemini 模型",
+        "desc": "直接访问 Google Gemini 模型。"
+      },
+      "xai": {
+        "name": "xAI Grok",
+        "short": "Grok 模型",
+        "desc": "直接访问 xAI Grok 模型。"
+      },
+      "local": {
+        "name": "本地 / 自定义端点",
+        "short": "自托管",
+        "desc": "将 Hermes 指向本地或自托管的 OpenAI 兼容端点（vLLM、llama.cpp、Ollama 等）。"
+      }
+    },
+    "oauth_providers": {
+      "nous": "Nous Portal",
+      "anthropic": "Anthropic Claude",
+      "openai-codex": "OpenAI Codex / ChatGPT",
+      "minimax-oauth": "MiniMax",
+      "xai-oauth": "xAI Grok",
+      "claude-code": "Claude Code",
+      "qwen-oauth": "Qwen Code"
+    },
+    "flow_subtitles": {
+      "pkce": "将在浏览器中打开登录页面，完成后返回此处",
+      "device_code": "将在浏览器中打开验证页面 — Hermes 会自动连接",
+      "loopback": "将在浏览器中打开登录页面 — Hermes 会自动连接",
+      "external": "在终端中完成登录，然后回来继续对话"
+    },
+    "featured": {
+      "pitch": "一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式",
+      "recommended": "推荐",
+      "connected": "已连接"
+    },
+    "picker": {
+      "looking_up": "正在查找提供商…",
+      "key_provider_title": "OpenRouter",
+      "key_provider_desc": "一个密钥，数百款模型 — 稳定可靠的首选",
+      "collapse": "收起",
+      "other_providers": "其他提供商",
+      "i_have_key": "我有 API 密钥"
+    },
+    "api_key": {
+      "back": "返回登录",
+      "get_key": "获取密钥",
+      "placeholder": "粘贴 API 密钥",
+      "save_error": "无法保存凭证。",
+      "connecting": "连接中…",
+      "connect": "连接"
+    },
+    "flow": {
+      "starting": "正在启动 {{title}} 登录…",
+      "verifying": "正在验证 {{title}} 的代码…",
+      "success": "{{title}} 已连接。正在选择默认模型…",
+      "failed": "登录失败。请重试。",
+      "pick_other": "选择其他提供商",
+      "sign_in_with": "登录 {{title}}",
+      "step_browser_open": "我们已在浏览器中打开 {{title}}。",
+      "step_browser_authorize": "请在浏览器中授权 Hermes。",
+      "step_paste_code": "复制授权码并粘贴到下方。",
+      "code_placeholder": "粘贴授权码",
+      "reopen_auth": "重新打开授权页面",
+      "continue": "继续",
+      "reopen_signin": "重新打开登录页面",
+      "waiting": "等待你完成授权…",
+      "external_instruction": "{{title}} 通过自己的命令行登录。在终端中运行以下命令，然后点击「我已登录」：",
+      "external_docs": "{{title}} 文档",
+      "signed_in": "我已登录",
+      "device_code_instruction": "我们已在浏览器中打开 {{title}}。请输入以下代码：",
+      "reopen_verification": "重新打开验证页面",
+      "browser_auto_instruction": "我们已在浏览器中打开 {{title}}。在浏览器中授权 Hermes，即可自动连接 — 无需复制或粘贴任何内容。"
+      },
+    "code_block": {
+      "copy": "复制",
+      "cancel": "取消"
+    },
+    "confirming": {
+      "connected": "{{label}} 已连接。",
+      "default_model": "默认模型",
+      "change": "更换",
+      "start_chatting": "开始对话",
+      "free_tier": "免费",
+      "pro_tier": "Pro",
+      "free_price": "免费",
+      "price_format": "{{input}} 输入 / {{output}} 输出 每百万 token"
+    }
+  },
+
+  "install": {
+    "stage_pending": "等待中",
+    "stage_installing": "安装中",
+    "stage_done": "完成",
+    "stage_succeeded": "成功",
+    "stage_skipped": "跳过",
+    "stage_failed": "失败",
+    "unsupported": {
+      "title": "Hermes 需要一次性安装",
+      "desc": "自动首次启动安装在 {{platform}} 上暂不可用。打开终端并运行以下命令，然后重新打开此应用。后续启动将跳过此步骤。",
+      "command_label": "安装命令",
+      "copy_command": "复制命令",
+      "view_docs": "查看安装文档",
+      "will_install_to": "将安装到 {{path}}",
+      "retry": "我已运行 — 重试"
+    },
+    "header": {
+      "failed": "安装失败",
+      "active": "正在设置 Hermes Agent",
+      "completed": "完成设置",
+      "failed_desc": "某个安装步骤失败了。在 Windows 上，可能是因为另一个 Hermes CLI 或桌面实例正在运行。请停止所有运行的 Hermes 实例后重试。查看下方详情或桌面日志获取完整记录。",
+      "active_desc": "这是一次性设置。Hermes 安装程序正在下载依赖并配置你的机器。后续启动将跳过此步骤。"
+    },
+    "progress": {
+      "count": "已完成 {{count}}/{{total}} 步",
+      "current": "当前：{{stageName}}",
+      "fetching": "正在获取安装清单…"
+    },
+    "error": "错误",
+    "log": {
+      "hide": "隐藏安装输出",
+      "show": "显示安装输出",
+      "line": "{{count}} 行",
+      "lines": "{{count}} 行",
+      "empty": "暂无输出。"
+    },
+    "footer": {
+      "cancelling": "取消中…",
+      "cancel": "取消安装",
+      "saved_to": "完整记录保存至 {{path}}",
+      "copied": "已复制！",
+      "copy_output": "复制输出",
+      "retry": "重新加载并重试"
+    }
+  },
+
+  "boot_failure": {
+    "title": "Hermes 无法启动",
+    "desc": "后台网关未能启动。请尝试以下恢复步骤 — 这些操作不会删除你的聊天记录或设置。",
+    "retry": "重试",
+    "repair": "修复安装",
+    "use_local": "使用本地网关",
+    "open_logs": "查看日志",
+    "repair_hint": "修复会重新运行安装程序，在全新机器上可能需要几分钟。",
+    "hide_logs": "隐藏最近的日志",
+    "show_logs": "显示最近的日志"
+  },
+
+  "updates": {
+    "stage": {
+      "idle": "正在准备…",
+      "prepare": "正在准备…",
+      "fetch": "下载中…",
+      "pull": "快好了…",
+      "pydeps": "收尾中…",
+      "restart": "正在重启 Hermes…",
+      "manual": "在终端中更新",
+      "error": "更新已暂停"
+    },
+    "checking": {
+      "title": "正在检查更新…",
+      "retry": "重试",
+      "error_title": "无法检查更新"
+    },
+    "status": {
+      "close": "关闭",
+      "not_supported": "此版本的 Hermes 无法在应用内自行更新。",
+      "not_available": "无法更新",
+      "check_connection": "请检查网络连接后重试。",
+      "up_to_date": "你正在运行最新版本。",
+      "all_set": "一切就绪"
+    },
+    "available": {
+      "title": "有新版本可用",
+      "desc": "新版 Hermes 已准备好安装。",
+      "update_now": "立即更新",
+      "maybe_later": "稍后再说",
+      "more_changes": "+ {{count}} 个其他变更"
+    },
+    "manual": {
+      "title": "在终端中更新",
+      "desc": "你从命令行安装了 Hermes，因此更新也需要在终端中运行。复制以下命令到终端执行：",
+      "prompt_prefix": "$ ",
+      "copied": "已复制",
+      "copy": "复制",
+      "footnote": "下次启动时 Hermes 会自动加载新版本。",
+      "done": "完成"
+    },
+    "applying": {
+      "fallback_title": "正在更新 Hermes…",
+      "desc": "Hermes 更新程序将在独立窗口中接管，完成后会自动重新打开。",
+      "footnote": "Hermes 将关闭以应用更新。"
+    },
+    "error": {
+      "title": "更新未完成",
+      "default_msg": "别担心 — 没有丢失任何内容。现在可以重试。",
+      "retry": "重试",
+      "not_now": "稍后"
+    }
+  },
+
+  "gateway": {
+    "connecting": "连接中"
+  }
+}

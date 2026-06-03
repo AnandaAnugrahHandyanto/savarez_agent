@@ -308,13 +308,16 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     }
 
     let pinRafScheduled = false
+
     const schedulePin = () => {
       if (pinRafScheduled || !armedRef.current) {
         return
       }
+
       pinRafScheduled = true
       requestAnimationFrame(() => {
         pinRafScheduled = false
+
         if (armedRef.current) {
           pinToBottom()
         }
@@ -367,6 +370,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     if (!enabled) {
       return
     }
+
     if (groupCount > prevGroupCountForLayoutRef.current && armedRef.current) {
       pinToBottom()
       requestAnimationFrame(() => {
@@ -375,6 +379,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
         }
       })
     }
+
     prevGroupCountForLayoutRef.current = groupCount
   }, [enabled, groupCount, pinToBottom])
 
