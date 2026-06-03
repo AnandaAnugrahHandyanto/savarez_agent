@@ -1,6 +1,7 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
+from pathlib import PureWindowsPath
 from unittest.mock import patch, MagicMock
 
 import httpx
@@ -1716,6 +1717,37 @@ class TestOptionalSkillSourceBinaryAssets:
         assert meta.identifier == "official/finance/3-statement-model"
         assert meta.repo == "NousResearch/hermes-agent"
         assert meta.path == "optional-skills/finance/3-statement-model"
+
+    def test_search_emits_posix_repo_metadata_path_on_windows(self, tmp_path):
+        """Published official index paths must use GitHub/POSIX separators."""
+        optional_root = tmp_path / "optional-skills"
+        skill_dir = optional_root / "finance" / "3-statement-model"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: 3-statement-model\ndescription: model\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+        path_class = type(skill_dir)
+        original_relative_to = path_class.relative_to
+
+        def _windows_relative_to(self, *other):
+            rel = original_relative_to(self, *other)
+            if self == skill_dir and other == (optional_root,):
+                return PureWindowsPath(*rel.parts)
+            return rel
+
+        with patch.object(path_class, "relative_to", _windows_relative_to):
+            results = src.search("3-statement-model", limit=10)
+
+        assert len(results) == 1
+        meta = results[0]
+        assert meta.identifier == "official/finance/3-statement-model"
+        assert meta.path == "optional-skills/finance/3-statement-model"
+        assert "\\" not in meta.identifier
+        assert "\\" not in meta.path
 
 
 class TestQuarantineBundleBinaryAssets:
