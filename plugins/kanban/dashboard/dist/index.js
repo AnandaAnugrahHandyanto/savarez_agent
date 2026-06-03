@@ -249,7 +249,7 @@
     try {
       const url = new URL(window.location.href);
       const ret = url.searchParams.get("return");
-      if (ret === "/kanban/list" || ret === "/kanban/priority") return ret;
+      if (ret === "/kanban" || ret === "/kanban/list" || ret === "/kanban/priority" || ret === "/kanban/board") return ret;
     } catch (_e) { /* ignore */ }
     return "/kanban";
   }
@@ -259,7 +259,7 @@
       const url = new URL(window.location.href);
       if (taskId) {
         url.pathname = `/kanban/cards/${encodeURIComponent(taskId)}`;
-        if (returnPath === "/kanban/list" || returnPath === "/kanban/priority") {
+        if (returnPath === "/kanban" || returnPath === "/kanban/list" || returnPath === "/kanban/priority" || returnPath === "/kanban/board") {
           url.searchParams.set("return", returnPath);
         } else {
           url.searchParams.delete("return");
@@ -535,7 +535,7 @@
     const { t } = useI18n();
     const [board, setBoard] = useState(() => readUrlParam("board") || readSelectedBoard() || null);
     const path = window.location.pathname.replace(/\/$/, "");
-    const isPriorityListRoute = path === "/kanban/list" || path === "/kanban/priority";
+    const isPriorityListRoute = path === "/kanban" || path === "/kanban/list" || path === "/kanban/priority";
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
 
@@ -569,7 +569,7 @@
     const openTask = useCallback(function (taskId) {
       if (!taskId) return;
       setSelectedTaskId(taskId);
-      writeCardPath(taskId, isPriorityListRoute ? "/kanban/list" : "/kanban");
+      writeCardPath(taskId, isPriorityListRoute ? "/kanban/list" : "/kanban/board");
     }, [isPriorityListRoute]);
     const closeTask = useCallback(function () {
       setSelectedTaskId(null);
@@ -2062,11 +2062,11 @@
     return h("div", { className: "flex flex-wrap items-end gap-3" },
       h("div", { className: "hermes-kanban-view-tabs" },
         h("a", {
-          href: "/kanban",
+          href: "/kanban/board",
           className: cn("hermes-kanban-view-tab", !props.isPriorityListRoute ? "hermes-kanban-view-tab--active" : ""),
         }, "Board"),
         h("a", {
-          href: "/kanban/list",
+          href: "/kanban",
           className: cn("hermes-kanban-view-tab", props.isPriorityListRoute ? "hermes-kanban-view-tab--active" : ""),
         }, "Priority list"),
       ),

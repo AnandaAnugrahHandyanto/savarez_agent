@@ -226,7 +226,7 @@ def test_dashboard_rolly_chat_passes_board_slug_to_tmux_session():
     assert "h(RollyChatSection, { task: t, boardSlug: props.boardSlug })" not in js
     assert "readPathTaskId() || readUrlParam(\"task\")" in js
     assert "function readReturnToBoardPath()" in js
-    assert "writeCardPath(taskId, isPriorityListRoute ? \"/kanban/list\" : \"/kanban\")" in js
+    assert "writeCardPath(taskId, isPriorityListRoute ? \"/kanban/list\" : \"/kanban/board\")" in js
     assert "window.dispatchEvent(new PopStateEvent(\"popstate\"))" in js
 
 
@@ -239,7 +239,9 @@ def test_dashboard_has_simple_columns_and_priority_list_route():
 
     assert 'const COLUMN_ORDER = ["triage", "ready", "done"]' in js
     assert "function PriorityList" in js
-    assert 'path === "/kanban/list" || path === "/kanban/priority"' in js
+    assert 'path === "/kanban" || path === "/kanban/list" || path === "/kanban/priority"' in js
+    assert 'href: "/kanban/board"' in js
+    assert 'href: "/kanban"' in js
     assert 'task.status !== "done" && task.status !== "archived"' in js
     assert 'className: "hermes-kanban-priority-list"' in js
     assert ".hermes-kanban-priority-list" in css
