@@ -354,6 +354,31 @@ class TestInstall:
 # ===========================================================================
 
 
+    @pytest.mark.parametrize(
+        "exclude_name",
+        ["bin", "logs", "cache", "sessions", "memories"],
+        ids=lambda n: f"nested_{n}",
+    )
+    def test_install_preserves_nested_exclude_named_dirs(
+        self, profile_env, exclude_name: str
+    ):
+        """Directories whose names appear in ``USER_OWNED_EXCLUDE`` (e.g.
+        ``bin``, ``logs``, ``cache``) must only be filtered at the **root** of
+        the staged tree.  Nested paths like ``tools/bin/`` or ``scripts/logs/``
+        are distribution content and must be copied verbatim."""
+        staged = _make_staging_dir(profile_env, "src")
+        parent = staged / "tools"
+        nested = parent / exclude_name
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "helper.py").write_text("# helper\n")
+
+        plan = install_distribution(str(staged), name=f"nested_{exclude_name}")
+
+        result = plan.target_dir / "tools" / exclude_name
+        assert result.is_dir(), f"tools/{exclude_name} must be copied, not filtered"
+        assert (result / "helper.py").read_text() == "# helper\n"
+
+
 class TestUpdate:
 
     def test_update_preserves_user_data(self, profile_env):
@@ -410,6 +435,39 @@ class TestUpdate:
         update_distribution("t3", force_config=True)
         assert "claude" in (plan.target_dir / "config.yaml").read_text()
         assert "gpt-5" not in (plan.target_dir / "config.yaml").read_text()
+
+    @pytest.mark.parametrize(
+        "exclude_name",
+        ["bin", "logs", "cache", "sessions", "memories"],
+        ids=lambda n: f"nested_{n}",
+    )
+    def test_update_preserves_nested_exclude_named_dirs(
+        self, profile_env, exclude_name: str
+    ):
+        """Update must not strip nested directories whose names happen to
+        appear in ``USER_OWNED_EXCLUDE``.  The root-level exclusion is only
+        for the host Hermes installation infrastructure."""
+        staged = _make_staging_dir(profile_env, "src")
+        nested = staged / "tools" / exclude_name
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "file.py").write_text("v1\n")
+
+        dist_name = f"up_nested_{exclude_name}"
+        plan = install_distribution(str(staged), name=dist_name)
+
+        result = plan.target_dir / "tools" / exclude_name
+        assert result.is_dir()
+        assert (result / "file.py").read_text() == "v1\n"
+
+        # Bump the source: update existing file, add a new one
+        (nested / "file.py").write_text("v2\n")
+        (nested / "extra.py").write_text("new\n")
+
+        update_distribution(dist_name, force_config=False)
+
+        assert result.is_dir(), f"tools/{exclude_name} must survive update"
+        assert (result / "file.py").read_text() == "v2\n"
+        assert (result / "extra.py").read_text() == "new\n"
 
     def test_update_missing_manifest_errors(self, profile_env):
         # Make a profile without a manifest; update must refuse
