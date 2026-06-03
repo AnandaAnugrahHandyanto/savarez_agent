@@ -24,11 +24,14 @@ from gateway.restart import (
     parse_restart_drain_timeout,
 )
 from hermes_cli.config import (
+    comment_env_value,
     get_env_value,
     get_hermes_home,
     is_managed,
     managed_error,
     read_raw_config,
+    remove_env_value,
+    save_config,
     save_env_value,
 )
 
@@ -5926,6 +5929,232 @@ def gateway_setup():
 
 
 # =============================================================================
+# Gateway Remove (Issue #9842)
+# =============================================================================
+
+# Env vars setup writes out-of-band — e.g. via _setup_signal, _setup_email —
+# beyond the standard ``vars`` schema. Mirror them here so ``gateway remove``
+# cleans up the same fields setup created without each platform's removal path
+# having to introspect its own setup function.
+_PLATFORM_EXTRA_ENV_VARS: dict[str, tuple[str, ...]] = {
+    "matrix": ("MATRIX_PASSWORD", "MATRIX_ENCRYPTION"),
+    "email": ("EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
+    "signal": ("SIGNAL_ACCOUNT",),
+    "weixin": ("WEIXIN_TOKEN",),
+    "wecom": (
+        "WECOM_CORP_ID",
+        "WECOM_CORP_SECRET",
+        "WECOM_AGENT_ID",
+        "WECOM_TOKEN",
+        "WECOM_AES_KEY",
+    ),
+    "feishu": (
+        "FEISHU_APP_ID",
+        "FEISHU_APP_SECRET",
+        "FEISHU_VERIFICATION_TOKEN",
+        "FEISHU_ENCRYPT_KEY",
+    ),
+    "dingtalk": (
+        "DINGTALK_APP_KEY",
+        "DINGTALK_APP_SECRET",
+        "DINGTALK_ROBOT_CODE",
+    ),
+    "qqbot": ("QQBOT_APP_ID", "QQBOT_APP_SECRET", "QQBOT_TOKEN"),
+}
+
+
+def _platform_env_var_names(platform: dict) -> list[str]:
+    """Return all env vars associated with a platform, deduped, in declared order."""
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def _add(name: str | None) -> None:
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+
+    for var in platform.get("vars", []) or []:
+        _add(var.get("name"))
+    _add(platform.get("token_var"))
+
+    entry = platform.get("_registry_entry")
+    if entry is not None:
+        for env_name in getattr(entry, "required_env", []) or []:
+            _add(env_name)
+
+    for name in _PLATFORM_EXTRA_ENV_VARS.get(platform.get("key", ""), ()):
+        _add(name)
+    return out
+
+
+def _resolve_platform_for_removal(name: str) -> dict | None:
+    """Find a platform dict by key (case-insensitive)."""
+    if not name:
+        return None
+    target = name.strip().lower()
+    for p in _all_platforms():
+        if p.get("key", "").lower() == target:
+            return p
+    return None
+
+
+def _remove_platform_config_yaml_entry(platform_key: str) -> bool:
+    """Drop ``gateway.platforms.<key>`` from ~/.hermes/config.yaml.
+
+    Operates on the *raw* YAML contents (via ``read_raw_config``) rather
+    than ``load_config``: load_config deep-merges defaults, so saving its
+    result back would persist every default value into the file. The raw
+    view contains only what the user actually wrote, which is what we
+    want to surgically prune.
+
+    Returns True iff a block was removed and the file was rewritten.
+    """
+    try:
+        config = read_raw_config()
+    except Exception as exc:
+        logger.warning("read_raw_config failed during gateway remove: %s", exc)
+        return False
+    if not isinstance(config, dict):
+        return False
+    gateway_cfg = config.get("gateway")
+    if not isinstance(gateway_cfg, dict):
+        return False
+    platforms = gateway_cfg.get("platforms")
+    if not isinstance(platforms, dict) or platform_key not in platforms:
+        return False
+    platforms.pop(platform_key, None)
+    if not platforms:
+        gateway_cfg.pop("platforms", None)
+    if not gateway_cfg:
+        config.pop("gateway", None)
+    save_config(config)
+    return True
+
+
+def _gateway_remove_platform(
+    name: str | None,
+    *,
+    force: bool = False,
+    keep_env: bool = False,
+    no_config: bool = False,
+) -> None:
+    """Remove a configured messaging platform (issue #9842).
+
+    Mirrors ``gateway setup``: walks the same ``_all_platforms()`` registry,
+    derives env-var names from each platform's ``vars`` schema (plus the
+    out-of-band extras in ``_PLATFORM_EXTRA_ENV_VARS``), and either deletes
+    them from ``~/.hermes/.env`` or comments them out when ``keep_env`` is
+    set so the user can rotate credentials back in by hand.
+
+    With no positional ``name``, lists configured platforms and prompts the
+    user to pick one. ``force`` skips the confirmation prompt.
+    """
+    if is_managed():
+        managed_error("remove a gateway platform (managed by NixOS)")
+        return
+
+    if not name:
+        platforms = _all_platforms()
+        configured = [p for p in platforms if _platform_status(p) != "not configured"]
+        if not configured:
+            print()
+            print_info("No platforms are currently configured.")
+            print_info("Run 'hermes gateway setup' to add one.")
+            return
+        print()
+        print(color("  Configured messaging platforms:", Colors.CYAN))
+        for p in configured:
+            status = _platform_status(p)
+            print_info(f"    • {p.get('emoji', '🔌')} {p['label']} ({p['key']}) — {status}")
+        print()
+        labels = [f"{p.get('emoji', '🔌')} {p['label']} ({p['key']})" for p in configured]
+        labels.append("Cancel")
+        idx = prompt_choice("Pick a platform to remove:", labels, len(labels) - 1)
+        if idx is None or idx == len(labels) - 1:
+            print_info("Cancelled.")
+            return
+        platform = configured[idx]
+    else:
+        platform = _resolve_platform_for_removal(name)
+        if platform is None:
+            valid = ", ".join(sorted(p["key"] for p in _all_platforms()))
+            print_error(f"Unknown platform: {name!r}")
+            print_info(f"Known platforms: {valid}")
+            sys.exit(1)
+
+    key = platform["key"]
+    label = platform.get("label", key)
+    emoji = platform.get("emoji", "🔌")
+
+    env_vars = _platform_env_var_names(platform)
+    active_env = [v for v in env_vars if get_env_value(v)]
+
+    config_present = False
+    if not no_config:
+        try:
+            raw = read_raw_config()
+            gw_cfg = raw.get("gateway") if isinstance(raw, dict) else None
+            plats = gw_cfg.get("platforms") if isinstance(gw_cfg, dict) else None
+            config_present = isinstance(plats, dict) and key in plats
+        except Exception:
+            config_present = False
+
+    if not active_env and not config_present:
+        print()
+        print_info(f"{emoji} {label} is not currently configured — nothing to remove.")
+        return
+
+    action_word = "Commenting out" if keep_env else "Removing"
+    print()
+    print(color(f"  ─── {emoji} {label}: planned changes ───", Colors.CYAN))
+    if active_env:
+        print_info(f"  {action_word} {len(active_env)} env var(s) from ~/.hermes/.env:")
+        for var in active_env:
+            print_info(f"    • {var}")
+    else:
+        print_info("  No active env vars to clear.")
+    if config_present:
+        print_info(f"  Removing gateway.platforms.{key} from ~/.hermes/config.yaml")
+
+    if not force:
+        print()
+        if not prompt_yes_no(f"  Remove {label}?", False):
+            print_info("Cancelled.")
+            return
+
+    cleared = 0
+    if active_env:
+        op = comment_env_value if keep_env else remove_env_value
+        for var in active_env:
+            try:
+                if op(var):
+                    cleared += 1
+            except Exception as exc:
+                print_warning(f"  Failed to update {var}: {exc}")
+
+    config_changed = False
+    if config_present and not no_config:
+        try:
+            config_changed = _remove_platform_config_yaml_entry(key)
+        except Exception as exc:
+            print_warning(f"  Failed to update config.yaml: {exc}")
+
+    print()
+    if cleared or config_changed:
+        verb = "commented out" if keep_env else "cleared"
+        print_success(f"✓ {label} removed.")
+        if cleared:
+            print_info(f"  {cleared} env var(s) {verb} in ~/.hermes/.env")
+        if config_changed:
+            print_info(f"  gateway.platforms.{key} dropped from ~/.hermes/config.yaml")
+        print()
+        print_info("If the gateway is running, restart it to apply:")
+        print_info("  hermes gateway restart")
+    else:
+        print_info(f"{label} was already absent — nothing changed.")
+
+
+# =============================================================================
 # Main Command Handler
 # =============================================================================
 
@@ -6183,6 +6412,15 @@ def _gateway_command_inner(args):
 
     if subcmd == "setup":
         gateway_setup()
+        return
+
+    if subcmd == "remove":
+        _gateway_remove_platform(
+            getattr(args, "platform", None),
+            force=getattr(args, "force", False),
+            keep_env=getattr(args, "keep_env", False),
+            no_config=getattr(args, "no_config", False),
+        )
         return
 
     # Service management commands
