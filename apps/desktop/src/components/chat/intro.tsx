@@ -38,6 +38,26 @@ const FALLBACK_COPY: IntroCopy[] = [
   {
     headline: 'What needs attention?',
     body: "Send the context you have. I'll help sort it into a plan or a fix."
+  },
+  {
+    headline: "On avance sur quoi aujourd'hui ?",
+    body: "Envoie un bug, une branche, un plan ou une idée vague. Je vais inspecter le repo et le transformer en prochaine étape concrète."
+  },
+  {
+    headline: "Qu'est-ce qui te passe par la tête ?",
+    body: "Apporte le code, la question ou le blocage. Je lirai la situation avant de faire des changements."
+  },
+  {
+    headline: "Qu'est-ce qu'Hermes devrait examiner ?",
+    body: "Envoie la tâche, le chemin qui échoue ou le plan à moitié formé. Je vais t'aider à le transformer en action."
+  },
+  {
+    headline: "Par où on commence ?",
+    body: "Apporte le problème, l'objectif ou le fichier. Je vais inspecter d'abord et garder la prochaine étape concrète."
+  },
+  {
+    headline: "Quoi qui demande de l'attention ?",
+    body: "Envoie le contexte dont tu disposes. Je vais t'aider à le transformer en plan ou en correctif."
   }
 ]
 
@@ -134,6 +154,14 @@ function fallbackCopyForPersonality(personalityKey: string): IntroCopy[] {
     {
       headline: 'Where should we begin?',
       body: `Give me the context and I'll answer in ${label} mode.`
+    },
+    {
+      headline: `Mode ${label} activé. On travaille sur quoi ?`,
+      body: "Envoie la tâche, le fichier ou l'idée vague. Je vais utiliser ta voix configurée et garder le travail ancré dans ce repo."
+    },
+    {
+      headline: `Qu'est-ce qu'Hermes ${label} doit voir ?`,
+      body: "Apporte le contexte ou le blocage. Je m'adapterai à ta personnalité configurée."
     }
   ]
 }
