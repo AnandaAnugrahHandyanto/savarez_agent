@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs } from './text-utils'
+import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs, isImeCompositionKeyEvent } from './text-utils'
 
 describe('detectTrigger', () => {
   it('detects a bare slash trigger with an empty query', () => {
@@ -21,6 +21,24 @@ describe('detectTrigger', () => {
 
   it('returns null for plain text', () => {
     expect(detectTrigger('hello there')).toBeNull()
+  })
+})
+
+describe('isImeCompositionKeyEvent', () => {
+  it('treats Enter during active IME composition as non-submit input', () => {
+    expect(isImeCompositionKeyEvent({ key: 'Enter', nativeEvent: { isComposing: true } })).toBe(true)
+  })
+
+  it('handles WebKit composition boundary keyCode 229', () => {
+    expect(isImeCompositionKeyEvent({ key: 'Enter', nativeEvent: { isComposing: false, keyCode: 229 } })).toBe(true)
+  })
+
+  it('handles Process key events reported by some IMEs', () => {
+    expect(isImeCompositionKeyEvent({ key: 'Process' })).toBe(true)
+  })
+
+  it('does not block normal Enter submit handling', () => {
+    expect(isImeCompositionKeyEvent({ key: 'Enter', nativeEvent: { isComposing: false, keyCode: 13 } })).toBe(false)
   })
 })
 

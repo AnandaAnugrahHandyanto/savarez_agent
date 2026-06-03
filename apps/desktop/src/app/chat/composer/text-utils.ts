@@ -96,6 +96,22 @@ export function textBeforeCaret(editor: HTMLDivElement): string | null {
   return before.toString()
 }
 
+export interface ComposerKeyboardLikeEvent {
+  key: string
+  nativeEvent?: {
+    isComposing?: boolean
+    keyCode?: number
+  }
+}
+
+export function isImeCompositionKeyEvent(event: ComposerKeyboardLikeEvent): boolean {
+  // During CJK IME conversion, browsers dispatch Enter as a keydown while the
+  // composition is still active. Treat that as IME input, not composer submit.
+  // WebKit can report the composing key as keyCode 229 around composition
+  // boundaries even when `isComposing` is false/missing.
+  return Boolean(event.nativeEvent?.isComposing || event.nativeEvent?.keyCode === 229 || event.key === 'Process')
+}
+
 export function detectTrigger(textBefore: string): TriggerState | null {
   const match = TRIGGER_RE.exec(textBefore)
 
