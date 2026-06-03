@@ -681,6 +681,7 @@ export function DesktopController() {
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
+            onNavigateRoute={path => navigate(path)}
             onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
           />
         </Suspense>
