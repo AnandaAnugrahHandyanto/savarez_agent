@@ -65,6 +65,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    merge_pending_message_event,
 )
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -1188,19 +1189,29 @@ class WeixinAdapter(BasePlatformAdapter):
             default=False,
         )
 
-        # Text debounce batching (mirrors Telegram adapter pattern).
+        # Message debounce batching (mirrors Telegram adapter pattern).
         # iLink delivers messages individually, so rapid multi-message
-        # bursts (forwarded batches, paste-splits) each trigger a
-        # separate agent invocation.  Default 3s delay / 5s split delay
-        # are tuned for iLink's typical delivery cadence.  Tunable via
-        # config.yaml under
+        # bursts (forwarded batches, paste-splits, and text followed by
+        # supplemental photos) each trigger a separate agent invocation
+        # unless we aggregate them first. Default 3s delay / 5s split
+        # delay are tuned for iLink's typical delivery cadence. Texts
+        # that explicitly mention a follow-up image wait a little longer
+        # because WeChat photo uploads often arrive several seconds after
+        # the text event. Tunable
+        # via config.yaml under
         # ``gateway.platforms.weixin.extra.text_batch_delay_seconds`` /
-        # ``text_batch_split_delay_seconds``.
+        # ``text_batch_split_delay_seconds`` /
+        # ``media_followup_delay_seconds``.  The historical text setting
+        # names are kept for compatibility even though the buffer now
+        # handles mixed text+media events.
         self._text_batch_delay_seconds = self._coerce_float_extra(
             "text_batch_delay_seconds", 3.0
         )
         self._text_batch_split_delay_seconds = self._coerce_float_extra(
             "text_batch_split_delay_seconds", 5.0
+        )
+        self._media_followup_delay_seconds = self._coerce_float_extra(
+            "media_followup_delay_seconds", 8.0
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
@@ -1444,10 +1455,7 @@ class WeixinAdapter(BasePlatformAdapter):
             timestamp=datetime.now(),
         )
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
-        if event.message_type == MessageType.TEXT:
-            self._enqueue_text_event(event)
-        else:
-            await self.handle_message(event)
+        self._enqueue_text_event(event)
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         if self._dm_policy == "disabled":
@@ -1462,10 +1470,20 @@ class WeixinAdapter(BasePlatformAdapter):
         return True
 
     # ------------------------------------------------------------------
-    # Text debounce batching
+    # Message debounce batching
     # ------------------------------------------------------------------
 
     _SPLIT_THRESHOLD = 1800  # iLink chunks at ~2048 chars
+    _MEDIA_FOLLOWUP_RE = re.compile(
+        r"(如图|如图所示|见图|看图|发图|图片|照片|截图|图所示|photo|image|pic(?:ture)?|screenshot|attached)",
+        re.IGNORECASE,
+    )
+
+    def _expects_media_followup(self, event: Optional[MessageEvent]) -> bool:
+        """Return True when a pending text likely expects a separate media event."""
+        if not event or event.media_urls:
+            return False
+        return bool(self._MEDIA_FOLLOWUP_RE.search(event.text or ""))
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text message batching."""
@@ -1477,12 +1495,15 @@ class WeixinAdapter(BasePlatformAdapter):
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text event and reset the flush timer.
+        """Buffer a Weixin event and reset the flush timer.
 
         When users forward multiple messages or send rapid-fire texts
         via WeChat, each arrives as a separate iLink message. This
         concatenates them and waits for a short quiet period before
-        dispatching the combined message.
+        dispatching the combined message. Media events use the same
+        path so a common WeChat flow — text first, photo second — reaches
+        the agent as one turn instead of starting the text turn and then
+        interrupting it with the photo follow-up.
         """
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
@@ -1491,12 +1512,14 @@ class WeixinAdapter(BasePlatformAdapter):
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
-            if event.text:
-                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            merge_pending_message_event(
+                self._pending_text_batches,
+                key,
+                event,
+                merge_text=True,
+            )
+            existing = self._pending_text_batches.get(key, existing)
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
 
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
@@ -1513,6 +1536,8 @@ class WeixinAdapter(BasePlatformAdapter):
             last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
             if last_len >= self._SPLIT_THRESHOLD:
                 delay = self._text_batch_split_delay_seconds
+            elif self._expects_media_followup(pending):
+                delay = self._media_followup_delay_seconds
             else:
                 delay = self._text_batch_delay_seconds
             await asyncio.sleep(delay)
@@ -1521,7 +1546,7 @@ class WeixinAdapter(BasePlatformAdapter):
             event = self._pending_text_batches.pop(key, None)
             if not event:
                 return
-            await self.handle_message(event)
+            await asyncio.shield(self.handle_message(event))
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)

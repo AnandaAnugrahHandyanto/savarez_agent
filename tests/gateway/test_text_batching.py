@@ -9,6 +9,7 @@ Telegram and Feishu.
 """
 
 import asyncio
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -26,11 +27,15 @@ def _make_event(
     platform: Platform,
     chat_id: str = "12345",
     msg_type: MessageType = MessageType.TEXT,
+    media_urls: list[str] | None = None,
+    media_types: list[str] | None = None,
 ) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=msg_type,
         source=SessionSource(platform=platform, chat_id=chat_id, chat_type="dm"),
+        media_urls=media_urls or [],
+        media_types=media_types or [],
     )
 
 
@@ -380,6 +385,144 @@ class TestWeComTextBatching:
         adapter._enqueue_text_event(_make_event("test", Platform.WECOM))
         await asyncio.sleep(0.2)
         assert len(adapter._pending_text_batches) == 0
+
+
+# =====================================================================
+# Weixin mixed message batching
+# =====================================================================
+
+def _make_weixin_adapter():
+    """Create a minimal WeixinAdapter for testing mixed text/media batching."""
+    from gateway.platforms.weixin import WeixinAdapter
+
+    config = PlatformConfig(enabled=True, token="test-token")
+    adapter = object.__new__(WeixinAdapter)
+    adapter._platform = Platform.WEIXIN
+    adapter.config = config
+    adapter._pending_text_batches = {}
+    adapter._pending_text_batch_tasks = {}
+    adapter._text_batch_delay_seconds = 0.1
+    adapter._text_batch_split_delay_seconds = 0.3
+    adapter._media_followup_delay_seconds = 0.25
+    adapter._active_sessions = {}
+    adapter._pending_messages = {}
+    adapter._message_handler = AsyncMock()
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
+class TestWeixinMixedMessageBatching:
+    @pytest.mark.asyncio
+    async def test_text_then_photo_dispatched_as_one_turn(self):
+        adapter = _make_weixin_adapter()
+
+        adapter._enqueue_text_event(_make_event("lunch: noodles", Platform.WEIXIN))
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(
+            _make_event(
+                "",
+                Platform.WEIXIN,
+                msg_type=MessageType.PHOTO,
+                media_urls=["/tmp/noodles.jpg"],
+                media_types=["image/jpeg"],
+            )
+        )
+
+        adapter.handle_message.assert_not_called()
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert dispatched.message_type == MessageType.PHOTO
+        assert dispatched.text == "lunch: noodles"
+        assert dispatched.media_urls == ["/tmp/noodles.jpg"]
+        assert dispatched.media_types == ["image/jpeg"]
+
+    @pytest.mark.asyncio
+    async def test_photo_then_text_dispatched_as_one_turn(self):
+        adapter = _make_weixin_adapter()
+
+        adapter._enqueue_text_event(
+            _make_event(
+                "",
+                Platform.WEIXIN,
+                msg_type=MessageType.PHOTO,
+                media_urls=["/tmp/plate.jpg"],
+                media_types=["image/jpeg"],
+            )
+        )
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(_make_event("dinner supplement", Platform.WEIXIN))
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert dispatched.message_type == MessageType.PHOTO
+        assert dispatched.text == "dinner supplement"
+        assert dispatched.media_urls == ["/tmp/plate.jpg"]
+
+    @pytest.mark.asyncio
+    async def test_multiple_photos_and_text_merge(self):
+        adapter = _make_weixin_adapter()
+
+        adapter._enqueue_text_event(_make_event("meal", Platform.WEIXIN))
+        adapter._enqueue_text_event(
+            _make_event(
+                "",
+                Platform.WEIXIN,
+                msg_type=MessageType.PHOTO,
+                media_urls=["/tmp/a.jpg"],
+                media_types=["image/jpeg"],
+            )
+        )
+        adapter._enqueue_text_event(
+            _make_event(
+                "",
+                Platform.WEIXIN,
+                msg_type=MessageType.PHOTO,
+                media_urls=["/tmp/b.jpg"],
+                media_types=["image/jpeg"],
+            )
+        )
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert dispatched.message_type == MessageType.PHOTO
+        assert dispatched.text == "meal"
+        assert dispatched.media_urls == ["/tmp/a.jpg", "/tmp/b.jpg"]
+
+    @pytest.mark.asyncio
+    async def test_media_hint_waits_for_late_photo(self):
+        adapter = _make_weixin_adapter()
+        handle_message = cast(AsyncMock, adapter.handle_message)
+
+        adapter._enqueue_text_event(_make_event("营养成分图如图所示", Platform.WEIXIN))
+
+        # The normal 0.1s text delay has passed, but image-hint text should
+        # keep waiting so WeChat upload latency does not start a text-only run.
+        await asyncio.sleep(0.15)
+        handle_message.assert_not_called()
+
+        adapter._enqueue_text_event(
+            _make_event(
+                "",
+                Platform.WEIXIN,
+                msg_type=MessageType.PHOTO,
+                media_urls=["/tmp/nutrition.jpg"],
+                media_types=["image/jpeg"],
+            )
+        )
+
+        await asyncio.sleep(0.2)
+
+        handle_message.assert_called_once()
+        dispatched = handle_message.call_args[0][0]
+        assert dispatched.message_type == MessageType.PHOTO
+        assert dispatched.text == "营养成分图如图所示"
+        assert dispatched.media_urls == ["/tmp/nutrition.jpg"]
 
 
 # =====================================================================
