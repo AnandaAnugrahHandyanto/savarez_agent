@@ -2,6 +2,8 @@
 
 import os
 import time
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -11,6 +13,7 @@ from gateway.platforms.base import (
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     safe_url_for_log,
+    stage_media_delivery_path,
     utf16_len,
     _log_safe_path,
     _prefix_within_utf16_limit,
@@ -953,6 +956,258 @@ class TestMediaDeliveryDefaultMode:
 
         out = BasePlatformAdapter.filter_local_delivery_paths([str(notes)])
         assert out == [str(notes.resolve())]
+
+
+class TestMediaDeliveryStaging:
+    """``stage_media_delivery_path`` + filter staging fallback.
+
+    Motivating live repro: a root-run gateway emits
+    ``MEDIA:/root/work/proposal.docx``. ``/root`` is on the system denylist
+    (it is the operator's home), so direct validation drops the file and the
+    user gets a chat message claiming an attachment with nothing attached.
+    Copying the same file under ``~/.hermes/cache/documents/`` made it deliver.
+    Staging automates exactly that, while keeping the credential / system
+    denylist intact.
+
+    All tests simulate that shape hermetically: ``$HOME`` is a tmp dir that is
+    ALSO patched onto the denied-prefix list (standing in for ``/root``), and
+    the per-type cache dirs live under a tmp Hermes home.
+    """
+
+    def _setup(self, monkeypatch, tmp_path, *, strict=False):
+        home = tmp_path / "home"
+        (home / "workdir").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+
+        hermes_home = home / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_home)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_home)
+
+        cache = hermes_home / "cache"
+        dirs = {
+            "img": cache / "images",
+            "audio": cache / "audio",
+            "video": cache / "videos",
+            "docs": cache / "documents",
+            "shots": cache / "screenshots",
+        }
+        for d in dirs.values():
+            d.mkdir(parents=True)
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", dirs["img"])
+        monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", dirs["audio"])
+        monkeypatch.setattr("gateway.platforms.base.VIDEO_CACHE_DIR", dirs["video"])
+        monkeypatch.setattr("gateway.platforms.base.DOCUMENT_CACHE_DIR", dirs["docs"])
+        monkeypatch.setattr("gateway.platforms.base.SCREENSHOT_CACHE_DIR", dirs["shots"])
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            tuple(dirs.values()),
+        )
+
+        # Denylist: a fake system dir plus the simulated home (the /root case).
+        fake_etc = tmp_path / "fake-etc"
+        fake_etc.mkdir()
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(fake_etc), str(home)),
+        )
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        if strict:
+            monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+            monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+            monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+        else:
+            monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+        ctx = SimpleNamespace(home=home, hermes_home=hermes_home, fake_etc=fake_etc, **dirs)
+        return ctx
+
+    def test_existing_cache_path_passes_through_without_copy(self, tmp_path, monkeypatch):
+        """A file already under a cache root is returned unchanged (no copy)."""
+        ctx = self._setup(monkeypatch, tmp_path)
+        cached = ctx.docs / "already.pdf"
+        cached.write_bytes(b"%PDF-1.4")
+
+        before = set(p.name for p in ctx.docs.iterdir())
+        staged = stage_media_delivery_path(str(cached))
+        after = set(p.name for p in ctx.docs.iterdir())
+
+        assert staged == str(cached.resolve())
+        assert before == after  # no duplicate created
+        assert BasePlatformAdapter.validate_media_delivery_path(str(cached)) == str(cached.resolve())
+
+    def test_workdir_document_is_staged_into_documents_cache(self, tmp_path, monkeypatch):
+        """The live repro: docx/pdf/txt under the (denied) home workdir stage."""
+        ctx = self._setup(monkeypatch, tmp_path)
+        for name, blob in (
+            ("proposal.docx", b"PK\x03\x04docx"),
+            ("report.pdf", b"%PDF-1.4"),
+            ("notes.txt", b"hello"),
+        ):
+            src = ctx.home / "workdir" / name
+            src.write_bytes(blob)
+
+            # Direct validation drops it (denied prefix == /root shape) ...
+            assert BasePlatformAdapter.validate_media_delivery_path(str(src)) is None
+            # ... but staging rescues it into the documents cache.
+            staged = stage_media_delivery_path(str(src))
+            assert staged is not None
+            assert Path(staged).parent == ctx.docs
+            assert Path(staged).read_bytes() == blob
+            # Source is never mutated or deleted.
+            assert src.exists() and src.read_bytes() == blob
+            # The staged copy round-trips through the validator.
+            assert BasePlatformAdapter.validate_media_delivery_path(staged) == str(Path(staged).resolve())
+
+    def test_workdir_image_is_staged_into_images_cache(self, tmp_path, monkeypatch):
+        ctx = self._setup(monkeypatch, tmp_path)
+        src = ctx.home / "workdir" / "chart.png"
+        src.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        staged = stage_media_delivery_path(str(src))
+        assert staged is not None
+        assert Path(staged).parent == ctx.img
+
+    def test_workdir_audio_and_video_routed_by_extension(self, tmp_path, monkeypatch):
+        ctx = self._setup(monkeypatch, tmp_path)
+        audio = ctx.home / "workdir" / "voice.mp3"
+        audio.write_bytes(b"ID3")
+        video = ctx.home / "workdir" / "clip.3gp"
+        video.write_bytes(b"\x00\x00\x00\x18ftyp3gp")
+
+        assert Path(stage_media_delivery_path(str(audio))).parent == ctx.audio
+        assert Path(stage_media_delivery_path(str(video))).parent == ctx.video
+
+    def test_unknown_extension_falls_back_to_documents(self, tmp_path, monkeypatch):
+        ctx = self._setup(monkeypatch, tmp_path)
+        src = ctx.home / "workdir" / "export.xyz"
+        src.write_bytes(b"data")
+
+        staged = stage_media_delivery_path(str(src))
+        assert staged is not None
+        assert Path(staged).parent == ctx.docs
+
+    def test_credential_subpath_is_not_staged(self, tmp_path, monkeypatch):
+        """``~/.ssh/id_rsa`` stays rejected; the home exception cannot reach
+        a credential sub-directory."""
+        ctx = self._setup(monkeypatch, tmp_path)
+        ssh = ctx.home / ".ssh"
+        ssh.mkdir()
+        key = ssh / "id_rsa"
+        key.write_bytes(b"-----BEGIN OPENSSH PRIVATE KEY-----")
+
+        assert stage_media_delivery_path(str(key)) is None
+        assert BasePlatformAdapter.validate_media_delivery_path(str(key)) is None
+
+    def test_hermes_env_secret_is_not_staged(self, tmp_path, monkeypatch):
+        """``~/.hermes/.env`` stays rejected even though it sits under home."""
+        ctx = self._setup(monkeypatch, tmp_path)
+        env_file = ctx.hermes_home / ".env"
+        env_file.write_text("OPENAI_API_KEY=sk-test")
+
+        assert stage_media_delivery_path(str(env_file)) is None
+
+    def test_credential_filename_anywhere_is_not_staged(self, tmp_path, monkeypatch):
+        """Secret filenames are refused even in a non-credential directory."""
+        ctx = self._setup(monkeypatch, tmp_path)
+        for name, blob in ((".netrc", b"machine x"), ("server.pem", b"-----BEGIN")):
+            src = ctx.home / "workdir" / name
+            src.write_bytes(blob)
+            assert stage_media_delivery_path(str(src)) is None
+
+    def test_system_prefix_is_not_staged(self, tmp_path, monkeypatch):
+        ctx = self._setup(monkeypatch, tmp_path)
+        secret = ctx.fake_etc / "shadow"
+        secret.write_bytes(b"root:!:0:0")
+
+        assert stage_media_delivery_path(str(secret)) is None
+
+    def test_symlink_to_denied_target_is_not_staged(self, tmp_path, monkeypatch):
+        """A workdir symlink pointing at a credential file resolves first."""
+        ctx = self._setup(monkeypatch, tmp_path)
+        ssh = ctx.home / ".ssh"
+        ssh.mkdir()
+        key = ssh / "id_rsa"
+        key.write_bytes(b"-----BEGIN")
+        link = ctx.home / "workdir" / "innocent.pdf"
+        try:
+            link.symlink_to(key)
+        except OSError:
+            pytest.skip("symlink creation is unavailable")
+
+        assert stage_media_delivery_path(str(link)) is None
+
+    def test_missing_and_non_file_paths_are_not_staged(self, tmp_path, monkeypatch):
+        ctx = self._setup(monkeypatch, tmp_path)
+        assert stage_media_delivery_path(str(ctx.home / "workdir" / "nope.pdf")) is None
+        assert stage_media_delivery_path("relative/not/absolute.pdf") is None
+        assert stage_media_delivery_path("") is None
+        # A directory is not a regular file.
+        assert stage_media_delivery_path(str(ctx.home / "workdir")) is None
+
+    def test_collision_creates_distinct_staged_filename(self, tmp_path, monkeypatch):
+        """Staging the same name twice never overwrites the first copy."""
+        ctx = self._setup(monkeypatch, tmp_path)
+        first = ctx.home / "workdir" / "summary.pdf"
+        first.write_bytes(b"FIRST")
+        staged_one = stage_media_delivery_path(str(first))
+
+        second = ctx.home / "other"
+        second.mkdir()
+        collide = second / "summary.pdf"  # same basename, different content
+        collide.write_bytes(b"SECOND")
+        staged_two = stage_media_delivery_path(str(collide))
+
+        assert staged_one is not None and staged_two is not None
+        assert staged_one != staged_two
+        assert Path(staged_one).read_bytes() == b"FIRST"
+        assert Path(staged_two).read_bytes() == b"SECOND"
+        assert Path(staged_one).parent == ctx.docs
+        assert Path(staged_two).parent == ctx.docs
+
+    def test_filter_media_stages_instead_of_dropping(self, tmp_path, monkeypatch):
+        """End-to-end: a workdir file is staged, not silently dropped, and a
+        genuinely denied path is still dropped in the same batch."""
+        ctx = self._setup(monkeypatch, tmp_path)
+        deliverable = ctx.home / "workdir" / "deck.pdf"
+        deliverable.write_bytes(b"%PDF-1.4")
+        secret = ctx.fake_etc / "shadow"
+        secret.write_bytes(b"root:!:0:0")
+
+        out = BasePlatformAdapter.filter_media_delivery_paths([
+            (str(secret), False),
+            (str(deliverable), False),
+        ])
+
+        assert len(out) == 1
+        staged_path, is_voice = out[0]
+        assert is_voice is False
+        assert Path(staged_path).parent == ctx.docs
+        assert BasePlatformAdapter.validate_media_delivery_path(staged_path) == staged_path
+
+    def test_filter_local_stages_workdir_file(self, tmp_path, monkeypatch):
+        ctx = self._setup(monkeypatch, tmp_path)
+        src = ctx.home / "workdir" / "appendix.docx"
+        src.write_bytes(b"PK\x03\x04")
+
+        out = BasePlatformAdapter.filter_local_delivery_paths([str(src)])
+        assert len(out) == 1
+        assert Path(out[0]).parent == ctx.docs
+
+    def test_strict_mode_stages_fresh_but_not_stale(self, tmp_path, monkeypatch):
+        """In strict mode staging respects the recency window: a freshly
+        produced workdir file stages, a stale one does not (so strict mode's
+        stale-host-file protection is preserved)."""
+        ctx = self._setup(monkeypatch, tmp_path, strict=True)
+
+        fresh = ctx.home / "workdir" / "fresh.pdf"
+        fresh.write_bytes(b"%PDF-1.4")  # mtime = now
+        assert stage_media_delivery_path(str(fresh)) is not None
+
+        stale = ctx.home / "workdir" / "stale.pdf"
+        stale.write_bytes(b"%PDF-1.4")
+        old = time.time() - 7200  # 2 hours ago, outside the window
+        os.utime(stale, (old, old))
+        assert stage_media_delivery_path(str(stale)) is None
 
 
 # ---------------------------------------------------------------------------

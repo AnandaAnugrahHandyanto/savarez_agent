@@ -12,6 +12,7 @@ import logging
 import os
 import random
 import re
+import shutil
 import socket as _socket
 import subprocess
 import sys
@@ -916,6 +917,23 @@ def _media_delivery_allowed_roots() -> List[Path]:
     return roots
 
 
+def _resolved_under_allowed_root(resolved: Path) -> bool:
+    """Return True if ``resolved`` already lives under an allowlisted root.
+
+    Used by :func:`stage_media_delivery_path` to skip the copy when a file is
+    already deliverable as-is (under a Hermes cache or operator-allowlisted
+    root) rather than duplicating it into the cache.
+    """
+    for root in _media_delivery_allowed_roots():
+        try:
+            resolved_root = root.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if _path_is_within(resolved, resolved_root):
+            return True
+    return False
+
+
 def _media_delivery_recency_seconds() -> float:
     """Return the recency window for trusting freshly-produced files.
 
@@ -1003,25 +1021,15 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
-def validate_media_delivery_path(path: str) -> Optional[str]:
-    """Return a safe absolute file path for native media delivery, else None.
+def _resolve_media_candidate(path: str) -> Optional[Path]:
+    """Parse and resolve a candidate MEDIA path to an existing regular file.
 
-    Default mode (single-user / private gateway): accept any existing regular
-    file that isn't under the credential / system-path denylist
-    (``_MEDIA_DELIVERY_DENIED_PREFIXES`` + ``~/.ssh``, ``~/.aws``, etc.).
-    This matches the symmetry of inbound delivery — Telegram/Discord/Slack
-    will hand the agent any file the user uploads, and the agent can hand
-    back any file that isn't a credential.
-
-    Strict mode (opt-in via ``gateway.strict`` in ``config.yaml`` or
-    ``HERMES_MEDIA_DELIVERY_STRICT=1``): the file MUST live under a
-    Hermes-managed cache, under an operator-allowlisted root
-    (``HERMES_MEDIA_ALLOW_DIRS``), or be freshly produced inside the
-    configured recency window. Suitable for public-facing bots where
-    prompt injection from one user shouldn't be able to exfiltrate the
-    host's secrets to that same user.
-
-    Symlinks are resolved before any containment / denylist check.
+    Returns the strict-resolved :class:`~pathlib.Path` (symlinks followed), or
+    ``None`` for an empty / relative / unresolvable / non-file path. Shared by
+    :func:`validate_media_delivery_path` (which then applies the allowlist /
+    denylist / recency policy) and :func:`stage_media_delivery_path` (which
+    applies its own staging gate) so the quote-stripping and resolution logic
+    lives in exactly one place.
     """
     if not path:
         return None
@@ -1047,6 +1055,33 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
         return None
 
     if not resolved.is_file():
+        return None
+
+    return resolved
+
+
+def validate_media_delivery_path(path: str) -> Optional[str]:
+    """Return a safe absolute file path for native media delivery, else None.
+
+    Default mode (single-user / private gateway): accept any existing regular
+    file that isn't under the credential / system-path denylist
+    (``_MEDIA_DELIVERY_DENIED_PREFIXES`` + ``~/.ssh``, ``~/.aws``, etc.).
+    This matches the symmetry of inbound delivery — Telegram/Discord/Slack
+    will hand the agent any file the user uploads, and the agent can hand
+    back any file that isn't a credential.
+
+    Strict mode (opt-in via ``gateway.strict`` in ``config.yaml`` or
+    ``HERMES_MEDIA_DELIVERY_STRICT=1``): the file MUST live under a
+    Hermes-managed cache, under an operator-allowlisted root
+    (``HERMES_MEDIA_ALLOW_DIRS``), or be freshly produced inside the
+    configured recency window. Suitable for public-facing bots where
+    prompt injection from one user shouldn't be able to exfiltrate the
+    host's secrets to that same user.
+
+    Symlinks are resolved before any containment / denylist check.
+    """
+    resolved = _resolve_media_candidate(path)
+    if resolved is None:
         return None
 
     # Cache / operator allowlist is always honored — these are unconditionally
@@ -1263,6 +1298,232 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
             except OSError:
                 pass
     return removed
+
+
+# ---------------------------------------------------------------------------
+# MEDIA staging
+#
+# Agents routinely produce deliverables in their working directory rather than
+# inside a Hermes cache, e.g. ``MEDIA:/root/work/proposal.docx`` or
+# ``MEDIA:/home/user/projects/report.pdf``. When that path fails the direct
+# delivery validator (most commonly because the gateway runs as root, so the
+# whole ``/root`` home is on the system denylist), the file is silently dropped
+# and the user gets a chat message that *says* a file is attached with nothing
+# attached. Staging copies such a file into the appropriate Hermes media cache
+# (which is allowlisted) and returns the staged path, so normal MEDIA delivery
+# proceeds, without broadly allowlisting arbitrary working directories.
+#
+# The denylist is preserved: staging refuses credential / system paths exactly
+# like the validator (via ``_media_delivery_denied_paths``), and additionally
+# screens credential *filenames* (``.netrc``, ``id_rsa``, ``*.pem`` ...) that
+# can live outside the credential sub-directories.
+# ---------------------------------------------------------------------------
+
+# Video extensions accepted for staging. Reuses ``SUPPORTED_VIDEO_TYPES`` (the
+# document-cache video map) plus ``.3gp`` (a phone-recorded format the dispatch
+# partition already routes as video) rather than inventing a second list.
+_STAGE_VIDEO_EXTS = frozenset(SUPPORTED_VIDEO_TYPES) | {".3gp"}
+
+# Credential-bearing filenames that must NEVER be staged, regardless of which
+# directory they sit in. These catch secret material that lives *outside* the
+# credential sub-directories already covered by
+# ``_MEDIA_DELIVERY_DENIED_HOME_SUBPATHS`` (e.g. a ``~/.netrc`` in the home
+# root, an exported ``id_rsa`` next to a project, a stray ``config.yaml``).
+# Matched case-insensitively against the resolved (symlink-followed) filename.
+_MEDIA_STAGE_DENIED_FILENAMES = frozenset({
+    ".env",
+    ".netrc",
+    ".pgpass",
+    ".bash_history",
+    ".zsh_history",
+    ".python_history",
+    ".git-credentials",
+    ".npmrc",
+    ".pypirc",
+    ".dockercfg",
+    ".htpasswd",
+    ".boto",
+    "auth.json",
+    "credentials",
+    "credentials.json",
+    "config.yaml",
+    "config.yml",
+    "secrets.yaml",
+    "secrets.yml",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+})
+
+# Credential-bearing file suffixes that must never be staged (private keys,
+# keystores, password databases).
+_MEDIA_STAGE_DENIED_SUFFIXES = frozenset({
+    ".pem",
+    ".key",
+    ".pfx",
+    ".p12",
+    ".jks",
+    ".keystore",
+    ".kdbx",
+})
+
+
+def _stage_filename_is_credential(name: str) -> bool:
+    """Return True if ``name`` looks like credential / secret material."""
+    lowered = name.lower()
+    if lowered in _MEDIA_STAGE_DENIED_FILENAMES:
+        return True
+    return Path(lowered).suffix in _MEDIA_STAGE_DENIED_SUFFIXES
+
+
+def _stage_path_under_denied_dir(resolved: Path) -> bool:
+    """Return True if ``resolved`` is under a directory staging must not touch.
+
+    Reuses the validator's :func:`_media_delivery_denied_paths` (``/etc``,
+    ``/proc``, ``~/.ssh``, ``~/.aws``, ``~/.hermes/.env`` ...) with one narrow
+    exception: the *running user's own home* may be reached into. That single
+    exception is what lets a root-run gateway deliver ``/root/work/proposal.docx``
+    while ``/root/.ssh/id_rsa`` (a separate, more-specific denylist entry) stays
+    blocked. The exception only matches when the denied directory IS the running
+    user's home, so it can never un-block a credential sub-directory, a Hermes
+    secret, or another user's home (``/root/...`` when running as a non-root
+    user).
+    """
+    try:
+        home = Path(os.path.expanduser("~")).resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        home = None
+
+    for denied in _media_delivery_denied_paths():
+        try:
+            resolved_denied = denied.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if not (_path_is_within(resolved, resolved_denied) or resolved == resolved_denied):
+            continue
+        # Allowed exception: the denied directory is the running user's own
+        # home. Credential sub-dirs/filenames are screened separately, so a
+        # plain deliverable under $HOME is safe to stage.
+        if home is not None and resolved_denied == home:
+            continue
+        return True
+    return False
+
+
+def _stage_target_cache_dir(resolved: Path) -> Path:
+    """Return the Hermes cache directory a staged file should be copied into.
+
+    Classified by extension using the existing supported-type sets. Unknown
+    extensions fall back to the document cache (the generic bucket) rather than
+    being dropped, since the product behaviour is "deliver the requested file".
+    """
+    suffix = resolved.suffix.lower()
+    if suffix in SUPPORTED_IMAGE_DOCUMENT_TYPES:
+        return get_image_cache_dir()
+    if suffix in _AUDIO_EXTS:
+        return get_audio_cache_dir()
+    if suffix in _STAGE_VIDEO_EXTS:
+        return get_video_cache_dir()
+    return get_document_cache_dir()
+
+
+def _copy_into_media_cache(source: Path, cache_dir: Path) -> Path:
+    """Copy ``source`` into ``cache_dir`` with a collision-safe name.
+
+    Preserves the original filename when free; on collision inserts a short
+    random token so an existing cache file is never overwritten. Never mutates
+    or deletes ``source``. Raises ``OSError`` on copy failure.
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = source.name or "media"
+    target = cache_dir / safe_name
+    if target.exists():
+        stem, suffix = target.stem, target.suffix
+        while True:
+            token = uuid.uuid4().hex[:8]
+            candidate = cache_dir / f"{stem}_{token}{suffix}"
+            if not candidate.exists():
+                target = candidate
+                break
+    # Defense in depth: ensure the staged path stays inside the cache dir even
+    # for unusual filenames.
+    if not target.resolve(strict=False).is_relative_to(cache_dir.resolve(strict=False)):
+        raise OSError(f"staging target escaped cache dir: {safe_name!r}")
+    shutil.copy2(source, target)
+    return target
+
+
+def stage_media_delivery_path(path: str) -> Optional[str]:
+    """Stage a safe local deliverable into the Hermes media cache for delivery.
+
+    Returns the staged cache path (which then passes
+    :func:`validate_media_delivery_path`), or ``None`` when the file must not be
+    staged. Intended as the fallback after a direct validation failure: an
+    existing regular file that the agent produced in a working directory the
+    delivery validator does not allowlist (e.g. ``/root/work/proposal.docx`` on
+    a root-run gateway) is copied into the cache directory matching its
+    extension, then delivered normally.
+
+    Denylist protections are preserved:
+
+    * Credential / system directories (``/etc``, ``~/.ssh``, ``~/.hermes/.env``
+      ...) are refused via :func:`_stage_path_under_denied_dir`.
+    * Credential filenames (``.netrc``, ``id_rsa``, ``*.pem`` ...) are refused
+      via :func:`_stage_filename_is_credential`.
+    * Symlinks are resolved before any check, so a link pointing at a denied
+      target is rejected on the resolved path.
+    * In strict mode (``HERMES_MEDIA_DELIVERY_STRICT=1``) only freshly-produced
+      files are staged, preserving a public-facing operator's stale-host-file
+      protection.
+
+    The source file is never mutated or deleted.
+    """
+    resolved = _resolve_media_candidate(path)
+    if resolved is None:
+        return None
+
+    # Already deliverable as-is (under a cache / operator-allowlisted root):
+    # return it unchanged instead of duplicating it into the cache.
+    if _resolved_under_allowed_root(resolved):
+        return str(resolved)
+
+    if _stage_filename_is_credential(resolved.name) or _stage_path_under_denied_dir(resolved):
+        logger.info(
+            "Refusing to stage MEDIA file %s, reason=stage-denied",
+            _log_safe_path(path),
+        )
+        return None
+
+    # Strict mode: only stage freshly-produced files. A public-facing operator
+    # opted into the allowlist+recency model precisely so stale host files are
+    # not deliverable; staging must not become a side door around that.
+    if _media_delivery_strict_mode():
+        window = _media_delivery_recency_seconds()
+        if not _file_is_recently_produced(resolved, window):
+            logger.info(
+                "Refusing to stage MEDIA file %s, reason=stage-stale-strict",
+                _log_safe_path(path),
+            )
+            return None
+
+    target_dir = _stage_target_cache_dir(resolved)
+    try:
+        staged = _copy_into_media_cache(resolved, target_dir)
+    except OSError as exc:
+        logger.warning(
+            "Failed to stage MEDIA file %s into cache: %s",
+            _log_safe_path(path),
+            exc,
+        )
+        return None
+
+    logger.info(
+        "Staged MEDIA file %s -> %s for delivery",
+        _log_safe_path(path),
+        _log_safe_path(str(staged)),
+    )
+    return str(staged)
 
 
 # ---------------------------------------------------------------------------
@@ -2749,28 +3010,65 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path)
 
     @staticmethod
+    def stage_media_delivery_path(path: str) -> Optional[str]:
+        """Copy a safe local deliverable into the media cache; return its path.
+
+        Returns ``None`` when the file must not be staged (credential / system
+        path, missing file, ...). See :func:`stage_media_delivery_path`.
+        """
+        return stage_media_delivery_path(path)
+
+    @staticmethod
     def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+        """Drop unsafe MEDIA paths and normalize accepted paths.
+
+        A path the direct validator rejects is given a second chance via
+        :func:`stage_media_delivery_path`, which copies a safe local
+        deliverable (e.g. a freshly produced ``proposal.docx`` under the
+        operator's working dir) into the media cache. Staging applies the same
+        credential / system denylist, so this never relaxes the security model;
+        it only rescues files that would otherwise be silently dropped.
+        """
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
             raw = str(media_path)
             safe_path = validate_media_delivery_path(raw)
+            if not safe_path:
+                try:
+                    safe_path = stage_media_delivery_path(raw)
+                except Exception:
+                    safe_path = None
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
+                # TODO(#31864): surface these rejections to the user (not just
+                # the operator log) so a "file didn't attach" report is visible
+                # in-chat rather than only diagnosable from gateway.log.
                 logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
         return safe_media
 
     @staticmethod
     def filter_local_delivery_paths(file_paths) -> List[str]:
-        """Drop unsafe bare local file paths and normalize accepted paths."""
+        """Drop unsafe bare local file paths and normalize accepted paths.
+
+        Falls back to :func:`stage_media_delivery_path` (same denylist as direct
+        delivery) before dropping a path, mirroring
+        :py:meth:`filter_media_delivery_paths`.
+        """
         safe_paths: List[str] = []
         for file_path in file_paths or []:
             raw = str(file_path)
             safe_path = validate_media_delivery_path(raw)
+            if not safe_path:
+                try:
+                    safe_path = stage_media_delivery_path(raw)
+                except Exception:
+                    safe_path = None
             if safe_path:
                 safe_paths.append(safe_path)
             else:
+                # TODO(#31864): surface these rejections to the user, not just
+                # the operator log.
                 logger.warning("Skipping unsafe local file path: %s", _log_safe_path(raw))
         return safe_paths
 
