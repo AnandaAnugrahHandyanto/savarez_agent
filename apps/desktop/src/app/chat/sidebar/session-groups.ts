@@ -29,6 +29,16 @@ export function sessionGroupingLabel(session: SessionInfo): { id: string; label:
   return { id, label, path: path || null }
 }
 
+function groupPriority(group: SidebarSessionGroup): number {
+  if (group.id.includes(':') && group.path === null && group.id !== '__no_workspace__') {
+    return 0
+  }
+  if (group.path) {
+    return 1
+  }
+  return 2
+}
+
 export function sessionGroupsFor(sessions: SessionInfo[]): SidebarSessionGroup[] {
   const groups = new Map<string, SidebarSessionGroup>()
 
@@ -39,13 +49,13 @@ export function sessionGroupsFor(sessions: SessionInfo[]): SidebarSessionGroup[]
     groups.set(key.id, group)
   }
 
-  // Groups keep recency order (Map insertion = first-seen in the recency-sorted
-  // input, so an active project/topic floats up), but rows *within* a group sort
-  // by creation time so they don't reshuffle every time a message lands — keeps
-  // muscle memory intact.
+  // Groups keep recency order inside each priority band (Telegram/chat topics
+  // first, then workspaces, then unscoped/no-workspace rows), but rows *within*
+  // a group sort by creation time so they don't reshuffle every time a message
+  // lands — keeps muscle memory intact.
   for (const group of groups.values()) {
     group.sessions.sort((a, b) => b.started_at - a.started_at)
   }
 
-  return [...groups.values()]
+  return [...groups.values()].sort((a, b) => groupPriority(a) - groupPriority(b))
 }

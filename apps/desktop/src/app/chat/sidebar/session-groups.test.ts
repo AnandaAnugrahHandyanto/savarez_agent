@@ -56,34 +56,22 @@ describe('sessionGroupingLabel', () => {
 })
 
 describe('sessionGroupsFor', () => {
-  it('groups sessions by Telegram topic before workspace', () => {
+  it('keeps Telegram topic groups above workspace groups even when workspace sessions are newer', () => {
     const sessions = [
+      baseSession({ id: 'workspace', cwd: '/tmp/hermes-agent', started_at: 300 }),
       baseSession({
-        id: 'a',
+        id: 'topic',
         origin: {
-          display_label: 'Dolly Main Projects / ▸ HWNextApp – /finance',
-          group_key: 'telegram:topic:finance',
+          display_label: 'Dolly Main Projects / ▸ HW-external tilbud',
+          group_key: 'telegram:topic:external',
           platform: 'telegram'
         },
-        started_at: 10
-      }),
-      baseSession({
-        id: 'b',
-        origin: {
-          display_label: 'Dolly Main Projects / ▸ HWNextApp – /finance',
-          group_key: 'telegram:topic:finance',
-          platform: 'telegram'
-        },
-        started_at: 20
-      }),
-      baseSession({ id: 'c', cwd: '/tmp/example', started_at: 30 })
+        started_at: 100
+      })
     ]
 
     const groups = sessionGroupsFor(sessions)
 
-    expect(groups).toHaveLength(2)
-    expect(groups[0]?.label).toBe('Dolly Main Projects / ▸ HWNextApp – /finance')
-    expect(groups[0]?.sessions.map(s => s.id)).toEqual(['b', 'a'])
-    expect(groups[1]?.label).toBe('example')
+    expect(groups.map(group => group.label)).toEqual(['Dolly Main Projects / ▸ HW-external tilbud', 'hermes-agent'])
   })
 })

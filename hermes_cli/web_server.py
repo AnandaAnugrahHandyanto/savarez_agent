@@ -1400,6 +1400,42 @@ def _compact_str(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
 
+def _configured_topic_labels(platform: str) -> Dict[str, str]:
+    if platform != "telegram":
+        return {}
+    try:
+        config = load_config()
+    except Exception:
+        return {}
+
+    candidates = []
+    platforms = config.get("platforms") if isinstance(config, dict) else None
+    telegram_platform = (platforms or {}).get("telegram") if isinstance(platforms, dict) else None
+    extra = (telegram_platform or {}).get("extra") if isinstance(telegram_platform, dict) else None
+    if isinstance(extra, dict):
+        candidates.extend(extra.get("group_topics") or [])
+
+    legacy = config.get("telegram") if isinstance(config, dict) else None
+    if isinstance(legacy, dict):
+        candidates.extend(legacy.get("group_topics") or [])
+
+    labels: Dict[str, str] = {}
+    for group in candidates:
+        if not isinstance(group, dict):
+            continue
+        chat_id = _compact_str(group.get("chat_id"))
+        if not chat_id:
+            continue
+        for topic in group.get("topics") or []:
+            if not isinstance(topic, dict):
+                continue
+            thread_id = _compact_str(topic.get("thread_id"))
+            name = _compact_str(topic.get("name"))
+            if thread_id and name:
+                labels[f"{chat_id}:{thread_id}"] = name
+    return labels
+
+
 def _session_origin_metadata(origin: Dict[str, Any]) -> Optional[Dict[str, str]]:
     """Return non-secret, UI-ready origin metadata for a gateway session."""
     platform = _compact_str(origin.get("platform"))
@@ -1407,7 +1443,8 @@ def _session_origin_metadata(origin: Dict[str, Any]) -> Optional[Dict[str, str]]
     thread_id = _compact_str(origin.get("thread_id"))
     chat_type = _compact_str(origin.get("chat_type")) or "chat"
     chat_name = _compact_str(origin.get("chat_name"))
-    chat_topic = _compact_str(origin.get("chat_topic"))
+    configured_topics = _configured_topic_labels(platform)
+    chat_topic = _compact_str(origin.get("chat_topic")) or configured_topics.get(f"{chat_id}:{thread_id}", "")
     user_name = _compact_str(origin.get("user_name"))
 
     if not platform:

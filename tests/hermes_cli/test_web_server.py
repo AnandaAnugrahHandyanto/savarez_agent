@@ -237,6 +237,36 @@ class TestSessionOriginMetadata:
             "group_key": "telegram:group:b485e15f335e",
         }
 
+    def test_configured_topic_label_fills_missing_origin_topic(self, monkeypatch):
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {
+            "platforms": {
+                "telegram": {
+                    "extra": {
+                        "group_topics": [
+                            {
+                                "chat_id": "-1003828321118",
+                                "topics": [{"thread_id": "11648", "name": "Vw AI render"}],
+                            }
+                        ]
+                    }
+                }
+            }
+        })
+
+        metadata = web_server._session_origin_metadata({
+            "platform": "telegram",
+            "chat_id": "-1003828321118",
+            "chat_name": "Dolly Main Projects",
+            "chat_type": "group",
+            "thread_id": "11648",
+            "chat_topic": None,
+        })
+
+        assert metadata["chat_topic"] == "Vw AI render"
+        assert metadata["display_label"] == "Dolly Main Projects / Vw AI render"
+
     def test_enriches_sessions_from_gateway_session_index(self, tmp_path, monkeypatch):
         from hermes_cli import web_server
 
