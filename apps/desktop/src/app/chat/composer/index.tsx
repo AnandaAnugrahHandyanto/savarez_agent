@@ -65,7 +65,13 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { SkinSlashPopover } from './skin-slash-popover'
-import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
+import {
+  detectTrigger,
+  extractClipboardImageBlobs,
+  isComposingKeyboardEvent,
+  textBeforeCaret,
+  type TriggerState
+} from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
@@ -567,6 +573,13 @@ export function ChatBar({
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // IMEs (Japanese, Chinese, Korean, etc.) use Enter/arrow keys while text is
+    // still composing. Let the browser finish conversion instead of treating
+    // that key press as a composer submit or slash-menu navigation.
+    if (isComposingKeyboardEvent(event)) {
+      return
+    }
+
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
       event.preventDefault()
 
@@ -628,7 +641,11 @@ export function ChatBar({
     }
   }
 
-  const handleEditorKeyUp = () => {
+  const handleEditorKeyUp = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (isComposingKeyboardEvent(event)) {
+      return
+    }
+
     // If this keyup belongs to a key the open trigger popover already consumed
     // in keydown (Arrow/Enter/Tab/Escape), skip the refresh. Those keys never
     // edit text, and for Escape the keydown already closed the menu — a refresh
