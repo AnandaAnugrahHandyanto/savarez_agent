@@ -809,6 +809,15 @@ async def get_action_status(name: str, lines: int = 200):
         exit_code = proc.poll()
         running = exit_code is None
         pid = proc.pid
+        # Reap completed child to prevent zombie accumulation (issue #38032).
+        # poll() reads exit code via waitpid(WNOHANG) but does NOT clear the
+        # process table entry — only a blocking wait() does that.
+        if exit_code is not None:
+            try:
+                proc.wait(timeout=1)
+            except Exception:
+                pass
+            _ACTION_PROCS.pop(name, None)
 
     return {
         "name": name,
