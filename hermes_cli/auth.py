@@ -3570,6 +3570,132 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         return None
 
 
+def _codex_cli_shared_auth_enabled() -> bool:
+    raw = os.getenv("HERMES_CODEX_SHARED_AUTH", "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _codex_cli_auth_path() -> Path:
+    codex_home = os.getenv("CODEX_HOME", "").strip()
+    if not codex_home:
+        codex_home = str(Path.home() / ".codex")
+    return Path(codex_home).expanduser() / "auth.json"
+
+
+@contextmanager
+def _codex_cli_auth_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    auth_path = _codex_cli_auth_path()
+    lock_path = auth_path.with_suffix(auth_path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+")
+    start = time.monotonic()
+    try:
+        if fcntl is not None:
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() - start > timeout_seconds:
+                        raise TimeoutError(f"Timed out waiting for Codex CLI auth lock: {lock_path}")
+                    time.sleep(0.05)
+        yield
+    finally:
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def _read_codex_cli_auth_payload() -> Dict[str, Any]:
+    auth_path = _codex_cli_auth_path()
+    if not auth_path.is_file():
+        raise AuthError(
+            f"Codex CLI auth is missing at {auth_path}. Run `codex login` as this user.",
+            provider="openai-codex",
+            code="codex_cli_auth_missing",
+            relogin_required=True,
+        )
+    try:
+        payload = json.loads(auth_path.read_text())
+    except Exception as exc:
+        raise AuthError(
+            f"Codex CLI auth at {auth_path} is not readable JSON.",
+            provider="openai-codex",
+            code="codex_cli_auth_invalid_json",
+            relogin_required=True,
+        ) from exc
+    tokens = payload.get("tokens")
+    if not isinstance(tokens, dict):
+        raise AuthError(
+            f"Codex CLI auth at {auth_path} is missing tokens. Run `codex login`.",
+            provider="openai-codex",
+            code="codex_cli_auth_missing_tokens",
+            relogin_required=True,
+        )
+    if not tokens.get("access_token") or not tokens.get("refresh_token"):
+        raise AuthError(
+            f"Codex CLI auth at {auth_path} is incomplete. Run `codex login`.",
+            provider="openai-codex",
+            code="codex_cli_auth_incomplete",
+            relogin_required=True,
+        )
+    return payload
+
+
+def _write_codex_cli_auth_payload(payload: Dict[str, Any]) -> None:
+    auth_path = _codex_cli_auth_path()
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = auth_path.with_name(f".{auth_path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    tmp_path.write_text(json.dumps(payload, indent=2) + "\n")
+    try:
+        os.chmod(tmp_path, 0o600)
+    except OSError:
+        pass
+    atomic_replace(tmp_path, auth_path)
+
+
+def _resolve_codex_cli_shared_tokens(
+    *,
+    force_refresh: bool,
+    refresh_if_expiring: bool,
+    refresh_skew_seconds: int,
+    refresh_timeout_seconds: float,
+) -> Dict[str, Any]:
+    with _codex_cli_auth_lock(
+        timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0),
+    ):
+        payload = _read_codex_cli_auth_payload()
+        tokens = dict(payload["tokens"])
+        access_token = str(tokens.get("access_token", "") or "").strip()
+        should_refresh = bool(force_refresh)
+        if (not should_refresh) and refresh_if_expiring:
+            should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
+        if should_refresh:
+            refreshed = refresh_codex_oauth_pure(
+                access_token,
+                str(tokens.get("refresh_token", "") or ""),
+                timeout_seconds=refresh_timeout_seconds,
+            )
+            tokens.update({
+                "access_token": refreshed["access_token"],
+                "refresh_token": refreshed["refresh_token"],
+            })
+            payload["tokens"] = tokens
+            payload["last_refresh"] = refreshed.get("last_refresh") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            if not payload.get("auth_mode"):
+                payload["auth_mode"] = "chatgpt"
+            _write_codex_cli_auth_payload(payload)
+            access_token = str(tokens.get("access_token", "") or "").strip()
+        return {
+            "tokens": tokens,
+            "last_refresh": payload.get("last_refresh"),
+            "auth_path": str(_codex_cli_auth_path()),
+            "access_token": access_token,
+        }
+
+
 def resolve_codex_runtime_credentials(
     *,
     force_refresh: bool = False,
@@ -3587,6 +3713,43 @@ def resolve_codex_runtime_credentials(
     HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
     credential. See issue #32992.
     """
+    refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
+    base_url = (
+        os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+        or DEFAULT_CODEX_BASE_URL
+    )
+
+    if _codex_cli_shared_auth_enabled():
+        try:
+            shared = _resolve_codex_cli_shared_tokens(
+                force_refresh=force_refresh,
+                refresh_if_expiring=refresh_if_expiring,
+                refresh_skew_seconds=refresh_skew_seconds,
+                refresh_timeout_seconds=refresh_timeout_seconds,
+            )
+            return {
+                "provider": "openai-codex",
+                "base_url": base_url,
+                "api_key": shared["access_token"],
+                "source": "codex-cli-shared",
+                "last_refresh": shared.get("last_refresh"),
+                "auth_mode": "codex_cli_shared",
+                "auth_path": shared.get("auth_path"),
+            }
+        except AuthError as exc:
+            # If the shared Codex CLI auth file exists but is invalid, fail
+            # closed with the direct `codex login` remediation.  If it is
+            # simply absent, fall back to upstream Hermes auth for compatibility.
+            if exc.code != "codex_cli_auth_missing":
+                raise
+        except Exception as exc:
+            raise AuthError(
+                f"Codex CLI shared auth failed: {exc}",
+                provider="openai-codex",
+                code="codex_cli_shared_auth_failed",
+                relogin_required=True,
+            ) from exc
+
     try:
         data = _read_codex_tokens()
     except AuthError:
@@ -3608,8 +3771,6 @@ def resolve_codex_runtime_credentials(
 
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
-
     should_refresh = bool(force_refresh)
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
@@ -3627,11 +3788,6 @@ def resolve_codex_runtime_credentials(
             if should_refresh:
                 tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
                 access_token = str(tokens.get("access_token", "") or "").strip()
-
-    base_url = (
-        os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
-        or DEFAULT_CODEX_BASE_URL
-    )
 
     return {
         "provider": "openai-codex",

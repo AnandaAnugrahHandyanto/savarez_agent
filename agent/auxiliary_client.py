@@ -1349,7 +1349,7 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
 
 
 def _read_codex_access_token() -> Optional[str]:
-    """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
+    """Read a valid, non-expired Codex OAuth access token.
 
     If a credential pool exists but currently has no selectable runtime entry
     (for example all pool slots are marked exhausted), fall back to the
@@ -1357,6 +1357,15 @@ def _read_codex_access_token() -> Optional[str]:
     fallback-to-Codex working when the pool state is stale but the stored OAuth
     token is still valid.
     """
+    try:
+        from hermes_cli.auth import resolve_codex_runtime_credentials
+        creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+        token = str(creds.get("api_key") or "").strip()
+        if token:
+            return token
+    except Exception as exc:
+        logger.debug("Could not resolve Codex runtime auth for auxiliary client: %s", exc)
+
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         token = _pool_runtime_api_key(entry)
