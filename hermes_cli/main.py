@@ -6846,10 +6846,21 @@ def _run_npm_install_deterministic(
     rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
     the working tree dirty and causes the next ``hermes update`` to stash the
     lockfile — repeatedly.
+
+    ``--include=dev`` is forced on every invocation: the only callers are
+    frontend builds (desktop / TUI / web), and those builds need the dev
+    toolchain (``tsc``, ``vite``, ``electron-builder`` — all ``devDependencies``).
+    If the caller's environment has ``NODE_ENV=production`` (or ``npm config``
+    ``omit=dev``) — which can leak in from a shell profile, a parent process, or
+    a packaged-app launch context — npm omits devDependencies by default, so the
+    build toolchain never installs and the build dies with ``tsc: command not
+    found`` (exit 127). Forcing ``--include=dev`` overrides that omission so a
+    self-update rebuild can't be silently broken by an inherited ``NODE_ENV``.
     """
+    include_dev = ("--include=dev",)
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
-        ci_cmd = [npm, "ci", *extra_args]
+        ci_cmd = [npm, "ci", *include_dev, *extra_args]
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
@@ -6863,7 +6874,7 @@ def _run_npm_install_deterministic(
             return ci_result
         # Fall through to `npm install` — lockfile may be out of sync on a
         # WIP fork/branch, or `npm ci` may not be available on very old npm.
-    install_cmd = [npm, "install", *extra_args]
+    install_cmd = [npm, "install", *include_dev, *extra_args]
     return subprocess.run(
         install_cmd,
         cwd=cwd,
