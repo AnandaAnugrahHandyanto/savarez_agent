@@ -2903,6 +2903,9 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
     </dict>
+
+    <key>SessionCreate</key>
+    <true/>
     
     <key>RunAtLoad</key>
     <true/>
