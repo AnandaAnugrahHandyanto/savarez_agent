@@ -5584,28 +5584,30 @@ def _define_discord_view_classes() -> None:
             self.clarify_id = clarify_id
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
-            self.resolved = False
-            for index, choice in enumerate(self.choices):
-                # Discord button labels are capped at 80 chars.
-                label_body = choice if len(choice) <= 75 else choice[:72] + "..."
-                button = discord.ui.Button(
+        self.resolved = False
 
-        async def on_timeout(self):
-            """Disable all buttons and update the embed when the interaction times out."""
-            for item in self.children:
-                item.disabled = True
-        
-                # Mesajı güncelle
-                if hasattr(self, "message") and self.message:
-                    try:
-                        await self.message.edit(content="⚠️ [Interaction Expired / Süresi Doldu]", view=self)
-                    except Exception:
-                        pass   
+        for index, choice in enumerate(self.choices):
+            # Discord button labels are capped at 80 chars.
+            label_body = choice if len(choice) <= 75 else choice[:75]
+            button = discord.ui.Button(
+                label=f"{index + 1}. {label_body}",
+                style=discord.ButtonStyle.primary,
+                custom_id=f"clarify:{clarify_id}:{index}",
+            )
+            button.callback = self._make_choice_callback(index, choice)
+            self.add_item(button)
 
-            
-                    label=f"{index + 1}. {label_body}",
-                    style=discord.ButtonStyle.primary,
-                    custom_id=f"clarify:{clarify_id}:{index}",
+    async def on_timeout(self):
+        """Disable all buttons and update the embed when the interaction times out."""
+        for item in self.children:
+            item.disabled = True
+
+        # Mesajı güncelle
+        if hasattr(self, "message") and self.message:
+            try:
+                await self.message.edit(content="⚠️ [Interaction timed out]")
+            except Exception:
+                pass
                 )
                 button.callback = self._make_choice_callback(index, choice)
                 self.add_item(button)
