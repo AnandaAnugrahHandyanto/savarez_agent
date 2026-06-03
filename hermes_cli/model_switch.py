@@ -238,6 +238,44 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                         provider=provider.strip() or current_provider,
                         base_url="",
                     )
+
+            # --- model.custom_providers (per-provider model dict) ---
+            # Each entry under custom_providers declares its own models. Surface
+            # every (slug, model) pair as a DirectAlias so /model picker lists
+            # them and runtime validation in resolve_target_provider() accepts
+            # them (see the matching slug convention below).
+            custom_providers = model_section.get("custom_providers")
+            if isinstance(custom_providers, dict):
+                for slug, provider_cfg in custom_providers.items():
+                    if not isinstance(provider_cfg, dict):
+                        continue
+                    provider_base_url = provider_cfg.get("base_url", "")
+                    provider_models = provider_cfg.get("models", {})
+                    if not isinstance(provider_models, dict):
+                        continue
+                    for model_name in provider_models.keys():
+                        if not isinstance(model_name, str) or not model_name.strip():
+                            continue
+                        # Register TWO keys per model: the short name (so the
+                        # picker matches `agn...` without forcing the user to
+                        # type the full `custom:agnes_ai/...` prefix), and
+                        # the fully-qualified `custom:slug/model` key for
+                        # round-tripping. Short names never override explicit
+                        # user aliases; the long name is always safe.
+                        short_key = model_name.strip().lower()
+                        long_key = f"custom:{slug}/{model_name}".lower()
+                        if short_key not in merged:
+                            merged[short_key] = DirectAlias(
+                                model=model_name.strip(),
+                                provider=f"custom:{slug}",
+                                base_url=provider_base_url or "",
+                            )
+                        if long_key not in merged:
+                            merged[long_key] = DirectAlias(
+                                model=model_name.strip(),
+                                provider=f"custom:{slug}",
+                                base_url=provider_base_url or "",
+                            )
     except Exception:
         pass
     return merged
