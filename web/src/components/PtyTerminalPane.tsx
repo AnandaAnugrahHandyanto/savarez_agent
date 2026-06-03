@@ -4,7 +4,8 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -61,7 +62,37 @@ export function PtyTerminalPane({ tmuxTarget, resume, className, title, autoFocu
       ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
       : null,
   );
+  const [composerDraft, setComposerDraft] = useState("");
   const channel = useMemo(() => generateChannelId(), [tmuxTarget, resume]);
+
+  const sendTextToTerminal = useCallback((text: string, submit = true) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const term = termRef.current;
+    const ws = wsRef.current;
+    if (!term || !ws || ws.readyState !== WebSocket.OPEN) return;
+    term.paste(trimmed);
+    if (submit) {
+      window.setTimeout(() => {
+        const s = wsRef.current;
+        if (s && s.readyState === WebSocket.OPEN) s.send("\r");
+      }, 80);
+    }
+    term.focus();
+  }, []);
+
+  const submitComposerDraft = useCallback((event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    const text = composerDraft;
+    setComposerDraft("");
+    sendTextToTerminal(text);
+  }, [composerDraft, sendTextToTerminal]);
+
+  const handleComposerKeyDown = useCallback((event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    event.preventDefault();
+    submitComposerDraft();
+  }, [submitComposerDraft]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -82,7 +113,8 @@ export function PtyTerminalPane({ tmuxTarget, resume, className, title, autoFocu
       macOptionIsMeta: true,
       macOptionClickForcesSelection: true,
       rightClickSelectsWord: true,
-      scrollback: 5000,
+      scrollback: 100000,
+      scrollOnUserInput: false,
       theme: TERMINAL_THEME,
     });
     termRef.current = term;
@@ -116,15 +148,6 @@ export function PtyTerminalPane({ tmuxTarget, resume, className, title, autoFocu
     term.unicode.activeVersion = "11";
     term.loadAddon(new WebLinksAddon());
     term.open(host);
-
-    const wheelHandler = (ev: WheelEvent) => {
-      if (!termRef.current) return;
-      const lineHeight = Math.max(1, Number(term.options.fontSize || 12) * Number(term.options.lineHeight || 1));
-      const lines = Math.max(1, Math.ceil(Math.abs(ev.deltaY) / lineHeight));
-      term.scrollLines(ev.deltaY > 0 ? lines : -lines);
-      ev.preventDefault();
-    };
-    host.addEventListener("wheel", wheelHandler, { passive: false });
 
     if (tierWidthPx(host) >= 768) {
       try {
@@ -185,10 +208,8 @@ export function PtyTerminalPane({ tmuxTarget, resume, className, title, autoFocu
         else if (ev.code === 4403) setBanner("Terminal is only reachable from localhost.");
         else term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
       };
-      // eslint-disable-next-line no-control-regex -- xterm SGR mouse report parser
-      const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
       onDataDisposable = term.onData((data) => {
-        if (ws.readyState !== WebSocket.OPEN || SGR_MOUSE_RE.test(data)) return;
+        if (ws.readyState !== WebSocket.OPEN) return;
         ws.send(data);
       });
       onResizeDisposable = term.onResize(({ cols, rows }) => {
@@ -203,7 +224,6 @@ export function PtyTerminalPane({ tmuxTarget, resume, className, title, autoFocu
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
       ro.disconnect();
-      host.removeEventListener("wheel", wheelHandler);
       window.removeEventListener("resize", scheduleSync);
       if (raf) cancelAnimationFrame(raf);
       wsRef.current?.close();
@@ -217,6 +237,28 @@ export function PtyTerminalPane({ tmuxTarget, resume, className, title, autoFocu
     <div className={cn("relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg p-2", className)} style={{ backgroundColor: TERMINAL_THEME.background }} title={title}>
       {banner ? <div className="border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">{banner}</div> : null}
       <div ref={hostRef} className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1" />
+      <form
+        onSubmit={submitComposerDraft}
+        className="mt-2 flex shrink-0 items-end gap-1.5 rounded border border-current/20 bg-black/20 p-1.5"
+        style={{ color: TERMINAL_THEME.foreground }}
+      >
+        <textarea
+          value={composerDraft}
+          onChange={(event) => setComposerDraft(event.target.value)}
+          onKeyDown={handleComposerKeyDown}
+          placeholder="Dictate or paste text… Enter sends"
+          rows={1}
+          autoCapitalize="sentences"
+          className="min-h-8 max-h-24 flex-1 resize-none rounded bg-black/20 px-2 py-1.5 text-sm leading-snug outline-none placeholder:text-current/45 focus:ring-1 focus:ring-current/40"
+        />
+        <button
+          type="submit"
+          disabled={!composerDraft.trim()}
+          className="h-8 shrink-0 rounded border border-current/25 px-2 text-xs disabled:opacity-40"
+        >
+          send
+        </button>
+      </form>
     </div>
   );
 }

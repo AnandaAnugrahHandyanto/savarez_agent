@@ -26,7 +26,8 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { ClipboardPaste, Copy, PanelRight, Send, X } from "lucide-react";
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -139,7 +140,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : null,
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [composerDraft, setComposerDraft] = useState("");
+  const [pasteState, setPasteState] = useState<"idle" | "pasted" | "blocked">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pasteResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -177,6 +181,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const kanbanTitleParam = searchParams.get("kanban_title");
   const ptyModeParam = searchParams.get("pty_mode");
   const tmuxSessionParam = searchParams.get("tmux_session");
+  const isTmuxTerminal = ptyModeParam === "tmux" || !!tmuxSessionParam;
   const terminalParams = useMemo(() => {
     const params = new URLSearchParams();
     if (ptyModeParam) params.set("pty_mode", ptyModeParam);
@@ -297,6 +302,51 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     termRef.current?.focus();
   };
 
+  const sendTextToTerminal = useCallback((text: string, submit = true) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const term = termRef.current;
+    const ws = wsRef.current;
+    if (!term || !ws || ws.readyState !== WebSocket.OPEN) return;
+    // xterm.paste preserves terminal paste semantics, including bracketed
+    // paste when the TUI/shell has it enabled. A short delayed Return lets
+    // dictated/mobile text submit without making the user focus xterm first.
+    term.paste(trimmed);
+    if (submit) {
+      window.setTimeout(() => {
+        const s = wsRef.current;
+        if (s && s.readyState === WebSocket.OPEN) s.send("\r");
+      }, 80);
+    }
+    term.focus();
+  }, []);
+
+  const submitComposerDraft = useCallback((event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    const text = composerDraft;
+    setComposerDraft("");
+    sendTextToTerminal(text);
+  }, [composerDraft, sendTextToTerminal]);
+
+  const pasteClipboardIntoComposer = useCallback(() => {
+    navigator.clipboard
+      .readText()
+      .then((text) => {
+        if (!text) return;
+        setComposerDraft((prev) => (prev ? `${prev}\n${text}` : text));
+        setPasteState("pasted");
+      })
+      .catch(() => setPasteState("blocked"));
+    if (pasteResetRef.current) clearTimeout(pasteResetRef.current);
+    pasteResetRef.current = setTimeout(() => setPasteState("idle"), 1500);
+  }, []);
+
+  const handleComposerKeyDown = useCallback((event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    event.preventDefault();
+    submitComposerDraft();
+  }, [submitComposerDraft]);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -335,7 +385,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       rightClickSelectsWord: true,
       // Browser-embedded chat runs the TUI in inline mode. Keep transcript
       // history in xterm.js so the browser wheel can scroll it directly.
-      scrollback: 5000,
+      // tmux sessions keep much more local scrollback too, while mouse-wheel
+      // events are passed through below so tmux copy-mode can handle panes.
+      scrollback: 100000,
+      scrollOnUserInput: false,
       theme: TERMINAL_THEME,
     });
     termRef.current = term;
@@ -439,20 +492,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(fit);
 
     // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
-    term.attachCustomWheelEventHandler((ev) => {
-      const delta = ev.deltaY;
-      if (!delta) {
+    // mouse-wheel protocol bytes through the PTY. Tmux sessions are the
+    // exception: Deniz's tmux config binds WheelUpPane/WheelDownPane, so let
+    // xterm emit mouse reports and let tmux enter/leave copy-mode itself.
+    if (!isTmuxTerminal) {
+      term.attachCustomWheelEventHandler((ev) => {
+        const delta = ev.deltaY;
+        if (!delta) {
+          return false;
+        }
+
+        const step = Math.max(1, Math.round(Math.abs(delta) / 50));
+        term.scrollLines(delta > 0 ? step : -step);
+
+        ev.preventDefault();
+        ev.stopPropagation();
         return false;
-      }
-
-      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      term.scrollLines(delta > 0 ? step : -step);
-
-      ev.preventDefault();
-      ev.stopPropagation();
-      return false;
-    });
+      });
+    }
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -647,23 +704,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // Keystrokes → PTY.
     //
     // IMPORTANT:
-    // The embedded web chat has occasionally surfaced stray letters/digits
-    // in the input line after a turn completes. The most likely culprit is
-    // browser-side terminal control traffic being forwarded back into the
-    // PTY as if it were user text. SGR mouse tracking is the highest-risk
-    // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
-    // ordinary bytes to the backend.
-    //
-    // For the browser embed we prefer input stability over terminal-style
-    // mouse reporting, so we drop SGR mouse reports entirely instead of
-    // forwarding them into Hermes. Keyboard input, paste, and resize still
-    // behave normally.
+    // Plain embedded web chat can surface stray letters/digits if browser-side
+    // mouse control traffic is forwarded into the Hermes TUI. Keep dropping
+    // SGR mouse reports there. Tmux sessions need those reports for pane-local
+    // mouse scrolling/copy-mode, so forward all data when pty_mode=tmux.
       // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
       const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
       onDataDisposable = term.onData((data) => {
         if (ws.readyState !== WebSocket.OPEN) return;
 
-        if (SGR_MOUSE_RE.test(data)) {
+        if (!isTmuxTerminal && SGR_MOUSE_RE.test(data)) {
           return;
         }
 
@@ -708,8 +758,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         clearTimeout(copyResetRef.current);
         copyResetRef.current = null;
       }
+      if (pasteResetRef.current) {
+        clearTimeout(pasteResetRef.current);
+        pasteResetRef.current = null;
+      }
     };
-  }, [channel, resumeParam, terminalParams, initialKanbanPrompt]);
+  }, [channel, resumeParam, terminalParams, initialKanbanPrompt, isTmuxTerminal]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -871,6 +925,49 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
+
+          <form
+            onSubmit={submitComposerDraft}
+            className="mt-2 flex shrink-0 items-end gap-1.5 rounded border border-current/20 bg-black/20 p-1.5"
+            style={{ color: TERMINAL_THEME.foreground }}
+          >
+            <textarea
+              value={composerDraft}
+              onChange={(event) => setComposerDraft(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
+              placeholder="Dictate or paste text… Enter sends, Shift+Enter newline"
+              rows={1}
+              autoCapitalize="sentences"
+              className={cn(
+                "min-h-8 max-h-24 flex-1 resize-none rounded bg-black/20 px-2 py-1.5 text-sm leading-snug outline-none",
+                "placeholder:text-current/45 focus:ring-1 focus:ring-current/40",
+              )}
+            />
+            <Button
+              type="button"
+              ghost
+              onClick={pasteClipboardIntoComposer}
+              title="Paste clipboard into the dictation box"
+              aria-label="Paste clipboard into dictation box"
+              className="h-8 shrink-0 rounded border border-current/25 px-2 text-xs"
+            >
+              <ClipboardPaste className="h-3.5 w-3.5" />
+              <span className="sr-only">
+                {pasteState === "blocked" ? "paste blocked" : pasteState === "pasted" ? "pasted" : "paste"}
+              </span>
+            </Button>
+            <Button
+              type="submit"
+              ghost
+              disabled={!composerDraft.trim()}
+              title="Send dictated/pasted text to the terminal"
+              aria-label="Send dictated or pasted text"
+              className="h-8 shrink-0 rounded border border-current/25 px-2 text-xs disabled:opacity-40"
+            >
+              <Send className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">send</span>
+            </Button>
+          </form>
 
           <Button
             ghost
