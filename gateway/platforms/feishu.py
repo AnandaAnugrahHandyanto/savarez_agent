@@ -2564,6 +2564,15 @@ class FeishuAdapter(BasePlatformAdapter):
                 loop=loop,
             )
 
+        # v2.10: select_session card action for session binding
+        select_session_action = (
+            action_value.get("action") if isinstance(action_value, dict) else None
+        )
+        if select_session_action == "select_session":
+            from gateway.platforms.feishu_session_binding_bridge import handle_select_session_card_action
+            handle_select_session_card_action(action_value)
+            return P2CardActionTriggerResponse() if P2CardActionTrigger else None
+
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
             return None
