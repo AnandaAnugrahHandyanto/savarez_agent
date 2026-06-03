@@ -1390,14 +1390,40 @@ class TestEnsureUserSystemdEnv:
 
         assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_socket}"
 
-    def test_preserves_existing_env_vars(self, monkeypatch):
-        monkeypatch.setenv("XDG_RUNTIME_DIR", "/custom/runtime")
+    def test_preserves_existing_env_vars(self, tmp_path, monkeypatch):
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
         monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/custom/bus")
 
         gateway_cli._ensure_user_systemd_env()
 
-        assert os.environ["XDG_RUNTIME_DIR"] == "/custom/runtime"
+        assert os.environ["XDG_RUNTIME_DIR"] == str(runtime)
         assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/custom/bus"
+
+    def test_replaces_inherited_runtime_dir_for_different_uid(self, monkeypatch):
+        monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setattr(os, "getuid", lambda: 1002)
+
+        def fake_stat(self):
+            if str(self) == "/run/user/1000":
+                return SimpleNamespace(st_uid=1000)
+            if str(self) == "/run/user/1002":
+                return SimpleNamespace(st_uid=1002)
+            raise FileNotFoundError(str(self))
+
+        def fake_exists(self):
+            return str(self) in {"/run/user/1002", "/run/user/1002/bus"}
+
+        monkeypatch.setattr(gateway_cli.Path, "stat", fake_stat)
+        monkeypatch.setattr(gateway_cli.Path, "exists", fake_exists)
+
+        gateway_cli._ensure_user_systemd_env()
+
+        assert os.environ["XDG_RUNTIME_DIR"] == "/run/user/1002"
+        assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/1002/bus"
 
     def test_no_dbus_when_bus_socket_missing(self, tmp_path, monkeypatch):
         runtime = tmp_path / "runtime"
@@ -1427,6 +1453,19 @@ class TestEnsureUserSystemdEnv:
         result = gateway_cli._systemctl_cmd(system=True)
         assert result == ["systemctl"]
         assert calls == []
+
+
+class TestSystemdLingerStatus:
+    def test_uses_linger_marker_before_loginctl(self, monkeypatch):
+        monkeypatch.setenv("USER", "jasper")
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: None)
+
+        def fake_exists(self):
+            return str(self) == "/var/lib/systemd/linger/jasper"
+
+        monkeypatch.setattr(gateway_cli.Path, "exists", fake_exists)
+
+        assert gateway_cli.get_systemd_linger_status() == (True, "")
 
 
 class TestPreflightUserSystemd:

@@ -1470,14 +1470,34 @@ class SystemScopeRequiresRootError(RuntimeError):
 
 def _user_dbus_socket_path() -> Path:
     """Return the expected per-user D-Bus socket path (regardless of existence)."""
-    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    xdg = _current_user_runtime_dir()
     return Path(xdg) / "bus"
 
 
 def _user_systemd_private_socket_path() -> Path:
     """Return the per-user systemd private socket path (regardless of existence)."""
-    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    xdg = _current_user_runtime_dir()
     return Path(xdg) / "systemd" / "private"
+
+
+def _current_user_runtime_dir() -> str:
+    """Return a usable runtime dir for the current uid.
+
+    SSH/tmux/container launches can inherit XDG_RUNTIME_DIR from another user.
+    Trusting that value makes pathlib.exists() raise PermissionError before
+    Hermes can show the normal systemd remediation. Prefer /run/user/$UID when
+    the inherited directory is missing, inaccessible, or owned by another uid.
+    """
+    uid = os.getuid()  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    fallback = f"/run/user/{uid}"
+    xdg = os.environ.get("XDG_RUNTIME_DIR") or fallback
+    try:
+        st = Path(xdg).stat()
+        if st.st_uid == uid:
+            return xdg
+    except OSError:
+        pass
+    return fallback
 
 
 def _user_systemd_socket_ready() -> bool:
@@ -1502,17 +1522,17 @@ def _ensure_user_systemd_env() -> None:
     We detect the standard socket path and set the vars so all subsequent
     subprocess calls inherit them.
     """
-    uid = os.getuid()  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
-    if "XDG_RUNTIME_DIR" not in os.environ:
-        runtime_dir = f"/run/user/{uid}"
-        if Path(runtime_dir).exists():
-            os.environ["XDG_RUNTIME_DIR"] = runtime_dir
+    runtime_dir = _current_user_runtime_dir()
+    if Path(runtime_dir).exists():
+        os.environ["XDG_RUNTIME_DIR"] = runtime_dir
 
-    if "DBUS_SESSION_BUS_ADDRESS" not in os.environ:
-        xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{uid}")
-        bus_path = Path(xdg_runtime) / "bus"
+    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", runtime_dir)
+    bus_path = Path(xdg_runtime) / "bus"
+    try:
         if bus_path.exists():
             os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+    except OSError:
+        os.environ.pop("DBUS_SESSION_BUS_ADDRESS", None)
 
 
 def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
@@ -2022,9 +2042,6 @@ def get_systemd_linger_status() -> tuple[bool | None, str]:
     if not is_linux():
         return None, "not supported on this platform"
 
-    if not shutil.which("loginctl"):
-        return None, "loginctl not found"
-
     username = os.getenv("USER") or os.getenv("LOGNAME")
     if not username:
         try:
@@ -2033,6 +2050,16 @@ def get_systemd_linger_status() -> tuple[bool | None, str]:
             username = pwd.getpwuid(os.getuid()).pw_name  # windows-footgun: ok — POSIX loginctl helper, never invoked on Windows
         except Exception:
             return None, "could not determine current user"
+
+    linger_file = Path(f"/var/lib/systemd/linger/{username}")
+    try:
+        if linger_file.exists():
+            return True, ""
+    except OSError:
+        pass
+
+    if not shutil.which("loginctl"):
+        return None, "loginctl not found"
 
     try:
         result = subprocess.run(
