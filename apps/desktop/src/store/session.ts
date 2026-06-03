@@ -4,7 +4,7 @@ import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { persistString, storedString } from '@/lib/storage'
-import type { SessionInfo, UsageStats } from '@/types/hermes'
+import type { DashboardAgent, DashboardConversation, DashboardProject, SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
 
@@ -57,6 +57,9 @@ export function mergeWorkingSessions(
 export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])
+export const $agents = atom<DashboardAgent[]>([])
+export const $conversations = atom<DashboardConversation[]>([])
+export const $projects = atom<DashboardProject[]>([])
 export const $sessionsTotal = atom<number>(0)
 export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
@@ -91,6 +94,9 @@ export const $modelPickerOpen = atom(false)
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
+export const setAgents = (next: Updater<DashboardAgent[]>) => updateAtom($agents, next)
+export const setConversations = (next: Updater<DashboardConversation[]>) => updateAtom($conversations, next)
+export const setProjects = (next: Updater<DashboardProject[]>) => updateAtom($projects, next)
 export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
@@ -142,6 +148,7 @@ function armSessionWatchdog(sessionId: string) {
 
   const timer = setTimeout(() => {
     sessionWatchdogTimers.delete(sessionId)
+
     // Re-check the latest state at fire-time. If the user already navigated
     // away or the session genuinely finished, the timer is a no-op.
     if ($workingSessionIds.get().includes(sessionId)) {

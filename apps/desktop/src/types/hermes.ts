@@ -232,6 +232,62 @@ export interface ModelOptionsResponse {
   providers?: ModelOptionProvider[]
 }
 
+export interface DashboardGatewaySummary {
+  platforms?: Record<string, unknown>
+  running: boolean
+  state: string
+  updated_at?: null | string
+}
+
+export interface DashboardAgent {
+  gateway?: DashboardGatewaySummary
+  has_env?: boolean
+  id: string
+  is_default?: boolean
+  kind: string
+  model?: null | string
+  name: string
+  profile: string
+  provider?: null | string
+  skill_count?: number
+}
+
+export interface DashboardAgentsResponse {
+  agents: DashboardAgent[]
+}
+
+export interface DashboardConversation {
+  chat_id?: string
+  chat_name?: string
+  display_label?: string
+  id: string
+  name: string
+  platform: string
+  session_ids: string[]
+  source: string[]
+  thread_id?: string
+  type: 'chat' | 'dm' | 'group' | 'topic' | string
+}
+
+export interface DashboardConversationsResponse {
+  conversations: DashboardConversation[]
+}
+
+export interface DashboardProject {
+  chat_id: string
+  conversation_id: string
+  display_label?: string
+  id: string
+  name: string
+  platform: string
+  source: string
+  topic_id: string
+}
+
+export interface DashboardProjectsResponse {
+  projects: DashboardProject[]
+}
+
 export interface PaginatedSessions {
   limit: number
   offset: number

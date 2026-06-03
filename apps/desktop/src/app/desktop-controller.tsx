@@ -11,7 +11,7 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getSessionMessages, listSessions } from '../hermes'
+import { getSessionMessages, listAgents, listConversations, listProjects, listSessions } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import {
   $pinnedSessionIds,
@@ -36,13 +36,16 @@ import {
   $workingSessionIds,
   mergeWorkingSessions,
   sessionPinId,
+  setAgents,
   setAwaitingResponse,
   setBusy,
+  setConversations,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
   setMessages,
+  setProjects,
   setSessions,
   setSessionsLoading,
   setSessionsTotal
@@ -202,10 +205,16 @@ export function DesktopController() {
 
     try {
       const limit = $sessionsLimit.get()
+
       // Require at least one message so abandoned/empty "Untitled" drafts (one
       // was created per TUI/desktop launch before the lazy-create fix) don't
       // clutter the sidebar.
-      const result = await listSessions(limit, 1)
+      const [result, agents, conversations, projects] = await Promise.all([
+        listSessions(limit, 1),
+        listAgents().catch(() => ({ agents: [] })),
+        listConversations().catch(() => ({ conversations: [] })),
+        listProjects().catch(() => ({ projects: [] }))
+      ])
 
       if (refreshSessionsRequestRef.current === requestId) {
         // Don't hard-replace: a session whose first turn is still in flight has
@@ -215,6 +224,9 @@ export function DesktopController() {
         // any working session the server hasn't surfaced yet.
         setSessions(prev => mergeWorkingSessions(prev, result.sessions, $workingSessionIds.get()))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
+        setAgents(agents.agents)
+        setConversations(conversations.conversations)
+        setProjects(projects.projects)
       }
     } finally {
       if (refreshSessionsRequestRef.current === requestId) {

@@ -50,6 +50,9 @@ import {
   unpinSession
 } from '@/store/layout'
 import {
+  $agents,
+  $conversations,
+  $projects,
   $selectedStoredSessionId,
   $sessions,
   $sessionsLoading,
@@ -62,7 +65,14 @@ import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '..
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
-import { type SidebarSessionGroup, sessionGroupsFor } from './session-groups'
+import {
+  sessionGroupsFor,
+  sessionsForScope,
+  sidebarControlSurfaceFor,
+  type SidebarControlSurfaceSection as SidebarControlSurfaceSectionModel,
+  type SidebarEntityScope,
+  type SidebarSessionGroup
+} from './session-groups'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 
@@ -184,6 +194,9 @@ export function ChatSidebar({
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
+  const agents = useStore($agents)
+  const conversations = useStore($conversations)
+  const projects = useStore($projects)
   const selectedSessionId = useStore($selectedStoredSessionId)
   const sessions = useStore($sessions)
   const sessionsLoading = useStore($sessionsLoading)
@@ -193,6 +206,7 @@ export function ChatSidebar({
   const [workspaceOrderIds, setWorkspaceOrderIds] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
+  const [selectedScope, setSelectedScope] = useState<SidebarEntityScope | null>(null)
   const trimmedQuery = searchQuery.trim()
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
@@ -299,9 +313,19 @@ export function ChatSidebar({
     [sortedSessions, pinnedRealIdSet]
   )
 
+  const controlSurfaceSections = useMemo(
+    () => sidebarControlSurfaceFor({ agents, conversations, projects, sessions: sortedSessions }),
+    [agents, conversations, projects, sortedSessions]
+  )
+
+  const scopedAgentSessions = useMemo(
+    () => sessionsForScope(unpinnedAgentSessions, selectedScope),
+    [unpinnedAgentSessions, selectedScope]
+  )
+
   const agentSessions = useMemo(
-    () => orderByIds(unpinnedAgentSessions, s => s.id, agentOrderIds),
-    [unpinnedAgentSessions, agentOrderIds]
+    () => orderByIds(scopedAgentSessions, s => s.id, agentOrderIds),
+    [scopedAgentSessions, agentOrderIds]
   )
 
   const agentGroups = useMemo(
@@ -310,6 +334,7 @@ export function ChatSidebar({
   )
 
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
+  const hasControlSurface = controlSurfaceSections.some(section => section.items.length > 0)
   const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
   const knownSessionTotal = Math.max(sessionsTotal, sortedSessions.length)
   const hasMoreSessions = knownSessionTotal > sortedSessions.length
@@ -473,6 +498,19 @@ export function ChatSidebar({
           />
         )}
 
+        {sidebarOpen && hasControlSurface && !trimmedQuery && (
+          <div className="shrink-0 p-0 pb-1">
+            {controlSurfaceSections.map(section => (
+              <SidebarControlSurfaceSection
+                activeScopeId={selectedScope?.id ?? null}
+                key={section.id}
+                onSelect={scope => setSelectedScope(current => (current?.id === scope.id ? null : scope))}
+                section={section}
+              />
+            ))}
+          </div>
+        )}
+
         {sidebarOpen && showSessionSections && !trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
@@ -500,9 +538,17 @@ export function ChatSidebar({
             activeSessionId={activeSidebarSessionId}
             contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
             dndSensors={dndSensors}
-            emptyState={showSessionSkeletons ? <SidebarSessionSkeletons /> : <SidebarAllPinnedState />}
+            emptyState={
+              showSessionSkeletons ? (
+                <SidebarSessionSkeletons />
+              ) : selectedScope ? (
+                <SidebarScopeEmptyState scope={selectedScope} />
+              ) : (
+                <SidebarAllPinnedState />
+              )
+            }
             footer={
-              !agentsGrouped && !showSessionSkeletons && hasMoreSessions ? (
+              !selectedScope && !agentsGrouped && !showSessionSkeletons && hasMoreSessions ? (
                 <SidebarLoadMoreRow
                   loading={sessionsLoading}
                   onClick={onLoadMoreSessions}
@@ -536,8 +582,8 @@ export function ChatSidebar({
                 </Button>
               ) : null
             }
-            label="Sessions"
-            labelMeta={countLabel(agentSessions.length, knownSessionTotal)}
+            label={selectedScope ? `Sessions • ${selectedScope.label}` : 'Recent Sessions'}
+            labelMeta={countLabel(agentSessions.length, selectedScope ? agentSessions.length : knownSessionTotal)}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onNewSessionInWorkspace={onNewSessionInWorkspace}
@@ -605,6 +651,14 @@ const SidebarAllPinnedState = () => (
   </div>
 )
 
+function SidebarScopeEmptyState({ scope }: { scope: SidebarEntityScope }) {
+  return (
+    <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
+      No loaded sessions match {scope.label}.
+    </div>
+  )
+}
+
 function SidebarPinnedEmptyState() {
   return (
     <div className="flex min-h-7 items-center gap-1.5 rounded-lg pl-2 text-[0.75rem] text-(--ui-text-tertiary)">
@@ -614,6 +668,74 @@ function SidebarPinnedEmptyState() {
       <span>Shift-click a chat to pin · drag to reorder</span>
     </div>
   )
+}
+
+interface SidebarControlSurfaceSectionProps {
+  activeScopeId: null | string
+  onSelect: (scope: SidebarEntityScope) => void
+  section: SidebarControlSurfaceSectionModel
+}
+
+function SidebarControlSurfaceSection({ activeScopeId, onSelect, section }: SidebarControlSurfaceSectionProps) {
+  const [open, setOpen] = useState(true)
+
+  if (section.items.length === 0) {
+    return null
+  }
+
+  return (
+    <SidebarGroup className="p-0">
+      <SidebarSectionHeader
+        label={section.label}
+        meta={String(section.items.length)}
+        onToggle={() => setOpen(value => !value)}
+        open={open}
+      />
+      {open && (
+        <SidebarGroupContent className="grid gap-px pb-1">
+          {section.items.map(item => {
+            const active = activeScopeId === item.scope.id
+
+            return (
+              <button
+                className={cn(
+                  'group flex min-h-6 cursor-pointer items-center gap-1.5 rounded-md bg-transparent px-2 text-left text-[0.8125rem] text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:text-foreground hover:transition-none',
+                  active && 'bg-(--ui-row-active-background) text-foreground'
+                )}
+                key={item.id}
+                onClick={() => onSelect(item.scope)}
+                title={item.label}
+                type="button"
+              >
+                <Codicon
+                  className="size-3.5 shrink-0 text-(--ui-text-quaternary) group-hover:text-(--ui-text-tertiary)"
+                  name={scopeIcon(item.scope.kind)}
+                />
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {item.meta && <SidebarCount>{item.meta}</SidebarCount>}
+              </button>
+            )
+          })}
+        </SidebarGroupContent>
+      )}
+    </SidebarGroup>
+  )
+}
+
+function scopeIcon(kind: SidebarEntityScope['kind']): string {
+  switch (kind) {
+    case 'agent':
+      return 'robot'
+
+    case 'chat':
+      return 'comment-discussion'
+
+    case 'project':
+      return 'project'
+
+    case 'workspace':
+      return 'root-folder'
+  }
 }
 
 interface SidebarSessionsSectionProps {

@@ -11,6 +11,9 @@ import type {
   CronJob,
   CronJobCreatePayload,
   CronJobUpdates,
+  DashboardAgentsResponse,
+  DashboardConversationsResponse,
+  DashboardProjectsResponse,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
   HermesConfig,
@@ -60,6 +63,13 @@ export type {
   CronJobCreatePayload,
   CronJobSchedule,
   CronJobUpdates,
+  DashboardAgent,
+  DashboardAgentsResponse,
+  DashboardConversation,
+  DashboardConversationsResponse,
+  DashboardGatewaySummary,
+  DashboardProject,
+  DashboardProjectsResponse,
   ElevenLabsVoice,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
@@ -126,6 +136,24 @@ export async function listSessions(
     sessions: result.sessions.slice(0, limit),
     offset: 0
   }
+}
+
+export function listAgents(): Promise<DashboardAgentsResponse> {
+  return window.hermesDesktop.api<DashboardAgentsResponse>({
+    path: '/api/agents'
+  })
+}
+
+export function listConversations(): Promise<DashboardConversationsResponse> {
+  return window.hermesDesktop.api<DashboardConversationsResponse>({
+    path: '/api/conversations'
+  })
+}
+
+export function listProjects(): Promise<DashboardProjectsResponse> {
+  return window.hermesDesktop.api<DashboardProjectsResponse>({
+    path: '/api/projects'
+  })
 }
 
 export function setSessionArchived(id: string, archived: boolean): Promise<{ ok: boolean }> {
