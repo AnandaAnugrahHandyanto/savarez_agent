@@ -10981,7 +10981,16 @@ class GatewayRunner:
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
-        adapter = self._resolve_adapter(event)
+        # Build a minimal MessageEvent so _resolve_adapter can match by
+        # adapter_instance_id when multi-app Feishu is configured.
+        from gateway.platforms.base import MessageEvent
+        _tmp_event = MessageEvent(
+            text="",
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+        adapter = self._resolve_adapter(_tmp_event)
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
             return
@@ -11008,7 +11017,16 @@ class GatewayRunner:
         exactly this boundary; when unavailable, fall back to direct awaited
         delivery rather than silently dropping the notice.
         """
-        adapter = self._resolve_adapter(event)
+        # Build a minimal MessageEvent so _resolve_adapter can match by
+        # adapter_instance_id when multi-app Feishu is configured.
+        from gateway.platforms.base import MessageEvent
+        _tmp_event = MessageEvent(
+            text="",
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+        adapter = self._resolve_adapter(_tmp_event)
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
             return
@@ -11096,7 +11114,16 @@ class GatewayRunner:
         # Enqueue via the adapter's FIFO so a user message already in
         # flight preempts the continuation naturally.
         try:
-            adapter = self._resolve_adapter(event)
+            # Build a minimal MessageEvent so _resolve_adapter can match by
+            # adapter_instance_id when multi-app Feishu is configured.
+            from gateway.platforms.base import MessageEvent
+            _tmp_event = MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+            adapter = self._resolve_adapter(_tmp_event)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
                 cont_event = MessageEvent(
