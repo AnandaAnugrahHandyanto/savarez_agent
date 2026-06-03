@@ -637,6 +637,10 @@ def run_doctor(args):
                 check_info("Run 'hermes setup' to create one")
                 issues.append("Run 'hermes setup' to create .env")
     
+    # Tracks the model.provider from config.yaml so the Auth Providers section
+    # can suppress warnings for OAuth providers the user is not using.
+    _doctor_configured_provider: str = ""
+
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():
@@ -649,6 +653,7 @@ def run_doctor(args):
             model_section = cfg.get("model") or {}
             provider_raw = (model_section.get("provider") or "").strip()
             provider = provider_raw.lower()
+            _doctor_configured_provider = provider
             default_model = (model_section.get("default") or model_section.get("model") or "").strip()
 
             known_providers: set = set()
@@ -936,6 +941,42 @@ def run_doctor(args):
 
     _section("Auth Providers")
 
+    # Map each OAuth provider's stable key to the set of model.provider values
+    # that require its credential. Only emit a warning when the user's
+    # configured provider is in the relevant set; otherwise demote to an info
+    # line so it doesn't look like something that needs fixing.
+    _OAUTH_PROVIDER_IDS: dict[str, set[str]] = {
+        "nous": {"nous"},
+        "openai-codex": {"openai-codex", "codex"},
+        "gemini": {"gemini", "google", "google-gemini"},
+        "minimax": {"minimax"},
+        "xai": {"xai", "grok"},
+    }
+
+    def _oauth_check(name: str, oauth_key: str, logged_in: bool, detail_ok: str = "(logged in)") -> bool:
+        """Print ok / warn / info for an OAuth provider.
+
+        Returns True when the row was printed as ok or warn (i.e. the provider
+        is relevant to the user's current config), so callers can attach
+        follow-up hint lines only for actionable rows.
+        """
+        relevant_ids = _OAUTH_PROVIDER_IDS.get(oauth_key, set())
+        is_active = (
+            not _doctor_configured_provider  # no provider set — show all
+            or _doctor_configured_provider in {"auto"}
+            or _doctor_configured_provider in relevant_ids
+        )
+        if logged_in:
+            check_ok(name, detail_ok)
+            return True
+        if is_active:
+            check_warn(name, "(not logged in)")
+            return True
+        # Not the active provider — demote to info; still visible but not
+        # flagged as something the user needs to act on.
+        check_info(f"{name}: not logged in (not your active provider — skipped)")
+        return False
+
     try:
         from hermes_cli.auth import (
             get_nous_auth_status,
@@ -945,16 +986,11 @@ def run_doctor(args):
         )
 
         nous_status = get_nous_auth_status()
-        if nous_status.get("logged_in"):
-            check_ok("Nous Portal auth", "(logged in)")
-        else:
-            check_warn("Nous Portal auth", "(not logged in)")
+        _oauth_check("Nous Portal auth", "nous", nous_status.get("logged_in", False))
 
         codex_status = get_codex_auth_status()
-        if codex_status.get("logged_in"):
-            check_ok("OpenAI Codex auth", "(logged in)")
-        else:
-            check_warn("OpenAI Codex auth", "(not logged in)")
+        codex_active = _oauth_check("OpenAI Codex auth", "openai-codex", codex_status.get("logged_in", False))
+        if codex_active and not codex_status.get("logged_in"):
             if codex_status.get("error"):
                 check_info(codex_status["error"])
             # Native OAuth uses Hermes' own device-code flow — the Codex CLI is
@@ -978,16 +1014,16 @@ def run_doctor(args):
             if project:
                 pieces.append(f"project={project}")
             suffix = f" ({', '.join(pieces)})" if pieces else ""
-            check_ok("Google Gemini OAuth", f"(logged in{suffix})")
+            _oauth_check("Google Gemini OAuth", "gemini", True, f"(logged in{suffix})")
         else:
-            check_warn("Google Gemini OAuth", "(not logged in)")
+            _oauth_check("Google Gemini OAuth", "gemini", False)
 
         minimax_status = get_minimax_oauth_auth_status()
         if minimax_status.get("logged_in"):
             region = minimax_status.get("region", "global")
-            check_ok("MiniMax OAuth", f"(logged in, region={region})")
+            _oauth_check("MiniMax OAuth", "minimax", True, f"(logged in, region={region})")
         else:
-            check_warn("MiniMax OAuth", "(not logged in)")
+            _oauth_check("MiniMax OAuth", "minimax", False)
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 
@@ -996,12 +1032,9 @@ def run_doctor(args):
     try:
         from hermes_cli.auth import get_xai_oauth_auth_status
         xai_oauth_status = get_xai_oauth_auth_status() or {}
-        if xai_oauth_status.get("logged_in"):
-            check_ok("xAI OAuth", "(logged in)")
-        else:
-            check_warn("xAI OAuth", "(not logged in)")
-            if xai_oauth_status.get("error"):
-                check_info(xai_oauth_status["error"])
+        xai_active = _oauth_check("xAI OAuth", "xai", xai_oauth_status.get("logged_in", False))
+        if xai_active and not xai_oauth_status.get("logged_in") and xai_oauth_status.get("error"):
+            check_info(xai_oauth_status["error"])
     except Exception:
         pass
 

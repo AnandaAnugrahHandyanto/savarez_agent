@@ -1274,3 +1274,98 @@ class TestDoctorCodexCliHintPlacement:
         minimax_idx = next(i for i, l in enumerate(lines) if "MiniMax OAuth" in l)
         assert self._hint_line() not in lines[minimax_idx - 1]
         assert minimax_idx + 1 >= len(lines) or self._hint_line() not in lines[minimax_idx + 1]
+
+
+# ---------------------------------------------------------------------------
+# ◆ Auth Providers — suppress warnings for OAuth providers not in use
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorOAuthSkippedForUnusedProviders:
+    """OAuth provider rows should be warnings only for the active provider.
+
+    When model.provider is set to something that doesn't use a given OAuth
+    flow (e.g. ``custom`` pointing at a local endpoint), showing ``⚠ not
+    logged in`` for every OAuth provider is noise. Those rows should be
+    demoted to informational ``→`` lines so they don't appear as actionable
+    issues.
+    """
+
+    _OAUTH_NAMES = [
+        "Nous Portal auth",
+        "OpenAI Codex auth",
+        "Google Gemini OAuth",
+        "MiniMax OAuth",
+        "xAI OAuth",
+    ]
+
+    def _run(self, monkeypatch, tmp_path, provider: str) -> str:
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        config_text = f"model:\n  provider: {provider}\n  default: my-model\n" if provider else "memory: {}\n"
+        (home / "config.yaml").write_text(config_text, encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
+        # Suppress credential-missing error for the custom provider check
+        monkeypatch.setattr(_auth_mod, "get_auth_status", lambda p: {"logged_in": False, "configured": True})
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_custom_provider_demotes_all_oauth_rows_to_info(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, provider="custom")
+        # All OAuth rows must appear (as info, not as warnings).
+        for name in self._OAUTH_NAMES:
+            assert name in out, f"Expected '{name}' in output"
+        # None of them should carry a ⚠ warning symbol.
+        warn_symbol = "⚠"
+        for line in out.splitlines():
+            if any(name in line for name in self._OAUTH_NAMES):
+                assert warn_symbol not in line, (
+                    f"OAuth row unexpectedly shown as warning for 'custom' provider: {line!r}"
+                )
+
+    def test_nous_provider_shows_nous_as_warning_not_others(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, provider="nous")
+        lines = out.splitlines()
+        nous_line = next(l for l in lines if "Nous Portal auth" in l)
+        assert "⚠" in nous_line, "Nous Portal auth should be a warning when provider=nous"
+        for name in self._OAUTH_NAMES:
+            if name == "Nous Portal auth":
+                continue
+            oauth_line = next((l for l in lines if name in l), None)
+            assert oauth_line is not None, f"Expected '{name}' in output"
+            assert "⚠" not in oauth_line, (
+                f"'{name}' should be demoted to info when provider=nous, got: {oauth_line!r}"
+            )
+
+    def test_no_provider_configured_shows_all_as_warnings(self, monkeypatch, tmp_path):
+        # When no model.provider is set, all OAuth rows should still warn —
+        # we have no basis to suppress any of them.
+        out = self._run(monkeypatch, tmp_path, provider="")
+        warn_symbol = "⚠"
+        for name in self._OAUTH_NAMES:
+            oauth_line = next((l for l in out.splitlines() if name in l), None)
+            assert oauth_line is not None, f"Expected '{name}' in output"
+            assert warn_symbol in oauth_line, (
+                f"'{name}' should warn when no provider is configured, got: {oauth_line!r}"
+            )
