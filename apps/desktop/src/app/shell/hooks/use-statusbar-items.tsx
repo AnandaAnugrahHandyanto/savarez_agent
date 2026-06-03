@@ -256,26 +256,9 @@ export function useStatusbarItems({
         title: 'Open cron jobs',
         to: CRON_ROUTE,
         variant: 'action'
-      },
-      {
-        // Gray (inherits tertiary text) when off, amber/yellow when on — amber
-        // is the app's existing "heads-up" colour and tracks dark/light theme.
-        className: yoloActive
-          ? 'text-amber-600 hover:text-amber-600 dark:text-amber-300 dark:hover:text-amber-300'
-          : undefined,
-        hidden: !activeSessionId,
-        icon: <Zap className="size-3" />,
-        id: 'yolo',
-        label: 'YOLO',
-        onSelect: () => void toggleYolo(),
-        title: yoloActive
-          ? 'YOLO on — auto-approving commands this session. Click to turn off.'
-          : 'YOLO off — click to auto-approve commands this session.',
-        variant: 'action'
       }
     ],
     [
-      activeSessionId,
       agentsOpen,
       bgFailed,
       bgRunning,
@@ -287,9 +270,7 @@ export function useStatusbarItems({
       inferenceStatus?.reason,
       openAgents,
       subagentsRunning,
-      toggleCommandCenter,
-      toggleYolo,
-      yoloActive
+      toggleCommandCenter
     ]
   )
 
@@ -319,6 +300,22 @@ export function useStatusbarItems({
         label: 'Session',
         title: 'Runtime session elapsed',
         variant: 'text'
+      },
+      {
+        // Gray (inherits tertiary text) when off, amber/yellow when on — amber
+        // is the app's existing "heads-up" colour and tracks dark/light theme.
+        className: yoloActive
+          ? 'text-amber-600 hover:text-amber-600 dark:text-amber-300 dark:hover:text-amber-300'
+          : undefined,
+        hidden: !activeSessionId,
+        icon: <Zap className="size-3" />,
+        id: 'yolo',
+        label: 'YOLO',
+        onSelect: () => void toggleYolo(),
+        title: yoloActive
+          ? 'YOLO on — auto-approving commands this session. Click to turn off.'
+          : 'YOLO off — click to auto-approve commands this session.',
+        variant: 'action'
       },
       {
         id: 'model-summary',
@@ -354,6 +351,7 @@ export function useStatusbarItems({
       versionItem
     ],
     [
+      activeSessionId,
       busy,
       contextBar,
       contextUsage,
@@ -363,8 +361,10 @@ export function useStatusbarItems({
       currentReasoningEffort,
       modelMenuContent,
       sessionStartedAt,
+      toggleYolo,
       turnStartedAt,
-      versionItem
+      versionItem,
+      yoloActive
     ]
   )
 
