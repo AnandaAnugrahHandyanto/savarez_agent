@@ -230,6 +230,17 @@ class TestPreflightMode:
         for fname in self.REQUIRED:
             assert (Path(out) / fname).exists(), f"Missing required: {fname}"
 
+    def test_preflight_context_target_uses_repo_target(self, tmp_path: Path):
+        """subagent-context.json target must be repo target, not bundle dir."""
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="preflight")
+        assert rc == 0, f"preflight failed: {stderr}"
+
+        ctx = json.loads((Path(out) / "subagent-context.json").read_text())
+        assert ctx["target"] == str(Path(target).resolve())
+        assert ctx["target"] != str(Path(out).resolve())
+
 
 class TestFullMode:
     """full: all available deterministic enrichers."""

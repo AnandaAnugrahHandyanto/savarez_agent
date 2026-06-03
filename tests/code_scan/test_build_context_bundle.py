@@ -81,7 +81,17 @@ def _make_minimal_bundle(tmp_path: Path) -> Path:
         "artifact_paths": {
             "scan.json": str(bundle / "scan.json"),
             "manifest.json": str(bundle / "manifest.json"),
+            "summary.json": str(bundle / "summary.json"),
+            "validation.json": str(bundle / "validation.json"),
         },
+        "artifacts_missing": [
+            "REPORT.md",
+            "domain-surfaces.json",
+            "graph.json",
+            "graph_analytics.json",
+            "imports.json",
+            "severity_analysis.json",
+        ],
         "script_versions": {},
     }, indent=2))
 
@@ -125,11 +135,14 @@ def _make_full_bundle(tmp_path: Path) -> Path:
         "artifact_paths": {
             "scan.json": str(bundle / "scan.json"),
             "manifest.json": str(bundle / "manifest.json"),
+            "summary.json": str(bundle / "summary.json"),
             "graph.json": str(bundle / "graph.json"),
             "imports.json": str(bundle / "imports.json"),
             "REPORT.md": str(bundle / "REPORT.md"),
             "validation.json": str(bundle / "validation.json"),
             "domain-surfaces.json": str(bundle / "domain-surfaces.json"),
+            "severity_analysis.json": str(bundle / "severity_analysis.json"),
+            "graph_analytics.json": str(bundle / "graph_analytics.json"),
         },
         "script_versions": {},
     }, indent=2))
@@ -361,6 +374,145 @@ class TestArtifactTracking:
         included_names = [a["artifact"] for a in data["artifacts_included"]]
         assert "severity_analysis.json" in included_names
         assert "graph_analytics.json" in included_names
+
+    def test_manifest_artifact_paths_are_canonical_for_presence(self, tmp_path: Path):
+        """When manifest is present, context artifact claims derive from it.
+
+        Regression for PRL/Muster: manifest listed manifest.json, summary.json,
+        and REPORT.md as present while subagent-context.json falsely claimed
+        they were missing.
+        """
+        bundle = _make_minimal_bundle(tmp_path)
+        report_path = bundle / "REPORT.md"
+        report_path.write_text("# Report\n")
+        manifest_path = bundle / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["artifact_paths"] = {
+            "scan.json": str(bundle / "scan.json"),
+            "manifest.json": str(manifest_path),
+            "summary.json": str(bundle / "summary.json"),
+            "REPORT.md": str(report_path),
+        }
+        manifest["artifacts_missing"] = []
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        data = json.loads(out.read_text())
+
+        included_names = {a["artifact"] for a in data["artifacts_included"]}
+        missing_names = {a["artifact"] for a in data["artifacts_missing"]}
+        assert {"manifest.json", "summary.json", "REPORT.md"} <= included_names
+        assert "manifest.json" not in missing_names
+        assert "summary.json" not in missing_names
+        assert "REPORT.md" not in missing_names
+        assert "validation.json" not in missing_names
+
+    def test_manifest_artifact_paths_record_real_missing_files(self, tmp_path: Path):
+        """Manifest-listed artifacts that do not exist are explicitly missing."""
+        bundle = _make_minimal_bundle(tmp_path)
+        manifest_path = bundle / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["artifact_paths"] = {
+            "scan.json": str(bundle / "scan.json"),
+            "missing-report.md": str(bundle / "missing-report.md"),
+        }
+        manifest["artifacts_missing"] = []
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        data = json.loads(out.read_text())
+
+        missing = {a["artifact"]: a["reason"] for a in data["artifacts_missing"]}
+        assert missing == {"missing-report.md": "file not found at manifest artifact path"}
+
+    def test_manifest_relative_artifact_paths_resolve_against_bundle_dir(self, tmp_path: Path):
+        """Relative manifest artifact_paths are resolved from bundle_dir."""
+        bundle = _make_minimal_bundle(tmp_path)
+        nested = bundle / "nested"
+        nested.mkdir()
+        relative_artifact = nested / "relative-report.md"
+        relative_artifact.write_text("# Relative Report\n")
+
+        manifest_path = bundle / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["artifact_paths"] = {
+            "scan.json": "scan.json",
+            "relative-report.md": "nested/relative-report.md",
+        }
+        manifest["artifacts_missing"] = []
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        data = json.loads(out.read_text())
+
+        included = {a["artifact"] for a in data["artifacts_included"]}
+        missing = {a["artifact"] for a in data["artifacts_missing"]}
+        assert {"scan.json", "relative-report.md"} <= included
+        assert "relative-report.md" not in missing
+
+    def test_manifest_missing_does_not_override_present_artifact_path(self, tmp_path: Path):
+        """A present artifact_path wins over duplicate artifacts_missing metadata."""
+        bundle = _make_minimal_bundle(tmp_path)
+        report_path = bundle / "present-report.md"
+        report_path.write_text("# Present Report\n")
+
+        manifest_path = bundle / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["artifact_paths"] = {
+            "scan.json": str(bundle / "scan.json"),
+            "present-report.md": str(report_path),
+        }
+        manifest["artifacts_missing"] = [
+            {"artifact": "present-report.md", "reason": "stale missing claim"},
+        ]
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        data = json.loads(out.read_text())
+
+        included = {a["artifact"] for a in data["artifacts_included"]}
+        missing = {a["artifact"] for a in data["artifacts_missing"]}
+        assert "present-report.md" in included
+        assert "present-report.md" not in missing
+
+    def test_manifest_missing_dict_path_key_is_normalized(self, tmp_path: Path):
+        """Manifest missing dict entries may identify artifacts with path."""
+        bundle = _make_minimal_bundle(tmp_path)
+        manifest_path = bundle / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["artifact_paths"] = {"scan.json": str(bundle / "scan.json")}
+        manifest["artifacts_missing"] = [
+            {"path": "path-key-report.md", "reason": "missing via path key"},
+        ]
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        data = json.loads(out.read_text())
+
+        missing = {a["artifact"]: a["reason"] for a in data["artifacts_missing"]}
+        assert missing == {"path-key-report.md": "missing via path key"}
+
+    def test_malformed_manifest_falls_back_to_bundle_artifact_detection(self, tmp_path: Path):
+        """Unreadable/malformed manifest uses static bundle artifact fallback."""
+        bundle = _make_minimal_bundle(tmp_path)
+        (bundle / "REPORT.md").write_text("# Report\n")
+        (bundle / "manifest.json").write_text("{not valid json")
+
+        out = tmp_path / "context.json"
+        rc, stdout, stderr = _run_build_context(bundle, out)
+        assert rc == 0, f"malformed manifest fallback failed: {stderr} {stdout}"
+        data = json.loads(out.read_text())
+
+        included = {a["artifact"] for a in data["artifacts_included"]}
+        missing = {a["artifact"] for a in data["artifacts_missing"]}
+        assert {"scan.json", "summary.json", "validation.json", "REPORT.md"} <= included
+        assert "manifest.json" in included
+        assert data["scan_run_id"] == "unknown"
 
 
 # ── GREEN: confidence labels ───────────────────────────────────────────

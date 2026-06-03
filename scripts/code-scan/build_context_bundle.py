@@ -69,6 +69,86 @@ def _load_text(bundle_dir: str, filename: str) -> Optional[str]:
         return None
 
 
+def _manifest_artifact_path(bundle_dir: str, raw_path: Any) -> Optional[str]:
+    """Return an absolute artifact path from manifest metadata, if usable."""
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = Path(bundle_dir) / path
+    return str(path)
+
+
+def _manifest_missing_items(manifest: dict) -> list[dict]:
+    """Normalize manifest-level missing artifact metadata."""
+    missing = manifest.get("artifacts_missing", [])
+    if not isinstance(missing, list):
+        return []
+
+    normalized: list[dict] = []
+    seen: set[str] = set()
+    for item in missing:
+        if isinstance(item, str):
+            artifact = item
+            reason = "listed as missing in manifest"
+        elif isinstance(item, dict):
+            artifact = str(
+                item.get("artifact") or item.get("name") or item.get("path") or ""
+            )
+            reason = str(item.get("reason") or "listed as missing in manifest")
+        else:
+            continue
+        if artifact and artifact not in seen:
+            normalized.append({"artifact": artifact, "reason": reason})
+            seen.add(artifact)
+    return normalized
+
+
+def _build_artifact_claims(bundle_dir: str, manifest: Optional[dict]) -> tuple[list[dict], list[dict]]:
+    """Build included/missing artifact claims from manifest or fallback definitions."""
+    artifacts_included: list[dict] = []
+    artifacts_missing: list[dict] = []
+    seen: set[str] = set()
+
+    if manifest and isinstance(manifest.get("artifact_paths"), dict):
+        artifact_paths = manifest.get("artifact_paths", {})
+        for artifact in sorted(artifact_paths):
+            artifact_path = _manifest_artifact_path(bundle_dir, artifact_paths.get(artifact))
+            seen.add(artifact)
+            if artifact_path and os.path.isfile(artifact_path):
+                artifacts_included.append({
+                    "artifact": artifact,
+                    "size_bytes": os.path.getsize(artifact_path),
+                })
+            else:
+                artifacts_missing.append({
+                    "artifact": artifact,
+                    "reason": "file not found at manifest artifact path",
+                })
+
+        for item in _manifest_missing_items(manifest):
+            artifact = item["artifact"]
+            if artifact not in seen:
+                artifacts_missing.append(item)
+                seen.add(artifact)
+
+        return artifacts_included, artifacts_missing
+
+    for artifact in ALL_ARTIFACTS:
+        path = os.path.join(bundle_dir, artifact)
+        if os.path.isfile(path):
+            artifacts_included.append({
+                "artifact": artifact,
+                "size_bytes": os.path.getsize(path),
+            })
+        else:
+            artifacts_missing.append({
+                "artifact": artifact,
+                "reason": "file not found in bundle",
+            })
+    return artifacts_included, artifacts_missing
+
+
 # ── Build the context envelope ────────────────────────────────────────────────
 
 def build_context_envelope(
@@ -89,26 +169,9 @@ def build_context_envelope(
     if not os.path.isdir(bundle_dir):
         raise FileNotFoundError(f"Bundle directory not found: {bundle_dir}")
 
-    # --- Determine which artifacts are present ---
-    artifacts_included = []
-    artifacts_missing = []
-
-    for artifact in ALL_ARTIFACTS:
-        path = os.path.join(bundle_dir, artifact)
-        if os.path.isfile(path):
-            size = os.path.getsize(path)
-            artifacts_included.append({
-                "artifact": artifact,
-                "size_bytes": size,
-            })
-        else:
-            artifacts_missing.append({
-                "artifact": artifact,
-                "reason": "file not found in bundle",
-            })
-
     # Load core data
     manifest = _load_json(bundle_dir, "manifest.json")
+    artifacts_included, artifacts_missing = _build_artifact_claims(bundle_dir, manifest)
     scan = _load_json(bundle_dir, "scan.json")
     summary = _load_json(bundle_dir, "summary.json")
     validation = _load_json(bundle_dir, "validation.json")

@@ -311,7 +311,17 @@ class RunUA:
         """Build subagent context envelope (UA-004)."""
         if not _HAS_CONTEXT:
             return {}
-        return build_context_envelope(self.out_dir)
+        context = build_context_envelope(self.out_dir)
+        context_target = context.get("target")
+        if (
+            isinstance(context_target, str)
+            and os.path.realpath(context_target) == os.path.realpath(self.out_dir)
+        ):
+            context["target"] = self.target_dir
+            confidence = context.setdefault("confidence", {})
+            if isinstance(confidence, dict):
+                confidence["target"] = "high"
+        return context
 
     def _build_report_raw(self) -> str:
         """Generate REPORT.md content directly."""

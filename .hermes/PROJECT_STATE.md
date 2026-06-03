@@ -533,3 +533,56 @@ No merge, deploy, production mutation, origin push, main push, dependency change
 - Approved commit/push scope: `.hermes/PROJECT_STATE.md`, `.hermes/swarm-runs/2026-06-03-ua-phase6.md`, `.hermes/handoffs/2026-06-03-1310-ua-p6-000-baseline-scope-guard.md`.
 - Push target: `jc-fork/feat/ua-phase6-trustworthy-handoff-security-review`; still not approved: merge, deploy, production mutation, origin push, main push, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or P6-001+ implementation.
 - Next gate: `UA-P6-001 - Manifest Reconciliation and Bundle Self-Validation` serial prerequisite; not started and not approved by this baseline checkpoint.
+
+## UA Phase 6 Trustworthy Handoff and Security-Review Readiness — UA-P6-001 Start Checkpoint
+- Timestamp: 2026-06-03T14:39:08Z.
+- Bead: `UA-P6-001 - Manifest Reconciliation and Bundle Self-Validation`.
+- Status: in progress, uncommitted.
+- Branch: `feat/ua-phase6-trustworthy-handoff-security-review` tracking `jc-fork/feat/ua-phase6-trustworthy-handoff-security-review`.
+- Base: `1d6a562fa` (`docs(code-scan): checkpoint UA phase 6 baseline`).
+- Approval quote: "[JC] execute p6-001".
+- Scope: make `manifest.json` the canonical trust anchor; reconcile `subagent-context.json` artifact presence/missing claims against manifest artifact paths; ensure `subagent-context.json.target` points to the repo target path, not the bundle directory; add failed/partial bundle tests where applicable.
+- Expected implementation files: `scripts/code-scan/run_bundle.py`, `scripts/code-scan/run_ua.py`, `scripts/code-scan/build_context_bundle.py`, `tests/code_scan/test_run_bundle.py`, `tests/code_scan/test_run_ua.py`, `tests/code_scan/test_build_context_bundle.py`, plus ledger/handoff evidence.
+- Guardrails: no commit, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or PRL/Muster source copying.
+- Required verification: focused P6-001 tests and full `python -m pytest tests/code_scan -q`, py_compile for touched scanner scripts, `git diff --check`, added-lines secret scan, diff artifact, reviewer PASS.
+
+## UA Phase 6 Trustworthy Handoff and Security-Review Readiness — UA-P6-001 Blocked Checkpoint
+- Timestamp: 2026-06-03T15:00:17Z.
+- Bead: `UA-P6-001 - Manifest Reconciliation and Bundle Self-Validation`.
+- Status: blocked before implementation.
+- Branch: `feat/ua-phase6-trustworthy-handoff-security-review`.
+- Coder attempt 1: timeout/no-summary after 600s; no source/test residue found by Hermes inspection.
+- Coder attempt 2: timeout/no-summary after 600s with narrower `build_context_bundle.py` scope; no source/test residue found by Hermes inspection.
+- Current diff: `.hermes/PROJECT_STATE.md` only, plus ignored handoff `.hermes/handoffs/2026-06-03-ua-p6-001-coder-timeout-blocked.md`.
+- Verification: N/A — no implementation artifacts produced; P6-001 RED/GREEN/FULL not available.
+- Reviewer: N/A — no implementation diff to review.
+- Handoff: `.hermes/handoffs/2026-06-03-ua-p6-001-coder-timeout-blocked.md`.
+- Guardrails preserved: no commit, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or P6-001 implementation completed.
+- Decision needed: retry a different implementation lane/profile, authorize Hermes-direct emergency implementation despite normal coder routing, or pause to debug subagent timeouts.
+
+## UA Phase 6 Trustworthy Handoff and Security-Review Readiness — UA-P6-001 Codex Retry Checkpoint
+- Timestamp: 2026-06-03T22:07:09Z.
+- Bead: `UA-P6-001 - Manifest Reconciliation and Bundle Self-Validation`.
+- Status: retrying implementation via `codex-coder` profile / Codex gpt-5.5 coding lane after two standard-coder timeouts.
+- Approval quote: "[JC] ok lets retry execution of P6-001 using the codex coder in the coder role".
+- Scope: strict TDD for manifest-backed artifact reconciliation, `subagent-context.json.target` target-path correction, failed/partial bundle behavior where applicable, focused/full verification, reviewer PASS before checkpoint approval.
+- Guardrails: no commit, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or PRL/Muster source copying.
+
+## UA Phase 6 Trustworthy Handoff and Security-Review Readiness — UA-P6-001 Completion Checkpoint
+- Timestamp: 2026-06-03T22:42:38Z.
+- Bead: `UA-P6-001 - Manifest Reconciliation and Bundle Self-Validation`.
+- Status: complete locally; awaiting separate JC commit/push approval.
+- Branch: `feat/ua-phase6-trustworthy-handoff-security-review` tracking `jc-fork/feat/ua-phase6-trustworthy-handoff-security-review`.
+- Coder lane: `codex-coder` / Codex gpt-5.5 after two standard-coder timeouts.
+- Changed in-scope files: `scripts/code-scan/build_context_bundle.py`, `scripts/code-scan/run_ua.py`, `tests/code_scan/test_build_context_bundle.py`, `tests/code_scan/test_run_ua.py`, `.hermes/PROJECT_STATE.md`, `.hermes/handoffs/20260603T221541Z-ua-p6-001-handoff.md`.
+- Implementation: `build_context_bundle.py` now derives artifact presence/missing claims from readable manifest `artifact_paths`; relative manifest paths resolve against bundle dir; manifest missing metadata accepts string/dict `artifact`/`name`/`path`; present artifact paths win over stale missing claims; malformed/unreadable manifest falls back to static bundle detection; `run_ua.py` corrects generated context target from bundle dir back to target repo path using realpath comparison.
+- RED evidence: focused new tests initially failed as expected for manifest-listed missing artifact behavior and `run_ua` preflight target (`2 failed, 1 passed in 0.87s`).
+- GREEN focused evidence: post-polish focused UA-P6-001 suite `python -m pytest tests/code_scan/test_run_bundle.py tests/code_scan/test_run_ua.py tests/code_scan/test_build_context_bundle.py -q` — PASS, `146 passed in 24.87s` under Hermes-owned verification.
+- FULL evidence: `python -m pytest tests/code_scan -q` — PASS, `1018 passed in 115.87s (0:01:55)` under Hermes-owned verification.
+- Compile/diff hygiene: `python -m py_compile scripts/code-scan/build_context_bundle.py scripts/code-scan/run_ua.py` — PASS; `git diff --check` — PASS.
+- Added-lines secret scan: PASS, `SECRET_SCAN_PASS no added-line secret patterns detected`.
+- Diff artifact: `/tmp/ua-p6-001-diff.patch` regenerated after completion checkpoint; exact final line/byte count in final Hermes report.
+- Reviewer: standard reviewer subagent timed out after 600s; Codex escalation reviewer final verdict PASS, no blockers, no non-blocking findings, one non-blocking coverage gap only for readable manifest with non-dict `artifact_paths` fallback. Review path: `.hermes/reviews/codex-escalation-review-20260603T224207Z-ua-p6-001-final.md`.
+- Handoff: `.hermes/handoffs/20260603T221541Z-ua-p6-001-handoff.md`.
+- Guardrails preserved: no commit, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or PRL/Muster source copying.
+- Approval gate: no commit/push performed; separate JC approval required for checkpoint commit/push.
