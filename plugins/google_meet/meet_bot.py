@@ -817,8 +817,9 @@ def _click_join(page, state: _BotState) -> None:
     """Click 'Join now' or 'Ask to join' if either button is visible.
 
     Polls for up to 30s waiting for the button to render after navigation.
-    Flags ``lobby_waiting`` when we hit the "waiting for host to admit you"
-    state so the agent can surface that in status.
+    Sets ``lobby_waiting=True`` immediately after clicking 'Ask to join' —
+    indicating the bot has entered the admission lobby and is waiting for
+    the host. Actual admission is detected later by ``_detect_admission``.
     """
     deadline = time.time() + 30.0
     while time.time() < deadline:
