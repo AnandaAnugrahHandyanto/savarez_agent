@@ -290,6 +290,22 @@ describe('setupShortcutListener', () => {
     pressKey(',', { metaKey: true })
     expect(fn).not.toHaveBeenCalled()
   })
+
+  it('does not call callback when event.defaultPrevented is true', () => {
+    const fn = vi.fn()
+    cleanup = setupShortcutListener('k', fn)
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'k',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true
+    })
+    // Simulate another handler (e.g. composer) already consuming the event
+    event.preventDefault()
+    window.dispatchEvent(event)
+    expect(fn).not.toHaveBeenCalled()
+  })
 })
 
 describe('Cmd+K (command center)', () => {

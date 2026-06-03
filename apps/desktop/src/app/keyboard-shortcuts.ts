@@ -78,6 +78,9 @@ export function setupCloseCascadeListener(
  */
 export function setupShortcutListener(key: string, callback: () => void): () => void {
   const onKeyDown = (event: KeyboardEvent) => {
+    // Skip if another handler already consumed this event (e.g. the composer's
+    // Cmd+K handler for queue drain calls preventDefault() but not stopPropagation).
+    if (event.defaultPrevented) return
     if (!isCleanShortcut(event, key)) return
 
     event.preventDefault()
