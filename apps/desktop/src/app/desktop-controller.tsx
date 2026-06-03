@@ -11,7 +11,7 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getSessionMessages, listAgents, listConversations, listProjects, listSessions } from '../hermes'
+import { getSessionMessages, listAggregatedGatewayData } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import {
   $pinnedSessionIds,
@@ -44,6 +44,7 @@ import {
   setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
+  setGatewayStates,
   setMessages,
   setProjects,
   setSessions,
@@ -209,12 +210,7 @@ export function DesktopController() {
       // Require at least one message so abandoned/empty "Untitled" drafts (one
       // was created per TUI/desktop launch before the lazy-create fix) don't
       // clutter the sidebar.
-      const [result, agents, conversations, projects] = await Promise.all([
-        listSessions(limit, 1),
-        listAgents().catch(() => ({ agents: [] })),
-        listConversations().catch(() => ({ conversations: [] })),
-        listProjects().catch(() => ({ projects: [] }))
-      ])
+      const aggregated = await listAggregatedGatewayData(limit)
 
       if (refreshSessionsRequestRef.current === requestId) {
         // Don't hard-replace: a session whose first turn is still in flight has
@@ -222,11 +218,12 @@ export function DesktopController() {
         // message.complete refreshes the list, a plain replace would drop the
         // other still-running new chats the moment one of them finishes. Keep
         // any working session the server hasn't surfaced yet.
-        setSessions(prev => mergeWorkingSessions(prev, result.sessions, $workingSessionIds.get()))
-        setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
-        setAgents(agents.agents)
-        setConversations(conversations.conversations)
-        setProjects(projects.projects)
+        setSessions(prev => mergeWorkingSessions(prev, aggregated.sessions, $workingSessionIds.get()))
+        setSessionsTotal(aggregated.sessionsTotal)
+        setAgents(aggregated.agents)
+        setGatewayStates(aggregated.gatewayStates)
+        setConversations(aggregated.conversations)
+        setProjects(aggregated.projects)
       }
     } finally {
       if (refreshSessionsRequestRef.current === requestId) {

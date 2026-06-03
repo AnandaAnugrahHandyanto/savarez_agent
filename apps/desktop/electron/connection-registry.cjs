@@ -49,7 +49,8 @@ function normalizeConnection(candidate, fallbackIndex = 1) {
 
   const mode = candidate.mode === 'remote' ? 'remote' : 'local'
   const id = String(candidate.id || stableConnectionId(mode, fallbackIndex)).trim() || stableConnectionId(mode, fallbackIndex)
-  const baseUrl = mode === 'remote' ? String(candidate.baseUrl ?? candidate.url ?? '').trim() : ''
+  const rawBaseUrl = String(candidate.baseUrl ?? candidate.url ?? '').trim()
+  const baseUrl = mode === 'remote' && rawBaseUrl ? normalizeRemoteBaseUrl(rawBaseUrl) : rawBaseUrl
 
   return {
     id,
@@ -167,6 +168,39 @@ function coerceDesktopConnectionConfig(input = {}, existing = {}, options = {}) 
   const decryptDesktopSecret = options.decryptDesktopSecret || (() => '')
   const persistToken = options.persistToken !== false
   const registry = migrateDesktopConnectionConfig(existing)
+
+  if (Array.isArray(input.connections)) {
+    const existingById = new Map(registry.connections.map(connection => [connection.id, connection]))
+    const connections = input.connections
+      .map((candidate, index) => {
+        const normalized = normalizeConnection(candidate, index + 1)
+        if (!normalized) return null
+        const existingConnection = existingById.get(normalized.id)
+        const incomingToken = typeof candidate.remoteToken === 'string' ? candidate.remoteToken.trim() : ''
+        const token = incomingToken
+          ? persistToken
+            ? encryptDesktopSecret(incomingToken)
+            : { encoding: 'plain', value: incomingToken }
+          : candidate.token && typeof candidate.token === 'object'
+            ? candidate.token
+            : existingConnection?.token || null
+
+        if (normalized.mode === 'remote') {
+          if (!normalized.baseUrl) {
+            throw new Error(`Remote gateway URL is required for ${normalized.name || normalized.id}.`)
+          }
+          if (!decryptDesktopSecret(token)) {
+            throw new Error(`Remote gateway session token is required for ${normalized.name || normalized.id}.`)
+          }
+        }
+
+        return { ...normalized, token }
+      })
+      .filter(Boolean)
+
+    return registryFromConnections(connections, input.activeConnectionId)
+  }
+
   const mode = input.mode === 'remote' ? 'remote' : 'local'
   const active = getActiveConnection(registry)
   const existingRemote =

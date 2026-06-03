@@ -183,7 +183,9 @@ export interface DesktopConnectionConfig {
 }
 
 export interface DesktopConnectionConfigInput {
-  mode: DesktopConnectionMode
+  activeConnectionId?: string
+  connections?: Array<DesktopConnectionRegistryEntry & { remoteToken?: string }>
+  mode?: DesktopConnectionMode
   remoteToken?: string
   remoteUrl?: string
 }
@@ -265,6 +267,7 @@ export type DesktopBootstrapEvent =
     }
 
 export interface HermesApiRequest {
+  gatewayId?: string
   path: string
   method?: string
   body?: unknown

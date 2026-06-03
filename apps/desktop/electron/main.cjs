@@ -3113,6 +3113,30 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
   })
 }
 
+function resolveRemoteConnectionBackend(connection, source = 'settings') {
+  if (!connection || connection.mode !== 'remote') {
+    return null
+  }
+
+  const token = decryptDesktopSecret(connection.token)
+
+  if (!token) {
+    throw new Error(`Remote Hermes gateway ${connection.name || connection.id} has no saved session token.`)
+  }
+
+  const baseUrl = normalizeRemoteBaseUrl(connection.baseUrl)
+
+  return {
+    baseUrl,
+    id: connection.id,
+    mode: 'remote',
+    name: connection.name,
+    source,
+    token,
+    wsUrl: buildGatewayWsUrl(baseUrl, token)
+  }
+}
+
 function resolveRemoteBackend() {
   const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
   const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
@@ -3139,28 +3163,32 @@ function resolveRemoteBackend() {
   const config = readDesktopConnectionConfig()
   const activeConnection = connectionRegistry.getActiveConnection(config)
 
-  if (activeConnection.mode !== 'remote') {
-    return null
+  return resolveRemoteConnectionBackend(activeConnection)
+}
+
+async function connectionForApiRequest(gatewayId) {
+  const requestedGatewayId = String(gatewayId || '').trim()
+
+  if (!requestedGatewayId) {
+    return startHermes()
   }
 
-  const token = decryptDesktopSecret(activeConnection.token)
+  const config = readDesktopConnectionConfig()
+  const connection = config.connections.find(candidate => candidate.id === requestedGatewayId)
 
-  if (!token) {
-    throw new Error(
-      'Remote Hermes gateway is selected, but no session token is saved. ' +
-        'Open Settings → Gateway and save a token, or switch back to Local.'
-    )
+  if (!connection) {
+    throw new Error(`Unknown gateway connection: ${requestedGatewayId}`)
   }
 
-  const baseUrl = normalizeRemoteBaseUrl(activeConnection.baseUrl)
-
-  return {
-    baseUrl,
-    mode: 'remote',
-    source: 'settings',
-    token,
-    wsUrl: buildGatewayWsUrl(baseUrl, token)
+  if (connection.mode === 'remote') {
+    return resolveRemoteConnectionBackend(connection, 'settings')
   }
+
+  if (connection.id !== config.activeConnectionId) {
+    throw new Error(`Local gateway connection ${connection.id} is not active and cannot be queried read-only.`)
+  }
+
+  return startHermes()
 }
 
 async function testDesktopConnectionConfig(input = {}) {
@@ -3571,7 +3599,7 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
 })
 
 ipcMain.handle('hermes:api', async (_event, request) => {
-  const connection = await startHermes()
+  const connection = await connectionForApiRequest(request?.gatewayId)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   return fetchJson(`${connection.baseUrl}${request.path}`, connection.token, {
     method: request?.method,

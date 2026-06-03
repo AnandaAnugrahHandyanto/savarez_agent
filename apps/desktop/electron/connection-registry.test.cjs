@@ -115,3 +115,47 @@ test('switching to local keeps the saved remote connection inactive for later re
   assert.equal(next.connections[1].baseUrl, 'https://gateway.example.test/hermes')
   assert.deepEqual(next.connections[1].token, existing.connections[0].token)
 })
+
+
+test('coerces multiple saved gateway connections without leaking raw tokens', () => {
+  const next = coerceDesktopConnectionConfig(
+    {
+      activeConnectionId: 'mac',
+      connections: [
+        {
+          id: 'wsl',
+          name: 'WSL gateway',
+          kind: 'hermes-dashboard',
+          mode: 'remote',
+          baseUrl: 'http://100.118.95.115:9120/',
+          remoteToken: 'wsl-secret-token'
+        },
+        {
+          id: 'mac',
+          name: 'Mac gateway',
+          kind: 'hermes-dashboard',
+          mode: 'remote',
+          baseUrl: 'http://127.0.0.1:9120',
+          remoteToken: 'mac-secret-token'
+        }
+      ]
+    },
+    {},
+    { decryptDesktopSecret: decrypt, encryptDesktopSecret: encrypt }
+  )
+
+  assert.equal(next.activeConnectionId, 'mac')
+  assert.equal(next.connections.length, 2)
+  assert.deepEqual(
+    next.connections.map(connection => [connection.id, connection.name, connection.baseUrl, decrypt(connection.token)]),
+    [
+      ['wsl', 'WSL gateway', 'http://100.118.95.115:9120', 'wsl-secret-token'],
+      ['mac', 'Mac gateway', 'http://127.0.0.1:9120', 'mac-secret-token']
+    ]
+  )
+
+  const sanitized = sanitizeDesktopConnectionConfig(next, { decryptDesktopSecret: decrypt })
+  assert.equal(JSON.stringify(sanitized).includes('wsl-secret-token'), false)
+  assert.equal(JSON.stringify(sanitized).includes('mac-secret-token'), false)
+  assert.equal(sanitized.connections[0].tokenPreview, '...-token')
+})

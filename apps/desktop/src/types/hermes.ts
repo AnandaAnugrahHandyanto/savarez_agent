@@ -241,6 +241,7 @@ export interface DashboardGatewaySummary {
 
 export interface DashboardAgent {
   gateway?: DashboardGatewaySummary
+  gateway_id?: string
   has_env?: boolean
   id: string
   is_default?: boolean
@@ -258,6 +259,7 @@ export interface DashboardAgentsResponse {
 
 export interface DashboardConversation {
   chat_id?: string
+  gateway_id?: string
   chat_name?: string
   display_label?: string
   id: string
@@ -275,6 +277,7 @@ export interface DashboardConversationsResponse {
 
 export interface DashboardProject {
   chat_id: string
+  gateway_id?: string
   conversation_id: string
   display_label?: string
   id: string
@@ -322,6 +325,7 @@ export interface SessionOriginInfo {
 
 export interface SessionInfo {
   archived?: boolean
+  gateway_id?: string
   cwd?: null | string
   ended_at: null | number
   id: string
@@ -597,6 +601,7 @@ export interface PlatformStatus {
 
 export interface StatusResponse {
   active_sessions: number
+  gateway?: DashboardGatewaySummary
   config_path: string
   config_version: number
   env_path: string

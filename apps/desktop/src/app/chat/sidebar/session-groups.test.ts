@@ -21,8 +21,8 @@ const baseSession = (overrides: Partial<SessionInfo>): SessionInfo => ({
   title: null,
   tool_call_count: 0,
   ...overrides
-})
 
+})
 const agent = (overrides: Partial<DashboardAgent>): DashboardAgent => ({
   gateway: { running: true, state: 'running' },
   id: 'profile:default',
@@ -156,4 +156,36 @@ describe('sidebarControlSurfaceFor', () => {
     expect(projectScope).toBeDefined()
     expect(sessionsForScope(sessions, projectScope ?? null).map(session => session.id)).toEqual(['topic-session'])
   })
+  it('namespaces colliding sessions and entities from two gateways', () => {
+    const sessions = [
+      baseSession({ id: 'wsl::same-session', cwd: '/work/wsl', started_at: 300 }),
+      baseSession({ id: 'mac::same-session', cwd: '/work/mac', started_at: 200 })
+    ]
+
+    const sections = sidebarControlSurfaceFor({
+      agents: [
+        agent({ id: 'wsl::profile:default', name: 'default', gateway_id: 'wsl' }),
+        agent({ id: 'mac::profile:default', name: 'default', gateway_id: 'mac' })
+      ],
+      conversations: [
+        conversation({ id: 'wsl::telegram:-1001:11648', gateway_id: 'wsl', session_ids: ['wsl::same-session'] }),
+        conversation({ id: 'mac::telegram:-1001:11648', gateway_id: 'mac', session_ids: ['mac::same-session'] })
+      ],
+      projects: [
+        project({ conversation_id: 'wsl::telegram:-1001:11648', id: 'wsl::project:telegram:-1001:11648', gateway_id: 'wsl' }),
+        project({ conversation_id: 'mac::telegram:-1001:11648', id: 'mac::project:telegram:-1001:11648', gateway_id: 'mac' })
+      ],
+      sessions
+    })
+
+    expect(sections.find(section => section.id === 'agents')?.items.map(item => item.id)).toEqual([
+      'wsl::profile:default',
+      'mac::profile:default'
+    ])
+    expect(sections.find(section => section.id === 'projects')?.items.map(item => item.scope.sessionIds)).toEqual([
+      ['wsl::same-session'],
+      ['mac::same-session']
+    ])
+  })
+
 })

@@ -1,3 +1,4 @@
+import type { GatewayAggregateState } from '@/gateway-aggregation'
 import type { DashboardAgent, DashboardConversation, DashboardProject, SessionInfo } from '@/hermes'
 
 export interface SidebarSessionGroup {
@@ -7,7 +8,7 @@ export interface SidebarSessionGroup {
   sessions: SessionInfo[]
 }
 
-export type SidebarControlSurfaceSectionId = 'agents' | 'projects' | 'chats' | 'workspaces'
+export type SidebarControlSurfaceSectionId = 'gateways' | 'agents' | 'projects' | 'chats' | 'workspaces'
 
 export interface SidebarControlSurfaceItem {
   id: string
@@ -23,6 +24,7 @@ export interface SidebarControlSurfaceSection {
 }
 
 export type SidebarEntityScope =
+  | { id: string; kind: 'gateway'; label: string; sessionIds: string[] }
   | { id: string; kind: 'agent'; label: string; sessionIds: string[] }
   | { id: string; kind: 'chat'; label: string; sessionIds: string[] }
   | { id: string; kind: 'project'; label: string; sessionIds: string[] }
@@ -30,6 +32,7 @@ export type SidebarEntityScope =
 
 interface SidebarControlSurfaceInput {
   agents: DashboardAgent[]
+  gatewayStates?: GatewayAggregateState[]
   conversations: DashboardConversation[]
   projects: DashboardProject[]
   sessions: SessionInfo[]
@@ -120,6 +123,7 @@ function workspaceItemsFor(sessions: SessionInfo[]): SidebarControlSurfaceItem[]
 
 export function sidebarControlSurfaceFor({
   agents,
+  gatewayStates = [],
   conversations,
   projects,
   sessions
@@ -129,6 +133,16 @@ export function sidebarControlSurfaceFor({
   const sessionIds = sessionIdSet(sessions.map(session => session.id))
 
   const sections: SidebarControlSurfaceSection[] = [
+    {
+      id: 'gateways',
+      label: 'Gateways',
+      items: gatewayStates.map(gateway => ({
+        id: gateway.gateway_id,
+        label: gateway.name,
+        meta: gateway.ok ? gateway.state : `degraded · ${gateway.error || gateway.state}`,
+        scope: { id: gateway.gateway_id, kind: 'gateway', label: gateway.name, sessionIds: [] }
+      }))
+    },
     {
       id: 'agents',
       label: 'Agents',

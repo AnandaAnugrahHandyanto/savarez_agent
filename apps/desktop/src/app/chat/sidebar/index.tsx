@@ -52,6 +52,7 @@ import {
 import {
   $agents,
   $conversations,
+  $gatewayStates,
   $projects,
   $selectedStoredSessionId,
   $sessions,
@@ -196,6 +197,7 @@ export function ChatSidebar({
   const agentsOpen = useStore($sidebarRecentsOpen)
   const agents = useStore($agents)
   const conversations = useStore($conversations)
+  const gatewayStates = useStore($gatewayStates)
   const projects = useStore($projects)
   const selectedSessionId = useStore($selectedStoredSessionId)
   const sessions = useStore($sessions)
@@ -314,8 +316,8 @@ export function ChatSidebar({
   )
 
   const controlSurfaceSections = useMemo(
-    () => sidebarControlSurfaceFor({ agents, conversations, projects, sessions: sortedSessions }),
-    [agents, conversations, projects, sortedSessions]
+    () => sidebarControlSurfaceFor({ agents, gatewayStates, conversations, projects, sessions: sortedSessions }),
+    [agents, gatewayStates, conversations, projects, sortedSessions]
   )
 
   const scopedAgentSessions = useMemo(
@@ -732,6 +734,9 @@ function scopeIcon(kind: SidebarEntityScope['kind']): string {
 
     case 'project':
       return 'project'
+
+    case 'gateway':
+      return 'server'
 
     case 'workspace':
       return 'root-folder'

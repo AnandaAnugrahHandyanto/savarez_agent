@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import type { DesktopConnectionConfig, DesktopConnectionMode } from '@/global'
+import type { DesktopConnectionConfig, DesktopConnectionMode, DesktopConnectionRegistryEntry } from '@/global'
 import { AlertCircle, Check, FileText, Globe, Loader2, Monitor } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -81,6 +81,7 @@ export function GatewaySettings() {
   const [testing, setTesting] = useState(false)
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [remoteToken, setRemoteToken] = useState('')
+  const [connectionTokens, setConnectionTokens] = useState<Record<string, string>>({})
   const [lastTest, setLastTest] = useState<null | string>(null)
 
   useEffect(() => {
@@ -112,16 +113,60 @@ export function GatewaySettings() {
     return () => void (cancelled = true)
   }, [])
 
-  const canUseRemote = useMemo(
-    () => Boolean(state.remoteUrl.trim()) && (Boolean(remoteToken.trim()) || state.remoteTokenSet),
-    [remoteToken, state.remoteTokenSet, state.remoteUrl]
-  )
+  const canUseRemote = useMemo(() => {
+    const active = state.connections.find(connection => connection.id === state.activeConnectionId)
+    const activeRemote = active?.mode === 'remote' ? active : state.connections.find(connection => connection.mode === 'remote')
 
-  const payload = () => ({
-    mode: state.mode,
-    remoteToken: remoteToken.trim() || undefined,
-    remoteUrl: state.remoteUrl.trim()
-  })
+    return Boolean(activeRemote?.baseUrl.trim() || state.remoteUrl.trim()) &&
+      (Boolean(connectionTokens[activeRemote?.id || '']?.trim()) || Boolean(remoteToken.trim()) || Boolean(activeRemote?.tokenSet) || state.remoteTokenSet)
+  }, [connectionTokens, remoteToken, state.activeConnectionId, state.connections, state.remoteTokenSet, state.remoteUrl])
+
+  const payload = () => {
+    const connections = state.connections.map(connection => ({
+      ...connection,
+      remoteToken: connectionTokens[connection.id]?.trim() || (connection.id === 'remote-1' ? remoteToken.trim() : '') || undefined
+    }))
+
+    return {
+      activeConnectionId: state.activeConnectionId,
+      connections,
+      mode: state.mode,
+      remoteToken: remoteToken.trim() || undefined,
+      remoteUrl: state.remoteUrl.trim()
+    }
+  }
+
+  const updateConnection = (id: string, patch: Partial<DesktopConnectionRegistryEntry>) => {
+    setState(current => ({
+      ...current,
+      connections: current.connections.map(connection => (connection.id === id ? { ...connection, ...patch } : connection))
+    }))
+  }
+
+  const addRemoteConnection = () => {
+    setState(current => {
+      const nextIndex = current.connections.filter(connection => connection.mode === 'remote').length + 1
+      const id = `remote-${nextIndex}`
+
+      return {
+        ...current,
+        activeConnectionId: id,
+        mode: 'remote',
+        connections: [
+          ...current.connections,
+          {
+            id,
+            name: `Remote gateway ${nextIndex}`,
+            kind: 'hermes-dashboard',
+            mode: 'remote',
+            baseUrl: '',
+            tokenPreview: null,
+            tokenSet: false
+          }
+        ]
+      }
+    })
+  }
 
   const save = async (apply: boolean) => {
     if (state.mode === 'remote' && !canUseRemote) {
@@ -170,11 +215,7 @@ export function GatewaySettings() {
     setLastTest(null)
 
     try {
-      const result = await window.hermesDesktop.testConnectionConfig({
-        mode: 'remote',
-        remoteToken: remoteToken.trim() || undefined,
-        remoteUrl: state.remoteUrl.trim()
-      })
+      const result = await window.hermesDesktop.testConnectionConfig(payload())
 
       const message = `Connected to ${result.baseUrl}${result.version ? ` · Hermes ${result.version}` : ''}`
       setLastTest(message)
@@ -232,7 +273,7 @@ export function GatewaySettings() {
           description="Start a private Hermes backend on localhost. This is the default and works offline."
           disabled={state.envOverride}
           icon={Monitor}
-          onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
+          onSelect={() => setState(current => ({ ...current, activeConnectionId: 'local', mode: 'local' }))}
           title="Local gateway"
         />
         <ModeCard
@@ -240,9 +281,71 @@ export function GatewaySettings() {
           description="Connect this desktop shell to a remote Hermes backend using its session token."
           disabled={state.envOverride}
           icon={Globe}
-          onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
+          onSelect={() =>
+            setState(current => ({
+              ...current,
+              activeConnectionId:
+                current.connections.find(connection => connection.mode === 'remote')?.id || current.activeConnectionId,
+              mode: 'remote'
+            }))
+          }
           title="Remote gateway"
         />
+      </div>
+
+      <div className="mt-5 divide-y divide-border/40 rounded-xl border border-(--ui-stroke-tertiary)">
+        {state.connections.map(connection => (
+          <div className="grid gap-3 p-3" key={connection.id}>
+            <div className="flex items-center gap-2">
+              <button
+                className={cn(
+                  'rounded-md border px-2 py-1 text-xs',
+                  state.activeConnectionId === connection.id
+                    ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
+                    : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)'
+                )}
+                disabled={state.envOverride}
+                onClick={() => setState(current => ({ ...current, activeConnectionId: connection.id, mode: connection.mode }))}
+                type="button"
+              >
+                {state.activeConnectionId === connection.id ? 'active' : 'make active'}
+              </button>
+              <Input
+                className={cn('h-8', CONTROL_TEXT)}
+                disabled={state.envOverride || connection.mode === 'local'}
+                onChange={event => updateConnection(connection.id, { name: event.target.value })}
+                value={connection.name}
+              />
+              <Pill tone={connection.mode === 'remote' ? 'primary' : 'muted'}>{connection.mode}</Pill>
+            </div>
+            {connection.mode === 'remote' ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Input
+                  className={cn('h-8', CONTROL_TEXT)}
+                  disabled={state.envOverride}
+                  onChange={event => updateConnection(connection.id, { baseUrl: event.target.value })}
+                  placeholder="https://gateway.example.com/hermes"
+                  value={connection.baseUrl}
+                />
+                <Input
+                  autoComplete="off"
+                  className={cn('h-8 font-mono', CONTROL_TEXT)}
+                  disabled={state.envOverride}
+                  onChange={event => setConnectionTokens(current => ({ ...current, [connection.id]: event.target.value }))}
+                  placeholder={connection.tokenSet ? `Existing token ${connection.tokenPreview ?? 'saved'}` : 'Paste session token'}
+                  type="password"
+                  value={connectionTokens[connection.id] || ''}
+                />
+              </div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3 flex justify-end">
+        <Button disabled={state.envOverride} onClick={addRemoteConnection} variant="outline">
+          Add remote gateway
+        </Button>
       </div>
 
       <div className="mt-5 divide-y divide-border/40">

@@ -1,5 +1,7 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 
+import type { DesktopConnectionRegistryEntry } from '@/global'
+import { aggregateGatewayReadModels, type AggregatedGatewayReadModel, type GatewayReadResult } from '@/gateway-aggregation'
 import type {
   ActionResponse,
   ActionStatusResponse,
@@ -125,9 +127,11 @@ export async function listSessions(
   limit = 40,
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
-  order: 'created' | 'recent' = 'recent'
+  order: 'created' | 'recent' = 'recent',
+  gatewayId?: string
 ): Promise<PaginatedSessions> {
   const result = await window.hermesDesktop.api<PaginatedSessions>({
+    gatewayId,
     path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`
   })
 
@@ -138,22 +142,50 @@ export async function listSessions(
   }
 }
 
-export function listAgents(): Promise<DashboardAgentsResponse> {
+export function listAgents(gatewayId?: string): Promise<DashboardAgentsResponse> {
   return window.hermesDesktop.api<DashboardAgentsResponse>({
+    gatewayId,
     path: '/api/agents'
   })
 }
 
-export function listConversations(): Promise<DashboardConversationsResponse> {
+export function listConversations(gatewayId?: string): Promise<DashboardConversationsResponse> {
   return window.hermesDesktop.api<DashboardConversationsResponse>({
+    gatewayId,
     path: '/api/conversations'
   })
 }
 
-export function listProjects(): Promise<DashboardProjectsResponse> {
+export function listProjects(gatewayId?: string): Promise<DashboardProjectsResponse> {
   return window.hermesDesktop.api<DashboardProjectsResponse>({
+    gatewayId,
     path: '/api/projects'
   })
+}
+
+async function readGatewayConnection(connection: DesktopConnectionRegistryEntry, limit: number): Promise<GatewayReadResult> {
+  try {
+    const [status, sessions, agents, conversations, projects] = await Promise.all([
+      getStatus(connection.id),
+      listSessions(limit, 1, 'exclude', 'recent', connection.id),
+      listAgents(connection.id).catch(() => ({ agents: [] })),
+      listConversations(connection.id).catch(() => ({ conversations: [] })),
+      listProjects(connection.id).catch(() => ({ projects: [] }))
+    ])
+
+    return { agents, connection, conversations, projects, sessions, status }
+  } catch (error) {
+    return { connection, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export async function listAggregatedGatewayData(limit = 40): Promise<AggregatedGatewayReadModel> {
+  const config = await window.hermesDesktop.getConnectionConfig()
+  const readableConnections = config.connections.filter(connection => connection.mode === 'local' || connection.tokenSet)
+  const connections = readableConnections.length ? readableConnections : config.connections
+  const results = await Promise.all(connections.map(connection => readGatewayConnection(connection, limit)))
+
+  return aggregateGatewayReadModels(results)
 }
 
 export function setSessionArchived(id: string, archived: boolean): Promise<{ ok: boolean }> {
@@ -197,8 +229,9 @@ export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
   })
 }
 
-export function getStatus(): Promise<StatusResponse> {
+export function getStatus(gatewayId?: string): Promise<StatusResponse> {
   return window.hermesDesktop.api<StatusResponse>({
+    gatewayId,
     path: '/api/status'
   })
 }

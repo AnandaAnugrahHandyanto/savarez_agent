@@ -4,6 +4,7 @@ import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { persistString, storedString } from '@/lib/storage'
+import type { GatewayAggregateState } from '@/gateway-aggregation'
 import type { DashboardAgent, DashboardConversation, DashboardProject, SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
@@ -56,6 +57,7 @@ export function mergeWorkingSessions(
 
 export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
+export const $gatewayStates = atom<GatewayAggregateState[]>([])
 export const $sessions = atom<SessionInfo[]>([])
 export const $agents = atom<DashboardAgent[]>([])
 export const $conversations = atom<DashboardConversation[]>([])
@@ -93,6 +95,7 @@ export const $modelPickerOpen = atom(false)
 
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
+export const setGatewayStates = (next: Updater<GatewayAggregateState[]>) => updateAtom($gatewayStates, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setAgents = (next: Updater<DashboardAgent[]>) => updateAtom($agents, next)
 export const setConversations = (next: Updater<DashboardConversation[]>) => updateAtom($conversations, next)
