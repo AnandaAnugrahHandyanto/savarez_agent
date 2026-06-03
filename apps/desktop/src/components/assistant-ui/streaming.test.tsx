@@ -263,6 +263,20 @@ function StreamingHarness() {
   )
 }
 
+function StaticThreadHarness() {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [userMessage(), assistantMessage('complete response', false)],
+    isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
+
 function TodoHarness({ message }: { message: ThreadMessage }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [message],
@@ -413,6 +427,81 @@ describe('assistant-ui streaming renderer', () => {
     await wait(0)
 
     expect(viewport.scrollTop).toBe(420)
+  })
+
+  it('does not auto-follow idle layout shifts', async () => {
+    const { container } = render(<StaticThreadHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    let scrollHeight = 1_000
+
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+
+    await wait(80)
+
+    await act(async () => {
+      viewport.scrollTop = 420
+      fireEvent.scroll(viewport)
+    })
+
+    scrollHeight = 1_200
+
+    await act(async () => {
+      for (const observer of resizeObservers) {
+        observer.trigger(1_200)
+      }
+    })
+    await wait(0)
+
+    expect(viewport.scrollTop).toBe(420)
+  })
+
+  it('keeps sticky-bottom armed through viewport height changes during streaming', async () => {
+    const { container } = render(<StreamingHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    let clientHeight = 200
+    let scrollHeight = 1_000
+
+    Object.defineProperty(viewport, 'clientHeight', {
+      configurable: true,
+      get: () => clientHeight
+    })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+
+    await wait(80)
+
+    await act(async () => {
+      viewport.scrollTop = 800
+      fireEvent.scroll(viewport)
+    })
+
+    clientHeight = 240
+
+    await act(async () => {
+      viewport.scrollTop = 760
+      fireEvent.scroll(viewport)
+    })
+
+    scrollHeight = 1_200
+
+    await act(async () => {
+      for (const observer of resizeObservers) {
+        observer.trigger(1_200)
+      }
+    })
+    await wait(0)
+
+    expect(viewport.scrollTop).toBe(1_200)
   })
 
   it('honors the first upward wheel scroll even when a programmatic bottom-pin scroll event is still pending', async () => {
