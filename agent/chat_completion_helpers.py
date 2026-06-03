@@ -854,6 +854,15 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         from agent.redact import redact_sensitive_text
         _san_content = redact_sensitive_text(_san_content)
 
+    # MiMo (xiaomi) API requires non-empty ``text``/``content`` on every
+    # assistant message — even those carrying only tool_calls with no
+    # natural-language body.  Without this, replay of tool-call-only
+    # assistant turns causes HTTP 400 "text is not set".  Pad with a
+    # single space so the API accepts the request while keeping the
+    # visible output identical.  (#github-pr-fix/mimo-empty-content)
+    if assistant_tool_calls and not (_san_content or "").strip():
+        _san_content = " "
+
     msg = {
         "role": "assistant",
         "content": _san_content,
