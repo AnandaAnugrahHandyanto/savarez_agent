@@ -611,7 +611,7 @@ export function DesktopController() {
       onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
       onAttachDroppedItems={composer.attachDroppedItems}
       onAttachImageBlob={composer.attachImageBlob}
-      onBranchInNewChat={messageId => void branchInNewChat(messageId)}
+      onBranchInNewChat={branchInNewChat}
       onCancel={cancelRun}
       onDeleteSelectedSession={() => {
         if (selectedStoredSessionId) {
