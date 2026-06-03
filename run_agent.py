@@ -6627,12 +6627,42 @@ class AIAgent:
         """
         Invalidate the cached system prompt, forcing a rebuild on the next turn.
         
-        Called after context compression events. Also reloads memory from disk
-        so the rebuilt prompt captures any writes from this session.
+        Called after context compression events and after skill mutations
+        (create/delete/edit via skill_manage) so the ``<available_skills>``
+        block reflects the current state of the skills filesystem.
+        Also reloads memory from disk so the rebuilt prompt captures any
+        writes from this session.
         """
         self._cached_system_prompt = None
         if self._memory_store:
             self._memory_store.load_from_disk()
+
+    def _maybe_invalidate_for_skill_mutation(self, function_name: str, function_result) -> None:
+        """Invalidate cached system prompt after successful skill mutations.
+
+        When ``skill_manage`` creates, deletes, or edits a skill, the
+        ``<available_skills>`` block baked into ``_cached_system_prompt``
+        becomes stale.  ``skill_manage`` already calls
+        ``clear_skills_system_prompt_cache()`` (prompt_builder LRU), but the
+        frozen ``_cached_system_prompt`` on this ``AIAgent`` instance is never
+        updated — the model keeps seeing the old skills list for the rest of
+        the session.
+
+        This method parses the tool result and, on success, invalidates the
+        cached prompt so it's rebuilt (with the new skills index) on the next
+        API call.  The one-turn prompt-cache miss is acceptable because skill
+        mutations are rare.
+        """
+        if function_name != "skill_manage":
+            return
+        try:
+            result_str = function_result if isinstance(function_result, str) else str(function_result)
+            parsed = json.loads(result_str)
+            if parsed.get("success"):
+                self._invalidate_system_prompt()
+                logger.info("Invalidated cached system prompt after successful skill_manage mutation")
+        except Exception:
+            pass  # Non-JSON result or parse error — no invalidation needed
 
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
@@ -11019,13 +11049,18 @@ class AIAgent:
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
         else:
-            return handle_function_call(
+            result = handle_function_call(
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
             )
+            # After skill mutations (create/delete/edit), invalidate the
+            # cached system prompt so the <available_skills> block is
+            # rebuilt with the updated skills index on the next API call.
+            self._maybe_invalidate_for_skill_mutation(function_name, result)
+            return result
 
     @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
@@ -11767,6 +11802,12 @@ class AIAgent:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
+
+            # After skill mutations (create/delete/edit), invalidate the
+            # cached system prompt so the <available_skills> block is
+            # rebuilt with the updated skills index on the next API call.
+            if not _execution_blocked:
+                self._maybe_invalidate_for_skill_mutation(function_name, function_result)
 
             if isinstance(function_result, str):
                 result_preview = function_result if self.verbose_logging else (
