@@ -276,6 +276,48 @@ class MemoryProvider(ABC):
           should all have ``env_var`` set and this method stays no-op).
         """
 
+    def read_config(self, hermes_home: str) -> Dict[str, Dict[str, Any]]:
+        """Read current config values for the Desktop config panel.
+
+        Returns ``{field_key: {"value": str, "is_set": bool}}``. Secret fields
+        ALWAYS return ``value == ""`` (write-only) — only ``is_set`` is exposed.
+
+        The default reads the conventional ``<hermes_home>/<name>/config.json``
+        plus env vars for secrets, driven by ``get_config_schema()``. Providers
+        with non-conventional storage (host-keyed files, camelCase keys,
+        multi-file resolution — e.g. Honcho's ``honcho.json``) override this to
+        route through their own resolution logic. The Desktop HTTP layer never
+        needs to know how any provider stores config.
+        """
+        from agent.memory_config_surface import default_read_config
+
+        return default_read_config(self.get_config_schema(), self.name, hermes_home)
+
+    def desktop_config_surface(self, hermes_home: str) -> Dict[str, Any]:
+        """Assemble the full Desktop config payload for this provider.
+
+        Generic — driven entirely by ``get_config_schema()`` + ``read_config()``.
+        Returns ``{name, label, fields}`` where each field carries display
+        metadata (label/kind/tier/placeholder/options) and current state
+        (value/is_set, secrets masked). Providers with no config surface return
+        an empty ``fields`` list, and the Desktop panel renders nothing.
+        """
+        from agent.memory_config_surface import enrich_schema
+
+        schema = self.get_config_schema() or []
+        fields = enrich_schema(schema)
+        if fields:
+            state = self.read_config(hermes_home)
+            for field in fields:
+                fs = state.get(field["key"], {})
+                field["value"] = "" if field["kind"] == "secret" else str(fs.get("value", ""))
+                field["is_set"] = bool(fs.get("is_set", False))
+        return {
+            "name": self.name,
+            "label": getattr(self, "display_label", None) or self.name.capitalize(),
+            "fields": fields,
+        }
+
     def on_memory_write(
         self,
         action: str,
