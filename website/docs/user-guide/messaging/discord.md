@@ -308,6 +308,7 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 discord:
   require_mention: true           # Require @mention in server channels
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
+  allow_bots: none                # none | mentions | all — admit messages from other bots
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
@@ -344,6 +345,17 @@ In **multi-bot threads** where users address one bot per turn, this default beco
 discord:
   require_mention: true
   thread_require_mention: true    # multi-bot setup
+```
+
+#### `discord.allow_bots`
+
+**Type:** string (`none` | `mentions` | `all`) — **Default:** `none`
+
+Controls how the bot handles messages from **other Discord bots** — the key setting for bot-to-bot / multi-agent setups. `none` ignores all other bots; `mentions` accepts a bot message only when it `@mentions` Hermes; `all` accepts every bot message. Equivalent to the [`DISCORD_ALLOW_BOTS`](#environment-variables-env) env var, which takes precedence when both are set.
+
+```yaml
+discord:
+  allow_bots: mentions    # respond to other bots only when they @mention us
 ```
 
 #### `discord.free_response_channels`
