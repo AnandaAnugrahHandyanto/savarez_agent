@@ -1269,6 +1269,13 @@ class TestNewEndpoints:
         assert "lines" in data
         assert isinstance(data["lines"], list)
 
+    def test_get_logs_gui_alias(self):
+        resp = self.client.get("/api/logs?file=gui")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["file"] == "gui"
+        assert isinstance(data["lines"], list)
+
     def test_get_logs_invalid_file(self):
         resp = self.client.get("/api/logs?file=nonexistent")
         assert resp.status_code == 400

@@ -32,8 +32,11 @@ LOG_FILES = {
     "agent": "agent.log",
     "errors": "errors.log",
     "gateway": "gateway.log",
-    "gui": "gui.log",
+    "desktop": "desktop.log",
+    # Backward-compatible alias used by the desktop GUI status snapshot.
+    "gui": "desktop.log",
 }
+
 
 # Log line timestamp regex — matches "2026-04-05 22:35:00,123" or
 # "2026-04-05 22:35:00" at the start of a line.
