@@ -558,21 +558,6 @@ class AudioTranscriptionRequest(BaseModel):
     mime_type: Optional[str] = None
 
 
-class ModelAssignment(BaseModel):
-    """Payload for POST /api/model/set — assign a provider/model to a slot.
-
-    scope="main"        → writes model.provider + model.default
-    scope="auxiliary"   → writes auxiliary.<task>.provider + auxiliary.<task>.model
-    scope="auxiliary" with task=""  → applied to every auxiliary.* slot
-    scope="auxiliary" with task="__reset__"  → resets every slot to provider="auto"
-    """
-
-    scope: str
-    provider: str
-    model: str
-    task: str = ""
-
-
 _AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
     "audio/aac": ".aac",
     "audio/flac": ".flac",
@@ -594,6 +579,12 @@ _MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024
 def _audio_extension_for_mime(mime_type: str) -> str:
     normalized = (mime_type or "").split(";", 1)[0].strip().lower()
     return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
+
+
+class MemoryProviderConfigUpdate(BaseModel):
+    """Payload for PUT /api/memory/providers/{name}/config."""
+
+    values: Dict[str, str] = {}
 
 
 class ModelAssignment(BaseModel):
@@ -1590,6 +1581,93 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         config["model_context_length"] = 0
     return config
+
+
+@app.get("/api/memory/providers/{name}/config")
+async def get_memory_provider_config(name: str):
+    """Return a provider's Desktop config surface (schema + current state).
+
+    Generic: delegates to the provider's ABC methods. Providers with no config
+    surface (e.g. builtin) return an empty ``fields`` list and the panel renders
+    nothing. Secrets are never returned, only an ``is_set`` flag.
+    """
+    try:
+        from plugins.memory import load_memory_provider
+
+        provider = load_memory_provider(name)
+        if provider is None:
+            return {"name": name, "label": name, "fields": []}
+        return provider.desktop_config_surface(str(get_hermes_home()))
+    except Exception:
+        _log.exception("GET /api/memory/providers/%s/config failed", name)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.put("/api/memory/providers/{name}/config")
+async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate):
+    """Persist a provider's config via its own ABC methods.
+
+    Validates submitted values against the provider's schema (select membership,
+    required), writes non-secret fields via ``save_config`` to the provider's
+    native location, and writes secrets to the env store under their declared
+    ``env_var``. Does NOT change ``memory.provider`` — saving a provider's
+    settings is distinct from activating it.
+    """
+    try:
+        from plugins.memory import load_memory_provider
+        from agent.memory_config_surface import KIND_SECRET, KIND_SELECT, enrich_schema
+
+        provider = load_memory_provider(name)
+        if provider is None:
+            raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+
+        fields = enrich_schema(provider.get_config_schema() or [])
+        if not fields:
+            raise HTTPException(status_code=404, detail=f"Provider {name} has no config surface")
+
+        values = body.values or {}
+        non_secret: Dict[str, str] = {}
+        secrets: Dict[str, str] = {}
+        errors: Dict[str, str] = {}
+
+        for field in fields:
+            key = field["key"]
+            if field["kind"] == KIND_SECRET:
+                submitted = (values.get(key) or "").strip()
+                if submitted and field.get("env_key"):
+                    secrets[field["env_key"]] = submitted
+                continue
+
+            if key not in values:
+                continue
+            raw = (values.get(key) or "").strip()
+
+            if field["kind"] == KIND_SELECT:
+                allowed = {opt["value"] for opt in field["options"]}
+                if raw and raw not in allowed:
+                    errors[key] = f"Invalid value for '{key}'"
+                    continue
+            if field.get("required") and not raw:
+                errors[key] = f"'{key}' is required"
+                continue
+            non_secret[key] = raw
+
+        if errors:
+            raise HTTPException(status_code=400, detail={"fields": errors})
+
+        hermes_home = str(get_hermes_home())
+        if non_secret and hasattr(provider, "save_config"):
+            provider.save_config(non_secret, hermes_home)
+
+        for env_key, secret in secrets.items():
+            save_env_value(env_key, secret)
+
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/memory/providers/%s/config failed", name)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/config")
