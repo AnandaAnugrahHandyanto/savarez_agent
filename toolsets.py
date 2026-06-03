@@ -221,6 +221,12 @@ TOOLSETS = {
         "tools": ["session_search"],
         "includes": []
     },
+
+    "personal_rag": {
+        "description": "Private local document RAG ingestion, listing, and sourced search",
+        "tools": ["personal_rag_ingest", "personal_rag_search", "personal_rag_list"],
+        "includes": []
+    },
     
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
