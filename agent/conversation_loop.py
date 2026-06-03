@@ -348,6 +348,82 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
 
 
+def _track_response_token_usage(agent: Any, response: Any) -> None:
+    """Record token usage from an API response on the agent's session counters.
+
+    This is intentionally safe to call on *every* API response, including
+    truncated ones (finish_reason='length') and failed retries.  When the
+    response carries no ``usage`` attribute the call is a no-op.
+
+    Fixes: https://github.com/NousResearch/hermes-agent/issues/38458
+    """
+    if not hasattr(response, "usage") or not response.usage:
+        return
+    try:
+        canonical_usage = normalize_usage(
+            response.usage,
+            provider=getattr(agent, "provider", None),
+            api_mode=getattr(agent, "api_mode", None),
+        )
+        prompt_tokens = canonical_usage.prompt_tokens
+        completion_tokens = canonical_usage.output_tokens
+        total_tokens = canonical_usage.total_tokens
+
+        agent.session_prompt_tokens += prompt_tokens
+        agent.session_completion_tokens += completion_tokens
+        agent.session_total_tokens += total_tokens
+        agent.session_api_calls += 1
+        agent.session_input_tokens += canonical_usage.input_tokens
+        agent.session_output_tokens += canonical_usage.output_tokens
+        agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
+        agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
+        agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+
+        cost_result = estimate_usage_cost(
+            agent.model,
+            canonical_usage,
+            provider=agent.provider,
+            base_url=agent.base_url,
+            api_key=getattr(agent, "api_key", ""),
+        )
+        if cost_result.amount_usd is not None:
+            agent.session_estimated_cost_usd += float(cost_result.amount_usd)
+        agent.session_cost_status = cost_result.status
+        agent.session_cost_source = cost_result.source
+
+        # Persist to session DB so /insights and analytics stay accurate.
+        if getattr(agent, "_session_db", None) and agent.session_id:
+            try:
+                if not agent._session_db_created:
+                    agent._ensure_db_session()
+                agent._session_db.update_token_counts(
+                    agent.session_id,
+                    input_tokens=canonical_usage.input_tokens,
+                    output_tokens=canonical_usage.output_tokens,
+                    cache_read_tokens=canonical_usage.cache_read_tokens,
+                    cache_write_tokens=canonical_usage.cache_write_tokens,
+                    reasoning_tokens=canonical_usage.reasoning_tokens,
+                    estimated_cost_usd=float(cost_result.amount_usd)
+                    if cost_result.amount_usd is not None else None,
+                    cost_status=cost_result.status,
+                    cost_source=cost_result.source,
+                    billing_provider=agent.provider,
+                    billing_base_url=agent.base_url,
+                    billing_mode="subscription_included"
+                    if cost_result.status == "included" else None,
+                    model=agent.model,
+                    api_call_count=1,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Token persistence failed (session=%s, tokens=%d): %s",
+                    agent.session_id, total_tokens, e,
+                )
+    except Exception:
+        # Never let usage tracking crash the conversation loop.
+        logger.debug("_track_response_token_usage failed", exc_info=True)
+
+
 def run_conversation(
     agent,
     user_message: str,
@@ -1709,6 +1785,8 @@ def run_conversation(
                             "→ Lower reasoning effort: `/thinkon low` or `/thinkon minimal`\n"
                             "→ Or switch to a larger/non-reasoning model with `/model`"
                         )
+                        # Record tokens consumed by this truncated response.
+                        _track_response_token_usage(agent, response)
                         agent._cleanup_task_resources(effective_task_id)
                         agent._persist_session(messages, conversation_history)
                         return {
@@ -1767,9 +1845,14 @@ def run_conversation(
                                 messages.append(continue_msg)
                                 agent._session_messages = messages
                                 restart_with_length_continuation = True
+                                # Record tokens consumed by this truncated response
+                                # before requesting a continuation.
+                                _track_response_token_usage(agent, response)
                                 break
 
                             partial_response = agent._strip_think_blocks("".join(truncated_response_parts)).strip()
+                            # Record tokens consumed by this final truncated response.
+                            _track_response_token_usage(agent, response)
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
@@ -1818,6 +1901,8 @@ def run_conversation(
                                 # Don't append the broken response to messages;
                                 # just re-run the same API call from the current
                                 # message state, giving the model another chance.
+                                # Record tokens consumed by this truncated attempt.
+                                _track_response_token_usage(agent, response)
                                 continue
                             agent._flush_status_buffer()
                             if _is_stub_stall:
@@ -1830,6 +1915,8 @@ def run_conversation(
                                     f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
                                     force=True,
                                 )
+                            # Record tokens consumed by the truncated tool call.
+                            _track_response_token_usage(agent, response)
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
@@ -1851,6 +1938,8 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}   ⏪ Rolling back to last complete assistant turn")
                         rolled_back_messages = agent._get_messages_up_to_last_assistant(messages)
 
+                        # Record tokens consumed by the truncated response.
+                        _track_response_token_usage(agent, response)
                         agent._cleanup_task_resources(effective_task_id)
                         agent._persist_session(messages, conversation_history)
 
@@ -1866,6 +1955,8 @@ def run_conversation(
                         # First message was truncated - mark as failed
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ First response truncated - cannot recover", force=True)
+                        # Record tokens consumed by the truncated response.
+                        _track_response_token_usage(agent, response)
                         agent._persist_session(messages, conversation_history)
                         return {
                             "final_response": None,
@@ -3533,6 +3624,12 @@ def run_conversation(
         if response is None:
             _turn_exit_reason = "all_retries_exhausted_no_response"
             print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
+            api_call_count -= 1
+            agent._api_call_count = api_call_count
+            try:
+                agent.iteration_budget.refund()
+            except Exception:
+                pass
             agent._persist_session(messages, conversation_history)
             break
 
