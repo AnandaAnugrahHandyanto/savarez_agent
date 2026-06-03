@@ -7,6 +7,33 @@ export interface TriggerState {
 }
 
 const TRIGGER_RE = /(?:^|[\s])([@/])([^\s@/]*)$/
+const IME_PROCESS_KEY_CODE = 229
+
+interface KeyboardEventLike {
+  isComposing?: boolean
+  key?: string
+  keyCode?: number
+  nativeEvent?: {
+    isComposing?: boolean
+    keyCode?: number
+    which?: number
+  }
+  which?: number
+}
+
+export function isComposingKeyboardEvent(event: KeyboardEventLike): boolean {
+  const native = event.nativeEvent
+
+  return Boolean(
+    event.isComposing ||
+      native?.isComposing ||
+      event.key === 'Process' ||
+      event.keyCode === IME_PROCESS_KEY_CODE ||
+      event.which === IME_PROCESS_KEY_CODE ||
+      native?.keyCode === IME_PROCESS_KEY_CODE ||
+      native?.which === IME_PROCESS_KEY_CODE
+  )
+}
 
 export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   const blobs: Blob[] = []
