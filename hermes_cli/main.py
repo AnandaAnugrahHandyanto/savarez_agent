@@ -2979,6 +2979,7 @@ def select_provider_and_model(args=None):
         "opencode-go",
         "alibaba",
         "huggingface",
+        "modelscope",
         "xiaomi",
         "arcee",
         "gmi",
