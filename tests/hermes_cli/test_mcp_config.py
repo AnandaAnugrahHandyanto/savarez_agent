@@ -6,6 +6,8 @@ any actual MCP servers or API keys.
 """
 
 import argparse
+import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -483,6 +485,73 @@ class TestEnvVarInterpolation:
         assert _interpolate_env_vars(None) is None
 
 
+class TestProbeConfigResolution:
+    def test_resolve_mcp_server_config_loads_dotenv(self, monkeypatch):
+        monkeypatch.delenv("API_KEY", raising=False)
+
+        def fake_load_dotenv(*args, **kwargs):
+            os.environ["API_KEY"] = "secret123"
+
+        monkeypatch.setattr(
+            "hermes_cli.env_loader.load_hermes_dotenv",
+            fake_load_dotenv,
+        )
+
+        from hermes_cli.mcp_config import _resolve_mcp_server_config
+
+        result = _resolve_mcp_server_config({
+            "url": "https://example.com/mcp",
+            "headers": {"Authorization": "Bearer ${API_KEY}"},
+        })
+
+        assert result["headers"]["Authorization"] == "Bearer secret123"
+
+    def test_probe_single_server_uses_resolved_config(self, monkeypatch):
+        resolved_config = {
+            "url": "https://example.com/mcp",
+            "headers": {"Authorization": "Bearer secret123"},
+        }
+        seen = {}
+
+        class FakeServer:
+            def __init__(self):
+                self._tools = [FakeTool("n8n_list", "List workflows")]
+
+            async def shutdown(self):
+                return None
+
+        async def fake_connect_server(name, config):
+            seen["name"] = name
+            seen["config"] = config
+            return FakeServer()
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._resolve_mcp_server_config",
+            lambda config: resolved_config,
+        )
+        monkeypatch.setattr("tools.mcp_tool._ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr(
+            "tools.mcp_tool._run_on_mcp_loop",
+            lambda coro, timeout=None: asyncio.run(coro),
+        )
+        monkeypatch.setattr("tools.mcp_tool._connect_server", fake_connect_server)
+        monkeypatch.setattr("tools.mcp_tool._stop_mcp_loop", lambda: None)
+
+        from hermes_cli.mcp_config import _probe_single_server
+
+        tools = _probe_single_server(
+            "n8n",
+            {
+                "url": "https://example.com/mcp",
+                "headers": {"Authorization": "Bearer ${API_KEY}"},
+            },
+        )
+
+        assert seen["name"] == "n8n"
+        assert seen["config"] == resolved_config
+        assert tools == [("n8n_list", "List workflows")]
+
+
 # ---------------------------------------------------------------------------
 # Tests: config helpers
 # ---------------------------------------------------------------------------
@@ -649,4 +718,3 @@ class TestMcpLogin:
 
         assert "Authenticated — 3 tool(s) available" in out
         assert "no OAuth token" not in out
-

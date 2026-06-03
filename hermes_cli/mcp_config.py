@@ -164,6 +164,14 @@ def _apply_mcp_preset(
 
 # ─── Discovery (temporary connect) ───────────────────────────────────────────
 
+def _resolve_mcp_server_config(config: dict) -> dict:
+    """Resolve dotenv-backed env placeholders before probing a server."""
+    from hermes_cli.env_loader import load_hermes_dotenv
+    from tools.mcp_tool import _interpolate_env_vars
+
+    load_hermes_dotenv()
+    return _interpolate_env_vars(config)
+
 def _probe_single_server(
     name: str, config: dict, connect_timeout: float = 30
 ) -> List[Tuple[str, str]]:
@@ -180,12 +188,13 @@ def _probe_single_server(
     )
 
     _ensure_mcp_loop()
+    resolved_config = _resolve_mcp_server_config(config)
 
     tools_found: List[Tuple[str, str]] = []
 
     async def _probe():
         server = await asyncio.wait_for(
-            _connect_server(name, config), timeout=connect_timeout
+            _connect_server(name, resolved_config), timeout=connect_timeout
         )
         for t in server._tools:
             desc = getattr(t, "description", "") or ""
