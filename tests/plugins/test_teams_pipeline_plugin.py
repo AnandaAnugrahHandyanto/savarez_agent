@@ -3,22 +3,134 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from pathlib import Path
 
+import httpx
 import pytest
 
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from plugins.teams_pipeline import register
-from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
+from plugins.teams_pipeline.pipeline import NotionWriter, TeamsMeetingPipeline, TeamsPipelineSinkError
 from plugins.teams_pipeline.store import TeamsPipelineStore
-from plugins.teams_pipeline.models import MeetingArtifact
+from plugins.teams_pipeline.models import MeetingArtifact, TeamsMeetingRef, TeamsMeetingSummaryPayload
 
 
 class FakeGraphClient:
     def __init__(self) -> None:
         self.downloaded = False
+
+
+def _summary_payload() -> TeamsMeetingSummaryPayload:
+    return TeamsMeetingSummaryPayload(
+        meeting_ref=TeamsMeetingRef(meeting_id="meeting-helm-1"),
+        title="Helm smoke",
+        summary="Shape-only smoke summary",
+        key_decisions=[],
+        action_items=[],
+        risks=["Regression risk"],
+    )
+
+
+def _valid_helm_preflight_contract() -> dict[str, object]:
+    return {
+        "action": "teams_pipeline.notion.write_summary",
+        "tier": "S3",
+        "actor_profile": "gond",
+        "approver": "EMA batch7 task t_994e10d4",
+        "target": "notion:database:db-1",
+        "payload_or_diff": "meeting summary payload fixture",
+        "why": "local smoke validates env-gated Notion writeback preflight",
+        "risks": ["Malformed writeback could mutate the wrong Notion page"],
+        "rollback": "delete or edit the created Notion page from the audit event",
+        "audit_event": "kanban:t_994e10d4",
+    }
+
+
+@pytest.mark.anyio
+async def test_notion_write_summary_helm_enforce_blocks_missing_approver(monkeypatch):
+    monkeypatch.setenv("HELM_ENFORCE", "1")
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500)
+
+    writer = NotionWriter(api_key="notion-test-token", transport=httpx.MockTransport(handler))
+    contract = _valid_helm_preflight_contract()
+    contract.pop("approver")
+
+    with pytest.raises(TeamsPipelineSinkError) as excinfo:
+        await writer.write_summary(
+            _summary_payload(),
+            {"database_id": "db-1", "helm_preflight": contract},
+        )
+
+    error = json.loads(str(excinfo.value))
+    assert error["classification"] == "BLOCKED"
+    assert error["wrapper"] == "teams_pipeline.notion.write_summary"
+    assert error["failures"] == ["missing:approver"]
+    assert calls == 0
+
+
+@pytest.mark.anyio
+async def test_notion_write_summary_helm_enforce_blocks_action_mismatch(monkeypatch):
+    monkeypatch.setenv("HELM_ENFORCE", "1")
+    writer = NotionWriter(api_key="notion-test-token", transport=httpx.MockTransport(lambda request: httpx.Response(500)))
+    contract = _valid_helm_preflight_contract()
+    contract["action"] = "teams_pipeline.linear.write_summary"
+
+    with pytest.raises(TeamsPipelineSinkError) as excinfo:
+        await writer.write_summary(
+            _summary_payload(),
+            {"database_id": "db-1", "helm_preflight": contract},
+        )
+
+    error = json.loads(str(excinfo.value))
+    assert error["classification"] == "BLOCKED"
+    assert error["failures"] == ["action.mismatch:teams_pipeline.linear.write_summary"]
+
+
+@pytest.mark.anyio
+async def test_notion_write_summary_helm_enforce_primary_contract_fails_closed(monkeypatch):
+    monkeypatch.setenv("HELM_ENFORCE", "1")
+    writer = NotionWriter(api_key="notion-test-token", transport=httpx.MockTransport(lambda request: httpx.Response(500)))
+
+    with pytest.raises(TeamsPipelineSinkError) as excinfo:
+        await writer.write_summary(
+            _summary_payload(),
+            {
+                "database_id": "db-1",
+                "helm_preflight": {},
+                "preflight_contract": _valid_helm_preflight_contract(),
+            },
+        )
+
+    error = json.loads(str(excinfo.value))
+    assert error["classification"] == "BLOCKED"
+    assert "missing:approver" in error["failures"]
+
+
+@pytest.mark.anyio
+async def test_notion_write_summary_helm_enforce_accepts_valid_contract(monkeypatch):
+    monkeypatch.setenv("HELM_ENFORCE", "1")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert str(request.url) == "https://api.notion.com/v1/pages"
+        return httpx.Response(200, json={"id": "page-helm-1", "url": "https://notion.so/page-helm-1"})
+
+    writer = NotionWriter(api_key="notion-test-token", transport=httpx.MockTransport(handler))
+
+    result = await writer.write_summary(
+        _summary_payload(),
+        {"database_id": "db-1", "helm_preflight": _valid_helm_preflight_contract()},
+    )
+
+    assert result == {"page_id": "page-helm-1", "url": "https://notion.so/page-helm-1"}
 
 
 async def _transcript_meeting_resolver(client, *, meeting_id=None, join_web_url=None, tenant_id=None):

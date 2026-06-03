@@ -65,7 +65,88 @@ class TeamsPipelineArtifactNotFoundError(TeamsPipelineRetryableError):
     """Raised when meeting artifacts are not yet available."""
 
 
+_HELM_PREFLIGHT_REQUIRED_FIELDS = (
+    "action",
+    "tier",
+    "actor_profile",
+    "approver",
+    "target",
+    "payload_or_diff",
+    "why",
+    "risks",
+    "rollback",
+    "audit_event",
+)
+_HELM_PREFLIGHT_TIER_ENUM = {"S3", "S4", "S5"}
+_HELM_PREFLIGHT_ACTOR_ENUM = {"ema", "gond", "helm", "waukeen", "mystra", "other"}
+
+
+def _helm_enforce_enabled() -> bool:
+    return os.getenv("HELM_ENFORCE", "").strip() == "1"
+
+
+def _validate_helm_preflight_contract(contract: Any) -> list[str]:
+    """Return sorted shape-validation failures for the S3-S5 preflight contract."""
+    if not isinstance(contract, dict):
+        return ["contract.not_object"]
+
+    failures: list[str] = []
+    extra = set(contract) - set(_HELM_PREFLIGHT_REQUIRED_FIELDS)
+    if extra:
+        failures.append(f"extra_properties:{','.join(sorted(extra))}")
+
+    for field in _HELM_PREFLIGHT_REQUIRED_FIELDS:
+        if field not in contract:
+            failures.append(f"missing:{field}")
+            continue
+        value = contract[field]
+        if field == "risks":
+            if not isinstance(value, list) or not value:
+                failures.append("risks.empty_or_not_array")
+            else:
+                for i, item in enumerate(value):
+                    if not isinstance(item, str) or not item.strip():
+                        failures.append(f"risks[{i}].empty_or_not_string")
+        elif not isinstance(value, str) or not value.strip():
+            failures.append(f"{field}.empty_or_not_string")
+
+    tier = contract.get("tier")
+    if isinstance(tier, str) and tier not in _HELM_PREFLIGHT_TIER_ENUM:
+        failures.append(f"tier.not_in_enum:{tier}")
+    actor = contract.get("actor_profile")
+    if isinstance(actor, str) and actor not in _HELM_PREFLIGHT_ACTOR_ENUM:
+        failures.append(f"actor_profile.not_in_enum:{actor}")
+    return sorted(failures)
+
+
+def _require_helm_preflight(config: dict[str, Any], *, wrapper: str) -> None:
+    if not _helm_enforce_enabled():
+        return
+    contract = (
+        config["helm_preflight"]
+        if "helm_preflight" in config
+        else config.get("preflight_contract")
+    )
+    failures = _validate_helm_preflight_contract(contract)
+    if isinstance(contract, dict) and not failures and contract.get("action") != wrapper:
+        failures.append(f"action.mismatch:{contract.get('action')}")
+    if not failures:
+        return
+    raise TeamsPipelineSinkError(
+        json.dumps(
+            {
+                "classification": "BLOCKED",
+                "wrapper": wrapper,
+                "failures": failures,
+                "note": "HELM_ENFORCE=1 rejected malformed S3-S5 preflight contract before mutation.",
+            },
+            sort_keys=True,
+        )
+    )
+
+
 TranscribeFn = Callable[[str, Optional[str]], dict[str, Any]]
+
 SummarizeFn = Callable[..., Awaitable[dict[str, Any] | TeamsMeetingSummaryPayload]]
 SinkFn = Callable[
     [TeamsMeetingSummaryPayload, dict[str, Any], Optional[dict[str, Any]]],
@@ -118,6 +199,7 @@ class NotionWriter:
         config: dict[str, Any],
         existing_record: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        _require_helm_preflight(config, wrapper="teams_pipeline.notion.write_summary")
         if not self.api_key:
             raise TeamsPipelineSinkError("NOTION_API_KEY is not configured.")
 
