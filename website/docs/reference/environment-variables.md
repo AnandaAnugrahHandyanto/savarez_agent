@@ -74,6 +74,9 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `DEEPSEEK_BASE_URL` | Custom DeepSeek API base URL |
 | `NOVITA_API_KEY` | NovitaAI API key — AI-native cloud for Model API, Agent Sandbox, and GPU Cloud ([novita.ai/settings/key-management](https://novita.ai/settings/key-management)) |
 | `NOVITA_BASE_URL` | Override NovitaAI base URL (default: `https://api.novita.ai/openai/v1`) |
+| `NEBIUS_API_KEY` | Nebius Token Factory API key — open-weight models via one OpenAI-compatible endpoint ([studio.nebius.com](https://studio.nebius.com)) |
+| `NEBIUS_TOKEN_FACTORY_API_KEY` | Alternate name for the Nebius Token Factory API key (used if `NEBIUS_API_KEY` is unset) |
+| `NEBIUS_BASE_URL` | Override Nebius base URL (default: `https://api.tokenfactory.nebius.com/v1`; set a region-pinned host such as `https://api.tokenfactory.us-central1.nebius.com/v1` if required) |
 | `NVIDIA_API_KEY` | NVIDIA NIM API key — Nemotron and open models ([build.nvidia.com](https://build.nvidia.com)) |
 | `NVIDIA_BASE_URL` | Override NVIDIA base URL (default: `https://integrate.api.nvidia.com/v1`; set to `http://localhost:8000/v1` for a local NIM endpoint) |
 | `STEPFUN_API_KEY` | StepFun API key — Step-series models ([platform.stepfun.com](https://platform.stepfun.com)) |

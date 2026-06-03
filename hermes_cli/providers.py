@@ -167,6 +167,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="NOVITA_BASE_URL",
     ),
+    "nebius": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        base_url_override="https://api.tokenfactory.nebius.com/v1",
+        base_url_env_var="NEBIUS_BASE_URL",
+    ),
     "xai": HermesOverlay(
         transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
@@ -324,6 +330,14 @@ ALIASES: Dict[str, str] = {
     "novita-ai": "novita",
     "novitaai": "novita",
 
+    # nebius
+    "nebius-ai": "nebius",
+    "nebius-token-factory": "nebius",
+    "nebius-tokenfactory": "nebius",
+    "nebius-tf": "nebius",
+    "tokenfactory": "nebius",
+    "token-factory": "nebius",
+
     # xiaomi
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
@@ -371,6 +385,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
+    "nebius": "Nebius Token Factory",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",

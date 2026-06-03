@@ -1,0 +1,5 @@
+name: nebius-provider
+kind: model-provider
+version: 1.0.0
+description: Nebius Token Factory — open-weight models via a single OpenAI-compatible endpoint
+author: Nous Research

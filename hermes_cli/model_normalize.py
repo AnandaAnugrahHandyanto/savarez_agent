@@ -102,6 +102,11 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "xiaomi",
     "arcee",
     "ollama-cloud",
+    # Nebius Token Factory: repair an accidental "nebius/" prefix on a native
+    # "vendor/model" id (e.g. "nebius/Qwen/Qwen3-235B" -> "Qwen/Qwen3-235B").
+    # Deliberately NOT added to _LOWERCASE_MODEL_PROVIDERS below — Nebius ids
+    # are case-sensitive ("Qwen/Qwen3-...", "deepseek-ai/DeepSeek-V3.2").
+    "nebius",
     "custom",
 })
 
