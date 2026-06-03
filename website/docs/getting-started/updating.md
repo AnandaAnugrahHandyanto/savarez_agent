@@ -101,6 +101,10 @@ $ hermes update
 
 Close the listed processes and re-run. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
 
+:::note venv rebuild under `--force`
+`--force` only skips the *concurrency check* — it never bricks the install. When the venv itself has to be rebuilt during an update (e.g. the first update after a managed-uv change) while a `hermes.exe` still holds the venv's `python.exe` open, the old venv is moved aside atomically (`os.replace`) and a fresh one is built in its place; the already-running processes keep using the moved-aside copy until they next restart. If the venv genuinely can't be moved (still locked), the rebuild aborts cleanly and leaves your existing venv **intact** rather than half-deleting it. Earlier builds deleted the venv in place here, so a `--force` update with the gateway/desktop running could gut it (missing `pyvenv.cfg`/`site-packages`, then `FileNotFoundError` on every request) with no recovery.
+:::
+
 Expected output looks like:
 
 ```

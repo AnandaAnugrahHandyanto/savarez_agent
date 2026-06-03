@@ -114,25 +114,78 @@ class TestRebuildVenv:
         (venv_dir / "old_file").write_text("stale")
 
         uv_bin = str(tmp_path / "bin" / "uv")
+        seen_cmds = []
 
         def fake_run(cmd, **kwargs):
+            seen_cmds.append(cmd)
             m = MagicMock(returncode=0)
             if cmd[1] == "venv":
-                # Simulate uv creating the venv dir
+                # Simulate uv creating a fresh venv dir (uv removes the old one
+                # too, but here it has already been moved aside to <name>.old).
                 venv_dir.mkdir(exist_ok=True)
-                bin_dir = venv_dir / "bin"
-                bin_dir.mkdir(parents=True, exist_ok=True)
-                (bin_dir / "python").write_text("#!/bin/sh\necho Python 3.11.0")
+                for sub in ("bin", "Scripts"):
+                    bin_dir = venv_dir / sub
+                    bin_dir.mkdir(parents=True, exist_ok=True)
+                    (bin_dir / "python").write_text("#!/bin/sh\necho Python 3.11.0")
             elif "--version" in cmd:
                 m.stdout = "Python 3.11.0"
             return m
 
-        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
-             patch("hermes_cli.managed_uv.shutil.rmtree") as mock_rmtree:
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run):
             from hermes_cli.managed_uv import rebuild_venv
             result = rebuild_venv(uv_bin, venv_dir)
             assert result is True
-            mock_rmtree.assert_called_once_with(venv_dir, ignore_errors=True)
+            # Fresh venv exists, old contents gone, backup cleaned up.
+            assert venv_dir.exists()
+            assert not (venv_dir / "old_file").exists()
+            assert not (tmp_path / "venv.old").exists()
+            # uv venv was invoked with --clear so a leftover partial dir can't
+            # wedge the rebuild.
+            venv_cmd = next(c for c in seen_cmds if c[1] == "venv")
+            assert "--clear" in venv_cmd
+
+    def test_aborts_without_deleting_when_venv_in_use(self, tmp_path):
+        """Regression: a venv in use (Windows file lock) must be left intact.
+
+        Previously rebuild_venv ran ``shutil.rmtree(ignore_errors=True)`` which
+        deleted what it could (site-packages, certifi) and left a gutted venv,
+        bricking the install.  Now the move-aside fails fast and the existing
+        venv is untouched, with no ``uv venv`` attempted.
+        """
+        venv_dir = tmp_path / "venv"
+        venv_dir.mkdir()
+        marker = venv_dir / "site-packages-marker"
+        marker.write_text("do not delete me")
+        uv_bin = str(tmp_path / "bin" / "uv")
+
+        with patch("hermes_cli.managed_uv.os.replace", side_effect=OSError("in use")), \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            from hermes_cli.managed_uv import rebuild_venv
+            result = rebuild_venv(uv_bin, venv_dir)
+            assert result is False
+            # No rebuild attempted, existing venv fully intact.
+            mock_run.assert_not_called()
+            assert marker.exists()
+            assert marker.read_text() == "do not delete me"
+
+    def test_restores_old_venv_when_rebuild_fails(self, tmp_path):
+        """If ``uv venv`` fails, the moved-aside venv is restored, not lost."""
+        venv_dir = tmp_path / "venv"
+        venv_dir.mkdir()
+        (venv_dir / "marker").write_text("original")
+        uv_bin = str(tmp_path / "bin" / "uv")
+
+        with patch(
+            "hermes_cli.managed_uv.subprocess.run",
+            return_value=MagicMock(returncode=1, stderr="boom"),
+        ):
+            from hermes_cli.managed_uv import rebuild_venv
+            result = rebuild_venv(uv_bin, venv_dir)
+            assert result is False
+            # Old venv restored; no orphaned backup left behind.
+            assert (venv_dir / "marker").exists()
+            assert (venv_dir / "marker").read_text() == "original"
+            assert not (tmp_path / "venv.old").exists()
 
     def test_rebuild_failure_returns_false(self, tmp_path):
         venv_dir = tmp_path / "venv"
