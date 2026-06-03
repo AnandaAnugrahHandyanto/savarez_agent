@@ -2,6 +2,7 @@ import type { MutableRefObject } from 'react'
 import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
+import { resolveRouteSelection } from '@/gateway-routing'
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
@@ -14,6 +15,9 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import {
   $currentCwd,
   $messages,
+  $projects,
+  $selectedGatewayId,
+  $selectedProjectId,
   $sessions,
   getRememberedWorkspaceCwd,
   setActiveSessionId,
@@ -33,8 +37,8 @@ import {
   setMessages,
   setSelectedStoredSessionId,
   setSessions,
-  setSessionsTotal,
   setSessionStartedAt,
+  setSessionsTotal,
   setTurnStartedAt
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
@@ -51,7 +55,7 @@ interface SessionActionsOptions {
   ensureSessionState: (sessionId: string, storedSessionId?: string | null) => ClientSessionState
   getRouteToken: () => string
   navigate: NavigateFunction
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: <T>(method: string, params?: Record<string, unknown>, options?: { gatewayId?: string }) => Promise<T>
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
   selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -312,15 +316,31 @@ export function useSessionActions({
 
     try {
       const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
-      const created = await requestGateway<SessionCreateResponse>('session.create', { cols: 96, ...(cwd && { cwd }) })
-      const stored = created.stored_session_id ?? null
+      const config = await window.hermesDesktop.getConnectionConfig()
+      const route = resolveRouteSelection({
+        connections: config.connections,
+        projects: $projects.get(),
+        selectedGatewayId: $selectedGatewayId.get(),
+        selectedProjectId: $selectedProjectId.get()
+      })
+
+      if (!route.ok) {
+        throw new Error(route.message)
+      }
+
+      const created = await requestGateway<SessionCreateResponse>(
+        'session.create',
+        { cols: 96, ...(cwd && { cwd }), ...(route.target && { target: route.target }) },
+        { gatewayId: route.gatewayId }
+      )
+      const stored = created.stored_session_id ? `${route.gatewayId}::${created.stored_session_id}` : null
 
       if (
         activeSessionIdRef.current !== startingActiveSessionId ||
         selectedStoredSessionIdRef.current !== startingStoredSessionId ||
         getRouteToken() !== startingRouteToken
       ) {
-        await requestGateway('session.close', { session_id: created.session_id }).catch(() => undefined)
+        await requestGateway('session.close', { session_id: created.session_id }, { gatewayId: route.gatewayId }).catch(() => undefined)
 
         return null
       }

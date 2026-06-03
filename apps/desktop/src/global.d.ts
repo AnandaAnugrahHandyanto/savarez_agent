@@ -3,7 +3,7 @@ export {}
 declare global {
   interface Window {
     hermesDesktop: {
-      getConnection: () => Promise<HermesConnection>
+      getConnection: (gatewayId?: string) => Promise<HermesConnection>
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: () => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>

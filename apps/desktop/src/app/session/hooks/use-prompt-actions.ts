@@ -1,6 +1,7 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { type MutableRefObject, useCallback } from 'react'
 
+import { stripGatewayCompositeId } from '@/gateway-routing'
 import { transcribeAudio } from '@/hermes'
 import { appendTextPart, branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
@@ -28,7 +29,7 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { $busy, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { $busy, $messages, $selectedGatewayId, $sessions, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
 import type { ClientSessionState, ImageAttachResponse, SlashExecResponse } from '../../types'
 
@@ -67,7 +68,7 @@ interface PromptActionsOptions {
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: <T>(method: string, params?: Record<string, unknown>, options?: { gatewayId?: string }) => Promise<T>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
   sttEnabled: boolean
@@ -168,7 +169,7 @@ export function usePromptActions({
     async (
       sessionId: string,
       attachments: ComposerAttachment[],
-      options: { updateComposerAttachments?: boolean } = {}
+      options: { gatewayId?: string; updateComposerAttachments?: boolean } = {}
     ) => {
       const updateComposerAttachments = options.updateComposerAttachments ?? true
       const images = attachments.filter(attachment => attachment.kind === 'image' && attachment.path)
@@ -181,7 +182,7 @@ export function usePromptActions({
         const result = await requestGateway<ImageAttachResponse>('image.attach', {
           session_id: sessionId,
           path: attachment.path
-        })
+        }, options.gatewayId ? { gatewayId: options.gatewayId } : undefined)
 
         if (!result.attached) {
           const label = attachment.label || (attachment.path ? pathLabel(attachment.path) : 'image')
@@ -317,10 +318,21 @@ export function usePromptActions({
       }
 
       try {
-        await syncImageAttachmentsForSubmit(sessionId, attachments, {
+        const storedSessionId = selectedStoredSessionIdRef.current
+        const storedSession = storedSessionId ? $sessions.get().find(session => session.id === storedSessionId) : undefined
+        const gatewayId = storedSession?.gateway_id ?? $selectedGatewayId.get()
+
+        if (!gatewayId) {
+          throw new Error('Select one gateway before sending.')
+        }
+
+        const routedSessionId = stripGatewayCompositeId(sessionId, gatewayId)
+
+        await syncImageAttachmentsForSubmit(routedSessionId, attachments, {
+          gatewayId,
           updateComposerAttachments: usingComposerAttachments
         })
-        await requestGateway('prompt.submit', { session_id: sessionId, text })
+        await requestGateway('prompt.submit', { session_id: routedSessionId, text }, { gatewayId })
 
         if (usingComposerAttachments) {
           clearComposerAttachments()

@@ -3191,6 +3191,35 @@ async function connectionForApiRequest(gatewayId) {
   return startHermes()
 }
 
+async function connectionForGatewayRequest(gatewayId) {
+  const requestedGatewayId = String(gatewayId || '').trim()
+
+  if (!requestedGatewayId) {
+    return startHermes()
+  }
+
+  const config = readDesktopConnectionConfig()
+  const connection = config.connections.find(candidate => candidate.id === requestedGatewayId)
+
+  if (!connection) {
+    throw new Error(`Unknown gateway connection: ${requestedGatewayId}`)
+  }
+
+  if (connection.mode === 'remote') {
+    const resolved = resolveRemoteConnectionBackend(connection, 'settings')
+
+    await waitForHermes(resolved.baseUrl, resolved.token)
+
+    return resolved
+  }
+
+  if (connection.id !== config.activeConnectionId) {
+    throw new Error(`Local gateway connection ${connection.id} is not active and cannot be used for chat routing.`)
+  }
+
+  return startHermes()
+}
+
 async function testDesktopConnectionConfig(input = {}) {
   const config = coerceDesktopConnectionConfig(input, readDesktopConnectionConfig(), { persistToken: false })
   const activeConnection = connectionRegistry.getActiveConnection(config)
@@ -3514,7 +3543,7 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('hermes:connection', async () => startHermes())
+ipcMain.handle('hermes:connection', async (_event, gatewayId) => connectionForGatewayRequest(gatewayId))
 ipcMain.handle('hermes:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
   // reset connection state so the next startHermes() call restarts the

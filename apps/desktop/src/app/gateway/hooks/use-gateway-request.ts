@@ -1,12 +1,17 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
-import type { HermesGateway } from '@/hermes'
+import { HermesGateway } from '@/hermes'
 import { $gatewayState, setConnection } from '@/store/session'
+
+export interface GatewayRequestOptions {
+  gatewayId?: string
+}
 
 export function useGatewayRequest() {
   const gatewayState = useStore($gatewayState)
   const gatewayRef = useRef<HermesGateway | null>(null)
+  const gatewayByIdRef = useRef<Map<string, HermesGateway>>(new Map())
 
   const connectionRef = useRef<Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null>(
     null
@@ -14,20 +19,56 @@ export function useGatewayRequest() {
 
   const gatewayStateRef = useRef(gatewayState)
   const reconnectingRef = useRef<Promise<HermesGateway | null> | null>(null)
+  const reconnectingByIdRef = useRef<Map<string, Promise<HermesGateway | null>>>(new Map())
 
   useEffect(() => {
     gatewayStateRef.current = gatewayState
   }, [gatewayState])
 
-  const ensureGatewayOpen = useCallback(async () => {
-    const existing = gatewayRef.current
+  const ensureGatewayOpen = useCallback(async (gatewayId?: string) => {
+    const trimmedGatewayId = gatewayId?.trim()
+    const existing = trimmedGatewayId ? (gatewayByIdRef.current.get(trimmedGatewayId) ?? new HermesGateway()) : gatewayRef.current
 
     if (!existing) {
       return null
     }
 
-    if (gatewayStateRef.current === 'open') {
+    if (!trimmedGatewayId && gatewayStateRef.current === 'open') {
       return existing
+    }
+
+    if (trimmedGatewayId && gatewayByIdRef.current.has(trimmedGatewayId)) {
+      return existing
+    }
+
+    if (trimmedGatewayId) {
+      const current = reconnectingByIdRef.current.get(trimmedGatewayId)
+
+      if (current) {
+        return current
+      }
+
+      const reconnecting = (async () => {
+        const desktop = window.hermesDesktop
+
+        if (!desktop) {
+          return null
+        }
+
+        try {
+          const conn = await desktop.getConnection(trimmedGatewayId)
+          await existing.connect(conn.wsUrl)
+          gatewayByIdRef.current.set(trimmedGatewayId, existing)
+
+          return existing
+        } finally {
+          reconnectingByIdRef.current.delete(trimmedGatewayId)
+        }
+      })()
+
+      reconnectingByIdRef.current.set(trimmedGatewayId, reconnecting)
+
+      return reconnecting
     }
 
     if (reconnectingRef.current) {
@@ -62,8 +103,13 @@ export function useGatewayRequest() {
   }, [])
 
   const requestGateway = useCallback(
-    async <T>(method: string, params: Record<string, unknown> = {}) => {
-      const gateway = gatewayRef.current
+    async <T>(method: string, params: Record<string, unknown> = {}, options: GatewayRequestOptions = {}) => {
+      const gatewayId = options.gatewayId?.trim()
+      let gateway = gatewayId ? gatewayByIdRef.current.get(gatewayId) : gatewayRef.current
+
+      if (!gateway && gatewayId) {
+        gateway = await ensureGatewayOpen(gatewayId)
+      }
 
       if (!gateway) {
         throw new Error('Hermes gateway unavailable')
@@ -78,7 +124,11 @@ export function useGatewayRequest() {
           throw error
         }
 
-        const recovered = await ensureGatewayOpen()
+        if (gatewayId) {
+          gatewayByIdRef.current.delete(gatewayId)
+        }
+
+        const recovered = await ensureGatewayOpen(gatewayId)
 
         if (!recovered) {
           throw error

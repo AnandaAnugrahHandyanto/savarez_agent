@@ -59,7 +59,9 @@ import {
   $sessionsLoading,
   $sessionsTotal,
   $workingSessionIds,
-  sessionPinId
+  sessionPinId,
+  setSelectedGatewayId,
+  setSelectedProjectId
 } from '@/store/session'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
@@ -506,7 +508,15 @@ export function ChatSidebar({
               <SidebarControlSurfaceSection
                 activeScopeId={selectedScope?.id ?? null}
                 key={section.id}
-                onSelect={scope => setSelectedScope(current => (current?.id === scope.id ? null : scope))}
+                onSelect={scope => {
+                  setSelectedScope(current => {
+                    const next = current?.id === scope.id ? null : scope
+                    setSelectedGatewayId(next?.gatewayId ?? null)
+                    setSelectedProjectId(next?.kind === 'project' ? next.id : null)
+
+                    return next
+                  })
+                }}
                 section={section}
               />
             ))}

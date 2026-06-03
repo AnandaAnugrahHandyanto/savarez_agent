@@ -24,11 +24,11 @@ export interface SidebarControlSurfaceSection {
 }
 
 export type SidebarEntityScope =
-  | { id: string; kind: 'gateway'; label: string; sessionIds: string[] }
-  | { id: string; kind: 'agent'; label: string; sessionIds: string[] }
-  | { id: string; kind: 'chat'; label: string; sessionIds: string[] }
-  | { id: string; kind: 'project'; label: string; sessionIds: string[] }
-  | { id: string; kind: 'workspace'; label: string; path: null | string; sessionIds: string[] }
+  | { gatewayId: string; id: string; kind: 'gateway'; label: string; sessionIds: string[] }
+  | { gatewayId?: string; id: string; kind: 'agent'; label: string; sessionIds: string[] }
+  | { gatewayId?: string; id: string; kind: 'chat'; label: string; sessionIds: string[] }
+  | { gatewayId?: string; id: string; kind: 'project'; label: string; sessionIds: string[] }
+  | { gatewayId?: undefined; id: string; kind: 'workspace'; label: string; path: null | string; sessionIds: string[] }
 
 interface SidebarControlSurfaceInput {
   agents: DashboardAgent[]
@@ -143,7 +143,7 @@ export function sidebarControlSurfaceFor({
           id: gateway.gateway_id,
           label: gateway.name,
           meta: gateway.ok ? gateway.state : `degraded · ${gateway.error || gateway.state}`,
-          scope: { id: gateway.gateway_id, kind: 'gateway', label: gateway.name, sessionIds: ids }
+          scope: { gatewayId: gateway.gateway_id, id: gateway.gateway_id, kind: 'gateway', label: gateway.name, sessionIds: ids }
         }
       })
     },
@@ -154,7 +154,7 @@ export function sidebarControlSurfaceFor({
         id: agent.id,
         label: agent.name,
         meta: agent.gateway?.state ?? agent.provider ?? undefined,
-        scope: { id: agent.id, kind: 'agent', label: agent.name, sessionIds: [] }
+        scope: { gatewayId: agent.gateway_id, id: agent.id, kind: 'agent', label: agent.name, sessionIds: [] }
       }))
     },
     {
@@ -169,6 +169,7 @@ export function sidebarControlSurfaceFor({
           meta: ids.length ? String(ids.length) : undefined,
           scope: {
             id: project.id,
+            gatewayId: project.gateway_id,
             kind: 'project',
             label: project.name || project.display_label || project.id,
             sessionIds: ids
@@ -190,6 +191,7 @@ export function sidebarControlSurfaceFor({
             meta: ids.length ? String(ids.length) : conversation.platform,
             scope: {
               id: conversation.id,
+              gatewayId: conversation.gateway_id,
               kind: 'chat',
               label: conversation.display_label || conversation.name || conversation.id,
               sessionIds: ids
