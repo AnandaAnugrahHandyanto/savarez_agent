@@ -2996,6 +2996,9 @@ def _(rid, params: dict) -> dict:
             display_history = db.get_messages_as_conversation(
                 target, include_ancestors=True
             )
+            display_history_prefix = display_history[
+                : max(0, len(display_history) - len(history))
+            ]
             messages = _history_to_messages(display_history)
             tokens = _set_session_context(target)
             try:
@@ -3004,7 +3007,7 @@ def _(rid, params: dict) -> dict:
                 _clear_session_context(tokens)
             _init_session(sid, target, agent, history, cols=cols)
             if sid in _sessions:
-                _sessions[sid]["display_history"] = display_history
+                _sessions[sid]["display_history_prefix"] = display_history_prefix
         except Exception as e:
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
@@ -3150,7 +3153,9 @@ def _live_session_payload(
             session["transport"] = transport
         if touch:
             session["last_active"] = time.time()
-        history = list(session.get("display_history") or session.get("history") or [])
+        history = list(session.get("display_history_prefix") or []) + list(
+            session.get("history") or []
+        )
         inflight = _inflight_snapshot(session)
         running = bool(session.get("running"))
     payload = {
