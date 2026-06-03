@@ -471,12 +471,14 @@ let bootstrapAbortController = null
 // of re-adopting the install we're repairing. Cleared once a bootstrap runs.
 let forceBootstrapRepair = false
 let connectionConfigCache = null
+let connectionConfigCacheMtime = null
 const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
 let desktopLogBuffer = ''
 let desktopLogFlushTimer = null
 let desktopLogFlushPromise = Promise.resolve()
+let nativeThemeListenerInstalled = false
 let bootProgressState = {
   error: null,
   fakeMode: BOOT_FAKE_MODE,
@@ -3144,7 +3146,17 @@ function decryptDesktopSecret(secret) {
 }
 
 function readDesktopConnectionConfig() {
-  if (connectionConfigCache) {
+  // Check if file changed on disk since last read (e.g. modified by another
+  // process or an external tool).  Our own writes update the cache inline
+  // via writeDesktopConnectionConfig, but external changes would be missed.
+  let mtime = null
+  try {
+    mtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
+  } catch {
+    mtime = null
+  }
+
+  if (connectionConfigCache && connectionConfigCacheMtime === mtime) {
     return connectionConfigCache
   }
 
@@ -3165,6 +3177,7 @@ function readDesktopConnectionConfig() {
   }
 
   connectionConfigCache = config
+  connectionConfigCacheMtime = mtime
 
   return config
 }
@@ -3173,6 +3186,7 @@ function writeDesktopConnectionConfig(config) {
   fs.mkdirSync(path.dirname(DESKTOP_CONNECTION_CONFIG_PATH), { recursive: true })
   writeFileAtomic(DESKTOP_CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2))
   connectionConfigCache = config
+  connectionConfigCacheMtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
 }
 
 function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig()) {
@@ -3500,9 +3514,12 @@ function createWindow() {
   }
 
   if (!IS_MAC) {
-    nativeTheme.on('updated', () => {
-      mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
-    })
+    if (!nativeThemeListenerInstalled) {
+      nativeThemeListenerInstalled = true
+      nativeTheme.on('updated', () => {
+        mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
+      })
+    }
   }
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
