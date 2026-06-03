@@ -692,6 +692,8 @@ def _session_cwd(session: dict | None) -> str:
 def _register_session_cwd(session: dict | None) -> None:
     if not session:
         return
+    if not session.get("explicit_cwd"):
+        return
     try:
         from tools.terminal_tool import register_task_env_overrides
 
@@ -2387,6 +2389,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "attached_images": [],
         "image_counter": 0,
         "cwd": _completion_cwd(),
+        "explicit_cwd": False,
         "cols": cols,
         "slash_worker": None,
         "show_reasoning": _load_show_reasoning(),
@@ -2402,6 +2405,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         row = db.get_session(key)
         if row and row.get("cwd"):
             _sessions[sid]["cwd"] = row["cwd"]
+            _sessions[sid]["explicit_cwd"] = True
         else:
             try:
                 db.update_session_cwd(key, _sessions[sid]["cwd"])
