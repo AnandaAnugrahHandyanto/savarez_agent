@@ -2254,6 +2254,14 @@ class GatewayRunner:
     def _telegram_topic_root_lobby_message(self) -> str:
         return (
             "This main chat is reserved for system commands.\n\n"
+            "To start a new Hermes chat, send a normal prompt in the main/All "
+            "Messages view and Hermes will create a new topic for it. Each topic "
+            "works as an independent Hermes session."
+        )
+
+    def _telegram_topic_root_creation_failed_message(self) -> str:
+        return (
+            "This main chat is reserved for system commands.\n\n"
             "I tried to create a new Hermes topic for that prompt but couldn't. "
             "Use Telegram's new-topic/+ button in this bot interface, then send "
             "your message inside that topic. Each topic works as an independent "
@@ -2272,7 +2280,7 @@ class GatewayRunner:
         self,
         event: MessageEvent,
         source: SessionSource,
-    ) -> Optional[SessionSource]:
+    ) -> tuple[Optional[SessionSource], bool]:
         """Create a fresh Telegram DM topic for a root-lobby prompt.
 
         Telegram's "All Messages" view in bot DMs is not delivered to bots as a
@@ -2283,24 +2291,30 @@ class GatewayRunner:
         non-command root prompt as a request for a new lane: create the forum
         topic via Bot API, rewrite the event source to that new thread, then let
         the normal agent path create/bind the session.
+
+        Returns:
+            (new_source, attempted) — ``new_source`` is the rewritten source on
+            success, ``None`` on failure or skip.  ``attempted`` is ``True`` when
+            a Bot API call was actually made (so the caller can show a specific
+            "couldn't create" message rather than the generic lobby reminder).
         """
         if not self._is_telegram_topic_root_lobby(source):
-            return None
+            return None, False
         if event.get_command():
-            return None
+            return None, False
         adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
         create_topic = getattr(adapter, "_create_dm_topic", None) if adapter is not None else None
         if not callable(create_topic) or not source.chat_id:
-            return None
+            return None, False
         raw_title = (event.text or "").strip() or "Hermes Chat"
         title = self._sanitize_telegram_topic_title(raw_title)
         try:
             thread_id = await create_topic(int(source.chat_id), title)
         except Exception:
             logger.debug("Failed to create Telegram topic for root prompt", exc_info=True)
-            return None
+            return None, True
         if not thread_id:
-            return None
+            return None, True
         logger.info(
             "telegram topic lobby prompt: created topic chat=%s user=%s thread=%s title=%r",
             source.chat_id,
@@ -2312,7 +2326,7 @@ class GatewayRunner:
             source,
             thread_id=str(thread_id),
             chat_topic=title,
-        )
+        ), False
 
     def _telegram_topic_new_header(self, source: SessionSource) -> Optional[str]:
         if not self._is_telegram_topic_lane(source):
@@ -7896,11 +7910,14 @@ class GatewayRunner:
         # execution of a dangerous command.
 
         if self._is_telegram_topic_root_lobby(source):
-            topic_source = await self._telegram_topic_source_for_root_prompt(event, source)
+            topic_source, attempted = await self._telegram_topic_source_for_root_prompt(event, source)
             if topic_source is not None:
                 source = topic_source
                 event = dataclasses.replace(event, source=source)
                 _quick_key = self._session_key_for_source(source)
+            elif attempted:
+                # We tried to create a topic but the Bot API call failed.
+                return self._telegram_topic_root_creation_failed_message()
             else:
                 # Debounce the lobby reminder so a user who forgets about
                 # topic mode and fires ten prompts doesn't get ten copies.

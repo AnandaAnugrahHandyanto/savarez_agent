@@ -1238,12 +1238,26 @@ def test_recover_preserves_unknown_thread_id_for_new_topic(tmp_path):
 
 
 def test_recover_rewrites_lobby_thread_id_to_most_recent(tmp_path):
-    # Stripped plain reply: thread_id is None, topic mode is on.
+    # Stripped plain reply: Telegram delivers thread_id="1" (General topic
+    # header) when a reply loses its thread context. Recovery maps that back
+    # to the most-recently active topic.
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
 
-    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) == "222"
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="1")) == "222"
+
+
+def test_recover_skips_bare_none_thread_id(tmp_path):
+    # A completely absent thread_id means the message came from the root
+    # "All Messages" view — a genuine new-lane intent. Recovery must NOT
+    # rewrite it; _telegram_topic_source_for_root_prompt handles this case
+    # by creating a fresh topic instead.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) is None
 
 
 def test_recover_returns_none_when_topic_mode_disabled(tmp_path):
