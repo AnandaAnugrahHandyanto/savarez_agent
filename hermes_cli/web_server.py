@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 import asyncio
 import base64
 import binascii
+import hashlib
 import hmac
 import importlib.util
 import json
@@ -1395,6 +1396,87 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
+def _compact_str(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _session_origin_metadata(origin: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """Return non-secret, UI-ready origin metadata for a gateway session."""
+    platform = _compact_str(origin.get("platform"))
+    chat_id = _compact_str(origin.get("chat_id"))
+    thread_id = _compact_str(origin.get("thread_id"))
+    chat_type = _compact_str(origin.get("chat_type")) or "chat"
+    chat_name = _compact_str(origin.get("chat_name"))
+    chat_topic = _compact_str(origin.get("chat_topic"))
+    user_name = _compact_str(origin.get("user_name"))
+
+    if not platform:
+        return None
+
+    if chat_type == "dm":
+        display_label = chat_name or user_name or f"{platform.title()} DM"
+    else:
+        base_label = chat_name or user_name or platform.title()
+        topic_label = chat_topic or (f"topic {thread_id}" if thread_id else "")
+        display_label = f"{base_label} / {topic_label}" if topic_label else base_label
+
+    identity = "|".join([platform, chat_id, thread_id])
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    group_key = f"{platform}:{chat_type}:{digest}"
+
+    metadata = {
+        "platform": platform,
+        "chat_type": chat_type,
+        "display_label": display_label,
+        "group_key": group_key,
+    }
+    for key, value in (
+        ("chat_name", chat_name),
+        ("thread_id", thread_id),
+        ("chat_topic", chat_topic),
+        ("user_name", user_name),
+    ):
+        if value:
+            metadata[key] = value
+    return metadata
+
+
+def _session_origins_by_id() -> Dict[str, Dict[str, str]]:
+    sessions_file = get_hermes_home() / "sessions" / "sessions.json"
+    if not sessions_file.exists():
+        return {}
+    try:
+        raw = json.loads(sessions_file.read_text(encoding="utf-8"))
+    except Exception:
+        _log.debug("Could not read gateway session origins from %s", sessions_file, exc_info=True)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+
+    origins: Dict[str, Dict[str, str]] = {}
+    for entry in raw.values():
+        if not isinstance(entry, dict):
+            continue
+        session_id = _compact_str(entry.get("session_id"))
+        origin = entry.get("origin")
+        if not session_id or not isinstance(origin, dict):
+            continue
+        metadata = _session_origin_metadata(origin)
+        if metadata:
+            origins[session_id] = metadata
+    return origins
+
+
+def _enrich_sessions_with_origins(sessions: List[Dict[str, Any]]) -> None:
+    origins = _session_origins_by_id()
+    if not origins:
+        return
+    for session in sessions:
+        origin = origins.get(_compact_str(session.get("id")))
+        if origin:
+            session["origin"] = origin
+
+
 @app.get("/api/sessions")
 async def get_sessions(
     limit: int = 20,
@@ -1453,6 +1535,7 @@ async def get_sessions(
                 )
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
+            _enrich_sessions_with_origins(sessions)
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()

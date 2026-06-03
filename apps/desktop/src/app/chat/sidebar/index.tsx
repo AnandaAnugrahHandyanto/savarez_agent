@@ -62,6 +62,7 @@ import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '..
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
+import { type SidebarSessionGroup, sessionGroupsFor } from './session-groups'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 
@@ -125,16 +126,6 @@ function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: string[
   return out
 }
 
-const baseName = (path: string) =>
-  path
-    .replace(/[/\\]+$/, '')
-    .split(/[/\\]/)
-    .filter(Boolean)
-    .pop()
-
-// FTS results cover sessions that aren't in the loaded page; synthesize a
-// minimal SessionInfo so they render in the same row component (resume works
-// by id; the snippet stands in for the preview).
 function searchResultToSession(result: SessionSearchResult): SessionInfo {
   const ts = result.session_started ?? Date.now() / 1000
 
@@ -155,30 +146,6 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     title: null,
     tool_call_count: 0
   }
-}
-
-function workspaceGroupsFor(sessions: SessionInfo[]): SidebarSessionGroup[] {
-  const groups = new Map<string, SidebarSessionGroup>()
-
-  for (const session of sessions) {
-    const path = session.cwd?.trim() || ''
-    const id = path || '__no_workspace__'
-    const label = baseName(path) || path || 'No workspace'
-
-    const group = groups.get(id) ?? { id, label, path: path || null, sessions: [] }
-    group.sessions.push(session)
-    groups.set(id, group)
-  }
-
-  // Groups keep recency order (Map insertion = first-seen in the recency-sorted
-  // input, so an active project floats up), but rows *within* a group sort by
-  // creation time so they don't reshuffle every time a message lands — keeps
-  // muscle memory intact.
-  for (const group of groups.values()) {
-    group.sessions.sort((a, b) => b.started_at - a.started_at)
-  }
-
-  return [...groups.values()]
 }
 
 function useSortableBindings(id: string) {
@@ -338,7 +305,7 @@ export function ChatSidebar({
   )
 
   const agentGroups = useMemo(
-    () => orderByIds(workspaceGroupsFor(agentSessions), g => g.id, workspaceOrderIds),
+    () => orderByIds(sessionGroupsFor(agentSessions), g => g.id, workspaceOrderIds),
     [agentSessions, workspaceOrderIds]
   )
 
@@ -647,13 +614,6 @@ function SidebarPinnedEmptyState() {
       <span>Shift-click a chat to pin · drag to reorder</span>
     </div>
   )
-}
-
-interface SidebarSessionGroup {
-  id: string
-  label: string
-  path: null | string
-  sessions: SessionInfo[]
 }
 
 interface SidebarSessionsSectionProps {

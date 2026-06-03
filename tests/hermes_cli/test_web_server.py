@@ -210,6 +210,61 @@ class TestSessionTokenInjection:
         assert ws._SESSION_TOKEN and len(ws._SESSION_TOKEN) >= 32
 
 
+class TestSessionOriginMetadata:
+    def test_origin_metadata_prefers_telegram_topic_label(self):
+        from hermes_cli import web_server
+
+        origin = {
+            "platform": "telegram",
+            "chat_id": "-1003828321118",
+            "chat_name": "Dolly Main Projects",
+            "chat_type": "group",
+            "thread_id": "20",
+            "chat_topic": "▸ HWNextApp – /finance",
+            "user_name": "Stig Runar",
+        }
+
+        metadata = web_server._session_origin_metadata(origin)
+
+        assert metadata == {
+            "platform": "telegram",
+            "chat_name": "Dolly Main Projects",
+            "chat_type": "group",
+            "thread_id": "20",
+            "chat_topic": "▸ HWNextApp – /finance",
+            "user_name": "Stig Runar",
+            "display_label": "Dolly Main Projects / ▸ HWNextApp – /finance",
+            "group_key": "telegram:group:b485e15f335e",
+        }
+
+    def test_enriches_sessions_from_gateway_session_index(self, tmp_path, monkeypatch):
+        from hermes_cli import web_server
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        (sessions_dir / "sessions.json").write_text(json.dumps({
+            "agent:main:telegram:group:-1003828321118:20": {
+                "session_id": "20260603_112850_fad38416",
+                "origin": {
+                    "platform": "telegram",
+                    "chat_id": "-1003828321118",
+                    "chat_name": "Dolly Main Projects",
+                    "chat_type": "group",
+                    "thread_id": "20",
+                    "chat_topic": "▸ HWNextApp – /finance",
+                },
+            }
+        }))
+
+        monkeypatch.setattr(web_server, "get_hermes_home", lambda: tmp_path)
+
+        rows = [{"id": "20260603_112850_fad38416", "source": "telegram"}]
+        web_server._enrich_sessions_with_origins(rows)
+
+        assert rows[0]["origin"]["display_label"] == "Dolly Main Projects / ▸ HWNextApp – /finance"
+        assert rows[0]["origin"]["group_key"] == "telegram:group:b485e15f335e"
+
+
 # ---------------------------------------------------------------------------
 # web_server tests (FastAPI endpoints)
 # ---------------------------------------------------------------------------

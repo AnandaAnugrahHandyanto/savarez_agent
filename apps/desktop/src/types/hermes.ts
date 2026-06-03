@@ -253,6 +253,17 @@ export interface SessionCreateResponse {
   stored_session_id?: string
 }
 
+export interface SessionOriginInfo {
+  chat_name?: null | string
+  chat_topic?: null | string
+  chat_type?: null | string
+  display_label?: null | string
+  group_key?: null | string
+  platform?: null | string
+  thread_id?: null | string
+  user_name?: null | string
+}
+
 export interface SessionInfo {
   archived?: boolean
   cwd?: null | string
@@ -267,6 +278,7 @@ export interface SessionInfo {
   last_active: number
   message_count: number
   model: null | string
+  origin?: null | SessionOriginInfo
   output_tokens: number
   preview: null | string
   source: null | string
