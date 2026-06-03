@@ -397,6 +397,12 @@ class BaseEnvironment(ABC):
                 self._session_id,
                 exc,
             )
+            # INSTRUMENTATION: log full traceback to find the real source of TypeError
+            import traceback
+            logger.warning(
+                "init_session TRACEBACK:\n%s",
+                traceback.format_exc(),
+            )
             self._snapshot_ready = False
 
     # ------------------------------------------------------------------

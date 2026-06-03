@@ -324,6 +324,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
+        self._user_email_cache: Dict[str, str] = {}  # user_id → email
+        # Per-channel participant tracking for multi-user commit attribution.
+        # {chat_id: {user_id: {name, email, message_count}}}
+        self._channel_participants: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
@@ -1699,12 +1703,73 @@ class SlackAdapter(BasePlatformAdapter):
                 or user.get("name")
                 or user_id
             )
+            # Sanitize to prevent prompt injection via display names.
+            name = self.sanitize_identity(name)
+            email = profile.get("email", "")
+            email = self.sanitize_identity(email, max_len=254)
             self._user_name_cache[user_id] = name
+            if email:
+                self._user_email_cache[user_id] = email
             return name
         except Exception as e:
             logger.debug("[Slack] users.info failed for %s: %s", user_id, e)
             self._user_name_cache[user_id] = user_id
             return user_id
+
+    async def _resolve_user_email(self, user_id: str, chat_id: str = "") -> str:
+        """Resolve a Slack user ID to their email, with caching.
+
+        Gated behind the ``SLACK_CAPTURE_USER_EMAIL`` env var (default false).
+        When enabled, the email is fetched alongside the name in
+        ``_resolve_user_name`` and requires the ``users:read.email`` OAuth
+        scope.  Returns empty string gracefully when the feature is off or
+        the scope is missing.
+        """
+        import os as _os
+        if _os.getenv("SLACK_CAPTURE_USER_EMAIL", "0").strip().lower() not in ("1", "true", "yes", "on"):
+            return ""
+        if not user_id:
+            return ""
+        if user_id in self._user_email_cache:
+            return self._user_email_cache[user_id]
+        return ""
+
+    def _upsert_participant(self, chat_id: str, user_id: str,
+                            name: str, email: str = "") -> None:
+        """Track a participant in the channel's session.
+
+        Increments the message count each time the same user sends a
+        message.  Names and emails are sanitized through
+        ``sanitize_identity`` before storage.
+        """
+        if not chat_id or not user_id:
+            return
+        if chat_id not in self._channel_participants:
+            self._channel_participants[chat_id] = {}
+        entry = self._channel_participants[chat_id].get(user_id)
+        if entry is None:
+            self._channel_participants[chat_id][user_id] = {
+                "name": self.sanitize_identity(name),
+                "email": self.sanitize_identity(email, max_len=254),
+                "message_count": 1,
+            }
+        else:
+            entry["message_count"] += 1
+
+    def _snapshot_participants(self, chat_id: str
+                               ) -> Dict[str, Dict[str, str]]:
+        """Return a snapshot of participants for a channel.
+
+        Returns a dict suitable for ``SessionSource.participants``.
+        The snapshot is a copy so mutations after this call don't
+        affect the session source.
+        """
+        if chat_id not in self._channel_participants:
+            return {}
+        return {
+            uid: dict(info)
+            for uid, info in self._channel_participants[chat_id].items()
+        }
 
     async def send_image_file(
         self,
@@ -2571,6 +2636,11 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
+        user_email = await self._resolve_user_email(user_id, chat_id=channel_id)
+
+        # Track participant for multi-user attribution
+        self._upsert_participant(channel_id, user_id, user_name, user_email)
+        participants = self._snapshot_participants(channel_id)
 
         # Build source
         source = self.build_source(
@@ -2579,6 +2649,8 @@ class SlackAdapter(BasePlatformAdapter):
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
             user_name=user_name,
+            user_email=user_email,
+            participants=participants,
             thread_id=thread_ts,
         )
 
@@ -3248,10 +3320,20 @@ class SlackAdapter(BasePlatformAdapter):
         # keep group semantics so different users do not collide into one
         # session key.
         is_dm = str(channel_id).startswith("D")
+        user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
+        user_email = await self._resolve_user_email(user_id, chat_id=channel_id)
+
+        # Track participant for multi-user attribution
+        self._upsert_participant(channel_id, user_id, user_name, user_email)
+        participants = self._snapshot_participants(channel_id)
+
         source = self.build_source(
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
+            user_name=user_name,
+            user_email=user_email,
+            participants=participants,
         )
 
         event = MessageEvent(

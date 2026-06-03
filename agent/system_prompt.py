@@ -335,6 +335,33 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         timestamp_line += f"\nModel: {agent.model}"
     if agent.provider:
         timestamp_line += f"\nProvider: {agent.provider}"
+    # ── Session user identity (gateway sessions only) ───────────────────
+    # Surfaced so the LLM can credit contributors in commit messages and
+    # other attribution contexts without programmatic --author injection.
+    # Gated by SLACK_CAPTURE_USER_EMAIL for email; name is always shown
+    # when available.  Empty in direct CLI sessions.
+    _session_user_name = getattr(agent, "_user_name", None)
+    _session_user_email = getattr(agent, "_user_email", None)
+    if _session_user_name:
+        if _session_user_email:
+            timestamp_line += f"\nCurrent session: {_session_user_name} <{_session_user_email}>"
+        else:
+            timestamp_line += f"\nCurrent session: {_session_user_name}"
+    # ── Session participant roster (multi-user platforms only) ──────────
+    _participants = getattr(agent, "_participants", None) or {}
+    if _participants and len(_participants) > 1:
+        _plist = []
+        for uid, info in sorted(_participants.items(),
+                                key=lambda x: -x[1].get("message_count", 0)):
+            _pname = info.get("name", uid)
+            _pemail = info.get("email", "")
+            _pcount = info.get("message_count", 0)
+            if _pemail:
+                _plist.append(f"  {_pname} <{_pemail}> — {_pcount} msgs")
+            else:
+                _plist.append(f"  {_pname} — {_pcount} msgs")
+        if _plist:
+            timestamp_line += "\nSession participants (sorted by activity):\n" + "\n".join(_plist)
     volatile_parts.append(timestamp_line)
 
     return {

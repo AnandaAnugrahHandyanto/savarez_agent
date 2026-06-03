@@ -4588,7 +4588,22 @@ class BasePlatformAdapter(ABC):
     def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
         """Get and clear any pending message for a session."""
         return self._pending_messages.pop(session_key, None)
-    
+
+    @staticmethod
+    def sanitize_identity(value: str, max_len: int = 80) -> str:
+        """Strip control chars and limit length for prompt safety.
+
+        Applies to user display names and email addresses from messaging
+        platforms before they are injected into system prompts or message
+        prefixes.  Control characters (including newlines, nulls, and
+        Unicode control ranges) are removed; the result is clipped to
+        ``max_len``.  An empty or falsy input returns an empty string.
+        """
+        if not value:
+            return ""
+        cleaned = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', str(value))
+        return cleaned[:max_len].strip()
+
     def build_source(
         self,
         chat_id: str,
@@ -4596,6 +4611,8 @@ class BasePlatformAdapter(ABC):
         chat_type: str = "dm",
         user_id: Optional[str] = None,
         user_name: Optional[str] = None,
+        user_email: Optional[str] = None,
+        participants: Optional[Dict[str, Dict[str, str]]] = None,
         thread_id: Optional[str] = None,
         chat_topic: Optional[str] = None,
         user_id_alt: Optional[str] = None,
@@ -4616,6 +4633,8 @@ class BasePlatformAdapter(ABC):
             chat_type=chat_type,
             user_id=str(user_id) if user_id else None,
             user_name=user_name,
+            user_email=user_email,
+            participants=participants,
             thread_id=str(thread_id) if thread_id else None,
             chat_topic=chat_topic.strip() if chat_topic else None,
             user_id_alt=user_id_alt,

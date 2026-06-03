@@ -83,6 +83,8 @@ class SessionSource:
     chat_type: str = "dm"  # "dm", "group", "channel", "thread"
     user_id: Optional[str] = None
     user_name: Optional[str] = None
+    user_email: Optional[str] = None  # Email from platform profile (Slack, etc.)
+    participants: Optional[Dict[str, Dict[str, str]]] = None  # {user_id: {name, email, message_count}} for multi-user sessions
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)

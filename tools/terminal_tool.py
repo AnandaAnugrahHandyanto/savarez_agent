@@ -1053,6 +1053,13 @@ def _get_env_config() -> Dict[str, Any]:
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    # INSTRUMENTATION: log what TERMINAL_CWD resolved to (debugging TypeError bug)
+    raw_cwd_env = os.getenv("TERMINAL_CWD")
+    if raw_cwd_env is not None:
+        logger.info(
+            "_get_env_config: TERMINAL_CWD env var is set — raw=%r type=%s resolved=%r default=%r",
+            raw_cwd_env, type(raw_cwd_env).__name__, cwd, default_cwd,
+        )
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None
@@ -1839,6 +1846,13 @@ def terminal_tool(
             image = ""
 
         cwd = overrides.get("cwd") or config["cwd"]
+        # INSTRUMENTATION: log cwd type/value before env creation (debugging TypeError bug)
+        if not isinstance(cwd, str):
+            logger.warning(
+                "terminal_tool: BUG DETECTED — cwd is not a string! type=%s repr=%r overrides=%r config_cwd=%r",
+                type(cwd).__name__, cwd,
+                overrides.get("cwd"), config.get("cwd"),
+            )
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 

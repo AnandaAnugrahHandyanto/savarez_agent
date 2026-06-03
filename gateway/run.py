@@ -8407,7 +8407,11 @@ class GatewayRunner:
             thread_sessions_per_user=_thread_sessions_per_user,
         )
         if _is_shared_multi_user and source.user_name:
-            message_text = f"[{source.user_name}] {message_text}"
+            # Sanitize: strip control chars, limit to 80 chars (defense in depth
+            # even though the adapter already sanitizes on resolve).
+            _safe_name = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', str(source.user_name))[:80].strip()
+            if _safe_name:
+                message_text = f"[{_safe_name}] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
@@ -12452,6 +12456,8 @@ class GatewayRunner:
                     user_id=source.user_id,
                     user_id_alt=source.user_id_alt,
                     user_name=source.user_name,
+                    user_email=source.user_email,
+                    participants=getattr(source, "participants", None),
                     chat_id=source.chat_id,
                     chat_name=source.chat_name,
                     chat_type=source.chat_type,
@@ -15348,6 +15354,8 @@ class GatewayRunner:
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
+            user_email=str(context.source.user_email) if context.source.user_email else "",
+            participants=getattr(context.source, "participants", None),
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
         )
@@ -17579,6 +17587,8 @@ class GatewayRunner:
                     user_id=source.user_id,
                     user_id_alt=source.user_id_alt,
                     user_name=source.user_name,
+                    user_email=source.user_email,
+                    participants=getattr(source, "participants", None),
                     chat_id=source.chat_id,
                     chat_name=source.chat_name,
                     chat_type=source.chat_type,

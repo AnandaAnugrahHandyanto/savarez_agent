@@ -340,9 +340,15 @@ def _make_run_env(env: dict) -> dict:
     # ContextVars don't propagate to child processes, so we bridge them here.
     try:
         from gateway.session_context import _UNSET, _VAR_MAP
+        import json as _json
         for var_name, var in _VAR_MAP.items():
             value = var.get()
             if value is not _UNSET and value:
+                # subprocess.Popen requires all env values to be strings.
+                # ContextVars like HERMES_SESSION_PARTICIPANTS can hold dicts
+                # that break os.fsencode() — serialize them to JSON.
+                if not isinstance(value, str):
+                    value = _json.dumps(value)
                 run_env[var_name] = value
     except Exception:
         pass
@@ -523,6 +529,13 @@ class LocalEnvironment(BaseEnvironment):
         # ``pwd -P`` result from bash isn't mistakenly treated as "missing"
         # and spammed as a warning on every command.
         safe_cwd = _resolve_safe_cwd(self.cwd)
+        # INSTRUMENTATION: log if cwd somehow became non-string (debugging TypeError bug)
+        if not isinstance(self.cwd, str):
+            logger.warning(
+                "LocalEnvironment._run_bash: BUG DETECTED — self.cwd is not a string! "
+                "type=%s repr=%r",
+                type(self.cwd).__name__, self.cwd,
+            )
         if safe_cwd != self.cwd:
             # MSYS → Windows translation alone shouldn't surface as a warning
             # (it's a benign normalization, not a recovery). Only warn when
@@ -541,19 +554,30 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
-        proc = subprocess.Popen(
-            args,
-            text=True,
-            env=run_env,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
-            cwd=_popen_cwd,
-            **_popen_kwargs,
-        )
+        # INSTRUMENTATION: catch any TypeError from subprocess.Popen to log what failed
+        try:
+            proc = subprocess.Popen(
+                args,
+                text=True,
+                env=run_env,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                preexec_fn=None if _IS_WINDOWS else os.setsid,
+                cwd=_popen_cwd,
+                **_popen_kwargs,
+            )
+        except TypeError:
+            import traceback
+            logger.error(
+                "LocalEnvironment._run_bash: subprocess.Popen raised TypeError! "
+                "args=%r cwd=%r (type=%s) run_env_type=%s traceback:\n%s",
+                args, _popen_cwd, type(_popen_cwd).__name__, type(run_env).__name__,
+                traceback.format_exc(),
+            )
+            raise
         if not _IS_WINDOWS:
             try:
                 proc._hermes_pgid = os.getpgid(proc.pid)
