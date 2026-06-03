@@ -420,6 +420,13 @@ export interface Translations {
     cli: string;
     copyCliCommand: string;
     connect: string;
+    authenticate: string;
+    detectedMethod: string;
+    notConnectedBadge: string;
+    preAuthDescription: string;
+    preAuthStep1: string;
+    preAuthStep2: string;
+    preAuthStep3: string;
     sessionExpires: string;
     initiatingLogin: string;
     exchangingCode: string;

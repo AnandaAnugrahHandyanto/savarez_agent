@@ -59,7 +59,9 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const { t } = useI18n();
 
   const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -71,7 +73,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   }, []);
 
   useEffect(() => {
-    refresh();
+    void Promise.resolve().then(refresh);
   }, [refresh]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {
@@ -233,7 +235,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       className="uppercase"
                       onClick={() => setLoginFor(p)}
                     >
-                      {t.oauth.login}
+                      {t.oauth.connect}
                     </Button>
                   )}
                   {p.status.logged_in && p.flow !== "external" && (

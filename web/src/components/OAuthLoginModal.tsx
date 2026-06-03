@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, X, Check } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
@@ -26,7 +27,7 @@ type Phase =
   | "error";
 
 export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
-  const [phase, setPhase] = useState<Phase>("starting");
+  const [phase, setPhase] = useState<Phase>("idle");
   const [start, setStart] = useState<OAuthStartResponse | null>(null);
   const [pkceCode, setPkceCode] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -35,9 +36,28 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
   const pollTimer = useRef<number | null>(null);
   const { t } = useI18n();
 
-  // Initiate flow on mount
   useEffect(() => {
     isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+      if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
+    };
+  }, []);
+
+  const openProviderAuthPage = (resp: OAuthStartResponse) => {
+    if (resp.flow === "pkce") {
+      window.open(resp.auth_url, "_blank", "noopener,noreferrer");
+    } else {
+      window.open(resp.verification_url, "_blank", "noopener,noreferrer");
+    }
+  };
+
+  const beginAuthentication = () => {
+    setErrorMsg(null);
+    setStart(null);
+    setPkceCode("");
+    setSecondsLeft(null);
+    setPhase("starting");
     api
       .startOAuthLogin(provider.id)
       .then((resp) => {
@@ -45,23 +65,14 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
         setStart(resp);
         setSecondsLeft(resp.expires_in);
         setPhase(resp.flow === "device_code" ? "polling" : "awaiting_user");
-        if (resp.flow === "pkce") {
-          window.open(resp.auth_url, "_blank", "noopener,noreferrer");
-        } else {
-          window.open(resp.verification_url, "_blank", "noopener,noreferrer");
-        }
+        openProviderAuthPage(resp);
       })
       .catch((e) => {
         if (!isMounted.current) return;
         setPhase("error");
         setErrorMsg(`Failed to start login: ${e}`);
       });
-    return () => {
-      isMounted.current = false;
-      if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  };
 
   // Tick the countdown
   useEffect(() => {
@@ -209,6 +220,43 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
             </div>
           )}
 
+          {phase === "idle" && (
+            <div className="flex flex-col gap-4">
+              <div className="rounded-sm border border-border bg-secondary/20 p-4">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <Badge tone="outline" className="text-xs tracking-wide">
+                    {t.oauth.detectedMethod.replace(
+                      "{method}",
+                      t.oauth.flowLabels[provider.flow],
+                    )}
+                  </Badge>
+                  <Badge tone="warning" className="text-xs">
+                    {t.oauth.notConnectedBadge}
+                  </Badge>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  {t.oauth.preAuthDescription.replace(
+                    "{provider}",
+                    provider.name,
+                  )}
+                </p>
+              </div>
+              <ol className="text-sm space-y-2 list-decimal list-inside text-muted-foreground">
+                <li>{t.oauth.preAuthStep1}</li>
+                <li>{t.oauth.preAuthStep2}</li>
+                <li>{t.oauth.preAuthStep3}</li>
+              </ol>
+              <div className="flex justify-end gap-2">
+                <Button outlined onClick={handleClose}>
+                  {t.common.cancel}
+                </Button>
+                <Button onClick={beginAuthentication}>
+                  {t.oauth.authenticate}
+                </Button>
+              </div>
+            </div>
+          )}
+
           {start?.flow === "pkce" && phase === "awaiting_user" && (
             <>
               <ol className="text-sm space-y-2 list-decimal list-inside text-muted-foreground">
@@ -326,40 +374,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
                     if (start?.session_id) {
                       api.cancelOAuthSession(start.session_id).catch(() => {});
                     }
-                    setErrorMsg(null);
-                    setStart(null);
-                    setPkceCode("");
-                    setPhase("starting");
-                    api
-                      .startOAuthLogin(provider.id)
-                      .then((resp) => {
-                        if (!isMounted.current) return;
-                        setStart(resp);
-                        setSecondsLeft(resp.expires_in);
-                        setPhase(
-                          resp.flow === "device_code"
-                            ? "polling"
-                            : "awaiting_user",
-                        );
-                        if (resp.flow === "pkce") {
-                          window.open(
-                            resp.auth_url,
-                            "_blank",
-                            "noopener,noreferrer",
-                          );
-                        } else {
-                          window.open(
-                            resp.verification_url,
-                            "_blank",
-                            "noopener,noreferrer",
-                          );
-                        }
-                      })
-                      .catch((e) => {
-                        if (!isMounted.current) return;
-                        setPhase("error");
-                        setErrorMsg(`${t.common.retry} failed: ${e}`);
-                      });
+                    beginAuthentication();
                   }}
                 >
                   {t.common.retry}
