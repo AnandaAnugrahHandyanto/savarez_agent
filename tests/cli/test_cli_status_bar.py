@@ -15,6 +15,7 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
     cli_obj.provider = None
+    cli_obj.requested_provider = None
     cli_obj.base_url = None
     cli_obj.api_key = None
     cli_obj._app = None
@@ -143,6 +144,29 @@ class TestCLIStatusBar:
 
         assert cli_obj._account_usage_is_codex_context() is False
         assert cli_obj._get_account_usage_bar_fragments(width=100) == []
+
+    def test_account_usage_bar_allows_openrouter_provider_when_requested_provider_is_codex(self, monkeypatch):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.provider = "openrouter"
+        cli_obj.requested_provider = "openai-codex"
+        cli_obj.base_url = "https://openrouter.ai/api/v1"
+        calls = []
+        snapshot = AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime.now().astimezone(),
+            windows=(AccountUsageWindow(label="Session", used_percent=27.0),),
+        )
+        monkeypatch.setattr(
+            "cli._fetch_account_usage_for_status_bar",
+            lambda provider, base_url=None, api_key=None: calls.append((provider, base_url, api_key)) or snapshot,
+            raising=False,
+        )
+
+        fragments = cli_obj._get_account_usage_bar_fragments(width=100)
+
+        assert "27%" in "".join(fragment for _style, fragment in fragments)
+        assert calls == [("openai-codex", "https://openrouter.ai/api/v1", None)]
 
     def test_context_style_thresholds(self):
         cli_obj = _make_cli()

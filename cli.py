@@ -3449,21 +3449,28 @@ class HermesCLI:
 
     def _account_usage_is_codex_context(self) -> bool:
         provider = str(getattr(self, "provider", "") or "").strip().lower()
-        if provider == "openai-codex":
+        requested_provider = str(getattr(self, "requested_provider", "") or "").strip().lower()
+        if provider == "openai-codex" or requested_provider == "openai-codex":
             return True
-        if provider and provider != "auto":
+        if provider and provider not in {"auto", "openrouter"}:
+            return False
+        if requested_provider and requested_provider not in {"auto", "openrouter"}:
             return False
         agent = getattr(self, "agent", None)
         agent_provider = str(getattr(agent, "provider", "") or "").strip().lower()
         if agent_provider == "openai-codex":
             return True
-        if agent_provider and agent_provider != "auto":
+        if agent_provider and agent_provider not in {"auto", "openrouter"}:
             return False
         base_url = str(getattr(self, "base_url", "") or getattr(agent, "base_url", "") or "").strip().lower()
         if "chatgpt.com/backend-api" in base_url or base_url.endswith("/codex"):
             return True
         model = str(getattr(self, "model", "") or "").strip().lower()
-        return provider in {"", "auto"} and ("codex" in model or model.startswith("gpt-5"))
+        return (
+            provider in {"", "auto", "openrouter"}
+            and requested_provider in {"", "auto", "openrouter"}
+            and ("codex" in model or model.startswith("gpt-5"))
+        )
 
     @staticmethod
     def _format_account_usage_reset(dt: Optional[datetime], *, weekly: bool = False) -> str:
