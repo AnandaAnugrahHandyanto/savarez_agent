@@ -3207,6 +3207,68 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
         return True
     return client_host in _LOOPBACK_HOSTS
 
+
+
+def _ws_origin_is_accepted(origin_netloc: str, bound_host: str) -> bool:
+    """Return True when a browser Origin is allowed for WS upgrades."""
+    if _is_accepted_host(origin_netloc, bound_host):
+        return True
+
+    # Cloudflare Tunnel / reverse-proxy deployments commonly rewrite the
+    # origin-facing Host header to the loopback upstream (e.g.
+    # ``httpHostHeader: 127.0.0.1:9119``) while the browser correctly sends
+    # ``Origin: https://hermes.example.com``.  That is not a rebinding attack
+    # when the operator explicitly configured dashboard.public_url; it is the
+    # declared public origin.  Keep the relief valve explicit so random public
+    # hostnames still die here.
+    try:
+        public_url = cfg_get(load_config(), "dashboard", "public_url", default="")
+    except Exception:
+        public_url = ""
+
+    if not isinstance(public_url, str) or not public_url:
+        return False
+
+    try:
+        public = urllib.parse.urlparse(public_url)
+    except ValueError:
+        return False
+
+    return bool(public.netloc) and origin_netloc.lower() == public.netloc.lower()
+
+
+def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
+    """Apply the dashboard Host/Origin guard to WebSocket upgrades.
+
+    FastAPI HTTP middleware does not run for WebSocket routes, so the
+    DNS-rebinding Host check used for normal dashboard HTTP requests must be
+    repeated here before accepting the upgrade. Browsers also send an Origin
+    header on WebSocket handshakes; when present, require it to target either
+    the same bound dashboard host or the operator-declared public URL.
+    """
+    bound_host = getattr(app.state, "bound_host", None)
+    if not bound_host:
+        return True
+
+    host_header = ws.headers.get("host", "")
+    if not _is_accepted_host(host_header, bound_host):
+        return False
+
+    origin = ws.headers.get("origin", "")
+    if not origin:
+        return True
+
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+
+    return _ws_origin_is_accepted(parsed.netloc, bound_host)
+
+
+def _ws_request_is_allowed(ws: "WebSocket") -> bool:
+    """Return True when the WebSocket upgrade matches dashboard boundaries."""
+    return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
+
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
@@ -3307,7 +3369,7 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3426,7 +3488,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3458,7 +3520,7 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3487,7 +3549,7 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
