@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { DesktopConnectionRegistryEntry } from '@/global'
 import type { DashboardProject, SessionInfo } from '@/types/hermes'
 
-import { resolveRouteSelection, routeRequestOptionsForSession } from './gateway-routing'
+import { resolveRouteSelection, routeRequestOptionsForSession, routeRequestOptionsForSessionId } from './gateway-routing'
 
 const connection = (id: string): DesktopConnectionRegistryEntry => ({
   id,
@@ -109,6 +109,22 @@ describe('routeRequestOptionsForSession', () => {
   it('uses the selected gateway id for new session create and later prompt submit calls', () => {
     expect(routeRequestOptionsForSession({ gatewayId: 'wsl' })).toEqual({ gatewayId: 'wsl', params: {} })
     expect(routeRequestOptionsForSession({ gatewayId: 'wsl', session: session({ id: 'wsl::session-1' }) })).toEqual({
+      gatewayId: 'wsl',
+      params: { session_id: 'session-1' }
+    })
+  })
+})
+
+describe('routeRequestOptionsForSessionId', () => {
+  it('routes a composite stored session id through the owning gateway with the runtime id', () => {
+    expect(routeRequestOptionsForSessionId({ gatewayId: 'mac', sessionId: 'mac::session-1' })).toEqual({
+      gatewayId: 'mac',
+      params: { session_id: 'session-1' }
+    })
+  })
+
+  it('routes an already-runtime session id through the explicit gateway unchanged', () => {
+    expect(routeRequestOptionsForSessionId({ gatewayId: 'wsl', sessionId: 'session-1' })).toEqual({
       gatewayId: 'wsl',
       params: { session_id: 'session-1' }
     })

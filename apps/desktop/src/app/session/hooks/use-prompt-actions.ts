@@ -1,7 +1,7 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { type MutableRefObject, useCallback } from 'react'
 
-import { stripGatewayCompositeId } from '@/gateway-routing'
+import { routeRequestOptionsForSessionId, stripGatewayCompositeId } from '@/gateway-routing'
 import { transcribeAudio } from '@/hermes'
 import { appendTextPart, branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
@@ -123,6 +123,21 @@ function appendText(message: AppendMessage): string {
 
 function visibleUserOrdinal(messages: readonly ChatMessage[], end: number): number {
   return messages.slice(0, end).filter(m => m.role === 'user' && !m.hidden).length
+}
+
+function gatewayIdForSession(storedSessionId: null | string): string {
+  const storedSession = storedSessionId ? $sessions.get().find(session => session.id === storedSessionId) : undefined
+  const gatewayId = storedSession?.gateway_id ?? $selectedGatewayId.get()
+
+  if (!gatewayId) {
+    throw new Error('Select one gateway before sending.')
+  }
+
+  return gatewayId
+}
+
+function routeOptionsForSessionId(sessionId: string, storedSessionId: null | string) {
+  return routeRequestOptionsForSessionId({ gatewayId: gatewayIdForSession(storedSessionId), sessionId })
 }
 
 export function usePromptActions({
@@ -625,11 +640,12 @@ export function usePromptActions({
     })
 
     try {
-      await requestGateway('session.interrupt', { session_id: sessionId })
+      const route = routeOptionsForSessionId(sessionId, selectedStoredSessionIdRef.current)
+      await requestGateway('session.interrupt', route.params, { gatewayId: route.gatewayId })
     } catch (err) {
       notifyError(err, 'Stop failed')
     }
-  }, [activeSessionId, activeSessionIdRef, busyRef, requestGateway, updateSessionState])
+  }, [activeSessionId, activeSessionIdRef, busyRef, requestGateway, selectedStoredSessionIdRef, updateSessionState])
 
   const reloadFromMessage = useCallback(
     async (parentId: string | null) => {
@@ -690,11 +706,16 @@ export function usePromptActions({
       })
 
       try {
-        await requestGateway('prompt.submit', {
-          session_id: activeSessionId,
-          text: userText,
-          truncate_before_user_ordinal: truncateBeforeUserOrdinal
-        })
+        const route = routeOptionsForSessionId(activeSessionId, selectedStoredSessionIdRef.current)
+        await requestGateway(
+          'prompt.submit',
+          {
+            ...route.params,
+            text: userText,
+            truncate_before_user_ordinal: truncateBeforeUserOrdinal
+          },
+          { gatewayId: route.gatewayId }
+        )
       } catch (err) {
         updateSessionState(activeSessionId, state => ({
           ...state,
@@ -704,7 +725,7 @@ export function usePromptActions({
         notifyError(err, 'Regenerate failed')
       }
     },
-    [activeSessionId, requestGateway, updateSessionState]
+    [activeSessionId, requestGateway, selectedStoredSessionIdRef, updateSessionState]
   )
 
   const editMessage = useCallback(
@@ -745,12 +766,19 @@ export function usePromptActions({
         messages: [...state.messages.slice(0, sourceIndex), editedMessage]
       }))
 
-      const submit = (truncateOrdinal?: number) =>
-        requestGateway('prompt.submit', {
-          session_id: sessionId,
-          text,
-          ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
-        })
+      const submit = (truncateOrdinal?: number) => {
+        const route = routeOptionsForSessionId(sessionId, selectedStoredSessionIdRef.current)
+
+        return requestGateway(
+          'prompt.submit',
+          {
+            ...route.params,
+            text,
+            ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
+          },
+          { gatewayId: route.gatewayId }
+        )
+      }
 
       const isStaleTargetError = (err: unknown) =>
         /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
@@ -777,7 +805,7 @@ export function usePromptActions({
         notifyError(surfaced, 'Edit failed')
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, requestGateway, updateSessionState]
+    [activeSessionId, activeSessionIdRef, busyRef, requestGateway, selectedStoredSessionIdRef, updateSessionState]
   )
 
   const handleThreadMessagesChange = useCallback(

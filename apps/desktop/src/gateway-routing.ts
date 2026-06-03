@@ -32,6 +32,11 @@ export interface RouteRequestOptionsInput {
   session?: SessionInfo | null
 }
 
+export interface RouteRequestOptionsForSessionIdInput {
+  gatewayId: string
+  sessionId: string
+}
+
 export interface RouteRequestOptions {
   gatewayId: string
   params: Record<string, unknown>
@@ -121,11 +126,15 @@ export function resolveRouteSelection({
   }
 }
 
+export function routeRequestOptionsForSessionId({ gatewayId, sessionId }: RouteRequestOptionsForSessionIdInput): RouteRequestOptions {
+  return { gatewayId, params: { session_id: stripGatewayCompositeId(sessionId, gatewayId) } }
+}
+
 export function routeRequestOptionsForSession({ gatewayId, session }: RouteRequestOptionsInput): RouteRequestOptions {
   const params: Record<string, unknown> = {}
 
   if (session?.id) {
-    params.session_id = stripGatewayCompositeId(session.id, gatewayId)
+    params.session_id = routeRequestOptionsForSessionId({ gatewayId, sessionId: session.id }).params.session_id
   }
 
   return { gatewayId, params }

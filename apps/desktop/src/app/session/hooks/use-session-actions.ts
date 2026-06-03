@@ -2,7 +2,7 @@ import type { MutableRefObject } from 'react'
 import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
-import { resolveRouteSelection } from '@/gateway-routing'
+import { resolveRouteSelection, routeRequestOptionsForSessionId } from '@/gateway-routing'
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
@@ -258,6 +258,27 @@ function applyRuntimeInfo(
   return sessionState
 }
 
+function routeOptionsForStoredSessionId(storedSessionId: string) {
+  const stored = $sessions.get().find(session => session.id === storedSessionId)
+  const gatewayId = stored?.gateway_id ?? $selectedGatewayId.get()
+
+  if (!gatewayId) {
+    throw new Error('Select one gateway before sending.')
+  }
+
+  return routeRequestOptionsForSessionId({ gatewayId, sessionId: storedSessionId })
+}
+
+function routeOptionsForRuntimeSessionId(sessionId: string, session?: SessionInfo) {
+  const gatewayId = session?.gateway_id ?? $selectedGatewayId.get()
+
+  if (!gatewayId) {
+    throw new Error('Select one gateway before sending.')
+  }
+
+  return routeRequestOptionsForSessionId({ gatewayId, sessionId })
+}
+
 export function useSessionActions({
   activeSessionId,
   activeSessionIdRef,
@@ -317,6 +338,7 @@ export function useSessionActions({
     try {
       const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
       const config = await window.hermesDesktop.getConnectionConfig()
+
       const route = resolveRouteSelection({
         connections: config.connections,
         projects: $projects.get(),
@@ -333,6 +355,7 @@ export function useSessionActions({
         { cols: 96, ...(cwd && { cwd }), ...(route.target && { target: route.target }) },
         { gatewayId: route.gatewayId }
       )
+
       const stored = created.stored_session_id ? `${route.gatewayId}::${created.stored_session_id}` : null
 
       if (
@@ -497,10 +520,16 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
-        const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
-          session_id: storedSessionId,
-          cols: 96
-        })
+        const resumeRoute = routeOptionsForStoredSessionId(storedSessionId)
+
+        const resumed = await requestGateway<SessionResumeResponse>(
+          'session.resume',
+          {
+            ...resumeRoute.params,
+            cols: 96
+          },
+          { gatewayId: resumeRoute.gatewayId }
+        )
 
         if (!isCurrentResume()) {
           return
@@ -727,7 +756,8 @@ export function useSessionActions({
 
       try {
         if (closingRuntimeId) {
-          await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
+          const closeRoute = routeOptionsForRuntimeSessionId(closingRuntimeId, removed)
+          await requestGateway('session.close', closeRoute.params, { gatewayId: closeRoute.gatewayId }).catch(() => undefined)
         }
 
         await deleteSession(storedSessionId)
