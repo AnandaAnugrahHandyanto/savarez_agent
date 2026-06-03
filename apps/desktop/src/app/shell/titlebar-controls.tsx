@@ -11,6 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -57,6 +58,7 @@ export function TitlebarControls({
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
+  const { locale, locales, setLocale, t } = useI18n()
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -169,6 +171,7 @@ export function TitlebarControls({
         {visibleSystemToolsBeforeSettings.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
+        <LanguageDropdown />
         <ProfilesMenuButton navigate={navigate} />
         {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
@@ -208,6 +211,41 @@ function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavig
           <Codicon name="account" size="1rem" />
           <span>Manage profiles</span>
         </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function LanguageDropdown() {
+  const { locale, locales, setLocale, t } = useI18n()
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          aria-label={t('language.change')}
+          className={cn(titlebarButtonClass, 'grid place-items-center bg-transparent select-none [&_svg]:size-4 [&_span]:text-[0.625rem] [&_span]:font-medium [&_span]:uppercase')}
+          onPointerDown={event => event.stopPropagation()}
+          title={t('language.change')}
+          type="button"
+        >
+          <span>{locale}</span>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={8}>
+        {locales.map(entry => (
+          <DropdownMenuItem
+            key={entry.code}
+            onSelect={() => {
+              triggerHaptic('tap')
+              setLocale(entry.code)
+            }}
+          >
+            <span className={entry.code === locale ? 'font-semibold' : ''}>
+              {entry.nativeLabel}
+            </span>
+          </DropdownMenuItem>
+        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   )
