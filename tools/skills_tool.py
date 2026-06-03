@@ -961,9 +961,23 @@ def skill_view(
                     _record(found_skill_md.parent, found_skill_md)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
+            # Do NOT treat supporting files inside canonical skill directories
+            # (references/templates/assets/scripts) as standalone skills. A file
+            # like ``popular-web-designs/templates/notion.md`` is reference
+            # material, not a skill named ``notion``.
             for found_md in search_dir.rglob(f"{name}.md"):
-                if found_md.name != "SKILL.md":
-                    _record(None, found_md)
+                if found_md.name == "SKILL.md":
+                    continue
+                try:
+                    inside_skill_dir = any(
+                        parent != search_dir and (parent / "SKILL.md").exists()
+                        for parent in found_md.parents
+                    )
+                except Exception:
+                    inside_skill_dir = False
+                if inside_skill_dir:
+                    continue
+                _record(None, found_md)
 
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]

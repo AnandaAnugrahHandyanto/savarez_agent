@@ -1205,6 +1205,26 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is True
         assert "LOCAL VERSION" in result["content"]
 
+    def test_supporting_reference_markdown_does_not_collide_with_skill(self, tmp_path):
+        """A support file named <skill>.md inside another skill should not make
+        a bare skill name ambiguous. Only standalone legacy flat files count."""
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+
+        _make_skill(local_dir, "notion", category="productivity", body="REAL NOTION")
+        other_skill = _make_skill(local_dir, "popular-web-designs", category="creative", body="OTHER")
+        support = other_skill / "templates" / "notion.md"
+        support.parent.mkdir(parents=True, exist_ok=True)
+        support.write_text("support file, not a skill", encoding="utf-8")
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            raw = skill_view("notion")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "REAL NOTION" in result["content"]
+
     def test_external_skill_resolves_when_no_collision(self, tmp_path):
         """External-only skills still resolve normally when there's no
         local skill of the same name."""
