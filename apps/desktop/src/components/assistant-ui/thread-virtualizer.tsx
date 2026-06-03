@@ -239,22 +239,6 @@ function useThreadScrollAnchor({
   const programmaticScrollPendingRef = useRef(0)
   const prevSessionKeyRef = useRef(sessionKey)
   const prevGroupCountRef = useRef(0)
-  // High-water mark of the content height within the current turn. Shiki /
-  // Streamdown can temporarily replace a code or patch block with shorter
-  // laid-out DOM; a real browser clamps scrollTop upward before any rAF pin can
-  // run. Reserving the high-water mark as min-height keeps the scroller from
-  // shrinking while the user is parked at the bottom.
-  const contentHwmRef = useRef(0)
-
-  const releaseContentHighWaterMark = useCallback(() => {
-    const content = scrollerRef.current?.firstElementChild as HTMLElement | null
-
-    if (content) {
-      content.style.minHeight = ''
-    }
-
-    contentHwmRef.current = 0
-  }, [scrollerRef])
 
   const pinToBottom = useCallback(() => {
     const el = scrollerRef.current
@@ -273,7 +257,6 @@ function useThreadScrollAnchor({
 
   const jumpToBottom = useCallback(() => {
     stickyBottomRef.current = true
-    releaseContentHighWaterMark()
 
     if (groupCount > 0) {
       virtualizer.scrollToIndex(groupCount - 1, { align: 'end', behavior: 'auto' })
@@ -284,7 +267,7 @@ function useThreadScrollAnchor({
         pinToBottom()
       }
     })
-  }, [groupCount, pinToBottom, releaseContentHighWaterMark, stickyBottomRef, virtualizer])
+  }, [groupCount, pinToBottom, stickyBottomRef, virtualizer])
 
   useEffect(() => () => setThreadScrolledUp(false), [])
 
@@ -300,7 +283,6 @@ function useThreadScrollAnchor({
     const disarm = () => {
       stickyBottomRef.current = false
       programmaticScrollPendingRef.current = 0
-      releaseContentHighWaterMark()
     }
 
     const onScroll = () => {
@@ -335,7 +317,7 @@ function useThreadScrollAnchor({
       const heightGrew = el.scrollHeight > lastHeightRef.current
       const clientHeightChanged = Math.abs(el.clientHeight - lastClientHeightRef.current) > 1
       if (!heightGrew && !clientHeightChanged && top + 1 < lastTopRef.current) {
-        disarm()
+        stickyBottomRef.current = false
       }
 
       lastTopRef.current = top
@@ -366,7 +348,7 @@ function useThreadScrollAnchor({
       el.removeEventListener('wheel', onWheel)
       el.removeEventListener('touchmove', disarm)
     }
-  }, [releaseContentHighWaterMark, scrollerRef, stickyBottomRef])
+  }, [scrollerRef, stickyBottomRef])
 
   // Follow content growth (streaming, item measurements, loading indicator)
   // while armed. During fast streaming the ResizeObserver can fire many
@@ -385,45 +367,27 @@ function useThreadScrollAnchor({
       return undefined
     }
 
-    const content = el.firstElementChild as HTMLElement | null
     let pinRafScheduled = false
-
     const schedulePin = () => {
       if (pinRafScheduled || !stickyBottomRef.current) {
         return
       }
-
       pinRafScheduled = true
       requestAnimationFrame(() => {
         pinRafScheduled = false
-
         if (stickyBottomRef.current) {
           pinToBottom()
         }
       })
     }
 
-    const observer = new ResizeObserver(() => {
-      // Keep content height monotonic within a turn while armed. Set min-height
-      // before scheduling the bottom pin so a transient code-block shrink
-      // cannot make the browser clamp scrollTop upward.
-      if (content && stickyBottomRef.current) {
-        const measured = content.scrollHeight
-
-        if (measured > contentHwmRef.current) {
-          contentHwmRef.current = measured
-          content.style.minHeight = `${measured}px`
-        }
-      }
-
-      schedulePin()
-    })
+    const observer = new ResizeObserver(schedulePin)
 
     // Observe ONLY the content (firstElementChild), not the scroller `el`
     // itself. Resizes of the viewport/scroller (window resize, devtools
     // panel toggle) shouldn't trigger a pin — only content growth should.
-    if (content) {
-      observer.observe(content)
+    if (el.firstElementChild) {
+      observer.observe(el.firstElementChild)
     }
 
     return () => observer.disconnect()
@@ -474,30 +438,6 @@ function useThreadScrollAnchor({
     }
     prevGroupCountForLayoutRef.current = groupCount
   }, [enabled, groupCount, pinToBottom, stickyBottomRef])
-
-  // Run completion removes transient streaming UI and may collapse the
-  // high-water mark we reserved for code/diff blocks. If the user is still at
-  // the bottom, release that reservation and pin to the real final bottom
-  // before paint so the completed turn does not appear to jump above the
-  // composer.
-  const prevIsRunningForLayoutRef = useRef(isRunning)
-  useLayoutEffect(() => {
-    const finishedRun = prevIsRunningForLayoutRef.current && !isRunning
-    prevIsRunningForLayoutRef.current = isRunning
-
-    if (!enabled || !finishedRun || !stickyBottomRef.current) {
-      return
-    }
-
-    releaseContentHighWaterMark()
-    pinToBottom()
-
-    requestAnimationFrame(() => {
-      if (stickyBottomRef.current) {
-        pinToBottom()
-      }
-    })
-  }, [enabled, isRunning, pinToBottom, releaseContentHighWaterMark, stickyBottomRef])
 
   useAuiEvent('thread.runStart', jumpToBottom)
 }
