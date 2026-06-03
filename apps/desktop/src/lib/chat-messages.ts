@@ -54,6 +54,9 @@ export type GatewayEventPayload = {
   request_id?: string
   question?: string
   choices?: string[] | null
+  // approval.request
+  command?: string
+  description?: string
 }
 
 export function textPart(text: string): ChatMessagePart {
