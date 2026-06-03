@@ -1816,6 +1816,20 @@ def terminal_tool(
         config = _get_env_config()
         env_type = config["env_type"]
 
+        if env_type == "local":
+            from tools.live_system_guard import check_live_gateway_system_command
+
+            live_system_guard = check_live_gateway_system_command(command)
+            if live_system_guard:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": live_system_guard["message"],
+                    "status": "blocked",
+                    "pattern_key": live_system_guard["pattern_key"],
+                    "description": live_system_guard["description"],
+                }, ensure_ascii=False)
+
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and
         # every delegate_task child share one container; only task_ids with

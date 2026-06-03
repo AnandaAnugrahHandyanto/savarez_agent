@@ -1503,6 +1503,19 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
         return {"approved": True, "message": None}
 
+    from tools.live_system_guard import check_live_gateway_system_code
+
+    live_system_guard = check_live_gateway_system_code(code)
+    if live_system_guard:
+        return {
+            "approved": False,
+            "message": live_system_guard["message"],
+            "pattern_key": live_system_guard["pattern_key"],
+            "description": live_system_guard["description"],
+            "outcome": "blocked",
+            "user_consent": False,
+        }
+
     # --yolo or approvals.mode=off: bypass (session- or process-scoped).
     approval_mode = _get_approval_mode()
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
