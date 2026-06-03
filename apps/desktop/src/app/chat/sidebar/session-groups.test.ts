@@ -23,6 +23,7 @@ const baseSession = (overrides: Partial<SessionInfo>): SessionInfo => ({
   ...overrides
 
 })
+
 const agent = (overrides: Partial<DashboardAgent>): DashboardAgent => ({
   gateway: { running: true, state: 'running' },
   id: 'profile:default',
@@ -156,6 +157,47 @@ describe('sidebarControlSurfaceFor', () => {
     expect(projectScope).toBeDefined()
     expect(sessionsForScope(sessions, projectScope ?? null).map(session => session.id)).toEqual(['topic-session'])
   })
+
+  it('maps gateway rows to loaded sessions from that gateway instead of an empty scope', () => {
+    const sessions = [
+      baseSession({ id: 'wsl::one', gateway_id: 'wsl' }),
+      baseSession({ id: 'mac::one', gateway_id: 'mac' })
+    ]
+
+    const gatewayScope = sidebarControlSurfaceFor({
+      agents: [],
+      conversations: [],
+      gatewayStates: [
+        { gateway_id: 'wsl', name: 'WSL', ok: true, state: 'running' },
+        { gateway_id: 'mac', name: 'Mac', ok: true, state: 'running' }
+      ],
+      projects: [],
+      sessions
+    }).find(section => section.id === 'gateways')?.items[0]?.scope
+
+    expect(gatewayScope).toBeDefined()
+    expect(gatewayScope?.sessionIds).toEqual(['wsl::one'])
+    expect(sessionsForScope(sessions, gatewayScope ?? null).map(session => session.id)).toEqual(['wsl::one'])
+  })
+
+  it('keeps degraded gateway rows visible with low-noise failure metadata', () => {
+    const gatewayItems = sidebarControlSurfaceFor({
+      agents: [],
+      conversations: [],
+      gatewayStates: [{ error: 'agents: timeout', gateway_id: 'wsl', name: 'WSL', ok: false, state: 'degraded' }],
+      projects: [],
+      sessions: []
+    }).find(section => section.id === 'gateways')?.items
+
+    expect(gatewayItems).toEqual([
+      expect.objectContaining({
+        label: 'WSL',
+        meta: 'degraded · agents: timeout',
+        scope: expect.objectContaining({ kind: 'gateway', sessionIds: [] })
+      })
+    ])
+  })
+
   it('namespaces colliding sessions and entities from two gateways', () => {
     const sessions = [
       baseSession({ id: 'wsl::same-session', cwd: '/work/wsl', started_at: 300 }),

@@ -134,4 +134,22 @@ describe('aggregateGatewayReadModels', () => {
       { error: 'offline', gateway_id: 'mac', name: 'Mac', ok: false, state: 'degraded' }
     ])
   })
+
+  it('marks a gateway degraded when optional entity APIs fail but sessions still load', () => {
+    const result = aggregateGatewayReadModels([
+      {
+        connection: { id: 'wsl', name: 'WSL', mode: 'remote', baseUrl: 'http://wsl', kind: 'hermes-dashboard', tokenPreview: null, tokenSet: true },
+        status: status('running'),
+        sessions: sessions('healthy-session'),
+        errors: { agents: 'timeout', projects: '500' }
+      }
+    ])
+
+    expect(result.sessions.map(session => session.id)).toEqual(['wsl::healthy-session'])
+    expect(result.agents).toEqual([])
+    expect(result.projects).toEqual([])
+    expect(result.gatewayStates).toEqual([
+      { error: 'agents: timeout; projects: 500', gateway_id: 'wsl', name: 'WSL', ok: false, state: 'degraded' }
+    ])
+  })
 })

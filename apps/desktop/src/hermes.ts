@@ -1,7 +1,7 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 
+import { type AggregatedGatewayReadModel, aggregateGatewayReadModels, type GatewayReadResult } from '@/gateway-aggregation'
 import type { DesktopConnectionRegistryEntry } from '@/global'
-import { aggregateGatewayReadModels, type AggregatedGatewayReadModel, type GatewayReadResult } from '@/gateway-aggregation'
 import type {
   ActionResponse,
   ActionStatusResponse,
@@ -163,19 +163,49 @@ export function listProjects(gatewayId?: string): Promise<DashboardProjectsRespo
   })
 }
 
+const apiErrorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+async function readOptionalGatewayData<T>(
+  label: 'agents' | 'conversations' | 'projects',
+  read: () => Promise<T>,
+  fallback: T
+): Promise<{ error?: string; label: 'agents' | 'conversations' | 'projects'; value: T }> {
+  try {
+    return { label, value: await read() }
+  } catch (error) {
+    return { error: apiErrorMessage(error), label, value: fallback }
+  }
+}
+
 async function readGatewayConnection(connection: DesktopConnectionRegistryEntry, limit: number): Promise<GatewayReadResult> {
   try {
     const [status, sessions, agents, conversations, projects] = await Promise.all([
       getStatus(connection.id),
       listSessions(limit, 1, 'exclude', 'recent', connection.id),
-      listAgents(connection.id).catch(() => ({ agents: [] })),
-      listConversations(connection.id).catch(() => ({ conversations: [] })),
-      listProjects(connection.id).catch(() => ({ projects: [] }))
+      readOptionalGatewayData('agents', () => listAgents(connection.id), { agents: [] }),
+      readOptionalGatewayData('conversations', () => listConversations(connection.id), { conversations: [] }),
+      readOptionalGatewayData('projects', () => listProjects(connection.id), { projects: [] })
     ])
 
-    return { agents, connection, conversations, projects, sessions, status }
+    const errors: GatewayReadResult['errors'] = {}
+
+    for (const result of [agents, conversations, projects]) {
+      if (result.error) {
+        errors[result.label] = result.error
+      }
+    }
+
+    return {
+      agents: agents.value,
+      connection,
+      conversations: conversations.value,
+      errors: Object.keys(errors).length ? errors : undefined,
+      projects: projects.value,
+      sessions,
+      status
+    }
   } catch (error) {
-    return { connection, error: error instanceof Error ? error.message : String(error) }
+    return { connection, error: apiErrorMessage(error) }
   }
 }
 

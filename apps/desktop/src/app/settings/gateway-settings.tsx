@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import type { DesktopConnectionConfig, DesktopConnectionMode, DesktopConnectionRegistryEntry } from '@/global'
+import type {
+  DesktopConnectionConfig,
+  DesktopConnectionConfigInput,
+  DesktopConnectionMode,
+  DesktopConnectionRegistryEntry
+} from '@/global'
 import { AlertCircle, Check, FileText, Globe, Loader2, Monitor } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -13,6 +18,49 @@ import { EmptyState, ListRow, LoadingState, Pill, SettingsContent } from './prim
 type Mode = DesktopConnectionMode
 
 type GatewaySettingsState = DesktopConnectionConfig
+
+interface GatewaySettingsPayloadOptions {
+  connectionTokens: Record<string, string>
+  remoteToken: string
+  remoteUrl: string
+}
+
+function activeRemoteConnectionFor(state: GatewaySettingsState): DesktopConnectionRegistryEntry | undefined {
+  const active = state.connections.find(connection => connection.id === state.activeConnectionId)
+
+  return active?.mode === 'remote' ? active : state.connections.find(connection => connection.mode === 'remote')
+}
+
+export function buildGatewaySettingsPayload(
+  state: GatewaySettingsState,
+  { connectionTokens, remoteToken, remoteUrl }: GatewaySettingsPayloadOptions
+): DesktopConnectionConfigInput {
+  const activeRemote = activeRemoteConnectionFor(state)
+  const legacyRemoteUrl = remoteUrl.trim()
+  const legacyRemoteToken = remoteToken.trim()
+
+  const connections = state.connections.map(connection => {
+    const isActiveRemote = connection.id === activeRemote?.id
+    const cardToken = connectionTokens[connection.id]?.trim()
+    const nextToken = cardToken || (isActiveRemote ? legacyRemoteToken : '')
+
+    return {
+      ...connection,
+      baseUrl: isActiveRemote && legacyRemoteUrl ? legacyRemoteUrl : connection.baseUrl,
+      remoteToken: nextToken || undefined
+    }
+  })
+
+  const nextRemoteUrl = legacyRemoteUrl || activeRemote?.baseUrl.trim() || state.remoteUrl.trim()
+
+  return {
+    activeConnectionId: state.activeConnectionId,
+    connections,
+    mode: state.mode,
+    remoteToken: legacyRemoteToken || connectionTokens[activeRemote?.id || '']?.trim() || undefined,
+    remoteUrl: nextRemoteUrl
+  }
+}
 
 const EMPTY_STATE: GatewaySettingsState = {
   schemaVersion: 2,
@@ -114,27 +162,13 @@ export function GatewaySettings() {
   }, [])
 
   const canUseRemote = useMemo(() => {
-    const active = state.connections.find(connection => connection.id === state.activeConnectionId)
-    const activeRemote = active?.mode === 'remote' ? active : state.connections.find(connection => connection.mode === 'remote')
+    const activeRemote = activeRemoteConnectionFor(state)
 
     return Boolean(activeRemote?.baseUrl.trim() || state.remoteUrl.trim()) &&
       (Boolean(connectionTokens[activeRemote?.id || '']?.trim()) || Boolean(remoteToken.trim()) || Boolean(activeRemote?.tokenSet) || state.remoteTokenSet)
-  }, [connectionTokens, remoteToken, state.activeConnectionId, state.connections, state.remoteTokenSet, state.remoteUrl])
+  }, [connectionTokens, remoteToken, state])
 
-  const payload = () => {
-    const connections = state.connections.map(connection => ({
-      ...connection,
-      remoteToken: connectionTokens[connection.id]?.trim() || (connection.id === 'remote-1' ? remoteToken.trim() : '') || undefined
-    }))
-
-    return {
-      activeConnectionId: state.activeConnectionId,
-      connections,
-      mode: state.mode,
-      remoteToken: remoteToken.trim() || undefined,
-      remoteUrl: state.remoteUrl.trim()
-    }
-  }
+  const payload = () => buildGatewaySettingsPayload(state, { connectionTokens, remoteToken, remoteUrl: state.remoteUrl })
 
   const updateConnection = (id: string, patch: Partial<DesktopConnectionRegistryEntry>) => {
     setState(current => ({
@@ -164,6 +198,20 @@ export function GatewaySettings() {
             tokenSet: false
           }
         ]
+      }
+    })
+  }
+
+  const updateActiveRemoteUrl = (baseUrl: string) => {
+    setState(current => {
+      const activeRemote = activeRemoteConnectionFor(current)
+
+      return {
+        ...current,
+        remoteUrl: baseUrl,
+        connections: activeRemote
+          ? current.connections.map(connection => (connection.id === activeRemote.id ? { ...connection, baseUrl } : connection))
+          : current.connections
       }
     })
   }
@@ -354,9 +402,9 @@ export function GatewaySettings() {
             <Input
               className={cn('h-8', CONTROL_TEXT)}
               disabled={state.envOverride}
-              onChange={event => setState(current => ({ ...current, remoteUrl: event.target.value }))}
+              onChange={event => updateActiveRemoteUrl(event.target.value)}
               placeholder="https://gateway.example.com/hermes"
-              value={state.remoteUrl}
+              value={activeRemoteConnectionFor(state)?.baseUrl ?? state.remoteUrl}
             />
           }
           description="Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes."

@@ -136,12 +136,16 @@ export function sidebarControlSurfaceFor({
     {
       id: 'gateways',
       label: 'Gateways',
-      items: gatewayStates.map(gateway => ({
-        id: gateway.gateway_id,
-        label: gateway.name,
-        meta: gateway.ok ? gateway.state : `degraded · ${gateway.error || gateway.state}`,
-        scope: { id: gateway.gateway_id, kind: 'gateway', label: gateway.name, sessionIds: [] }
-      }))
+      items: gatewayStates.map(gateway => {
+        const ids = sessions.filter(session => session.gateway_id === gateway.gateway_id).map(session => session.id)
+
+        return {
+          id: gateway.gateway_id,
+          label: gateway.name,
+          meta: gateway.ok ? gateway.state : `degraded · ${gateway.error || gateway.state}`,
+          scope: { id: gateway.gateway_id, kind: 'gateway', label: gateway.name, sessionIds: ids }
+        }
+      })
     },
     {
       id: 'agents',

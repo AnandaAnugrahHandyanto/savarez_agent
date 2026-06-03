@@ -1,3 +1,4 @@
+import type { DesktopConnectionRegistryEntry } from '@/global'
 import type {
   DashboardAgent,
   DashboardAgentsResponse,
@@ -9,13 +10,13 @@ import type {
   SessionInfo,
   StatusResponse
 } from '@/types/hermes'
-import type { DesktopConnectionRegistryEntry } from '@/global'
 
 export interface GatewayReadResult {
   agents?: DashboardAgentsResponse
   connection: DesktopConnectionRegistryEntry
   conversations?: DashboardConversationsResponse
   error?: string
+  errors?: Partial<Record<'agents' | 'conversations' | 'projects' | 'sessions' | 'status', string>>
   projects?: DashboardProjectsResponse
   sessions?: PaginatedSessions
   status?: StatusResponse
@@ -41,6 +42,14 @@ export interface AggregatedGatewayReadModel {
 const compositeId = (gatewayId: string, id: string) => `${gatewayId}::${id}`
 const asText = (value: unknown) => (typeof value === 'string' ? value : '')
 
+function partialErrorText(errors: GatewayReadResult['errors']): string | undefined {
+  const parts = Object.entries(errors ?? {})
+    .filter((entry): entry is [string, string] => Boolean(entry[1]))
+    .map(([key, value]) => `${key}: ${value}`)
+
+  return parts.length ? parts.join('; ') : undefined
+}
+
 export function aggregateGatewayReadModels(results: GatewayReadResult[]): AggregatedGatewayReadModel {
   const agents: DashboardAgent[] = []
   const conversations: DashboardConversation[] = []
@@ -51,15 +60,17 @@ export function aggregateGatewayReadModels(results: GatewayReadResult[]): Aggreg
 
   for (const result of results) {
     const gatewayId = result.connection.id
-    const state = result.error
+    const error = result.error || partialErrorText(result.errors)
+
+    const state = error
       ? 'degraded'
       : result.status?.gateway_state ?? result.status?.gateway?.state ?? (result.status ? 'running' : 'unknown')
 
     gatewayStates.push({
-      error: result.error,
+      error,
       gateway_id: gatewayId,
       name: result.connection.name || gatewayId,
-      ok: !result.error,
+      ok: !error,
       state: asText(state) || 'unknown'
     })
 
@@ -71,6 +82,7 @@ export function aggregateGatewayReadModels(results: GatewayReadResult[]): Aggreg
         id: compositeId(gatewayId, session.id)
       })
     }
+
     sessionsTotal += result.sessions?.total ?? result.sessions?.sessions?.length ?? 0
 
     for (const agent of result.agents?.agents ?? []) {
