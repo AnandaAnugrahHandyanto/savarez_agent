@@ -75,10 +75,38 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
-def _security_scan_skill(skill_dir: Path) -> Optional[str]:
+def _quarantine_queue_enabled() -> bool:
+    """Read skills.quarantine_queue from config (default False).
+
+    When on, a blocked agent-created write is also recorded in the skill
+    proposal/quarantine queue (``tools.skill_proposals``) so a human can review
+    what was attempted. Recording is purely additive: it never changes the
+    fail-closed block/rollback decision. Off by default — no profile-wide
+    behavior change unless explicitly enabled.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return is_truthy_value(
+            cfg_get(cfg, "skills", "quarantine_queue"),
+            default=False,
+        )
+    except Exception:
+        return False
+
+
+def _security_scan_skill(
+    skill_dir: Path,
+    skill_name: Optional[str] = None,
+    action: Optional[str] = None,
+) -> Optional[str]:
     """Scan a skill directory after write. Returns error string if blocked, else None.
 
-    No-op when skills.guard_agent_created is disabled (the default).
+    No-op when skills.guard_agent_created is disabled (the default). When a
+    write is blocked and skills.quarantine_queue is enabled, a quarantine entry
+    is recorded for human review before the caller rolls the write back. The
+    block decision itself is unchanged: dangerous agent-created content still
+    fails closed and never activates.
     """
     if not _GUARD_AVAILABLE:
         return None
@@ -87,19 +115,41 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     try:
         result = scan_skill(skill_dir, source="agent-created")
         allowed, reason = should_allow_install(result)
-        if allowed is False:
+        # ``allowed is False`` => policy block; ``allowed is None`` => "ask"
+        # verdict, which for agent-created skills means dangerous findings were
+        # detected. Both fail closed and surface an error so the agent can
+        # retry with the flagged content removed.
+        if allowed is False or allowed is None:
+            if allowed is None:
+                logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
+            _maybe_record_quarantine(result, skill_dir, skill_name, action, reason)
             report = format_scan_report(result)
-            return f"Security scan blocked this skill ({reason}):\n{report}"
-        if allowed is None:
-            # "ask" verdict — for agent-created skills this means dangerous
-            # findings were detected.  Surface as an error so the agent can
-            # retry with the flagged content removed.
-            report = format_scan_report(result)
-            logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
             return f"Security scan blocked this skill ({reason}):\n{report}"
     except Exception as e:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
+
+
+def _maybe_record_quarantine(result, skill_dir, skill_name, action, reason) -> None:
+    """Best-effort: record a quarantine entry for a blocked agent-created write.
+
+    Gated behind skills.quarantine_queue (off by default). Never raises and
+    never affects the block decision — the write is still rolled back by the
+    caller regardless of whether this succeeds.
+    """
+    if not _quarantine_queue_enabled():
+        return
+    try:
+        from tools import skill_proposals
+        skill_proposals.record_quarantine(
+            skill_name=skill_name or skill_dir.name,
+            action=action or "unknown",
+            reason=reason,
+            verdict=getattr(result, "verdict", None),
+            findings=getattr(result, "findings", None),
+        )
+    except Exception:
+        logger.debug("Failed to record quarantine entry for %s", skill_dir, exc_info=True)
 
 import yaml
 
@@ -510,7 +560,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
+    scan_error = _security_scan_skill(skill_dir, skill_name=name, action="create")
     if scan_error:
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
@@ -550,7 +600,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
+    scan_error = _security_scan_skill(existing["path"], skill_name=name, action="edit")
     if scan_error:
         if original_content is not None:
             _atomic_write_text(skill_md, original_content)
@@ -646,7 +696,7 @@ def _patch_skill(
     _atomic_write_text(target, new_content)
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
+    scan_error = _security_scan_skill(skill_dir, skill_name=name, action="patch")
     if scan_error:
         _atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
@@ -751,7 +801,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     _atomic_write_text(target, file_content)
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
+    scan_error = _security_scan_skill(existing["path"], skill_name=name, action="write_file")
     if scan_error:
         if original_content is not None:
             _atomic_write_text(target, original_content)

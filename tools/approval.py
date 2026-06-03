@@ -1243,6 +1243,29 @@ def check_all_command_guards(command: str, env_type: str,
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
 
+    # DeerFlow-style deterministic shell classifier. Malformed quoting is a
+    # fail-closed parse error, not a user-approvable risk class, so it remains
+    # below hardline/sudo but above yolo and approvals.mode=off.
+    command_risk_result = None
+    try:
+        from tools.command_risk_classifier import classify_terminal_command
+        command_risk_result = classify_terminal_command(command)
+    except Exception as exc:
+        logger.debug("Command risk classifier failed open: %s", exc)
+    if command_risk_result is not None and command_risk_result.level == "block":
+        malformed = [
+            finding for finding in command_risk_result.findings
+            if finding.reason.startswith("malformed shell quoting")
+        ]
+        if malformed:
+            reason = malformed[0].reason
+            return {
+                "approved": False,
+                "message": f"BLOCKED: {reason}. The command was not executed.",
+                "pattern_key": "command-risk:malformed-shell-quoting",
+                "description": reason,
+            }
+
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
@@ -1261,7 +1284,16 @@ def check_all_command_guards(command: str, env_type: str,
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
-                if is_dangerous:
+                risk_description = None
+                if command_risk_result is not None and command_risk_result.level in {"warn", "block"}:
+                    risk_description = "; ".join(
+                        finding.reason for finding in command_risk_result.findings
+                    )
+                if is_dangerous or risk_description:
+                    description = "; ".join(
+                        part for part in [description if is_dangerous else None, risk_description]
+                        if part
+                    )
                     return {
                         "approved": False,
                         "message": (
@@ -1310,6 +1342,15 @@ def check_all_command_guards(command: str, env_type: str,
     if is_dangerous:
         if not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
+
+    if command_risk_result is not None and command_risk_result.level in {"warn", "block"}:
+        for finding in command_risk_result.findings:
+            risk_key = f"command-risk:{finding.reason}"
+            if not is_approved(session_key, risk_key):
+                # Treat classifier findings like non-permanent safety findings:
+                # users may approve once/session, but should not permanently
+                # allowlist a broad class such as curl|sh or package installs.
+                warnings.append((risk_key, finding.reason, True))
 
     # Nothing to warn about
     if not warnings:
