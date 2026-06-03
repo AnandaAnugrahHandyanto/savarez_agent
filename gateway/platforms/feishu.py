@@ -1320,6 +1320,60 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
+
+    # Monkey-patch _handle_data_frame to dispatch CARD-type messages
+    # (card.action.trigger) to the event handler instead of dropping them.
+    # Upstream lark-oapi WS client (v1.5.3) has:
+    #   elif message_type == MessageType.CARD: return
+    # which silently discards all card action callbacks.
+    _original_handle_data_frame = ws_client._handle_data_frame
+
+    async def _patched_handle_data_frame(self, frame):
+        import lark_oapi.ws.client as _ws_mod
+        hs = frame.headers
+        type_ = _ws_mod._get_by_key(hs, _ws_mod.HEADER_TYPE)
+        message_type = _ws_mod.MessageType(type_)
+
+        if message_type == _ws_mod.MessageType.CARD:
+            # Dispatch CARD events to the event handler, same as EVENT type.
+            pl = frame.payload
+            if int(_ws_mod._get_by_key(hs, _ws_mod.HEADER_SUM)) > 1:
+                pl = self._combine(
+                    _ws_mod._get_by_key(hs, _ws_mod.HEADER_MESSAGE_ID),
+                    int(_ws_mod._get_by_key(hs, _ws_mod.HEADER_SUM)),
+                    int(_ws_mod._get_by_key(hs, _ws_mod.HEADER_SEQ)),
+                    pl,
+                )
+                if pl is None:
+                    return
+
+            resp = _ws_mod.Response(code=_ws_mod.http.HTTPStatus.OK)
+            try:
+                start = int(round(time.time() * 1000))
+                result = self._event_handler.do_without_validation(pl)
+                end = int(round(time.time() * 1000))
+                header = hs.add()
+                header.key = _ws_mod.HEADER_BIZ_RT
+                header.value = str(end - start)
+                if result is not None:
+                    resp.data = _ws_mod.base64.b64encode(
+                        _ws_mod.JSON.marshal(result).encode("utf-8")
+                    )
+            except Exception as e:
+                logger.error(
+                    "[Feishu] CARD message dispatch failed: %s", e, exc_info=True
+                )
+                resp = _ws_mod.Response(code=_ws_mod.http.HTTPStatus.INTERNAL_SERVER_ERROR)
+
+            frame.payload = _ws_mod.JSON.marshal(resp).encode("utf-8")
+            await self._write_message(frame.SerializeToString())
+            return
+
+        await _original_handle_data_frame(frame)
+
+    import types
+    ws_client._handle_data_frame = types.MethodType(_patched_handle_data_frame, ws_client)
+
     try:
         ws_client.start()
     except Exception:
