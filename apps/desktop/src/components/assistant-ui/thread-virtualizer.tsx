@@ -65,6 +65,7 @@ const _VirtualizedThread: FC<VirtualizedThreadProps> = ({
   const messageSignature = useAuiState(s =>
     s.thread.messages.map((message, index) => `${index}:${message.id}:${message.role}`).join('\n')
   )
+  const isRunning = useAuiState(s => s.thread.isRunning)
 
   const groups = useMemo(() => buildGroups(messageSignature), [messageSignature])
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
@@ -109,6 +110,7 @@ const _VirtualizedThread: FC<VirtualizedThreadProps> = ({
   useThreadScrollAnchor({
     enabled: !renderEmpty,
     groupCount: groups.length,
+    isRunning,
     scrollerRef,
     sessionKey: sessionKey ?? null,
     stickyBottomRef,
@@ -200,13 +202,14 @@ export const VirtualizedThread = memo(_VirtualizedThread)
 interface ScrollAnchorOptions {
   enabled: boolean
   groupCount: number
+  isRunning: boolean
   scrollerRef: React.RefObject<HTMLDivElement | null>
   sessionKey: string | null
   stickyBottomRef: React.MutableRefObject<boolean>
   virtualizer: Virtualizer<HTMLDivElement, Element>
 }
 
-function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, stickyBottomRef, virtualizer }: ScrollAnchorOptions) {
+function useThreadScrollAnchor({ enabled, groupCount, isRunning, scrollerRef, sessionKey, stickyBottomRef, virtualizer }: ScrollAnchorOptions) {
   // `stickyBottomRef` = parked at bottom, content growth should follow. Cleared on
   // user-driven upward scroll; re-armed when they reach bottom again.
   // This is a shared ref — scrollToFn reads it to prevent the virtualizer's
