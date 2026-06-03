@@ -10,14 +10,20 @@ const TRIGGER_RE = /(?:^|[\s])([@/])([^\s@/]*)$/
 
 export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   const blobs: Blob[] = []
-  const seen = new Set<Blob>()
+  const seen = new Set<string>()
 
   const push = (blob: Blob | null) => {
-    if (!blob || blob.size === 0 || seen.has(blob)) {
+    if (!blob || blob.size === 0) {
       return
     }
 
-    seen.add(blob)
+    const key = `${blob.type}:${blob.size}`
+
+    if (seen.has(key)) {
+      return
+    }
+
+    seen.add(key)
     blobs.push(blob)
   }
 
@@ -29,7 +35,7 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
     }
   }
 
-  if (clipboard.files?.length) {
+  if (blobs.length === 0 && clipboard.files?.length) {
     for (let i = 0; i < clipboard.files.length; i += 1) {
       const file = clipboard.files.item(i)
 
