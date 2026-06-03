@@ -487,6 +487,17 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-r1-0528",
         "qwen/qwen3-235b-a22b-fp8",
     ],
+    # Nebius Token Factory model IDs are HuggingFace-style and case-sensitive —
+    # keep the exact casing the API expects.
+    "nebius": [
+        "moonshotai/Kimi-K2.5",
+        "zai-org/GLM-5",
+        "deepseek-ai/DeepSeek-V3.2",
+        "Qwen/Qwen3-235B-A22B-Instruct-2507",
+        "openai/gpt-oss-120b",
+        "MiniMaxAI/MiniMax-M2.5",
+        "meta-llama/Llama-3.3-70B-Instruct",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -905,6 +916,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
+    ProviderEntry("nebius",         "Nebius Token Factory",     "Nebius Token Factory (OpenAI-compatible API for open-weight LLMs)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
@@ -1117,6 +1129,10 @@ _PROVIDER_ALIASES = {
     "huggingface-hub": "huggingface",
     "novita-ai": "novita",
     "novitaai": "novita",
+    "nebius-token-factory": "nebius",
+    "token-factory": "nebius",
+    "tokenfactory": "nebius",
+    "nebius-ai-studio": "nebius",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
     "tencent": "tencent-tokenhub",
