@@ -215,7 +215,11 @@ def test_make_tui_argv_skips_install_when_bundle_is_fresh_without_node_modules(
 def test_make_tui_argv_installs_dev_deps_when_cold_building(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
-    """Cold builds need esbuild/tsx even when parent NODE_ENV=production."""
+    """Cold builds need dev deps and install from the npm workspace root."""
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
     calls = []
     monkeypatch.setenv("NODE_ENV", "production")
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
@@ -233,15 +237,17 @@ def test_make_tui_argv_installs_dev_deps_when_cold_building(
 
     monkeypatch.setattr(main_mod.subprocess, "run", record_run)
 
-    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
+    argv, cwd = main_mod._make_tui_argv(tui_dir, tui_dev=False)
 
-    assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
-    assert cwd == tmp_path
+    assert argv == ["/bin/node", "--expose-gc", str(tui_dir / "dist" / "entry.js")]
+    assert cwd == tui_dir
     assert len(calls) == 2
     assert calls[0][0][:2] == ["/bin/npm", "install"]
     assert "--include=dev" in calls[0][0]
+    assert calls[0][1]["cwd"] == str(tmp_path)
     assert calls[0][1]["env"]["CI"] == "1"
     assert calls[1][0] == ["/bin/npm", "run", "build"]
+    assert calls[1][1]["cwd"] == str(tui_dir)
 
 
 def test_tui_initial_skin_env_serializes_configured_skin(main_mod) -> None:
@@ -251,3 +257,76 @@ def test_tui_initial_skin_env_serializes_configured_skin(main_mod) -> None:
     assert '"name":"mono"' in raw
     assert '"colors"' in raw
     assert '"branding"' in raw
+
+
+# ── _workspace_root helper ──────────────────────────────────────────
+
+
+def test_workspace_root_returns_parent_when_subpackage(tmp_path: Path, main_mod) -> None:
+    """Sub-package has package.json, no lockfile; parent has lockfile → parent."""
+    sub = tmp_path / "ui-tui"
+    sub.mkdir()
+    (sub / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+    assert main_mod._workspace_root(sub) == tmp_path
+
+
+def test_workspace_root_returns_dir_when_standalone(tmp_path: Path, main_mod) -> None:
+    """No package.json → not a sub-package, return dir itself."""
+    assert main_mod._workspace_root(tmp_path) == tmp_path
+
+
+def test_workspace_root_returns_dir_when_own_lockfile(tmp_path: Path, main_mod) -> None:
+    """Has package.json AND its own lockfile → standalone, return dir."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+    (tmp_path.parent / "package-lock.json").write_text("{}")
+    assert main_mod._workspace_root(tmp_path) == tmp_path
+
+
+def test_workspace_root_returns_dir_when_no_parent_lockfile(
+    tmp_path: Path, main_mod
+) -> None:
+    """Has package.json, no own lockfile, but parent also has no lockfile → standalone."""
+    sub = tmp_path / "ui-tui"
+    sub.mkdir()
+    (sub / "package.json").write_text("{}")
+    # tmp_path has no package-lock.json either
+    assert main_mod._workspace_root(sub) == sub
+
+
+def test_workspace_root_consistent_with_need_npm_install(
+    tmp_path: Path, main_mod
+) -> None:
+    """The install decision and install cwd share the same workspace root helper."""
+    sub = tmp_path / "ui-tui"
+    sub.mkdir()
+    (sub / "package.json").write_text("{}")
+    # Both sub and parent have lockfiles — accidental state
+    (sub / "package-lock.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    ws = main_mod._workspace_root(sub)
+    assert ws == sub
+    assert main_mod._tui_need_npm_install.__code__.co_names
+
+
+def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
+    """Workspace sub-directories must not contain their own package-lock.json."""
+    root = main_mod.PROJECT_ROOT
+    subdirs = [
+        root / "ui-tui",
+        root / "web",
+        root / "apps" / "desktop",
+        root / "apps" / "shared",
+    ]
+    tui_pkgs = root / "ui-tui" / "packages"
+    if tui_pkgs.is_dir():
+        subdirs.extend(d for d in tui_pkgs.iterdir() if d.is_dir())
+
+    stray = [d for d in subdirs if (d / "package-lock.json").is_file()]
+    assert not stray, (
+        "stray package-lock.json found in workspace sub-directory(es); "
+        "delete them and run `npm install` from the repo root instead: "
+        + ", ".join(str(d / "package-lock.json") for d in stray)
+    )
