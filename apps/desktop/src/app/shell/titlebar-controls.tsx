@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import type { ComponentProps, ReactNode } from 'react'
+import { type ComponentProps, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { Codicon } from '@/components/ui/codicon'
@@ -8,14 +8,18 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import type { DesktopProfilesState } from '@/global'
 import { triggerHaptic } from '@/lib/haptics'
 import { Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { $fileBrowserOpen, $sidebarOpen, toggleFileBrowserOpen, toggleSidebarOpen } from '@/store/layout'
+import { notifyError } from '@/store/notifications'
 
 import { PROFILES_ROUTE } from '../routes'
 
@@ -178,14 +182,65 @@ export function TitlebarControls({
 }
 
 function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavigate> }) {
+  const [open, setOpen] = useState(false)
+  const [profilesState, setProfilesState] = useState<DesktopProfilesState | null>(null)
+  const [switchingTo, setSwitchingTo] = useState<string | null>(null)
+
+  const refreshProfiles = useCallback(() => {
+    window.hermesDesktop.profiles
+      .list()
+      .then(setProfilesState)
+      .catch(error => {
+        notifyError('Could not load Hermes profiles', error instanceof Error ? error.message : String(error))
+      })
+  }, [])
+
+  useEffect(() => {
+    refreshProfiles()
+  }, [refreshProfiles])
+
+  const activeProfile = useMemo(
+    () => profilesState?.profiles.find(profile => profile.active) || null,
+    [profilesState]
+  )
+
+  const switchProfile = (name: string) => {
+    if (name === profilesState?.active || switchingTo) {
+      return
+    }
+
+    setSwitchingTo(name)
+    triggerHaptic('open')
+    window.hermesDesktop.profiles
+      .switch(name)
+      .then(setProfilesState)
+      .catch(error => {
+        setSwitchingTo(null)
+        notifyError('Could not switch Hermes profile', error instanceof Error ? error.message : String(error))
+      })
+  }
+
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      onOpenChange={nextOpen => {
+        setOpen(nextOpen)
+
+        if (nextOpen) {
+          refreshProfiles()
+        }
+      }}
+      open={open}
+    >
       <DropdownMenuTrigger asChild>
         <button
-          aria-label="Profiles"
-          className={cn(titlebarButtonClass, 'grid place-items-center bg-transparent select-none [&_svg]:size-4')}
+          aria-label={`Profiles${activeProfile ? `: ${activeProfile.name}` : ''}`}
+          className={cn(
+            titlebarButtonClass,
+            'grid place-items-center bg-transparent select-none [&_svg]:size-4',
+            activeProfile && !activeProfile.isDefault && 'bg-(--ui-control-active-background)! text-foreground!'
+          )}
           onPointerDown={event => event.stopPropagation()}
-          title="Profiles"
+          title={activeProfile ? `Hermes profile: ${activeProfile.name}` : 'Profiles'}
           type="button"
         >
           <Codicon name="account" />
@@ -193,11 +248,44 @@ function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavig
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64" sideOffset={8}>
         <DropdownMenuLabel>
-          <div className="text-sm font-medium text-foreground">Profiles</div>
-          <div className="mt-1 text-xs font-normal leading-4 text-muted-foreground">
-            Advanced Hermes environments for separate personas, config, skills, and SOUL.md.
+          <div className="text-sm font-medium text-foreground">Agent profile</div>
+          <div className="mt-1 truncate text-xs font-normal leading-4 text-muted-foreground">
+            {activeProfile ? activeProfile.name : 'Loading profiles...'}
           </div>
         </DropdownMenuLabel>
+        {profilesState && profilesState.profiles.length > 0 && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuRadioGroup value={profilesState.active}>
+              {profilesState.profiles.map(profile => {
+                const detail = [profile.provider, profile.model].filter(Boolean).join(' / ')
+                const busy = switchingTo === profile.name
+
+                return (
+                  <DropdownMenuRadioItem
+                    disabled={Boolean(switchingTo)}
+                    key={profile.name}
+                    onSelect={event => {
+                      event.preventDefault()
+                      switchProfile(profile.name)
+                    }}
+                    value={profile.name}
+                  >
+                    <Codicon name={busy ? 'sync' : profile.isDefault ? 'home' : 'account'} size="1rem" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{profile.name}</span>
+                      {detail && (
+                        <span className="block truncate text-[0.625rem] leading-3 text-(--ui-text-tertiary)">
+                          {detail}
+                        </span>
+                      )}
+                    </span>
+                  </DropdownMenuRadioItem>
+                )
+              })}
+            </DropdownMenuRadioGroup>
+          </>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           onSelect={() => {

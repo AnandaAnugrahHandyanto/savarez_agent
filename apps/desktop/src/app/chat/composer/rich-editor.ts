@@ -111,6 +111,11 @@ export function renderComposerContents(target: HTMLElement, text: string) {
   appendComposerContents(target, text)
 }
 
+export interface ComposerSelectionSnapshot {
+  end: number
+  start: number
+}
+
 /** Serialize a draft string into chip-HTML for the contenteditable surface. */
 export function composerHtml(text: string) {
   let cursor = 0
@@ -152,6 +157,149 @@ export function composerPlainText(node: Node): string {
   const block = el.tagName === 'DIV' || el.tagName === 'P'
 
   return block && text && el.dataset.slot !== RICH_INPUT_SLOT ? `${text}\n` : text
+}
+
+function nodeTextLength(node: Node): number {
+  return composerPlainText(node).length
+}
+
+function childIndex(node: Node): number {
+  const parent = node.parentNode
+
+  return parent ? Array.prototype.indexOf.call(parent.childNodes, node) : 0
+}
+
+function offsetForPosition(root: Node, target: Node, targetOffset: number): number | null {
+  const visit = (node: Node): { found: true; offset: number } | { found: false; length: number } => {
+    if (node === target) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        return { found: true, offset: Math.max(0, Math.min(targetOffset, node.textContent?.length ?? 0)) }
+      }
+
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const children = Array.from(node.childNodes).slice(0, targetOffset)
+
+        return { found: true, offset: children.reduce((sum, child) => sum + nodeTextLength(child), 0) }
+      }
+
+      return { found: true, offset: 0 }
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return { found: false, length: nodeTextLength(node) }
+    }
+
+    let length = 0
+
+    for (const child of Array.from(node.childNodes)) {
+      const result = visit(child)
+
+      if (result.found) {
+        return { found: true, offset: length + result.offset }
+      }
+
+      length += result.length
+    }
+
+    return { found: false, length }
+  }
+
+  const result = visit(root)
+
+  return result.found ? result.offset : null
+}
+
+function domPositionForOffset(root: HTMLElement, targetOffset: number): { node: Node; offset: number } {
+  let remaining = Math.max(0, targetOffset)
+
+  const walk = (node: Node): { node: Node; offset: number } | null => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const length = node.textContent?.length ?? 0
+
+      if (remaining <= length) {
+        return { node, offset: remaining }
+      }
+
+      remaining -= length
+
+      return null
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return null
+    }
+
+    const el = node as HTMLElement
+
+    if (el.dataset.refText || el.tagName === 'BR') {
+      const length = nodeTextLength(el)
+
+      if (remaining <= length) {
+        return { node: el.parentNode || root, offset: childIndex(el) + (remaining > 0 ? 1 : 0) }
+      }
+
+      remaining -= length
+
+      return null
+    }
+
+    for (const child of Array.from(node.childNodes)) {
+      const position = walk(child)
+
+      if (position) {
+        return position
+      }
+    }
+
+    return null
+  }
+
+  return walk(root) || { node: root, offset: root.childNodes.length }
+}
+
+export function captureComposerSelection(element: HTMLElement): ComposerSelectionSnapshot | null {
+  const selection = window.getSelection()
+
+  if (!selection || selection.rangeCount === 0) {
+    return null
+  }
+
+  const range = selection.getRangeAt(0)
+
+  if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) {
+    return null
+  }
+
+  const start = offsetForPosition(element, range.startContainer, range.startOffset)
+  const end = offsetForPosition(element, range.endContainer, range.endOffset)
+
+  return start === null || end === null ? null : { start, end }
+}
+
+export function restoreComposerSelection(element: HTMLElement, snapshot: ComposerSelectionSnapshot | null) {
+  if (!snapshot) {
+    return false
+  }
+
+  const selection = window.getSelection()
+
+  if (!selection) {
+    return false
+  }
+
+  const textLength = composerPlainText(element).length
+  const start = Math.max(0, Math.min(snapshot.start, textLength))
+  const end = Math.max(0, Math.min(snapshot.end, textLength))
+  const startPosition = domPositionForOffset(element, start)
+  const endPosition = domPositionForOffset(element, end)
+  const range = document.createRange()
+
+  range.setStart(startPosition.node, startPosition.offset)
+  range.setEnd(endPosition.node, endPosition.offset)
+  selection.removeAllRanges()
+  selection.addRange(range)
+
+  return true
 }
 
 export function placeCaretEnd(element: HTMLElement) {
