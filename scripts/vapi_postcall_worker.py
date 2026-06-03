@@ -159,6 +159,13 @@ def infer_deliverable_kind(lead: dict[str, Any], summary: dict[str, Any]) -> str
     haystack = " ".join(str(v or "") for v in [
         lead.get("need"), lead.get("notes"), summary.get("summary"), summary.get("next_steps"), summary.get("outcome"),
     ]).lower()
+    admin_accounting_terms = [
+        "factura", "facturas", "invoice", "invoices", "cuenta de cobro", "cuentas de cobro",
+        "contable", "contabilidad", "accounting", "bookkeeping", "tributario", "tributaria", "tax",
+        "calendario tributario", "agenda", "recordatorio", "recordatorios", "administrativo", "administrativa",
+    ]
+    if any(word in haystack for word in admin_accounting_terms):
+        return "admin_accounting_demo"
     if any(word in haystack for word in ["taller", "mecánico", "mecanico", "auto", "vehículo", "vehiculo"]):
         if any(word in haystack for word in ["cotización", "cotizacion", "quote"]):
             return "mechanic_quote_demo"
@@ -289,6 +296,57 @@ def generate_generic_demo_pdf(job: PostCallJob, output_dir: Path = DEFAULT_OUTPU
     return generate_mechanic_quote_demo_pdf(job, output_dir)
 
 
+def generate_admin_accounting_demo_pdf(job: PostCallJob, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import HRFlowable, Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    name = str(job.lead.get("name") or job.summary.get("caller_name") or "cliente").strip() or "cliente"
+    company = str(job.lead.get("company") or job.lead.get("organization") or job.summary.get("company") or "la empresa").strip() or "la empresa"
+    email = normalize_email(job.lead.get("email") or job.summary.get("email")) or "correo confirmado"
+    pdf_path = output_dir / f"demo_formatos_admin_contable_{_slug(company)}_{_slug(name)}_{_slug(job.call_id)[:16]}.pdf"
+    logo = Path("/home/jean/.hermes/reference-assets/sitiouno/brand/derived/sitiouno-logo-blue-on-white-1600x320.png")
+    styles = getSampleStyleSheet()
+    blue = colors.HexColor("#0B4FA8")
+    dark = colors.HexColor("#172033")
+    muted = colors.HexColor("#5C6470")
+    light = colors.HexColor("#F4F7FB")
+    styles.add(ParagraphStyle(name="TitleSU", parent=styles["Title"], textColor=blue, fontSize=20, leading=24, spaceAfter=8))
+    styles.add(ParagraphStyle(name="H2SU", parent=styles["Heading2"], textColor=dark, fontSize=13, leading=16, spaceBefore=10, spaceAfter=6))
+    styles.add(ParagraphStyle(name="BodySU", parent=styles["BodyText"], textColor=dark, fontSize=9.3, leading=12.5))
+    styles.add(ParagraphStyle(name="SmallSU", parent=styles["BodyText"], textColor=muted, fontSize=8.4, leading=11))
+    doc = SimpleDocTemplate(str(pdf_path), pagesize=letter, rightMargin=0.55 * inch, leftMargin=0.55 * inch, topMargin=0.45 * inch, bottomMargin=0.45 * inch)
+    story: list[Any] = []
+    logo_cell: Any = Image(str(logo), width=2.1 * inch, height=0.42 * inch) if logo.exists() else Paragraph("SitioUno", styles["TitleSU"])
+    header = Table([[logo_cell, Paragraph("<b>Demostración comercial</b><br/>Agente administrativo-contable", styles["SmallSU"])]], colWidths=[3.1 * inch, 3.3 * inch])
+    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, 0), "RIGHT"), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
+    story.extend([header, HRFlowable(width="100%", color=blue, thickness=1.2), Spacer(1, 10)])
+    story.append(Paragraph(f"Demostración para {company}", styles["TitleSU"]))
+    story.append(Paragraph(f"Formatos administrativos y contables con agente SitioUno", styles["H2SU"]))
+    story.append(Paragraph(f"Contacto: {name} · Empresa: {company} · Correo: {email}", styles["SmallSU"]))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("Objetivo de la demo:", styles["H2SU"]))
+    story.append(Paragraph("Mostrar cómo Sophie/Zeus puede construir formatos de cotización, factura, cuenta de cobro, agenda de tareas, recordatorios y calendario tributario por cliente, listos para adaptarse a las reglas reales del negocio.", styles["BodySU"]))
+    sections = [
+        ("1. Formato base de cotización", [["Campo", "Ejemplo inicial"], ["Cliente", "Cliente ABC LLC"], ["Servicio", "Asesoría contable mensual + preparación de reportes"], ["Alcance", "Revisión de documentos, clasificación, conciliación y reporte mensual"], ["Condiciones", "50% al iniciar / saldo contra entrega"], ["Validez", "15 días"]]),
+        ("Detalle económico de ejemplo", [["Concepto", "Cantidad", "Precio", "Total"], ["Setup administrativo inicial", "1", "$250.00", "$250.00"], ["Gestión contable mensual", "1", "$450.00", "$450.00"], ["Calendario tributario por cliente", "1", "$120.00", "$120.00"], ["Total estimado", "", "", "$820.00"]]),
+        ("2. Formato base de factura / cuenta de cobro", [["Campo", "Contenido"], ["Emisor", company], ["Cliente", "Cliente final"], ["Concepto", "Servicios administrativos/contables del mes"], ["Soportes", "Documentos adjuntos, aprobaciones y notas"], ["Estado", "Borrador, enviada, vencida, pagada"]]),
+        ("3. Agenda, recordatorios y calendario tributario", [["Automatización", "Cómo la usa el agente"], ["Agenda", "Organiza llamadas, entregas de documentos y vencimientos"], ["Recordatorios", "Avisa a clientes cuando falta soporte o aprobación"], ["Calendario tributario", "Mantiene obligaciones por cliente, fecha y estado"], ["Seguimiento", "Registra en CRM cada pendiente y próxima acción"]]),
+    ]
+    for title, rows in sections:
+        story.append(Paragraph(title, styles["H2SU"]))
+        table = Table(rows, colWidths=[1.9 * inch] + ([4.5 * inch] if len(rows[0]) == 2 else [1.2 * inch, 1.2 * inch, 1.4 * inch]))
+        table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), blue), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#DDE3EC")), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, light]), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7), ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+        story.append(table)
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("Próximo paso: convertir estos modelos en plantillas reales con datos, precios, reglas de aprobación, branding y flujos de envío propios de la operación.", styles["SmallSU"]))
+    doc.build(story)
+    return pdf_path
+
+
 def _sendgrid_request(path: str, body: dict[str, Any], env: dict[str, str] | None = None) -> dict[str, Any]:
     active_env = merged_env(env)
     key = active_env.get("SENDGRID_API_KEY") or ""
@@ -363,14 +421,41 @@ def upsert_crm_records(job: PostCallJob, pdf_path: Path | None, email_result: di
     contact = _crm_call("contact_upsert", {"contact_id": contact_id, "full_name": name, "email": email, "phone": phone, "status": "active", "source": "vapi_voice", "metadata": metadata})
     opportunity = _crm_call("opportunity_upsert", {"opportunity_id": opp_id, "contact_id": contact_id, "title": f"Demo agente SitioUno - {job.lead.get('need') or job.deliverable_kind}", "stage": "proposal", "status": "open", "currency": "USD", "metadata": metadata})
     quote = None
-    if job.deliverable_kind in {"mechanic_quote_demo", "generic_quote_demo"}:
-        quote = _crm_call("quote_create", {"quote_id": quote_id, "contact_id": contact_id, "opportunity_id": opp_id, "title": "Cotización demo - agente SitioUno", "status": "sent" if (email_result or {}).get("ok") else "draft", "currency": "USD", "items": [{"description": "Diagnóstico de frenos", "quantity": 1, "unit_price": 25}, {"description": "Pastillas delanteras estándar", "quantity": 1, "unit_price": 95}, {"description": "Mano de obra instalación", "quantity": 1, "unit_price": 65}, {"description": "Rectificación/limpieza preventiva", "quantity": 1, "unit_price": 35}], "metadata": metadata})
+    if job.deliverable_kind in {"mechanic_quote_demo", "generic_quote_demo", "admin_accounting_demo"}:
+        items = (
+            [{"description": "Setup administrativo inicial", "quantity": 1, "unit_price": 250}, {"description": "Gestión contable mensual", "quantity": 1, "unit_price": 450}, {"description": "Calendario tributario por cliente", "quantity": 1, "unit_price": 120}]
+            if job.deliverable_kind == "admin_accounting_demo"
+            else [{"description": "Diagnóstico de frenos", "quantity": 1, "unit_price": 25}, {"description": "Pastillas delanteras estándar", "quantity": 1, "unit_price": 95}, {"description": "Mano de obra instalación", "quantity": 1, "unit_price": 65}, {"description": "Rectificación/limpieza preventiva", "quantity": 1, "unit_price": 35}]
+        )
+        quote = _crm_call("quote_create", {"quote_id": quote_id, "contact_id": contact_id, "opportunity_id": opp_id, "title": "Demo administrativo-contable - agente SitioUno" if job.deliverable_kind == "admin_accounting_demo" else "Cotización demo - agente SitioUno", "status": "sent" if (email_result or {}).get("ok") else "draft", "currency": "USD", "items": items, "metadata": metadata})
     interaction = _crm_call("interaction_record", {"contact_id": contact_id, "opportunity_id": opp_id, "channel": "voice/email", "direction": "outbound", "actor": "Sophie de SitioUno / Zeus post-call worker", "summary": f"Post-call worker procesó llamada {job.call_id}: {job.summary.get('summary') or job.lead.get('need')}. Email status: {(email_result or {}).get('status')}; documento: {pdf_path}", "metadata": metadata})
     return {"ok": True, "contact": contact, "opportunity": opportunity, "quote": quote, "interaction": interaction, "contact_id": contact_id, "opportunity_id": opp_id, "quote_id": quote_id if quote else None}
 
 
 def _email_body(job: PostCallJob) -> tuple[str, str, str]:
     name = str(job.lead.get("name") or job.summary.get("caller_name") or "").strip() or "cliente"
+    if job.deliverable_kind == "admin_accounting_demo":
+        company = str(job.lead.get("company") or job.lead.get("organization") or "tu empresa").strip() or "tu empresa"
+        subject = "Demo SitioUno: formatos administrativos y contables"
+        text = textwrap.dedent(f"""\
+        Hola {name},
+
+        Soy Sophie de SitioUno. Como acordamos en la llamada, te comparto una demostración inicial para {company} con formatos administrativos y contables.
+
+        Incluye:
+        - formato base de cotización,
+        - formato base de factura / cuenta de cobro,
+        - agenda de tareas y entregas,
+        - recordatorios a clientes,
+        - calendario tributario por cliente.
+
+        Este es un modelo inicial; en una implementación real Zeus/SitioUno lo ajusta a tus reglas, precios, aprobaciones, branding y flujo de trabajo.
+
+        Saludos,
+        Sophie de SitioUno
+        Supervisión: Zeus
+        """)
+        return subject, text, "<br>".join(text.splitlines())
     subject = "Demostración SitioUno: cotización personalizada para taller mecánico"
     text = textwrap.dedent(f"""\
     Hola {name},
@@ -396,8 +481,13 @@ def _email_body(job: PostCallJob) -> tuple[str, str, str]:
 def process_job(job: PostCallJob, *, state: dict[str, Any], output_dir: Path = DEFAULT_OUTPUT_DIR, env: dict[str, str] | None = None) -> dict[str, Any]:
     pdf_path: Path | None = None
     email_result: dict[str, Any] | None = None
-    if job.deliverable_kind in {"mechanic_quote_demo", "generic_quote_demo", "agent_capabilities_pdf"}:
-        pdf_path = generate_mechanic_quote_demo_pdf(job, output_dir) if job.deliverable_kind == "mechanic_quote_demo" else generate_generic_demo_pdf(job, output_dir)
+    if job.deliverable_kind in {"mechanic_quote_demo", "generic_quote_demo", "agent_capabilities_pdf", "admin_accounting_demo"}:
+        if job.deliverable_kind == "mechanic_quote_demo":
+            pdf_path = generate_mechanic_quote_demo_pdf(job, output_dir)
+        elif job.deliverable_kind == "admin_accounting_demo":
+            pdf_path = generate_admin_accounting_demo_pdf(job, output_dir)
+        else:
+            pdf_path = generate_generic_demo_pdf(job, output_dir)
     if job.should_send_email and job.to_email and pdf_path:
         subject, text, html = _email_body(job)
         email_result = send_email_with_attachment(

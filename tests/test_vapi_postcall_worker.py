@@ -65,6 +65,38 @@ def test_does_not_build_job_before_call_has_ended():
     assert worker.build_pending_jobs(events, processed_call_ids=set()) == []
 
 
+def test_admin_accounting_request_uses_admin_accounting_demo_not_mechanic_template(tmp_path):
+    call_id = "call-admin-1"
+    events = [
+        _event("vapi_tool_call", call_id, tool_name="capture_voice_lead", args={
+            "name": "Eileen Owen",
+            "company": "HMSK Business Solution LLC",
+            "email": "e.owen@solucionesfiscalesconsulting.com",
+            "need": "Formatos de cotización, facturas, cuentas de cobro, agenda, recordatorios y calendario tributario por cliente.",
+            "notes": "Cliente quiere demo administrativo-contable, no taller mecánico.",
+        }),
+        _event("vapi_tool_call", call_id, tool_name="send_call_summary", args={
+            "caller_name": "Eileen Owen",
+            "summary": "Enviar formatos administrativos y contables para HMSK Business Solution LLC.",
+            "next_steps": "Zeus debe preparar y enviar por correo cotización, factura, cuenta de cobro, agenda, recordatorios y calendario tributario.",
+            "follow_up_required": True,
+        }),
+        _event("vapi_call_ended", call_id, status="pending_agent_ingest"),
+    ]
+
+    jobs = worker.build_pending_jobs(events, processed_call_ids=set())
+
+    assert len(jobs) == 1
+    assert jobs[0].deliverable_kind == "admin_accounting_demo"
+    assert jobs[0].should_send_email is True
+    subject, text, _html = worker._email_body(jobs[0])
+    assert "administrativos y contables" in subject.lower()
+    assert "factura / cuenta de cobro" in text
+    pdf_path = worker.generate_admin_accounting_demo_pdf(jobs[0], tmp_path)
+    assert pdf_path.exists()
+    assert pdf_path.name.startswith("demo_formatos_admin_contable_hmsk-business-solution-llc")
+
+
 def test_skips_already_processed_call_ids():
     events = [
         _event("vapi_tool_call", "call-1", tool_name="capture_voice_lead", args={"email": "client@example.com"}),
