@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.config import get_hermes_home
+from hermes_cli.config import get_hermes_home, load_config
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -43,13 +43,55 @@ def _session_entry_id(origin: Dict[str, Any]) -> Optional[str]:
     return str(chat_id)
 
 
-def _session_entry_name(origin: Dict[str, Any]) -> str:
+def _compact_str(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _configured_topic_labels(platform_name: str) -> Dict[str, str]:
+    if platform_name != "telegram":
+        return {}
+    try:
+        config = load_config()
+    except Exception:
+        return {}
+
+    candidates = []
+    platforms = config.get("platforms") if isinstance(config, dict) else None
+    telegram_platform = (platforms or {}).get("telegram") if isinstance(platforms, dict) else None
+    extra = (telegram_platform or {}).get("extra") if isinstance(telegram_platform, dict) else None
+    if isinstance(extra, dict):
+        candidates.extend(extra.get("group_topics") or [])
+
+    legacy = config.get("telegram") if isinstance(config, dict) else None
+    if isinstance(legacy, dict):
+        candidates.extend(legacy.get("group_topics") or [])
+
+    labels: Dict[str, str] = {}
+    for group in candidates:
+        if not isinstance(group, dict):
+            continue
+        chat_id = _compact_str(group.get("chat_id"))
+        if not chat_id:
+            continue
+        for topic in group.get("topics") or []:
+            if not isinstance(topic, dict):
+                continue
+            thread_id = _compact_str(topic.get("thread_id"))
+            name = _compact_str(topic.get("name"))
+            if thread_id and name:
+                labels[f"{chat_id}:{thread_id}"] = name
+    return labels
+
+
+def _session_entry_name(origin: Dict[str, Any], topic_labels: Optional[Dict[str, str]] = None) -> str:
     base_name = origin.get("chat_name") or origin.get("user_name") or str(origin.get("chat_id"))
     thread_id = origin.get("thread_id")
     if not thread_id:
         return base_name
 
-    topic_label = origin.get("chat_topic") or f"topic {thread_id}"
+    chat_id = _compact_str(origin.get("chat_id"))
+    configured_topic = (topic_labels or {}).get(f"{chat_id}:{thread_id}")
+    topic_label = origin.get("chat_topic") or configured_topic or f"topic {thread_id}"
     return f"{base_name} / {topic_label}"
 
 
@@ -220,6 +262,7 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
             data = json.load(f)
 
         seen_ids = set()
+        topic_labels = _configured_topic_labels(platform_name)
         for _key, session in data.items():
             origin = session.get("origin") or {}
             if origin.get("platform") != platform_name:
@@ -230,7 +273,7 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
             seen_ids.add(entry_id)
             entries.append({
                 "id": entry_id,
-                "name": _session_entry_name(origin),
+                "name": _session_entry_name(origin, topic_labels),
                 "type": session.get("chat_type", "dm"),
                 "thread_id": origin.get("thread_id"),
             })

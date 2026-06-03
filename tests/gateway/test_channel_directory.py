@@ -264,6 +264,42 @@ class TestBuildFromSessions:
         assert "Coaching Chat" in names
         assert "Coaching Chat / topic 17585" in names
         assert "Coaching Chat / topic 17587" in names
+    def test_configured_topic_label_overrides_generic_topic_id(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "topic": {
+                "origin": {
+                    "platform": "telegram",
+                    "chat_id": "-1003828321118",
+                    "chat_name": "Dolly Main Projects",
+                    "thread_id": "11648",
+                },
+                "chat_type": "group",
+            },
+        })
+        (tmp_path / "config.yaml").write_text(json.dumps({
+            "platforms": {
+                "telegram": {
+                    "extra": {
+                        "group_topics": [
+                            {
+                                "chat_id": -1003828321118,
+                                "topics": [{"thread_id": 11648, "name": "Vw AI render"}],
+                            }
+                        ]
+                    }
+                }
+            }
+        }))
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("telegram")
+
+        assert entries == [{
+            "id": "-1003828321118:11648",
+            "name": "Dolly Main Projects / Vw AI render",
+            "type": "group",
+            "thread_id": "11648",
+        }]
 
 
 class TestFormatDirectoryForDisplay:
