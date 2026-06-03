@@ -8,6 +8,7 @@ import { setThreadScrolledUp } from '@/store/thread-scroll'
 const ESTIMATED_ITEM_HEIGHT = 220
 const OVERSCAN = 4
 const AT_BOTTOM_THRESHOLD = 4
+const USER_SCROLL_INTENT_MS = 500
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -194,6 +195,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
   const programmaticScrollPendingRef = useRef(0)
   const prevSessionKeyRef = useRef(sessionKey)
   const prevGroupCountRef = useRef(0)
+  const userScrollIntentUntilRef = useRef(0)
 
   const pinToBottom = useCallback(() => {
     const el = scrollerRef.current
@@ -237,6 +239,10 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
       armedRef.current = false
     }
 
+    const noteUserScrollIntent = () => {
+      userScrollIntentUntilRef.current = Date.now() + USER_SCROLL_INTENT_MS
+    }
+
     const onScroll = () => {
       const top = el.scrollTop
 
@@ -258,7 +264,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
         return
       }
 
-      if (top + 1 < lastTopRef.current) {
+      if (top + 1 < lastTopRef.current && Date.now() <= userScrollIntentUntilRef.current) {
         armedRef.current = false
       }
 
@@ -275,18 +281,24 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
 
     const onWheel = (event: WheelEvent) => {
       if (event.deltaY < 0) {
+        noteUserScrollIntent()
         disarm()
       }
     }
 
+    const onTouchMove = () => {
+      noteUserScrollIntent()
+      disarm()
+    }
+
     el.addEventListener('scroll', onScroll, { passive: true })
     el.addEventListener('wheel', onWheel, { passive: true })
-    el.addEventListener('touchmove', disarm, { passive: true })
+    el.addEventListener('touchmove', onTouchMove, { passive: true })
 
     return () => {
       el.removeEventListener('scroll', onScroll)
       el.removeEventListener('wheel', onWheel)
-      el.removeEventListener('touchmove', disarm)
+      el.removeEventListener('touchmove', onTouchMove)
     }
   }, [scrollerRef])
 

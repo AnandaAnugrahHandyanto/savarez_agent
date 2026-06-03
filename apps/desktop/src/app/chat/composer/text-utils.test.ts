@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { detectTrigger } from './text-utils'
+import { detectTrigger, extractClipboardImageBlobs } from './text-utils'
 
 describe('detectTrigger', () => {
   it('detects a bare slash trigger with an empty query', () => {
@@ -21,5 +21,28 @@ describe('detectTrigger', () => {
 
   it('returns null for plain text', () => {
     expect(detectTrigger('hello there')).toBeNull()
+  })
+})
+
+describe('extractClipboardImageBlobs', () => {
+  it('does not duplicate a screenshot exposed through both items and files', () => {
+    const image = new File(['png'], 'screenshot.png', { type: 'image/png' })
+    const duplicateImage = new File(['png'], 'screenshot.png', { type: 'image/png' })
+    const clipboard = {
+      files: {
+        item: (index: number) => (index === 0 ? duplicateImage : null),
+        length: 1
+      },
+      getData: () => '',
+      items: [
+        {
+          getAsFile: () => image,
+          kind: 'file',
+          type: 'image/png'
+        }
+      ]
+    } as unknown as DataTransfer
+
+    expect(extractClipboardImageBlobs(clipboard)).toHaveLength(1)
   })
 })
