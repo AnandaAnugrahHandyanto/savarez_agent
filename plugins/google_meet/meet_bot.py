@@ -816,19 +816,23 @@ def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:
 def _click_join(page, state: _BotState) -> None:
     """Click 'Join now' or 'Ask to join' if either button is visible.
 
+    Polls for up to 30s waiting for the button to render after navigation.
     Flags ``lobby_waiting`` when we hit the "waiting for host to admit you"
     state so the agent can surface that in status.
     """
-    for label in ("Join now", "Ask to join"):
-        try:
-            btn = page.get_by_role("button", name=label, exact=False).first
-            if btn.count() and btn.is_visible():
-                btn.click(timeout=3_000)
-                if label == "Ask to join":
-                    state.set(lobby_waiting=True)
-                break
-        except Exception:
-            continue
+    deadline = time.time() + 30.0
+    while time.time() < deadline:
+        for label in ("Join now", "Ask to join"):
+            try:
+                btn = page.get_by_role("button", name=label, exact=False).first
+                if btn.count() and btn.is_visible():
+                    btn.click(timeout=3_000)
+                    if label == "Ask to join":
+                        state.set(lobby_waiting=True)
+                    return
+            except Exception:
+                continue
+        time.sleep(0.5)
 
 
 def _parse_duration(raw: str) -> Optional[float]:
