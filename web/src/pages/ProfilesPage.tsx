@@ -552,7 +552,7 @@ export default function ProfilesPage() {
     setDescribing(true);
     try {
       const res = await api.describeProfileAuto(name);
-      if (res.ok && res.description) {
+      if (res.ok && res.description != null) {
         setDescText(res.description);
         setProfiles((prev) =>
           prev.map((p) =>
@@ -560,7 +560,7 @@ export default function ProfilesPage() {
               ? {
                   ...p,
                   description: res.description ?? "",
-                  description_auto: true,
+                  description_auto: res.description_auto,
                 }
               : p,
           ),
@@ -1202,7 +1202,14 @@ export default function ProfilesPage() {
                         size="sm"
                         className="uppercase"
                         onClick={() => handleSaveModel(editorName)}
-                        disabled={modelSaving || !modelEditChoice}
+                        disabled={
+                          modelSaving ||
+                          !modelChoices?.some(
+                            (c) =>
+                              `${c.provider}\u0000${c.model}` ===
+                              modelEditChoice,
+                          )
+                        }
                       >
                         {modelSaving ? t.common.saving : t.common.save}
                       </Button>
