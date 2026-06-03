@@ -64,10 +64,33 @@ def test_linear_hermes_env_aliases_are_supported(monkeypatch):
     assert "scope=LINEAR_HERMES_CLIENT_CREDENTIALS_SCOPE" in source
 
 
+def test_oauth_error_summary_redacts_token_shapes():
+    summary = linear_aig_smoke._oauth_error_summary(
+        400,
+        '{"error":"invalid_scope","error_description":"Invalid scope: '
+        'lin_oauth_secretvalue"}',
+    )
+
+    assert "lin_oauth_secretvalue" not in summary
+    assert "<redacted-token>" in summary
+
+
 @pytest.mark.asyncio
 async def test_client_credentials_fetch_skips_when_incomplete(monkeypatch):
     monkeypatch.delenv("HERMES_LINEAR_AIG_CLIENT_ID", raising=False)
     monkeypatch.delenv("HERMES_LINEAR_AIG_CLIENT_SECRET", raising=False)
+
+    source, token = await linear_aig_smoke._fetch_client_credentials_token(_args())
+
+    assert source == ""
+    assert token == ""
+
+
+@pytest.mark.asyncio
+async def test_client_credentials_fetch_skips_token_shaped_scope(monkeypatch):
+    monkeypatch.setenv("HERMES_LINEAR_AIG_CLIENT_ID", "client-id")
+    monkeypatch.setenv("HERMES_LINEAR_AIG_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("HERMES_LINEAR_AIG_CLIENT_CREDENTIALS_SCOPE", "lin_oauth_bad")
 
     source, token = await linear_aig_smoke._fetch_client_credentials_token(_args())
 

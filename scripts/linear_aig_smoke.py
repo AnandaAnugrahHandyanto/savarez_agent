@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import platform
+import re
 import signal
 import sys
 from datetime import datetime, timezone
@@ -59,6 +61,7 @@ CLIENT_SCOPE_ENV_NAMES = (
     "LINEAR_HERMES_CLIENT_CREDENTIALS_SCOPE",
     "LINEAR_CLIENT_CREDENTIALS_SCOPE",
 )
+TOKEN_SHAPE_RE = re.compile(r"\b(?:lin_api|lin_oauth)_[A-Za-z0-9_-]+\b")
 
 
 def _windows_env(name: str) -> str:
@@ -98,6 +101,28 @@ def _mask_state(name: str, value: str) -> str:
     return f"{name}=missing"
 
 
+def _redact_secret_shapes(text: str) -> str:
+    return TOKEN_SHAPE_RE.sub("<redacted-token>", str(text or ""))
+
+
+def _scope_looks_like_secret(value: str) -> bool:
+    stripped = str(value or "").strip()
+    return bool(TOKEN_SHAPE_RE.search(stripped))
+
+
+def _oauth_error_summary(status: int, text: str) -> str:
+    redacted = _redact_secret_shapes(text)
+    try:
+        payload = json.loads(redacted)
+    except json.JSONDecodeError:
+        return f"HTTP {status} {redacted[:200]}"
+    error = str(payload.get("error") or "error")
+    description = str(payload.get("error_description") or "").strip()
+    if description:
+        return f"HTTP {status} {error}: {description[:160]}"
+    return f"HTTP {status} {error}"
+
+
 def _client_credentials_config(args: argparse.Namespace) -> tuple[str, str, str, str]:
     client_id_name, client_id = _get_secret_env(CLIENT_ID_ENV_NAMES)
     client_secret_name, client_secret = _get_secret_env(CLIENT_SECRET_ENV_NAMES)
@@ -123,6 +148,12 @@ async def _fetch_client_credentials_token(args: argparse.Namespace) -> tuple[str
             "a different scope set is requested."
         )
         return "", ""
+    if _scope_looks_like_secret(scope):
+        print(
+            "client credentials skipped: scope value looks like a token or secret. "
+            "Set it to a comma-separated Linear scope list instead."
+        )
+        return "", ""
     try:
         import aiohttp
     except ImportError:
@@ -143,7 +174,10 @@ async def _fetch_client_credentials_token(args: argparse.Namespace) -> tuple[str
         ) as response:
             text = await response.text()
             if response.status >= 400:
-                print(f"client credentials failed: HTTP {response.status} {text[:200]}")
+                print(
+                    "client credentials failed: "
+                    f"{_oauth_error_summary(response.status, text)}"
+                )
                 return "", ""
             try:
                 payload = await response.json()
