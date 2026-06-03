@@ -28,6 +28,7 @@ REQUIRED_TOP_KEYS = [
     "reading_budget",
     "truncation_warnings",
     "suggested_questions",
+    "critic_packs",  # UA-P5-008
 ]
 
 REQUIRED_VALIDATION_KEYS = [
@@ -128,6 +129,7 @@ def _make_full_bundle(tmp_path: Path) -> Path:
             "imports.json": str(bundle / "imports.json"),
             "REPORT.md": str(bundle / "REPORT.md"),
             "validation.json": str(bundle / "validation.json"),
+            "domain-surfaces.json": str(bundle / "domain-surfaces.json"),
         },
         "script_versions": {},
     }, indent=2))
@@ -153,6 +155,23 @@ def _make_full_bundle(tmp_path: Path) -> Path:
     }, indent=2))
 
     (bundle / "REPORT.md").write_text("# Report\n\nGenerated.\n")
+
+    (bundle / "domain-surfaces.json").write_text(json.dumps({
+        "surfaces": [
+            {
+                "surface": "package_scripts",
+                "path": "package.json",
+                "claim_type": "deterministic_inventory",
+                "semantic_status": "not_validated",
+            },
+        ],
+        "summary": {
+            "total_surfaces": 1,
+            "surface_types": {"package_scripts": 1},
+        },
+        "claim_type": "deterministic_inventory",
+        "semantic_status": "not_validated",
+    }, indent=2))
 
     # UA-002: severity_analysis.json (optional)
     (bundle / "severity_analysis.json").write_text(json.dumps({
@@ -558,3 +577,155 @@ class TestPublicAPI:
         md = render_markdown_handoff(envelope)
         assert isinstance(md, str)
         assert len(md) > 0
+
+
+# ── UA-P5-008: Subagent Context Critic Packs (strict TDD) ────────────────────
+
+CRITIC_PACK_KEYS = [
+    "trust_anchor_summary",
+    "top_deterministic_facts",
+    "warning_orphan_triage_summary",
+    "domain_surface_inventory_summary",
+    "outside_ua_scope_boundaries",
+]
+
+REQUIRED_ROLE_CRITIC_PACKS = [
+    "reviewer_critic",
+    "researcher_scout",
+    "coder_preflight",
+]
+
+
+class TestCriticPacksUA_P5_008:
+    """UA-P5-008: critic_packs must be present, bounded, deterministic (no LLM)."""
+
+    def test_critic_packs_key_present(self, tmp_path: Path):
+        """Envelope must contain top-level 'critic_packs' key (RED before impl)."""
+        bundle = _make_minimal_bundle(tmp_path)
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        data = json.loads(out.read_text())
+        assert "critic_packs" in data, f"Missing top-level critic_packs in {list(data.keys())}"
+        assert isinstance(data["critic_packs"], dict)
+
+    def test_required_role_packs_present(self, tmp_path: Path):
+        """critic_packs must contain reviewer_critic, researcher_scout, coder_preflight."""
+        bundle = _make_minimal_bundle(tmp_path)
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        packs = json.loads(out.read_text())["critic_packs"]
+        for role in REQUIRED_ROLE_CRITIC_PACKS:
+            assert role in packs, f"Missing required critic pack: {role}"
+            pack = packs[role]
+            assert isinstance(pack, dict)
+            for k in CRITIC_PACK_KEYS:
+                assert k in pack, f"Role {role} pack missing key {k}: {list(pack.keys())}"
+
+    def test_critic_packs_bounded_deterministic(self, tmp_path: Path):
+        """Packs must be bounded (no LLM summaries) and contain only deterministic facts."""
+        bundle = _make_minimal_bundle(tmp_path)
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        packs = json.loads(out.read_text())["critic_packs"]
+        for role in REQUIRED_ROLE_CRITIC_PACKS:
+            pack = packs[role]
+            # All values must be concrete (str/list/dict of primitives) — no free-form LLM text blobs
+            # Trust anchor must mention deterministic nature explicitly
+            tas = pack["trust_anchor_summary"]
+            assert isinstance(tas, str)
+            assert len(tas) > 0
+            assert "deterministic" in tas.lower() or "fact" in tas.lower()
+            # top_deterministic_facts must be list of strings
+            tdf = pack["top_deterministic_facts"]
+            assert isinstance(tdf, list)
+            # warning_orphan_triage_summary: list or str summary, bounded
+            wots = pack["warning_orphan_triage_summary"]
+            assert isinstance(wots, (list, str))
+            # domain_surface_inventory_summary nullable with reason if absent
+            dsi = pack["domain_surface_inventory_summary"]
+            assert dsi is None or isinstance(dsi, (dict, str))
+            if dsi is None or (isinstance(dsi, str) and "absent" in dsi.lower()):
+                pass  # allowed when artifact absent
+            # boundaries must explicitly contain UA scope text
+            bounds = pack["outside_ua_scope_boundaries"]
+            assert isinstance(bounds, (str, list))
+            bo = str(bounds).lower()
+            assert "hermes owns final" in bo or "hermes" in bo
+            assert "reviewer" in bo and "researcher" in bo and "coder" in bo
+
+    def test_suggested_questions_preserved_for_backward_compat(self, tmp_path: Path):
+        """suggested_questions must remain for backward compatibility."""
+        bundle = _make_minimal_bundle(tmp_path)
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        data = json.loads(out.read_text())
+        assert "suggested_questions" in data
+        sq = data["suggested_questions"]
+        for k in ("researcher", "reviewer", "coder"):
+            assert k in sq
+
+    def test_domain_surfaces_included_when_present(self, tmp_path: Path):
+        """If domain-surfaces.json present in bundle, domain_surface_inventory_summary must summarize it (not fabricate)."""
+        bundle = _make_minimal_bundle(tmp_path)
+        # add domain-surfaces.json
+        ds = {
+            "surfaces": [
+                {"surface": "vite_config", "path": "vite.config.ts", "claim_type": "deterministic_inventory"},
+                {"surface": "pwa_manifest", "path": "public/manifest.webmanifest", "claim_type": "deterministic_inventory"},
+            ],
+            "summary": {"total_surfaces": 2, "surface_types": {"vite_config": 1, "pwa_manifest": 1}},
+        }
+        (bundle / "domain-surfaces.json").write_text(json.dumps(ds))
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        packs = json.loads(out.read_text())["critic_packs"]
+        # All three roles should surface the domain inventory or reason
+        for role in REQUIRED_ROLE_CRITIC_PACKS:
+            dsi = packs[role]["domain_surface_inventory_summary"]
+            assert dsi is not None
+            # Must reference surfaces or summary count deterministically
+            ds_str = json.dumps(dsi) if isinstance(dsi, dict) else str(dsi)
+            assert "total_surfaces" in ds_str or "vite_config" in ds_str or "2" in ds_str
+
+    def test_domain_surface_absent_reason_when_missing(self, tmp_path: Path):
+        """When domain-surfaces.json absent, summary must contain explicit 'not present' / reason."""
+        bundle = _make_minimal_bundle(tmp_path)
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        packs = json.loads(out.read_text())["critic_packs"]
+        for role in REQUIRED_ROLE_CRITIC_PACKS:
+            dsi = packs[role]["domain_surface_inventory_summary"]
+            # Either None or a string explaining absence
+            if dsi is not None:
+                assert "absent" in str(dsi).lower() or "not present" in str(dsi).lower() or "unavailable" in str(dsi).lower()
+
+    def test_critic_packs_size_bounded(self, tmp_path: Path):
+        """Generated subagent-context.json (with critic_packs) must remain bounded (use existing size approach or document cap)."""
+        bundle = _make_full_bundle(tmp_path)
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        raw = out.read_text()
+        size = len(raw)
+        # Conservative bound: < 100kB for context envelope (existing truncation machinery implies boundedness)
+        # If script exposes an explicit cap we would test it here; otherwise document in test.
+        assert size < 100_000, f"context envelope too large: {size} bytes"
+        data = json.loads(raw)
+        cp = json.dumps(data.get("critic_packs", {}))
+        assert len(cp) < 20_000, "critic_packs section itself must stay small and bounded"
+
+
+class TestCriticPacksViaRunUA:
+    """Integration via run_ua preflight/review/full that produces subagent-context.json."""
+
+    def test_preflight_includes_critic_packs(self, tmp_path: Path):
+        from tests.code_scan.test_run_ua import run_ua, FIXTURES_DIR
+        target = str(FIXTURES_DIR / "sample_repo")
+        bundle_dir = str(tmp_path / "bundle")
+        rc, stdout, stderr = run_ua(target, bundle_dir, mode="preflight")
+        assert rc == 0
+        ctx_path = Path(bundle_dir) / "subagent-context.json"
+        assert ctx_path.exists()
+        data = json.loads(ctx_path.read_text())
+        assert "critic_packs" in data
+        for role in REQUIRED_ROLE_CRITIC_PACKS:
+            assert role in data["critic_packs"]

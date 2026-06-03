@@ -430,3 +430,33 @@ Committed: `24356edcd` | Tests: 80 passed
 - Pre-commit focused verification rerun: `python -m pytest tests/code_scan/test_runtime_readiness.py tests/code_scan/test_report_data.py tests/code_scan/test_render_report.py -q` -> `147 passed in 19.35s`.
 - Pre-commit hygiene rerun: py_compile for runtime/report modules plus `git diff --check` -> exit 0, no output.
 - Commit target: local branch `feat/ua-phase5-development-hardening`; no remote operation.
+
+## UA Phase 5 Development Hardening — UA-P5-008 Start Checkpoint
+- Timestamp: 2026-06-03T04:37:47Z.
+- Bead: `UA-P5-008 - Subagent Context Critic Packs`.
+- Status: in progress, uncommitted.
+- Base: `83039756d` (`feat(code-scan): checkpoint UA phase 5 runtime gates`).
+- Scope: deterministic bounded `critic_packs` in `subagent-context.json` for `reviewer_critic`, `researcher_scout`, and `coder_preflight`.
+- Required boundaries: targeted critics only; Hermes owns final assessment; deterministic facts separate from interpretation; no LLM summaries.
+- Allowed implementation files: `scripts/code-scan/build_context_bundle.py`, `scripts/code-scan/run_ua.py` only if integration requires it, `tests/code_scan/test_build_context_bundle.py`, `tests/code_scan/test_run_ua.py`, plus this ledger/handoff evidence.
+- Commit/push gate: no commit, push, merge, deploy, production mutation, new dependencies, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner calls without separate JC approval.
+
+## UA Phase 5 Development Hardening — UA-P5-008 Complete
+- Timestamp: 2026-06-03T05:04:47Z.
+- Bead: `UA-P5-008 - Subagent Context Critic Packs`.
+- Status: implemented, verified, reviewer PASS, not committed.
+- Files changed: `scripts/code-scan/build_context_bundle.py`, `tests/code_scan/test_build_context_bundle.py`, `.hermes/PROJECT_STATE.md`, `.hermes/handoffs/2026-06-03-0507-ua-p5-008-subagent-context-critic-packs.md`.
+- Implementation: added deterministic bounded `critic_packs` to `subagent-context.json` with `reviewer_critic`, `researcher_scout`, and `coder_preflight`; added `domain-surfaces.json` optional artifact loading/tracking for context packs; preserved `suggested_questions`.
+- Boundary contract: packs state Hermes owns final assessment; reviewer/researcher/coder are targeted critics only; deterministic facts remain separate from interpretation; UA does not prove security/deployment/RLS/runtime correctness unless gates actually ran; no LLM summaries embedded.
+- RED evidence: `python -m pytest tests/code_scan/test_build_context_bundle.py::TestCriticPacksUA_P5_008::test_critic_packs_key_present -q` failed as expected with missing top-level `critic_packs` (`1 failed in 0.27s`). Coder timed out after adding tests only; Hermes reconciled implementation.
+- GREEN evidence: focused subset `3 passed in 0.46s`.
+- Focused suite: `python -m pytest tests/code_scan/test_build_context_bundle.py tests/code_scan/test_run_ua.py -q` -> `90 passed in 23.10s`.
+- Full suite: `python -m pytest tests/code_scan -q` -> `1003 passed in 134.43s (0:02:14)`.
+- Compile/diff hygiene: `python -m py_compile scripts/code-scan/build_context_bundle.py scripts/code-scan/run_ua.py` and `git diff --check -- ...` passed.
+- Diff artifact: `/tmp/ua-p5-008-diff.patch` (`469` lines, `21343` bytes).
+- Added-lines secret scan: PASS (`added_lines=401`).
+- Runtime smoke: `run_ua.py --mode preflight` produced `subagent-context.json` (`8877` bytes), critic pack roles `coder_preflight,researcher_scout,reviewer_critic`, and domain summary `available=True`.
+- Reviewer: PASS, no must-fix findings; reviewer confirmed bounded context, no LLM summaries, role clarity, backward compatibility, and run_ua domain-before-context ordering.
+- Handoff: `.hermes/handoffs/2026-06-03-0507-ua-p5-008-subagent-context-critic-packs.md`.
+- Commit/push gate: no commit, push, merge, deploy, or production mutation performed; awaiting explicit JC approval for local checkpoint commit if desired.
+

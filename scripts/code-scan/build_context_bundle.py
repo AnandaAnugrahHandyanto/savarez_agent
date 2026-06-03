@@ -34,6 +34,7 @@ CORE_ARTIFACTS = [
 OPTIONAL_ARTIFACTS = [
     "graph_analytics.json",  # UA-003
     "severity_analysis.json",  # UA-002
+    "domain-surfaces.json",  # UA-P5-005
     "graph.json",
     "imports.json",
     "REPORT.md",
@@ -116,6 +117,7 @@ def build_context_envelope(
     # Load optional data
     severity = _load_json(bundle_dir, "severity_analysis.json")
     analytics = _load_json(bundle_dir, "graph_analytics.json")
+    domain_surfaces = _load_json(bundle_dir, "domain-surfaces.json")
     graph = _load_json(bundle_dir, "graph.json")
 
     # --- scan_run_id ---
@@ -162,6 +164,18 @@ def build_context_envelope(
         scan, artifacts_missing, graph,
     )
 
+    # --- critic_packs (UA-P5-008) ---
+    critic_packs = _build_critic_packs(
+        manifest=manifest,
+        scan=scan,
+        validation=validation_section,
+        severity=severity,
+        analytics=analytics,
+        domain_surfaces=domain_surfaces,
+        artifacts_missing=artifacts_missing,
+        recommended_files=recommended_files,
+    )
+
     envelope = {
         "handoff_version": HANDOFF_VERSION,
         "scan_run_id": scan_run_id,
@@ -174,6 +188,7 @@ def build_context_envelope(
         "reading_budget": reading_budget,
         "truncation_warnings": truncation_warnings,
         "suggested_questions": suggested_questions,
+        "critic_packs": critic_packs,
     }
 
     if out_path:
@@ -380,6 +395,221 @@ def _build_truncation_warnings(
             )
 
     return warnings
+
+
+# ── Critic packs (UA-P5-008) ─────────────────────────────────────────────────
+
+def _bounded_list(values: list[Any], limit: int) -> list[Any]:
+    """Return a deterministic bounded copy of a list."""
+    return list(values[:limit])
+
+
+def _artifact_missing_reason(artifacts_missing: list[dict], artifact: str) -> str:
+    """Return the recorded reason for a missing artifact, if any."""
+    for item in artifacts_missing:
+        if item.get("artifact") == artifact:
+            reason = str(item.get("reason") or "file not found in bundle")
+            return f"artifact not present in bundle: {reason}"
+    return "artifact not present in bundle"
+
+
+def _build_trust_anchor_summary(manifest: Optional[dict]) -> str:
+    """Summarize deterministic provenance anchors without interpreting runtime state."""
+    if not manifest:
+        return "Deterministic facts are limited: manifest.json is absent or unreadable."
+
+    run_id = manifest.get("run_id", "unknown")
+    mode = manifest.get("mode", "unknown")
+    clean = manifest.get("cleanliness", {})
+    if isinstance(clean, dict):
+        clean_bits = [f"{key}={clean.get(key)}" for key in sorted(clean)]
+        clean_text = "; ".join(clean_bits) if clean_bits else "cleanliness fields not present"
+    else:
+        clean_text = "cleanliness fields not present"
+    return (
+        f"Deterministic manifest facts only: run_id={run_id}; mode={mode}; "
+        f"cleanliness={clean_text}."
+    )
+
+
+def _build_top_deterministic_facts(
+    scan: Optional[dict],
+    validation: dict,
+    recommended_files: list[dict],
+) -> list[str]:
+    """Build a compact list of measured facts from artifacts."""
+    facts: list[str] = []
+    if scan:
+        facts.append(f"total_files={scan.get('total_files', 0)}")
+        facts.append(f"total_lines={scan.get('total_lines', 0)}")
+        languages = scan.get("languages", {})
+        if isinstance(languages, dict) and languages:
+            lang_text = ", ".join(f"{k}:{languages[k]}" for k in sorted(languages)[:8])
+            facts.append(f"languages={lang_text}")
+    facts.append(
+        "validation="
+        f"{validation.get('verdict', 'unknown')}; "
+        f"issues={validation.get('issue_count', 0)}; "
+        f"warnings={validation.get('warning_count', 0)}"
+    )
+    if recommended_files:
+        top_paths = [str(item.get("path", "")) for item in recommended_files[:5]]
+        facts.append("top_recommended_files=" + ", ".join(p for p in top_paths if p))
+    return _bounded_list(facts, 8)
+
+
+def _build_warning_orphan_triage_summary(
+    validation: dict,
+    severity: Optional[dict],
+) -> list[str]:
+    """Summarize warnings/orphans/severity counts without assigning semantic cause."""
+    triage = [
+        f"validation_issues={validation.get('issue_count', 0)}",
+        f"validation_warnings={validation.get('warning_count', 0)}",
+        f"validation_verdict={validation.get('verdict', 'unknown')}",
+    ]
+    if severity:
+        counts = []
+        for level in ("critical", "high", "medium", "low", "info"):
+            value = severity.get(level, 0)
+            if value:
+                counts.append(f"{level}={value}")
+        if counts:
+            triage.append("severity_counts=" + ", ".join(counts))
+    return _bounded_list(triage, 8)
+
+
+def _build_domain_surface_inventory_summary(
+    domain_surfaces: Optional[dict],
+    artifacts_missing: list[dict],
+) -> dict:
+    """Summarize domain-surfaces.json, or record an explicit missing reason."""
+    if not domain_surfaces:
+        return {
+            "available": False,
+            "reason": _artifact_missing_reason(artifacts_missing, "domain-surfaces.json"),
+        }
+
+    summary = domain_surfaces.get("summary", {}) if isinstance(domain_surfaces, dict) else {}
+    surfaces = domain_surfaces.get("surfaces", []) if isinstance(domain_surfaces, dict) else []
+    surface_types = summary.get("surface_types", {}) if isinstance(summary, dict) else {}
+    top_surfaces = []
+    if isinstance(surfaces, list):
+        for item in sorted(
+            surfaces,
+            key=lambda x: (str(x.get("surface", "")), str(x.get("path", ""))),
+        )[:8]:
+            top_surfaces.append({
+                "surface": item.get("surface", ""),
+                "path": item.get("path", ""),
+                "claim_type": item.get("claim_type", "deterministic_inventory"),
+            })
+    return {
+        "available": True,
+        "total_surfaces": summary.get("total_surfaces", len(surfaces) if isinstance(surfaces, list) else 0),
+        "surface_types": dict(sorted(surface_types.items())) if isinstance(surface_types, dict) else {},
+        "top_surfaces": top_surfaces,
+        "claim_type": domain_surfaces.get("claim_type", "deterministic_inventory"),
+        "semantic_status": domain_surfaces.get("semantic_status", "not_validated"),
+    }
+
+
+def _outside_ua_scope_boundaries() -> list[str]:
+    """Return the fixed boundary contract for critic packs."""
+    return [
+        "Hermes owns final assessment; reviewer/researcher/coder packs are targeted critic prompts only.",
+        "Deterministic facts are separate from interpretation; do not convert heuristic hints into proven findings.",
+        "UA does not prove security, deployment readiness, RLS correctness, or runtime correctness unless those gates actually ran.",
+        "No LLM summaries are embedded in this pack; all values come from bundle artifacts or explicit missing-artifact reasons.",
+    ]
+
+
+def _build_critic_pack(
+    *,
+    mission: str,
+    trust_anchor_summary: str,
+    top_deterministic_facts: list[str],
+    warning_orphan_triage_summary: list[str],
+    domain_surface_inventory_summary: dict,
+    outside_ua_scope_boundaries: list[str],
+    focus_questions: list[str],
+) -> dict:
+    """Build a single bounded role-specific critic pack."""
+    return {
+        "mission": mission,
+        "trust_anchor_summary": trust_anchor_summary,
+        "top_deterministic_facts": _bounded_list(top_deterministic_facts, 8),
+        "warning_orphan_triage_summary": _bounded_list(warning_orphan_triage_summary, 8),
+        "domain_surface_inventory_summary": domain_surface_inventory_summary,
+        "outside_ua_scope_boundaries": outside_ua_scope_boundaries,
+        "focus_questions": _bounded_list(focus_questions, 5),
+    }
+
+
+def _build_critic_packs(
+    *,
+    manifest: Optional[dict],
+    scan: Optional[dict],
+    validation: dict,
+    severity: Optional[dict],
+    analytics: Optional[dict],
+    domain_surfaces: Optional[dict],
+    artifacts_missing: list[dict],
+    recommended_files: list[dict],
+) -> dict:
+    """Build deterministic role packs for targeted critics, not primary authorship."""
+    trust_anchor_summary = _build_trust_anchor_summary(manifest)
+    top_facts = _build_top_deterministic_facts(scan, validation, recommended_files)
+    triage = _build_warning_orphan_triage_summary(validation, severity)
+    domain_summary = _build_domain_surface_inventory_summary(domain_surfaces, artifacts_missing)
+    boundaries = _outside_ua_scope_boundaries()
+
+    hub_count = 0
+    if analytics and isinstance(analytics.get("hub_nodes"), list):
+        hub_count = len(analytics.get("hub_nodes", []))
+    shared_context = top_facts + [f"hub_hints={hub_count}"]
+
+    return {
+        "reviewer_critic": _build_critic_pack(
+            mission="Challenge validation blind spots, overclaims, and risk boundaries; do not author the final assessment.",
+            trust_anchor_summary=trust_anchor_summary,
+            top_deterministic_facts=shared_context,
+            warning_orphan_triage_summary=triage,
+            domain_surface_inventory_summary=domain_summary,
+            outside_ua_scope_boundaries=boundaries,
+            focus_questions=[
+                "Which deterministic facts could be over-interpreted?",
+                "Do warnings/orphans indicate areas needing manual inspection?",
+                "Are outside-UA-scope boundaries preserved?",
+            ],
+        ),
+        "researcher_scout": _build_critic_pack(
+            mission="Scout architecture/domain questions from deterministic artifacts only; do not replace Hermes final synthesis.",
+            trust_anchor_summary=trust_anchor_summary,
+            top_deterministic_facts=shared_context,
+            warning_orphan_triage_summary=triage,
+            domain_surface_inventory_summary=domain_summary,
+            outside_ua_scope_boundaries=boundaries,
+            focus_questions=[
+                "Which surfaces or languages deserve first-pass orientation?",
+                "Which files should be read before forming architecture hypotheses?",
+                "What facts are absent and must not be inferred?",
+            ],
+        ),
+        "coder_preflight": _build_critic_pack(
+            mission="Identify preflight implementation risks and candidate files from UA artifacts; do not change code without Hermes/user direction.",
+            trust_anchor_summary=trust_anchor_summary,
+            top_deterministic_facts=shared_context,
+            warning_orphan_triage_summary=triage,
+            domain_surface_inventory_summary=domain_summary,
+            outside_ua_scope_boundaries=boundaries,
+            focus_questions=[
+                "Which recommended files are likely safest to inspect first?",
+                "Which validation or surface facts suggest missing test/build gates?",
+                "What commands are only suggested/not-run rather than verified?",
+            ],
+        ),
+    }
 
 
 # ── Suggested questions ────────────────────────────────────────────────────────
