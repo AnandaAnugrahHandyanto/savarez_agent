@@ -642,7 +642,7 @@ echo "$TOKEN"   # copy this value into the desktop app
 # 2. Run the dashboard bound to a reachable address.
 #    --insecure is required for any non-loopback bind and keeps the
 #    legacy session-token auth path (instead of the OAuth gate).
-hermes dashboard --no-open --insecure --host 0.0.0.0 --port 9119
+hermes dashboard --tui --no-open --insecure --host 0.0.0.0 --port 9119
 ```
 
 If you run the dashboard as a systemd service, `~/.hermes/.env` is picked up automatically when the unit has `EnvironmentFile=%h/.hermes/.env`, so the token is in the environment at boot.
