@@ -96,6 +96,42 @@ def agent_with_memory_tool():
         return a
 
 
+def test_aiagent_build_durable_continuation_packet_uses_active_todos(agent):
+    agent._todo_store.write(
+        [
+            {"id": "done", "content": "Choose lifecycle integration point", "status": "completed"},
+            {"id": "implement", "content": "Wire AIAgent helper", "status": "in_progress"},
+            {"id": "verify", "content": "Run lifecycle tests", "status": "pending"},
+            {"id": "stale", "content": "Repeat writer atomicity review", "status": "cancelled"},
+        ]
+    )
+
+    packet = agent.build_durable_continuation_packet(job_name="Lifecycle integration")
+
+    assert packet.job_name == "Lifecycle integration"
+    assert packet.current_phase == "IN_PROGRESS"
+    assert packet.pending_tasks == (
+        "implement: Wire AIAgent helper",
+        "verify: Run lifecycle tests",
+    )
+    assert packet.exact_next_action == "Continue now: Wire AIAgent helper."
+
+
+def test_aiagent_build_durable_continuation_packet_does_not_revive_completed_state(agent):
+    agent._todo_store.write(
+        [
+            {"id": "done", "content": "Complete lifecycle slice", "status": "completed"},
+            {"id": "cancelled", "content": "Abandoned approach", "status": "cancelled"},
+        ]
+    )
+
+    packet = agent.build_durable_continuation_packet(job_name="Lifecycle integration")
+
+    assert packet.pending_tasks == ()
+    assert packet.exact_next_action == "Review the current task state and continue safely."
+
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()

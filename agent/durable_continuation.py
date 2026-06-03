@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -122,6 +122,92 @@ def write_durable_continuation(
         job_ledger_path=job_ledger_path,
         next_run_path=next_run_path,
     )
+
+
+def build_durable_continuation_packet_from_todos(
+    todo_store: Any,
+    *,
+    job_name: str,
+    current_phase: str = "IN_PROGRESS",
+    exact_next_action: str | None = None,
+    completed_tasks: Sequence[str] = (),
+    blockers: Sequence[str] = (),
+    changed_files: Sequence[str] = (),
+    evidence_links: Sequence[str] = (),
+    verification_completed: Sequence[str] = (),
+    remaining_verification: Sequence[str] = (),
+    do_not_repeat: Sequence[str] = (),
+    last_updated: str | None = None,
+) -> DurableContinuationPacket:
+    """Build a continuation packet from a todo-store-like object.
+
+    ``todo_store`` is intentionally duck-typed: any object with ``read()`` that
+    returns todo mappings is accepted. Only active ``pending`` and
+    ``in_progress`` todos are carried forward so finished or cancelled work is
+    not revived after a handoff.
+    """
+    todos = _read_todo_items(todo_store)
+    active_items = [item for item in todos if _todo_status(item) in {"pending", "in_progress"}]
+    pending_tasks = tuple(_format_todo_item(item) for item in active_items)
+
+    if exact_next_action is None:
+        exact_next_action = _default_next_action(active_items)
+
+    return DurableContinuationPacket(
+        job_name=job_name,
+        current_phase=current_phase,
+        exact_next_action=exact_next_action,
+        completed_tasks=tuple(completed_tasks),
+        pending_tasks=pending_tasks,
+        blockers=tuple(blockers),
+        changed_files=tuple(changed_files),
+        evidence_links=tuple(evidence_links),
+        verification_completed=tuple(verification_completed),
+        remaining_verification=tuple(remaining_verification),
+        do_not_repeat=tuple(do_not_repeat),
+        last_updated=last_updated,
+    )
+
+
+def _read_todo_items(todo_store: Any) -> list[Mapping[str, Any]]:
+    raw_items = todo_store.read()
+    return [item for item in raw_items if isinstance(item, Mapping)]
+
+
+def _todo_status(item: Mapping[str, Any]) -> str:
+    return _clean_text(item.get("status"), "").lower()
+
+
+def _clean_text(value: Any, fallback: str) -> str:
+    if value is None:
+        return fallback
+    cleaned = str(value).strip()
+    return cleaned or fallback
+
+
+def _format_todo_item(item: Mapping[str, Any]) -> str:
+    item_id = _clean_text(item.get("id"), "?")
+    content = _clean_text(item.get("content"), "(no description)")
+    return f"{item_id}: {content}"
+
+
+def _default_next_action(active_items: Sequence[Mapping[str, Any]]) -> str:
+    selected = next(
+        (item for item in active_items if _todo_status(item) == "in_progress"),
+        None,
+    )
+    if selected is None:
+        selected = next(
+            (item for item in active_items if _todo_status(item) == "pending"),
+            None,
+        )
+    if selected is None:
+        return "Review the current task state and continue safely."
+
+    content = _clean_text(selected.get("content"), "")
+    if not content:
+        return "Review the current task state and continue safely."
+    return f"Continue now: {content}."
 
 
 def _last_updated(packet: DurableContinuationPacket) -> str:

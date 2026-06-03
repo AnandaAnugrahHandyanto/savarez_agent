@@ -114,6 +114,10 @@ from agent.model_metadata import (
     is_local_endpoint,
 )
 from agent.usage_pricing import normalize_usage
+from agent.durable_continuation import (
+    DurableContinuationPacket,
+    build_durable_continuation_packet_from_todos,
+)
 # Re-exported for tests that monkeypatch these symbols on run_agent.
 from agent.context_compressor import ContextCompressor  # noqa: F401
 from agent.retry_utils import jittered_backoff  # noqa: F401
@@ -2748,6 +2752,42 @@ class AIAgent:
             if not self.quiet_mode:
                 self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
         _set_interrupt(False)
+
+    def build_durable_continuation_packet(
+        self,
+        *,
+        job_name: str,
+        current_phase: str = "IN_PROGRESS",
+        exact_next_action: str | None = None,
+        completed_tasks: List[str] | None = None,
+        blockers: List[str] | None = None,
+        changed_files: List[str] | None = None,
+        evidence_links: List[str] | None = None,
+        verification_completed: List[str] | None = None,
+        remaining_verification: List[str] | None = None,
+        do_not_repeat: List[str] | None = None,
+        last_updated: str | None = None,
+    ) -> DurableContinuationPacket:
+        """Build a durable continuation packet from this agent's todo lifecycle state.
+
+        This is intentionally an explicit helper only: it converts the current
+        TodoStore into a packet that a caller may persist after choosing a safe
+        project root. It does not infer paths or write files automatically.
+        """
+        return build_durable_continuation_packet_from_todos(
+            getattr(self, "_todo_store"),
+            job_name=job_name,
+            current_phase=current_phase,
+            exact_next_action=exact_next_action,
+            completed_tasks=completed_tasks or (),
+            blockers=blockers or (),
+            changed_files=changed_files or (),
+            evidence_links=evidence_links or (),
+            verification_completed=verification_completed or (),
+            remaining_verification=remaining_verification or (),
+            do_not_repeat=do_not_repeat or (),
+            last_updated=last_updated,
+        )
 
     @property
     def is_interrupted(self) -> bool:
