@@ -60,9 +60,22 @@ class SubdirectoryHintTracker:
 
     def __init__(self, working_dir: Optional[str] = None):
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
+        self.scan_root = self._find_scan_root(self.working_dir)
         self._loaded_dirs: Set[Path] = set()
         # Pre-mark the working dir as loaded (startup context handles it)
         self._loaded_dirs.add(self.working_dir)
+
+    @staticmethod
+    def _find_scan_root(path: Path) -> Path:
+        """Return the repository/worktree root used as the hint boundary."""
+        current = path
+        while True:
+            if (current / ".git").exists():
+                return current
+            parent = current.parent
+            if parent == current:
+                return path
+            current = parent
 
     def check_tool_call(
         self,
@@ -122,15 +135,21 @@ class SubdirectoryHintTracker:
             if not p.is_absolute():
                 p = self.working_dir / p
             p = p.resolve()
+            if not self._is_within_scan_root(p):
+                return
             # Use parent if it's a file path (has extension or doesn't exist as dir)
             if p.suffix or (p.exists() and p.is_file()):
                 p = p.parent
             # Walk up ancestors — stop at already-loaded or root
             for _ in range(_MAX_ANCESTOR_WALK):
+                if not self._is_within_scan_root(p):
+                    break
                 if p in self._loaded_dirs:
                     break
                 if self._is_valid_subdir(p):
                     candidates.add(p)
+                if p == self.scan_root:
+                    break
                 parent = p.parent
                 if parent == p:
                     break  # filesystem root
@@ -166,10 +185,22 @@ class SubdirectoryHintTracker:
             return False
         if path in self._loaded_dirs:
             return False
+        if not self._is_within_scan_root(path):
+            return False
         return True
+
+    def _is_within_scan_root(self, path: Path) -> bool:
+        """Return True when a resolved path is inside the hint scan root."""
+        try:
+            path.relative_to(self.scan_root)
+            return True
+        except ValueError:
+            return False
 
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
         """Load hint files from a directory. Returns formatted text or None."""
+        if not self._is_within_scan_root(directory):
+            return None
         self._loaded_dirs.add(directory)
 
         found_hints = []

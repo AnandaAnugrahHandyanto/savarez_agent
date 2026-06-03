@@ -11,6 +11,8 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 @pytest.fixture
 def project(tmp_path):
     """Create a mock project tree with hint files in subdirectories."""
+    (tmp_path / ".git").mkdir()
+
     # Root — already loaded at startup
     (tmp_path / "AGENTS.md").write_text("Root project instructions")
 
@@ -122,17 +124,57 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Frontend rules" in result
 
-    def test_outside_working_dir_still_checked(self, tmp_path, project):
-        """Paths outside working_dir are still checked for hints."""
-        other_project = tmp_path / "other"
+    def test_absolute_path_outside_working_dir_is_ignored(self, tmp_path, project):
+        """Absolute sibling paths outside working_dir must not load hints."""
+        other_project = tmp_path.parent / f"{tmp_path.name}-other"
         other_project.mkdir()
         (other_project / "AGENTS.md").write_text("Other project rules")
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         result = tracker.check_tool_call(
             "read_file", {"path": str(other_project / "file.py")}
         )
-        assert result is not None
-        assert "Other project rules" in result
+        assert result is None
+
+    def test_relative_parent_sibling_path_is_ignored(self, tmp_path, project):
+        """Relative ../sibling paths must not escape the scan root."""
+        sibling = tmp_path.parent / f"{tmp_path.name}-sibling"
+        sibling.mkdir()
+        (sibling / "AGENTS.md").write_text("Sibling project rules")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "read_file", {"path": f"../{sibling.name}/file.py"}
+        )
+
+        assert result is None
+
+    def test_symlink_resolving_outside_working_dir_is_ignored(self, tmp_path, project):
+        """Symlinks inside the repo that resolve outside root must not load hints."""
+        outside = tmp_path.parent / f"{tmp_path.name}-outside"
+        outside.mkdir()
+        (outside / "AGENTS.md").write_text("Outside symlink rules")
+        link = project / "linked-outside"
+        link.symlink_to(outside, target_is_directory=True)
+
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(link / "file.py")}
+        )
+
+        assert result is None
+
+    def test_quarantined_sibling_path_is_ignored(self, tmp_path, project):
+        """Quarantined sibling worktrees must not contribute AGENTS hints."""
+        quarantine = tmp_path.parent / f"{tmp_path.name}-quarantine"
+        quarantine.mkdir()
+        (quarantine / "AGENTS.md").write_text("Quarantined rules")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(quarantine / "agent" / "file.py")}
+        )
+
+        assert result is None
 
     def test_workdir_arg(self, project):
         """The workdir argument from terminal tool is checked."""
