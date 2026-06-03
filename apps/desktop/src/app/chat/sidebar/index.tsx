@@ -707,20 +707,33 @@ function SidebarControlSurfaceSection({ activeScopeId, onSelect, section }: Side
         <SidebarGroupContent className="grid gap-px pb-1">
           {section.items.map(item => {
             const active = activeScopeId === item.scope.id
+            const selectable = item.selectable !== false
 
             return (
               <button
+                aria-disabled={!selectable}
                 className={cn(
-                  'group flex min-h-6 cursor-pointer items-center gap-1.5 rounded-md bg-transparent px-2 text-left text-[0.8125rem] text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:text-foreground hover:transition-none',
-                  active && 'bg-(--ui-row-active-background) text-foreground'
+                  'group flex min-h-6 items-center gap-1.5 rounded-md bg-transparent px-2 text-left text-[0.8125rem] text-(--ui-text-secondary) transition-colors duration-100 ease-out',
+                  selectable
+                    ? 'cursor-pointer hover:bg-(--ui-row-hover-background) hover:text-foreground hover:transition-none'
+                    : 'cursor-default opacity-80',
+                  active && selectable && 'bg-(--ui-row-active-background) text-foreground'
                 )}
+                disabled={!selectable}
                 key={item.id}
-                onClick={() => onSelect(item.scope)}
+                onClick={() => {
+                  if (selectable) {
+                    onSelect(item.scope)
+                  }
+                }}
                 title={item.label}
                 type="button"
               >
                 <Codicon
-                  className="size-3.5 shrink-0 text-(--ui-text-quaternary) group-hover:text-(--ui-text-tertiary)"
+                  className={cn(
+                    'size-3.5 shrink-0 text-(--ui-text-quaternary)',
+                    selectable && 'group-hover:text-(--ui-text-tertiary)'
+                  )}
                   name={scopeIcon(item.scope.kind)}
                 />
                 <span className="min-w-0 flex-1 truncate">{item.label}</span>

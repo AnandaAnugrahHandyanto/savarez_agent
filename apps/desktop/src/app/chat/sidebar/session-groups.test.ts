@@ -192,10 +192,46 @@ describe('sidebarControlSurfaceFor', () => {
     expect(gatewayItems).toEqual([
       expect.objectContaining({
         label: 'WSL',
-        meta: 'degraded · agents: timeout',
+        meta: 'Degraded · agents: timeout',
         scope: expect.objectContaining({ kind: 'gateway', sessionIds: [] })
       })
     ])
+  })
+
+  it('renders connected and offline gateway health with compact semantic labels', () => {
+    const gatewayItems = sidebarControlSurfaceFor({
+      agents: [],
+      conversations: [],
+      gatewayStates: [
+        { gateway_id: 'wsl', name: 'WSL', ok: true, state: 'connected' },
+        { error: 'unreachable', gateway_id: 'mac', name: 'Mac', ok: false, state: 'offline' }
+      ],
+      projects: [],
+      sessions: []
+    }).find(section => section.id === 'gateways')?.items
+
+    expect(gatewayItems?.map(item => [item.label, item.meta])).toEqual([
+      ['WSL', 'Connected'],
+      ['Mac', 'Offline · unreachable']
+    ])
+  })
+
+  it('marks agent rows without session mappings as display-only instead of selectable empty scopes', () => {
+    const agentItem = sidebarControlSurfaceFor({
+      agents: [agent({ id: 'wsl::profile:default', name: 'default', gateway_id: 'wsl' })],
+      conversations: [],
+      projects: [],
+      sessions: [baseSession({ id: 'wsl::session', gateway_id: 'wsl' })]
+    }).find(section => section.id === 'agents')?.items[0]
+
+    expect(agentItem).toEqual(
+      expect.objectContaining({
+        label: 'default',
+        selectable: false,
+        meta: 'running · no session scope',
+        scope: expect.objectContaining({ kind: 'agent', sessionIds: [] })
+      })
+    )
   })
 
   it('namespaces colliding sessions and entities from two gateways', () => {

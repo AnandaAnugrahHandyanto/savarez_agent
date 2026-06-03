@@ -14,6 +14,7 @@ export interface SidebarControlSurfaceItem {
   id: string
   label: string
   meta?: string
+  selectable?: boolean
   scope: SidebarEntityScope
 }
 
@@ -121,6 +122,13 @@ function workspaceItemsFor(sessions: SessionInfo[]): SidebarControlSurfaceItem[]
     }))
 }
 
+function healthLabel(state: string, error?: string): string {
+  const normalized = state.toLowerCase()
+  const label = normalized === 'connected' ? 'Connected' : normalized === 'offline' ? 'Offline' : normalized === 'degraded' ? 'Degraded' : state
+
+  return error ? `${label} · ${error}` : label
+}
+
 export function sidebarControlSurfaceFor({
   agents,
   gatewayStates = [],
@@ -142,7 +150,7 @@ export function sidebarControlSurfaceFor({
         return {
           id: gateway.gateway_id,
           label: gateway.name,
-          meta: gateway.ok ? gateway.state : `degraded · ${gateway.error || gateway.state}`,
+          meta: healthLabel(gateway.state, gateway.error),
           scope: { gatewayId: gateway.gateway_id, id: gateway.gateway_id, kind: 'gateway', label: gateway.name, sessionIds: ids }
         }
       })
@@ -153,7 +161,8 @@ export function sidebarControlSurfaceFor({
       items: agents.map(agent => ({
         id: agent.id,
         label: agent.name,
-        meta: agent.gateway?.state ?? agent.provider ?? undefined,
+        meta: `${agent.gateway?.state ?? agent.provider ?? 'available'} · no session scope`,
+        selectable: false,
         scope: { gatewayId: agent.gateway_id, id: agent.id, kind: 'agent', label: agent.name, sessionIds: [] }
       }))
     },

@@ -130,8 +130,8 @@ describe('aggregateGatewayReadModels', () => {
 
     expect(result.sessions.map(session => session.id)).toEqual(['wsl::healthy-session'])
     expect(result.gatewayStates).toEqual([
-      { gateway_id: 'wsl', name: 'WSL', ok: true, state: 'running' },
-      { error: 'offline', gateway_id: 'mac', name: 'Mac', ok: false, state: 'degraded' }
+      { gateway_id: 'wsl', name: 'WSL', ok: true, state: 'connected' },
+      { error: 'offline', gateway_id: 'mac', name: 'Mac', ok: false, state: 'offline' }
     ])
   })
 

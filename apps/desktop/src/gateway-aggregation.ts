@@ -42,6 +42,28 @@ export interface AggregatedGatewayReadModel {
 const compositeId = (gatewayId: string, id: string) => `${gatewayId}::${id}`
 const asText = (value: unknown) => (typeof value === 'string' ? value : '')
 
+function normalizeGatewayState(statusState: unknown, error?: string): string {
+  if (error) {
+    const lower = error.toLowerCase()
+
+    return lower.includes('offline') || lower.includes('unreachable') || lower.includes('connection') || lower.includes('fetch')
+      ? 'offline'
+      : 'degraded'
+  }
+
+  const state = asText(statusState).toLowerCase()
+
+  if (state === 'running' || state === 'open' || state === 'ready' || state === 'connected') {
+    return 'connected'
+  }
+
+  if (state === 'stopped' || state === 'offline' || state === 'closed' || state === 'error') {
+    return 'offline'
+  }
+
+  return state || 'unknown'
+}
+
 function partialErrorText(errors: GatewayReadResult['errors']): string | undefined {
   const parts = Object.entries(errors ?? {})
     .filter((entry): entry is [string, string] => Boolean(entry[1]))
@@ -62,16 +84,17 @@ export function aggregateGatewayReadModels(results: GatewayReadResult[]): Aggreg
     const gatewayId = result.connection.id
     const error = result.error || partialErrorText(result.errors)
 
-    const state = error
-      ? 'degraded'
-      : result.status?.gateway_state ?? result.status?.gateway?.state ?? (result.status ? 'running' : 'unknown')
+    const state = normalizeGatewayState(
+      result.status?.gateway_state ?? result.status?.gateway?.state ?? (result.status ? 'running' : 'unknown'),
+      error
+    )
 
     gatewayStates.push({
-      error,
       gateway_id: gatewayId,
       name: result.connection.name || gatewayId,
       ok: !error,
-      state: asText(state) || 'unknown'
+      state,
+      ...(error ? { error } : {})
     })
 
     for (const session of result.sessions?.sessions ?? []) {
