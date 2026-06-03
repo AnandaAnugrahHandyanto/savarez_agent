@@ -1066,20 +1066,20 @@ async def test_startup_auto_resume_skips_when_adapter_unavailable():
 
 
 @pytest.mark.asyncio
-async def test_restart_banner_uses_try_to_resume_wording():
-    """The notification sent before drain should hedge the resume promise
-    — the session-continuity fix is best-effort (stuck-loop counter can
-    still escalate to suspended)."""
+async def test_restart_banner_uses_default_restarting_warning():
+    """The notification sent before restart uses Hermes' default restart
+    interruption warning, including the resume hint.
+    """
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
     runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
 
     await runner._notify_active_sessions_of_shutdown()
 
-    assert len(adapter.sent) == 1
-    msg = adapter.sent[0]
-    assert "restarting" in msg
-    assert "try to resume" in msg
+    assert getattr(adapter, "sent") == [
+        "⚠️ Gateway restarting — Your current task will be interrupted. "
+        "Send any message after restart and I'll try to resume where you left off."
+    ]
 
 
 @pytest.mark.asyncio
@@ -1094,7 +1094,7 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
 
     await runner._notify_active_sessions_of_shutdown()
 
-    assert adapter.sent == [
+    assert getattr(adapter, "sent") == [
         "⚠️ Gateway restarting — Your current task will be interrupted. "
         "Send any message after restart and I'll try to resume where you left off."
     ]

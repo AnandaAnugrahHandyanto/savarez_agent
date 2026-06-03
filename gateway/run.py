@@ -3633,14 +3633,11 @@ class GatewayRunner:
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
 
-        action = "restarting" if self._restart_requested else "shutting down"
-        hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+        msg = (
+            t("gateway.restart.restarting_warning")
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else t("gateway.restart.shutdown_warning")
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -3737,6 +3734,59 @@ class GatewayRunner:
                 )
 
         if self._restart_requested and restart_source is not None:
+            try:
+                restart_platform = restart_source.platform
+                restart_chat_id = str(restart_source.chat_id)
+                restart_thread_id = restart_source.thread_id
+                restart_dedup_key = (
+                    restart_platform.value,
+                    restart_chat_id,
+                    str(restart_thread_id) if restart_thread_id else None,
+                )
+                if restart_dedup_key not in notified:
+                    adapter = self.adapters.get(restart_platform)
+                    platform_cfg = self.config.platforms.get(restart_platform)
+                    if (
+                        adapter is not None
+                        and (
+                            platform_cfg is None
+                            or platform_cfg.gateway_restart_notification
+                        )
+                    ):
+                        metadata = self._thread_metadata_for_target(
+                            restart_platform,
+                            restart_chat_id,
+                            restart_thread_id,
+                            chat_type=getattr(restart_source, "chat_type", None),
+                            reply_to_message_id=getattr(
+                                restart_source, "message_id", None
+                            ),
+                            adapter=adapter,
+                        )
+                        result = await adapter.send(
+                            restart_chat_id,
+                            msg,
+                            metadata=metadata,
+                        )
+                        if result is not None and getattr(result, "success", True) is False:
+                            logger.debug(
+                                "Failed to send restart-requester shutdown notification to %s:%s: %s",
+                                restart_platform.value,
+                                restart_chat_id,
+                                getattr(result, "error", "send returned success=False"),
+                            )
+                        else:
+                            notified.add(restart_dedup_key)
+                            logger.info(
+                                "Sent shutdown notification to restart requester %s:%s",
+                                restart_platform.value,
+                                restart_chat_id,
+                            )
+            except Exception as e:
+                logger.debug(
+                    "Failed to send restart-requester shutdown notification: %s",
+                    e,
+                )
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
             return
 
@@ -6693,11 +6743,12 @@ class GatewayRunner:
                 # makes systemd treat the operator-requested restart as a
                 # failure and can trip stepped restart backoff.  launchd's
                 # KeepAlive.SuccessfulExit=false needs a non-zero exit to
-                # relaunch, so keep the old code on macOS.
+                # relaunch, so keep the old non-zero code for launchd and
+                # other non-systemd service managers.
                 self._exit_code = (
-                    GATEWAY_SERVICE_RESTART_EXIT_CODE
-                    if sys.platform == "darwin" or not os.environ.get("INVOCATION_ID")
-                    else 0
+                    0
+                    if os.environ.get("INVOCATION_ID")
+                    else GATEWAY_SERVICE_RESTART_EXIT_CODE
                 )
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
@@ -10739,11 +10790,20 @@ class GatewayRunner:
         # Docker/Podman container, use the service restart path: exit with
         # code 75 so the service manager / container restart policy restarts
         # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # under systemd (KillMode=mixed kills the cgroup), launchd (the helper
+        # can race the managed job state and leave KeepAlive idle after a
+        # successful exit), or Docker (tini exits when the gateway dies, taking
+        # the detached helper with it).
+        _under_systemd = bool(os.environ.get("INVOCATION_ID"))
+        _xpc_service_name = os.environ.get("XPC_SERVICE_NAME", "")
+        _under_launchd = (
+            sys.platform == "darwin"
+            and bool(_xpc_service_name)
+            and _xpc_service_name != "0"
+            and _xpc_service_name.startswith("ai.hermes.gateway")
+        )
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        if _under_systemd or _under_launchd or _in_container:
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)
@@ -15357,7 +15417,7 @@ class GatewayRunner:
             )
             result = await adapter.send(
                 str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
+                t("gateway.restart.restarted_success"),
                 metadata=metadata,
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")
@@ -15398,7 +15458,7 @@ class GatewayRunner:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        message = t("gateway.restart.online")
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)

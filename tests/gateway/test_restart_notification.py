@@ -99,10 +99,34 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypatch):
-    """Without systemd, /restart uses the detached subprocess approach."""
+async def test_restart_command_uses_service_restart_under_launchd(tmp_path, monkeypatch):
+    """Under launchd (XPC_SERVICE_NAME set to the job label), /restart uses via_service=True."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_uses_detached_without_service_manager(tmp_path, monkeypatch):
+    """Without systemd/launchd/container, /restart uses the detached subprocess approach."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -662,6 +686,32 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
 
 
 @pytest.mark.asyncio
+async def test_in_chat_restart_sends_requester_shutdown_warning_without_active_agents():
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    source = make_restart_source(chat_id="123456", thread_id="20197")
+    source.message_id = "462"
+    runner._restart_command_source = source
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once()
+    call = adapter.send.await_args
+    assert call is not None
+    assert call.args[0] == "123456"
+    assert "Gateway restarting" in call.args[1]
+    assert "Your current task will be interrupted" in call.args[1]
+    assert "resume where you left off" in call.args[1]
+    assert call.kwargs["metadata"] == {
+        "thread_id": "20197",
+        "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "20197",
+        "telegram_reply_to_message_id": "462",
+    }
+
+
+@pytest.mark.asyncio
 async def test_restart_shutdown_notification_anchors_telegram_dm_topic():
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
@@ -676,6 +726,7 @@ async def test_restart_shutdown_notification_anchors_telegram_dm_topic():
     await runner._notify_active_sessions_of_shutdown()
 
     call = adapter.send.await_args
+    assert call is not None
     assert call.args[0] == "123456"
     assert "Gateway restarting" in call.args[1]
     assert call.kwargs["metadata"] == {

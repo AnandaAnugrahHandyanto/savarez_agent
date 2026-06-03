@@ -610,12 +610,28 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     if remaining_toolsets > 0:
         right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
 
-    # MCP Servers section (only if configured)
+    # MCP Servers section (only if configured). MCP discovery runs in the
+    # background during CLI/TUI startup; if the banner snapshots status too
+    # early, enabled servers look disconnected and get mislabeled as failed.
+    # Wait a bounded amount here so the banner reflects the real post-discovery
+    # state in normal cases. Override for slower remotes with
+    # HERMES_MCP_STATUS_WAIT_SECONDS.
     try:
+        from hermes_cli.mcp_startup import is_mcp_discovery_running, wait_for_mcp_discovery
+
+        try:
+            status_wait = float(os.getenv("HERMES_MCP_STATUS_WAIT_SECONDS", "30"))
+        except ValueError:
+            status_wait = 30.0
+        if status_wait > 0:
+            wait_for_mcp_discovery(timeout=status_wait)
+
         from tools.mcp_tool import get_mcp_status
         mcp_status = get_mcp_status()
+        mcp_discovery_running = is_mcp_discovery_running()
     except Exception:
         mcp_status = []
+        mcp_discovery_running = False
 
     if mcp_status:
         right_lines.append("")
@@ -630,6 +646,11 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 right_lines.append(
                     f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
                     f"[dim {dim}]— disabled[/]"
+                )
+            elif mcp_discovery_running:
+                right_lines.append(
+                    f"[yellow]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[dim {dim}]—[/] [yellow]connecting…[/]"
                 )
             else:
                 right_lines.append(

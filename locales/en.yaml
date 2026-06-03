@@ -231,6 +231,10 @@ gateway:
   restart:
     in_progress:           "⏳ Gateway restart already in progress..."
     restarting:            "♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`."
+    shutdown_warning:      "⚠️ Gateway shutting down — Your current task will be interrupted."
+    restarting_warning:    "⚠️ Gateway restarting — Your current task will be interrupted. Send any message after restart and I'll try to resume where you left off."
+    restarted_success:     "♻ Gateway restarted successfully. Your session continues."
+    online:                "♻️ Gateway online — Hermes is back and ready."
 
   resume:
     db_unavailable:        "Session database not available."

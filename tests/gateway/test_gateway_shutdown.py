@@ -220,7 +220,7 @@ async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
 
 
 @pytest.mark.asyncio
-async def test_idle_in_chat_restart_does_not_send_interruption_warning():
+async def test_idle_in_chat_restart_sends_requester_interruption_warning():
     runner, adapter = make_restart_runner()
     source = make_restart_source(thread_id="42")
     source.message_id = "restart-command"
@@ -235,7 +235,13 @@ async def test_idle_in_chat_restart_does_not_send_interruption_warning():
 
     await runner._notify_active_sessions_of_shutdown()
 
-    assert adapter.sent_calls == []
+    sent_calls = getattr(adapter, "sent_calls")
+    assert len(sent_calls) == 1
+    chat_id, message, metadata = sent_calls[0]
+    assert chat_id == source.chat_id
+    assert "Gateway restarting" in message
+    assert "Your current task will be interrupted" in message
+    assert metadata["telegram_reply_to_message_id"] == "restart-command"
 
 
 @pytest.mark.asyncio

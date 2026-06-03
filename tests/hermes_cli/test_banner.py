@@ -135,6 +135,41 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
     assert "\x1b]8;" not in raw, "OSC-8 hyperlink should not be emitted without a tag"
 
 
+def test_build_welcome_banner_waits_for_mcp_discovery_before_status_snapshot():
+    """The banner should wait for background discovery before rendering real MCP status."""
+    import hermes_cli.mcp_startup as mcp_startup
+
+    calls = []
+
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=(["web"], [])),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(mcp_startup, "wait_for_mcp_discovery", side_effect=lambda timeout: calls.append(timeout)),
+        patch.object(mcp_startup, "is_mcp_discovery_running", return_value=False),
+        patch.object(
+            tools.mcp_tool,
+            "get_mcp_status",
+            return_value=[
+                {"name": "notion", "transport": "http", "tools": 16,
+                 "connected": True, "disabled": False},
+            ],
+        ),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=160)
+        banner.build_welcome_banner(
+            console=console, model="anthropic/test-model", cwd="/tmp/project",
+            tools=[{"function": {"name": "read_file"}}],
+            get_toolset_for_tool=lambda n: "file",
+        )
+
+    output = console.export_text()
+    assert calls == [30.0]
+    assert "notion" in output
+    assert "16 tool(s)" in output
+    assert "notion (http) — failed" not in output
+
+
 def test_build_welcome_banner_disabled_mcp_shows_disabled_not_failed():
     """A disabled MCP server renders '— disabled' (dim), not '— failed' (red)."""
     with (

@@ -3665,8 +3665,17 @@ def get_mcp_status() -> List[dict]:
         active_servers = dict(_servers)
 
     for name, cfg in configured.items():
-        transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
         enabled = _parse_boolish(cfg.get("enabled", True), default=True)
+        transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
+        if not enabled:
+            result.append({
+                "name": name,
+                "transport": transport,
+                "tools": 0,
+                "connected": False,
+                "disabled": True,
+            })
+            continue
         server = active_servers.get(name)
         if server and server.session is not None:
             entry = {
