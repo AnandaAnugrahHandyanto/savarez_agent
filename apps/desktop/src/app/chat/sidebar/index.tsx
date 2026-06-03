@@ -54,7 +54,9 @@ import {
   $sessions,
   $sessionsLoading,
   $sessionsTotal,
-  $workingSessionIds
+  $workingSessionIds,
+  $workingSessionMeta,
+  mergeWorkingSessions
 } from '@/store/session'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
@@ -177,6 +179,7 @@ export function ChatSidebar({
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
   const workingSessionIds = useStore($workingSessionIds)
+  const workingSessionMeta = useStore($workingSessionMeta)
   const [agentOrderIds, setAgentOrderIds] = useState<string[]>([])
   const [workspaceOrderIds, setWorkspaceOrderIds] = useState<string[]>([])
 
@@ -187,9 +190,21 @@ export function ChatSidebar({
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 
-  const sortedSessions = useMemo(() => [...sessions].sort((a, b) => sessionTime(b) - sessionTime(a)), [sessions])
+  // Working sessions that aren't in the loaded list yet (e.g. an untitled
+  // session mid-turn with zero persisted messages, filtered out by the
+  // backend's min_messages=1 query) get a synthetic row so they stay visible
+  // after "New session" instead of silently dropping out of the sidebar.
+  const mergedSessions = useMemo(
+    () => mergeWorkingSessions(sessions, workingSessionIds, workingSessionMeta),
+    [sessions, workingSessionIds, workingSessionMeta]
+  )
 
-  const sessionsById = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
+  const sortedSessions = useMemo(
+    () => [...mergedSessions].sort((a, b) => sessionTime(b) - sessionTime(a)),
+    [mergedSessions]
+  )
+
+  const sessionsById = useMemo(() => new Map(mergedSessions.map(s => [s.id, s])), [mergedSessions])
   const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
 
   const visiblePinnedIds = useMemo(

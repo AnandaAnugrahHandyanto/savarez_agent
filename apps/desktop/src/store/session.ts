@@ -7,6 +7,12 @@ import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
 
+export interface WorkingSessionMeta {
+  cwd: string | null
+  model: string | null
+  startedAt: number
+}
+
 interface AppAtom<T> {
   get: () => T
   set: (value: T) => void
@@ -22,6 +28,11 @@ export const $sessions = atom<SessionInfo[]>([])
 export const $sessionsTotal = atom<number>(0)
 export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
+// Minimal runtime metadata for sessions that are currently working but may
+// not yet appear in the loaded `$sessions` list — e.g. an untitled session
+// whose agent is mid-turn with zero persisted messages, which the backend
+// session list (min_messages=1) filters out. Keyed by stored session id.
+export const $workingSessionMeta = atom<Record<string, WorkingSessionMeta>>({})
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
@@ -56,6 +67,8 @@ export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($session
 export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
+export const setWorkingSessionMeta = (next: Updater<Record<string, WorkingSessionMeta>>) =>
+  updateAtom($workingSessionMeta, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
@@ -93,4 +106,88 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
 
     return alreadyWorking ? current.filter(id => id !== sessionId) : current
   })
+
+  // Drop synthetic-row metadata once a session stops working. Its real row
+  // (if any) comes back through the normal session list on the next refresh.
+  if (!working) {
+    setWorkingSessionMeta(current => {
+      if (!(sessionId in current)) {
+        return current
+      }
+
+      const { [sessionId]: _removed, ...rest } = current
+
+      return rest
+    })
+  }
+}
+
+// Record just enough about a working session to render a synthetic sidebar
+// row for it before it lands in the loaded session list. Idempotent: the
+// startedAt timestamp is preserved across updates so the row's age is stable.
+export function noteWorkingSessionMeta(
+  sessionId: string | null | undefined,
+  meta: { cwd?: string | null; model?: string | null }
+) {
+  if (!sessionId) {
+    return
+  }
+
+  setWorkingSessionMeta(current => {
+    const existing = current[sessionId]
+    const cwd = meta.cwd ?? existing?.cwd ?? null
+    const model = meta.model ?? existing?.model ?? null
+
+    if (existing && existing.cwd === cwd && existing.model === model) {
+      return current
+    }
+
+    return {
+      ...current,
+      [sessionId]: { cwd, model, startedAt: existing?.startedAt ?? Date.now() / 1000 }
+    }
+  })
+}
+
+// Merge synthetic rows for working sessions that aren't in the loaded list.
+// Pure so it can be unit-tested and reused by any sidebar surface.
+export function mergeWorkingSessions(
+  sessions: SessionInfo[],
+  workingIds: string[],
+  meta: Record<string, WorkingSessionMeta>
+): SessionInfo[] {
+  if (!workingIds.length) {
+    return sessions
+  }
+
+  const known = new Set(sessions.map(s => s.id))
+  const synthetic: SessionInfo[] = []
+
+  for (const id of workingIds) {
+    if (known.has(id)) {
+      continue
+    }
+
+    const info = meta[id]
+    const startedAt = info?.startedAt ?? Date.now() / 1000
+
+    synthetic.push({
+      cwd: info?.cwd ?? null,
+      ended_at: null,
+      id,
+      input_tokens: 0,
+      is_active: true,
+      last_active: startedAt,
+      message_count: 0,
+      model: info?.model ?? null,
+      output_tokens: 0,
+      preview: null,
+      source: 'tui',
+      started_at: startedAt,
+      title: null,
+      tool_call_count: 0
+    })
+  }
+
+  return synthetic.length ? [...synthetic, ...sessions] : sessions
 }

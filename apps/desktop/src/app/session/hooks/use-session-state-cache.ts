@@ -4,7 +4,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $busy, $messages, setSessionWorking } from '@/store/session'
+import { $busy, $currentModel, $messages, noteWorkingSessionMeta, setSessionWorking } from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -137,6 +137,10 @@ export function useSessionStateCache({
 
       if (previous.storedSessionId !== next.storedSessionId || !next.busy) {
         setSessionWorking(previous.storedSessionId, false)
+      }
+
+      if (next.busy) {
+        noteWorkingSessionMeta(next.storedSessionId, { cwd: next.cwd || null, model: $currentModel.get() || null })
       }
 
       setSessionWorking(next.storedSessionId, next.busy)
