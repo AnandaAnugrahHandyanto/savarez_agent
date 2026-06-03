@@ -8,6 +8,7 @@ import {
   type DragEvent as ReactDragEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
@@ -23,8 +24,10 @@ import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import {
   $composerAttachments,
+  $composerDraft,
   clearComposerAttachments,
-  type ComposerAttachment
+  type ComposerAttachment,
+  setComposerDraft
 } from '@/store/composer'
 import {
   $queuedPromptsBySession,
@@ -167,6 +170,40 @@ export function ChatBar({
     setFocusRequestId(id => id + 1)
   }, [])
 
+  const setDraftText = useCallback(
+    (text: string) => {
+      draftRef.current = text
+      setComposerDraft(text)
+      aui.composer().setText(text)
+    },
+    [aui]
+  )
+
+  const renderDraftText = useCallback(
+    (text: string, placeCaret = true) => {
+      const editor = editorRef.current
+
+      if (!editor) {
+        return
+      }
+
+      renderComposerContents(editor, text)
+
+      if (placeCaret) {
+        placeCaretEnd(editor)
+      }
+    },
+    []
+  )
+
+  const applyDraftText = useCallback(
+    (text: string, placeCaret = true) => {
+      setDraftText(text)
+      renderDraftText(text, placeCaret)
+    },
+    [renderDraftText, setDraftText]
+  )
+
   const appendExternalText = useCallback(
     (text: string, mode: ComposerInsertMode) => {
       const value = text.trim()
@@ -179,19 +216,11 @@ export function ChatBar({
       const sep = mode === 'inline' ? (base ? ' ' : '') : base && !base.endsWith('\n') ? '\n\n' : ''
       const next = `${base}${sep}${value}`
 
-      draftRef.current = next
-      aui.composer().setText(next)
-
-      const editor = editorRef.current
-
-      if (editor) {
-        renderComposerContents(editor, next)
-        placeCaretEnd(editor)
-      }
+      applyDraftText(next)
 
       setFocusRequestId(id => id + 1)
     },
-    [aui]
+    [applyDraftText]
   )
 
   useEffect(() => {
@@ -223,15 +252,58 @@ export function ChatBar({
     }
   }, [appendExternalText, disabled])
 
-  // Keep draftRef in sync with the assistant-ui composer state for callers
-  // that read the latest text outside the React render cycle. We don't push
-  // to `$composerDraft` per keystroke any more — nobody outside the composer
-  // subscribes to it (verified by grep), and the round-trip
-  // `setText` ⇄ `subscribe` ⇄ `setText` was adding two useEffects to the per-
-  // keystroke critical path. `reconcileComposerTerminalSelections` only
-  // matters when the draft is submitted; we now call it from the submit
-  // path instead.
+  useLayoutEffect(() => {
+    const stashedDraft = $composerDraft.get()
+
+    if (stashedDraft && stashedDraft !== draftRef.current) {
+      applyDraftText(stashedDraft)
+    }
+  }, [applyDraftText])
+
   useEffect(() => {
+    const restore = () => {
+      const stashedDraft = $composerDraft.get()
+      const editor = editorRef.current
+
+      if (editor && stashedDraft && composerPlainText(editor) !== stashedDraft) {
+        applyDraftText(stashedDraft)
+      }
+    }
+
+    const frame = window.requestAnimationFrame(restore)
+    const timer = window.setTimeout(restore, 0)
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.clearTimeout(timer)
+    }
+  }, [applyDraftText])
+
+  useLayoutEffect(() => {
+    const stashedDraft = $composerDraft.get()
+
+    if (stashedDraft !== draftRef.current) {
+      applyDraftText(stashedDraft)
+    }
+  }, [applyDraftText, focusKey])
+
+  // Keep draftRef in sync with the assistant-ui composer state for callers
+  // that read the latest text outside the React render cycle. Composer edits
+  // write through to `$composerDraft` only from mutation paths above/below; we
+  // intentionally do not subscribe to `$composerDraft` per keystroke because
+  // the old `setText` ⇄ `subscribe` ⇄ `setText` feedback loop added two
+  // useEffects to the critical path. The global atom now serves as a
+  // route-survival stash for chat-screen unmount/remount. `reconcileComposerTerminalSelections`
+  // only matters when the draft is submitted; we call it from the submit path.
+  useEffect(() => {
+    const stashedDraft = $composerDraft.get()
+
+    if (!draft && stashedDraft && draftRef.current === stashedDraft) {
+      renderDraftText(stashedDraft)
+
+      return
+    }
+
     draftRef.current = draft
 
     const editor = editorRef.current
@@ -239,7 +311,7 @@ export function ChatBar({
     if (editor && document.activeElement !== editor && composerPlainText(editor) !== draft) {
       renderComposerContents(editor, draft)
     }
-  }, [draft])
+  }, [draft, renderDraftText])
 
   useEffect(() => {
     if (urlOpen) {
@@ -336,22 +408,7 @@ export function ChatBar({
     const sep = currentDraft && !currentDraft.endsWith('\n') ? '\n' : ''
     const nextDraft = `${currentDraft}${sep}${text}`
 
-    draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
-
-    // Push the new text into the contentEditable editor directly. Setting the
-    // assistant-ui composer state alone is not enough: the draft→editor sync
-    // effect only re-renders the editor when it is NOT focused
-    // (document.activeElement !== editor), and the dictation/insert paths
-    // typically run while the editor has (or immediately regains) focus — so
-    // the store would hold the text but the visible editor would stay empty
-    // and there'd be nothing to send. Mirror appendExternalText here.
-    const editor = editorRef.current
-
-    if (editor) {
-      renderComposerContents(editor, nextDraft)
-      placeCaretEnd(editor)
-    }
+    applyDraftText(nextDraft)
 
     requestMainFocus()
   }
@@ -369,16 +426,14 @@ export function ChatBar({
       return false
     }
 
-    draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    setDraftText(nextDraft)
     requestMainFocus()
 
     return true
   }
 
   const selectSkinSlashCommand = (command: string) => {
-    draftRef.current = command
-    aui.composer().setText(command)
+    setDraftText(command)
     requestMainFocus()
   }
 
@@ -414,8 +469,7 @@ export function ChatBar({
     event.preventDefault()
     document.execCommand('insertText', false, pastedText)
     const nextDraft = composerPlainText(event.currentTarget)
-    draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    setDraftText(nextDraft)
   }
 
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
@@ -477,8 +531,7 @@ export function ChatBar({
     const nextDraft = composerPlainText(editor)
 
     if (nextDraft !== draftRef.current) {
-      draftRef.current = nextDraft
-      aui.composer().setText(nextDraft)
+      setDraftText(nextDraft)
     }
 
     window.setTimeout(refreshTrigger, 0)
@@ -522,8 +575,7 @@ export function ChatBar({
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)
 
     const finish = () => {
-      draftRef.current = composerPlainText(editor)
-      aui.composer().setText(draftRef.current)
+      setDraftText(composerPlainText(editor))
       requestMainFocus()
       starter ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
     }
@@ -753,25 +805,16 @@ export function ChatBar({
   }
 
   const clearDraft = useCallback(() => {
-    aui.composer().setText('')
-    draftRef.current = ''
+    setDraftText('')
 
     if (editorRef.current) {
       editorRef.current.replaceChildren()
     }
-  }, [aui])
+  }, [setDraftText])
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
-    draftRef.current = text
-    aui.composer().setText(text)
+    applyDraftText(text)
     $composerAttachments.set(cloneAttachments(attachments))
-
-    const editor = editorRef.current
-
-    if (editor) {
-      renderComposerContents(editor, text)
-      placeCaretEnd(editor)
-    }
   }
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
@@ -1082,8 +1125,8 @@ export function ChatBar({
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
         aria-label="Message"
-        autoCorrect="off"
         autoCapitalize="off"
+        autoCorrect="off"
         className={cn(
           'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
