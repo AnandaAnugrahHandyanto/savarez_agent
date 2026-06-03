@@ -3,12 +3,13 @@ import { atom } from 'nanostores'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { persistString, storedString } from '@/lib/storage'
+import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
+const YOLO_STICKY_KEY = 'hermes.desktop.yolo-sticky'
 
 export const getRememberedWorkspaceCwd = (): string => storedString(WORKSPACE_CWD_KEY)?.trim() || ''
 
@@ -88,10 +89,12 @@ export const $currentProvider = atom('')
 export const $currentReasoningEffort = atom('')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(false)
-// Per-session YOLO (approval-bypass) state, mirrored from the gateway so the
-// status-bar toggle can colour itself. Not persisted — it follows the live
-// runtime session and resets when there's no active session.
-export const $yoloActive = atom(false)
+// Sticky YOLO (approval-bypass) preference. This is the user's *desired* state,
+// persisted across restarts — when on, every new/resumed session is forced into
+// YOLO (see use-session-actions). It is intentionally NOT overwritten by the
+// gateway's per-session state, so turning it on once keeps it on until the user
+// turns it off.
+export const $yoloActive = atom(storedBoolean(YOLO_STICKY_KEY, false))
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
@@ -126,7 +129,10 @@ export const setCurrentProvider = (next: Updater<string>) => updateAtom($current
 export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
-export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
+export const setYoloActive = (next: Updater<boolean>) => {
+  updateAtom($yoloActive, next)
+  persistBoolean(YOLO_STICKY_KEY, $yoloActive.get())
+}
 
 export const setCurrentCwd = (next: Updater<string>) => {
   updateAtom($currentCwd, next)

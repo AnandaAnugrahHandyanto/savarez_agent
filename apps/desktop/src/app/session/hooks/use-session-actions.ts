@@ -16,6 +16,7 @@ import {
   $currentCwd,
   $messages,
   $sessions,
+  $yoloActive,
   getRememberedWorkspaceCwd,
   sessionPinId,
   setActiveSessionId,
@@ -37,9 +38,7 @@ import {
   setSessions,
   setSessionsTotal,
   setSessionStartedAt,
-  setTurnStartedAt,
-  $yoloActive,
-  setYoloActive
+  setTurnStartedAt
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
@@ -250,10 +249,6 @@ function applyRuntimeInfo(
   if (typeof info.fast === 'boolean') {
     setCurrentFastMode(info.fast)
   }
-
-  // Always sync YOLO on resume/create so switching sessions can't leave a stale
-  // "on" indicator (the gateway clears per-session yolo on some resume paths).
-  setYoloActive(info.yolo === true)
 
   if (info.usage) {
     setCurrentUsage(current => ({ ...current, ...info.usage }))
@@ -528,6 +523,12 @@ export function useSessionActions({
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
         const runtimeInfo = applyRuntimeInfo(resumed.info)
+
+        // Sticky YOLO: the gateway clears per-session yolo on resume, so re-apply
+        // the user's persisted preference onto the resumed session.
+        if ($yoloActive.get() && resumed.info?.yolo !== true) {
+          void setSessionYolo(requestGateway, resumed.session_id, true).catch(() => undefined)
+        }
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 

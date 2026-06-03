@@ -8,8 +8,8 @@ import { Activity, AlertCircle, ChevronDown, Clock, Command, Hash, Loader2, Spar
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
-import { setSessionYolo } from '@/lib/yolo-session'
 import { cn } from '@/lib/utils'
+import { setSessionYolo } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
@@ -308,17 +308,9 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        className: cn(
-          'w-8 justify-center px-2',
-          yoloActive && 'bg-[#f4e381] hover:bg-[#f4e381]',
-          yoloActive && !activeSessionId && 'ring-1 ring-inset ring-amber-700/15'
-        ),
+        className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
         hidden: !showYoloToggle,
-        icon: (
-          <Zap
-            className={cn('size-3.5 shrink-0', yoloActive ? 'text-amber-950' : 'opacity-70')}
-          />
-        ),
+        icon: <Zap className={cn('size-3.5 shrink-0', yoloActive || 'opacity-70')} />,
         id: 'yolo',
         onSelect: () => void toggleYolo(),
         title: yoloActive
@@ -348,16 +340,12 @@ export function useStatusbarItems({
               menuAlign: 'end' as const,
               menuClassName: 'w-64',
               menuContent: modelMenuContent,
-              title: currentProvider
-                ? `Model · ${currentProvider}: ${currentModel || 'none'}`
-                : 'Switch model',
+              title: currentProvider ? `Model · ${currentProvider}: ${currentModel || 'none'}` : 'Switch model',
               variant: 'menu' as const
             }
           : {
               onSelect: () => setModelPickerOpen(true),
-              title: currentProvider
-                ? `${currentProvider} · ${currentModel || 'no model'}`
-                : 'Open model picker',
+              title: currentProvider ? `${currentProvider} · ${currentModel || 'no model'}` : 'Open model picker',
               variant: 'action' as const
             })
       },
@@ -372,8 +360,6 @@ export function useStatusbarItems({
       currentModel,
       currentProvider,
       currentReasoningEffort,
-      freshDraftReady,
-      gatewayState,
       modelMenuContent,
       sessionStartedAt,
       showYoloToggle,
