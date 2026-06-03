@@ -834,10 +834,24 @@ def _load_context_cache() -> Dict[str, int]:
     try:
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-        return data.get("context_lengths", {})
+        raw = data.get("context_lengths", {})
+        # Normalize keys: strip trailing slashes so http://host/v1 and
+        # http://host/v1/ share the same cache entry.
+        return {
+            f"{model}@{_normalize_cache_base_url(url)}": length
+            for key, length in raw.items()
+            if "@" in key
+            for model, url in [key.split("@", 1)]
+            if isinstance(length, int)
+        }
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
         return {}
+
+
+def _normalize_cache_base_url(base_url: str) -> str:
+    """Strip trailing slashes so http://host/v1 and http://host/v1/ share a cache key."""
+    return base_url.rstrip("/") if base_url else base_url
 
 
 def save_context_length(model: str, base_url: str, length: int) -> None:
@@ -846,7 +860,7 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     Cache key is ``model@base_url`` so the same model name served from
     different providers can have different limits.
     """
-    key = f"{model}@{base_url}"
+    key = f"{model}@{_normalize_cache_base_url(base_url)}"
     cache = _load_context_cache()
     if cache.get(key) == length:
         return  # already stored
@@ -863,14 +877,14 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
 
 def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
     """Look up a previously discovered context length for model+provider."""
-    key = f"{model}@{base_url}"
+    key = f"{model}@{_normalize_cache_base_url(base_url)}"
     cache = _load_context_cache()
     return cache.get(key)
 
 
 def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     """Drop a stale cache entry so it gets re-resolved on the next lookup."""
-    key = f"{model}@{base_url}"
+    key = f"{model}@{_normalize_cache_base_url(base_url)}"
     cache = _load_context_cache()
     if key not in cache:
         return
@@ -1082,7 +1096,7 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
     # In-memory TTL cache: per model+base_url, avoids repeated disk reads and
     # network calls within the same process lifetime.
     global _ollama_context_cache, _ollama_context_cache_time
-    cache_key = f"{model}@{base_url}"
+    cache_key = f"{model}@{_normalize_cache_base_url(base_url)}"
     now = time.time()
     cached_at = _ollama_context_cache_time.get(cache_key, 0)
     if cache_key in _ollama_context_cache and (now - cached_at) < _OLLAMA_CONTEXT_CACHE_TTL:
