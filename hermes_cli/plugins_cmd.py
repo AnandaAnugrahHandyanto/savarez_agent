@@ -575,8 +575,18 @@ def cmd_update(name: str) -> None:
             f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date."
         )
     else:
+        manifest = _read_manifest(target)
+        review_names = _plugin_review_names(name, target, manifest)
+        _prompt_plugin_env_vars(manifest, console)
+        _display_after_install(target, name)
+        disabled_for_review = _disable_enabled_plugin_names(review_names)
         console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
         console.print(f"[dim]{out}[/dim]")
+        if disabled_for_review:
+            console.print(
+                "[yellow]Review required:[/yellow] Updated plugin content was "
+                "disabled until you explicitly enable it again."
+            )
 
 
 def cmd_remove(name: str) -> None:
@@ -647,6 +657,31 @@ def _save_enabled_set(enabled: set) -> None:
         config["plugins"] = {}
     config["plugins"]["enabled"] = sorted(enabled)
     save_config(config)
+
+
+def _plugin_review_names(name: str, target: Path, manifest: dict) -> set[str]:
+    """Return possible config keys for an updated plugin."""
+    names = {str(name), target.name}
+    manifest_name = manifest.get("name")
+    if manifest_name:
+        names.add(str(manifest_name))
+    return {candidate for candidate in names if candidate}
+
+
+def _disable_enabled_plugin_names(names: set[str]) -> bool:
+    """Disable any currently enabled plugin key in *names* pending review."""
+    enabled = _get_enabled_set()
+    disabled = _get_disabled_set()
+    matched = {name for name in names if name in enabled and name not in disabled}
+    if not matched:
+        return False
+    enabled.difference_update(matched)
+    disabled.update(matched)
+    _save_enabled_set(enabled)
+    _save_disabled_set(disabled)
+    for name in matched:
+        _toggle_plugin_toolset(name, enable=False)
+    return True
 
 
 def cmd_enable(name: str) -> None:
@@ -1612,7 +1647,21 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
 
     _copy_example_files(target, Console())
     unchanged = "Already up to date" in msg
-    return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
+    review_required = False
+    enabled_after_update = name in _get_enabled_set() and name not in _get_disabled_set()
+    if not unchanged:
+        manifest = _read_manifest(target)
+        review_names = _plugin_review_names(name, target, manifest)
+        review_required = _disable_enabled_plugin_names(review_names)
+        enabled_after_update = not review_required
+    return {
+        "ok": True,
+        "name": name,
+        "output": msg,
+        "unchanged": unchanged,
+        "review_required": review_required,
+        "enabled_after_update": enabled_after_update,
+    }
 
 
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
