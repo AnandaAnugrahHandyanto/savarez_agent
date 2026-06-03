@@ -11,6 +11,7 @@ Usage:
 """
 
 import importlib.util
+import json
 import logging
 import subprocess
 import sys
@@ -182,6 +183,51 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
     if not auto_yes and not prompt_yes_no("Continue anyway?", default=False):
         print_info("Migration cancelled. Stop the gateway and try again.")
         sys.exit(0)
+
+
+def _warn_if_remote_client(source_dir: Path) -> bool:
+    """Check if the OpenClaw source appears to be a remote-mode client.
+
+    When ``gateway.mode`` is ``\"remote\"``, the full OpenClaw configuration
+    (model settings, channels, MCPs, cron jobs, agent defaults, approvals)
+    lives on the remote server, not in the local ``openclaw.json``.  This
+    function warns the user so they don't expect a full migration.
+
+    Returns ``True`` if remote-mode was detected and a warning was printed.
+    """
+    for name in ("openclaw.json", "clawdbot.json", "moltbot.json"):
+        config_path = source_dir / name
+        if not config_path.exists():
+            continue
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        gateway = data.get("gateway", {})
+        mode = gateway.get("mode", "") if isinstance(gateway, dict) else ""
+
+        if mode == "remote":
+            print()
+            print(color("  ⚠ Remote-mode OpenClaw client detected", Colors.YELLOW))
+            print_info(
+                "This OpenClaw directory is configured as a remote-mode client "
+                "(gateway.mode: \"remote\"). The full configuration (model settings, "
+                "channels, MCPs, cron jobs, agent defaults, approvals) lives on the "
+                "remote server, not in this local directory. Only workspace files "
+                "and skills will be migrated."
+            )
+            print_info(
+                "To migrate the complete configuration, run this tool against "
+                "the server's OpenClaw directory instead."
+            )
+            print()
+            return True
+        # Config found but not remote-mode — nothing to warn about
+        return False
+
+    return False
+
 
 # State files commonly found in OpenClaw workspace directories — listed
 # during cleanup to help the user decide whether to archive
@@ -400,6 +446,9 @@ def _cmd_migrate(args):
 
     # Check if a Hermes gateway is running with connected platforms.
     _warn_if_gateway_running(auto_yes)
+
+    # Warn if the source is a remote-mode client (full config lives remotely).
+    _warn_if_remote_client(source_dir)
 
     # Ensure config.yaml exists before migration tries to read it
     config_path = get_config_path()
