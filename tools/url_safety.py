@@ -146,12 +146,28 @@ def _reset_allow_private_cache() -> None:
     _cached_allow_private = False
 
 
+# DNS64/NAT64 well-known prefix (RFC 6052) — synthesized AAAA records that
+# embed an IPv4 address in the last 32 bits.  Python marks these as
+# is_reserved, so without explicit handling they get blocked even when the
+# embedded IPv4 target is a legitimate public address.
+_NAT64_WKP = ipaddress.ip_network("64:ff9b::/96")
+
+
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
     # IPv4-mapped IPv6 addresses (``::ffff:x.x.x.x``) should be checked
     # by their embedded IPv4 address, not as IPv6
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         embedded_ip = ip.ipv4_mapped
+        return (embedded_ip.is_private or embedded_ip.is_loopback or
+                embedded_ip.is_link_local or embedded_ip.is_reserved or
+                embedded_ip.is_multicast or embedded_ip.is_unspecified or
+                embedded_ip in _CGNAT_NETWORK)
+
+    # DNS64/NAT64 synthesized addresses (64:ff9b::/96) — check the
+    # embedded IPv4 address instead of the reserved IPv6 prefix
+    if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_WKP:
+        embedded_ip = ipaddress.IPv4Address(ip.packed[-4:])
         return (embedded_ip.is_private or embedded_ip.is_loopback or
                 embedded_ip.is_link_local or embedded_ip.is_reserved or
                 embedded_ip.is_multicast or embedded_ip.is_unspecified or

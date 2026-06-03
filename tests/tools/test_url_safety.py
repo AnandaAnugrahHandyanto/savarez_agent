@@ -204,6 +204,13 @@ class TestIsBlockedIp:
         "100.64.0.1", "100.100.100.100", "100.127.255.254", "198.18.0.23",
         "::1", "fe80::1", "fc00::1", "fd12::1", "ff02::1",
         "::ffff:127.0.0.1", "::ffff:169.254.169.254",
+        # NAT64 with dangerous embedded IPv4 — must remain blocked
+        "64:ff9b::a9fe:a9fe",   # 169.254.169.254 (cloud metadata)
+        "64:ff9b::0a00:0001",   # 10.0.0.1 (private)
+        "64:ff9b::7f00:0001",   # 127.0.0.1 (loopback)
+        "64:ff9b::c0a8:0101",   # 192.168.1.1 (private)
+        "64:ff9b::e000:00fb",   # 224.0.0.251 (multicast)
+        "64:ff9b::0000:0000",   # 0.0.0.0 (unspecified)
     ])
     def test_blocked_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)
@@ -212,10 +219,73 @@ class TestIsBlockedIp:
     @pytest.mark.parametrize("ip_str", [
         "8.8.8.8", "93.184.216.34", "1.1.1.1", "100.0.0.1",
         "2606:4700::1", "2001:4860:4860::8888",
+        # NAT64 with public embedded IPv4 — must be allowed
+        "64:ff9b::6812:27e4",   # 104.18.39.228 (public, e.g. Cloudflare)
+        "64:ff9b::ac40:941c",   # 172.64.148.28 (public)
+        "64:ff9b::0101:0101",   # 1.1.1.1 (public)
+        "64:ff9b::0808:0808",   # 8.8.8.8 (public)
     ])
     def test_allowed_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)
         assert _is_blocked_ip(ip) is False, f"{ip_str} should be allowed"
+
+
+class TestNat64:
+    """DNS64/NAT64 synthesized addresses (64:ff9b::/96) handling.
+
+    When a DNS64 resolver returns synthesized AAAA records, the embedded
+    IPv4 address should be evaluated for SSRF — not the reserved IPv6 prefix.
+    """
+
+    def test_nat64_public_ip_allowed_via_is_safe_url(self):
+        """A NAT64-wrapped public IPv4 should not be blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::6812:27e4", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://www.bhphotovideo.com/") is True
+
+    def test_nat64_private_ip_blocked_via_is_safe_url(self):
+        """A NAT64-wrapped private IPv4 should still be blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::0a00:0001", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://internal.example/") is False
+
+    def test_nat64_loopback_blocked_via_is_safe_url(self):
+        """A NAT64-wrapped 127.0.0.1 should still be blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::7f00:0001", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://localhost.fake/") is False
+
+    def test_nat64_metadata_blocked_via_is_safe_url(self):
+        """A NAT64-wrapped 169.254.169.254 should still be blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::a9fe:a9fe", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://metadata-fake.example/") is False
+
+    def test_nat64_allowed_when_toggle_on(self):
+        """NAT64-wrapped private IP passes when allow_private_urls is on."""
+        import os
+        with patch.dict(os.environ, {"HERMES_ALLOW_PRIVATE_URLS": "true"}):
+            from tools.url_safety import _reset_allow_private_cache
+            _reset_allow_private_cache()
+            with patch("socket.getaddrinfo", return_value=[
+                (10, 1, 6, "", ("64:ff9b::c0a8:0101", 0, 0, 0)),
+            ]):
+                assert is_safe_url("http://router.local/") is True
+        _reset_allow_private_cache()
+
+    def test_nat64_mixed_with_plain_ipv4(self):
+        """When DNS returns both plain IPv4 and NAT64, all are checked.
+        The plain public IPv4 should not cause a block, and the NAT64
+        public should also pass."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("104.18.39.228", 0)),
+            (10, 1, 6, "", ("64:ff9b::6812:27e4", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://www.bhphotovideo.com/") is True
 
 
 class TestGlobalAllowPrivateUrls:
