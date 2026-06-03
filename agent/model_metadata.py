@@ -1788,7 +1788,25 @@ def get_model_context_length(
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
-            return ctx
+            # Guard: when models_dev reports a sub-1M value for an M3 slug,
+            # that value is a community-maintained underreport (M3 is 1M
+            # per platform.minimaxi.com).  Step 5f's return on non-None
+            # would otherwise short-circuit step 7's hardcoded
+            # "minimax-m3" -> 1000000 entry and the wrong value would
+            # surface in /usage and Compressor.  Mirror the step-1
+            # invalidation pattern (see M3 cache guard above) at the
+            # lookup site: drop the value and let execution fall through
+            # to step 7.  Scope is intentionally narrow (M3 only) so
+            # other models and providers are unaffected.
+            if _model_name_suggests_minimax_m3(model) and ctx < 1_000_000:
+                logger.info(
+                    "Rejecting models_dev context=%s for %r (M3 stale "
+                    "cache underreport, expected 1M); falling through to hardcoded defaults",
+                    ctx, model,
+                )
+                # Don't return — fall through to step 6/7/8/9/10.
+            else:
+                return ctx
 
     # 6. OpenRouter live API metadata — provider-unaware fallback.
     # Only consulted when the provider is unknown (no effective_provider),
