@@ -751,6 +751,30 @@ def _collect_auto_append_media_tags(
 
     return media_tags, has_voice_directive
 
+
+def _should_persist_hygiene_compression_result(
+    *,
+    old_session_id: str,
+    new_session_id: str,
+    original_messages: List[Dict[str, Any]],
+    compressed_messages: List[Dict[str, Any]],
+    compressor: Any,
+) -> bool:
+    """Return True when gateway hygiene actually produced a transcript update.
+
+    ``AIAgent._compress_context`` returns the input messages unchanged when
+    compression aborts or cannot acquire the per-session lock. Gateway hygiene
+    passes a filtered user/assistant transcript into that helper, so blindly
+    writing an unchanged result back to the active session can erase tool rows
+    and richer recent context from the canonical DB transcript.
+    """
+    if compressor is not None and getattr(compressor, "_last_compress_aborted", False):
+        return False
+    if new_session_id and new_session_id != old_session_id:
+        return True
+    return compressed_messages != original_messages
+
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -9177,42 +9201,27 @@ class GatewayRunner:
                                         ),
                                     )
 
+                                    _comp = getattr(_hyg_agent, "context_compressor", None)
+
                                     # _compress_context ends the old session and creates
                                     # a new session_id.  Write compressed messages into
                                     # the NEW session so the old transcript stays intact
                                     # and searchable via session_search.
                                     _hyg_new_sid = _hyg_agent.session_id
-                                    if _hyg_new_sid != session_entry.session_id:
+                                    _hyg_should_persist = _should_persist_hygiene_compression_result(
+                                        old_session_id=session_entry.session_id,
+                                        new_session_id=_hyg_new_sid,
+                                        original_messages=_hyg_msgs,
+                                        compressed_messages=_compressed,
+                                        compressor=_comp,
+                                    )
+
+                                    if _hyg_should_persist and _hyg_new_sid != session_entry.session_id:
                                         session_entry.session_id = _hyg_new_sid
                                         self.session_store._save()
                                         self._sync_telegram_topic_binding(
                                             source, session_entry,
                                             reason="hygiene-compression",
-                                        )
-
-                                    self.session_store.rewrite_transcript(
-                                        session_entry.session_id, _compressed
-                                    )
-                                    # Reset stored token count — transcript was rewritten
-                                    session_entry.last_prompt_tokens = 0
-                                    history = _compressed
-                                    _new_count = len(_compressed)
-                                    _new_tokens = estimate_messages_tokens_rough(
-                                        _compressed
-                                    )
-
-                                    logger.info(
-                                        "Session hygiene: compressed %s → %s msgs, "
-                                        "~%s → ~%s tokens",
-                                        _msg_count, _new_count,
-                                        f"{_approx_tokens:,}", f"{_new_tokens:,}",
-                                    )
-
-                                    if _new_tokens >= _warn_token_threshold:
-                                        logger.warning(
-                                            "Session hygiene: still ~%s tokens after "
-                                            "compression",
-                                            f"{_new_tokens:,}",
                                         )
 
                                     # If summary generation failed, the
@@ -9224,7 +9233,6 @@ class GatewayRunner:
                                     # is "frozen" at the current size and can
                                     # /compress to retry or /reset to start
                                     # fresh.
-                                    _comp = getattr(_hyg_agent, "context_compressor", None)
                                     if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
                                         _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
                                         _warn_msg = (
@@ -9243,6 +9251,31 @@ class GatewayRunner:
                                             logger.warning(
                                                 "Failed to deliver compression-failure warning to user: %s",
                                                 _werr,
+                                            )
+                                    elif _hyg_should_persist:
+                                        self.session_store.rewrite_transcript(
+                                            session_entry.session_id, _compressed
+                                        )
+                                        # Reset stored token count — transcript was rewritten
+                                        session_entry.last_prompt_tokens = 0
+                                        history = _compressed
+                                        _new_count = len(_compressed)
+                                        _new_tokens = estimate_messages_tokens_rough(
+                                            _compressed
+                                        )
+
+                                        logger.info(
+                                            "Session hygiene: compressed %s → %s msgs, "
+                                            "~%s → ~%s tokens",
+                                            _msg_count, _new_count,
+                                            f"{_approx_tokens:,}", f"{_new_tokens:,}",
+                                        )
+
+                                        if _new_tokens >= _warn_token_threshold:
+                                            logger.warning(
+                                                "Session hygiene: still ~%s tokens after "
+                                                "compression",
+                                                f"{_new_tokens:,}",
                                             )
                                     # Separately: if the user's CONFIGURED aux
                                     # model failed and we recovered by falling
