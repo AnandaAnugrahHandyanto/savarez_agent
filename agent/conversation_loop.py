@@ -3264,8 +3264,18 @@ def run_conversation(
                             "failed": True,
                             "error": f"content_policy_blocked: {_summary}",
                         }
+                    # Build an error response so Desktop/TUI users see what happened
+                    # instead of staring at a frozen "thinking" spinner (#35314, #17446).
+                    _err_summary = agent._summarize_api_error(api_error)
+                    _err_response = (
+                        f"❌ **模型调用失败**\\n\\n"
+                        f"HTTP {status_code} | {_provider} / {_model}\\n"
+                        f"摘要: {_err_summary}\\n\\n"
+                        f"这类错误重试无法修复。如果会话较长，可以尝试 `/new` 新建会话，"
+                        f"或通过 `/model` 切换到其他模型重试。"
+                    )
                     return {
-                        "final_response": None,
+                        "final_response": _err_response,
                         "messages": messages,
                         "api_calls": api_call_count,
                         "completed": False,
