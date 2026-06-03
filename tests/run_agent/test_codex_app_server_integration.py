@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
+from hermes_state import SessionDB
 import run_agent
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
@@ -49,7 +50,7 @@ def fake_session(monkeypatch):
     )
 
 
-def _make_codex_agent():
+def _make_codex_agent(*, session_db=None):
     """Construct an AIAgent in codex_app_server mode without contacting any
     real provider. We pass api_mode explicitly so the constructor takes the
     fast path for direct credentials."""
@@ -61,6 +62,7 @@ def _make_codex_agent():
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
+        session_db=session_db,
     )
 
 
@@ -97,6 +99,25 @@ class TestRunConversationCodexPath:
         final = [m for m in msgs if m.get("role") == "assistant"
                  and m.get("content") == "echo: hello"]
         assert final, f"expected final assistant message in {msgs}"
+
+    def test_codex_turn_persists_session_messages(self, fake_session, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            agent = _make_codex_agent(session_db=db)
+            with patch.object(agent, "_spawn_background_review", return_value=None):
+                result = agent.run_conversation("hello")
+
+            assert result["completed"] is True
+            rows = db.get_messages(agent.session_id)
+            assert [(row["role"], row["content"]) for row in rows] == [
+                ("user", "hello"),
+                ("assistant", None),
+                ("tool", "ok"),
+                ("assistant", "echo: hello"),
+            ]
+            assert db.get_session(agent.session_id)["message_count"] == 4
+        finally:
+            db.close()
 
     def test_nudge_counters_tick(self, fake_session):
         """The skill nudge counter must accumulate tool_iterations across
