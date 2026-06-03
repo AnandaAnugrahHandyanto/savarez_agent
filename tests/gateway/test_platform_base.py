@@ -458,6 +458,51 @@ class TestExtractMedia:
         assert [p for p, _ in media] == ["/r/a.png"]
         assert "`MEDIA:/ex/b.png`" in cleaned
 
+    def test_media_tag_supports_markdown_file(self):
+        """MEDIA: tags with .md paths must be extracted correctly."""
+        content = "Here is your report:\nMEDIA:/tmp/report.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/report.md", False)]
+        assert "MEDIA:" not in cleaned
+        assert "Here is your report" in cleaned
+
+    def test_media_tag_supports_markdown_file_with_spaces(self):
+        """MEDIA: .md paths with spaces in the filename must not be truncated.
+
+        Regression guard: without .md in the extension whitelist, the regex
+        falls back to the bare \\S+ branch which stops at the first space,
+        producing '/tmp/my' instead of '/tmp/my report.md'.
+        """
+        content = "MEDIA:/tmp/my report.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/my report.md", False)], (
+            "Path with spaces must not be truncated for .md files; "
+            "add 'md' to the extension whitelist in extract_media()"
+        )
+        assert cleaned == ""
+
+    def test_media_tag_supports_common_document_extensions(self):
+        """Common document/data/code/script extensions must all be whitelisted."""
+        cases = [
+            ("MEDIA:/tmp/data.json", "/tmp/data.json"),
+            ("MEDIA:/tmp/config.yaml", "/tmp/config.yaml"),
+            ("MEDIA:/tmp/config.yml", "/tmp/config.yml"),
+            ("MEDIA:/tmp/script.py", "/tmp/script.py"),
+            ("MEDIA:/tmp/setup.sh", "/tmp/setup.sh"),
+            ("MEDIA:/tmp/schema.sql", "/tmp/schema.sql"),
+            ("MEDIA:/tmp/app.log", "/tmp/app.log"),
+            ("MEDIA:/tmp/index.html", "/tmp/index.html"),
+            ("MEDIA:/tmp/index.htm", "/tmp/index.htm"),
+            ("MEDIA:/tmp/report.markdown", "/tmp/report.markdown"),
+        ]
+        for content, expected_path in cases:
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert len(media) == 1, f"Expected 1 match for {content!r}, got {media!r}"
+            assert media[0][0] == expected_path, (
+                f"Expected path {expected_path!r} for {content!r}, got {media[0][0]!r}"
+            )
+
+
 
 class TestMediaInsideSerializedJson:
     """Regression coverage for #34375 — MEDIA: embedded in serialized JSON
