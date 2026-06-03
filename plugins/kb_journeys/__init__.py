@@ -1226,6 +1226,201 @@ def _proposal_ids_for_item(item: Any) -> list[str]:
     return [str(pid).strip() for pid in proposal_ids if str(pid).strip()]
 
 
+def _preview_lease_payload(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return None
+    for candidate in (
+        payload.get("preview_lease"),
+        payload.get("lease"),
+        _get_path(payload, "preview", "preview_lease"),
+        _get_path(payload, "preview", "lease"),
+    ):
+        if isinstance(candidate, dict):
+            return dict(candidate)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _review_session_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    for candidate in (
+        payload.get("review_session"),
+        payload.get("preview_session"),
+        _get_path(payload, "preview", "review_session"),
+        _get_path(payload, "preview", "preview_session"),
+    ):
+        if isinstance(candidate, dict):
+            return dict(candidate)
+    return {}
+
+
+def _safe_scope_label(value: Any) -> str:
+    text = _clip(value, 120)
+    if not text:
+        return ""
+    # Scope text is user-facing; avoid rendering path-like or secret-like blobs
+    # from backend metadata. Counts are rendered separately.
+    if any(marker in text for marker in ("/", "\\", "~", "$", "://")):
+        return ""
+    return text
+
+
+def _queue_count_value(*values: Any) -> int | None:
+    for value in values:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if number >= 0:
+            return number
+    return None
+
+
+def _queue_preview_metadata(payload: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    lease = _preview_lease_payload(payload)
+    if lease:
+        metadata["preview_lease"] = lease
+    review_session = _review_session_payload(payload)
+    if review_session:
+        metadata["review_session"] = review_session
+        metadata["preview_session"] = review_session
+    return metadata
+
+
+def _apply_queue_preview_metadata(args: dict[str, Any], metadata: dict[str, Any]) -> None:
+    if not metadata:
+        return
+    review_session_id = _review_session_id(metadata)
+    if review_session_id:
+        args.setdefault("review_session_id", review_session_id)
+    cursor_id = _queue_cursor_id(metadata)
+    if cursor_id:
+        args.setdefault("cursor_id", cursor_id)
+    decision_scope = _queue_decision_scope(metadata)
+    if decision_scope:
+        args.setdefault("decision_scope", decision_scope)
+
+
+def _apply_queue_confirmation_preview_metadata(user_confirmation: dict[str, Any], metadata: dict[str, Any]) -> None:
+    if not metadata:
+        return
+    lease = metadata.get("preview_lease")
+    if isinstance(lease, dict) and lease:
+        user_confirmation["preview_lease"] = dict(lease)
+    elif isinstance(lease, str) and lease.strip():
+        user_confirmation["preview_lease_id"] = lease.strip()
+    review_session_id = _review_session_id(metadata)
+    if review_session_id:
+        user_confirmation["review_session_id"] = review_session_id
+
+
+def _review_session_id(metadata: dict[str, Any]) -> str:
+    review_session = metadata.get("review_session") or metadata.get("preview_session")
+    if not isinstance(review_session, dict):
+        return ""
+    return _short(
+        review_session.get("session_id")
+        or review_session.get("review_session_id")
+        or review_session.get("preview_session_id"),
+        "",
+    )
+
+
+def _queue_cursor_id(metadata: dict[str, Any]) -> str:
+    lease = metadata.get("preview_lease")
+    if isinstance(lease, dict):
+        cursor_id = _short(lease.get("cursor_id"), "")
+        if cursor_id:
+            return cursor_id
+    review_session = metadata.get("review_session") or metadata.get("preview_session")
+    if isinstance(review_session, dict):
+        cursor_id = _short(review_session.get("cursor_id"), "")
+        if cursor_id:
+            return cursor_id
+        cursor = review_session.get("cursor")
+        if isinstance(cursor, dict):
+            return _short(cursor.get("cursor_id"), "")
+    return ""
+
+
+def _queue_decision_scope(metadata: dict[str, Any]) -> str:
+    lease = metadata.get("preview_lease")
+    if isinstance(lease, dict):
+        scope = _queue_scope_value(lease.get("decision_scope")) or _queue_scope_value(lease.get("scope"))
+        if scope:
+            return scope
+    review_session = metadata.get("review_session") or metadata.get("preview_session")
+    if isinstance(review_session, dict):
+        return _queue_scope_value(review_session.get("decision_scope")) or _queue_scope_value(review_session.get("scope"))
+    return ""
+
+
+def _queue_scope_value(value: Any) -> str:
+    if isinstance(value, str):
+        return _short(value, "")
+    if isinstance(value, dict):
+        return _short(value.get("scope_type") or value.get("scope") or value.get("type"), "")
+    return ""
+
+
+def _queue_scope_display_label(value: Any) -> str:
+    scope = _queue_scope_value(value).strip().lower()
+    if not scope:
+        return ""
+    aliases = {
+        "all_viewed": "Visible",
+        "all_window": "Window",
+        "all_filtered": "Filter",
+        "explicit_ids": "Selected",
+    }
+    return aliases.get(scope, _safe_scope_label(scope.replace("_", " ").title()))
+
+
+def _queue_scope_lines(payload: Any) -> list[str]:
+    review_session = _review_session_payload(payload)
+    if not review_session:
+        return []
+    lease = _preview_lease_payload(payload)
+    cursor = review_session.get("cursor") if isinstance(review_session.get("cursor"), dict) else {}
+    scope = review_session.get("scope") if isinstance(review_session.get("scope"), dict) else {}
+    scope_label = _safe_scope_label(
+        review_session.get("scope_label")
+        or review_session.get("scope_description")
+        or scope.get("label")
+        or scope.get("description")
+        or _queue_scope_display_label(review_session.get("decision_scope"))
+        or _queue_scope_display_label(review_session.get("scope"))
+    )
+    item_count = _queue_count_value(
+        review_session.get("item_count"),
+        review_session.get("selected_item_count"),
+        review_session.get("selected_count"),
+        cursor.get("displayed_count"),
+        scope.get("item_count"),
+        scope.get("selected_count"),
+    )
+    proposal_count = _queue_count_value(
+        review_session.get("proposal_count"),
+        review_session.get("selected_proposal_count"),
+        len(lease.get("proposal_ids", [])) if isinstance(lease, dict) and isinstance(lease.get("proposal_ids"), list) else None,
+        scope.get("proposal_count"),
+    )
+    lines: list[str] = []
+    if scope_label:
+        lines.append(f"Scope: {scope_label}")
+    count_bits: list[str] = []
+    if item_count is not None:
+        count_bits.append(f"{item_count} item(s)")
+    if proposal_count is not None:
+        count_bits.append(f"{proposal_count} proposal(s)")
+    if count_bits:
+        lines.append("Review session: " + " · ".join(count_bits))
+    return lines
+
+
 def _result_payload(raw: Any) -> Any:
     payload, error = _unwrap_tool_result(raw)
     if error:
@@ -1323,7 +1518,7 @@ def _queue_decision_commands(item: dict[str, Any], *, index: int) -> list[str]:
         lines.append(f"- {label}: /kb queue {decision} {index}")
     if decisions:
         example_decision = decisions[0][0]
-        lines.append(f"Confirm after preview: /kb queue {example_decision} {index} confirm")
+        lines.append(f"Confirm from the preview button; text fallback: /kb queue {example_decision} {index} confirm")
     return lines
 
 
@@ -1470,6 +1665,7 @@ def _render_queue_descriptor_preview(
     text = _preview_text(decision, proposal_ids, preview_payload, selection=selection)
     if not _preview_allows_confirmation(preview_payload):
         return {"title": "KB Queue", "text": text, "actions": []}
+    preview_metadata = _queue_preview_metadata(preview_payload)
     label = _short(descriptor.get("label") or decision.replace("_", " ").title(), decision.title())
     action_id = _short(descriptor.get("action_id") or f"queue.{decision}", f"queue.{decision}")
     confirm_action = KbAction(
@@ -1482,12 +1678,15 @@ def _render_queue_descriptor_preview(
             index=index,
             descriptor=descriptor,
             callback_ctx=confirm_ctx,
+            preview_metadata=preview_metadata,
         ),
         metadata={
             "target_kind": "proposal_queue",
             "target_ref": _item_target(item),
             "decision": decision,
             "preview_required": True,
+            "preview_lease": bool(preview_metadata.get("preview_lease")),
+            "review_session_id": _review_session_id(preview_metadata),
         },
     )
     return {
@@ -1505,6 +1704,7 @@ def _render_queue_descriptor_confirm(
     index: int,
     descriptor: dict[str, Any],
     callback_ctx: Any,
+    preview_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     params = descriptor.get("params") if isinstance(descriptor.get("params"), dict) else {}
     decision = str(params.get("decision") or "").strip().lower()
@@ -1516,21 +1716,24 @@ def _render_queue_descriptor_confirm(
     preview_tool = _descriptor_tool_name(target, descriptor.get("preview_tool"))
     confirmed_tool = _descriptor_tool_name(target, descriptor.get("confirm_tool"))
     selection = [(index, item)]
-    preview_payload = _result_payload(
-        ctx.dispatch_tool(
-            preview_tool,
-            _queue_descriptor_call_args(
-                descriptor,
-                item,
-                decision=decision,
-                actor=actor,
-                source=source,
-                note=f"Re-previewed before Telegram action-card confirmation for {_item_title(item)}",
-            ),
+    effective_metadata = dict(preview_metadata or {})
+    if not effective_metadata.get("preview_lease"):
+        preview_payload = _result_payload(
+            ctx.dispatch_tool(
+                preview_tool,
+                _queue_descriptor_call_args(
+                    descriptor,
+                    item,
+                    decision=decision,
+                    actor=actor,
+                    source=source,
+                    note=f"Re-previewed before Telegram action-card confirmation for {_item_title(item)}",
+                ),
+            )
         )
-    )
-    if not _preview_allows_confirmation(preview_payload):
-        return {"title": "KB Queue", "text": _preview_text(decision, proposal_ids, preview_payload, selection=selection), "actions": []}
+        if not _preview_allows_confirmation(preview_payload):
+            return {"title": "KB Queue", "text": _preview_text(decision, proposal_ids, preview_payload, selection=selection), "actions": []}
+        effective_metadata.update(_queue_preview_metadata(preview_payload))
     confirmed_args = _queue_descriptor_call_args(
         descriptor,
         item,
@@ -1539,7 +1742,8 @@ def _render_queue_descriptor_confirm(
         source=source,
         note=f"Confirmed from Telegram action card for {_item_title(item)}",
     )
-    confirmed_args["session_id"] = f"telegram-kb-card-{int(time.time())}"
+    _apply_queue_preview_metadata(confirmed_args, effective_metadata)
+    confirmed_args["session_id"] = _review_session_id(effective_metadata) or f"telegram-kb-card-{int(time.time())}"
     confirmed_args["user_confirmation"] = {
         "confirmed": True,
         "surface": "telegram",
@@ -1548,6 +1752,7 @@ def _render_queue_descriptor_confirm(
         "confirmation_text": str(descriptor.get("confirmation_copy") or f"Confirm {decision}"),
         "proposal_ids": proposal_ids,
     }
+    _apply_queue_confirmation_preview_metadata(confirmed_args["user_confirmation"], effective_metadata)
     confirmed_payload = _result_payload(ctx.dispatch_tool(confirmed_tool, confirmed_args))
     return {
         "title": "KB Queue",
@@ -1711,6 +1916,7 @@ def _store_queue_text_preview_scope(
     decision: str,
     indices: list[int],
     selection: list[tuple[int, dict[str, Any]]],
+    preview_payload: Any = None,
 ) -> None:
     if not session_id:
         return
@@ -1725,6 +1931,7 @@ def _store_queue_text_preview_scope(
         "selection": _queue_selection_snapshot(selection),
         "proposal_ids": _proposal_ids_for_selection(selection),
     }
+    state["preview"]["preview_metadata"] = _queue_preview_metadata(preview_payload)
     _save_queue_scope_states(states)
 
 
@@ -1733,24 +1940,25 @@ def _get_queue_text_preview_scope(
     *,
     decision: str,
     indices: list[int],
-) -> list[tuple[int, dict[str, Any]]]:
+) -> tuple[list[tuple[int, dict[str, Any]]], dict[str, Any]]:
     states, state = _queue_scope_state(session_id)
     if state is None:
-        return []
+        return [], {}
     preview = state.get("preview")
     if _queue_scope_stale(preview):
         state.pop("preview", None)
         _save_queue_scope_states(states)
-        return []
+        return [], {}
     if str(preview.get("decision") or "").strip().lower() != str(decision or "").strip().lower():
-        return []
+        return [], {}
     try:
         recorded_indices = [int(index) for index in (preview.get("indices") or [])]
     except (TypeError, ValueError):
         recorded_indices = []
     if recorded_indices != [int(index) for index in indices]:
-        return []
-    return _queue_selection_from_snapshot(preview.get("selection"))
+        return [], {}
+    preview_metadata = preview.get("preview_metadata") if isinstance(preview.get("preview_metadata"), dict) else {}
+    return _queue_selection_from_snapshot(preview.get("selection")), dict(preview_metadata)
 
 
 def _preview_text(
@@ -1786,6 +1994,7 @@ def _preview_text(
                 "Confirm only if this item and decision match what you intend.",
             ]
         )
+        lines.extend(_queue_scope_lines(payload))
         return "\n".join(lines)
     lines = [f"Queue {decision} preview"]
     if selection:
@@ -1856,6 +2065,28 @@ def _confirmed_text(
     proposal_ids = proposal_ids or []
     past_tense = _decision_past_tense(decision)
     if isinstance(payload, dict):
+        status = _short(payload.get("status") or payload.get("state"), "")
+        reason = _short(payload.get("reason") or payload.get("message"), "")
+        if payload.get("ok") is False or status.lower() in {
+            "blocked",
+            "error",
+            "failed",
+            "operator_blocked",
+            "preview_lease_expired",
+            "preview_lease_missing",
+            "preview_lease_stale",
+            "stale_preview_lease",
+            "validation_failed",
+        }:
+            lines = [
+                f"Queue {decision.title()} Blocked",
+                f"Status: {status or 'blocked'} · ok: {_short(payload.get('ok'))}",
+            ]
+            if reason:
+                lines.append("Reason: " + _clip(reason, 220))
+            lines.extend(_receipt_lines(payload))
+            lines.append("Next: /kb queue")
+            return "\n".join(lines)
         publication = payload.get("publication") if isinstance(payload.get("publication"), dict) else {}
         git_state = payload.get("git") if isinstance(payload.get("git"), dict) else {}
         lines = [
@@ -2308,6 +2539,7 @@ def _render_visible_scope_all_decision(
             decision=decision,
             indices=indices,
             selection=selection,
+            preview_payload=preview_payload,
         )
         text += f"\nTo apply: /kb queue {decision} {_format_indices(indices)} confirm"
     return {"title": "KB Queue", "text": text, "actions": []}
@@ -2770,7 +3002,8 @@ def _queue_command_help() -> dict[str, Any]:
                 "Use /kb queue review 1 to inspect one item.",
                 "Use /kb queue reject 1 to preview a decision.",
                 "Use /kb queue complete 1 for a TODO-backed proposal.",
-                "Use /kb queue reject 1 confirm only after that exact Telegram preview.",
+                "Confirm from the Telegram preview button when available.",
+                "Text fallback: /kb queue reject 1 confirm only after that exact Telegram preview.",
                 "Reply Reject all to preview only the queue items currently shown in Telegram.",
             ]
         ),
@@ -2803,9 +3036,11 @@ def _render_queue_text_decision(
     decision: str,
     confirm: bool,
     session_id: str = "",
+    callback_ctx: Any | None = None,
 ) -> dict[str, Any]:
+    preview_metadata: dict[str, Any] = {}
     if confirm:
-        selection = _get_queue_text_preview_scope(session_id, decision=decision, indices=indices)
+        selection, preview_metadata = _get_queue_text_preview_scope(session_id, decision=decision, indices=indices)
         missing: list[int] = []
         if not selection:
             return {
@@ -2837,60 +3072,94 @@ def _render_queue_text_decision(
     index_text = _format_indices([index for index, _ in selection])
     preview_tool = _mcp_tool_name(target, "queue.decision_preview")
     confirmed_tool = _mcp_tool_name(target, "queue.batch_decide_confirmed")
-    actor = "telegram:operator"
+    actor = _queue_callback_actor(callback_ctx) if callback_ctx is not None else "telegram:operator"
     source = "Hermes Telegram"
-    preview_payload = _result_payload(
-        ctx.dispatch_tool(
-            preview_tool,
-            {
-                "proposal_ids": proposal_ids,
-                "decision": decision,
-                "actor": actor,
-                "source": source,
-                "note": f"Previewed from Telegram /kb queue text command for {selected_titles}",
-            },
+    preview_payload: Any = None
+    if not confirm or not preview_metadata.get("preview_lease"):
+        preview_payload = _result_payload(
+            ctx.dispatch_tool(
+                preview_tool,
+                {
+                    "proposal_ids": proposal_ids,
+                    "decision": decision,
+                    "actor": actor,
+                    "source": source,
+                    "note": f"Previewed from Telegram /kb queue text command for {selected_titles}",
+                },
+            )
         )
-    )
+        if confirm:
+            preview_metadata.update(_queue_preview_metadata(preview_payload))
     if not confirm:
         text = _preview_text(decision, proposal_ids, preview_payload, selection=selection)
         if missing:
             text += "\nMissing queue item(s): " + ", ".join(str(index) for index in missing)
+        actions: list[Any] = []
         if _preview_allows_confirmation(preview_payload):
             _store_queue_text_preview_scope(
                 session_id,
                 decision=decision,
                 indices=[index for index, _ in selection],
                 selection=selection,
+                preview_payload=preview_payload,
             )
-            text += f"\nTo apply: /kb queue {decision} {index_text} confirm"
-        return {"title": "KB Queue", "text": text, "actions": []}
-    if not _preview_allows_confirmation(preview_payload):
+            text += "\nConfirm with the button below when it matches your intent."
+            text += f"\nText fallback: /kb queue {decision} {index_text} confirm"
+            try:
+                from tools.kb_callback_registry import KbAction
+
+                metadata = _queue_preview_metadata(preview_payload)
+                actions = [
+                    KbAction(
+                        label=f"Confirm {decision.title()}",
+                        action_id=f"queue.{decision}.confirm",
+                        handler=lambda confirm_ctx: _render_queue_text_decision(
+                            ctx,
+                            target,
+                            data,
+                            indices=[index for index, _ in selection],
+                            decision=decision,
+                            confirm=True,
+                            session_id=session_id,
+                            callback_ctx=confirm_ctx,
+                        ),
+                        metadata={
+                            "target_kind": "proposal_queue",
+                            "decision": decision,
+                            "preview_required": True,
+                            "preview_lease": bool(metadata.get("preview_lease")),
+                            "review_session_id": _review_session_id(metadata),
+                        },
+                    )
+                ]
+            except Exception:
+                actions = []
+        return {"title": "KB Queue", "text": text, "actions": actions}
+    if not preview_metadata.get("preview_lease") and not _preview_allows_confirmation(preview_payload):
         return {
             "title": "KB Queue",
             "text": _preview_text(decision, proposal_ids, preview_payload, selection=selection),
             "actions": [],
         }
-    confirmed_payload = _result_payload(
-        ctx.dispatch_tool(
-            confirmed_tool,
-            {
-                "proposal_ids": proposal_ids,
-                "decision": decision,
-                "actor": actor,
-                "source": source,
-                "session_id": f"telegram-kb-text-{int(time.time())}",
-                "user_confirmation": {
-                    "confirmed": True,
-                    "surface": "telegram",
-                    "action": f"queue.{decision}",
-                    "preview_required": True,
-                    "confirmation_text": f"/kb queue {decision} {index_text} confirm",
-                    "proposal_ids": proposal_ids,
-                },
-                "note": f"Confirmed from Telegram /kb queue text command for {selected_titles}",
-            },
-        )
-    )
+    confirmed_args = {
+        "proposal_ids": proposal_ids,
+        "decision": decision,
+        "actor": actor,
+        "source": source,
+        "session_id": _review_session_id(preview_metadata) or f"telegram-kb-text-{int(time.time())}",
+        "user_confirmation": {
+            "confirmed": True,
+            "surface": "telegram",
+            "action": f"queue.{decision}",
+            "preview_required": True,
+            "confirmation_text": f"/kb queue {decision} {index_text} confirm",
+            "proposal_ids": proposal_ids,
+        },
+        "note": f"Confirmed from Telegram /kb queue text command for {selected_titles}",
+    }
+    _apply_queue_preview_metadata(confirmed_args, preview_metadata)
+    _apply_queue_confirmation_preview_metadata(confirmed_args["user_confirmation"], preview_metadata)
+    confirmed_payload = _result_payload(ctx.dispatch_tool(confirmed_tool, confirmed_args))
     text = _confirmed_text(decision, confirmed_payload, selection=selection, proposal_ids=proposal_ids)
     if missing:
         text += "\nSkipped missing queue item(s): " + ", ".join(str(index) for index in missing)
@@ -3257,7 +3526,7 @@ def _render_queue(
         lines.append("Then preview a listed action, for example: /kb queue reject 1")
         lines.append("Batch: /kb queue reject 1,2")
         lines.append("Visible batch: reply Reject all to preview only the items shown here")
-        lines.append("Confirm after preview: /kb queue reject 1 confirm")
+        lines.append("Confirm from the preview button when available; text fallback: /kb queue reject 1 confirm")
     return {"title": "KB Queue", "text": "\n".join(lines), "actions": []}
 
 
@@ -3305,7 +3574,8 @@ def _kb_command_help() -> dict[str, Any]:
                 "/kb queue - proposal review list",
                 "/kb queue review 1 - inspect one queue item",
                 "/kb queue reject 1 - preview a decision",
-                "/kb queue reject 1 confirm - apply a previewed decision",
+                "Confirm queue decisions from the preview button when available",
+                "/kb queue reject 1 confirm - text fallback for a previewed decision",
                 "/kb publish - preview KB Git publication",
                 "/kb publish confirm - commit and push after preview",
                 "/kb status - lane, Hermes/KB reasoning, readiness, publication",

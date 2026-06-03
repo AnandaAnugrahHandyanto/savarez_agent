@@ -940,6 +940,118 @@ def test_kbqueue_review_item_renders_descriptor_preview_and_confirm_buttons(monk
     assert ctx.calls[-1][1]["user_confirmation"]["preview_required"] is True
 
 
+def test_kbqueue_descriptor_confirm_carries_lease_session_and_blocks_stale_result(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_queue_summary": {
+                "result": {
+                    "total": 1,
+                    "items": [
+                        {
+                            "item_id": "accounts/mistral",
+                            "title": "Mistral",
+                            "kind": "proposal_entity",
+                            "summary": "Admission: Mistral has Nemotron Coalition licensing coordination.",
+                            "raw": {"proposal_ids": ["act_2"]},
+                            "safe_actions": [
+                                {
+                                    "packet_type": "dashboard_action_descriptor",
+                                    "schema_version": 2,
+                                    "action_id": "review.entity_reject",
+                                    "label": "Reject",
+                                    "target_kind": "proposal_queue",
+                                    "target_ref": "accounts/mistral",
+                                    "preview_tool": "queue.decision_preview",
+                                    "confirm_tool": "queue.batch_decide_confirmed",
+                                    "params": {"proposal_ids": ["act_2"], "decision": "reject"},
+                                    "dashboard_owned_write": False,
+                                    "requires_canonical_tool": True,
+                                    "confirmation_copy": "Confirm Reject after reviewing the preview.",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            },
+            "mcp_kb_engine_prod_queue_decision_preview": {
+                "result": {
+                    "status": "preview",
+                    "ok": True,
+                    "plan": {"summary": "Reject 1 proposal."},
+                    "preview_lease": {
+                        "preview_lease_id": "lease_123",
+                        "review_session_id": "review_session_123",
+                        "cursor_id": "cursor_123",
+                        "decision_scope": "all_viewed",
+                        "proposal_ids": ["act_2"],
+                        "expires_at": "2026-06-03T12:00:00Z",
+                    },
+                    "review_session": {
+                        "review_session_id": "review_session_123",
+                        "decision_scope": "all_viewed",
+                        "cursor": {
+                            "cursor_id": "cursor_123",
+                            "displayed_count": 1,
+                            "candidate_count": 5,
+                        },
+                    },
+                }
+            },
+            "mcp_kb_engine_prod_queue_batch_decide_confirmed": {
+                "result": {
+                    "status": "preview_lease_stale",
+                    "ok": False,
+                    "reason": "Preview lease expired; refresh the queue.",
+                }
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb queue review 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    preview_action = next(action for action in adapter.sent[0]["actions"] if action.label == "Preview Reject")
+
+    preview_card = preview_action.handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
+    if asyncio.iscoroutine(preview_card):
+        preview_card = asyncio.run(preview_card)
+
+    assert "Scope: Visible" in preview_card["text"]
+    assert "Review session: 1 item(s) · 1 proposal(s)" in preview_card["text"]
+    assert "lease_123" not in preview_card["text"]
+    assert preview_card["actions"][0].metadata["preview_lease"] is True
+    assert preview_card["actions"][0].metadata["review_session_id"] == "review_session_123"
+
+    confirm_card = preview_card["actions"][0].handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
+    if asyncio.iscoroutine(confirm_card):
+        confirm_card = asyncio.run(confirm_card)
+
+    assert "Queue Reject Blocked" in confirm_card["text"]
+    assert "Preview lease expired" in confirm_card["text"]
+    assert "Queue Reject Applied" not in confirm_card["text"]
+    assert [call[0] for call in ctx.calls] == [
+        "mcp_kb_engine_prod_queue_summary",
+        "mcp_kb_engine_prod_queue_decision_preview",
+        "mcp_kb_engine_prod_queue_batch_decide_confirmed",
+    ]
+    confirm_args = ctx.calls[-1][1]
+    assert "preview_lease" not in confirm_args
+    assert "review_session" not in confirm_args
+    assert "preview_session" not in confirm_args
+    assert confirm_args["user_confirmation"]["preview_lease"]["preview_lease_id"] == "lease_123"
+    assert confirm_args["session_id"] == "review_session_123"
+    assert confirm_args["review_session_id"] == "review_session_123"
+    assert confirm_args["cursor_id"] == "cursor_123"
+    assert confirm_args["decision_scope"] == "all_viewed"
+    assert confirm_args["user_confirmation"]["review_session_id"] == "review_session_123"
+
+
 def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 
@@ -984,8 +1096,9 @@ def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeyp
 
     assert preview == {"action": "skip", "reason": "kb_journeys"}
     assert "Queue reject preview" in adapter.sent[0]["text"]
-    assert "To apply: /kb queue reject 1 confirm" in adapter.sent[0]["text"]
-    assert adapter.sent[0]["actions"] == []
+    assert "Confirm with the button below" in adapter.sent[0]["text"]
+    assert "Text fallback: /kb queue reject 1 confirm" in adapter.sent[0]["text"]
+    assert adapter.sent[0]["actions"][0].label == "Confirm Reject"
 
     applied = hook(event=_event("/kb queue reject 1 confirm"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
@@ -1391,7 +1504,8 @@ def test_kbqueue_todo_complete_decision_uses_queue_decision_contract(monkeypatch
     assert preview == {"action": "skip", "reason": "kb_journeys"}
     assert confirmed == {"action": "skip", "reason": "kb_journeys"}
     assert "Queue complete preview" in adapter.sent[0]["text"]
-    assert "To apply: /kb queue complete 1 confirm" in adapter.sent[0]["text"]
+    assert "Confirm with the button below" in adapter.sent[0]["text"]
+    assert "Text fallback: /kb queue complete 1 confirm" in adapter.sent[0]["text"]
     assert "Queue Complete Applied" in adapter.sent[1]["text"]
     assert ctx.calls[-2][0] == "mcp_kb_engine_prod_queue_decision_preview"
     assert ctx.calls[-2][1]["decision"] == "complete"
