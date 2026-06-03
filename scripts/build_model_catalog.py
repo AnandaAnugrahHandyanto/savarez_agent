@@ -33,7 +33,11 @@ sys.path.insert(0, REPO_ROOT)
 # Ensure HERMES_HOME is set for imports that touch it at module level.
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
 
-from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS  # noqa: E402
+from hermes_cli.models import (  # noqa: E402
+    OPENROUTER_MODELS,
+    _OPENROUTER_PINNED_IDS,
+    _PROVIDER_MODELS,
+)
 
 OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "model-catalog.json")
 CATALOG_VERSION = 1
@@ -53,11 +57,18 @@ def build_catalog() -> dict:
                     "display_name": "OpenRouter",
                     "note": (
                         "Descriptions drive picker badges. Live /api/v1/models "
-                        "filters curated ids by tool-calling support and free pricing."
+                        "filters curated ids by tool-calling support and free pricing. "
+                        'Models flagged "pinned" stay at the top of the picker '
+                        "regardless of usage-based reordering (openrouter.sort_by_usage); "
+                        "everything else is ordered by openrouter.ai/rankings daily usage."
                     ),
                 },
                 "models": [
-                    {"id": mid, "description": desc}
+                    (
+                        {"id": mid, "description": desc, "pinned": True}
+                        if mid in _OPENROUTER_PINNED_IDS
+                        else {"id": mid, "description": desc}
+                    )
                     for mid, desc in OPENROUTER_MODELS
                 ],
             },
