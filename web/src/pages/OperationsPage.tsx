@@ -32,6 +32,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { AdapterHealthCard } from "@/components/AdapterHealthCard";
+import { useI18n } from "@/i18n";
 import { isoTimeAgo, timeAgo } from "@/lib/utils";
 
 type KnownState = "healthy" | "degraded" | "critical";
@@ -410,6 +411,7 @@ function actionWhy(action: AlertAction, alert: OperationAlert): string {
 
 
 export default function OperationsPage() {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const { setTitle } = usePageHeader();
   const [project, setProject] = useState(DEFAULT_PROJECT);
@@ -737,7 +739,7 @@ export default function OperationsPage() {
     <div className="space-y-4 p-4 lg:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-normal text-foreground">Agent Operations</h1>
+          <h1 className="text-xl font-semibold tracking-normal text-foreground">{t.operations?.title ?? "Agent Operations"}</h1>
           <p className="mt-1 max-w-3xl text-sm normal-case text-muted-foreground">
             Single cockpit for health, queue pressure, routing explanation, risk alerts, and ledger-backed collaboration samples.
           </p>
@@ -937,7 +939,7 @@ export default function OperationsPage() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <CardTitle className="flex items-center gap-2 text-base">
                 <Bot className="h-4 w-4" />
-                Agent Health Contract
+                {t.operations?.agentHealth ?? "Agent Health"}
               </CardTitle>
               <Badge tone={routing?.preview ? "success" : "secondary"}>
                 routing {routing?.preview ? "available" : "unknown"}
@@ -1064,7 +1066,7 @@ export default function OperationsPage() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
                 <ClipboardList className="h-4 w-4" />
-                Queue And Scheduler
+                {t.operations?.queueAndScheduler ?? "Queue And Scheduler"}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
@@ -1114,7 +1116,7 @@ export default function OperationsPage() {
                 <Route className="h-4 w-4" />
                 Routing Explanation
               </CardTitle>
-              <Badge tone="secondary" className="text-[10px]">advisory only</Badge>
+              <Badge tone="secondary" className="text-[10px]">{t.operations?.advisoryOnly ?? "advisory only"}</Badge>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <div className="grid gap-3">
@@ -1211,7 +1213,7 @@ export default function OperationsPage() {
                     {routing?.reroute?.reason ?? "No routing preview loaded."}
                   </div>
                   <div className="mt-1">
-                    <Badge tone="secondary" className="text-[9px]">suggestion only</Badge>
+                    <Badge tone="secondary" className="text-[9px]">{t.operations?.suggestionOnly ?? "suggestion only"}</Badge>
                   </div>
                 </div>
               </div>

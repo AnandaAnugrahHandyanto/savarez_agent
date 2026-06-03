@@ -750,4 +750,49 @@ export interface Translations {
     logTruncated: string;
     logAt: string;
   };
+
+  // ── Operations (运营中心) ──
+  operations?: {
+    title: string;
+    agentHealth: string;
+    adapterHealth: string;
+    queueAndScheduler: string;
+    scheduler: string;
+    queue: string;
+    watchdog: string;
+    effectiveness: string;
+    eval: string;
+    handoff: string;
+    alerts: string;
+    policy: string;
+    routing: string;
+    capabilityMatrix: string;
+    routerExplanation: string;
+    stabilityStats: string;
+    advisoryOnly: string;
+    suggestionOnly: string;
+    enabled: string;
+    disabled: string;
+    unknown: string;
+    noAlerts: string;
+  };
+
+  // ── v2.10 Multi-Entry ──
+  v210?: {
+    contextTitle: string;
+    mode: string;
+    modeCliLegacy: string;
+    modeMultiEntry: string;
+    modeCliLegacyDesc: string;
+    workspaces: string;
+    sessions: string;
+    adapters: string;
+    adapterHealthTitle: string;
+    loadError: string;
+    statusConnected: string;
+    statusDisconnected: string;
+    statusUnknown: string;
+    statusUnregistered: string;
+    statusError: string;
+  };
 }
