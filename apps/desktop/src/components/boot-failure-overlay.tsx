@@ -1,12 +1,18 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { AlertTriangle, FileText, Loader2, RefreshCw, Wrench } from '@/lib/icons'
+import { AlertTriangle, FileText, Loader2, Monitor, RefreshCw, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 type BusyAction = 'local' | 'repair' | 'retry' | null
+
+// After this many boot-failure events within the window, the overlay
+// refuses to auto-dismiss and shows escalated recovery options (including
+// a direct gateway-settings button) even while boot.running is true.
+const ESCALATE_AFTER_FAILURES = 2
+const FAILURE_WINDOW_MS = 30_000
 
 // Recovery surface for a hard boot failure (gateway never came up, backend
 // exited during startup, bootstrap latched, …). Without this the app shell
@@ -25,8 +31,35 @@ export function BootFailureOverlay() {
   // higher z-index regardless of onboarding state.
   const suppressed = onboarding.flow.status !== 'idle' && onboarding.flow.status !== 'error'
 
+  // Track failure timestamps to detect persistent retry loops. After
+  // ESCALATE_AFTER_FAILURES failures within FAILURE_WINDOW_MS, the overlay
+  // stays visible even while boot.running is true so the user can switch
+  // gateway settings without the overlay disappearing between retries.
+  const failureTimestamps = useRef<number[]>([])
+  const [escalated, setEscalated] = useState(false)
+
   useEffect(() => {
-    if (!visible) {
+    if (!visible) return
+    const now = Date.now()
+    failureTimestamps.current = failureTimestamps.current.filter(ts => now - ts < FAILURE_WINDOW_MS)
+    failureTimestamps.current.push(now)
+    if (failureTimestamps.current.length >= ESCALATE_AFTER_FAILURES) {
+      setEscalated(true)
+    }
+  }, [visible])
+
+  // Clear escalation when boot succeeds
+  useEffect(() => {
+    if (boot.phase === 'renderer.ready' && !boot.error) {
+      setEscalated(false)
+      failureTimestamps.current = []
+    }
+  }, [boot.phase, boot.error])
+
+  const effectiveVisible = visible || (escalated && Boolean(boot.error))
+
+  useEffect(() => {
+    if (!effectiveVisible) {
       return
     }
 
@@ -36,7 +69,7 @@ export function BootFailureOverlay() {
       .catch(() => undefined)
   }, [visible])
 
-  if (!visible || suppressed) {
+  if (!effectiveVisible || suppressed) {
     return null
   }
 
@@ -92,9 +125,9 @@ export function BootFailureOverlay() {
                 {busy === 'repair' ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
                 Repair install
               </Button>
-              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
-                {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : null}
-                Use local gateway
+              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant={escalated ? 'default' : 'outline'}>
+                {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : <Monitor className="size-4" />}
+                Switch to local gateway
               </Button>
               <Button onClick={openLogs} variant="ghost">
                 <FileText className="size-4" />
@@ -102,7 +135,9 @@ export function BootFailureOverlay() {
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
-              Repair re-runs the installer and can take a few minutes on a fresh machine.
+              {escalated
+                ? 'Multiple connection attempts failed. Check your remote gateway URL and token, or switch to local mode.'
+                : 'Repair re-runs the installer and can take a few minutes on a fresh machine.'}
             </p>
           </div>
 
