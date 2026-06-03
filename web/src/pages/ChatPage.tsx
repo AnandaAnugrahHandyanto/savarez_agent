@@ -408,19 +408,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     //
     // Three independent paths all route to the system clipboard:
     //
-    //   1. **Selection → Ctrl+C (or Cmd+C on macOS).**  Ink's own handler
+    //   1. **Mouse selection.**  On mouseup, if xterm has a selection,
+    //      write it directly to the system clipboard. This matches the
+    //      browser terminal expectation that dragging over text copies it
+    //      without needing a second keyboard shortcut.
+    //
+    //   2. **Selection → Ctrl+C (or Cmd+C on macOS).**  Ink's own handler
     //      in useInputHandlers.ts turns Ctrl+C into a copy when the
     //      terminal has a selection, then emits an OSC 52 escape.  Our
     //      OSC 52 handler below decodes that escape and writes to the
     //      browser clipboard — so the flow works just like it does in
     //      `hermes --tui`.
     //
-    //   2. **Ctrl/Cmd+Shift+C.**  Belt-and-suspenders shortcut that
+    //   3. **Ctrl/Cmd+Shift+C.**  Belt-and-suspenders shortcut that
     //      operates directly on xterm's selection, useful if the TUI
     //      ever stops listening (e.g. overlays / pickers) or if the user
     //      has selected with the mouse outside of Ink's selection model.
     //
-    //   3. **Ctrl/Cmd+Shift+V.**  Reads the system clipboard and feeds
+    //   4. **Ctrl/Cmd+Shift+V.**  Reads the system clipboard and feeds
     //      it to the terminal as keyboard input.  xterm's paste() wraps
     //      it with bracketed-paste if the host has that mode enabled.
     //
@@ -529,6 +534,44 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(new WebLinksAddon());
 
     term.open(host);
+
+    // Make plain click-drag act like a browser terminal selection even when
+    // the child TUI/tmux has enabled xterm mouse tracking. xterm's public
+    // option only supports forcing this with Option/Alt; Deniz expects normal
+    // drag-select to copy text, so override the internal selection gate for
+    // primary-button drags in this embedded dashboard terminal.
+    const selectionService = (term as unknown as {
+      _core?: {
+        _selectionService?: {
+          shouldForceSelection?: (event: MouseEvent) => boolean;
+        };
+      };
+    })._core?._selectionService;
+    const originalShouldForceSelection = selectionService?.shouldForceSelection?.bind(selectionService);
+    if (selectionService && originalShouldForceSelection) {
+      selectionService.shouldForceSelection = (event: MouseEvent) => {
+        if (event.button === 0) return true;
+        return originalShouldForceSelection(event);
+      };
+    }
+
+    let lastMouseSelectionCopy = "";
+    const copyTerminalSelectionOnMouseUp = () => {
+      const selected = term.getSelection();
+      if (!selected || selected === lastMouseSelectionCopy) return;
+      lastMouseSelectionCopy = selected;
+      navigator.clipboard.writeText(selected).catch((err) => {
+        console.warn("[dashboard clipboard] mouse selection copy failed:", err.message);
+      });
+      setCopyState("copied");
+      if (copyResetRef.current) clearTimeout(copyResetRef.current);
+      copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
+    };
+    const resetLastMouseSelectionCopy = () => {
+      if (!term.getSelection()) lastMouseSelectionCopy = "";
+    };
+    const selectionDisposable = term.onSelectionChange(resetLastMouseSelectionCopy);
+    host.addEventListener("mouseup", copyTerminalSelectionOnMouseUp);
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
@@ -760,6 +803,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // effect's top level so it can't reach into that scope — close via
       // the ref instead. ``?.`` covers the race where unmount fires before
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
+      host.removeEventListener("mouseup", copyTerminalSelectionOnMouseUp);
+      selectionDisposable.dispose();
+      if (selectionService && originalShouldForceSelection) {
+        selectionService.shouldForceSelection = originalShouldForceSelection;
+      }
       wsRef.current?.close();
       wsRef.current = null;
       term.dispose();
