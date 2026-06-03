@@ -3139,7 +3139,14 @@ class GatewayRunner:
 
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
-            adapter = self._resolve_adapter(event)
+            adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
             if not adapter:
                 return True
 
@@ -3166,7 +3173,14 @@ class GatewayRunner:
             return True
 
         # Normal busy case (agent actively running a task)
-        adapter = self._resolve_adapter(event)
+        adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
         if not adapter:
             return False  # let default path handle it
 
@@ -6890,7 +6904,14 @@ class GatewayRunner:
                     platform_name, source.user_id, source.user_name or ""
                 )
                 if code:
-                    adapter = self._resolve_adapter(event)
+                    adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                     if adapter:
                         await adapter.send(
                             source.chat_id,
@@ -6900,7 +6921,14 @@ class GatewayRunner:
                             f"`hermes pairing approve {platform_name} {code}`"
                         )
                 else:
-                    adapter = self._resolve_adapter(event)
+                    adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                     if adapter:
                         await adapter.send(
                             source.chat_id,
@@ -7197,7 +7225,14 @@ class GatewayRunner:
                 queued_text = event.get_command_args().strip()
                 if not queued_text:
                     return "Usage: /queue <prompt>"
-                adapter = self._resolve_adapter(event)
+                adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                 if adapter:
                     queued_event = MessageEvent(
                         text=queued_text,
@@ -7207,7 +7242,14 @@ class GatewayRunner:
                         channel_prompt=event.channel_prompt,
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
-                depth = self._queue_depth(_quick_key, adapter=self._resolve_adapter(event))
+                depth = self._queue_depth(_quick_key, adapter=self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        ))
                 if depth <= 1:
                     return "Queued for the next turn."
                 return f"Queued for the next turn. ({depth} queued)"
@@ -7224,7 +7266,14 @@ class GatewayRunner:
                 running_agent = self._running_agents.get(_quick_key)
                 if running_agent is _AGENT_PENDING_SENTINEL:
                     # Agent hasn't started yet — queue as turn-boundary fallback.
-                    adapter = self._resolve_adapter(event)
+                    adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                     if adapter:
                         queued_event = MessageEvent(
                             text=steer_text,
@@ -7246,7 +7295,14 @@ class GatewayRunner:
                         return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
                     return "Steer rejected (empty payload)."
                 # Running agent is missing or lacks steer() — fall back to queue.
-                adapter = self._resolve_adapter(event)
+                adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                 if adapter:
                     queued_event = MessageEvent(
                         text=steer_text,
@@ -7358,7 +7414,14 @@ class GatewayRunner:
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
-                adapter = self._resolve_adapter(event)
+                adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                 if adapter:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
@@ -7379,7 +7442,14 @@ class GatewayRunner:
                     time.time() - _started_at,
                     _quick_key,
                 )
-                adapter = self._resolve_adapter(event)
+                adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                 if adapter:
                     merge_pending_message_event(
                         adapter._pending_messages,
@@ -7399,7 +7469,14 @@ class GatewayRunner:
                     return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
                 # Queue the message so it will be picked up after the
                 # agent starts.
-                adapter = self._resolve_adapter(event)
+                adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                 if adapter:
                     merge_pending_message_event(
                         adapter._pending_messages,
@@ -8061,7 +8138,14 @@ class GatewayRunner:
                     "VOICE_TOOLS_OPENAI_KEY",
                 )
                 if any(marker in message_text for marker in _stt_fail_markers):
-                    _stt_adapter = self._resolve_adapter(event)
+                    _stt_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                     _stt_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _stt_adapter:
                         try:
@@ -8181,7 +8265,14 @@ class GatewayRunner:
                     allowed_root=_msg_cwd,
                 )
                 if _ctx_result.blocked:
-                    _adapter = self._resolve_adapter(event)
+                    _adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                     if _adapter:
                         await _adapter.send(
                             source.chat_id,
@@ -8367,7 +8458,14 @@ class GatewayRunner:
                     and platform_name not in policy.notify_exclude_platforms
                 )
                 if should_notify:
-                    adapter = self._resolve_adapter(event)
+                    adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                     if adapter:
                         if reset_reason == "suspended":
                             reason_text = "previous session was stopped or interrupted"
@@ -8709,7 +8807,14 @@ class GatewayRunner:
                                             "configuration."
                                         )
                                         try:
-                                            _adapter = self._resolve_adapter(event)
+                                            _adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                                             if _adapter and source.chat_id:
                                                 await _adapter.send(source.chat_id, _warn_msg, metadata=_hyg_meta)
                                         except Exception as _werr:
@@ -8733,7 +8838,14 @@ class GatewayRunner:
                                             "check `auxiliary.compression.model` in config.yaml."
                                         )
                                         try:
-                                            _adapter = self._resolve_adapter(event)
+                                            _adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                                             if _adapter and source.chat_id:
                                                 await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
                                         except Exception as _werr:
@@ -8821,7 +8933,14 @@ class GatewayRunner:
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
         self._bind_adapter_run_generation(
-            self._resolve_adapter(event),
+            self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        ),
             session_key,
             run_generation,
         )
@@ -8852,7 +8971,14 @@ class GatewayRunner:
 
             # Stop persistent typing indicator now that the agent is done
             try:
-                _typing_adapter = self._resolve_adapter(event)
+                _typing_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                 if _typing_adapter and hasattr(_typing_adapter, "stop_typing"):
                     await _typing_adapter.stop_typing(source.chat_id)
             except Exception:
@@ -8864,7 +8990,14 @@ class GatewayRunner:
                     _quick_key or "?",
                     run_generation,
                 )
-                _stale_adapter = self._resolve_adapter(event)
+                _stale_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                 if getattr(type(_stale_adapter), "pop_post_delivery_callback", None) is not None:
                     _stale_adapter.pop_post_delivery_callback(
                         _quick_key,
@@ -9195,7 +9328,14 @@ class GatewayRunner:
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
                 if response:
-                    _media_adapter = self._resolve_adapter(event)
+                    _media_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                     if _media_adapter:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
@@ -9206,7 +9346,14 @@ class GatewayRunner:
                 # still surface the runtime metadata on the final reply.
                 if _footer_line:
                     try:
-                        _foot_adapter = self._resolve_adapter(event)
+                        _foot_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                         if _foot_adapter:
                             await _foot_adapter.send(
                                 source.chat_id,
@@ -9222,7 +9369,14 @@ class GatewayRunner:
         except Exception as e:
             # Stop typing indicator on error too
             try:
-                _err_adapter = self._resolve_adapter(event)
+                _err_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                 if _err_adapter and hasattr(_err_adapter, "stop_typing"):
                     await _err_adapter.stop_typing(source.chat_id)
             except Exception:
@@ -9770,7 +9924,14 @@ class GatewayRunner:
         is_running = session_key in self._running_agents
 
         # Count pending /queue follow-ups (slot + overflow).
-        adapter = self._resolve_adapter(event) if source else None
+        adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        ) if source else None
         queue_depth = self._queue_depth(session_key, adapter=adapter)
 
         title = None
@@ -10342,7 +10503,14 @@ class GatewayRunner:
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it
-            adapter = self._resolve_adapter(event)
+            adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
             has_picker = (
                 adapter is not None
                 and getattr(type(adapter), "send_model_picker", None) is not None
@@ -10877,7 +11045,14 @@ class GatewayRunner:
             if state is None:
                 return t("gateway.goal.no_goal_set")
             try:
-                adapter = self._resolve_adapter(event) if event.source else None
+                adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        ) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
                 if adapter and _quick_key:
                     self._clear_goal_pending_continuations(_quick_key, adapter)
@@ -10895,7 +11070,14 @@ class GatewayRunner:
             had = mgr.has_goal()
             mgr.clear()
             try:
-                adapter = self._resolve_adapter(event) if event.source else None
+                adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        ) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
                 if adapter and _quick_key:
                     self._clear_goal_pending_continuations(_quick_key, adapter)
@@ -10911,7 +11093,14 @@ class GatewayRunner:
 
         # Queue the goal text as an immediate first turn so the agent
         # starts making progress. The post-turn hook takes over after.
-        adapter = self._resolve_adapter(event) if event.source else None
+        adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        ) if event.source else None
         _quick_key = self._session_key_for_source(event.source) if event.source else None
         if adapter and _quick_key:
             try:
@@ -11220,7 +11409,14 @@ class GatewayRunner:
         platform = event.source.platform
         voice_key = self._voice_key(platform, chat_id)
 
-        adapter = self._resolve_adapter(event)
+        adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
 
         if args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"
@@ -11252,7 +11448,14 @@ class GatewayRunner:
                 "all": t("gateway.voice.label_all"),
             }
             # Append voice channel info if connected
-            adapter = self._resolve_adapter(event)
+            adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
             guild_id = self._get_guild_id(event)
             if guild_id and hasattr(adapter, "get_voice_channel_info"):
                 info = adapter.get_voice_channel_info(guild_id)
@@ -11565,7 +11768,14 @@ class GatewayRunner:
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
                 return
 
-            adapter = self._resolve_adapter(event)
+            adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
 
             # If connected to a voice channel, play there instead of sending a file
             guild_id = self._get_guild_id(event)
@@ -13849,7 +14059,14 @@ class GatewayRunner:
         # cannot race the send_slash_confirm return.
         _slash_confirm_mod.register(session_key, confirm_id, command, handler)
 
-        adapter = self._resolve_adapter(event)
+        adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
 
         used_buttons = False
@@ -13978,7 +14195,14 @@ class GatewayRunner:
             return t("gateway.approve.no_pending")
 
         # Resume typing indicator — agent is about to continue processing.
-        _adapter = self._resolve_adapter(event)
+        _adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
@@ -14015,7 +14239,14 @@ class GatewayRunner:
             return t("gateway.deny.no_pending")
 
         # Resume typing indicator — agent continues (with BLOCKED result).
-        _adapter = self._resolve_adapter(event)
+        _adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
@@ -15509,7 +15740,16 @@ class GatewayRunner:
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             running_agent.interrupt(interrupt_reason)
         self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
-        adapter = self._resolve_adapter(event)
+        # Build a minimal MessageEvent so _resolve_adapter can match by
+        # adapter_instance_id when multi-app Feishu is configured.
+        from gateway.platforms.base import MessageEvent
+        _tmp_event = MessageEvent(
+            text="",
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+        adapter = self._resolve_adapter(_tmp_event)
         if adapter and hasattr(adapter, "interrupt_session_activity"):
             await adapter.interrupt_session_activity(session_key, source.chat_id)
         if adapter and hasattr(adapter, "get_pending_message"):
@@ -15820,7 +16060,14 @@ class GatewayRunner:
         if _streaming_enabled:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-                _adapter = self._resolve_adapter(event)
+                _adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                 if _adapter:
                     _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
                     _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
@@ -15862,7 +16109,16 @@ class GatewayRunner:
             stream_task = asyncio.create_task(_stream_consumer.run())
 
         # Send typing indicator
-        _adapter = self._resolve_adapter(event)
+        # Build a minimal MessageEvent so _resolve_adapter can match by
+        # adapter_instance_id when multi-app Feishu is configured.
+        from gateway.platforms.base import MessageEvent
+        _tmp_event = MessageEvent(
+            text="",
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+        _adapter = self._resolve_adapter(_tmp_event)
         if _adapter:
             try:
                 await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
@@ -16124,7 +16380,14 @@ class GatewayRunner:
         _cleanup_progress = bool(
             resolve_display_setting(user_config, platform_key, "cleanup_progress")
         )
-        _cleanup_adapter = self._resolve_adapter(event) if _cleanup_progress else None
+        _cleanup_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        ) if _cleanup_progress else None
         if _cleanup_adapter is not None and (
             type(_cleanup_adapter).delete_message is BasePlatformAdapter.delete_message
         ):
@@ -16276,7 +16539,14 @@ class GatewayRunner:
             if not progress_queue:
                 return
 
-            adapter = self._resolve_adapter(event)
+            adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
             if not adapter:
                 return
 
@@ -16638,7 +16908,14 @@ class GatewayRunner:
             )
 
         # Bridge sync status_callback → async adapter.send for context pressure
-        _status_adapter = self._resolve_adapter(event)
+        _status_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
         _status_chat_id = source.chat_id
         if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
             # Feishu topics only keep messages inside the topic when they are
@@ -16772,7 +17049,14 @@ class GatewayRunner:
             if _want_stream_deltas or _want_interim_consumer:
                 try:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-                    _adapter = self._resolve_adapter(event)
+                    _adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                     if _adapter:
                         # Platforms that don't support editing sent messages
                         # (e.g. QQ, WeChat) should skip streaming entirely —
@@ -17607,7 +17891,14 @@ class GatewayRunner:
                 try:
                     # Re-resolve adapter each iteration so reconnects don't
                     # leave us holding a stale reference.
-                    _adapter = self._resolve_adapter(event)
+                    _adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                     if not _adapter:
                         continue
                     # Check if adapter has a pending interrupt for this session.
@@ -17659,7 +17950,14 @@ class GatewayRunner:
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
                 return  # Notifications disabled (gateway_notify_interval: 0)
-            _notify_adapter = self._resolve_adapter(event)
+            _notify_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
             if not _notify_adapter:
                 return
             # Track the heartbeat message id so we can edit-in-place on
@@ -17766,7 +18064,14 @@ class GatewayRunner:
                     # Backup interrupt check: if the monitor task died or
                     # missed the interrupt, catch it here.
                     if not _interrupt_detected.is_set() and session_key:
-                        _backup_adapter = self._resolve_adapter(event)
+                        _backup_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                         _backup_agent = agent_holder[0]
                         if (_backup_adapter and _backup_agent
                                 and hasattr(_backup_adapter, 'has_pending_interrupt')
@@ -17806,7 +18111,14 @@ class GatewayRunner:
                     if (not _warning_fired and _agent_warning is not None
                             and _idle_secs >= _agent_warning):
                         _warning_fired = True
-                        _warn_adapter = self._resolve_adapter(event)
+                        _warn_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                         if _warn_adapter:
                             _elapsed_warn = int(_agent_warning // 60) or 1
                             _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
@@ -17826,7 +18138,14 @@ class GatewayRunner:
                         break
                     # Backup interrupt check (same as unlimited path).
                     if not _interrupt_detected.is_set() and session_key:
-                        _backup_adapter = self._resolve_adapter(event)
+                        _backup_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                         _backup_agent = agent_holder[0]
                         if (_backup_adapter and _backup_agent
                                 and hasattr(_backup_adapter, 'has_pending_interrupt')
@@ -17925,7 +18244,14 @@ class GatewayRunner:
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
-            adapter = self._resolve_adapter(event)
+            adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
             
             # Get pending message from adapter.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
@@ -18012,7 +18338,14 @@ class GatewayRunner:
                         "queueing message instead of recursing.",
                         _interrupt_depth, session_key,
                     )
-                    adapter = self._resolve_adapter(event)
+                    adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                     if adapter and pending_event:
                         merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
                     elif adapter and hasattr(adapter, 'queue_message'):
@@ -18116,7 +18449,14 @@ class GatewayRunner:
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
                 # typing task is still alive but may be stale.
-                _followup_adapter = self._resolve_adapter(event)
+                _followup_adapter = self._resolve_adapter(
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+        )
                 if _followup_adapter:
                     try:
                         await _followup_adapter.send_typing(
