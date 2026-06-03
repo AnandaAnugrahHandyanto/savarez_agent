@@ -1849,7 +1849,7 @@ class GatewayRunner:
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
-        self._busy_text_mode = self._load_busy_text_mode()
+        self._busy_text_mode = self._load_busy_text_mode(self._busy_input_mode)
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -3191,15 +3191,25 @@ class GatewayRunner:
         return "interrupt"
 
     @staticmethod
-    def _load_busy_text_mode() -> str:
-        """Load normal busy TEXT follow-up behavior from config/env."""
+    def _load_busy_text_mode(busy_input_mode: str = "queue") -> str:
+        """Load normal busy TEXT follow-up behavior from config/env.
+
+        When ``busy_text_mode`` is not explicitly configured, inherit from
+        *busy_input_mode* so that ``busy_input_mode: interrupt`` applies to
+        text follow-ups as well (pre-v2026.5.23 behaviour).  Explicit
+        ``busy_text_mode`` in config/env always wins.
+        """
         mode = os.getenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "").strip().lower()
         if not mode:
             cfg = _load_gateway_runtime_config()
             mode = str(cfg_get(cfg, "display", "busy_text_mode", default="") or "").strip().lower()
         if mode == "interrupt":
             return "interrupt"
-        return "queue"
+        if mode == "queue":
+            return "queue"
+        # Not explicitly configured — inherit from busy_input_mode so that
+        # busy_input_mode: interrupt also interrupts text follow-ups (#38390).
+        return busy_input_mode
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:

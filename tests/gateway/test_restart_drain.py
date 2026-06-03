@@ -120,18 +120,27 @@ def test_load_busy_text_mode_defaults_to_queue_and_allows_interrupt(tmp_path, mo
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
 
+    # When not explicitly configured, busy_text_mode inherits from busy_input_mode.
+    # Default busy_input_mode is "interrupt", so busy_text_mode should also be "interrupt".
+    assert gateway_run.GatewayRunner._load_busy_text_mode("interrupt") == "interrupt"
+    # When busy_input_mode is "queue", busy_text_mode inherits "queue".
+    assert gateway_run.GatewayRunner._load_busy_text_mode("queue") == "queue"
+    # Fallback when no argument is given (backward compat).
     assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
 
+    # Explicit config always wins regardless of busy_input_mode.
     (tmp_path / "config.yaml").write_text(
         "display:\n  busy_text_mode: interrupt\n", encoding="utf-8"
     )
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
+    assert gateway_run.GatewayRunner._load_busy_text_mode("queue") == "interrupt"
 
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue")
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+    assert gateway_run.GatewayRunner._load_busy_text_mode("interrupt") == "queue"
 
+    # Bogus value falls back to busy_input_mode inheritance.
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "bogus")
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+    assert gateway_run.GatewayRunner._load_busy_text_mode("interrupt") == "interrupt"
+    assert gateway_run.GatewayRunner._load_busy_text_mode("queue") == "queue"
 
 
 def test_load_restart_drain_timeout_prefers_env_then_config_then_default(
