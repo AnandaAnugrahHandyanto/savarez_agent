@@ -473,11 +473,33 @@ Committed: `24356edcd` | Tests: 80 passed
 ## UA Phase 5 Development Hardening — UA-P5-009 Completion Checkpoint
 - Timestamp: 2026-06-03T07:01:11Z.
 - Bead: `UA-P5-009 - PRL-like Golden E2E Gate`.
-- Status: implemented, reviewer PASS, uncommitted pending JC checkpoint approval.
+- Status: implemented, reviewer PASS, locally checkpointed.
+- Local checkpoint commit: `a463cef87` (`test(code-scan): checkpoint UA phase 5 PRL-like golden gate`).
 - Deterministic changes: added synthetic PRL-like React/Supabase/PWA golden fixture; added explicit P5 E2E gate; wired `run_ua.py` raw `REPORT.md` path to include deterministic P5-006 boundary/confidence language.
-- Canonical smoke: PASS with fresh external output/cache directories; worktree fixture manifest reported `target_cleanliness_status=preexisting_dirty` because new fixture files remain uncommitted, while isolated E2E temp-copy test verifies `clean`.
+- Canonical smoke: PASS with fresh external output/cache directories; worktree fixture manifest reported `target_cleanliness_status=preexisting_dirty` while new fixture files were uncommitted, and isolated E2E temp-copy test verified `clean`.
 - Verification: `python -m pytest tests/code_scan/test_e2e_ua_workflow.py::TestPhase5PrlLikeGoldenE2EGate -q` PASS; `python -m py_compile scripts/code-scan/run_ua.py` PASS; `git diff --check` PASS; canonical smoke PASS; `python -m pytest tests/code_scan/test_e2e_ua_workflow.py -q` PASS (`60 passed`); `python -m pytest tests/code_scan -q` PASS (`1011 passed`); added-lines secret scan PASS.
 - Reviewer: targeted reviewer PASS; fixture synthetic/safe, report addition deterministic, E2E contract appropriate, no scope creep found.
 - Diff artifact: `/tmp/ua-p5-009-diff.patch` (`383` lines, `14531` bytes) for code/test/fixture changes, excluding this ledger entry.
-- Commit/push gate: no commit, push, merge, deploy, production mutation, PRL source copying, dependency install, provider/LLM production call, or production repo mutation performed.
+- Commit/push gate: local commit completed after JC checkpoint approval; no push, merge, deploy, production mutation, PRL source copying, dependency install, provider/LLM production call, or production repo mutation performed.
+
+## UA Phase 5 Development Hardening — UA-P5-010 Start Checkpoint
+- Timestamp: 2026-06-03T07:19:35Z.
+- Bead: `UA-P5-010 - Docs, Skill Alignment, and Closeout`.
+- Status: in progress, uncommitted.
+- Base: `a463cef87` (`test(code-scan): checkpoint UA phase 5 PRL-like golden gate`).
+- Scope: repo-contained docs/skills only plus `.hermes/PROJECT_STATE.md` and closeout handoff; no active-profile skill edits.
+- Required language: UA validation does not prove security/deployment readiness/RLS/runtime correctness; runtime readiness lists tool availability and suggested/external gate status without executing project gates; reviewer/researcher are targeted critics and Hermes owns final assessment.
+- Guardrails: no commit, push, merge, deploy, production mutation, new dependencies, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner calls without separate JC approval.
+
+## UA Phase 5 Development Hardening — UA-P5-010 Completion Checkpoint
+- Timestamp: 2026-06-03T07:23:36Z.
+- Bead: `UA-P5-010 - Docs, Skill Alignment, and Closeout`.
+- Status: implemented, reviewer PASS, uncommitted pending JC checkpoint approval.
+- Base: `a463cef87` (`test(code-scan): checkpoint UA phase 5 PRL-like golden gate`).
+- Ledger cleanup: updated `UA-P5-009` entry to reflect local checkpoint commit `a463cef87` and remove stale "uncommitted" wording.
+- Docs alignment: updated repo-contained `skills/code-analysis/code-scan/SKILL.md` and `skills/code-analysis/validation-gate/SKILL.md` with Phase 5 trust-boundary language, runtime gate non-execution language, targeted critic/Hermes-owned final assessment language, and canonical artifact checklist.
+- Handoff: `.hermes/handoffs/2026-06-03-ua-p5-010-docs-skill-alignment-closeout.md`.
+- Verification: docs boundary language PASS; docs stale-overclaim scan PASS; `git diff --check` PASS; `python -m pytest tests/code_scan -q` PASS (`1011 passed in 153.77s`); added-lines secret scan PASS (`P5_010_SECRET_SCAN_PASS`).
+- Diff artifact: `/tmp/ua-p5-010-diff.patch` (`132` lines, `9518` bytes before this completion ledger append; regenerate before commit if needed).
+- Guardrails: no active-profile skill edits outside this repo; no commit, push, merge, deploy, production mutation, new dependencies, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner calls performed.
 

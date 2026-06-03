@@ -29,6 +29,14 @@ Interpret results and render a verdict:
 
 **Constraint:** Do NOT validate using LLM intuition — only report what the validation script returns. Do NOT assign severity to warnings using LLM intuition — severity is determined deterministically by `graph_schema.py` heuristics.
 
+## Phase 5 Trust Boundaries
+
+UA validation means the graph/artifact is structurally usable; it does not prove security, deployment readiness, RLS correctness, or runtime correctness.
+
+Runtime readiness lists tool availability and suggested/external gate status; UA does not execute project gates unless a separate user-approved runner exists. Do not treat suggested verification commands as executed tests or builds.
+
+Use reviewer/researcher as targeted critics; Hermes owns final assessment. Validation gate output is deterministic evidence for Hermes to assess, not a replacement for Hermes-owned synthesis.
+
 ## Warning Severity Taxonomy (UA-002)
 
 Warnings are classified into four deterministic severity levels:

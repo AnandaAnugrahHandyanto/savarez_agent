@@ -86,6 +86,23 @@ Every UA run bundle produced by `run_ua.py` is a directory containing:
 
 **Deterministic boundary:** Deterministic scripts (`scan_project.py`, `extract_imports.py`, `assemble_graph.py`, `graph_schema.py`, and optional enrichers) produce **facts** — JSON artifacts with stable schemas. The LLM's role is to **interpret** those facts (e.g., synthesizing project name, description, and framework narrative from scan data). Never allow LLM intuition to override deterministic validation results, graph structure, or severity classifications.
 
+## Phase 5 Trust Boundaries and Closeout Checklist
+
+UA validation means the graph/artifact is structurally usable; it does not prove security, deployment readiness, RLS correctness, or runtime correctness.
+
+Runtime readiness lists tool availability and suggested/external gate status; UA does not execute project gates unless a separate user-approved runner exists. Suggested commands in `runtime-readiness.json`, `runtime-readiness.md`, or `REPORT.md` must be treated as `suggested_not_run` unless a separate external gate explicitly records an executed result.
+
+Use reviewer/researcher as targeted critics; Hermes owns final assessment. `subagent-context.json` critic packs are bounded handoff aids, not authority transfer, and deterministic UA facts must remain separate from Hermes interpretation.
+
+Canonical Phase 5 artifact checks for `review`/`full` bundles:
+
+- Verify `manifest.json` before trusting a bundle: `status`, `target_mutation_allowed`, target cleanliness fields, `unexpected_target_changes`, `provenance`, and `artifact_integrity`.
+- Read `validation.json` for deterministic issues/warnings and severity-classified orphan findings.
+- Read `runtime-readiness.json`/`.md` for detected stacks, blockers, and verification gate statuses without assuming commands ran.
+- Read `domain-surfaces.json` as deterministic inventory only; it is not semantic, security, RLS, runtime, or deployment validation.
+- Read `REPORT.md` for confidence labels and the explicit “What UA proves / What UA does not prove” boundary section.
+- Read `subagent-context.json` for scoped `reviewer_critic`, `researcher_scout`, and `coder_preflight` packs when using targeted critics.
+
 ## Constraints
 - Never hallucinate file structures — only report what scan scripts return.
 - If scan fails, report the error; do not guess.
