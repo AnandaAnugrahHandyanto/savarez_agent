@@ -319,7 +319,14 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     return text
 
 
-async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
+async def _send_or_update_status_coro(
+    adapter,
+    chat_id,
+    status_key,
+    content,
+    metadata,
+    reply_to=None,
+):
     """Route a status message through adapter.send_or_update_status when supported.
 
     Issue #30045: adapters that implement send_or_update_status (currently
@@ -329,7 +336,7 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)
-    return await adapter.send(chat_id, content, metadata=metadata)
+    return await adapter.send(chat_id, content, reply_to=reply_to, metadata=metadata)
 
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
@@ -1494,6 +1501,23 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 def _platform_config_key(platform: "Platform") -> str:
     """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
     return "cli" if platform == Platform.LOCAL else platform.value
+
+
+def _progress_thread_id_for_source(
+    source: SessionSource,
+    event_message_id: Optional[str],
+) -> Optional[str]:
+    """Return the thread target for gateway progress/status side-channel sends.
+
+    Some platforms need the triggering top-level message id as a synthetic
+    thread target for progress bubbles, even though the inbound event itself is
+    not already inside a thread.  Final responses already pass that id via
+    ``reply_to``; progress/status paths need the same anchor explicitly.
+    """
+    thread_id = getattr(source, "thread_id", None)
+    if source.platform in {Platform.SLACK, Platform.MATTERMOST}:
+        return thread_id or event_message_id
+    return thread_id
 
 
 def _teams_pipeline_plugin_enabled() -> bool:
@@ -17030,15 +17054,18 @@ class GatewayRunner:
         #
         # Threading metadata is platform-specific:
         # - Slack DM threading needs event_message_id fallback (reply thread)
+        # - Mattermost thread mode also needs the triggering top-level post id:
+        #   final replies pass it as reply_to, but progress/status sends run on
+        #   a separate side-channel and otherwise land as top-level posts.
         # - Telegram forum topics use message_thread_id; Hermes-created private
         #   DM topic lanes require both thread metadata and a reply anchor
         # - Feishu only honors reply_in_thread when sending a reply, so topic
         #   progress uses the triggering event message as the reply target
         # - Other platforms should use explicit source.thread_id only
-        if source.platform == Platform.SLACK:
-            _progress_thread_id = source.thread_id or event_message_id
-        else:
-            _progress_thread_id = source.thread_id
+        _progress_thread_id = _progress_thread_id_for_source(
+            source,
+            event_message_id,
+        )
         _progress_metadata = (
             self._thread_metadata_for_source(source, event_message_id)
             if _progress_thread_id == source.thread_id
@@ -17046,7 +17073,7 @@ class GatewayRunner:
         ) if _progress_thread_id else None
         _progress_reply_to = (
             event_message_id
-            if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
+            if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and event_message_id
             else None
         )
 
@@ -17428,7 +17455,8 @@ class GatewayRunner:
                 "reply_to_message_id": event_message_id,
             }
         else:
-            _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+            _status_thread_metadata = _progress_metadata
+        _status_reply_to = _progress_reply_to
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -17447,7 +17475,14 @@ class GatewayRunner:
                 )
                 return
             _fut = safe_schedule_threadsafe(
-                _send_or_update_status_coro(_status_adapter, _status_chat_id, event_type, prepared_message, _status_thread_metadata),
+                _send_or_update_status_coro(
+                    _status_adapter,
+                    _status_chat_id,
+                    event_type,
+                    prepared_message,
+                    _status_thread_metadata,
+                    reply_to=_status_reply_to,
+                ),
                 _loop_for_step,
                 logger=logger,
                 log_message=f"status_callback ({event_type}) scheduling error",
@@ -17621,6 +17656,7 @@ class GatewayRunner:
                     _status_adapter.send(
                         _status_chat_id,
                         text,
+                        reply_to=_status_reply_to,
                         metadata=_status_thread_metadata,
                     ),
                     _loop_for_step,
@@ -17722,6 +17758,7 @@ class GatewayRunner:
                     _status_adapter.send(
                         _status_chat_id,
                         message,
+                        reply_to=_status_reply_to,
                         metadata=_status_thread_metadata,
                     ),
                     _loop_for_step,
@@ -17958,6 +17995,7 @@ class GatewayRunner:
                         _status_adapter.send(
                             _status_chat_id,
                             msg,
+                            reply_to=_status_reply_to,
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
@@ -18491,6 +18529,7 @@ class GatewayRunner:
                         _notify_res = await _notify_adapter.send(
                             source.chat_id,
                             _heartbeat_text,
+                            reply_to=_status_reply_to,
                             metadata=_status_thread_metadata,
                         )
                         if getattr(_notify_res, "success", False) and getattr(
@@ -18591,6 +18630,7 @@ class GatewayRunner:
                                     f"If the agent does not respond soon, it will "
                                     f"be timed out in {_remaining_mins} min. "
                                     f"You can continue waiting or use /reset.",
+                                    reply_to=_status_reply_to,
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
@@ -18826,6 +18866,7 @@ class GatewayRunner:
                             await adapter.send(
                                 source.chat_id,
                                 first_response,
+                                reply_to=_status_reply_to,
                                 metadata=_status_thread_metadata,
                             )
                         except Exception as e:
