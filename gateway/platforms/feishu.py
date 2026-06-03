@@ -1289,45 +1289,19 @@ def _strip_edge_self_mentions(
 
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop.
-    
-    Each adapter instance gets an isolated module namespace to avoid
-    event-loop conflicts when multiple Feishu adapters run simultaneously.
+
+    Uses a fresh event loop per adapter instance so that multiple Feishu
+    adapters can run simultaneously without conflicting over the global
+    ``lark_oapi.ws.client.loop`` variable.
     """
-    import importlib
-    import sys
-    import lark_oapi.ws.client as _orig_ws_module
-    
-    # Create a fresh module copy for this adapter instance
+    import lark_oapi.ws.client as ws_client_module
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
-    # Monkey-patch the module-level loop variable by re-importing
-    # into a temporary module namespace
-    # Get the module file path
-    module_file = None
-    if hasattr(_orig_ws_module, '__spec__') and _orig_ws_module.__spec__:
-        module_file = _orig_ws_module.__spec__.origin
-    if not module_file:
-        try:
-            module_file = inspect.getfile(_orig_ws_module)
-        except TypeError:
-            module_file = getattr(_orig_ws_module, '__file__', None)
-    
-    spec = importlib.util.spec_from_file_location(
-        f"lark_oapi.ws.client_{id(adapter)}",
-        module_file,
-    )
-    if spec and spec.loader:
-        ws_client_module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = ws_client_module
-        spec.loader.exec_module(ws_client_module)
-        ws_client_module.loop = loop
-        adapter._ws_thread_loop = loop
-    else:
-        # Fallback: just patch the global module
-        _orig_ws_module.loop = loop
-        adapter._ws_thread_loop = loop
-        ws_client_module = _orig_ws_module
+    # Patch the module-level loop so that the SDK's internal callbacks
+    # (ping, receive, reconnect) schedule onto this thread's loop.
+    ws_client_module.loop = loop
+    adapter._ws_thread_loop = loop
 
     original_connect = ws_client_module.websockets.connect
     original_configure = getattr(ws_client, "_configure", None)
@@ -1381,9 +1355,6 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         except Exception:
             pass
         adapter._ws_thread_loop = None
-        # Clean up temporary module
-        if spec and spec.name in sys.modules:
-            del sys.modules[spec.name]
 
 
 def check_feishu_requirements() -> bool:
