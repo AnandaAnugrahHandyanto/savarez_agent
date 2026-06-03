@@ -501,13 +501,13 @@ class TestSlashCommandCompleter:
         completions = _completions(SlashCommandCompleter(), "/re")
         texts = {item.text for item in completions}
 
-        # Primary commands starting with "re" should appear; aliases
-        # (like /reset → alias of /new) should NOT appear (#33211).
+        # Primary commands starting with "re" should appear.
         assert "retry" in texts
         assert "reload-mcp" in texts
         assert "reload-skills" in texts
-        # /reset is an alias for /new — it should NOT clutter the list.
-        assert "reset" not in texts
+        # Semantic aliases like /reset (alias of /new) are KEPT in
+        # autocomplete — users discover them via the menu.
+        assert "reset" in texts
 
     def test_builtin_completion_display_meta_shows_description(self):
         completions = _completions(SlashCommandCompleter(), "/help")
@@ -569,9 +569,11 @@ class TestSlashCommandCompleter:
         # /gif doesn't match any builtin command
         assert completions == []
 
-    def test_alias_commands_not_in_autocomplete(self):
-        """Aliases should not appear as separate entries in the autocomplete
-        dropdown (issue #33211).  They still resolve via resolve_command()."""
+    def test_underscore_alias_duplicates_not_in_autocomplete(self):
+        """Only underscore↔hyphon duplicate aliases are filtered from the
+        autocomplete dropdown (issue #33211).  Semantic aliases like
+        /provider, /bg, /reset etc. are kept.  All aliases still resolve
+        via resolve_command()."""
         completer = SlashCommandCompleter()
         completions = _completions(completer, "/reload")
         texts = {item.text for item in completions}
@@ -579,9 +581,24 @@ class TestSlashCommandCompleter:
         # Primary commands should appear
         assert "reload-mcp" in texts
         assert "reload-skills" in texts
-        # Alias variants should NOT appear as separate entries
+        # Underscore variants should NOT appear as separate entries
         assert "reload_mcp" not in texts
         assert "reload_skills" not in texts
+
+    def test_semantic_aliases_are_kept_in_autocomplete(self):
+        """Semantic aliases (non-underscore-variants) must appear in
+        autocomplete — users discover /provider, /bg, /q etc. via the menu."""
+        completer = SlashCommandCompleter()
+
+        # /provider (alias of /model) must appear for "/pro"
+        completions = _completions(completer, "/pro")
+        texts = {item.text for item in completions}
+        assert "provider" in texts
+
+        # /bg (alias of /background) must appear for "/b"
+        completions = _completions(completer, "/b")
+        texts = {item.text for item in completions}
+        assert "bg" in texts
 
     def test_alias_commands_still_resolve(self):
         """Aliases must still resolve to their primary command via

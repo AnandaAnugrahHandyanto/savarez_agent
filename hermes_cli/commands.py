@@ -241,10 +241,19 @@ _COMMAND_LOOKUP: dict[str, CommandDef] = _build_command_lookup()
 
 # Set of alias names (without leading slash) that should NOT appear as
 # separate entries in the autocomplete dropdown (issue #33211).
-# Aliases still resolve correctly via resolve_command() — they just
-# don't clutter the completion menu.
+# Only stylistic duplicates (underscore ↔ hyphen variants of the
+# canonical name) are filtered — semantic aliases like /provider,
+# /bg, /q, /reset etc. are kept because users discover them via
+# autocomplete and the gateway contract depends on them.
+def _is_underscore_duplicate(alias: str, canonical: str) -> bool:
+    """True when *alias* is just canonical with underscores swapped for hyphens."""
+    return alias.replace("_", "-") == canonical
+
 _ALIAS_NAMES: frozenset[str] = frozenset(
-    alias for cmd in COMMAND_REGISTRY for alias in cmd.aliases
+    alias
+    for cmd in COMMAND_REGISTRY
+    for alias in cmd.aliases
+    if _is_underscore_duplicate(alias, cmd.name)
 )
 
 
