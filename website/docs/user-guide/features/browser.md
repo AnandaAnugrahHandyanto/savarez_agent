@@ -58,7 +58,9 @@ To use Browser Use as your cloud browser provider, add:
 BROWSER_USE_API_KEY=***
 ```
 
-Get your API key at [browser-use.com](https://browser-use.com). Browser Use provides a cloud browser via its REST API. If both Browserbase and Browser Use credentials are set, Browserbase takes priority.
+Get your API key at [cloud.browser-use.com/settings](https://cloud.browser-use.com/settings?tab=api-keys&new=1). Browser Use provides both raw cloud browser sessions via CDP and hosted Browser Use Cloud v3 agent sessions through its REST API. If both Browserbase and Browser Use credentials are set and no provider is explicitly configured, Hermes auto-detects Browser Use first, then Browserbase.
+
+For high-level tasks where you want Browser Use to navigate, click, extract, and summarize autonomously, the browser toolset exposes `browser_use_agent` when `BROWSER_USE_API_KEY` or a managed Nous Browser Use gateway is available. It follows the Browser Use Cloud quickstart shape, `POST /api/v3/sessions` with `{ "task": "..." }`, then polls the session until completion. Use the lower-level `browser_navigate`, `browser_click`, and related tools when Hermes needs step-by-step control of a page.
 
 ### Firecrawl cloud mode
 

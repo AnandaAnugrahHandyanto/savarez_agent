@@ -1614,6 +1614,25 @@ BROWSER_TOOL_SCHEMAS = [
             "required": []
         }
     },
+    {
+        "name": "browser_use_agent",
+        "description": "Run a complete web task using Browser Use Cloud v3's hosted AI browser agent. Use this as a cloud alternative to manual Browserbase-style browser sessions when you want Browser Use to navigate, click, extract, and summarize autonomously from a natural-language task. Returns the terminal agent output.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Natural-language browser task for the hosted Browser Use agent to complete."
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "default": 600,
+                    "description": "Maximum seconds to poll for completion before timing out."
+                }
+            },
+            "required": ["task"]
+        }
+    },
 ]
 
 
@@ -3716,6 +3735,29 @@ def check_browser_vision_requirements() -> bool:
     return check_vision_requirements()
 
 
+def check_browser_use_agent_requirements() -> bool:
+    """Whether Browser Use Cloud agent sessions can be created."""
+    try:
+        return BrowserUseProvider().is_configured()
+    except Exception:
+        return False
+
+
+def browser_use_agent(
+    task: str,
+    timeout_seconds: int = 600,
+    task_id: str = None,
+) -> str:
+    """Run a task through Browser Use Cloud's hosted v3 browser agent."""
+    provider = BrowserUseProvider()
+    result = provider.run_agent_task(
+        task,
+        task_id=task_id,
+        timeout_seconds=timeout_seconds,
+    )
+    return json.dumps({"success": True, **result}, ensure_ascii=False)
+
+
 # ============================================================================
 # Module Test
 # ============================================================================
@@ -3860,4 +3902,16 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+)
+registry.register(
+    name="browser_use_agent",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_use_agent"],
+    handler=lambda args, **kw: browser_use_agent(
+        task=args.get("task", ""),
+        timeout_seconds=args.get("timeout_seconds", 600),
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=check_browser_use_agent_requirements,
+    emoji="🌐",
 )

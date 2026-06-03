@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import threading
 import uuid
 from typing import Any, Dict, Optional
@@ -45,11 +46,22 @@ logger = logging.getLogger(__name__)
 # original idempotency key so the gateway can deduplicate. Cleared on
 # success or terminal failure.
 _pending_create_keys: Dict[str, str] = {}
+_pending_agent_task_keys: Dict[str, str] = {}
 _pending_create_keys_lock = threading.Lock()
 
 _BASE_URL = "https://api.browser-use.com/api/v3"
 _DEFAULT_MANAGED_TIMEOUT_MINUTES = 5
 _DEFAULT_MANAGED_PROXY_COUNTRY_CODE = "us"
+_TERMINAL_AGENT_STATUSES = {"idle", "stopped", "error", "timed_out"}
+_SUCCESS_AGENT_STATUSES = {"idle", "stopped"}
+
+
+def _get_first_present(payload: Dict[str, Any], *keys: str) -> Any:
+    """Return the first present Browser Use field, handling SDK/API casing."""
+    for key in keys:
+        if key in payload:
+            return payload.get(key)
+    return None
 
 
 def _get_or_create_pending_create_key(task_id: str) -> str:
@@ -66,6 +78,28 @@ def _get_or_create_pending_create_key(task_id: str) -> str:
 def _clear_pending_create_key(task_id: str) -> None:
     with _pending_create_keys_lock:
         _pending_create_keys.pop(task_id, None)
+
+
+def _agent_task_pending_key(task_id: Optional[str], task_text: str) -> str:
+    return f"{task_id or 'default'}:{task_text}"
+
+
+def _get_or_create_pending_agent_task_key(task_id: Optional[str], task_text: str) -> str:
+    pending_key = _agent_task_pending_key(task_id, task_text)
+    with _pending_create_keys_lock:
+        existing = _pending_agent_task_keys.get(pending_key)
+        if existing:
+            return existing
+
+        created = f"browser-use-agent-task:{uuid.uuid4().hex}"
+        _pending_agent_task_keys[pending_key] = created
+        return created
+
+
+def _clear_pending_agent_task_key(task_id: Optional[str], task_text: str) -> None:
+    pending_key = _agent_task_pending_key(task_id, task_text)
+    with _pending_create_keys_lock:
+        _pending_agent_task_keys.pop(pending_key, None)
 
 
 def _should_preserve_pending_create_key(response: requests.Response) -> bool:
@@ -249,6 +283,129 @@ class BrowserUseBrowserProvider(BrowserProvider):
             "features": {"browser_use": True},
             "external_call_id": external_call_id,
         }
+
+    def run_agent_task(
+        self,
+        task: str,
+        *,
+        task_id: str = None,
+        poll_interval_seconds: float = 2.0,
+        timeout_seconds: int = 600,
+    ) -> Dict[str, Any]:
+        """Run a Browser Use Cloud v3 agent session and return its output."""
+        task_text = (task or "").strip()
+        if not task_text:
+            raise ValueError("Browser Use agent task cannot be empty.")
+
+        config = self._get_config()
+        managed_mode = bool(config.get("managed_mode"))
+        headers = self._headers(config)
+        if managed_mode:
+            headers["X-Idempotency-Key"] = _get_or_create_pending_agent_task_key(
+                task_id,
+                task_text,
+            )
+
+        try:
+            response = requests.post(
+                f"{config['base_url']}/sessions",
+                headers=headers,
+                json={"task": task_text},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            if managed_mode:
+                raise
+            raise RuntimeError(
+                f"Browser Use agent API connection failed: {exc}"
+            ) from exc
+
+        if not response.ok:
+            if managed_mode and not _should_preserve_pending_create_key(response):
+                _clear_pending_agent_task_key(task_id, task_text)
+            raise RuntimeError(
+                f"Failed to create Browser Use agent session: "
+                f"{response.status_code} {response.text}"
+            )
+
+        session = response.json()
+        if managed_mode:
+            _clear_pending_agent_task_key(task_id, task_text)
+        session_id = str(session.get("id") or "")
+        if not session_id:
+            raise RuntimeError(
+                f"Browser Use agent session response missing id: {session!r}"
+            )
+
+        deadline = time.monotonic() + max(float(timeout_seconds), 1.0)
+        poll_interval = max(float(poll_interval_seconds), 0.1)
+        last_session = session
+
+        while True:
+            status = str(last_session.get("status") or "").lower()
+            if status in _TERMINAL_AGENT_STATUSES:
+                output = last_session.get("output")
+                task_success = _get_first_present(
+                    last_session,
+                    "isTaskSuccessful",
+                    "is_task_successful",
+                )
+                result = {
+                    "session_id": session_id,
+                    "status": status,
+                    "output": output,
+                }
+                if task_success is not None:
+                    result["is_task_successful"] = task_success
+                live_url = _get_first_present(last_session, "liveUrl", "live_url")
+                if live_url is not None:
+                    result["live_url"] = live_url
+                recording_urls = _get_first_present(
+                    last_session,
+                    "recordingUrls",
+                    "recording_urls",
+                    "recordingUrl",
+                    "recording_url",
+                )
+                if recording_urls is not None:
+                    result["recording_urls"] = recording_urls
+
+                if status in _SUCCESS_AGENT_STATUSES and task_success is not False:
+                    return result
+                error = (
+                    last_session.get("error")
+                    or last_session.get("message")
+                    or output
+                    or f"Browser Use agent session ended with status {status}."
+                )
+                raise RuntimeError(str(error))
+
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Browser Use agent session {session_id} did not finish "
+                    f"within {int(timeout_seconds)} seconds; last status={status or 'unknown'}."
+                )
+
+            time.sleep(poll_interval)
+            try:
+                poll_response = requests.get(
+                    f"{config['base_url']}/sessions/{session_id}",
+                    headers=headers,
+                    timeout=30,
+                )
+            except requests.RequestException as exc:
+                if managed_mode:
+                    raise
+                raise RuntimeError(
+                    f"Browser Use agent API polling failed: {exc}"
+                ) from exc
+
+            if not poll_response.ok:
+                raise RuntimeError(
+                    f"Failed to poll Browser Use agent session {session_id}: "
+                    f"{poll_response.status_code} {poll_response.text}"
+                )
+            last_session = poll_response.json()
 
     def close_session(self, session_id: str) -> bool:
         try:
