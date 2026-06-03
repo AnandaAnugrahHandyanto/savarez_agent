@@ -16,6 +16,7 @@ import {
   $messages,
   $sessions,
   getRememberedWorkspaceCwd,
+  sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
   setBusy,
@@ -303,7 +304,7 @@ export function useSessionActions({
     [activeSessionIdRef, busyRef, navigate, selectedStoredSessionIdRef]
   )
 
-  const createBackendSessionForSend = useCallback(async (): Promise<string | null> => {
+  const createBackendSessionForSend = useCallback(async (preview: string | null = null): Promise<string | null> => {
     const startingActiveSessionId = activeSessionIdRef.current
     const startingStoredSessionId = selectedStoredSessionIdRef.current
     const startingRouteToken = getRouteToken()
@@ -330,7 +331,11 @@ export function useSessionActions({
       ensureSessionState(created.session_id, stored)
 
       if (stored) {
-        upsertOptimisticSession(created, stored)
+        // Seed the sidebar preview with the user's first message so the row
+        // reads meaningfully while the turn is in flight, instead of flashing
+        // "Untitled session" until the turn persists and auto-title runs. The
+        // server later returns its own preview/title and supersedes this.
+        upsertOptimisticSession(created, stored, null, preview?.trim() || null)
         navigate(sessionRoute(stored), { replace: true })
       }
 
@@ -688,12 +693,15 @@ export function useSessionActions({
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
+      // Pins are keyed on the durable lineage-root id; the stored id may be the
+      // live tip after compression. Drop both so the pin can't linger.
+      const removedPinId = removed ? sessionPinId(removed) : storedSessionId
 
       setSessions(prev => prev.filter(s => s.id !== storedSessionId))
       // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
       // doesn't keep claiming the removed row is still on the server.
       setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
+      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
 
       // Tear down before awaiting so the route effect can't resume the
       // doomed session via the stale /<sid> URL.
@@ -765,6 +773,9 @@ export function useSessionActions({
       const archived = $sessions.get().find(s => s.id === storedSessionId)
       const wasSelected = selectedStoredSessionId === storedSessionId
       const previousPinned = $pinnedSessionIds.get()
+      // Pins are keyed on the durable lineage-root id; the stored id may be the
+      // live tip after compression. Drop both so the pin can't linger.
+      const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(s => s.id !== storedSessionId))
@@ -772,7 +783,7 @@ export function useSessionActions({
       // on the next refresh, so they count as "removed" for the load-more
       // footer math.
       setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
+      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
 
       if (wasSelected) {
         startFreshSessionDraft(true)
