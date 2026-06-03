@@ -83,11 +83,15 @@ kanban_complete(
 )
 ```
 
-只有真实 blocker 才 block，并写清楚具体请求：
+只有真实 blocker 才 block，并写清楚具体请求。如果 blocker 是你创建或识别出的另一张 Kanban 任务卡，包含 `blocked_by=["t_..."]`，这样 Hermes 会把该任务链接为父依赖，并在 blocker 完成后自动重试当前卡：
 
 ```python
 kanban_block(
     reason="Need rate-limit key decision: IP is simple but NAT-unsafe; user_id requires auth and skips anonymous endpoints.",
+)
+kanban_block(
+    reason="Canonical build is failing in a separate shared compile-fix card; retry this card when that fix lands.",
+    blocked_by=["t_compilefix"],
 )
 ```
 

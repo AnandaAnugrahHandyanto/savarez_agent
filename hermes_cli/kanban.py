@@ -554,6 +554,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
     p_block.add_argument("--ids", nargs="+", default=None,
                          help="Additional task ids to block with the same reason (bulk mode)")
+    p_block.add_argument(
+        "--blocked-by",
+        action="append",
+        default=None,
+        help=(
+            "Task id(s) whose completion resolves this block. They are linked "
+            "as parents and the blocked task auto-promotes when all blockers "
+            "are done/archived."
+        ),
+    )
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
@@ -1940,6 +1950,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
+    blocker_ids = list(getattr(args, "blocked_by", None) or [])
     failed: list[str] = []
     if kb.is_review_only_block_reason(reason):
         print(kb.REVIEW_ONLY_BLOCK_MESSAGE, file=sys.stderr)
@@ -1954,7 +1965,17 @@ def _cmd_block(args: argparse.Namespace) -> int:
                     tid,
                     reason=reason,
                     expected_run_id=_worker_run_id_for(tid),
+                    blocker_task_ids=blocker_ids,
                 )
+                if not blocked and blocker_ids:
+                    kb.add_blocker_dependency(
+                        conn,
+                        tid,
+                        blocker_ids,
+                        reason=reason,
+                        actor=author,
+                    )
+                    blocked = True
             except ValueError as exc:
                 failed.append(tid)
                 print(f"cannot block {tid}: {exc}", file=sys.stderr)
@@ -1963,7 +1984,10 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
             else:
-                print(f"Blocked {tid}" + (f": {reason}" if reason else ""))
+                suffix = f": {reason}" if reason else ""
+                if blocker_ids:
+                    suffix += f" (auto-unblocks after {', '.join(blocker_ids)})"
+                print(f"Blocked {tid}" + suffix)
     return 0 if not failed else 1
 
 

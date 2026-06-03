@@ -2865,6 +2865,99 @@ def _synthesize_ended_run(
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
+def _blocker_ids_from_payload(payload: Optional[str]) -> list[str]:
+    if not payload:
+        return []
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return []
+    raw = data.get("blocked_by") if isinstance(data, dict) else None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip() and item.strip() not in seen:
+            seen.add(item.strip())
+            out.append(item.strip())
+    return out
+
+
+def _all_blockers_terminal(conn: sqlite3.Connection, blocker_ids: list[str]) -> bool:
+    if not blocker_ids:
+        return False
+    placeholders = ",".join("?" for _ in blocker_ids)
+    rows = conn.execute(
+        f"SELECT id, status FROM tasks WHERE id IN ({placeholders})",
+        tuple(blocker_ids),
+    ).fetchall()
+    if len(rows) != len(set(blocker_ids)):
+        return False
+    return all(r["status"] in ("done", "archived") for r in rows)
+
+
+def _latest_blocked_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    row = conn.execute(
+        """
+        SELECT summary FROM task_runs
+         WHERE task_id = ? AND outcome = 'blocked' AND summary IS NOT NULL
+         ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+         LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+    return row["summary"] if row else None
+
+
+def _append_blocker_links_unlocked(
+    conn: sqlite3.Connection,
+    task_id: str,
+    blocker_task_ids: Iterable[str],
+) -> list[str]:
+    """Link blocker tasks as parents of ``task_id`` and return normalized ids.
+
+    This deliberately reuses the existing dependency graph: a blocked task that
+    is waiting on another Kanban card should not dispatch until that card is
+    terminal.  The separate ``blocked`` event payload below tells
+    ``recompute_ready`` that this sticky block has an automatic exit once the
+    named blockers are done.
+    """
+    blocker_ids: list[str] = []
+    seen: set[str] = set()
+    for raw in blocker_task_ids or ():
+        if not isinstance(raw, str):
+            raise ValueError("blocked_by task ids must be strings")
+        tid = raw.strip()
+        if not tid or tid in seen:
+            continue
+        if tid == task_id:
+            raise ValueError("a task cannot be blocked by itself")
+        seen.add(tid)
+        blocker_ids.append(tid)
+    if not blocker_ids:
+        return []
+    missing = _find_missing_parents(conn, [task_id, *blocker_ids])
+    if missing:
+        raise ValueError(f"unknown task(s): {', '.join(missing)}")
+    for blocker_id in blocker_ids:
+        if _would_cycle(conn, blocker_id, task_id):
+            raise ValueError(
+                f"linking blocker {blocker_id} -> {task_id} would create a cycle"
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+            (blocker_id, task_id),
+        )
+        _append_event(
+            conn, task_id, "linked",
+            {"parent": blocker_id, "child": task_id, "auto_unblock": True},
+        )
+    return blocker_ids
+
+
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return True when ``task_id`` is sticky-blocked by an explicit
     worker/operator ``kanban_block`` call (#28712).
@@ -2886,9 +2979,11 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 
     The cheapest signal that distinguishes the two is the most recent
     ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
+    recent one is ``"blocked"`` without a ``blocked_by`` resolver list,
+    the task is sticky and ``recompute_ready`` must *not* auto-promote
+    it. If the block event names ``blocked_by`` task ids, the block is
+    only sticky until every named blocker reaches ``done``/``archived``;
+    at that point dependency promotion may retry the task automatically.
 
     Returns ``False`` when there is no such event at all (e.g. the task
     was set to ``status='blocked'`` by the circuit breaker or by direct
@@ -2896,12 +2991,17 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     for that path.
     """
     row = conn.execute(
-        "SELECT kind FROM task_events "
+        "SELECT kind, payload FROM task_events "
         "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    if not row or row["kind"] != "blocked":
+        return False
+    blocker_ids = _blocker_ids_from_payload(row["payload"])
+    if blocker_ids and _all_blockers_terminal(conn, blocker_ids):
+        return False
+    return True
 
 
 def recompute_ready(
@@ -2917,11 +3017,12 @@ def recompute_ready(
     parent completes), *except* in two cases:
 
     1. The most recent block event was a worker-initiated
-       ``kanban_block`` — those stay blocked until an explicit
-       ``kanban_unblock`` (#28712). Without that guard, a stale
-       human-input handoff could auto-respawn, the fresh worker might
-       find nothing actionable to do, exit cleanly, get recorded as a
-       protocol violation, and the cycle would repeat indefinitely.
+       ``kanban_block`` without completed ``blocked_by`` resolver tasks —
+       those stay blocked until an explicit ``kanban_unblock`` or until
+       all named resolver tasks finish (#28712). Without that guard, a
+       stale human-input handoff could auto-respawn, the fresh worker
+       might find nothing actionable to do, exit cleanly, get recorded as
+       a protocol violation, and the cycle would repeat indefinitely.
 
     2. The task's ``consecutive_failures`` has reached the effective
        failure limit.  This prevents infinite retry loops when a task
@@ -4079,8 +4180,16 @@ def block_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    blocker_task_ids: Iterable[str] = (),
 ) -> bool:
-    """Transition ``running -> blocked``."""
+    """Transition ``running -> blocked``.
+
+    ``blocker_task_ids`` names Kanban tasks that can resolve this block. They
+    are linked as parents and recorded on the block event; once they all reach
+    ``done``/``archived``, ``recompute_ready`` is allowed to auto-promote the
+    blocked task back to ``ready``. Blocks without blockers remain sticky and
+    require explicit ``unblock_task``.
+    """
     if is_review_only_block_reason(reason):
         raise ValueError(REVIEW_ONLY_BLOCK_MESSAGE)
     with write_txn(conn):
@@ -4113,6 +4222,7 @@ def block_task(
             )
         if cur.rowcount != 1:
             return False
+        blocker_ids = _append_blocker_links_unlocked(conn, task_id, blocker_task_ids)
         run_id = _end_run(
             conn, task_id,
             outcome="blocked", status="blocked",
@@ -4126,8 +4236,55 @@ def block_task(
                 outcome="blocked",
                 summary=reason,
             )
-        _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        payload = {"reason": reason}
+        if blocker_ids:
+            payload["blocked_by"] = blocker_ids
+            payload["auto_unblock_when_blockers_done"] = True
+        _append_event(conn, task_id, "blocked", payload, run_id=run_id)
         return True
+
+
+def add_blocker_dependency(
+    conn: sqlite3.Connection,
+    task_id: str,
+    blocker_task_ids: Iterable[str],
+    *,
+    reason: Optional[str] = None,
+    actor: Optional[str] = None,
+) -> list[str]:
+    """Make an existing blocked task auto-retry after blocker tasks finish."""
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"task {task_id} not found")
+        if row["status"] != "blocked":
+            raise ValueError(f"task {task_id} is {row['status']!r}; expected 'blocked'")
+        blocker_ids = _append_blocker_links_unlocked(conn, task_id, blocker_task_ids)
+        if not blocker_ids:
+            raise ValueError("at least one blocked_by task id is required")
+        summary = reason or _latest_blocked_summary(conn, task_id)
+        payload = {
+            "reason": summary,
+            "blocked_by": blocker_ids,
+            "auto_unblock_when_blockers_done": True,
+        }
+        _append_event(conn, task_id, "blocked", payload)
+        if actor:
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    task_id,
+                    actor,
+                    "AUTO-UNBLOCK: waiting for blocker task(s) "
+                    + ", ".join(blocker_ids)
+                    + ". This blocked task will be promoted when those blockers are done.",
+                    int(time.time()),
+                ),
+            )
+        return blocker_ids
 
 
 
@@ -4238,7 +4395,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         undone_parents = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
             (task_id,),
         ).fetchone()
         new_status = "todo" if undone_parents else "ready"

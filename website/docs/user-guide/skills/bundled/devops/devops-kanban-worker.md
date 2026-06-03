@@ -83,11 +83,15 @@ kanban_complete(
 )
 ```
 
-Block instead only for a real blocker, with a concrete ask:
+Block instead only for a real blocker, with a concrete ask. If the blocker is another Kanban task you created or identified, include `blocked_by=["t_..."]` so Hermes links that task as a parent and automatically retries this card when the blocker finishes:
 
 ```python
 kanban_block(
     reason="Need rate-limit key decision: IP is simple but NAT-unsafe; user_id requires auth and skips anonymous endpoints.",
+)
+kanban_block(
+    reason="Canonical build is failing in a separate shared compile-fix card; retry this card when that fix lands.",
+    blocked_by=["t_compilefix"],
 )
 ```
 

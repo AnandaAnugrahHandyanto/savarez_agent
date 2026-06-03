@@ -117,6 +117,60 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
         assert kb.get_task(conn, child).status == "blocked"
 
 
+
+def test_blocked_by_task_auto_promotes_after_blocker_done(kanban_home: Path) -> None:
+    """A sticky worker block can name Kanban blockers that resolve it."""
+    with kb.connect() as conn:
+        blocker = kb.create_task(conn, title="fix shared compile error")
+        dependent = kb.create_task(conn, title="run tests blocked by compile error")
+        kb.claim_task(conn, dependent)
+
+        assert kb.block_task(
+            conn,
+            dependent,
+            reason="canonical build is blocked by the shared compile fix task",
+            expected_run_id=kb.get_task(conn, dependent).current_run_id,
+            blocker_task_ids=[blocker],
+        )
+        assert kb.get_task(conn, dependent).status == "blocked"
+
+        # Still sticky while the blocker is incomplete.
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, dependent).status == "blocked"
+
+        kb.complete_task(conn, blocker, result="compile fix merged")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, dependent).status == "ready"
+
+
+def test_add_blocker_dependency_converts_existing_block_to_auto_retry(kanban_home: Path) -> None:
+    """Operators can attach a resolver card to an already-blocked task."""
+    with kb.connect() as conn:
+        blocker = kb.create_task(conn, title="resolve failed test")
+        dependent = kb.create_task(conn, title="dependent verification")
+        kb.claim_task(conn, dependent)
+        kb.block_task(
+            conn,
+            dependent,
+            reason="failed test in peer task",
+            expected_run_id=kb.get_task(conn, dependent).current_run_id,
+        )
+        assert kb.get_task(conn, dependent).status == "blocked"
+
+        kb.add_blocker_dependency(
+            conn,
+            dependent,
+            [blocker],
+            reason="waiting for peer test fix",
+            actor="test",
+        )
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, dependent).status == "blocked"
+
+        kb.complete_task(conn, blocker, result="fixed")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, dependent).status == "ready"
+
 # ---------------------------------------------------------------------------
 # Circuit-breaker blocks still auto-recover (preserve #40c1decb3 intent)
 # ---------------------------------------------------------------------------

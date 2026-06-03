@@ -612,6 +612,11 @@ def _handle_block(args: dict, **kw) -> str:
     if _kb.is_review_only_block_reason(str(reason)):
         return tool_error(_kb.REVIEW_ONLY_BLOCK_MESSAGE)
     board = args.get("board")
+    blocked_by = args.get("blocked_by") or []
+    if isinstance(blocked_by, str):
+        blocked_by = [blocked_by]
+    if not isinstance(blocked_by, (list, tuple)):
+        return tool_error("blocked_by must be a list of task ids")
     try:
         kb, conn = _connect(board=board)
         try:
@@ -619,14 +624,24 @@ def _handle_block(args: dict, **kw) -> str:
                 conn, tid,
                 reason=reason,
                 expected_run_id=_worker_run_id(tid),
+                blocker_task_ids=blocked_by,
             )
+            if not ok and blocked_by:
+                kb.add_blocker_dependency(
+                    conn,
+                    tid,
+                    blocked_by,
+                    reason=str(reason),
+                    actor=os.environ.get("HERMES_PROFILE") or "worker",
+                )
+                ok = True
             if not ok:
                 return tool_error(
                     f"could not block {tid} (unknown id or not in "
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            return _ok(task_id=tid, run_id=run.id if run else None, blocked_by=list(blocked_by))
         finally:
             conn.close()
     except ValueError as e:
@@ -1094,6 +1109,15 @@ KANBAN_BLOCK_SCHEMA = {
                     "What you need answered, in one or two sentences. "
                     "Don't paste the whole conversation; the human has "
                     "the board and can ask follow-ups via comments."
+                ),
+            },
+            "blocked_by": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional Kanban task id(s) whose completion resolves this block. "
+                    "Use when you created or identified a concrete fix/prerequisite card; "
+                    "the current task will auto-promote when all blocker tasks are done/archived."
                 ),
             },
             "board": _board_schema_prop(),

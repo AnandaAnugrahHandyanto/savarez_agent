@@ -51,7 +51,7 @@ For non-Hermes lanes (registered via a plugin), the plugin supplies its own `spa
 Every claim must end in exactly one of:
 
 - `kanban_complete(summary=..., metadata=...)` — task succeeds, status flips to `done`.
-- `kanban_block(reason=...)` — task waits for human input, status flips to `blocked`. The dispatcher respawns when `kanban_unblock` runs.
+- `kanban_block(reason=...)` — task waits for human input, status flips to `blocked`. The dispatcher respawns when `kanban_unblock` runs. If the block is resolved by another Kanban card, pass `blocked_by=["t_..."]`; Hermes links that card as a parent and auto-promotes this card when the blocker is done/archived.
 - The worker process exits without a tool call. The kernel reaps it and emits `crashed` (PID died) or `gave_up` (consecutive-failure breaker tripped) or `timed_out` (max_runtime exceeded). This is the failure path; healthy workers don't end here.
 
 The kanban kernel enforces that exactly one of these terminates each run. A worker that calls neither and exits normally is treated as crashed.
@@ -63,7 +63,7 @@ A worker should complete once its own acceptance criteria are met and verified. 
 - **Complete producer work with structured evidence** via `kanban_complete(summary=..., metadata=...)`.
 - **Put review handoff data in metadata**: changed_files, tests_run/tests_passed, diff_path or PR URL, decisions, artifacts, and `ready_for_review: true` when a reviewer/QA/human should inspect it later.
 - **Use explicit reviewer child cards** for critique. The reviewer can complete with findings or create follow-up fix cards.
-- **Reserve `kanban_block(reason=...)` for real blockers**: missing credentials, unavailable hardware/services, failing verification that leaves acceptance criteria unmet, or ambiguous requirements that materially change the work.
+- **Reserve `kanban_block(reason=...)` for real blockers**: missing credentials, unavailable hardware/services, failing verification that leaves acceptance criteria unmet, or ambiguous requirements that materially change the work. For task-resolved blockers, include `blocked_by=["t_..."]` so the block resolves automatically when the prerequisite card completes.
 
 The kanban kernel rejects generic review/sign-off block reasons because blocked producer cards freeze dependency promotion and wedge multi-agent graphs.
 
