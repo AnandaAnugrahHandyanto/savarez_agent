@@ -2863,6 +2863,42 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
+    # ── ~/.toolenv support ──────────────────────────────────────────────────
+    # launchd does not source shell init files (~/.zshrc, ~/.toolenv, etc.).
+    # Detect ~/.toolenv and merge exported variables into the plist so that
+    # API keys, tokens, and other user-level environment is available to the
+    # gateway process without manual plist editing.
+    toolenv_path = Path.home() / ".toolenv"
+    toolenv_vars: dict[str, str] = {}
+    if toolenv_path.is_file():
+        try:
+            text = toolenv_path.read_text(encoding="utf-8", errors="replace")
+            for line in text.splitlines():
+                line = line.strip()
+                # Match lines like: export FOO="bar"   or   export FOO=bar
+                if line.startswith("export "):
+                    rest = line[7:].strip()
+                    if "=" in rest:
+                        key, _, val = rest.partition("=")
+                        # Strip surrounding quotes
+                        val = val.strip().strip("'\"")
+                        if key.isidentifier():
+                            # Skip PATH (already explicitly set), HERMES_HOME,
+                            # VIRTUAL_ENV (managed by Hermes itself)
+                            if key not in ("PATH", "HERMES_HOME", "VIRTUAL_ENV"):
+                                # Expand $HOME since launchd doesn't go through a shell
+                                val = val.replace("$HOME", str(Path.home()))
+                                toolenv_vars[key] = val
+        except Exception:
+            pass  # Best-effort; don't crash plist generation over a read error
+
+    # Render toolenv variables as plist XML entries
+    toolenv_xml = ""
+    for key in sorted(toolenv_vars):
+        escaped_val = toolenv_vars[key].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        toolenv_xml += f"        <key>{key}</key>\n"
+        toolenv_xml += f"        <string>{escaped_val}</string>\n"
+
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
         f"<string>{python_path}</string>",
@@ -2902,6 +2938,7 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+{toolenv_xml}
     </dict>
     
     <key>RunAtLoad</key>
