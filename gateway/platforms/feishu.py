@@ -1562,7 +1562,10 @@ class FeishuAdapter(BasePlatformAdapter):
             group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
             allowed_group_users=frozenset(
                 item.strip()
-                for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
+                for item in (
+                    extra.get("allowed_users")
+                    or os.getenv("FEISHU_ALLOWED_USERS", "")
+                ).split(",")
                 if item.strip()
             ),
             bot_open_id=os.getenv("FEISHU_BOT_OPEN_ID", "").strip(),

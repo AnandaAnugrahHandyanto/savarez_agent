@@ -811,17 +811,9 @@ def load_gateway_config() -> GatewayConfig:
                                     for key in ("app_id", "app_secret", "domain", "connection_mode", "encrypt_key", "verification_token", "webhook_host", "webhook_port", "webhook_path"):
                                         if key in item and key not in extra:
                                             extra[key] = item[key]
-                                if idx < len(existing) and isinstance(existing[idx], dict):
-                                    merged_extra = {**existing[idx].get("extra", {}), **item.get("extra", {})}
-                                    merged = {**existing[idx], **item}
-                                    if merged_extra:
-                                        merged["extra"] = merged_extra
-                                    merged_list.append(merged)
-                                else:
-                                    merged_list.append(item)
-                            # Append any remaining existing entries
-                            if isinstance(existing, list) and len(existing) > len(plat_block):
-                                merged_list.extend(existing[len(plat_block):])
+                                # Use yaml item directly, don't merge with existing
+                                # to avoid config values being overwritten
+                                merged_list.append(item)
                             platforms_data[plat_name] = merged_list
                         else:
                             # Bridge Feishu keys to extra for list items
@@ -1646,46 +1638,48 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if feishu_app_id and feishu_app_secret:
         feishu_cfg = config.platforms.get(Platform.FEISHU)
         if isinstance(feishu_cfg, list) and feishu_cfg:
-            # Env vars seed the first Feishu config entry when multi-app is configured
-            feishu_cfg[0].enabled = True
-            feishu_cfg[0].extra.update({
-                "app_id": feishu_app_id,
-                "app_secret": feishu_app_secret,
-                "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
-                "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
-            })
+            # Multi-app mode: env vars seed ONLY entries that don't already have
+            # an app_id. Never overwrite an existing app_id from YAML.
+            for entry in feishu_cfg:
+                if not entry.extra.get("app_id"):
+                    entry.enabled = True
+                    entry.extra.setdefault("app_id", feishu_app_id)
+                    entry.extra.setdefault("app_secret", feishu_app_secret)
+                    entry.extra.setdefault("domain", os.getenv("FEISHU_DOMAIN", "feishu"))
+                    entry.extra.setdefault("connection_mode", os.getenv("FEISHU_CONNECTION_MODE", "websocket"))
+                    feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
+                    if feishu_encrypt_key:
+                        entry.extra.setdefault("encrypt_key", feishu_encrypt_key)
+                    feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+                    if feishu_verification_token:
+                        entry.extra.setdefault("verification_token", feishu_verification_token)
+                    break  # Only seed the first empty entry
+        else:
+            # Single-app mode (backwards compat)
+            target_cfg = config.platforms.get(Platform.FEISHU)
+            if target_cfg is None:
+                config.platforms[Platform.FEISHU] = PlatformConfig()
+                target_cfg = config.platforms[Platform.FEISHU]
+            # Only set if not already present from YAML
+            target_cfg.enabled = True
+            target_cfg.extra.setdefault("app_id", feishu_app_id)
+            target_cfg.extra.setdefault("app_secret", feishu_app_secret)
+            target_cfg.extra.setdefault("domain", os.getenv("FEISHU_DOMAIN", "feishu"))
+            target_cfg.extra.setdefault("connection_mode", os.getenv("FEISHU_CONNECTION_MODE", "websocket"))
             feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
             if feishu_encrypt_key:
-                feishu_cfg[0].extra["encrypt_key"] = feishu_encrypt_key
+                target_cfg.extra.setdefault("encrypt_key", feishu_encrypt_key)
             feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
             if feishu_verification_token:
-                feishu_cfg[0].extra["verification_token"] = feishu_verification_token
+                target_cfg.extra.setdefault("verification_token", feishu_verification_token)
             feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
             if feishu_home:
-                feishu_cfg[0].home_channel = HomeChannel(
+                target_cfg.home_channel = HomeChannel(
                     platform=Platform.FEISHU,
                     chat_id=feishu_home,
                     name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
                     thread_id=os.getenv("FEISHU_HOME_CHANNEL_THREAD_ID") or None,
                 )
-        else:
-            if Platform.FEISHU not in config.platforms:
-                config.platforms[Platform.FEISHU] = PlatformConfig()
-            config.platforms[Platform.FEISHU].enabled = True
-            config.platforms[Platform.FEISHU].extra.update({
-                "app_id": feishu_app_id,
-                "app_secret": feishu_app_secret,
-                "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
-                "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
-            })
-            feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
-            if feishu_encrypt_key:
-                config.platforms[Platform.FEISHU].extra["encrypt_key"] = feishu_encrypt_key
-            feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
-            if feishu_verification_token:
-                config.platforms[Platform.FEISHU].extra["verification_token"] = feishu_verification_token
-            feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
-            if feishu_home:
                 config.platforms[Platform.FEISHU].home_channel = HomeChannel(
                     platform=Platform.FEISHU,
                     chat_id=feishu_home,
