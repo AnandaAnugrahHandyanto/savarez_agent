@@ -8128,7 +8128,22 @@ class GatewayRunner:
 
         if canonical == "whereami":
             return await self._handle_whereami_command(event)
-        
+
+        if canonical == "guide":
+            return await self._handle_guide_command(event)
+
+        if canonical == "agent_status":
+            return await self._handle_agent_status_command(event)
+
+        if canonical == "summon":
+            return await self._handle_summon_command(event)
+
+        if canonical == "swarm":
+            return await self._handle_swarm_command(event)
+
+        if canonical == "route":
+            return await self._handle_route_command(event)
+
         if canonical == "help":
             return await self._handle_help_command(event)
 
@@ -11893,6 +11908,71 @@ class GatewayRunner:
             return describe_current_topic(event.source)
         except Exception as exc:
             return f"Could not inspect current topic: {exc}"
+
+    async def _handle_guide_command(self, event: MessageEvent) -> str:
+        """Handle /guide -- show the multi-agent workspace guide."""
+        try:
+            from gateway.agent_registry import generate_pinned_guide
+            return generate_pinned_guide()
+        except Exception as exc:
+            return f"Could not generate workspace guide: {exc}"
+
+    async def _handle_agent_status_command(self, event: MessageEvent) -> str:
+        """Handle /agent_status (/roster) -- show registered agent roster."""
+        try:
+            from gateway.agent_registry import render_agent_roster
+            return render_agent_roster()
+        except Exception as exc:
+            return f"Could not load agent registry: {exc}"
+
+    async def _handle_summon_command(self, event: MessageEvent) -> str:
+        """Handle /summon @agent [task] -- show invocation guidance for an agent."""
+        try:
+            from gateway.agent_registry import render_summon_help
+            args = event.get_command_args().strip()
+            # Extract alias from first word; may start with @
+            parts = args.split(None, 1)
+            if not parts:
+                from gateway.agent_registry import render_agent_roster
+                return "Usage: /summon @agent [task]\n\n" + render_agent_roster()
+            alias = parts[0].lstrip("@").lower()
+            task = parts[1] if len(parts) > 1 else ""
+            return render_summon_help(alias)
+        except Exception as exc:
+            return f"Could not look up agent: {exc}"
+
+    async def _handle_swarm_command(self, event: MessageEvent) -> str:
+        """Handle /swarm @a @b [task] -- multi-agent dispatch guidance."""
+        try:
+            from gateway.agent_registry import render_swarm_guidance
+            args = event.get_command_args().strip()
+            tokens = args.split()
+            aliases: list[str] = []
+            task_parts: list[str] = []
+            for tok in tokens:
+                if tok.startswith("@"):
+                    aliases.append(tok.lstrip("@"))
+                else:
+                    task_parts.append(tok)
+            task = " ".join(task_parts)
+            return render_swarm_guidance(aliases, task)
+        except Exception as exc:
+            return f"Could not generate swarm guidance: {exc}"
+
+    async def _handle_route_command(self, event: MessageEvent) -> str:
+        """Handle /route @agent [task] -- routing guidance for an agent."""
+        try:
+            from gateway.agent_registry import render_route_guidance
+            args = event.get_command_args().strip()
+            parts = args.split(None, 1)
+            if not parts:
+                from gateway.agent_registry import render_agent_roster
+                return "Usage: /route @agent [task]\n\n" + render_agent_roster()
+            alias = parts[0].lstrip("@").lower()
+            task = parts[1] if len(parts) > 1 else ""
+            return render_route_guidance(alias, task)
+        except Exception as exc:
+            return f"Could not generate routing guidance: {exc}"
 
     @staticmethod
     def _get_guild_id(event: MessageEvent) -> Optional[int]:

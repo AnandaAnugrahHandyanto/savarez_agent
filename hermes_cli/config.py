@@ -2112,6 +2112,14 @@ DEFAULT_CONFIG = {
         "topic_registry": {
             "topics": {},
         },
+        # Operator-authored agent roster.  Each key is the agent alias (e.g.
+        # "codex", "glm", "blazemind").  Built-in agents are always present;
+        # entries here override or extend them.  Set enabled: false to suppress
+        # a built-in.  See `gateway/agent_registry.py` for the full schema and
+        # `hermes workspace guide` for the compatibility contract.
+        "agent_registry": {
+            "agents": {},
+        },
         "decision_records": {
             "enabled": False,
             "target": "",
