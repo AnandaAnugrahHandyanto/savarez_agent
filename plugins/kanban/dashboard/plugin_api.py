@@ -859,7 +859,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     status_code=400,
                     detail="Cannot set status to 'running' directly; use the dispatcher/claim path",
                 )
-            elif s in ("todo", "triage", "scheduled"):
+            elif s in ("todo", "triage", "review"):
                 ok = _set_status_direct(conn, task_id, s)
             else:
                 raise HTTPException(status_code=400, detail=f"unknown status: {s}")
@@ -867,7 +867,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 # For ``ready``, name the blocking parent(s) so the dashboard
                 # can render an actionable toast instead of a silent no-op.
                 # See #26744.
-                if s == "ready":
+                if s in ("ready", "review"):
                     blockers = _parents_blocking_ready(conn, task_id)
                     if blockers:
                         names = ", ".join(
@@ -877,8 +877,8 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                         raise HTTPException(
                             status_code=409,
                             detail=(
-                                f"Cannot move to 'ready': blocked by parent(s) "
-                                f"not done — {names}"
+                                f"Cannot move to {s!r}: blocked by parent(s) "
+                                f"not done/archived — {names}"
                             ),
                         )
                 raise HTTPException(
@@ -948,18 +948,19 @@ def delete_task(task_id: str, board: Optional[str] = Query(None)):
 def _parents_blocking_ready(
     conn: sqlite3.Connection, task_id: str,
 ) -> list:
-    """Return parent rows (``id``, ``title``, ``status``) that aren't ``done``
-    and therefore prevent ``task_id`` from being promoted to ``ready``.
+    """Return parent rows (``id``, ``title``, ``status``) that are not in a
+    dependency-satisfied terminal state and therefore prevent ``task_id`` from
+    being promoted to ``ready`` or ``review``.
 
     Used to enrich the 409 response from :func:`update_task` so the
     dashboard can show an actionable toast (#26744) instead of a silent
     no-op.  Returns ``[]`` when nothing blocks the transition (e.g. no
-    parents, or all parents already done).
+    parents, or all parents are already ``done``/``archived``).
     """
     rows = conn.execute(
         "SELECT t.id, t.title, t.status FROM tasks t "
         "JOIN task_links l ON l.parent_id = t.id "
-        "WHERE l.child_id = ? AND t.status != 'done'",
+        "WHERE l.child_id = ? AND t.status NOT IN ('done', 'archived')",
         (task_id,),
     ).fetchall()
     return [
@@ -990,10 +991,10 @@ def _set_status_direct(
         if prev is None:
             return False
 
-        # Guard: don't allow promoting to 'ready' unless all parents are done.
-        # Prevents the dispatcher from spawning a child whose upstream work
-        # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
-        if new_status == "ready":
+        # Guard: don't allow promoting to dispatchable/reviewable states unless
+        # all parents are done. ``claim_review_task`` assumes review tasks have
+        # already passed the dependency gate, just like ready tasks.
+        if new_status in {"ready", "review"}:
             parent_statuses = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
@@ -1001,7 +1002,7 @@ def _set_status_direct(
                 (task_id,),
             ).fetchall()
             if parent_statuses and not all(
-                p["status"] == "done" for p in parent_statuses
+                p["status"] in {"done", "archived"} for p in parent_statuses
             ):
                 return False
 
@@ -1045,7 +1046,7 @@ def _set_status_direct(
                 child_id = row["child_id"]
                 demoted = conn.execute(
                     "UPDATE tasks SET status = 'todo' "
-                    "WHERE id = ? AND status = 'ready'",
+                    "WHERE id = ? AND status IN ('ready', 'review')",
                     (child_id,),
                 )
                 if demoted.rowcount == 1:
@@ -1203,7 +1204,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         continue
                     elif s == "scheduled":
                         ok = kanban_db.schedule_task(conn, tid)
-                    elif s in {"todo", "triage"}:
+                    elif s in {"todo", "triage", "review"}:
                         ok = _set_status_direct(conn, tid, s)
                     else:
                         entry.update(ok=False, error=f"unknown status {s!r}")
