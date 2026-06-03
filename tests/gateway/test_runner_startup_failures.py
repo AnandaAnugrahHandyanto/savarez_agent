@@ -408,3 +408,235 @@ def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatc
         "host-visible output mount" in record.message
         for record in caplog.records
     )
+
+
+# ─── --replace cgroup-membership guard ────────────────────────────────────
+#
+# Two kanban worker self-destruct incidents in 8 days (t_6b3865db on
+# 2026-05-21, t_4b868fa8 on 2026-05-29) traced to `hermes gateway run
+# --replace` being callable from inside the target's own cgroup. Both
+# times the worker SIGTERM'd its parent gateway, the systemd unit's
+# KillMode=mixed SIGKILL'd the whole cgroup including the worker, and
+# the audit trail was concealed by a second worker run completing the
+# task with a misattributed success summary. The post-mortem lives at
+# jetminds/engineering/substrate/2026-05-29-gateway-self-destruct-
+# recurrence.md. These tests pin the substrate-side guard.
+
+
+def _patch_replace_path_skeleton(monkeypatch, tmp_path, calls):
+    """Common monkeypatch scaffolding for --replace start_gateway tests."""
+    import os as _os
+
+    class _CleanExitRunner:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = True
+            self.exit_reason = None
+            self.adapters = {}
+
+        async def start(self):
+            return True
+
+        async def stop(self):
+            return None
+
+    _pid_state = {"alive": True}
+
+    def _mock_get_running_pid():
+        return 42 if _pid_state["alive"] else None
+
+    def _mock_remove_pid_file():
+        _pid_state["alive"] = False
+
+    monkeypatch.setattr("gateway.status.get_running_pid", _mock_get_running_pid)
+    monkeypatch.setattr("gateway.status.remove_pid_file", _mock_remove_pid_file)
+    monkeypatch.setattr(
+        "gateway.status.release_all_scoped_locks", lambda **kwargs: 0
+    )
+    monkeypatch.setattr(
+        "gateway.status.terminate_pid",
+        lambda pid, force=False: calls.append((pid, force)),
+    )
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
+    monkeypatch.setattr("gateway.run.os.kill", lambda pid, sig: None)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr(
+        "hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path
+    )
+    monkeypatch.setattr(
+        "hermes_logging._add_rotating_handler", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_replace_refuses_when_caller_shares_target_cgroup(
+    monkeypatch, tmp_path, capsys
+):
+    """--replace MUST refuse when caller is in the target's cgroup.
+
+    Repro of the kanban-worker self-destruct path (t_6b3865db,
+    t_4b868fa8). Forces caller_shares_target_cgroup to report True;
+    asserts start_gateway returns False without calling terminate_pid,
+    and emits a clear error message naming the cgroup overlap and the
+    systemctl alternative.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_GATEWAY_REPLACE_FORCE", raising=False)
+
+    calls = []
+    _patch_replace_path_skeleton(monkeypatch, tmp_path, calls)
+    monkeypatch.setattr(
+        "gateway.status.caller_shares_target_cgroup",
+        lambda pid: (True, "/user.slice/x.service", "/user.slice/x.service"),
+    )
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+
+    assert ok is False
+    assert calls == [], "terminate_pid must NOT be called when guard fires"
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "refusing --replace" in combined
+    assert "cgroup" in combined
+    assert "systemctl --user restart hermes-gateway-" in combined
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_replace_proceeds_when_cgroups_differ(
+    monkeypatch, tmp_path
+):
+    """Operator use case: independent shell, different cgroup → unchanged.
+
+    A human typing `hermes gateway run --replace` from a login shell is
+    in /user.slice/...session-N.scope; the target gateway is in
+    /user.slice/...hermes-gateway-<profile>.service. Different cgroups →
+    guard passes → terminate_pid runs as before.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_GATEWAY_REPLACE_FORCE", raising=False)
+
+    calls = []
+    _patch_replace_path_skeleton(monkeypatch, tmp_path, calls)
+    monkeypatch.setattr(
+        "gateway.status.caller_shares_target_cgroup",
+        lambda pid: (
+            False,
+            "/user.slice/user-1000.slice/session-3.scope",
+            "/user.slice/user-1000.slice/hermes-gateway-default.service",
+        ),
+    )
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+
+    assert ok is True
+    assert calls == [(42, False), (42, True)]
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_replace_fail_open_when_cgroup_unreadable(
+    monkeypatch, tmp_path
+):
+    """Non-Linux hosts (and any /proc read failure) → guard fails open.
+
+    macOS/Windows operators must still be able to use --replace. The
+    helper returns (False, None, None) when /proc is unavailable, and
+    start_gateway treats that as "not shared" — proceeds with replace.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_GATEWAY_REPLACE_FORCE", raising=False)
+
+    calls = []
+    _patch_replace_path_skeleton(monkeypatch, tmp_path, calls)
+    monkeypatch.setattr(
+        "gateway.status.caller_shares_target_cgroup",
+        lambda pid: (False, None, None),
+    )
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+
+    assert ok is True
+    assert calls == [(42, False), (42, True)]
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_replace_force_env_bypasses_cgroup_guard(
+    monkeypatch, tmp_path
+):
+    """HERMES_GATEWAY_REPLACE_FORCE=1 bypasses the cgroup guard.
+
+    Reserved for the rare legitimate intra-cgroup case (debugging,
+    container scenarios where the operator knows the kill cascade is
+    acceptable). Not advertised in the error message but documented
+    in the inline comment.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_GATEWAY_REPLACE_FORCE", "1")
+
+    calls = []
+    _patch_replace_path_skeleton(monkeypatch, tmp_path, calls)
+
+    # Even if shared cgroup would have been detected, the env override
+    # must short-circuit the check before it runs.
+    def _should_not_be_called(pid):
+        raise AssertionError(
+            "caller_shares_target_cgroup must not be called when "
+            "HERMES_GATEWAY_REPLACE_FORCE=1"
+        )
+
+    monkeypatch.setattr(
+        "gateway.status.caller_shares_target_cgroup", _should_not_be_called
+    )
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+
+    assert ok is True
+    assert calls == [(42, False), (42, True)]
+
+
+# ─── Unit tests for the helper itself ─────────────────────────────────────
+
+
+def test_caller_shares_target_cgroup_reports_shared_for_self():
+    """A process compared to itself shares its own cgroup.
+
+    On Linux hosts this exercises the real /proc read path end-to-end.
+    Skipped on non-Linux because /proc/<pid>/cgroup doesn't exist.
+    """
+    import os
+    import sys
+
+    if sys.platform != "linux":
+        pytest.skip("cgroup membership only meaningful on Linux")
+
+    from gateway.status import caller_shares_target_cgroup
+
+    shared, ours, theirs = caller_shares_target_cgroup(os.getpid())
+    assert shared is True
+    assert ours is not None
+    assert ours == theirs
+
+
+def test_caller_shares_target_cgroup_fails_open_on_bogus_pid():
+    """Unreadable target PID → (False, _, None), guard fails open."""
+    import sys
+
+    if sys.platform != "linux":
+        pytest.skip("cgroup membership only meaningful on Linux")
+
+    from gateway.status import caller_shares_target_cgroup
+
+    # PID 2**31 - 1 will not exist; /proc/<pid>/cgroup read raises FileNotFoundError.
+    shared, _ours, theirs = caller_shares_target_cgroup(2**31 - 1)
+    assert shared is False
+    assert theirs is None

@@ -100,6 +100,76 @@ def terminate_pid(pid: int, *, force: bool = False) -> None:
     os.kill(pid, sig)
 
 
+def _read_cgroup_path(pid_or_self: str) -> Optional[str]:
+    """Read the unified-hierarchy cgroup path for a PID (or "self").
+
+    Returns the path string (e.g. ``/user.slice/user-1000.slice/...service``)
+    from a ``/proc/<pid>/cgroup`` line of the form ``0::<path>``.  Returns
+    ``None`` on any read error, on non-Linux hosts (no /proc), or when the
+    file has no unified-hierarchy line (rare; pre-v2 cgroup-only systems
+    where the host hasn't migrated).
+
+    Best-effort.  Never raises.
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        with open(f"/proc/{pid_or_self}/cgroup", encoding="utf-8") as fh:
+            for line in fh:
+                # Format per cgroups(7): "hierarchy-ID:controller-list:cgroup-path"
+                # Unified hierarchy (cgroup v2) lines always start with "0::".
+                if line.startswith("0::"):
+                    return line[3:].strip()
+            # No unified hierarchy line — pure v1 host. Fall back to the first
+            # non-name= line so the guard still has *some* signal.
+            try:
+                fh.seek(0)
+                for line in fh:
+                    parts = line.strip().split(":", 2)
+                    if len(parts) == 3 and not parts[1].startswith("name="):
+                        return parts[2]
+            except OSError:
+                return None
+    except (OSError, FileNotFoundError, PermissionError):
+        return None
+    return None
+
+
+def caller_shares_target_cgroup(target_pid: int) -> tuple[bool, Optional[str], Optional[str]]:
+    """Return whether the current process shares ``target_pid``'s cgroup.
+
+    Used by ``hermes gateway run --replace`` to refuse the self-destruct
+    case where a kanban worker (a child of the gateway's systemd unit, in
+    the same cgroup) calls ``--replace`` against its own parent gateway.
+    Killing the gateway in that scenario also SIGKILLs the worker via
+    ``KillMode=mixed`` on the unit — the worker dies mid-command, the
+    audit trail truncates, and a second worker run hides the violence
+    behind a misattributed success summary.
+
+    Cgroup-membership is stricter than an ancestor-walk: it also catches
+    sibling-process cases (two kanban workers spawned by the same gateway
+    dispatcher; if one calls ``--replace`` against the gateway it will
+    take its sibling out too).
+
+    Returns ``(shared, our_cgroup, target_cgroup)``:
+
+    * ``shared`` is ``True`` only when both cgroups are readable AND
+      identical.  Any read failure → ``False`` (fail-open for the
+      operator use case: independent shell, different cgroup, or any
+      platform without /proc).
+    * The two path strings are returned for inclusion in the error
+      message so the caller can see *which* cgroup overlap triggered the
+      refusal.
+
+    Best-effort.  Never raises.
+    """
+    our_cgroup = _read_cgroup_path("self")
+    target_cgroup = _read_cgroup_path(str(target_pid))
+    if our_cgroup is None or target_cgroup is None:
+        return (False, our_cgroup, target_cgroup)
+    return (our_cgroup == target_cgroup, our_cgroup, target_cgroup)
+
+
 def _scope_hash(identity: str) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
