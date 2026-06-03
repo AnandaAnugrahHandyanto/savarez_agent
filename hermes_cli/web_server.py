@@ -539,6 +539,18 @@ class EnvVarUpdate(BaseModel):
     value: str
 
 
+class CustomProviderModelsRequest(BaseModel):
+    base_url: str
+    api_key: str = ""
+
+
+class CustomProviderSetupRequest(BaseModel):
+    name: str = ""
+    base_url: str
+    api_key: str = ""
+    model: str = ""
+
+
 class EnvVarDelete(BaseModel):
     key: str
 
@@ -2076,6 +2088,75 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
         # 429 = key is valid but rate-limited; success = valid.
         return {"ok": True, "reachable": True, "message": ""}
     return {"ok": False, "reachable": True, "message": f"Provider returned HTTP {resp.status_code} for this key."}
+
+
+@app.post("/api/providers/custom/models")
+async def list_custom_provider_models(body: CustomProviderModelsRequest, request: Request):
+    """Probe an OpenAI-compatible custom endpoint and return available models."""
+    _require_token(request)
+    base_url = (body.base_url or "").strip().rstrip("/")
+    api_key = (body.api_key or "").strip()
+
+    if not base_url:
+        raise HTTPException(status_code=400, detail="base_url required")
+
+    try:
+        from hermes_cli.models import probe_api_models
+
+        probe = probe_api_models(api_key, base_url, timeout=10.0)
+        models = [str(m) for m in (probe.get("models") or []) if str(m).strip()]
+        return {
+            "ok": bool(models),
+            "models": models,
+            "probed_url": probe.get("probed_url"),
+            "resolved_base_url": probe.get("resolved_base_url") or base_url,
+            "suggested_base_url": probe.get("suggested_base_url"),
+            "used_fallback": bool(probe.get("used_fallback")),
+            "message": "" if models else "Could not fetch any models from this endpoint.",
+        }
+    except Exception:
+        _log.exception("POST /api/providers/custom/models failed")
+        return {
+            "ok": False,
+            "models": [],
+            "probed_url": base_url.rstrip("/") + "/models",
+            "resolved_base_url": base_url,
+            "suggested_base_url": None,
+            "used_fallback": False,
+            "message": "Could not reach the endpoint to fetch models.",
+        }
+
+
+@app.post("/api/providers/custom")
+async def save_custom_provider(body: CustomProviderSetupRequest, request: Request):
+    """Persist a custom OpenAI-compatible endpoint into config.yaml."""
+    _require_token(request)
+    base_url = (body.base_url or "").strip().rstrip("/")
+    api_key = (body.api_key or "").strip()
+    model = (body.model or "").strip()
+    name = (body.name or "").strip()
+
+    if not base_url:
+        raise HTTPException(status_code=400, detail="base_url required")
+    if not model:
+        raise HTTPException(status_code=400, detail="model required")
+
+    try:
+        from hermes_cli.main import _auto_provider_name, _save_custom_provider
+        from hermes_cli.providers import custom_provider_slug
+
+        display_name = name or _auto_provider_name(base_url)
+        _save_custom_provider(base_url, api_key, model, name=display_name)
+        return {
+            "ok": True,
+            "name": display_name,
+            "slug": custom_provider_slug(display_name),
+            "base_url": base_url,
+            "model": model,
+        }
+    except Exception:
+        _log.exception("POST /api/providers/custom failed")
+        raise HTTPException(status_code=500, detail="Failed to save custom provider")
 
 
 @app.delete("/api/env")

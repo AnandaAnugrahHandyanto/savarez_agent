@@ -1,11 +1,33 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $desktopBoot } from '@/store/boot'
+import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import type { OAuthProvider } from '@/types/hermes'
 
-import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
+import { DesktopOnboardingOverlay, Picker } from './desktop-onboarding-overlay'
 
-import { Picker } from './desktop-onboarding-overlay'
+const getGlobalModelOptions = vi.fn()
+const listCustomProviderModels = vi.fn()
+
+class ResizeObserverMock {
+  observe = vi.fn()
+  unobserve = vi.fn()
+  disconnect = vi.fn()
+}
+
+vi.stubGlobal('ResizeObserver', ResizeObserverMock)
+
+vi.mock('@/hermes', async importOriginal => {
+  const actual = (await importOriginal()) as object
+
+  return {
+    ...actual,
+    getGlobalModelOptions: () => getGlobalModelOptions(),
+    listCustomProviderModels: (baseUrl: string, apiKey?: string) => listCustomProviderModels(baseUrl, apiKey)
+  }
+})
 
 function provider(id: string, name = id): OAuthProvider {
   return {
@@ -32,8 +54,36 @@ function setProviders(providers: OAuthProvider[]) {
 
 const ctx: OnboardingContext = { requestGateway: async () => undefined as never }
 
+function renderOverlay() {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false }
+    }
+  })
+
+  $desktopBoot.set({
+    error: null,
+    fakeMode: false,
+    message: 'ready',
+    phase: 'ready',
+    progress: 100,
+    running: false,
+    timestamp: Date.now(),
+    visible: false
+  })
+
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <DesktopOnboardingOverlay enabled requestGateway={ctx.requestGateway} />
+    </QueryClientProvider>
+  )
+}
+
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
+  getGlobalModelOptions.mockReset()
+  listCustomProviderModels.mockReset()
   $desktopOnboarding.set({
     configured: null,
     flow: { status: 'idle' },
@@ -42,6 +92,16 @@ afterEach(() => {
     reason: null,
     requested: false,
     manual: false
+  })
+  $desktopBoot.set({
+    error: null,
+    fakeMode: false,
+    message: 'Starting Hermes Desktop…',
+    phase: 'renderer.init',
+    progress: 2,
+    running: true,
+    timestamp: Date.now(),
+    visible: true
   })
 })
 
@@ -68,5 +128,81 @@ describe('onboarding Picker', () => {
     expect(screen.getByText('OpenAI Codex / ChatGPT')).toBeTruthy()
     expect(screen.queryByText('Other sign-in options')).toBeNull()
     expect(screen.queryByText('Recommended')).toBeNull()
+  })
+
+  it('collects endpoint, API key, and default model for custom providers', () => {
+    setProviders([])
+    render(<Picker ctx={ctx} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Local \/ custom endpoint/i }))
+
+    expect(screen.getByPlaceholderText('http://127.0.0.1:8000/v1')).toBeTruthy()
+    expect(screen.getByPlaceholderText('Paste API key (optional for local endpoints)')).toBeTruthy()
+    expect(screen.getByPlaceholderText('Provider name')).toBeTruthy()
+    expect(screen.getByPlaceholderText('Select or enter a model id')).toBeTruthy()
+  })
+
+  it('shows the selected custom model while keeping every probed model in the dropdown', async () => {
+    listCustomProviderModels.mockResolvedValue({
+      models: ['codex-auto-review', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.5'],
+      resolved_base_url: 'https://api.volcanowei.org/v1'
+    })
+    setProviders([])
+    render(<Picker ctx={ctx} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Local \/ custom endpoint/i }))
+    fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8000/v1'), {
+      target: { value: 'https://api.volcanowei.org/v1' }
+    })
+    fireEvent.change(screen.getByPlaceholderText('Paste API key (optional for local endpoints)'), {
+      target: { value: 'sk-test' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
+
+    await waitFor(() => expect(listCustomProviderModels).toHaveBeenCalledWith('https://api.volcanowei.org/v1', 'sk-test'))
+
+    const modelSelect = screen.getByDisplayValue('codex-auto-review') as HTMLSelectElement
+    expect(modelSelect.value).toBe('codex-auto-review')
+    expect(screen.getByRole('option', { name: 'codex-auto-review' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'gpt-5.3-codex' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'gpt-5.4' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'gpt-5.5' })).toBeTruthy()
+  })
+
+  it('scopes the confirmation model picker to the newly configured custom provider', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'Pinche',
+          slug: 'custom:pinche',
+          models: ['codex-auto-review', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-image-2']
+        },
+        { name: 'GitHub Copilot', slug: 'copilot', models: ['codex-auto-review'] }
+      ]
+    })
+    $desktopOnboarding.set({
+      configured: false,
+      flow: {
+        status: 'confirming_model',
+        currentModel: 'gpt-5.5',
+        label: 'Pinche',
+        providerSlug: 'custom:pinche',
+        saving: false
+      },
+      mode: 'oauth',
+      providers: [],
+      reason: null,
+      requested: false,
+      manual: false
+    } satisfies DesktopOnboardingState)
+
+    renderOverlay()
+    fireEvent.click(screen.getByRole('button', { name: 'Change' }))
+
+    await waitFor(() => expect(screen.getByText('gpt-5.5')).toBeTruthy())
+    expect(screen.getByText('gpt-5.4')).toBeTruthy()
+    expect(screen.getByText('gpt-5.3-codex')).toBeTruthy()
+    expect(screen.getByText('Pinche')).toBeTruthy()
+    expect(screen.queryByText('GitHub Copilot')).toBeNull()
   })
 })

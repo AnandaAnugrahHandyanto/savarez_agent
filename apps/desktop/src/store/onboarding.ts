@@ -3,9 +3,11 @@ import { atom } from 'nanostores'
 import {
   cancelOAuthSession,
   getGlobalModelOptions,
+  listCustomProviderModels,
   getRecommendedDefaultModel,
   listOAuthProviders,
   pollOAuthSession,
+  saveCustomProvider,
   setEnvVar,
   setModelAssignment,
   startOAuthLogin,
@@ -660,6 +662,53 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
 
     return { ok: false, message: errMessage(error) }
   }
+}
+
+export async function saveOnboardingCustomProvider(params: {
+  apiKey: string
+  baseUrl: string
+  model: string
+  name: string
+}, ctx: OnboardingContext) {
+  const baseUrl = params.baseUrl.trim()
+  const model = params.model.trim()
+
+  if (!baseUrl) {
+    return { ok: false, message: 'Enter an endpoint URL first.' }
+  }
+  if (!model) {
+    return { ok: false, message: 'Select or enter a default model first.' }
+  }
+
+  try {
+    const saved = await saveCustomProvider({
+      apiKey: params.apiKey.trim(),
+      baseUrl,
+      model,
+      name: params.name.trim()
+    })
+    await setModelAssignment({ scope: 'main', provider: saved.slug, model: saved.model })
+    await ctx.requestGateway('reload.env').catch(() => undefined)
+    notifyReady(saved.name)
+    completeDesktopOnboarding()
+    ctx.onCompleted?.()
+
+    return { ok: true }
+  } catch (error) {
+    notifyError(error, 'Could not save custom provider')
+
+    return { ok: false, message: errMessage(error) }
+  }
+}
+
+export async function fetchOnboardingCustomProviderModels(baseUrl: string, apiKey: string) {
+  const trimmed = baseUrl.trim()
+
+  if (!trimmed) {
+    return { ok: false, models: [], message: 'Enter an endpoint URL first.' }
+  }
+
+  return listCustomProviderModels(trimmed, apiKey.trim())
 }
 
 // User picked a different model from the dropdown on the confirm card.
