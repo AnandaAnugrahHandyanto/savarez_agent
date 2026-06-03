@@ -4674,7 +4674,11 @@ class GatewayRunner:
             # Process in batches of 100 with event-loop yield points to avoid
             # O(n^2) event-loop blocking when recovering thousands of watchers.
             for i, watcher in enumerate(watchers):
-                asyncio.create_task(self._run_process_watcher(watcher))
+                self._spawn_supervised(
+                    lambda w=watcher: self._run_process_watcher(w),
+                    f"process_watcher:{watcher.get('session_id')}",
+                    restart=False,
+                )
                 logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
                 if i % 100 == 99:
                     await asyncio.sleep(0)
@@ -4682,18 +4686,18 @@ class GatewayRunner:
             logger.error("Recovered watcher setup error: %s", e)
 
         # Start background session expiry watcher to finalize expired sessions
-        asyncio.create_task(self._session_expiry_watcher())
+        self._spawn_supervised(self._session_expiry_watcher, "session_expiry_watcher")
 
         # Start background kanban notifier — delivers `completed`, `blocked`,
         # `spawn_auto_blocked`, and `crashed` events to gateway subscribers
         # so human-in-the-loop workflows hear back without polling.
-        asyncio.create_task(self._kanban_notifier_watcher())
+        self._spawn_supervised(self._kanban_notifier_watcher, "kanban_notifier_watcher")
 
         # Start background kanban dispatcher — spawns workers for ready
         # tasks. Gated by `kanban.dispatch_in_gateway` (default True).
         # When false, users run `hermes kanban daemon` externally or
         # simply don't use kanban; this loop becomes a no-op.
-        asyncio.create_task(self._kanban_dispatcher_watcher())
+        self._spawn_supervised(self._kanban_dispatcher_watcher, "kanban_dispatcher_watcher")
 
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
@@ -4702,17 +4706,62 @@ class GatewayRunner:
                 len(self._failed_platforms),
                 ", ".join(p.value for p in self._failed_platforms),
             )
-        asyncio.create_task(self._platform_reconnect_watcher())
+        self._spawn_supervised(self._platform_reconnect_watcher, "platform_reconnect_watcher")
 
         # Start background handoff watcher — picks up CLI sessions marked
         # handoff_state='pending' in state.db and re-binds them to the
         # destination platform's home channel, then forges a synthetic user
         # turn so the agent kicks off the new chat.
-        asyncio.create_task(self._handoff_watcher())
+        self._spawn_supervised(self._handoff_watcher, "handoff_watcher")
 
         logger.info("Press Ctrl+C to stop")
-        
+
         return True
+
+    def _spawn_supervised(self, coro_factory, name, *, restart=True):
+        """Launch a long-lived background task with supervision.
+
+        Bare ``asyncio.create_task(...)`` for the gateway's long-lived
+        watchers means a transient unhandled exception silently kills the
+        task with no log and no recovery — e.g. one raise inside
+        ``_platform_reconnect_watcher`` permanently disables the only
+        platform-reconnect mechanism while the gateway keeps running and
+        looking healthy.
+
+        This wrapper keeps a handle in ``_background_tasks``, logs any
+        non-cancellation exception with a traceback, and (when ``restart``
+        is True and the gateway is still running) respawns the task after a
+        short back-off so a one-off blip doesn't permanently lose the
+        watcher.
+        """
+        # Some test harnesses construct the runner without running __init__.
+        if getattr(self, "_background_tasks", None) is None:
+            self._background_tasks = set()
+
+        # NOTE: deliberately do NOT pass name= to create_task — a test
+        # replaces create_task with a fake that rejects the name kwarg.
+        task = asyncio.create_task(coro_factory())
+        self._background_tasks.add(task)
+
+        def _done(t):
+            self._background_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is None:
+                return
+            logger.error("Supervised task %s died: %r", name, exc, exc_info=exc)
+            if restart and self._running:
+                async def _respawn():
+                    await asyncio.sleep(1.0)
+                    if self._running:
+                        self._spawn_supervised(coro_factory, name, restart=restart)
+                respawn_task = asyncio.create_task(_respawn())
+                self._background_tasks.add(respawn_task)
+                respawn_task.add_done_callback(self._background_tasks.discard)
+
+        task.add_done_callback(_done)
+        return task
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.

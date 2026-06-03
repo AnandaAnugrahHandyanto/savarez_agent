@@ -309,3 +309,79 @@ async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     app.stop.assert_not_awaited()
     app.shutdown.assert_awaited_once()
     warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_polling_heartbeat_detects_wedged_poll(monkeypatch):
+    """A wedged long-poll (get_me() hangs/fails) must re-enter the reconnect ladder."""
+    monkeypatch.setenv("HERMES_TELEGRAM_HEARTBEAT_INTERVAL", "0.01")
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._polling_error_task = None
+
+    calls = []
+
+    async def _handler(err):
+        calls.append(err)
+        # Trip fatal so the heartbeat loop exits after this one iteration —
+        # robust against tests that globally mock asyncio.sleep.
+        adapter._set_fatal_error("test_heartbeat_stop", "stop", retryable=False)
+
+    adapter._handle_polling_network_error = _handler
+    adapter._app = SimpleNamespace(
+        updater=SimpleNamespace(running=True),
+        bot=SimpleNamespace(get_me=AsyncMock(side_effect=RuntimeError("wedged"))),
+    )
+
+    await asyncio.wait_for(adapter._polling_heartbeat_loop(), timeout=5)
+
+    assert len(calls) >= 1
+    assert isinstance(calls[0], Exception)
+
+
+@pytest.mark.asyncio
+async def test_polling_heartbeat_detects_stopped_updater(monkeypatch):
+    """An updater that has stopped running must re-enter the reconnect ladder."""
+    monkeypatch.setenv("HERMES_TELEGRAM_HEARTBEAT_INTERVAL", "0.01")
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._polling_error_task = None
+
+    calls = []
+
+    async def _handler(err):
+        calls.append(err)
+        adapter._set_fatal_error("test_heartbeat_stop", "stop", retryable=False)
+
+    adapter._handle_polling_network_error = _handler
+    adapter._app = SimpleNamespace(
+        updater=SimpleNamespace(running=False),
+        bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(username="bot"))),
+    )
+
+    await asyncio.wait_for(adapter._polling_heartbeat_loop(), timeout=5)
+
+    assert len(calls) >= 1
+
+
+@pytest.mark.asyncio
+async def test_polling_heartbeat_quiet_when_healthy(monkeypatch):
+    """A healthy poll (updater running, get_me() succeeds) must not trip recovery."""
+    monkeypatch.setenv("HERMES_TELEGRAM_HEARTBEAT_INTERVAL", "0.01")
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._polling_error_task = None
+
+    handler = AsyncMock()
+    adapter._handle_polling_network_error = handler
+
+    async def _get_me():
+        # Trip fatal so the loop exits after one healthy probe.
+        adapter._set_fatal_error("test_heartbeat_stop", "stop", retryable=False)
+        return SimpleNamespace(username="bot")
+
+    adapter._app = SimpleNamespace(
+        updater=SimpleNamespace(running=True),
+        bot=SimpleNamespace(get_me=_get_me),
+    )
+
+    await asyncio.wait_for(adapter._polling_heartbeat_loop(), timeout=5)
+
+    handler.assert_not_awaited()
