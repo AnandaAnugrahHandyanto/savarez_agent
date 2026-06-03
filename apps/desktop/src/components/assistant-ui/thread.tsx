@@ -13,6 +13,7 @@ import { useStore } from '@nanostores/react'
 import { IconPlayerStopFilled } from '@tabler/icons-react'
 import {
   type ClipboardEvent,
+  type ComponentProps,
   type FC,
   type FocusEvent,
   type FormEvent,
@@ -48,14 +49,13 @@ import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/co
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
-import { DirectiveContent } from '@/components/assistant-ui/directive-text'
-import { UserMessageText } from '@/components/assistant-ui/user-message-text'
-import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
-import { MarkdownText } from '@/components/assistant-ui/markdown-text'
+import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
+import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
 import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
+import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
@@ -446,17 +446,19 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
 
 const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ text, status }) => {
   const displayText = text.trimStart()
+  const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  const isRunning = status?.type === 'running' || messageRunning
 
   return (
-    <div
-      className={cn(
-        'whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground/85',
-        status?.type === 'running' && 'shimmer text-muted-foreground/55'
+    <MarkdownTextContent
+      containerClassName={cn(
+        'text-xs leading-relaxed text-muted-foreground/85',
+        isRunning && 'shimmer text-muted-foreground/55'
       )}
-      data-slot="aui_reasoning-text"
-    >
-      {displayText}
-    </div>
+      containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
+      isRunning={isRunning}
+      text={displayText}
+    />
   )
 }
 

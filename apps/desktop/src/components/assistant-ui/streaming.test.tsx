@@ -130,12 +130,12 @@ function assistantErrorMessage(error: string): ThreadMessage {
   } as ThreadMessage
 }
 
-function assistantReasoningMessage(text: string): ThreadMessage {
+function assistantReasoningMessage(text: string, running = false): ThreadMessage {
   return {
     id: 'assistant-reasoning-1',
     role: 'assistant',
     content: [{ type: 'reasoning', text }],
-    status: { type: 'complete', reason: 'stop' },
+    status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
     createdAt,
     metadata: {
       unstable_state: null,
@@ -323,6 +323,20 @@ function ReasoningHarness() {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [assistantReasoningMessage(' The user is asking what this file is.')],
     isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
+
+function RunningReasoningHarness() {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [assistantReasoningMessage('```ts\nconst answer = 42\n', true)],
+    isRunning: true,
     onNew: async () => {}
   })
 
@@ -625,10 +639,25 @@ describe('assistant-ui streaming renderer', () => {
     expect(container.textContent).not.toContain('```ts')
   })
 
+  it('renders an incomplete streaming reasoning fenced code block as a code card', async () => {
+    const { container } = render(<RunningReasoningHarness />)
+    const ui = within(container)
+
+    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
+    })
+
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
+    expect(container.textContent).not.toContain('```ts')
+  })
+
   it('renders reasoning text without a leading token space', () => {
     const { container } = render(<ReasoningHarness />)
+    const ui = within(container)
 
-    fireEvent.click(screen.getByRole('button', { name: /thinking/i }))
+    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
 
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toBe(
       'The user is asking what this file is.'
