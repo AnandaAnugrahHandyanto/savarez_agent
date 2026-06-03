@@ -2286,6 +2286,21 @@ def _credential_fingerprint(provider: str) -> str:
                 parts.append(f"{bev}={_os.environ.get(bev, '')}")
     except Exception:
         pass
+    # Fallback: check plugin ProviderProfile env_vars for providers not
+    # in PROVIDER_REGISTRY (e.g. tinfoil.sh).
+    try:
+        pcfg = PROVIDER_REGISTRY.get(provider)
+    except NameError:
+        pcfg = None
+    if pcfg is None:
+        try:
+            from providers import get_provider_profile
+            pp = get_provider_profile(provider)
+            if pp and pp.env_vars:
+                for ev in pp.env_vars:
+                    parts.append(f"{ev}={_os.environ.get(ev, '')}")
+        except Exception:
+            pass
 
     # OAuth / external-file mtimes that change on re-auth
     try:
