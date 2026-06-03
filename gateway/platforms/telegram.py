@@ -5198,6 +5198,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        await self._attach_replied_document_if_present(event, msg)
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
 
@@ -5212,8 +5213,121 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        await self._attach_replied_document_if_present(event, msg)
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
+
+    async def _attach_replied_document_if_present(self, event: MessageEvent, message: Message) -> None:
+        """Expose media from the message being replied to.
+
+        Telegram only puts the current message in the update handler. If a user
+        replies to a photo/PDF/document and tags the bot, the current text
+        message has no media of its own; without this bridge the agent only sees
+        the quote text and says no attachment was present.
+        """
+        if event.media_urls:
+            return
+        replied = getattr(message, "reply_to_message", None)
+        if replied is None:
+            return
+
+        def append_reply_note(note: str) -> None:
+            event.reply_to_text = f"{event.reply_to_text}\n{note}" if event.reply_to_text else note
+
+        photo_sizes = getattr(replied, "photo", None)
+        if photo_sizes:
+            try:
+                photo = photo_sizes[-1]
+                file_obj = await photo.get_file()
+                image_bytes = await file_obj.download_as_bytearray()
+                ext = ".jpg"
+                file_path = getattr(file_obj, "file_path", None)
+                if file_path:
+                    for candidate in [".png", ".webp", ".gif", ".jpeg", ".jpg"]:
+                        if file_path.lower().endswith(candidate):
+                            ext = candidate
+                            break
+                cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+            except Exception as exc:
+                logger.warning("[Telegram] Failed to cache replied-to photo: %s", exc, exc_info=True)
+                append_reply_note("[Replied-to photo could not be downloaded.]")
+                return
+
+            event.message_type = MessageType.PHOTO
+            event.media_urls = [cached_path]
+            event.media_types = [_TELEGRAM_IMAGE_EXT_TO_MIME.get(ext, f"image/{ext.lstrip('.')}")]
+            append_reply_note(f"[Replied-to photo attached: saved at {cached_path}]")
+            logger.info("[Telegram] Cached replied-to user photo at %s", cached_path)
+            return
+
+        doc = getattr(replied, "document", None)
+        if doc is None:
+            return
+
+        original_filename = doc.file_name or ""
+        ext = ""
+        if original_filename:
+            _, ext = os.path.splitext(original_filename)
+            ext = ext.lower()
+
+        doc_mime = (doc.mime_type or "").lower()
+        if not ext and doc_mime:
+            ext = _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, "")
+            if not ext:
+                mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                ext = mime_to_ext.get(doc_mime, "")
+
+        display_name = original_filename or f"document{ext or ''}" or "document"
+        if not doc.file_size or doc.file_size > self._max_doc_bytes:
+            limit_mb = self._max_doc_bytes // (1024 * 1024)
+            note = (
+                f"[Replied-to document '{display_name}' was not downloaded: "
+                f"too large or size unknown. Maximum: {limit_mb} MB.]"
+            )
+            append_reply_note(note)
+            return
+
+        if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
+            try:
+                file_obj = await doc.get_file()
+                image_bytes = await file_obj.download_as_bytearray()
+                image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
+                cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
+            except Exception as exc:
+                logger.warning("[Telegram] Failed to cache replied-to image document: %s", exc, exc_info=True)
+                note = f"[Replied-to image document '{display_name}' could not be downloaded.]"
+                append_reply_note(note)
+                return
+
+            event.message_type = MessageType.PHOTO
+            event.media_urls = [cached_path]
+            event.media_types = [doc_mime if doc_mime.startswith("image/") else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg")]
+            note = f"[Replied-to image document attached: '{display_name}' saved at {cached_path}]"
+            append_reply_note(note)
+            logger.info("[Telegram] Cached replied-to user image-document at %s", cached_path)
+            return
+
+        if ext not in SUPPORTED_DOCUMENT_TYPES:
+            note = f"[Replied-to document '{display_name}' has unsupported type '{ext or 'unknown'}'.]"
+            append_reply_note(note)
+            return
+
+        try:
+            file_obj = await doc.get_file()
+            raw_bytes = bytes(await file_obj.download_as_bytearray())
+            cached_path = cache_document_from_bytes(raw_bytes, display_name)
+        except Exception as exc:
+            logger.warning("[Telegram] Failed to cache replied-to document: %s", exc, exc_info=True)
+            note = f"[Replied-to document '{display_name}' could not be downloaded.]"
+            append_reply_note(note)
+            return
+
+        event.message_type = MessageType.DOCUMENT
+        event.media_urls = [cached_path]
+        event.media_types = [SUPPORTED_DOCUMENT_TYPES[ext]]
+        note = f"[Replied-to document attached: '{display_name}' saved at {cached_path}]"
+        append_reply_note(note)
+        logger.info("[Telegram] Cached replied-to user document at %s", cached_path)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
