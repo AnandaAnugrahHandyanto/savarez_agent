@@ -2774,6 +2774,9 @@ def test_portal_provider_falls_through_when_no_anthropic_credentials(monkeypatch
         lambda provider: {"provider": provider, "api_key": "", "base_url": "", "source": "default"},
     )
 
+    # Prevent pool from intercepting before the fallthrough path
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
     # Mock nous runtime credentials so fallthrough works
     monkeypatch.setattr(
         rp, "resolve_nous_runtime_credentials",
@@ -2802,6 +2805,9 @@ def test_explicit_provider_prevents_anthropic_auto_switch(monkeypatch):
         lambda: {"provider": "nous", "base_url": "https://inference-api.nousresearch.com/v1"},
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    # Prevent pool from intercepting before credential resolution
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
     monkeypatch.setattr(
         rp, "resolve_nous_runtime_credentials",
         lambda timeout_seconds=None: {
@@ -2830,6 +2836,9 @@ def test_portal_with_non_anthropic_model_stays_on_nous(monkeypatch):
         lambda: {"provider": "nous", "base_url": "https://inference-api.nousresearch.com/v1"},
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    # Prevent pool from intercepting before credential resolution
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
     monkeypatch.setattr(
         rp, "resolve_nous_runtime_credentials",
         lambda timeout_seconds=None: {
