@@ -3916,32 +3916,52 @@ def _stop_mcp_loop():
 
 
 def ensure_mcp_discovered() -> None:
-    """Trigger MCP discovery when running in a synchronous context.
+    """Guarantee MCP tools are registered before an AIAgent resolves its tool list.
 
-    Intended to be called early in ``AIAgent`` construction so that every code
-    path that creates an agent — oneshot, batch_runner, delegate_tool,
-    background_review, curator, etc. — automatically discovers configured MCP
-    servers without each entry point having to remember to do so.
+    Called from ``init_agent()`` — the single convergence point for all AIAgent
+    construction — so that every code path (oneshot, batch_runner, delegate_tool,
+    background_review, curator, …) gets MCP tools without each having to call
+    ``discover_mcp_tools()`` explicitly.
 
-    In an async context (gateway / ACP event loop) this is a no-op: those paths
-    already call ``discover_mcp_tools()`` via ``run_in_executor`` at startup to
-    avoid blocking the event loop (see #16856).  Calling it again from inside
-    the loop would cause the same freeze, so we detect the running loop and
-    return immediately.
+    Three cases are handled:
 
-    ``discover_mcp_tools()`` is idempotent — already-connected servers are
-    skipped — so repeated calls from multiple agents in the same process are
-    cheap after the first one.
+    1. **Async context** (gateway / ACP event loop running): no-op.  Those paths
+       call ``discover_mcp_tools()`` via ``run_in_executor`` at startup to avoid
+       blocking the event loop (#16856).
+
+    2. **Background thread already in flight** (hermes -z / hermes chat launched
+       via ``hermes_cli.mcp_startup.start_background_mcp_discovery``, PR #35397):
+       join the thread without a timeout so we wait for full discovery rather than
+       the 0.75 s bounded join used by the interactive CLI prompt.  This avoids a
+       race where two threads call ``discover_mcp_tools()`` concurrently for the
+       same servers.
+
+    3. **No background thread** (batch_runner, delegate_tool, background_review,
+       curator, …): call ``discover_mcp_tools()`` directly.  It is idempotent —
+       already-connected servers are skipped — so repeated calls across multiple
+       agents in the same process are cheap.
     """
     import asyncio
 
     try:
         asyncio.get_running_loop()
-        # Inside an async event loop — gateway/ACP handles discovery separately.
+        # Case 1: inside an async event loop — gateway/ACP handles this.
         return
     except RuntimeError:
-        pass  # No running loop; safe to call the blocking discovery.
+        pass  # No running loop; safe to call blocking discovery.
 
+    # Case 2: a background discovery thread was started by mcp_startup (PR #35397).
+    try:
+        from hermes_cli.mcp_startup import _mcp_discovery_thread
+
+        thread = _mcp_discovery_thread
+        if thread is not None and thread.is_alive():
+            thread.join()  # wait fully — no 0.75 s cap in non-interactive paths
+            return
+    except Exception:
+        pass
+
+    # Case 3: no background thread — run discovery synchronously.
     try:
         discover_mcp_tools()
     except Exception:
