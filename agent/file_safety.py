@@ -165,7 +165,7 @@ _BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
 
-    Three categories are blocked:
+    Four categories are blocked:
 
       * Internal Hermes cache files under ``HERMES_HOME/skills/.hub`` —
         readable metadata that an attacker could use as a prompt-injection
@@ -309,7 +309,12 @@ def get_read_block_error(path: str) -> Optional[str]:
     # stop touching it (single-use refresh-token race); it is external by design.
     home = Path(os.path.expanduser("~"))
     xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    config_home = Path(xdg) if xdg else (home / ".config")
+    # Normalize XDG_CONFIG_HOME the same way the input path is normalized above:
+    # users commonly set it to "~/.config" or "$HOME/.config", which must be
+    # expanded before comparison or the Copilot store would slip the denylist.
+    config_home = (
+        Path(os.path.expanduser(os.path.expandvars(xdg))) if xdg else (home / ".config")
+    )
     external_credential_paths = (
         home / ".claude" / ".credentials.json",        # Claude Code OAuth
         home / ".claude.json",                          # Claude Code creds (legacy)

@@ -198,6 +198,18 @@ class TestExternalCredentialStoreReadBlocking:
 
         assert get_read_block_error(str(target)) is not None
 
+    def test_xdg_config_home_with_tilde_honored_for_copilot(self, monkeypatch, tmp_path):
+        """A tilde-containing XDG_CONFIG_HOME (e.g. "~/.config") is expanded."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        # User-style value that must be expanded against HOME before matching.
+        monkeypatch.setenv("XDG_CONFIG_HOME", "~/xdgconfig")
+        target = tmp_path / "xdgconfig" / "github-copilot" / "apps.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}")
+
+        assert get_read_block_error(str(target)) is not None
+
     def test_codex_auth_not_read_denied(self, monkeypatch, tmp_path):
         """~/.codex/auth.json is intentionally external (#12360) — not denied here."""
         monkeypatch.setenv("HOME", str(tmp_path))
