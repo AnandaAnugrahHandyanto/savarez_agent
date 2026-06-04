@@ -957,9 +957,18 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     error_lower = error_msg.lower()
 
     # Must look like an output-cap error, not a prompt-length error.
+    # OpenRouter/Nous Research format (OpenAI-compatible):
+    #   "5683 of text input, 13410 of tool input, 262000 in the output"
+    # Note: these errors do NOT contain the word "max_tokens" — they use
+    # "in the output" to describe the output cap.
     is_output_cap_error = (
+        re.search(r'\d+\s+in\s+the\s+output', error_lower) is not None
+    ) or (
         "max_tokens" in error_lower
-        and ("available_tokens" in error_lower or "available tokens" in error_lower)
+        and (
+            "available_tokens" in error_lower
+            or "available tokens" in error_lower
+        )
     )
     if not is_output_cap_error:
         return None
@@ -972,6 +981,23 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # fallback: last number after "=" in expressions like "200000 - 190000 = 10000"
         r'=\s*(\d+)\s*$',
     ]
+
+    # OpenRouter/Nous format: compute available = context_length - text_input - tool_input
+    #   "maximum context length is 256000 ... 5683 of text input ... 13410 of tool input"
+    or_match = re.search(
+        r'maximum\s+context\s+length\s+is\s+(\d+).*?'
+        r'(\d+)\s+of\s+text\s+input.*?'
+        r'(\d+)\s+of\s+tool\s+input',
+        error_lower
+    )
+    if or_match:
+        max_ctx = int(or_match.group(1))
+        text_input = int(or_match.group(2))
+        tool_input = int(or_match.group(3))
+        available = max_ctx - text_input - tool_input
+        if available >= 1:
+            return available
+
     for pattern in patterns:
         match = re.search(pattern, error_lower)
         if match:
