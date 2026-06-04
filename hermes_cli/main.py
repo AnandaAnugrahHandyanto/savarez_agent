@@ -7007,7 +7007,11 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     r1 = _run_npm_install_deterministic(
         npm,
         _workspace_root(web_dir),
-        extra_args=("--silent",),
+        # Scope install to the web workspace only so that the full workspace
+        # graph (including apps/desktop with its Electron + node-pty deps) is
+        # never resolved here.  Without --workspace the root package.json's
+        # apps/* glob would pull in desktop on every web build. See #38772.
+        extra_args=("--silent", "--workspace", "web"),
     )
     if r1.returncode != 0:
         _say(
