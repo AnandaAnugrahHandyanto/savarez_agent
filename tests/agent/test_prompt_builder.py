@@ -38,15 +38,13 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 
 class TestGuidanceConstants:
     def test_memory_guidance_discourages_task_logs(self):
-        assert "durable facts" in MEMORY_GUIDANCE
-        assert "Do NOT save task progress" in MEMORY_GUIDANCE
-        assert "session_search" in MEMORY_GUIDANCE
+        assert "持久记忆" in MEMORY_GUIDANCE
+        assert "不要保存任务进度" in MEMORY_GUIDANCE
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
     def test_session_search_guidance_is_simple_cross_session_recall(self):
-        assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
-        assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+        assert SESSION_SEARCH_GUIDANCE == ""
 
 
 # =========================================================================
@@ -499,14 +497,14 @@ class TestBuildContextFilesPrompt:
         fake_home.mkdir()
         with patch("pathlib.Path.home", return_value=fake_home):
             result = build_context_files_prompt(cwd=str(tmp_path))
-        assert "Project Context" in result
+        assert "项目上下文" in result
         assert "Hermes Agent" in result
 
     def test_loads_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Ruff for linting" in result
-        assert "Project Context" in result
+        assert "项目上下文" in result
 
     def test_loads_cursorrules(self, tmp_path):
         (tmp_path / ".cursorrules").write_text("Always use type hints.")
@@ -571,7 +569,7 @@ class TestBuildContextFilesPrompt:
         (tmp_path / ".hermes.md").write_text("Use pytest for testing.")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "pytest for testing" in result
-        assert "Project Context" in result
+        assert "项目上下文" in result
 
     def test_loads_hermes_md_uppercase(self, tmp_path):
         (tmp_path / "HERMES.md").write_text("Always use type hints.")
@@ -645,7 +643,7 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "type hints" in result
         assert "CLAUDE.md" in result
-        assert "Project Context" in result
+        assert "项目上下文" in result
 
     def test_loads_claude_md_lowercase(self, tmp_path):
         (tmp_path / "claude.md").write_text("Lowercase claude rules.")
@@ -1202,14 +1200,13 @@ class TestBuildSkillsSystemPromptConditional:
 
 class TestToolUseEnforcementGuidance:
     def test_guidance_mentions_tool_calls(self):
-        assert "tool call" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+        assert "工具" in TOOL_USE_ENFORCEMENT_GUIDANCE
 
     def test_guidance_forbids_description_only(self):
-        assert "describe" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
-        assert "promise" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+        assert "不要只描述意图" in TOOL_USE_ENFORCEMENT_GUIDANCE
 
     def test_guidance_requires_action(self):
-        assert "MUST" in TOOL_USE_ENFORCEMENT_GUIDANCE
+        assert "必须" in TOOL_USE_ENFORCEMENT_GUIDANCE
 
     def test_enforcement_models_includes_gpt(self):
         assert "gpt" in TOOL_USE_ENFORCEMENT_MODELS

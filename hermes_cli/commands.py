@@ -133,6 +133,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
+    CommandDef("memory", "Browse and manage persistent memory (Letta)",
+               "Configuration", cli_only=True,
+               aliases=("mem",),
+               args_hint="<list|search|stats|forget|export|import> [args]",
+               subcommands=("list", "search", "stats", "forget", "export", "import")),
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
                cli_only=True, aliases=("sb",)),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
@@ -217,6 +222,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="<path>"),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info"),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
+    CommandDef("billing", "Show cost tracking, budget status, and TokenJuice gauge",
+               "Info",
+               aliases=("wallet", "cost", "juice"),
+               args_hint="[status|history|reset]",
+               subcommands=("status", "history", "reset")),
 
     # Exit
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",

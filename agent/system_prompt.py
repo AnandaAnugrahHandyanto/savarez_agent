@@ -81,6 +81,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # we resolve through ``_ra()`` to honor those patches.
     _r = _ra()
 
+    # Pre-compute dev session flag for gating tool enforcement and context loading
+    _is_dev_session = True  # default: assume dev session
+    if hasattr(agent, '_last_user_message') and agent._last_user_message:
+        from agent.prompt_builder import should_load_project_context
+        _is_dev_session = should_load_project_context(agent._last_user_message)
+    agent._is_dev_session = _is_dev_session
+
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
@@ -114,8 +121,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     tool_guidance = []
     if "memory" in agent.valid_tool_names:
         tool_guidance.append(MEMORY_GUIDANCE)
-    if "session_search" in agent.valid_tool_names:
-        tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
         tool_guidance.append(SKILLS_GUIDANCE)
     # Kanban worker/orchestrator lifecycle — only present when the
@@ -162,19 +167,24 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             model_lower = (agent.model or "").lower()
             _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
         if _inject:
-            stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
-            _model_lower = (agent.model or "").lower()
-            # Google model operational guidance (conciseness, absolute
-            # paths, parallel tool calls, verify-before-edit, etc.)
-            if "gemini" in _model_lower or "gemma" in _model_lower:
-                stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
-            # OpenAI GPT/Codex execution discipline (tool persistence,
-            # prerequisite checks, verification, anti-hallucination).
-            # Also applied to xAI Grok — same failure modes (claims completion
-            # without tool calls, suggests workarounds instead of using
-            # existing tools, replies with plans instead of executing).
-            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
-                stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+            # Skip tool enforcement in casual chat sessions
+            _skip_for_chat = False
+            if hasattr(agent, '_is_dev_session') and not agent._is_dev_session:
+                _skip_for_chat = True
+            if not _skip_for_chat:
+                stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+                _model_lower = (agent.model or "").lower()
+                # Google model operational guidance (conciseness, absolute
+                # paths, parallel tool calls, verify-before-edit, etc.)
+                if "gemini" in _model_lower or "gemma" in _model_lower:
+                    stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+                # OpenAI GPT/Codex execution discipline (tool persistence,
+                # prerequisite checks, verification, anti-hallucination).
+                # Also applied to xAI Grok — same failure modes (claims completion
+                # without tool calls, suggests workarounds instead of using
+                # existing tools, replies with plans instead of executing).
+                if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
+                    stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:
@@ -214,57 +224,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _env_hints = _r.build_environment_hints()
     if _env_hints:
         stable_parts.append(_env_hints)
-
-    # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
-    # something is non-default so the model can pick the right install
-    # strategy without discovering by failure.  Emits a single line; emits
-    # NOTHING when the environment is clean (no token cost).  Skipped
-    # entirely for remote terminal backends (the host's Python state is
-    # irrelevant when tools run inside docker/modal/ssh).  Gated by
-    # config.yaml ``agent.environment_probe`` (default True).
-    if getattr(agent, "_environment_probe", True):
-        try:
-            from tools.env_probe import get_environment_probe_line
-            _probe_line = get_environment_probe_line()
-            if _probe_line:
-                stable_parts.append(_probe_line)
-        except Exception:
-            # Probe failure must never block prompt build.
-            pass
-
-    # Active-profile hint — names the Hermes profile the agent is running
-    # under so it doesn't conflate ~/.hermes/skills/ (default profile) with
-    # ~/.hermes/profiles/<active>/skills/ (this profile's). Deterministic
-    # for the lifetime of the agent — profile name doesn't change
-    # mid-session, so this doesn't break the prompt cache.
-    # See file_safety._resolve_active_profile_name + classify_cross_profile_target
-    # for the matching tool-side guard.
-    try:
-        from agent.file_safety import _resolve_active_profile_name
-        active_profile = _resolve_active_profile_name()
-    except Exception:
-        active_profile = "default"
-    if active_profile == "default":
-        stable_parts.append(
-            "Active Hermes profile: default. Other profiles (if any) live "
-            "under ~/.hermes/profiles/<name>/. Each profile has its own "
-            "skills/, plugins/, cron/, and memories/ that affect a different "
-            "session than this one. Do not modify another profile's "
-            "skills/plugins/cron/memories unless the user explicitly directs "
-            "you to."
-        )
-    else:
-        stable_parts.append(
-            f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes ~/.hermes/profiles/{active_profile}/. The default "
-            f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
-            f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
-            f"different session run from a different shell. Do NOT modify "
-            f"another profile's skills/plugins/cron/memories unless the user "
-            f"explicitly directs you to. The cross-profile write guard will "
-            f"refuse such writes by default; pass cross_profile=True only "
-            f"after explicit direction."
-        )
 
     platform_key = (agent.platform or "").lower().strip()
     if platform_key in PLATFORM_HINTS:
@@ -310,6 +269,39 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             user_block = agent._memory_store.format_for_system_prompt("user")
             if user_block:
                 volatile_parts.append(user_block)
+
+    # Letta three-tier memory — inject the frozen core-memory snapshot
+    # (persona / human blocks) captured at session start.  Live edits
+    # via core_memory_update tools persist to the DB but do NOT mutate
+    # the snapshot mid-session, preserving prompt-prefix caching.
+    _letta = getattr(agent, "_letta_memory", None)
+    if _letta is not None:
+        try:
+            _core_block = _letta.core.format_for_prompt()
+            if _core_block and _core_block.strip():
+                volatile_parts.append(_core_block)
+        except Exception:
+            pass
+
+        # Adaptive tone injection — read the live ``mood`` core block
+        # (e.g. "happy (conf=0.7)") and append a short, invisible tone
+        # hint derived from agent.emotion_detector.TONE_GUIDANCE.  This
+        # is read from the *live* DB rather than the frozen snapshot so
+        # the latest detected emotion takes effect on the next prompt
+        # rebuild without requiring a session restart.  Wrapped in a
+        # broad try/except — tone injection must never break prompt
+        # assembly.
+        try:
+            _mood_block = _letta.core.get_block("mood")
+            _mood_value = (_mood_block.value if _mood_block else "") or ""
+            if _mood_value.strip():
+                from agent.emotion_detector import TONE_GUIDANCE
+                _emotion_label = _mood_value.split("(")[0].strip().lower()
+                _guidance = TONE_GUIDANCE.get(_emotion_label, "")
+                if _guidance:
+                    volatile_parts.append(f"[语气调整: {_guidance}]")
+        except Exception:
+            pass  # Never crash prompt building for tone injection
 
     # External memory provider system prompt block (additive to built-in)
     if agent._memory_manager:
