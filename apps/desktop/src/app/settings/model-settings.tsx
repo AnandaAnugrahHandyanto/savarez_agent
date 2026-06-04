@@ -40,11 +40,12 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
 
 interface ModelSettingsProps {
+  gatewayId?: string
   /** Notified after the main model is applied, so live UI stores can sync. */
   onMainModelChanged?: (provider: string, model: string) => void
 }
 
-export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
+export function ModelSettings({ gatewayId, onMainModelChanged }: ModelSettingsProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
@@ -62,9 +63,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
     try {
       const [modelInfo, modelOptions, auxiliaryModels] = await Promise.all([
-        getGlobalModelInfo(),
-        getGlobalModelOptions(),
-        getAuxiliaryModels()
+        getGlobalModelInfo(gatewayId),
+        getGlobalModelOptions(gatewayId),
+        getAuxiliaryModels(gatewayId)
       ])
 
       setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
@@ -77,7 +78,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [gatewayId])
 
   useEffect(() => {
     void refresh()
@@ -104,7 +105,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     setError('')
 
     try {
-      const result = await setModelAssignment({ model: selectedModel, provider: selectedProvider, scope: 'main' })
+      const result = await setModelAssignment({ model: selectedModel, provider: selectedProvider, scope: 'main' }, gatewayId)
       const provider = result.provider || selectedProvider
       const model = result.model || selectedModel
       setMainModel({ provider, model })
@@ -115,7 +116,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     } finally {
       setApplying(false)
     }
-  }, [onMainModelChanged, refresh, selectedModel, selectedProvider])
+  }, [gatewayId, onMainModelChanged, refresh, selectedModel, selectedProvider])
 
   const setAuxiliaryToMain = useCallback(
     async (task: string) => {
@@ -127,7 +128,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       setError('')
 
       try {
-        await setModelAssignment({ model: mainModel.model, provider: mainModel.provider, scope: 'auxiliary', task })
+        await setModelAssignment({ model: mainModel.model, provider: mainModel.provider, scope: 'auxiliary', task }, gatewayId)
         await refresh()
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
@@ -135,7 +136,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         setApplying(false)
       }
     },
-    [mainModel, refresh]
+    [gatewayId, mainModel, refresh]
   )
 
   const applyAuxiliaryDraft = useCallback(
@@ -148,7 +149,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       setError('')
 
       try {
-        await setModelAssignment({ model: auxDraft.model, provider: auxDraft.provider, scope: 'auxiliary', task })
+        await setModelAssignment({ model: auxDraft.model, provider: auxDraft.provider, scope: 'auxiliary', task }, gatewayId)
         setEditingAuxTask(null)
         await refresh()
       } catch (err) {
@@ -157,7 +158,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         setApplying(false)
       }
     },
-    [auxDraft, refresh]
+    [auxDraft, gatewayId, refresh]
   )
 
   const beginAuxiliaryEdit = useCallback(

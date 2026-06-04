@@ -167,11 +167,13 @@ function ConfigField({
 export function ConfigSettings({
   query,
   activeSectionId,
+  gatewayId,
   onConfigSaved,
   onMainModelChanged,
   importInputRef
 }: SearchProps & {
   activeSectionId: string
+  gatewayId?: string
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
   importInputRef: React.RefObject<HTMLInputElement | null>
@@ -186,7 +188,7 @@ export function ConfigSettings({
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([getHermesConfigRecord(), getHermesConfigDefaults(), getHermesConfigSchema()])
+    Promise.all([getHermesConfigRecord(gatewayId), getHermesConfigDefaults(gatewayId), getHermesConfigSchema(gatewayId)])
       .then(([c, d, s]) => {
         if (cancelled) {
           return
@@ -199,7 +201,7 @@ export function ConfigSettings({
       .catch(err => notifyError(err, 'Settings failed to load'))
 
     return () => void (cancelled = true)
-  }, [])
+  }, [gatewayId])
 
   useEffect(() => {
     let cancelled = false
@@ -233,7 +235,7 @@ export function ConfigSettings({
     const t = window.setTimeout(() => {
       void (async () => {
         try {
-          await saveHermesConfig(config)
+          await saveHermesConfig(config, gatewayId)
 
           if (saveVersionRef.current === v) {
             onConfigSaved?.()
@@ -247,7 +249,7 @@ export function ConfigSettings({
     }, 550)
 
     return () => window.clearTimeout(t)
-  }, [config, onConfigSaved, saveVersion])
+  }, [config, gatewayId, onConfigSaved, saveVersion])
 
   const updateConfig = (next: HermesConfigRecord) => {
     saveVersionRef.current += 1
@@ -327,7 +329,7 @@ export function ConfigSettings({
     <SettingsContent>
       {activeSectionId === 'model' && !query.trim() && (
         <div className="mb-6">
-          <ModelSettings onMainModelChanged={onMainModelChanged} />
+          <ModelSettings gatewayId={gatewayId} onMainModelChanged={onMainModelChanged} />
         </div>
       )}
       {query.trim() && (

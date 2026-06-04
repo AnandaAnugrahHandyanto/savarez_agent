@@ -47,6 +47,25 @@ import type {
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 
+export interface KanbanBoardSummary {
+  archived?: boolean
+  counts?: Record<string, number>
+  is_current?: boolean
+  name?: string
+  slug: string
+  total?: number
+}
+
+export interface KanbanBoardsResponse {
+  boards: KanbanBoardSummary[]
+  current?: string
+}
+
+export interface KanbanBoardResponse {
+  columns: Array<{ name: string; tasks: unknown[] }>
+  [key: string]: unknown
+}
+
 export type {
   ActionResponse,
   ActionStatusResponse,
@@ -165,13 +184,39 @@ export function listProjects(gatewayId?: string): Promise<DashboardProjectsRespo
 
 const apiErrorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
+interface OptionalApiError {
+  __hermesOptionalApiError: string
+}
+
+const isOptionalApiError = (value: unknown): value is OptionalApiError =>
+  Boolean(
+    value &&
+      typeof value === 'object' &&
+      '__hermesOptionalApiError' in value &&
+      typeof (value as OptionalApiError).__hermesOptionalApiError === 'string'
+  )
+
+async function readOptionalGatewayApi<T>(gatewayId: string, path: string): Promise<T | OptionalApiError> {
+  return window.hermesDesktop.api<T | OptionalApiError>({
+    gatewayId,
+    optional: true,
+    path
+  })
+}
+
 async function readOptionalGatewayData<T>(
   label: 'agents' | 'conversations' | 'projects',
-  read: () => Promise<T>,
+  read: () => Promise<T | OptionalApiError>,
   fallback: T
 ): Promise<{ error?: string; label: 'agents' | 'conversations' | 'projects'; value: T }> {
   try {
-    return { label, value: await read() }
+    const value = await read()
+
+    if (isOptionalApiError(value)) {
+      return { error: value.__hermesOptionalApiError, label, value: fallback }
+    }
+
+    return { label, value }
   } catch (error) {
     return { error: apiErrorMessage(error), label, value: fallback }
   }
@@ -182,9 +227,11 @@ async function readGatewayConnection(connection: DesktopConnectionRegistryEntry,
     const [status, sessions, agents, conversations, projects] = await Promise.all([
       getStatus(connection.id),
       listSessions(limit, 1, 'exclude', 'recent', connection.id),
-      readOptionalGatewayData('agents', () => listAgents(connection.id), { agents: [] }),
-      readOptionalGatewayData('conversations', () => listConversations(connection.id), { conversations: [] }),
-      readOptionalGatewayData('projects', () => listProjects(connection.id), { projects: [] })
+      readOptionalGatewayData('agents', () => readOptionalGatewayApi(connection.id, '/api/agents'), { agents: [] }),
+      readOptionalGatewayData('conversations', () => readOptionalGatewayApi(connection.id, '/api/conversations'), {
+        conversations: []
+      }),
+      readOptionalGatewayData('projects', () => readOptionalGatewayApi(connection.id, '/api/projects'), { projects: [] })
     ])
 
     const errors: GatewayReadResult['errors'] = {}
@@ -253,8 +300,9 @@ export function renameSession(id: string, title: string): Promise<{ ok: boolean;
   })
 }
 
-export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
+export function getGlobalModelInfo(gatewayId?: string): Promise<ModelInfoResponse> {
   return window.hermesDesktop.api<ModelInfoResponse>({
+    gatewayId,
     path: '/api/model/info'
   })
 }
@@ -297,76 +345,127 @@ export function getLogs(params: {
   })
 }
 
-export function getHermesConfig(): Promise<HermesConfig> {
+export function getHermesConfig(gatewayId?: string): Promise<HermesConfig> {
   return window.hermesDesktop.api<HermesConfig>({
+    gatewayId,
     path: '/api/config'
   })
 }
 
-export function getHermesConfigRecord(): Promise<HermesConfigRecord> {
+export function getHermesConfigRecord(gatewayId?: string): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
+    gatewayId,
     path: '/api/config'
   })
 }
 
-export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
+export function getHermesConfigDefaults(gatewayId?: string): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
+    gatewayId,
     path: '/api/config/defaults'
   })
 }
 
-export function getHermesConfigSchema(): Promise<ConfigSchemaResponse> {
+export function getHermesConfigSchema(gatewayId?: string): Promise<ConfigSchemaResponse> {
   return window.hermesDesktop.api<ConfigSchemaResponse>({
+    gatewayId,
     path: '/api/config/schema'
   })
 }
 
-export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: boolean }> {
+export function saveHermesConfig(config: HermesConfigRecord, gatewayId?: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
-    path: '/api/config',
+    body: { config },
+    gatewayId,
     method: 'PUT',
-    body: { config }
+    path: '/api/config'
   })
 }
 
-export function getEnvVars(): Promise<Record<string, EnvVarInfo>> {
+export function listKanbanBoards(gatewayId?: string): Promise<KanbanBoardsResponse> {
+  return window.hermesDesktop.api<KanbanBoardsResponse>({
+    gatewayId,
+    path: '/api/plugins/kanban/boards'
+  })
+}
+
+export function getKanbanBoard({
+  board,
+  gatewayId,
+  includeArchived,
+  tenant
+}: {
+  board?: string
+  gatewayId?: string
+  includeArchived?: boolean
+  tenant?: string
+} = {}): Promise<KanbanBoardResponse> {
+  const query = new URLSearchParams()
+
+  if (board) {
+    query.set('board', board)
+  }
+
+  if (tenant) {
+    query.set('tenant', tenant)
+  }
+
+  if (includeArchived) {
+    query.set('include_archived', 'true')
+  }
+
+  const suffix = query.toString()
+
+  return window.hermesDesktop.api<KanbanBoardResponse>({
+    gatewayId,
+    path: suffix ? `/api/plugins/kanban/board?${suffix}` : '/api/plugins/kanban/board'
+  })
+}
+
+export function getEnvVars(gatewayId?: string): Promise<Record<string, EnvVarInfo>> {
   return window.hermesDesktop.api<Record<string, EnvVarInfo>>({
+    gatewayId,
     path: '/api/env'
   })
 }
 
-export function setEnvVar(key: string, value: string): Promise<{ ok: boolean }> {
+export function setEnvVar(key: string, value: string, gatewayId?: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
-    path: '/api/env',
+    body: { key, value },
+    gatewayId,
     method: 'PUT',
-    body: { key, value }
+    path: '/api/env'
   })
 }
 
 export function validateProviderCredential(
   key: string,
-  value: string
+  value: string,
+  gatewayId?: string
 ): Promise<{ ok: boolean; reachable: boolean; message: string }> {
   return window.hermesDesktop.api<{ ok: boolean; reachable: boolean; message: string }>({
-    path: '/api/providers/validate',
+    body: { key, value },
+    gatewayId,
     method: 'POST',
-    body: { key, value }
+    path: '/api/providers/validate'
   })
 }
 
-export function deleteEnvVar(key: string): Promise<{ ok: boolean }> {
+export function deleteEnvVar(key: string, gatewayId?: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
-    path: '/api/env',
+    body: { key },
+    gatewayId,
     method: 'DELETE',
-    body: { key }
+    path: '/api/env'
   })
 }
 
-export function revealEnvVar(key: string): Promise<{ key: string; value: string }> {
+export function revealEnvVar(key: string, gatewayId?: string): Promise<{ key: string; value: string }> {
   return window.hermesDesktop.api<{ key: string; value: string }>({
-    path: '/api/env/reveal',
+    body: { key },
+    gatewayId,
     method: 'POST',
-    body: { key }
+    path: '/api/env/reveal'
   })
 }
 
@@ -419,37 +518,43 @@ export function toggleSkill(name: string, enabled: boolean): Promise<{ ok: boole
   })
 }
 
-export function getToolsets(): Promise<ToolsetInfo[]> {
+export function getToolsets(gatewayId?: string): Promise<ToolsetInfo[]> {
   return window.hermesDesktop.api<ToolsetInfo[]>({
+    gatewayId,
     path: '/api/tools/toolsets'
   })
 }
 
 export function toggleToolset(
   name: string,
-  enabled: boolean
+  enabled: boolean,
+  gatewayId?: string
 ): Promise<{ ok: boolean; name: string; enabled: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
-    path: `/api/tools/toolsets/${encodeURIComponent(name)}`,
+    body: { enabled },
+    gatewayId,
     method: 'PUT',
-    body: { enabled }
+    path: `/api/tools/toolsets/${encodeURIComponent(name)}`
   })
 }
 
-export function getToolsetConfig(name: string): Promise<ToolsetConfig> {
+export function getToolsetConfig(name: string, gatewayId?: string): Promise<ToolsetConfig> {
   return window.hermesDesktop.api<ToolsetConfig>({
+    gatewayId,
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/config`
   })
 }
 
 export function selectToolsetProvider(
   name: string,
-  provider: string
+  provider: string,
+  gatewayId?: string
 ): Promise<{ ok: boolean; name: string; provider: string }> {
   return window.hermesDesktop.api<{ ok: boolean; name: string; provider: string }>({
-    path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
+    body: { provider },
+    gatewayId,
     method: 'PUT',
-    body: { provider }
+    path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`
   })
 }
 
@@ -588,8 +693,9 @@ export function getUsageAnalytics(days = 30): Promise<AnalyticsResponse> {
   })
 }
 
-export function getGlobalModelOptions(): Promise<ModelOptionsResponse> {
+export function getGlobalModelOptions(gatewayId?: string): Promise<ModelOptionsResponse> {
   return window.hermesDesktop.api<ModelOptionsResponse>({
+    gatewayId,
     path: '/api/model/options'
   })
 }
@@ -625,17 +731,19 @@ export function setGlobalModel(
   })
 }
 
-export function getAuxiliaryModels(): Promise<AuxiliaryModelsResponse> {
+export function getAuxiliaryModels(gatewayId?: string): Promise<AuxiliaryModelsResponse> {
   return window.hermesDesktop.api<AuxiliaryModelsResponse>({
+    gatewayId,
     path: '/api/model/auxiliary'
   })
 }
 
-export function setModelAssignment(body: ModelAssignmentRequest): Promise<ModelAssignmentResponse> {
+export function setModelAssignment(body: ModelAssignmentRequest, gatewayId?: string): Promise<ModelAssignmentResponse> {
   return window.hermesDesktop.api<ModelAssignmentResponse>({
-    path: '/api/model/set',
+    body,
+    gatewayId,
     method: 'POST',
-    body
+    path: '/api/model/set'
   })
 }
 

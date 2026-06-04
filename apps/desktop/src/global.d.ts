@@ -271,6 +271,7 @@ export interface HermesApiRequest {
   path: string
   method?: string
   body?: unknown
+  optional?: boolean
   timeoutMs?: number
 }
 

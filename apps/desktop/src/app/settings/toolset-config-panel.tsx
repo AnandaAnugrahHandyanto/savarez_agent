@@ -12,6 +12,7 @@ import { Pill } from './primitives'
 
 interface ToolsetConfigPanelProps {
   toolset: string
+  gatewayId?: string
   /** Called after a key is saved/cleared or a provider chosen, so the parent
    *  can refresh the "Configured / Needs keys" pill. */
   onConfiguredChange?: () => void
@@ -27,12 +28,13 @@ function providerConfigured(provider: ToolProvider, envState: Record<string, boo
 
 interface EnvVarFieldProps {
   envVar: ToolEnvVar
+  gatewayId?: string
   isSet: boolean
   onSaved: (key: string) => void
   onCleared: (key: string) => void
 }
 
-function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
+function EnvVarField({ envVar, gatewayId, isSet, onSaved, onCleared }: EnvVarFieldProps) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [revealed, setRevealed] = useState<string | null>(null)
@@ -46,7 +48,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
     setBusy(true)
 
     try {
-      await setEnvVar(envVar.key, value)
+      await setEnvVar(envVar.key, value, gatewayId)
       setEditing(false)
       setValue('')
       onSaved(envVar.key)
@@ -66,7 +68,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
     setBusy(true)
 
     try {
-      await deleteEnvVar(envVar.key)
+      await deleteEnvVar(envVar.key, gatewayId)
       setRevealed(null)
       onCleared(envVar.key)
       notify({ kind: 'success', title: 'Credential removed', message: `${envVar.key} removed.` })
@@ -85,7 +87,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
     }
 
     try {
-      const result = await revealEnvVar(envVar.key)
+      const result = await revealEnvVar(envVar.key, gatewayId)
       setRevealed(result.value)
     } catch (err) {
       notifyError(err, `Failed to reveal ${envVar.key}`)
@@ -159,7 +161,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
   )
 }
 
-export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfigPanelProps) {
+export function ToolsetConfigPanel({ gatewayId, toolset, onConfiguredChange }: ToolsetConfigPanelProps) {
   const [cfg, setCfg] = useState<ToolsetConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [selecting, setSelecting] = useState<string | null>(null)
@@ -171,7 +173,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     setLoading(true)
 
     try {
-      const next = await getToolsetConfig(toolset)
+      const next = await getToolsetConfig(toolset, gatewayId)
       setCfg(next)
       const seeded: Record<string, boolean> = {}
 
@@ -187,7 +189,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     } finally {
       setLoading(false)
     }
-  }, [toolset])
+  }, [gatewayId, toolset])
 
   useEffect(() => {
     void refresh()
@@ -210,6 +212,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
       (cfg?.active_provider ? providers.find(p => p.name === cfg.active_provider) : undefined) ??
       providers.find(p => providerConfigured(p, envState)) ??
       providers[0]
+
     setActiveProvider(selected.name)
   }, [activeProvider, providers, envState, cfg])
 
@@ -218,7 +221,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     setSelecting(provider.name)
 
     try {
-      await selectToolsetProvider(toolset, provider.name)
+      await selectToolsetProvider(toolset, provider.name, gatewayId)
       notify({ kind: 'success', title: 'Provider selected', message: `${provider.name} is now active.` })
       onConfiguredChange?.()
     } catch (err) {
@@ -306,6 +309,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                   provider.env_vars.map(ev => (
                     <EnvVarField
                       envVar={ev}
+                      gatewayId={gatewayId}
                       isSet={Boolean(envState[ev.key])}
                       key={ev.key}
                       onCleared={key => patchEnv(key, false)}

@@ -217,7 +217,7 @@ function EnvProviderGroup({
   )
 }
 
-export function KeysSettings({ query }: SearchProps) {
+export function KeysSettings({ gatewayId, query }: SearchProps & { gatewayId?: string }) {
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
@@ -240,7 +240,7 @@ export function KeysSettings({ query }: SearchProps) {
 
     void (async () => {
       try {
-        const next = await getEnvVars()
+        const next = await getEnvVars(gatewayId)
 
         if (!cancelled) {
           setVars(next)
@@ -251,7 +251,7 @@ export function KeysSettings({ query }: SearchProps) {
     })()
 
     return () => void (cancelled = true)
-  }, [])
+  }, [gatewayId])
 
   const filterEnv = useCallback((info: EnvVarInfo, key: string, q: string, cat: string, extra?: string) => {
     if (asText(info.category) !== cat) {
@@ -336,7 +336,7 @@ export function KeysSettings({ query }: SearchProps) {
     setSaving(key)
 
     try {
-      await setEnvVar(key, value)
+      await setEnvVar(key, value, gatewayId)
       patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
       clearLocalState(key)
       notify({ kind: 'success', title: 'Credential saved', message: `${key} updated.` })
@@ -355,7 +355,7 @@ export function KeysSettings({ query }: SearchProps) {
     setSaving(key)
 
     try {
-      await deleteEnvVar(key)
+      await deleteEnvVar(key, gatewayId)
       patchVar(key, { is_set: false, redacted_value: null })
       clearLocalState(key)
       notify({ kind: 'success', title: 'Credential removed', message: `${key} removed.` })
@@ -374,7 +374,7 @@ export function KeysSettings({ query }: SearchProps) {
     }
 
     try {
-      const result = await revealEnvVar(key)
+      const result = await revealEnvVar(key, gatewayId)
       setRevealed(c => ({ ...c, [key]: result.value }))
     } catch (err) {
       notifyError(err, `Failed to reveal ${key}`)

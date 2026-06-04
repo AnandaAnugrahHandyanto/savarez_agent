@@ -16,6 +16,7 @@ import type { SearchProps } from './types'
 
 interface McpSettingsProps extends SearchProps {
   gateway?: HermesGateway | null
+  gatewayId?: string
   onConfigSaved?: () => void
 }
 
@@ -50,7 +51,7 @@ function serverMatches(name: string, server: Record<string, unknown>, query: str
   return includesQuery(name, query) || includesQuery(JSON.stringify(server), query)
 }
 
-export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps) {
+export function McpSettings({ gateway, gatewayId, onConfigSaved, query }: McpSettingsProps) {
   const activeSessionId = useStore($activeSessionId)
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
@@ -62,7 +63,7 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
   useEffect(() => {
     let cancelled = false
 
-    getHermesConfigRecord()
+    getHermesConfigRecord(gatewayId)
       .then(next => {
         if (cancelled) {
           return
@@ -75,7 +76,7 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
       .catch(err => notifyError(err, 'MCP config failed to load'))
 
     return () => void (cancelled = true)
-  }, [])
+  }, [gatewayId])
 
   const servers = useMemo(() => getServers(config), [config])
   const names = useMemo(() => Object.keys(servers).sort(), [servers])
@@ -133,7 +134,7 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
       nextServers[nextName] = parsed
 
       const nextConfig = { ...config, mcp_servers: nextServers }
-      await saveHermesConfig(nextConfig)
+      await saveHermesConfig(nextConfig, gatewayId)
       setConfig(nextConfig)
       setSelected(nextName)
       onConfigSaved?.()
@@ -153,7 +154,7 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
       delete nextServers[serverName]
 
       const nextConfig = { ...config, mcp_servers: nextServers }
-      await saveHermesConfig(nextConfig)
+      await saveHermesConfig(nextConfig, gatewayId)
       setConfig(nextConfig)
       setSelected(Object.keys(nextServers).sort()[0] ?? null)
       onConfigSaved?.()

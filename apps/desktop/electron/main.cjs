@@ -27,6 +27,7 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const connectionRegistry = require('./connection-registry.cjs')
+const { resolveConnectionRoute } = require('./connection-router.cjs')
 const {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -3166,55 +3167,31 @@ function resolveRemoteBackend() {
   return resolveRemoteConnectionBackend(activeConnection)
 }
 
+function resolveConfiguredConnectionRoute(gatewayId) {
+  return resolveConnectionRoute(readDesktopConnectionConfig(), gatewayId, {
+    buildGatewayWsUrl,
+    decryptDesktopSecret,
+    normalizeRemoteBaseUrl
+  })
+}
+
 async function connectionForApiRequest(gatewayId) {
-  const requestedGatewayId = String(gatewayId || '').trim()
+  const route = resolveConfiguredConnectionRoute(gatewayId)
 
-  if (!requestedGatewayId) {
-    return startHermes()
-  }
-
-  const config = readDesktopConnectionConfig()
-  const connection = config.connections.find(candidate => candidate.id === requestedGatewayId)
-
-  if (!connection) {
-    throw new Error(`Unknown gateway connection: ${requestedGatewayId}`)
-  }
-
-  if (connection.mode === 'remote') {
-    return resolveRemoteConnectionBackend(connection, 'settings')
-  }
-
-  if (connection.id !== config.activeConnectionId) {
-    throw new Error(`Local gateway connection ${connection.id} is not active and cannot be queried read-only.`)
+  if (route.mode === 'remote') {
+    return route
   }
 
   return startHermes()
 }
 
 async function connectionForGatewayRequest(gatewayId) {
-  const requestedGatewayId = String(gatewayId || '').trim()
+  const route = resolveConfiguredConnectionRoute(gatewayId)
 
-  if (!requestedGatewayId) {
-    return startHermes()
-  }
+  if (route.mode === 'remote') {
+    await waitForHermes(route.baseUrl, route.token)
 
-  const config = readDesktopConnectionConfig()
-  const connection = config.connections.find(candidate => candidate.id === requestedGatewayId)
-
-  if (!connection) {
-    throw new Error(`Unknown gateway connection: ${requestedGatewayId}`)
-  }
-
-  if (connection.mode === 'remote') {
-    const resolved = resolveRemoteConnectionBackend(connection, 'settings')
-
-    await waitForHermes(resolved.baseUrl, resolved.token)
-
-    return resolved
-  }
-
-  if (connection.id !== config.activeConnectionId) {
-    throw new Error(`Local gateway connection ${connection.id} is not active and cannot be used for chat routing.`)
+    return route
   }
 
   return startHermes()
@@ -3630,11 +3607,21 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
 ipcMain.handle('hermes:api', async (_event, request) => {
   const connection = await connectionForApiRequest(request?.gatewayId)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-  return fetchJson(`${connection.baseUrl}${request.path}`, connection.token, {
-    method: request?.method,
-    body: request?.body,
-    timeoutMs
-  })
+  try {
+    return await fetchJson(`${connection.baseUrl}${request.path}`, connection.token, {
+      method: request?.method,
+      body: request?.body,
+      timeoutMs
+    })
+  } catch (error) {
+    if (request?.optional) {
+      return {
+        __hermesOptionalApiError: error instanceof Error ? error.message : String(error)
+      }
+    }
+
+    throw error
+  }
 })
 
 ipcMain.handle('hermes:notify', (_event, payload) => {
