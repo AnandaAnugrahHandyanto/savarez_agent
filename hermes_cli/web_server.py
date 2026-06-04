@@ -4524,12 +4524,13 @@ def _session_latest_descendant(session_id: str):
 # templated ``/api/sessions/{session_id}`` family that follows. FastAPI/
 # Starlette match routes in registration order, and the ``{session_id}``
 # pattern is unconstrained — it would otherwise swallow e.g.
-# ``DELETE /api/sessions/empty``, ``POST /api/sessions/bulk-delete``, or
-# ``GET /api/sessions/stats`` as "operate on the session with id
-# 'empty'" / "'bulk-delete'" / "'stats'", which would 404 (or worse,
-# succeed and delete the wrong row). Same story as the older
-# ``/api/sessions/search`` endpoint up at line ~1191. If you split or
-# reorder this block, move every route in it together.
+# ``DELETE /api/sessions/empty``, ``POST /api/sessions/bulk-delete``,
+# ``POST /api/sessions/bulk-archive``, or ``GET /api/sessions/stats`` as
+# "operate on the session with id 'empty'" / "'bulk-delete'" /
+# "'bulk-archive'" / "'stats'", which would 404 (or worse, succeed and
+# update the wrong row). Same story as the older ``/api/sessions/search``
+# endpoint up at line ~1191. If you split or reorder this block, move every
+# route in it together.
 class AutoArchiveSessions(BaseModel):
     preserve_ids: Optional[List[str]] = None
     keep_recent: Optional[int] = None
@@ -4592,6 +4593,53 @@ async def auto_archive_sessions_endpoint(body: AutoArchiveSessions):
             active_grace_seconds=max(0, active_grace_seconds),
         )
         return {"ok": True, **result}
+    finally:
+        db.close()
+
+
+class BulkArchiveSessions(BaseModel):
+    preserve_ids: Optional[List[str]] = None
+    min_messages: Optional[int] = 1
+    active_grace_seconds: Optional[int] = None
+
+
+@app.post("/api/sessions/bulk-archive")
+async def bulk_archive_sessions_endpoint(body: BulkArchiveSessions):
+    """Soft-archive all normal sessions except caller-preserved rows.
+
+    This is the manual counterpart to the old-session auto-maintenance policy:
+    the desktop can pass pinned IDs, the selected chat, and running session IDs
+    in ``preserve_ids`` and then hide everything else from the regular sidebar
+    without deleting the underlying transcript.
+    """
+    preserve_ids = [
+        str(sid).strip()
+        for sid in (body.preserve_ids or [])
+        if str(sid).strip()
+    ]
+    if len(preserve_ids) > 5000:
+        raise HTTPException(
+            status_code=400,
+            detail="preserve_ids must contain at most 5000 entries",
+        )
+
+    cfg = (load_config().get("sessions") or {})
+    active_grace_seconds = (
+        body.active_grace_seconds
+        if body.active_grace_seconds is not None
+        else cfg.get("auto_archive_active_grace_seconds", 300)
+    )
+
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        archived = db.archive_surfaced_sessions(
+            preserve_ids=preserve_ids,
+            min_message_count=max(0, int(body.min_messages if body.min_messages is not None else 1)),
+            active_grace_seconds=max(0, int(active_grace_seconds or 0)),
+        )
+        return {"ok": True, "archived": archived}
     finally:
         db.close()
 
