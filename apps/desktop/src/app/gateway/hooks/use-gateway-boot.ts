@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 
 import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
-import { translateNow } from '@/i18n'
+import { resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -58,7 +58,7 @@ export function useGatewayBoot({
     }
 
     if (!desktop) {
-      failDesktopBoot(translateNow('boot.ipcBridgeUnavailable'))
+      failDesktopBoot('Desktop IPC bridge is unavailable.')
       setSessionsLoading(false)
 
       return () => void (cancelled = true)
@@ -160,7 +160,7 @@ export function useGatewayBoot({
 
     setDesktopBootStep({
       phase: 'renderer.boot',
-      message: translateNow('boot.steps.startingDesktopConnection'),
+      message: 'Starting desktop connection',
       progress: 6
     })
 
@@ -206,13 +206,13 @@ export function useGatewayBoot({
 
     const offExit = desktop.onBackendExit(() => {
       if ($desktopBoot.get().running || $desktopBoot.get().visible) {
-        failDesktopBoot(translateNow('boot.backgroundExitedDuringStartup'))
+        failDesktopBoot('Hermes background process exited during startup.')
       }
 
       notify({
         kind: 'error',
-        title: translateNow('boot.backendStopped'),
-        message: translateNow('boot.backgroundExited'),
+        title: 'Backend stopped',
+        message: 'Hermes background process exited.',
         durationMs: 0
       })
     })
@@ -227,11 +227,17 @@ export function useGatewayBoot({
 
         setDesktopBootStep({
           phase: 'renderer.gateway.connect',
-          message: translateNow('boot.steps.connectingGateway'),
+          message: 'Connecting live desktop gateway',
           progress: 95
         })
         publish(conn)
-        await gateway.connect(conn.wsUrl)
+        // Mint a fresh WS URL right before connecting. For OAuth gateways the
+        // ticket is single-use with a short TTL, so the ticket baked into
+        // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it and, on
+        // failure, throws a reauth error rather than connecting with a dead
+        // ticket (which would surface as an opaque "connection closed").
+        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        await gateway.connect(wsUrl)
 
         if (cancelled) {
           return
@@ -239,7 +245,7 @@ export function useGatewayBoot({
 
         setDesktopBootStep({
           phase: 'renderer.config',
-          message: translateNow('boot.steps.loadingSettings'),
+          message: 'Loading Hermes settings',
           progress: 97
         })
         await callbacksRef.current.refreshHermesConfig()
@@ -250,7 +256,7 @@ export function useGatewayBoot({
 
         setDesktopBootStep({
           phase: 'renderer.sessions',
-          message: translateNow('boot.steps.loadingSessions'),
+          message: 'Loading recent sessions',
           progress: 99
         })
         await callbacksRef.current.refreshSessions()
@@ -260,7 +266,7 @@ export function useGatewayBoot({
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
           failDesktopBoot(message)
-          notifyError(err, translateNow('boot.desktopBootFailed'))
+          notifyError(err, 'Desktop boot failed')
           setSessionsLoading(false)
         }
       }
