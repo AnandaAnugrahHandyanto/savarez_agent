@@ -16,6 +16,7 @@ import base64
 import binascii
 import hmac
 import importlib.util
+import ipaddress
 import json
 import logging
 import os
@@ -210,6 +211,45 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _normalize_host_value(value: Any) -> str:
+    """Normalize a configured Host/client value for comparisons."""
+    if value is None:
+        return ""
+    h = str(value).strip().lower()
+    if not h:
+        return ""
+    if h.startswith("["):
+        close = h.find("]")
+        return h[1:close] if close != -1 else h.strip("[]")
+    return h.rsplit(":", 1)[0] if ":" in h and h.count(":") == 1 else h
+
+
+def _configured_dashboard_values(*keys: str) -> frozenset[str]:
+    """Read dashboard security allow-list values from app.state or config.yaml."""
+    configured = getattr(app.state, "dashboard_security", None)
+    if configured is None:
+        try:
+            config = load_config()
+        except Exception:
+            config = {}
+        dashboard = config.get("dashboard", {}) if isinstance(config, dict) else {}
+    else:
+        dashboard = configured if isinstance(configured, dict) else {}
+
+    values: set[str] = set()
+    for key in keys:
+        raw = dashboard.get(key, []) if isinstance(dashboard, dict) else []
+        if isinstance(raw, (str, int, float)):
+            raw = [raw]
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            normalized = _normalize_host_value(item)
+            if normalized:
+                values.add(normalized)
+    return frozenset(values)
+
+
 def should_require_auth(host: str, allow_public: bool) -> bool:
     """Return True iff the dashboard OAuth auth gate must be active.
 
@@ -385,6 +425,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "type": "select",
         "description": "Web dashboard visual theme",
         "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
+    },
+    "dashboard.trusted_proxy_hosts": {
+        "type": "list",
+        "description": "Extra trusted WebSocket peer hosts/IPs/CIDRs for dashboard chat reverse proxies",
+    },
+    "dashboard.allowed_ws_clients": {
+        "type": "list",
+        "description": "Alias for dashboard.trusted_proxy_hosts",
     },
     "display.resume_display": {
         "type": "select",
@@ -7010,61 +7058,72 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
+def _trusted_ws_client_values() -> frozenset[str]:
+    return _LOOPBACK_HOSTS | _configured_dashboard_values(
+        "trusted_proxy_hosts",
+        "allowed_ws_clients",
+    )
+
+
+def _host_matches_configured_client(client_host: str, allowed: frozenset[str]) -> bool:
+    """Match a WebSocket peer host against exact values or configured CIDRs."""
+    client = _normalize_host_value(client_host)
+    if client in allowed:
+        return True
+    try:
+        client_ip = ipaddress.ip_address(client)
+    except ValueError:
+        return False
+    for value in allowed:
+        if "/" not in value:
+            continue
+        try:
+            if client_ip in ipaddress.ip_network(value, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _ws_host_or_origin_value_is_allowed(value: str) -> bool:
+    """Validate WebSocket Host/Origin against bind target or WS proxy config."""
+    if not value:
+        return False
+    host = _normalize_host_value(value)
+    bound_host = getattr(app.state, "bound_host", "127.0.0.1")
+    if bound_host in {"0.0.0.0", "::"}:
+        return True
+    bound_lc = str(bound_host).lower()
+    if bound_lc in _LOOPBACK_HOST_VALUES:
+        return _host_matches_configured_client(host, _trusted_ws_client_values())
+    return host == bound_lc
+
+
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Loopback bind: only loopback clients allowed — the legacy
-    ``?token=<_SESSION_TOKEN>`` path is the only auth we have, so we
-    don't want LAN hosts guessing tokens.
-
-    Explicit non-loopback bind (``--host 0.0.0.0``, ``--host ::``, or a
-    specific address such as a Tailscale/LAN IP, always with
-    ``--insecure``): allow any peer. The operator explicitly opted into
-    non-loopback exposure, so the loopback-only peer restriction does not
-    apply. DNS-rebinding is still blocked by the Host/Origin guard in
-    :func:`_ws_host_origin_is_allowed`, which mirrors the HTTP layer and
-    requires the Host header to match the bound interface — the same
-    defence ``_is_accepted_host`` applies to non-loopback HTTP requests.
-
-    Gated mode: any peer is allowed — uvicorn's ``proxy_headers=True``
-    (enabled when the OAuth gate is active so cookies can pick up
-    ``X-Forwarded-Proto``) rewrites ``ws.client.host`` to the
-    X-Forwarded-For value, which is the real internet client IP. The
-    OAuth gate + single-use ``?ticket=`` is the auth at that point; the
-    Host/Origin guard in :func:`_ws_host_origin_is_allowed` is what
-    blocks DNS-rebinding here, not the peer IP.
+    Gated mode and explicit non-loopback binds rely on WS auth plus Host/Origin
+    validation. Loopback binds allow loopback peers plus configured trusted
+    reverse proxies.
     """
     if getattr(app.state, "auth_required", False):
         return True
-    # Any explicit non-loopback bind (0.0.0.0, ::, or a specific LAN /
-    # Tailscale address) means the operator opted into non-loopback
-    # access via --insecure.  The loopback-only peer gate only applies to
-    # an actual loopback bind; otherwise the WS handshake is rejected even
-    # though same-bind HTTP requests pass _is_accepted_host.
     bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
     if bound_host and bound_host not in _LOOPBACK_HOSTS:
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
-    return client_host in _LOOPBACK_HOSTS
+    return _host_matches_configured_client(client_host, _trusted_ws_client_values())
 
 
 def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
-    """Apply the dashboard Host/Origin guard to WebSocket upgrades.
-
-    FastAPI HTTP middleware does not run for WebSocket routes, so the
-    DNS-rebinding Host check used for normal dashboard HTTP requests must be
-    repeated here before accepting the upgrade.  Browsers also send an Origin
-    header on WebSocket handshakes; when present, require it to target the
-    same bound dashboard host.
-    """
+    """Apply the dashboard Host/Origin guard to WebSocket upgrades."""
     bound_host = getattr(app.state, "bound_host", None)
     if not bound_host:
         return True
 
-    host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    if not _ws_host_or_origin_value_is_allowed(ws.headers.get("host", "")):
         return False
 
     origin = ws.headers.get("origin", "")
@@ -7073,37 +7132,15 @@ def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
 
     parsed = urllib.parse.urlparse(origin)
     if parsed.scheme not in {"http", "https"}:
-        # Packaged Electron loads the desktop renderer over a non-web origin
-        # such as file://, null, or a custom app:// scheme. This helper is
-        # called only AFTER _ws_auth_ok has already accepted the WS credential,
-        # which is the real auth boundary in every mode:
-        #   * loopback bind          → legacy dashboard session token
-        #   * non-loopback --insecure → legacy session token (Tailscale / LAN)
-        #   * OAuth-gated public bind → single-use, 30s-TTL, identity-bound
-        #     ?ticket= minted at the cookie-authed POST /api/auth/ws-ticket
-        # A non-web origin can only be produced by a native client (the desktop
-        # shell); a DNS-rebinding attack always arrives from an http(s) origin
-        # and is still match-checked against the bound host below. So once the
-        # credential check upstream has passed, the Origin guard adds nothing
-        # for a non-web origin — trust it in every mode.
-        #
-        # (Earlier revisions restricted this to loopback, then to non-gated
-        # binds; both excluded the packaged desktop talking to a remote
-        # OAuth-gated gateway, whose file:// renderer origin then got rejected
-        # at the WS upgrade even with a valid ticket. The ticket is the gate,
-        # not the origin.)
         return True
-
     if not parsed.netloc:
         return False
-
-    return _is_accepted_host(parsed.netloc, bound_host)
+    return _ws_host_or_origin_value_is_allowed(parsed.netloc)
 
 
 def _ws_request_is_allowed(ws: "WebSocket") -> bool:
     """Return True when the WebSocket upgrade matches dashboard boundaries."""
     return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
-
 
 def _ws_auth_ok(ws: "WebSocket") -> bool:
     """Validate WS-upgrade auth in either loopback or gated mode.
@@ -8668,6 +8705,11 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    try:
+        dashboard_cfg = load_config().get("dashboard", {})
+    except Exception:
+        dashboard_cfg = {}
+    app.state.dashboard_security = dashboard_cfg if isinstance(dashboard_cfg, dict) else {}
 
     if open_browser:
         import webbrowser
