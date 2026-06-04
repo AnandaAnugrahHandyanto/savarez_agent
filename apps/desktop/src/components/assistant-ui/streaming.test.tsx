@@ -566,6 +566,61 @@ describe('assistant-ui streaming renderer', () => {
     expect(viewport.scrollTop).toBe(420)
   })
 
+  it('does not swallow a real user scroll after a programmatic pin that produced no scroll event', async () => {
+    const { container } = render(<StreamingHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    let scrollHeight = 1_000
+    let scrollTop = 0
+
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+    Object.defineProperty(viewport, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = Math.max(0, Math.min(value, scrollHeight - 200))
+      }
+    })
+
+    await wait(80)
+
+    await act(async () => {
+      viewport.scrollTop = 800
+      fireEvent.scroll(viewport)
+    })
+    await wait(0)
+
+    await act(async () => {
+      for (const observer of resizeObservers) {
+        observer.trigger(1_000)
+      }
+    })
+    await wait(20)
+
+    await act(async () => {
+      fireEvent.wheel(viewport, { deltaY: -120 })
+      viewport.scrollTop = 420
+      fireEvent.scroll(viewport)
+    })
+    await wait(0)
+
+    scrollHeight = 1_200
+
+    await act(async () => {
+      for (const observer of resizeObservers) {
+        observer.trigger(1_200)
+      }
+    })
+    await wait(0)
+
+    expect(viewport.scrollTop).toBe(420)
+  })
+
   it('keeps following final code-highlight growth when a run completes at bottom', async () => {
     const { container } = render(<StreamingHarness />)
 
@@ -652,7 +707,6 @@ describe('assistant-ui streaming renderer', () => {
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
     expect(container.textContent).not.toContain('```ts')
   })
-
   it('renders reasoning text without a leading token space', () => {
     const { container } = render(<ReasoningHarness />)
     const ui = within(container)

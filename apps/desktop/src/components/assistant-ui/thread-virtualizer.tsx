@@ -228,16 +228,22 @@ function useThreadScrollAnchor({
   const lastTopRef = useRef(0)
   const lastHeightRef = useRef(0)
   const lastClientHeightRef = useRef(0)
-  // Counter that tracks how many scroll events we expect to be ours rather
-  // than the user's. `pinToBottom` writes `el.scrollTop`, which fires an
-  // async `scroll` event; without this guard the on-scroll handler can race
-  // with the programmatic write (because content also grew, the *resulting*
+  // Flag that marks the next scroll event as ours rather than the user's.
+  // `pinToBottom` writes `el.scrollTop`, which can fire an async `scroll`
+  // event; without this guard the on-scroll handler can race with the
+  // programmatic write (because content also grew, the *resulting*
   // scrollTop can be lower than `lastTopRef` from the previous frame) and
   // misread the programmatic pin as the user scrolling up — which disarms
   // sticky-bottom and the user's just-submitted message slides above the
   // fold. See `apps/desktop/scripts/measure-jump.mjs` for the repro
   // (distFromBottom 0 → 49 within one frame, sticking forever).
-  const programmaticScrollPendingRef = useRef(0)
+  //
+  // Important: some `scrollTop` writes do NOT produce a scroll event
+  // (already at bottom / browser clamps to the same visual position). So the
+  // guard must auto-expire next frame instead of accumulating stale credits
+  // that would swallow a later real user scroll.
+  const programmaticScrollPendingRef = useRef(false)
+  const programmaticScrollTokenRef = useRef(0)
   const prevSessionKeyRef = useRef(sessionKey)
   const prevGroupCountRef = useRef(0)
 
@@ -248,12 +254,19 @@ function useThreadScrollAnchor({
       return
     }
 
-    // Hold the disarm gate across the scroll event the next line will fire.
-    programmaticScrollPendingRef.current += 1
+    // Hold the disarm gate across the scroll event this write may fire, but
+    // expire it automatically next frame if the browser emits no event.
+    const token = ++programmaticScrollTokenRef.current
+    programmaticScrollPendingRef.current = true
     el.scrollTop = el.scrollHeight
     lastTopRef.current = el.scrollTop
     lastHeightRef.current = el.scrollHeight
     lastClientHeightRef.current = el.clientHeight
+    requestAnimationFrame(() => {
+      if (programmaticScrollTokenRef.current === token) {
+        programmaticScrollPendingRef.current = false
+      }
+    })
   }, [scrollerRef])
 
   const jumpToBottom = useCallback(() => {
@@ -283,7 +296,7 @@ function useThreadScrollAnchor({
 
     const disarm = () => {
       stickyBottomRef.current = false
-      programmaticScrollPendingRef.current = 0
+      programmaticScrollPendingRef.current = false
     }
 
     const onScroll = () => {
@@ -296,8 +309,8 @@ function useThreadScrollAnchor({
       // Without this guard the post-pin scrollTop gets misread as the
       // user scrolling up, disarming sticky-bottom permanently and
       // leaving the just-submitted message below the fold.
-      if (programmaticScrollPendingRef.current > 0) {
-        programmaticScrollPendingRef.current -= 1
+      if (programmaticScrollPendingRef.current) {
+        programmaticScrollPendingRef.current = false
         lastTopRef.current = top
         lastHeightRef.current = el.scrollHeight
         lastClientHeightRef.current = el.clientHeight
