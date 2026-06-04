@@ -70,11 +70,11 @@ def _ensure_telegram_mock():
 
     telegram_mod = MagicMock()
     telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
+    telegram_mod.ParseMode.MARKDOWN_V2 = "MarkdownV2"
+    telegram_mod.ChatType.GROUP = "group"
+    telegram_mod.ChatType.SUPERGROUP = "supergroup"
+    telegram_mod.ChatType.CHANNEL = "channel"
+    telegram_mod.ChatType.PRIVATE = "private"
 
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, telegram_mod)

@@ -52,13 +52,17 @@ def _ensure_telegram_mock() -> None:
 
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
-    mod.constants.ChatType.PRIVATE = "private"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
+    # NOTE: Set attributes on mod directly, not mod.constants, because
+    # sys.modules["telegram.constants"] is mapped to mod (not mod.constants).
+    # When production code does `from telegram.constants import ParseMode`,
+    # it resolves to sys.modules["telegram.constants"].ParseMode which is mod.ParseMode.
+    mod.ParseMode.MARKDOWN = "Markdown"
+    mod.ParseMode.MARKDOWN_V2 = "MarkdownV2"
+    mod.ParseMode.HTML = "HTML"
+    mod.ChatType.PRIVATE = "private"
+    mod.ChatType.GROUP = "group"
+    mod.ChatType.SUPERGROUP = "supergroup"
+    mod.ChatType.CHANNEL = "channel"
 
     # Real exception classes so ``except (NetworkError, ...)`` clauses
     # in production code don't blow up with TypeError.

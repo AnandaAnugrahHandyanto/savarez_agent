@@ -13,13 +13,13 @@ def _ensure_telegram_mock():
 
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
-    mod.constants.ChatType.PRIVATE = "private"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
+    mod.ParseMode.MARKDOWN = "Markdown"
+    mod.ParseMode.MARKDOWN_V2 = "MarkdownV2"
+    mod.ParseMode.HTML = "HTML"
+    mod.ChatType.PRIVATE = "private"
+    mod.ChatType.GROUP = "group"
+    mod.ChatType.SUPERGROUP = "supergroup"
+    mod.ChatType.CHANNEL = "channel"
     mod.error.NetworkError = type("NetworkError", (OSError,), {})
     mod.error.TimedOut = type("TimedOut", (OSError,), {})
     mod.error.BadRequest = type("BadRequest", (Exception,), {})
