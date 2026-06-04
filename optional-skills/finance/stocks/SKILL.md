@@ -6,7 +6,7 @@ author: Mibay (Mibayy), Savarez AI Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  savarez:
     tags: [Stocks, Finance, Market, Crypto, Investing]
     category: finance
     related_skills: [dcf-model, comps-analysis, lbo-model]

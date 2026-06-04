@@ -4,7 +4,7 @@ sidebar_position: 7
 
 # Profile 命令参考
 
-本页涵盖所有与 [Hermes profiles](../user-guide/profiles.md) 相关的命令。通用 CLI 命令请参阅 [CLI 命令参考](./cli-commands.md)。
+本页涵盖所有与 [Savarez profiles](../user-guide/profiles.md) 相关的命令。通用 CLI 命令请参阅 [CLI 命令参考](./cli-commands.md)。
 
 ## `savarez profile`
 
@@ -170,7 +170,7 @@ savarez profile show <name>
 
 显示 profile 的详细信息，包括其主目录、配置的模型、gateway 状态、skill 数量和配置文件状态。
 
-此处显示的是 profile 的 Hermes 主目录，而非终端工作目录。终端命令从 `terminal.cwd` 启动（或在本地后端 `cwd: "."` 时从启动目录启动）。
+此处显示的是 profile 的 Savarez 主目录，而非终端工作目录。终端命令从 `terminal.cwd` 启动（或在本地后端 `cwd: "."` 时从启动目录启动）。
 
 | 参数 | 描述 |
 |----------|-------------|
@@ -196,7 +196,7 @@ Alias:   ~/.local/bin/work
 savarez profile alias <name> [options]
 ```
 
-重新生成位于 `~/.local/bin/<name>` 的 shell alias 脚本。适用于 alias 被意外删除，或移动 Hermes 安装目录后需要更新的情况。
+重新生成位于 `~/.local/bin/<name>` 的 shell alias 脚本。适用于 alias 被意外删除，或移动 Savarez 安装目录后需要更新的情况。
 
 | 参数 / 选项 | 描述 |
 |-------------------|-------------|
@@ -310,7 +310,7 @@ savarez profile install <source> [--name <name>] [--alias] [--force] [--yes]
 |--------|-------------|
 | `<source>` | Git URL（`github.com/user/repo`、`https://...`、`git@...`、`ssh://`、`git://`）或包含 `distribution.yaml` 的本地目录根路径。 |
 | `--name NAME` | 覆盖 manifest 中的 profile 名称。 |
-| `--alias` | 同时创建 shell wrapper（例如 `telemetry` → `hermes -p telemetry`）。 |
+| `--alias` | 同时创建 shell wrapper（例如 `telemetry` → `savarez -p telemetry`）。 |
 | `--force` | 覆盖同名的已有 profile。用户数据仍会保留。 |
 | `-y`, `--yes` | 跳过 manifest 预览确认提示。 |
 
@@ -348,7 +348,7 @@ savarez profile update <name> [--force-config] [--yes]
 savarez profile info <name>
 ```
 
-打印 profile 的发行版 manifest — 名称、版本、所需 Hermes 版本、作者、环境变量要求、来源 URL/路径，以及发行版最后一次 `install` 或 `update` 时记录的 `Installed:` 时间戳。适用于安装前检查共享 profile 的需求，以及发现"该 profile 已安装 6 个月未更新"等情况。
+打印 profile 的发行版 manifest — 名称、版本、所需 Savarez 版本、作者、环境变量要求、来源 URL/路径，以及发行版最后一次 `install` 或 `update` 时记录的 `Installed:` 时间戳。适用于安装前检查共享 profile 的需求，以及发现"该 profile 已安装 6 个月未更新"等情况。
 
 `savarez profile list` 也会在 `Distribution` 列中显示发行版名称和版本，`savarez profile show <name>` / `delete <name>` 会显示来源 URL，让你一眼看出哪些 profile 来自 git 仓库，哪些是本地创建的。
 
@@ -392,7 +392,7 @@ distribution_owned:   # optional; defaults to SOUL.md, config.yaml,
   - cron/
 ```
 
-`hermes_requires` 支持 `>=`、`<=`、`==`、`!=`、`>`、`<`，或裸版本号（视为 `>=`）。若当前 Hermes 版本不满足规格，安装将失败并给出明确错误。
+`hermes_requires` 支持 `>=`、`<=`、`==`、`!=`、`>`、`<`，或裸版本号（视为 `>=`）。若当前 Savarez 版本不满足规格，安装将失败并给出明确错误。
 
 `distribution_owned` 为可选项。若设置，更新时仅替换这些路径；profile 中的其他内容保持用户所有。若省略，则应用上述默认值。
 
@@ -401,19 +401,19 @@ distribution_owned:   # optional; defaults to SOUL.md, config.yaml,
 编写发行版就是一次 git push：
 
 1. 在你的 profile 目录中创建 `distribution.yaml`，至少包含 `name` 和 `version`。
-2. 初始化 git 仓库（或使用已有仓库），推送到 GitHub / GitLab / 任何 Hermes 可克隆的托管平台。
+2. 初始化 git 仓库（或使用已有仓库），推送到 GitHub / GitLab / 任何 Savarez 可克隆的托管平台。
 3. 告知接收方运行 `savarez profile install <your-repo-url>`。
 
 使用 git tag 进行版本化发布 — 克隆 `HEAD` 的接收方将获得最新状态，你也可以随时在 manifest 中更新 `version:`。
 
-## `hermes -p` / `hermes --profile`
+## `savarez -p` / `savarez --profile`
 
 ```bash
-hermes -p <name> <command> [options]
-hermes --profile <name> <command> [options]
+savarez -p <name> <command> [options]
+savarez --profile <name> <command> [options]
 ```
 
-全局标志，用于在不更改默认 profile 的情况下，在指定 profile 下运行任意 Hermes 命令。仅在该命令执行期间覆盖活跃 profile。
+全局标志，用于在不更改默认 profile 的情况下，在指定 profile 下运行任意 Savarez 命令。仅在该命令执行期间覆盖活跃 profile。
 
 | 选项 | 描述 |
 |--------|-------------|
@@ -422,16 +422,16 @@ hermes --profile <name> <command> [options]
 **示例：**
 
 ```bash
-hermes -p work chat -q "Check the server status"
-hermes --profile dev gateway start
-hermes -p personal skills list
-hermes -p work config edit
+savarez -p work chat -q "Check the server status"
+savarez --profile dev gateway start
+savarez -p personal skills list
+savarez -p work config edit
 ```
 
-## `hermes completion`
+## `savarez completion`
 
 ```bash
-hermes completion <shell>
+savarez completion <shell>
 ```
 
 生成 shell 补全脚本。包含对 profile 名称和 profile 子命令的补全。
@@ -444,9 +444,9 @@ hermes completion <shell>
 
 ```bash
 # 安装补全脚本
-hermes completion bash >> ~/.bashrc
-hermes completion zsh >> ~/.zshrc
-hermes completion fish > ~/.config/fish/completions/hermes.fish
+savarez completion bash >> ~/.bashrc
+savarez completion zsh >> ~/.zshrc
+savarez completion fish > ~/.config/fish/completions/savarez.fish
 
 # 重新加载 shell
 source ~/.bashrc
@@ -455,7 +455,7 @@ source ~/.bashrc
 安装后，Tab 补全适用于：
 - `savarez profile <TAB>` — 子命令（list、use、create 等）
 - `savarez profile use <TAB>` — profile 名称
-- `hermes -p <TAB>` — profile 名称
+- `savarez -p <TAB>` — profile 名称
 
 ## 另请参阅
 

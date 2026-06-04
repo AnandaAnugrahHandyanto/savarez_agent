@@ -6,7 +6,7 @@ author: Hugo Sequier (Hugo-SEQUIER), Savarez AI Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  savarez:
     tags: [Hyperliquid, Blockchain, Crypto, Trading, Perpetuals, Spot, DeFi]
     related_skills: []
 ---

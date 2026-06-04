@@ -242,7 +242,7 @@ def test_load_website_blocklist_wraps_shared_file_read_errors(tmp_path, monkeypa
 
 
 def test_check_website_access_uses_dynamic_hermes_home(monkeypatch, tmp_path):
-    hermes_home = tmp_path / "hermes-home"
+    hermes_home = tmp_path / "savarez-home"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(
         yaml.safe_dump(

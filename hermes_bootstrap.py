@@ -1,4 +1,4 @@
-"""Windows UTF-8 bootstrap for Hermes entry points.
+"""Windows UTF-8 bootstrap for Savarez entry points.
 
 Python on Windows has two long-standing text-encoding footguns:
 
@@ -13,8 +13,8 @@ Python on Windows has two long-standing text-encoding footguns:
    cp1252 defaults and hits the same UnicodeEncodeError.
 
 This module fixes both on Windows *only* — POSIX is untouched.  It
-should be imported at the very top of every Hermes entry point
-(``savarez``, ``hermes-agent``, ``hermes-acp``, ``python -m gateway.run``,
+should be imported at the very top of every Savarez entry point
+(``savarez``, ``savarez-agent``, ``savarez-acp``, ``python -m gateway.run``,
 ``batch_runner.py``, ``cron/scheduler.py``) before any other imports
 that might do file I/O or print to stdout.
 

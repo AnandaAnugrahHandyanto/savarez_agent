@@ -62,7 +62,7 @@ def main():
     # hermes_cli.main. We do this by putting a shim on PATH.
     shim_dir = os.path.join(home, "bin")
     os.makedirs(shim_dir, exist_ok=True)
-    shim_path = os.path.join(shim_dir, "hermes")
+    shim_path = os.path.join(shim_dir, "savarez")
     with open(shim_path, "w") as f:
         f.write(f"""#!/bin/sh
 exec {PY} -m hermes_cli.main "$@"

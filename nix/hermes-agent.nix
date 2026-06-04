@@ -1,9 +1,9 @@
-# nix/hermes-agent.nix — Overridable Savarez AI Agent package
+# nix/savarez-agent.nix — Overridable Savarez AI Agent package
 #
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
 # Users override via:
-#   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-#   pkgs.hermes-agent.override { extraDependencyGroups = [ "hindsight" ]; }
+#   pkgs.savarez-agent.override { extraPythonPackages = [...]; }
+#   pkgs.savarez-agent.override { extraDependencyGroups = [ "hindsight" ]; }
 {
   lib,
   stdenv,
@@ -153,7 +153,7 @@ let
   '';
 in
 stdenv.mkDerivation (finalAttrs: {
-  pname = "hermes-agent";
+  pname = "savarez-agent";
   version = (fromTOML (builtins.readFile ../pyproject.toml)).project.version;
 
   dontUnpack = true;
@@ -163,11 +163,11 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
-    mkdir -p $out/share/hermes-agent $out/bin
-    cp -r ${bundledSkills} $out/share/hermes-agent/skills
-    cp -r ${bundledPlugins} $out/share/hermes-agent/plugins
-    cp -r ${bundledLocales} $out/share/hermes-agent/locales
-    cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
+    mkdir -p $out/share/savarez-agent $out/bin
+    cp -r ${bundledSkills} $out/share/savarez-agent/skills
+    cp -r ${bundledPlugins} $out/share/savarez-agent/plugins
+    cp -r ${bundledLocales} $out/share/savarez-agent/locales
+    cp -r ${hermesWeb} $out/share/savarez-agent/web_dist
 
     mkdir -p $out/ui-tui
     cp -r ${hermesTui}/lib/hermes-tui/* $out/ui-tui/
@@ -176,10 +176,10 @@ stdenv.mkDerivation (finalAttrs: {
       (name: ''
         makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
           --suffix PATH : "${runtimePath}" \
-          --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
-          --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
-          --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
-          --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
+          --set HERMES_BUNDLED_SKILLS $out/share/savarez-agent/skills \
+          --set HERMES_BUNDLED_PLUGINS $out/share/savarez-agent/plugins \
+          --set HERMES_BUNDLED_LOCALES $out/share/savarez-agent/locales \
+          --set HERMES_WEB_DIST $out/share/savarez-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
           --set HERMES_NODE ${lib.getExe nodejs} \
@@ -188,7 +188,7 @@ stdenv.mkDerivation (finalAttrs: {
       '')
       [
         "hermes"
-        "hermes-agent"
+        "savarez-agent"
         "hermes-acp"
       ]
     }
@@ -223,10 +223,10 @@ stdenv.mkDerivation (finalAttrs: {
     };
 
     devShellHook = ''
-      STAMP=".nix-stamps/hermes-agent"
+      STAMP=".nix-stamps/savarez-agent"
       STAMP_VALUE="${pyprojectHash}:${uvLockHash}"
       if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
-        echo "hermes-agent: installing Python dependencies..."
+        echo "savarez-agent: installing Python dependencies..."
         uv venv .venv --python ${python312}/bin/python3 2>/dev/null || true
         source .venv/bin/activate
         uv pip install -e ".[all]"
@@ -242,7 +242,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   meta = with lib; {
     description = "AI agent with advanced tool-calling capabilities";
-    homepage = "https://github.com/NousResearch/hermes-agent";
+    homepage = "https://github.com/NousResearch/savarez-agent";
     mainProgram = "hermes";
     license = licenses.mit;
     platforms = platforms.unix;

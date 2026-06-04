@@ -13,7 +13,7 @@ hooks land.
 
 Every ``docker exec`` here runs as the unprivileged ``savarez`` user
 (via :func:`docker_exec` in conftest); see the conftest module
-docstring. ``/run/service`` is chowned hermes-writable by the
+docstring. ``/run/service`` is chowned savarez-writable by the
 ``02-reconcile-profiles`` cont-init.d script, so register/unregister
 operations work correctly under UID 10000.
 """
@@ -27,7 +27,7 @@ from tests.docker.conftest import docker_exec
 
 _REGISTER_SCRIPT = """
 import sys
-sys.path.insert(0, "/opt/hermes")
+sys.path.insert(0, "/opt/savarez")
 from hermes_cli.service_manager import S6ServiceManager
 S6ServiceManager().register_profile_gateway("phase3test")
 # Don't worry about whether the gateway actually starts — we only care
@@ -38,7 +38,7 @@ print("REGISTERED")
 
 _UNREGISTER_SCRIPT = """
 import sys
-sys.path.insert(0, "/opt/hermes")
+sys.path.insert(0, "/opt/savarez")
 from hermes_cli.service_manager import S6ServiceManager
 S6ServiceManager().unregister_profile_gateway("phase3test")
 print("UNREGISTERED")

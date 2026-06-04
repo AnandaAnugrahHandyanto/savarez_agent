@@ -6,7 +6,7 @@ author: Savarez AI Agent
 license: MIT
 platforms: [macos]
 metadata:
-  hermes:
+  savarez:
     tags: [Notes, Apple, macOS, note-taking]
     related_skills: [obsidian]
 prerequisites:

@@ -220,25 +220,25 @@ def test_get_platform_tools_x_search_respects_explicit_config(monkeypatch):
     )
 
     # User explicitly opted into spotify but not x_search via `savarez tools`.
-    config = {"platform_toolsets": {"cli": ["hermes-cli", "spotify"]}}
+    config = {"platform_toolsets": {"cli": ["savarez-cli", "spotify"]}}
     enabled = _get_platform_tools(config, "cli")
     assert "x_search" not in enabled
     assert "spotify" in enabled
 
 
 def test_get_platform_tools_expands_composite_when_mixed_with_configurable():
-    """``[hermes-cli, spotify]`` (composite + configurable) must keep the full
-    ``hermes-cli`` toolset alongside the explicit Spotify opt-in. The
-    has_explicit_config branch used to drop ``hermes-cli`` on the floor,
+    """``[savarez-cli, spotify]`` (composite + configurable) must keep the full
+    ``savarez-cli`` toolset alongside the explicit Spotify opt-in. The
+    has_explicit_config branch used to drop ``savarez-cli`` on the floor,
     leaving sessions with only ``{spotify, kanban}``."""
-    config = {"platform_toolsets": {"cli": ["hermes-cli", "spotify"]}}
+    config = {"platform_toolsets": {"cli": ["savarez-cli", "spotify"]}}
 
     enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
 
     # Native tools must reappear.
     for ts in ("terminal", "file", "web", "browser", "memory", "delegation",
                "code_execution", "todo", "session_search", "skills"):
-        assert ts in enabled, f"{ts} should be enabled when hermes-cli is listed"
+        assert ts in enabled, f"{ts} should be enabled when savarez-cli is listed"
     # User explicitly opted into Spotify — must survive _DEFAULT_OFF_TOOLSETS subtraction.
     assert "spotify" in enabled
 
@@ -248,7 +248,7 @@ def test_get_platform_tools_composite_only_unchanged():
     else-branch path and produce the full toolset — guards against the new
     code accidentally hijacking the composite-only case."""
     composite_only = _get_platform_tools(
-        {"platform_toolsets": {"cli": ["hermes-cli"]}},
+        {"platform_toolsets": {"cli": ["savarez-cli"]}},
         "cli",
         include_default_mcp_servers=False,
     )
@@ -273,9 +273,9 @@ def test_get_platform_tools_configurable_only_no_expansion():
 
 def test_get_platform_tools_mixed_does_not_resurrect_default_off():
     """Expansion must subtract _DEFAULT_OFF_TOOLSETS from the implicit
-    pull-in. Without this, ``hermes-cli`` expansion would re-enable
+    pull-in. Without this, ``savarez-cli`` expansion would re-enable
     ``moa`` / ``rl`` / ``homeassistant`` for users who never opted in."""
-    config = {"platform_toolsets": {"cli": ["hermes-cli", "terminal"]}}
+    config = {"platform_toolsets": {"cli": ["savarez-cli", "terminal"]}}
 
     enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
 
@@ -441,7 +441,7 @@ def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
 def test_save_platform_tools_preserves_mcp_server_names():
     """Ensure MCP server names are preserved when saving platform tools.
 
-    Regression test for https://github.com/NousResearch/hermes-agent/issues/1247
+    Regression test for https://github.com/NousResearch/savarez-agent/issues/1247
     """
     config = {
         "platform_toolsets": {
@@ -492,7 +492,7 @@ def test_save_platform_tools_handles_invalid_existing_config():
 
 
 def test_save_platform_tools_does_not_preserve_platform_default_toolsets():
-    """Platform default toolsets (hermes-cli, hermes-telegram, etc.) must NOT
+    """Platform default toolsets (savarez-cli, savarez-telegram, etc.) must NOT
     be preserved across saves.
 
     These "super" toolsets resolve to ALL tools, so if they survive in the
@@ -502,14 +502,14 @@ def test_save_platform_tools_does_not_preserve_platform_default_toolsets():
     (like MCP server names), causing them to be kept unconditionally.
 
     Regression test: user unchecks image_gen and homeassistant via
-    ``savarez tools``, but hermes-cli stays in the config and re-enables
+    ``savarez tools``, but savarez-cli stays in the config and re-enables
     everything on the next read.
     """
     config = {
         "platform_toolsets": {
             "cli": [
                 "browser", "clarify", "code_execution", "cronjob",
-                "delegation", "file", "hermes-cli",  # <-- the culprit
+                "delegation", "file", "savarez-cli",  # <-- the culprit
                 "memory", "session_search", "skills", "terminal",
                 "todo", "tts", "vision", "web",
             ]
@@ -528,8 +528,8 @@ def test_save_platform_tools_does_not_preserve_platform_default_toolsets():
 
     saved = config["platform_toolsets"]["cli"]
 
-    # hermes-cli must NOT survive — it's a platform default, not an MCP server
-    assert "hermes-cli" not in saved
+    # savarez-cli must NOT survive — it's a platform default, not an MCP server
+    assert "savarez-cli" not in saved
 
     # The individual toolset keys the user selected must be present
     assert "web" in saved
@@ -543,11 +543,11 @@ def test_save_platform_tools_does_not_preserve_platform_default_toolsets():
 
 
 def test_save_platform_tools_does_not_preserve_hermes_telegram():
-    """Same bug for Telegram — hermes-telegram must not be preserved."""
+    """Same bug for Telegram — savarez-telegram must not be preserved."""
     config = {
         "platform_toolsets": {
             "telegram": [
-                "browser", "file", "hermes-telegram", "terminal", "web",
+                "browser", "file", "savarez-telegram", "terminal", "web",
             ]
         }
     }
@@ -558,7 +558,7 @@ def test_save_platform_tools_does_not_preserve_hermes_telegram():
         _save_platform_tools(config, "telegram", new_selection)
 
     saved = config["platform_toolsets"]["telegram"]
-    assert "hermes-telegram" not in saved
+    assert "savarez-telegram" not in saved
     assert "web" in saved
 
 
@@ -568,7 +568,7 @@ def test_save_platform_tools_still_preserves_mcp_with_platform_default_present()
     config = {
         "platform_toolsets": {
             "cli": [
-                "web", "terminal", "hermes-cli", "my-mcp-server", "github-tools",
+                "web", "terminal", "savarez-cli", "my-mcp-server", "github-tools",
             ]
         }
     }
@@ -585,7 +585,7 @@ def test_save_platform_tools_still_preserves_mcp_with_platform_default_present()
     assert "github-tools" in saved
 
     # Platform default stripped
-    assert "hermes-cli" not in saved
+    assert "savarez-cli" not in saved
 
     # User selections present
     assert "web" in saved
@@ -900,11 +900,11 @@ class TestPlatformToolsetConsistency:
             )
 
     def test_gateway_toolset_includes_all_messaging_platforms(self):
-        """hermes-gateway includes list should cover all messaging platforms."""
+        """savarez-gateway includes list should cover all messaging platforms."""
         from hermes_cli.tools_config import PLATFORMS
         from toolsets import TOOLSETS
 
-        gateway_includes = set(TOOLSETS["hermes-gateway"]["includes"])
+        gateway_includes = set(TOOLSETS["savarez-gateway"]["includes"])
         # Exclude non-messaging platforms from the check
         non_messaging = {"cli", "api_server", "cron"}
         for platform, meta in PLATFORMS.items():
@@ -913,7 +913,7 @@ class TestPlatformToolsetConsistency:
             ts_name = meta["default_toolset"]
             assert ts_name in gateway_includes, (
                 f"Platform {platform!r} toolset {ts_name!r} missing from "
-                f"hermes-gateway includes"
+                f"savarez-gateway includes"
             )
 
     def test_skills_config_covers_tools_config_platforms(self):
@@ -937,7 +937,7 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
     _get_platform_tools must normalise them to str so that sorted()
     on the returned set never raises TypeError on mixed int/str.
 
-    Regression test for https://github.com/NousResearch/hermes-agent/issues/6901
+    Regression test for https://github.com/NousResearch/savarez-agent/issues/6901
     """
     config = {
         "platform_toolsets": {"cli": ["web", 12306]},
@@ -1199,14 +1199,14 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
         "tools": ["_test_special_tool"],
         "includes": [],
     }
-    fake_toolsets["hermes-_test_platform"] = {
+    fake_toolsets["savarez-_test_platform"] = {
         "description": "test composite",
         "tools": ["web_search", "web_extract", "terminal", "process", "_test_special_tool"],
         "includes": [],
     }
 
     test_platforms = {
-        "_test_platform": {"label": "Test", "default_toolset": "hermes-_test_platform"},
+        "_test_platform": {"label": "Test", "default_toolset": "savarez-_test_platform"},
     }
 
     with mock_patch("hermes_cli.tools_config.PLATFORMS", {**PLATFORMS, **test_platforms}):
@@ -1220,7 +1220,7 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
 
 def test_get_platform_tools_second_pass_skips_fully_claimed_toolsets():
     """Toolsets whose tools are fully covered by configurable keys should NOT
-    be added by the second pass (prevents 'search', 'hermes-acp' noise).
+    be added by the second pass (prevents 'search', 'savarez-acp' noise).
     """
     enabled = _get_platform_tools({}, "cli")
 

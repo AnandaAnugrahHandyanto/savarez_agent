@@ -38,12 +38,12 @@ pub fn hermes_home() -> PathBuf {
     // macOS + Linux + fallback: ~/.savarez (matches Python get_hermes_home(),
     // install.sh, and the Electron desktop's resolveHermesHome()).
     if let Some(home) = dirs::home_dir() {
-        return home.join(".hermes");
+        return home.join(".savarez");
     }
 
     // Last resort — current dir, almost certainly wrong but at least
     // doesn't panic.
-    PathBuf::from(".hermes")
+    PathBuf::from(".savarez")
 }
 
 pub fn log_dir() -> PathBuf {
@@ -62,7 +62,7 @@ pub fn bootstrap_cache_dir() -> PathBuf {
 /// The desktop app re-invokes this with `--update`, and the start-menu /
 /// desktop shortcuts can point users back to it. Lives directly under
 /// SAVAREZ_HOME so it survives repo checkout deletion (unlike anything under
-/// hermes-agent/).
+/// savarez-agent/).
 ///
 /// On Windows this is `%LOCALAPPDATA%\hermes\hermes-setup.exe`; on other
 /// platforms the extension differs but the directory is the same.

@@ -2,10 +2,10 @@ class HermesAgent < Formula
   include Language::Python::Virtualenv
 
   desc "Self-improving AI agent that creates skills from experience"
-  homepage "https://hermes-agent.nousresearch.com"
+  homepage "https://savarez-agent.nousresearch.com"
   # Stable source should point at the semver-named sdist asset attached by
   # scripts/release.py, not the CalVer tag tarball.
-  url "https://github.com/NousResearch/hermes-agent/releases/download/v2026.3.30/hermes_agent-0.6.0.tar.gz"
+  url "https://github.com/NousResearch/savarez-agent/releases/download/v2026.3.30/hermes_agent-0.6.0.tar.gz"
   sha256 "<replace-with-release-asset-sha256>"
   license "MIT"
 
@@ -17,7 +17,7 @@ class HermesAgent < Formula
   pypi_packages ignore_packages: %w[certifi cryptography pydantic]
 
   # Refresh resource stanzas after bumping the source url/version:
-  #   brew update-python-resources --print-only hermes-agent
+  #   brew update-python-resources --print-only savarez-agent
 
   def install
     venv = virtualenv_create(libexec, "python3.14")
@@ -26,7 +26,7 @@ class HermesAgent < Formula
 
     pkgshare.install "skills", "optional-skills"
 
-    %w[hermes hermes-agent hermes-acp].each do |exe|
+    %w[hermes savarez-agent hermes-acp].each do |exe|
       next unless (libexec/"bin"/exe).exist?
 
       (bin/exe).write_env_script(
@@ -43,6 +43,6 @@ class HermesAgent < Formula
 
     managed = shell_output("#{bin}/savarez update 2>&1")
     assert_match "managed by Homebrew", managed
-    assert_match "brew upgrade hermes-agent", managed
+    assert_match "brew upgrade savarez-agent", managed
   end
 end

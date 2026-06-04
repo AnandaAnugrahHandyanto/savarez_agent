@@ -14,7 +14,7 @@ import pytest
 @pytest.fixture
 def config_home(tmp_path, monkeypatch):
     """Isolated SAVAREZ_HOME with a minimal string-format config."""
-    home = tmp_path / "hermes"
+    home = tmp_path / "savarez"
     home.mkdir()
     config_yaml = home / "config.yaml"
     # Start with model as a plain string — the format that triggered the bug

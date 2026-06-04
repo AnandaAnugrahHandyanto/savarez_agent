@@ -98,7 +98,7 @@ When Savarez AI Agent starts, `discover_mcp_tools()` is called during tool initi
 1. Reads `mcp_servers` from `~/.savarez/config.yaml`
 2. For each server, spawns a connection in a dedicated background event loop
 3. Initializes the MCP session and calls `list_tools()` to discover available tools
-4. Registers each tool in the Hermes tool registry
+4. Registers each tool in the Savarez tool registry
 
 ### Tool Naming Convention
 
@@ -117,7 +117,7 @@ Examples:
 
 ### Auto-Injection
 
-After discovery, MCP tools are automatically injected into all `hermes-*` platform toolsets (CLI, Discord, Telegram, etc.). This means MCP tools are available in every conversation without any additional configuration.
+After discovery, MCP tools are automatically injected into all `savarez-*` platform toolsets (CLI, Discord, Telegram, etc.). This means MCP tools are available in every conversation without any additional configuration.
 
 ### Connection Lifecycle
 
@@ -134,7 +134,7 @@ After discovery, MCP tools are automatically injected into all `hermes-*` platfo
 
 ### Stdio Transport
 
-The most common transport. Hermes launches the MCP server as a subprocess and communicates over stdin/stdout.
+The most common transport. Savarez launches the MCP server as a subprocess and communicates over stdin/stdout.
 
 ```yaml
 mcp_servers:
@@ -163,7 +163,7 @@ If HTTP support is not available in your installed `mcp` version, the server wil
 
 ### Environment Variable Filtering
 
-For stdio servers, Hermes does NOT pass your full shell environment to MCP subprocesses. Only safe baseline variables are inherited:
+For stdio servers, Savarez does NOT pass your full shell environment to MCP subprocesses. Only safe baseline variables are inherited:
 
 - `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `TERM`, `SHELL`, `TMPDIR`
 - Any `XDG_*` variables
@@ -311,7 +311,7 @@ All tools from all servers are registered and available simultaneously. Each ser
 
 ## Sampling (Server-Initiated LLM Requests)
 
-Hermes supports MCP's `sampling/createMessage` capability — MCP servers can request LLM completions through the agent during tool execution. This enables agent-in-the-loop workflows (data analysis, content generation, decision-making).
+Savarez supports MCP's `sampling/createMessage` capability — MCP servers can request LLM completions through the agent during tool execution. This enables agent-in-the-loop workflows (data analysis, content generation, decision-making).
 
 Sampling is **enabled by default**. Configure per server:
 

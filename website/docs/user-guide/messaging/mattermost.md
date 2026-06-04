@@ -8,21 +8,21 @@ description: "Set up Savarez AI Agent as a Mattermost bot"
 
 Savarez AI Agent integrates with Mattermost as a bot, letting you chat with your AI assistant through direct messages or team channels. Mattermost is a self-hosted, open-source Slack alternative — you run it on your own infrastructure, keeping full control of your data. The bot connects via Mattermost's REST API (v4) and WebSocket for real-time events, processes messages through the Savarez AI Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, file attachments, images, and slash commands.
 
-No external Mattermost library is required — the adapter uses `aiohttp`, which is already a Hermes dependency.
+No external Mattermost library is required — the adapter uses `aiohttp`, which is already a Savarez dependency.
 
-Before setup, here's the part most people want to know: how Hermes behaves once it's in your Mattermost instance.
+Before setup, here's the part most people want to know: how Savarez behaves once it's in your Mattermost instance.
 
-## How Hermes Behaves
+## How Savarez Behaves
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
-| **Public/private channels** | Hermes responds when you `@mention` it. Without a mention, Hermes ignores the message. |
-| **Threads** | If `MATTERMOST_REPLY_MODE=thread`, Hermes replies in a thread under your message. Thread context stays isolated from the parent channel. |
-| **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
+| **DMs** | Savarez responds to every message. No `@mention` needed. Each DM has its own session. |
+| **Public/private channels** | Savarez responds when you `@mention` it. Without a mention, Savarez ignores the message. |
+| **Threads** | If `MATTERMOST_REPLY_MODE=thread`, Savarez replies in a thread under your message. Thread context stays isolated from the parent channel. |
+| **Shared channels with multiple users** | By default, Savarez isolates session history per user inside the channel. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 
 :::tip
-If you want Hermes to reply as threaded conversations (nested under your original message), set `MATTERMOST_REPLY_MODE=thread`. The default is `off`, which sends flat messages in the channel.
+If you want Savarez to reply as threaded conversations (nested under your original message), set `MATTERMOST_REPLY_MODE=thread`. The default is `off`, which sends flat messages in the channel.
 :::
 
 ### Session Model in Mattermost
@@ -85,7 +85,7 @@ The bot token is only displayed once when you create the bot account. If you los
 Store the token somewhere safe (a password manager, for example). You'll need it in Step 5.
 
 :::tip
-You can also use a **personal access token** instead of a bot account. Go to **Profile** → **Security** → **Personal Access Tokens** → **Create Token**. This is useful if you want Hermes to post as your own user rather than a separate bot user.
+You can also use a **personal access token** instead of a bot account. Go to **Profile** → **Security** → **Personal Access Tokens** → **Create Token**. This is useful if you want Savarez to post as your own user rather than a separate bot user.
 :::
 
 ## Step 3: Add the Bot to Channels
@@ -199,12 +199,12 @@ Replace the ID with the actual channel ID (click the channel name → View Info 
 
 ## Reply Mode
 
-The `MATTERMOST_REPLY_MODE` setting controls how Hermes posts responses:
+The `MATTERMOST_REPLY_MODE` setting controls how Savarez posts responses:
 
 | Mode | Behavior |
 |------|----------|
-| `off` (default) | Hermes posts flat messages in the channel, like a normal user. |
-| `thread` | Hermes replies in a thread under your original message. Keeps channels clean when there's lots of back-and-forth. |
+| `off` (default) | Savarez posts flat messages in the channel, like a normal user. |
+| `thread` | Savarez replies in a thread under your original message. Keeps channels clean when there's lots of back-and-forth. |
 
 Set it in your `~/.savarez/.env`:
 

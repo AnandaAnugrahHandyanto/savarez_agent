@@ -690,7 +690,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     _qwen_meta = None
     if _is_qwen:
         _qwen_meta = {
-            "sessionId": agent.session_id or "hermes",
+            "sessionId": agent.session_id or "savarez",
             "promptId": str(uuid.uuid4()),
         }
 
@@ -1290,7 +1290,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # hand-builds messages and calls chat.completions.create() directly,
             # bypassing the transport — so mirror that sanitization here:
             # tool_name (SQLite FTS bookkeeping), the codex_* reasoning carriers,
-            # and every Hermes-internal underscore-prefixed scaffolding key.
+            # and every Savarez-internal underscore-prefixed scaffolding key.
             for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items"):
                 api_msg.pop(schema_foreign, None)
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:

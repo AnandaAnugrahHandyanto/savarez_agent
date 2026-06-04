@@ -1,5 +1,5 @@
 """
-Profile management for multiple isolated Hermes instances.
+Profile management for multiple isolated Savarez instances.
 
 Each profile is a fully independent SAVAREZ_HOME directory with its own
 config.yaml, .env, memory, sessions, skills, gateway, cron, and logs.
@@ -14,7 +14,7 @@ Usage::
     savarez profile create coder --clone  # also copy config, .env, SOUL.md, skills
     savarez profile create coder --clone-all  # full copy of source profile
     coder chat                           # use via wrapper alias
-    hermes -p coder chat                 # or via flag
+    savarez -p coder chat                 # or via flag
     savarez profile use coder             # set as sticky default
     savarez profile delete coder          # remove profile + alias + service
 """
@@ -81,7 +81,7 @@ _CLONE_ALL_STRIP: list[str] = [
 # user data from a named-profile source.
 #
 # Rationale per item:
-#   hermes-agent  — git repo checkout (~84 MB source + ~3 GB venv)
+#   savarez-agent  — git repo checkout (~84 MB source + ~3 GB venv)
 #   .worktrees    — git worktrees
 #   profiles      — sibling named profiles (recursive copy never intended)
 #   bin           — installed binaries (tirith etc., ~10 MB) shared per-host
@@ -92,7 +92,7 @@ _CLONE_ALL_STRIP: list[str] = [
 # archive is a portable snapshot; clone-all keeps those because the cloned
 # profile is meant to keep working immediately).
 _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
-    "hermes-agent",
+    "savarez-agent",
     ".worktrees",
     "profiles",
     "bin",
@@ -100,7 +100,7 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
 })
 
 # Marker file written by `savarez profile create --no-skills`.  When present in
-# a profile's root, callers of seed_profile_skills() (fresh-create, `hermes
+# a profile's root, callers of seed_profile_skills() (fresh-create, `savarez
 # update`'s all-profile sync, the web dashboard) skip bundled-skill seeding
 # for that profile.  The user can still install skills manually via
 # `savarez skills install` or drop SKILL.md files into the profile's skills/.
@@ -121,7 +121,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
 
     Two categories:
       1. Root-level entries in ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` — known
-         Hermes infrastructure directories that only the default profile
+         Savarez infrastructure directories that only the default profile
          (``~/.savarez``) ever contains.  Gated on ``source_dir`` actually
          being the default profile so a named-profile source never has its
          own data silently dropped.
@@ -169,7 +169,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
 # export is a portable, reasonable-size archive of actual profile data.
 _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     # Infrastructure
-    "hermes-agent",         # repo checkout (multi-GB)
+    "savarez-agent",         # repo checkout (multi-GB)
     ".worktrees",           # git worktrees
     "profiles",             # other profiles — never recursive-export
     "bin",                  # installed binaries (tirith, etc.)
@@ -193,10 +193,10 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
 
 # Names that cannot be used as profile aliases
 _RESERVED_NAMES = frozenset({
-    "hermes", "default", "test", "tmp", "root", "sudo",
+    "savarez", "default", "test", "tmp", "root", "sudo",
 })
 
-# Hermes subcommands that cannot be used as profile names/aliases
+# Savarez subcommands that cannot be used as profile names/aliases
 _HERMES_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
     "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools",
@@ -212,7 +212,7 @@ _HERMES_SUBCOMMANDS = frozenset({
 def _get_profiles_root() -> Path:
     """Return the directory where named profiles are stored.
 
-    Anchored to the hermes root, NOT to the current SAVAREZ_HOME
+    Anchored to the savarez root, NOT to the current SAVAREZ_HOME
     (which may itself be a profile).  This ensures ``coder profile list``
     can see all profiles.
 
@@ -291,7 +291,7 @@ def validate_profile_name(name: str) -> None:
     if name in _RESERVED_NAMES:
         raise ValueError(
             f"Profile name {name!r} is reserved — it collides with either "
-            f"the Hermes installation itself or a common system binary.  "
+            f"the Savarez installation itself or a common system binary.  "
             f"Pick a different name."
         )
 
@@ -319,13 +319,13 @@ def profile_exists(name: str) -> bool:
 def check_alias_collision(name: str) -> Optional[str]:
     """Return a human-readable collision message, or None if the name is safe.
 
-    Checks: reserved names, hermes subcommands, existing binaries in PATH.
+    Checks: reserved names, savarez subcommands, existing binaries in PATH.
     """
     canon = normalize_profile_name(name)
     if canon in _RESERVED_NAMES:
         return f"'{canon}' is a reserved name"
     if canon in _HERMES_SUBCOMMANDS:
-        return f"'{canon}' conflicts with a hermes subcommand"
+        return f"'{canon}' conflicts with a savarez subcommand"
 
     # Check existing commands in PATH
     wrapper_dir = _get_wrapper_dir()
@@ -342,7 +342,7 @@ def check_alias_collision(name: str) -> Optional[str]:
             if existing_path == str(expected):
                 try:
                     content = expected.read_text()
-                    if "hermes -p" in content:
+                    if "savarez -p" in content:
                         return None  # it's our wrapper, safe to overwrite
                 except Exception:
                     pass
@@ -390,7 +390,7 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     else:
         wrapper_path = wrapper_dir / canon
         try:
-            wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {profile} "$@"\n')
+            wrapper_path.write_text(f'#!/bin/sh\nexec savarez -p {profile} "$@"\n')
             wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
             return wrapper_path
         except OSError as e:
@@ -414,7 +414,7 @@ def remove_wrapper_script(name: str) -> bool:
             try:
                 # Verify it's our wrapper before removing
                 content = wrapper_path.read_text()
-                if "hermes -p" in content:
+                if "savarez -p" in content:
                     wrapper_path.unlink()
                     return True
             except Exception:
@@ -526,7 +526,7 @@ def _count_skills(profile_dir: Path) -> int:
 # ---------------------------------------------------------------------------
 #
 # We keep this file deliberately tiny and separate from the profile's
-# ``config.yaml``. ``config.yaml`` is the user-facing Hermes config
+# ``config.yaml``. ``config.yaml`` is the user-facing Savarez config
 # (~5000 lines of defaults); ``profile.yaml`` is metadata ABOUT the
 # profile itself (its role, who described it). Mixing them makes both
 # harder to read.
@@ -817,7 +817,7 @@ def create_profile(
 
     # Phase 4: when running inside a container under s6, register the
     # new profile's gateway as a runtime s6 service so
-    # `hermes -p <profile> gateway start` can supervise it via
+    # `savarez -p <profile> gateway start` can supervise it via
     # `s6-svc -u` instead of spawning a bare process. On host (systemd
     # / launchd / windows) this is a no-op — the existing per-profile
     # unit-generation paths handle gateway lifecycle.
@@ -1300,7 +1300,7 @@ def export_profile(name: str, output_path: str) -> Path:
 
     if canon == "default":
         # The default profile IS ~/.savarez itself — its parent is ~/ and its
-        # directory name is ".hermes", not "default".  We stage a clean copy
+        # directory name is ".savarez", not "default".  We stage a clean copy
         # under a temp dir so the archive contains ``default/...``.
         with tempfile.TemporaryDirectory() as tmpdir:
             staged = Path(tmpdir) / "default"
@@ -1472,7 +1472,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) -> None:
     """Rename Honcho host blocks for a renamed profile without changing peers."""
     old_host = f"hermes_{old_name}"
-    legacy_old_host = f"hermes.{old_name}"
+    legacy_old_host = f"savarez.{old_name}"
     new_host = f"hermes_{new_name}"
 
     candidates = [
@@ -1591,7 +1591,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 def resolve_profile_env(profile_name: str) -> str:
     """Resolve a profile name to a SAVAREZ_HOME path string.
 
-    Called early in the CLI entry point, before any hermes modules
+    Called early in the CLI entry point, before any savarez modules
     are imported, to set the SAVAREZ_HOME environment variable.
     """
     canon = normalize_profile_name(profile_name)

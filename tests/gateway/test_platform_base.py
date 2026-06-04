@@ -489,7 +489,7 @@ class TestMediaInsideSerializedJson:
     def test_media_in_embedded_serialized_reply_not_extracted(self):
         """A serialized tool result that embeds a prior reply's MEDIA: tag."""
         content = (
-            '{"content":"previous reply MEDIA:/Users/ex/.hermes/media/'
+            '{"content":"previous reply MEDIA:/Users/ex/.savarez/media/'
             'generated/stale.png and more text"}'
         )
         media, _ = BasePlatformAdapter.extract_media(content)
@@ -861,7 +861,7 @@ class TestMediaDeliveryDefaultMode:
         self._patch_roots(monkeypatch)
 
         fake_home = tmp_path / "home"
-        hermes_dir = fake_home / ".hermes"
+        hermes_dir = fake_home / ".savarez"
         hermes_dir.mkdir(parents=True)
         env_file = hermes_dir / ".env"
         env_file.write_text("OPENAI_API_KEY=sk-...")
@@ -878,7 +878,7 @@ class TestMediaDeliveryDefaultMode:
         self._patch_roots(monkeypatch)
 
         fake_home = tmp_path / "home"
-        hermes_dir = fake_home / ".hermes"
+        hermes_dir = fake_home / ".savarez"
         hermes_dir.mkdir(parents=True)
         config_file = hermes_dir / "config.yaml"
         config_file.write_text("model:\n  provider: openai\n")
@@ -891,13 +891,13 @@ class TestMediaDeliveryDefaultMode:
         assert BasePlatformAdapter.validate_media_delivery_path(str(config_file)) is None
 
     def test_denylist_blocks_shared_hermes_root_config_for_profiles(self, tmp_path, monkeypatch):
-        """Profile-mode gateways must still block the shared Hermes root config."""
+        """Profile-mode gateways must still block the shared Savarez root config."""
         self._patch_roots(monkeypatch)
 
         fake_home = tmp_path / "home"
-        profile_home = fake_home / ".hermes" / "profiles" / "work"
+        profile_home = fake_home / ".savarez" / "profiles" / "work"
         profile_home.mkdir(parents=True)
-        hermes_root = fake_home / ".hermes"
+        hermes_root = fake_home / ".savarez"
         config_file = hermes_root / "config.yaml"
         config_file.write_text("profiles:\n  active: work\n")
         monkeypatch.setenv("HOME", str(fake_home))

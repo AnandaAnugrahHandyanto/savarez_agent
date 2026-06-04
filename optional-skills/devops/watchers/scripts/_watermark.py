@@ -33,7 +33,7 @@ def _state_dir() -> Path:
     if override:
         return Path(override)
     # Default: $SAVAREZ_HOME/watcher-state/, falling back to ~/.savarez/watcher-state/.
-    hermes_home = os.environ.get("SAVAREZ_HOME") or str(Path.home() / ".hermes")
+    hermes_home = os.environ.get("SAVAREZ_HOME") or str(Path.home() / ".savarez")
     return Path(hermes_home) / "watcher-state"
 
 

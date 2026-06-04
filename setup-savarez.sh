@@ -13,7 +13,7 @@
 # 2. Creates a Python 3.11 virtual environment
 # 3. Installs the appropriate dependency set for the platform
 # 4. Creates .env from template (if not exists)
-# 5. Symlinks the 'hermes' CLI command into a user-facing bin dir
+# 5. Symlinks the 'savarez' CLI command into a user-facing bin dir
 # 6. Runs the setup wizard (optional)
 # ============================================================================
 
@@ -87,8 +87,8 @@ else
         # full, etc.) instead of "✗ Failed to install uv" with zero
         # diagnostic.  Two-stage to avoid `curl | sh` masking curl
         # failures (sh exits 0 on empty stdin under no pipefail).
-        _uv_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
-        _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
+        _uv_log="$(mktemp 2>/dev/null || echo "/tmp/savarez-uv-install.$$.log")"
+        _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/savarez-uv-installer.$$.sh")"
         if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_log"; then
             echo -e "${RED}✗${NC} Failed to download uv installer."
             sed 's/^/    /' "$_uv_log" >&2
@@ -342,17 +342,17 @@ else
 fi
 
 # ============================================================================
-# PATH setup — symlink hermes into a user-facing bin dir
+# PATH setup — symlink savarez into a user-facing bin dir
 # ============================================================================
 
-echo -e "${CYAN}→${NC} Setting up hermes command..."
+echo -e "${CYAN}→${NC} Setting up savarez command..."
 
-HERMES_BIN="$SCRIPT_DIR/venv/bin/hermes"
+HERMES_BIN="$SCRIPT_DIR/venv/bin/savarez"
 COMMAND_LINK_DIR="$(get_command_link_dir)"
 COMMAND_LINK_DISPLAY_DIR="$(get_command_link_display_dir)"
 mkdir -p "$COMMAND_LINK_DIR"
-ln -sf "$HERMES_BIN" "$COMMAND_LINK_DIR/hermes"
-echo -e "${GREEN}✓${NC} Symlinked hermes → $COMMAND_LINK_DISPLAY_DIR/hermes"
+ln -sf "$HERMES_BIN" "$COMMAND_LINK_DIR/savarez"
+echo -e "${GREEN}✓${NC} Symlinked savarez → $COMMAND_LINK_DISPLAY_DIR/savarez"
 
 if is_termux; then
     export PATH="$COMMAND_LINK_DIR:$PATH"
@@ -428,7 +428,7 @@ if is_termux; then
     echo "     savarez setup"
     echo ""
     echo "  2. Start chatting:"
-    echo "     hermes"
+    echo "     savarez"
     echo ""
 else
     echo "  1. Reload your shell:"
@@ -438,7 +438,7 @@ else
     echo "     savarez setup"
     echo ""
     echo "  3. Start chatting:"
-    echo "     hermes"
+    echo "     savarez"
     echo ""
 fi
 echo "Other commands:"

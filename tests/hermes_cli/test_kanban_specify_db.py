@@ -13,7 +13,7 @@ from hermes_cli import kanban_db as kb
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated SAVAREZ_HOME with an empty kanban DB."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

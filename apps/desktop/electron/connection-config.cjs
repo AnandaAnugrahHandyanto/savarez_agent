@@ -21,7 +21,7 @@
 // Bare + prefixed variants of the access-token cookie the gateway may set,
 // depending on its deploy shape (HTTPS direct → __Host-, behind a path prefix
 // → __Secure-, loopback HTTP → bare). Mirrors
-// hermes_cli/dashboard_auth/cookies.py.
+//.savarez_cli/dashboard_auth/cookies.py.
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 
 function normalizeRemoteBaseUrl(rawUrl) {

@@ -34,7 +34,7 @@ def cron_env(tmp_path, monkeypatch):
     after that reload and defeat ``pytest.raises(...)`` checks. Each test
     re-imports via this fixture's return value instead.
     """
-    hermes_home = tmp_path / ".hermes"
+    hermes_home = tmp_path / ".savarez"
     hermes_home.mkdir()
     skills_dir = hermes_home / "skills"
     skills_dir.mkdir()
@@ -198,7 +198,7 @@ class TestBuildJobPromptScansSkillContent:
         """A skill that *describes* an exfil command in prose (e.g. a
         security postmortem documenting "the attacker could just
         ``cat ~/.savarez/.env``") must NOT be blocked. This was a real
-        false positive in the bundled `hermes-agent-dev` skill that
+        false positive in the bundled `savarez-agent-dev` skill that
         silently killed every PR-scout cron job for weeks.
 
         Skill bodies are vetted at install time by ``skills_guard.py``;

@@ -1,14 +1,14 @@
 ---
 sidebar_position: 1
 title: "消息网关"
-description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Email、Home Assistant、Mattermost、Matrix、DingTalk、Yuanbao、Microsoft Teams、LINE、Webhooks 或任何兼容 OpenAI 的前端与 Hermes 对话 — 架构与配置概览"
+description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Email、Home Assistant、Mattermost、Matrix、DingTalk、Yuanbao、Microsoft Teams、LINE、Webhooks 或任何兼容 OpenAI 的前端与 Savarez 对话 — 架构与配置概览"
 ---
 
 # 消息网关
 
-通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Email、Home Assistant、Mattermost、Matrix、DingTalk、Feishu/Lark、WeCom、Weixin、BlueBubbles（iMessage）、QQ、Yuanbao、Microsoft Teams、LINE、ntfy 或浏览器与 Hermes 对话。网关是一个单一后台进程，连接所有已配置的平台，管理会话，运行 cron 任务，并传递语音消息。
+通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Email、Home Assistant、Mattermost、Matrix、DingTalk、Feishu/Lark、WeCom、Weixin、BlueBubbles（iMessage）、QQ、Yuanbao、Microsoft Teams、LINE、ntfy 或浏览器与 Savarez 对话。网关是一个单一后台进程，连接所有已配置的平台，管理会话，运行 cron 任务，并传递语音消息。
 
-完整的语音功能集——包括 CLI 麦克风模式、消息中的语音回复以及 Discord 语音频道对话——请参阅 [Voice Mode](/user-guide/features/voice-mode) 和 [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)。
+完整的语音功能集——包括 CLI 麦克风模式、消息中的语音回复以及 Discord 语音频道对话——请参阅 [Voice Mode](/user-guide/features/voice-mode) 和 [Use Voice Mode with Savarez](/guides/use-voice-mode-with-savarez)。
 
 ## 平台对比
 
@@ -214,11 +214,11 @@ GATEWAY_ALLOW_ALL_USERS=true
 ```bash
 # 用户看到："Pairing code: XKGH5N7P"
 # 你通过以下命令批准：
-hermes pairing approve telegram XKGH5N7P
+savarez pairing approve telegram XKGH5N7P
 
 # 其他配对命令：
-hermes pairing list          # 查看待审核和已批准的用户
-hermes pairing revoke telegram 123456789  # 撤销访问权限
+savarez pairing list          # 查看待审核和已批准的用户
+savarez pairing revoke telegram 123456789  # 撤销访问权限
 ```
 
 配对码 1 小时后过期，有频率限制，并使用密码学随机数生成。
@@ -281,7 +281,7 @@ display:
   busy_ack_enabled: true   # 设为 false 可完全抑制 ⚡/⏳/⏩ 聊天回复
 ```
 
-第一次在任意平台向繁忙的 agent 发送消息时，Hermes 会在繁忙确认中附加一行提示，说明该配置项（`"💡 First-time tip — …"`）。该提示每次安装只触发一次——由 `onboarding.seen.busy_input_prompt` 下的标志锁定。删除该键可再次看到提示。
+第一次在任意平台向繁忙的 agent 发送消息时，Savarez 会在繁忙确认中附加一行提示，说明该配置项（`"💡 First-time tip — …"`）。该提示每次安装只触发一次——由 `onboarding.seen.busy_input_prompt` 下的标志锁定。删除该键可再次看到提示。
 
 如果你觉得繁忙确认消息过多——尤其是使用语音输入或快速连续发送消息时——可设置 `display.busy_ack_enabled: false`。你的输入仍会正常排队/引导/中断，只是聊天回复被静默。
 
@@ -312,7 +312,7 @@ display:
 /background Check all servers in the cluster and report any that are down
 ```
 
-Hermes 立即确认：
+Savarez 立即确认：
 
 ```
 🔄 Background task started: "Check all servers in the cluster..."
@@ -370,7 +370,7 @@ savarez gateway install               # 安装为用户服务
 savarez gateway start                 # 启动服务
 savarez gateway stop                  # 停止服务
 savarez gateway status                # 检查状态
-journalctl --user -u hermes-gateway -f  # 查看日志
+journalctl --user -u savarez-gateway -f  # 查看日志
 
 # 启用 lingering（注销后保持运行）
 sudo loginctl enable-linger $USER
@@ -379,15 +379,15 @@ sudo loginctl enable-linger $USER
 sudo savarez gateway install --system
 sudo savarez gateway start --system
 sudo savarez gateway status --system
-journalctl -u hermes-gateway -f
+journalctl -u savarez-gateway -f
 ```
 
 笔记本和开发机使用用户服务。VPS 或无头主机（需要开机自动启动而不依赖 systemd linger）使用系统服务。
 
-除非你确实有此需要，否则避免同时安装用户和系统网关单元。Hermes 检测到两者同时存在时会发出警告，因为 start/stop/status 行为会变得不明确。
+除非你确实有此需要，否则避免同时安装用户和系统网关单元。Savarez 检测到两者同时存在时会发出警告，因为 start/stop/status 行为会变得不明确。
 
 :::info 多个安装
-如果你在同一台机器上运行多个 Hermes 安装（使用不同的 `SAVAREZ_HOME` 目录），每个安装都有自己的 systemd 服务名称。默认的 `~/.savarez` 使用 `hermes-gateway`；其他安装使用 `hermes-gateway-<hash>`。`savarez gateway` 命令会自动针对当前 `SAVAREZ_HOME` 对应的正确服务。
+如果你在同一台机器上运行多个 Savarez 安装（使用不同的 `SAVAREZ_HOME` 目录），每个安装都有自己的 systemd 服务名称。默认的 `~/.savarez` 使用 `savarez-gateway`；其他安装使用 `savarez-gateway-<hash>`。`savarez gateway` 命令会自动针对当前 `SAVAREZ_HOME` 对应的正确服务。
 :::
 
 ### macOS（launchd）
@@ -400,18 +400,18 @@ savarez gateway status                # 检查状态
 tail -f ~/.savarez/logs/gateway.log   # 查看日志
 ```
 
-生成的 plist 文件位于 `~/Library/LaunchAgents/ai.hermes.gateway.plist`。它包含三个环境变量：
+生成的 plist 文件位于 `~/Library/LaunchAgents/ai.savarez.gateway.plist`。它包含三个环境变量：
 
 - **PATH** — 安装时你的完整 shell PATH，并在前面添加了 venv `bin/` 和 `node_modules/.bin`。这确保用户安装的工具（Node.js、ffmpeg 等）可供网关子进程（如 WhatsApp 桥接）使用。
 - **VIRTUAL_ENV** — 指向 Python 虚拟环境，使工具能正确解析包。
-- **SAVAREZ_HOME** — 将网关限定到你的 Hermes 安装。
+- **SAVAREZ_HOME** — 将网关限定到你的 Savarez 安装。
 
 :::tip 安装后 PATH 变更
 launchd plist 是静态的——如果你在配置网关后安装了新工具（例如通过 nvm 安装新版 Node.js，或通过 Homebrew 安装 ffmpeg），请重新运行 `savarez gateway install` 以捕获更新后的 PATH。网关会检测到过时的 plist 并自动重新加载。
 :::
 
 :::info 多个安装
-与 Linux systemd 服务类似，每个 `SAVAREZ_HOME` 目录都有自己的 launchd 标签。默认的 `~/.savarez` 使用 `ai.hermes.gateway`；其他安装使用 `ai.hermes.gateway-<suffix>`。
+与 Linux systemd 服务类似，每个 `SAVAREZ_HOME` 目录都有自己的 launchd 标签。默认的 `~/.savarez` 使用 `ai.savarez.gateway`；其他安装使用 `ai.savarez.gateway-<suffix>`。
 :::
 
 ## 平台专属工具集
@@ -420,29 +420,29 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 
 | 平台 | 工具集 | 功能 |
 |----------|---------|--------------|
-| CLI | `hermes-cli` | 完全访问 |
-| Telegram | `hermes-telegram` | 完整工具，包括终端 |
-| Discord | `hermes-discord` | 完整工具，包括终端 |
-| WhatsApp | `hermes-whatsapp` | 完整工具，包括终端 |
-| Slack | `hermes-slack` | 完整工具，包括终端 |
-| Google Chat | `hermes-google_chat` | 完整工具，包括终端 |
-| Signal | `hermes-signal` | 完整工具，包括终端 |
-| SMS | `hermes-sms` | 完整工具，包括终端 |
-| Email | `hermes-email` | 完整工具，包括终端 |
-| Home Assistant | `hermes-homeassistant` | 完整工具 + HA 设备控制（ha_list_entities、ha_get_state、ha_call_service、ha_list_services） |
-| Mattermost | `hermes-mattermost` | 完整工具，包括终端 |
-| Matrix | `hermes-matrix` | 完整工具，包括终端 |
-| DingTalk | `hermes-dingtalk` | 完整工具，包括终端 |
-| Feishu/Lark | `hermes-feishu` | 完整工具，包括终端 |
-| WeCom | `hermes-wecom` | 完整工具，包括终端 |
-| WeCom Callback | `hermes-wecom-callback` | 完整工具，包括终端 |
-| Weixin | `hermes-weixin` | 完整工具，包括终端 |
-| BlueBubbles | `hermes-bluebubbles` | 完整工具，包括终端 |
-| QQBot | `hermes-qqbot` | 完整工具，包括终端 |
-| Yuanbao | `hermes-yuanbao` | 完整工具，包括终端 |
-| Microsoft Teams | `hermes-teams` | 完整工具，包括终端 |
-| API Server | `hermes-api-server` | 完整工具（去除 `clarify`、`send_message`、`text_to_speech`——程序化访问没有交互用户） |
-| Webhooks | `hermes-webhook` | 完整工具，包括终端 |
+| CLI | `savarez-cli` | 完全访问 |
+| Telegram | `savarez-telegram` | 完整工具，包括终端 |
+| Discord | `savarez-discord` | 完整工具，包括终端 |
+| WhatsApp | `savarez-whatsapp` | 完整工具，包括终端 |
+| Slack | `savarez-slack` | 完整工具，包括终端 |
+| Google Chat | `savarez-google_chat` | 完整工具，包括终端 |
+| Signal | `savarez-signal` | 完整工具，包括终端 |
+| SMS | `savarez-sms` | 完整工具，包括终端 |
+| Email | `savarez-email` | 完整工具，包括终端 |
+| Home Assistant | `savarez-homeassistant` | 完整工具 + HA 设备控制（ha_list_entities、ha_get_state、ha_call_service、ha_list_services） |
+| Mattermost | `savarez-mattermost` | 完整工具，包括终端 |
+| Matrix | `savarez-matrix` | 完整工具，包括终端 |
+| DingTalk | `savarez-dingtalk` | 完整工具，包括终端 |
+| Feishu/Lark | `savarez-feishu` | 完整工具，包括终端 |
+| WeCom | `savarez-wecom` | 完整工具，包括终端 |
+| WeCom Callback | `savarez-wecom-callback` | 完整工具，包括终端 |
+| Weixin | `savarez-weixin` | 完整工具，包括终端 |
+| BlueBubbles | `savarez-bluebubbles` | 完整工具，包括终端 |
+| QQBot | `savarez-qqbot` | 完整工具，包括终端 |
+| Yuanbao | `savarez-yuanbao` | 完整工具，包括终端 |
+| Microsoft Teams | `savarez-teams` | 完整工具，包括终端 |
+| API Server | `savarez-api-server` | 完整工具（去除 `clarify`、`send_message`、`text_to_speech`——程序化访问没有交互用户） |
+| Webhooks | `savarez-webhook` | 完整工具，包括终端 |
 
 ## 运营多平台网关
 

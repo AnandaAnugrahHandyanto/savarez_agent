@@ -58,7 +58,7 @@ const DEFAULT_SAVAREZ_HOME = (() => {
   }
   return path.join(os.homedir(), '.hermes')
 })()
-const VENV_ROOT = path.join(DEFAULT_SAVAREZ_HOME, 'hermes-agent', 'venv')
+const VENV_ROOT = path.join(DEFAULT_SAVAREZ_HOME, 'savarez-agent', 'venv')
 const FRESH_SANDBOX_ROOT = path.join(os.tmpdir(), 'hermes-desktop-fresh-install')
 
 function die(message) {
@@ -272,7 +272,7 @@ function launchFresh() {
   console.log(`  SAVAREZ_HOME: ${hermesHome}`)
   console.log(`  cwd: ${cwd}`)
 
-  return { runtimeRoot: path.join(hermesHome, 'hermes-agent', 'venv') }
+  return { runtimeRoot: path.join(hermesHome, 'savarez-agent', 'venv') }
 }
 
 // Validate the packaged bundle matches the thin-installer architecture:
@@ -292,7 +292,7 @@ function validateBundle() {
   // Negative assertion: the OLD fat-installer factory payload must NOT be
   // present anymore. If a stray ship of hermes_cli sneaks back in we want
   // to fail loudly rather than re-introduce the 400MB delta we just removed.
-  const staleFactoryMarker = path.join(APP.resourcesPath, 'hermes-agent', 'hermes_cli', 'main.py')
+  const staleFactoryMarker = path.join(APP.resourcesPath, 'savarez-agent', 'hermes_cli', 'main.py')
   if (exists(staleFactoryMarker)) {
     die(
       `Thin-installer regression: factory-payload file should NOT be in the package: ${staleFactoryMarker}`

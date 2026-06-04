@@ -1,17 +1,17 @@
 # NeMo Relay Observability
 
-Optional Hermes observability plugin that maps Hermes observer hooks to
+Optional Savarez observability plugin that maps Savarez observer hooks to
 NeMo Relay scopes, LLM spans, tool spans, marks, ATOF, and ATIF.
 
 NeMo Relay is NVIDIA's runtime layer for agent execution boundaries. It does
 not replace Savarez AI Agent's planner, tools, memory, model provider routing, or
-CLI UX. Instead, this plugin lets Hermes emit NeMo Relay lifecycle events for
-the work Hermes already owns: sessions, turns, provider/API calls, tool calls,
+CLI UX. Instead, this plugin lets Savarez emit NeMo Relay lifecycle events for
+the work Savarez already owns: sessions, turns, provider/API calls, tool calls,
 approval prompts, and delegated subagents.
 
 With this plugin enabled, Savarez AI Agent can:
 
-- Preserve Hermes execution as NeMo Relay scopes, LLM spans, tool spans, and
+- Preserve Savarez execution as NeMo Relay scopes, LLM spans, tool spans, and
   mark events.
 - Export raw lifecycle events as Agent Trajectory Observability Format (ATOF)
   JSONL for debugging and offline inspection.
@@ -48,7 +48,7 @@ For isolated test homes, enable the plugin in the same `SAVAREZ_HOME` that the
 agent run will use:
 
 ```bash
-env SAVAREZ_HOME=/tmp/hermes-nemo-relay-test \
+env SAVAREZ_HOME=/tmp/savarez-nemo-relay-test \
   savarez plugins enable observability/nemo_relay
 ```
 
@@ -56,14 +56,14 @@ Runs started with `--ignore_user_config` skip the enabled-plugin state from
 `SAVAREZ_HOME`, so local E2E tests should omit that flag unless the test harness
 loads `observability/nemo_relay` explicitly another way.
 
-`SAVAREZ_HOME` is the Hermes profile/config home used by both
+`SAVAREZ_HOME` is the Savarez profile/config home used by both
 `savarez plugins enable ...` and the later `savarez chat ...` run. If unset,
-Hermes uses the user's default home, usually `~/.savarez`. For isolated smoke
+Savarez uses the user's default home, usually `~/.savarez`. For isolated smoke
 tests, choose any writable temporary directory and use the same value for every
 command in that test:
 
 ```bash
-export SAVAREZ_HOME=/tmp/hermes-nemo-relay-test
+export SAVAREZ_HOME=/tmp/savarez-nemo-relay-test
 savarez plugins enable observability/nemo_relay
 savarez chat --query 'Reply exactly ok' --provider custom --model qwen3.6:35b
 ```
@@ -129,7 +129,7 @@ Optional overrides:
 ### NeMo Relay Component Config
 
 To initialize NeMo Relay from a component config, create a `plugins.toml` file
-and point Hermes at it:
+and point Savarez at it:
 
 ```bash
 export HERMES_NEMO_RELAY_PLUGINS_TOML=.nemo-relay/plugins.toml
@@ -173,7 +173,7 @@ Ollama model served through the OpenAI-compatible API.
 ```bash
 pip install "nemo-relay==0.3"
 
-export SAVAREZ_HOME=/tmp/hermes-nemo-relay-docs/hermes-home
+export SAVAREZ_HOME=/tmp/savarez-nemo-relay-docs/savarez-home
 mkdir -p "$SAVAREZ_HOME"
 
 cat > "$SAVAREZ_HOME/config.yaml" <<'YAML'
@@ -198,16 +198,16 @@ YAML
 
 ### Delegated Subagent Tool Call
 
-This run starts a parent Hermes session, delegates to a child subagent, has the
+This run starts a parent Savarez session, delegates to a child subagent, has the
 child call `terminal`, and writes both ATOF and ATIF.
 
 ```bash
 export HERMES_NEMO_RELAY_ATOF_ENABLED=1
-export HERMES_NEMO_RELAY_ATOF_OUTPUT_DIRECTORY=/tmp/hermes-nemo-relay-docs/subagent/atof
+export HERMES_NEMO_RELAY_ATOF_OUTPUT_DIRECTORY=/tmp/savarez-nemo-relay-docs/subagent/atof
 export HERMES_NEMO_RELAY_ATOF_FILENAME=nested-subagent-atof.jsonl
 export HERMES_NEMO_RELAY_ATOF_MODE=overwrite
 export HERMES_NEMO_RELAY_ATIF_ENABLED=1
-export HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY=/tmp/hermes-nemo-relay-docs/subagent/atif
+export HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY=/tmp/savarez-nemo-relay-docs/subagent/atif
 export HERMES_NEMO_RELAY_ATIF_FILENAME_TEMPLATE='nested-subagent-atif-{session_id}.json'
 export HERMES_NEMO_RELAY_ATIF_AGENT_NAME='Savarez AI Agent E2E'
 export HERMES_NEMO_RELAY_ATIF_AGENT_VERSION=docs-example
@@ -234,7 +234,7 @@ Sanitized ATOF excerpt:
 
 ```jsonl
 {"kind":"scope","category":"tool","name":"delegate_task","scope_category":"start","metadata":{"session_id":"docs-parent-session","tool_call_id":"call_delegate"},"data":{"goal":"Run the command `printf docs_nested_leaf_function` using the terminal tool.","toolsets":["terminal"]}}
-{"kind":"mark","name":"hermes.subagent.start","metadata":{"parent_session_id":"docs-parent-session","session_id":"docs-child-session","subagent_id":"sa-0-docs","child_role":"leaf"}}
+{"kind":"mark","name":"savarez.subagent.start","metadata":{"parent_session_id":"docs-parent-session","session_id":"docs-child-session","subagent_id":"sa-0-docs","child_role":"leaf"}}
 {"kind":"scope","category":"tool","name":"terminal","scope_category":"end","metadata":{"session_id":"docs-child-session","tool_call_id":"call_terminal","status":"ok"},"data":"{\"output\":\"docs_nested_leaf_function\",\"exit_code\":0,\"error\":null}"}
 {"kind":"scope","category":"tool","name":"delegate_task","scope_category":"end","metadata":{"session_id":"docs-parent-session","tool_call_id":"call_delegate","status":"ok"}}
 ```
@@ -279,21 +279,21 @@ Sanitized ATIF excerpt:
 ### Parallel Tool Calls
 
 This run asks the model to emit two `read_file` tool calls in the same assistant
-message. Hermes dispatches the read-only tools as one batch, and NeMo Relay
+message. Savarez dispatches the read-only tools as one batch, and NeMo Relay
 records both tool invocations.
 
 ```bash
-mkdir -p /tmp/hermes-nemo-relay-docs/workdir
-printf 'docs_parallel_alpha_function\n' > /tmp/hermes-nemo-relay-docs/workdir/alpha.txt
-printf 'docs_parallel_beta_function\n' > /tmp/hermes-nemo-relay-docs/workdir/beta.txt
-cd /tmp/hermes-nemo-relay-docs/workdir
+mkdir -p /tmp/savarez-nemo-relay-docs/workdir
+printf 'docs_parallel_alpha_function\n' > /tmp/savarez-nemo-relay-docs/workdir/alpha.txt
+printf 'docs_parallel_beta_function\n' > /tmp/savarez-nemo-relay-docs/workdir/beta.txt
+cd /tmp/savarez-nemo-relay-docs/workdir
 
 export HERMES_NEMO_RELAY_ATOF_ENABLED=1
-export HERMES_NEMO_RELAY_ATOF_OUTPUT_DIRECTORY=/tmp/hermes-nemo-relay-docs/parallel/atof
+export HERMES_NEMO_RELAY_ATOF_OUTPUT_DIRECTORY=/tmp/savarez-nemo-relay-docs/parallel/atof
 export HERMES_NEMO_RELAY_ATOF_FILENAME=parallel-tools-atof.jsonl
 export HERMES_NEMO_RELAY_ATOF_MODE=overwrite
 export HERMES_NEMO_RELAY_ATIF_ENABLED=1
-export HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY=/tmp/hermes-nemo-relay-docs/parallel/atif
+export HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY=/tmp/savarez-nemo-relay-docs/parallel/atif
 export HERMES_NEMO_RELAY_ATIF_FILENAME_TEMPLATE='parallel-tools-atif-{session_id}.json'
 export HERMES_NEMO_RELAY_ATIF_AGENT_NAME='Savarez AI Agent E2E'
 export HERMES_NEMO_RELAY_ATIF_AGENT_VERSION=docs-example
@@ -355,9 +355,9 @@ Sanitized ATIF excerpt:
 
 The plugin keeps NeMo Relay's native event model:
 
-- Hermes sessions map to `agent` scopes.
-- Hermes API request hooks map to `llm` scope start/end events.
-- Hermes tool hooks map to `tool` scope start/end events.
+- Savarez sessions map to `agent` scopes.
+- Savarez API request hooks map to `llm` scope start/end events.
+- Savarez tool hooks map to `tool` scope start/end events.
 - Turn, approval, subagent, and diagnostic fallback events map to `mark`
   events.
 

@@ -119,7 +119,7 @@ def _get_token_dir() -> Path:
         from hermes_constants import get_hermes_home
         base = Path(get_hermes_home())
     except ImportError:
-        base = Path(os.environ.get("SAVAREZ_HOME", str(Path.home() / ".hermes")))
+        base = Path(os.environ.get("SAVAREZ_HOME", str(Path.home() / ".savarez")))
     return base / "mcp-tokens"
 
 
@@ -243,7 +243,7 @@ class HermesTokenStorage:
         data = _read_json(self._tokens_path())
         if data is None:
             return None
-        # Hermes records an absolute wall-clock ``expires_at`` alongside the
+        # Savarez records an absolute wall-clock ``expires_at`` alongside the
         # SDK's serialized token (see ``set_tokens``). On read we rewrite
         # ``expires_in`` to the remaining seconds so the SDK's downstream
         # ``update_token_expiry`` computes the correct absolute time and
@@ -376,7 +376,7 @@ def _make_callback_handler() -> tuple[type, dict]:
 
             body = (
                 "<html><body><h2>Authorization Successful</h2>"
-                "<p>You can close this tab and return to Hermes.</p></body></html>"
+                "<p>You can close this tab and return to Savarez.</p></body></html>"
             ) if code else (
                 "<html><body><h2>Authorization Failed</h2>"
                 f"<p>Error: {error or 'unknown'}</p></body></html>"
@@ -431,7 +431,7 @@ async def _redirect_handler(authorization_url: str) -> None:
             f"         ssh -N -L {_oauth_port}:127.0.0.1:{_oauth_port} <user>@<this-host>\n"
             f"       then open the URL above and let it redirect normally.\n"
             f"\n"
-            f"  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
+            f"  See: https://savarez-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
             file=sys.stderr,
         )
 

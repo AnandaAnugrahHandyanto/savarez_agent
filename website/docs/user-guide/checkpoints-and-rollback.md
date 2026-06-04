@@ -48,27 +48,27 @@ CLI for inspecting and managing the store outside a session:
 
 | Command | Description |
 |---------|-------------|
-| `hermes checkpoints` | Show total size, project count, per-project breakdown |
-| `hermes checkpoints status` | Same as bare `checkpoints` |
-| `hermes checkpoints list` | Alias for `status` |
-| `hermes checkpoints prune` | Force a sweep: delete orphans/stale, GC, enforce size cap |
-| `hermes checkpoints clear` | Nuke the entire checkpoint base (asks first) |
-| `hermes checkpoints clear-legacy` | Delete only the `legacy-*` archives from v1 migration |
+| `savarez checkpoints` | Show total size, project count, per-project breakdown |
+| `savarez checkpoints status` | Same as bare `checkpoints` |
+| `savarez checkpoints list` | Alias for `status` |
+| `savarez checkpoints prune` | Force a sweep: delete orphans/stale, GC, enforce size cap |
+| `savarez checkpoints clear` | Nuke the entire checkpoint base (asks first) |
+| `savarez checkpoints clear-legacy` | Delete only the `legacy-*` archives from v1 migration |
 
 ## How Checkpoints Work
 
 At a high level:
 
-- Hermes detects when tools are about to **modify files** in your working tree.
+- Savarez detects when tools are about to **modify files** in your working tree.
 - Once per conversation turn (per directory), it:
   - Resolves a reasonable project root for the file.
   - Initialises or reuses the **single shared shadow store** at `~/.savarez/checkpoints/store/`.
-  - Stages into a per-project index, builds a tree, and commits to a per-project ref (`refs/hermes/<project-hash>`).
+  - Stages into a per-project index, builds a tree, and commits to a per-project ref (`refs/savarez/<project-hash>`).
 - These per-project refs form a checkpoint history that you can inspect and restore via `/rollback`.
 
 ```mermaid
 flowchart LR
-  user["User command\n(hermes, gateway)"]
+  user["User command\n(savarez, gateway)"]
   agent["AIAgent\n(run_agent.py)"]
   tools["File & terminal tools"]
   cpMgr["CheckpointManager"]
@@ -111,7 +111,7 @@ checkpoints:
   auto_prune: false
 ```
 
-When `enabled: false`, the Checkpoint Manager is a no-op and never attempts git operations. When `auto_prune: false`, the store grows until you run `hermes checkpoints prune` manually.
+When `enabled: false`, the Checkpoint Manager is a no-op and never attempts git operations. When `auto_prune: false`, the store grows until you run `savarez checkpoints prune` manually.
 
 ## Listing Checkpoints
 
@@ -121,7 +121,7 @@ From a CLI session:
 /rollback
 ```
 
-Hermes responds with a formatted list showing change statistics:
+Savarez responds with a formatted list showing change statistics:
 
 ```text
 📸 Checkpoints for /path/to/project:
@@ -138,20 +138,20 @@ Hermes responds with a formatted list showing change statistics:
 ## Inspecting the Store from the Shell
 
 ```bash
-hermes checkpoints
+savarez checkpoints
 ```
 
 Sample output:
 
 ```text
-Checkpoint base: /home/you/.hermes/checkpoints
+Checkpoint base: /home/you/.savarez/checkpoints
 Total size:      142.3 MB
   store/         138.1 MB
   legacy-*       4.2 MB
 Projects:        12
 
   WORKDIR                                                       COMMITS    LAST TOUCH  STATE
-  /home/you/code/hermes-agent                                        20       2h ago  live
+  /home/you/code/savarez-agent                                        20       2h ago  live
   /home/you/code/experiments/rl-runner                                8       1d ago  live
   /home/you/code/old-prototype                                        3       9d ago  orphan
   ...
@@ -159,13 +159,13 @@ Projects:        12
 Legacy archives (1):
   legacy-20260506-050616                           4.2 MB
 
-Clear with: hermes checkpoints clear-legacy
+Clear with: savarez checkpoints clear-legacy
 ```
 
 Force a full sweep (ignores the 24h idempotency marker):
 
 ```bash
-hermes checkpoints prune --retention-days 3 --max-size-mb 200
+savarez checkpoints prune --retention-days 3 --max-size-mb 200
 ```
 
 ## Previewing Changes with `/rollback diff`
@@ -184,7 +184,7 @@ This shows a git diff stat summary followed by the actual diff.
 /rollback 1
 ```
 
-Behind the scenes, Hermes:
+Behind the scenes, Savarez:
 
 1. Verifies the target commit exists in the shadow store.
 2. Takes a **pre-rollback snapshot** of the current state so you can "undo the undo" later.
@@ -202,7 +202,7 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 ## Safety and Performance Guards
 
 - **Git availability** — if `git` is not found on `PATH`, checkpoints are transparently disabled.
-- **Directory scope** — Hermes skips overly broad directories (root `/`, home `$HOME`).
+- **Directory scope** — Savarez skips overly broad directories (root `/`, home `$HOME`).
 - **Repository size** — directories with more than 50,000 files are skipped.
 - **Per-file size cap** — files larger than `max_file_size_mb` (default 10 MB) are excluded from the snapshot. Prevents accidentally swallowing datasets, model weights, or generated media.
 - **Total store size cap** — when the store exceeds `max_total_size_mb` (default 500 MB), the oldest commit per project is dropped round-robin until under the cap.
@@ -216,7 +216,7 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 ~/.savarez/checkpoints/
   ├── store/                 # single shared bare git repo
   │   ├── HEAD, objects/     # git internals (shared across projects)
-  │   ├── refs/hermes/<hash> # per-project branch tip
+  │   ├── refs/savarez/<hash> # per-project branch tip
   │   ├── indexes/<hash>     # per-project git index
   │   ├── projects/<hash>.json  # workdir + created_at + last_touch
   │   └── info/exclude
@@ -224,7 +224,7 @@ Restore just one file from a checkpoint without affecting the rest of the direct
   └── legacy-<ts>/           # archived pre-v2 per-project shadow repos
 ```
 
-Each `<hash>` is derived from the absolute path of the working directory. You normally never need to touch these manually — use `hermes checkpoints status` / `prune` / `clear` instead.
+Each `<hash>` is derived from the absolute path of the working directory. You normally never need to touch these manually — use `savarez checkpoints status` / `prune` / `clear` instead.
 
 ### Migration from v1
 
@@ -233,7 +233,7 @@ Before the v2 rewrite, each working directory got its own complete shadow git re
 On first v2 run, any pre-v2 shadow repos are moved into `~/.savarez/checkpoints/legacy-<timestamp>/` so the new single-store layout starts clean. Old `/rollback` history is still reachable by manually inspecting the legacy archive with `git`; once you're confident you don't need it, run:
 
 ```bash
-hermes checkpoints clear-legacy
+savarez checkpoints clear-legacy
 ```
 
 to reclaim the space. Legacy archives are also swept by `auto_prune` after `retention_days`.
@@ -243,7 +243,7 @@ to reclaim the space. Legacy archives are also swept by `auto_prune` after `rete
 - **Enable checkpoints only when you need them** — `savarez chat --checkpoints` or per-profile `enabled: true`.
 - **Use `/rollback diff` before restoring** — preview what will change to pick the right checkpoint.
 - **Use `/rollback` instead of `git reset`** when you want to undo agent-driven changes only.
-- **Check `hermes checkpoints status` occasionally** if you use checkpoints regularly — shows which projects are active and what the store costs you.
-- **Combine with Git worktrees** for maximum safety — keep each Hermes session in its own worktree/branch, with checkpoints as an extra layer.
+- **Check `savarez checkpoints status` occasionally** if you use checkpoints regularly — shows which projects are active and what the store costs you.
+- **Combine with Git worktrees** for maximum safety — keep each Savarez session in its own worktree/branch, with checkpoints as an extra layer.
 
 For running multiple agents in parallel on the same repo, see the guide on [Git worktrees](./git-worktrees.md).

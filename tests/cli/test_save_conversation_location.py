@@ -21,7 +21,7 @@ import pytest
 
 @pytest.fixture
 def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("SAVAREZ_HOME", str(home))
@@ -84,7 +84,7 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
     # User-facing message must include the absolute path AND the resume hint.
     out = capsys.readouterr().out
     assert str(files[0]) in out, out
-    assert "hermes --resume 20260101_120000_abc123" in out, out
+    assert "savarez --resume 20260101_120000_abc123" in out, out
 
 
 def test_save_conversation_empty_history_does_nothing(hermes_home, capsys):

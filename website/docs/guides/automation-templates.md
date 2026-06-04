@@ -6,7 +6,7 @@ description: "Ready-to-use automation recipes — scheduled tasks, GitHub event 
 
 # Automation Templates
 
-Copy-paste recipes for common automation patterns. Each template uses Hermes's built-in [cron scheduler](/user-guide/features/cron) for time-based triggers and [webhook platform](/user-guide/messaging/webhooks) for event-driven triggers.
+Copy-paste recipes for common automation patterns. Each template uses Savarez's built-in [cron scheduler](/user-guide/features/cron) for time-based triggers and [webhook platform](/user-guide/messaging/webhooks) for event-driven triggers.
 
 Every template works with **any model** — not locked to a single provider.
 
@@ -32,9 +32,9 @@ Label, prioritize, and summarize new issues every night. Delivers a digest to yo
 
 ```bash
 savarez cron create "0 2 * * *" \
-  "You are a project manager triaging the NousResearch/hermes-agent GitHub repo.
+  "You are a project manager triaging the NousResearch/savarez-agent GitHub repo.
 
-1. Run: gh issue list --repo NousResearch/hermes-agent --state open --json number,title,labels,author,createdAt --limit 30
+1. Run: gh issue list --repo NousResearch/savarez-agent --state open --json number,title,labels,author,createdAt --limit 30
 2. Identify issues opened in the last 24 hours
 3. For each new issue:
    - Suggest a priority label (P0-critical, P1-high, P2-medium, P3-low)
@@ -114,9 +114,9 @@ Weekly scan of merged PRs to find API changes that need documentation updates.
 
 ```bash
 savarez cron create "0 9 * * 1" \
-  "Scan the NousResearch/hermes-agent repo for documentation drift.
+  "Scan the NousResearch/savarez-agent repo for documentation drift.
 
-1. Run: gh pr list --repo NousResearch/hermes-agent --state merged --json number,title,files,mergedAt --limit 30
+1. Run: gh pr list --repo NousResearch/savarez-agent --state merged --json number,title,files,mergedAt --limit 30
 2. Filter to PRs merged in the last 7 days
 3. For each merged PR, check if it modified:
    - Tool schemas (tools/*.py) — may need docs/reference/tools-reference.md update
@@ -138,9 +138,9 @@ Daily scan for known vulnerabilities in project dependencies.
 
 ```bash
 savarez cron create "0 6 * * *" \
-  "Run a dependency security audit on the hermes-agent project.
+  "Run a dependency security audit on the savarez-agent project.
 
-1. cd ~/.savarez/hermes-agent && source .venv/bin/activate
+1. cd ~/.savarez/savarez-agent && source .venv/bin/activate
 2. Run: pip audit --format json 2>/dev/null || pip audit 2>&1
 3. Run: npm audit --json 2>/dev/null (in website/ directory if it exists)
 4. Check for any CVEs with CVSS score >= 7.0
@@ -239,7 +239,7 @@ results = []
 for ep in ENDPOINTS:
     try:
         start = time.time()
-        req = urllib.request.Request(ep["url"], headers={"User-Agent": "Hermes-Monitor/1.0"})
+        req = urllib.request.Request(ep["url"], headers={"User-Agent": "Savarez-Monitor/1.0"})
         resp = urllib.request.urlopen(req, timeout=10)
         elapsed = round((time.time() - start) * 1000)
         results.append({"name": ep["name"], "status": resp.getcode(), "ms": elapsed})
@@ -501,7 +501,7 @@ Combine multiple skills for a comprehensive weekly security review.
 
 ```bash
 savarez cron create "0 3 * * 0" \
-  "Run a comprehensive security audit of the hermes-agent codebase.
+  "Run a comprehensive security audit of the savarez-agent codebase.
 
 1. Check for dependency vulnerabilities (pip audit, npm audit)
 2. Search the codebase for common security anti-patterns:

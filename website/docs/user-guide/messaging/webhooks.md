@@ -186,7 +186,7 @@ gh auth login
 
 ### 4. Test it
 
-Open a pull request on the repository. The webhook fires, Hermes processes the event, and posts a review comment on the PR.
+Open a pull request on the repository. The webhook fires, Savarez processes the event, and posts a review comment on the PR.
 
 ---
 

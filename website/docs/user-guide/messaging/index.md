@@ -1,14 +1,14 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
+description: "Chat with Savarez from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, ntfy, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Savarez from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, ntfy, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
-For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes).
+For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/user-guide/features/voice-mode) and [Use Voice Mode with Savarez](/guides/use-voice-mode-with-savarez).
 
 :::tip
 Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/integrations/nous-portal) subscription bundles all of them.
@@ -218,11 +218,11 @@ Instead of manually configuring user IDs, unknown users receive a one-time pairi
 ```bash
 # The user sees: "Pairing code: XKGH5N7P"
 # You approve them with:
-hermes pairing approve telegram XKGH5N7P
+savarez pairing approve telegram XKGH5N7P
 
 # Other pairing commands:
-hermes pairing list          # View pending + approved users
-hermes pairing revoke telegram 123456789  # Remove access
+savarez pairing list          # View pending + approved users
+savarez pairing revoke telegram 123456789  # Remove access
 ```
 
 Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
@@ -285,7 +285,7 @@ display:
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
 ```
 
-The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
+The first time you message a busy agent on any platform, Savarez appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
 
 If you find the busy-ack noisy — especially with voice input or rapid-fire messages — set `display.busy_ack_enabled: false`. Your input is still queued/steered/interrupts as normal, only the chat reply is silenced.
 
@@ -316,7 +316,7 @@ Run a prompt in a separate background session so the agent works on it independe
 /background Check all servers in the cluster and report any that are down
 ```
 
-Hermes confirms immediately:
+Savarez confirms immediately:
 
 ```
 🔄 Background task started: "Check all servers in the cluster..."
@@ -374,7 +374,7 @@ savarez gateway install               # Install as user service
 savarez gateway start                 # Start the service
 savarez gateway stop                  # Stop the service
 savarez gateway status                # Check status
-journalctl --user -u hermes-gateway -f  # View logs
+journalctl --user -u savarez-gateway -f  # View logs
 
 # Enable lingering (keeps running after logout)
 sudo loginctl enable-linger $USER
@@ -383,15 +383,15 @@ sudo loginctl enable-linger $USER
 sudo savarez gateway install --system
 sudo savarez gateway start --system
 sudo savarez gateway status --system
-journalctl -u hermes-gateway -f
+journalctl -u savarez-gateway -f
 ```
 
 Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
 
-Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
+Avoid keeping both the user and system gateway units installed at once unless you really mean to. Savarez will warn if it detects both because start/stop/status behavior gets ambiguous.
 
 :::info Multiple installations
-If you run multiple Hermes installations on the same machine (with different `SAVAREZ_HOME` directories), each gets its own systemd service name. The default `~/.savarez` uses `hermes-gateway`; other installations use `hermes-gateway-<hash>`. The `savarez gateway` commands automatically target the correct service for your current `SAVAREZ_HOME`.
+If you run multiple Savarez installations on the same machine (with different `SAVAREZ_HOME` directories), each gets its own systemd service name. The default `~/.savarez` uses `savarez-gateway`; other installations use `savarez-gateway-<hash>`. The `savarez gateway` commands automatically target the correct service for your current `SAVAREZ_HOME`.
 :::
 
 ### macOS (launchd)
@@ -404,18 +404,18 @@ savarez gateway status                # Check status
 tail -f ~/.savarez/logs/gateway.log   # View logs
 ```
 
-The generated plist lives at `~/Library/LaunchAgents/ai.hermes.gateway.plist`. It includes three environment variables:
+The generated plist lives at `~/Library/LaunchAgents/ai.savarez.gateway.plist`. It includes three environment variables:
 
 - **PATH** — your full shell PATH at install time, with the venv `bin/` and `node_modules/.bin` prepended. This ensures user-installed tools (Node.js, ffmpeg, etc.) are available to gateway subprocesses like the WhatsApp bridge.
 - **VIRTUAL_ENV** — points to the Python virtualenv so tools can resolve packages correctly.
-- **SAVAREZ_HOME** — scopes the gateway to your Hermes installation.
+- **SAVAREZ_HOME** — scopes the gateway to your Savarez installation.
 
 :::tip PATH changes after install
 launchd plists are static — if you install new tools (e.g. a new Node.js version via nvm, or ffmpeg via Homebrew) after setting up the gateway, run `savarez gateway install` again to capture the updated PATH. The gateway will detect the stale plist and reload automatically.
 :::
 
 :::info Multiple installations
-Like the Linux systemd service, each `SAVAREZ_HOME` directory gets its own launchd label. The default `~/.savarez` uses `ai.hermes.gateway`; other installations use `ai.hermes.gateway-<suffix>`.
+Like the Linux systemd service, each `SAVAREZ_HOME` directory gets its own launchd label. The default `~/.savarez` uses `ai.savarez.gateway`; other installations use `ai.savarez.gateway-<suffix>`.
 :::
 
 ## Platform-Specific Toolsets
@@ -424,29 +424,29 @@ Each platform has its own toolset:
 
 | Platform | Toolset | Capabilities |
 |----------|---------|--------------|
-| CLI | `hermes-cli` | Full access |
-| Telegram | `hermes-telegram` | Full tools including terminal |
-| Discord | `hermes-discord` | Full tools including terminal |
-| WhatsApp | `hermes-whatsapp` | Full tools including terminal |
-| Slack | `hermes-slack` | Full tools including terminal |
-| Google Chat | `hermes-google_chat` | Full tools including terminal |
-| Signal | `hermes-signal` | Full tools including terminal |
-| SMS | `hermes-sms` | Full tools including terminal |
-| Email | `hermes-email` | Full tools including terminal |
-| Home Assistant | `hermes-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
-| Mattermost | `hermes-mattermost` | Full tools including terminal |
-| Matrix | `hermes-matrix` | Full tools including terminal |
-| DingTalk | `hermes-dingtalk` | Full tools including terminal |
-| Feishu/Lark | `hermes-feishu` | Full tools including terminal |
-| WeCom | `hermes-wecom` | Full tools including terminal |
-| WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
-| Weixin | `hermes-weixin` | Full tools including terminal |
-| BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
-| QQBot | `hermes-qqbot` | Full tools including terminal |
-| Yuanbao | `hermes-yuanbao` | Full tools including terminal |
-| Microsoft Teams | `hermes-teams` | Full tools including terminal |
-| API Server | `hermes-api-server` | Full tools (drops `clarify`, `send_message`, `text_to_speech` — programmatic access doesn't have an interactive user) |
-| Webhooks | `hermes-webhook` | Full tools including terminal |
+| CLI | `savarez-cli` | Full access |
+| Telegram | `savarez-telegram` | Full tools including terminal |
+| Discord | `savarez-discord` | Full tools including terminal |
+| WhatsApp | `savarez-whatsapp` | Full tools including terminal |
+| Slack | `savarez-slack` | Full tools including terminal |
+| Google Chat | `savarez-google_chat` | Full tools including terminal |
+| Signal | `savarez-signal` | Full tools including terminal |
+| SMS | `savarez-sms` | Full tools including terminal |
+| Email | `savarez-email` | Full tools including terminal |
+| Home Assistant | `savarez-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
+| Mattermost | `savarez-mattermost` | Full tools including terminal |
+| Matrix | `savarez-matrix` | Full tools including terminal |
+| DingTalk | `savarez-dingtalk` | Full tools including terminal |
+| Feishu/Lark | `savarez-feishu` | Full tools including terminal |
+| WeCom | `savarez-wecom` | Full tools including terminal |
+| WeCom Callback | `savarez-wecom-callback` | Full tools including terminal |
+| Weixin | `savarez-weixin` | Full tools including terminal |
+| BlueBubbles | `savarez-bluebubbles` | Full tools including terminal |
+| QQBot | `savarez-qqbot` | Full tools including terminal |
+| Yuanbao | `savarez-yuanbao` | Full tools including terminal |
+| Microsoft Teams | `savarez-teams` | Full tools including terminal |
+| API Server | `savarez-api-server` | Full tools (drops `clarify`, `send_message`, `text_to_speech` — programmatic access doesn't have an interactive user) |
+| Webhooks | `savarez-webhook` | Full tools including terminal |
 
 ## Operating a multi-platform gateway
 

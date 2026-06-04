@@ -1,7 +1,7 @@
 ---
 sidebar_position: 1
 title: "CLI Commands Reference"
-description: "Authoritative reference for Hermes terminal commands and command families"
+description: "Authoritative reference for Savarez terminal commands and command families"
 ---
 
 # CLI Commands Reference
@@ -13,7 +13,7 @@ For in-chat slash commands, see [Slash Commands Reference](./slash-commands.md).
 ## Global entrypoint
 
 ```bash
-hermes [global-options] <command> [subcommand/options]
+savarez [global-options] <command> [subcommand/options]
 ```
 
 ### Global options
@@ -21,7 +21,7 @@ hermes [global-options] <command> [subcommand/options]
 | Option | Description |
 |--------|-------------|
 | `--version`, `-V` | Show version and exit. |
-| `--profile <name>`, `-p <name>` | Select which Hermes profile to use for this invocation. Overrides the sticky default set by `savarez profile use`. |
+| `--profile <name>`, `-p <name>` | Select which Savarez profile to use for this invocation. Overrides the sticky default set by `savarez profile use`. |
 | `--resume <session>`, `-r <session>` | Resume a previous session by ID or title. |
 | `--continue [name]`, `-c [name]` | Resume the most recent session, or the most recent session matching a title. |
 | `--worktree`, `-w` | Start in an isolated git worktree for parallel-agent workflows. |
@@ -39,53 +39,53 @@ hermes [global-options] <command> [subcommand/options]
 |---------|---------|
 | `savarez chat` | Interactive or one-shot chat with the agent. |
 | `savarez model` | Interactively choose the default provider and model. |
-| `hermes fallback` | Manage fallback providers tried when the primary model errors. |
+| `savarez fallback` | Manage fallback providers tried when the primary model errors. |
 | `savarez gateway` | Run or manage the messaging gateway service. |
-| `hermes proxy` | Local OpenAI-compatible proxy that attaches OAuth provider credentials. See [Subscription Proxy](../user-guide/features/subscription-proxy.md). |
-| `hermes lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
+| `savarez proxy` | Local OpenAI-compatible proxy that attaches OAuth provider credentials. See [Subscription Proxy](../user-guide/features/subscription-proxy.md). |
+| `savarez lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
 | `savarez setup` | Interactive setup wizard for all or part of the configuration. |
-| `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
-| `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
+| `savarez whatsapp` | Configure and pair the WhatsApp bridge. |
+| `savarez slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
 | `savarez auth` | Manage credentials — add, list, remove, reset, set strategy. Handles OAuth flows for Codex/Nous/Anthropic. |
-| `hermes login` / `logout` | **Deprecated** — use `savarez auth` instead. |
+| `savarez login` / `logout` | **Deprecated** — use `savarez auth` instead. |
 | `savarez send` | Send a one-shot message to a configured messaging platform (Telegram, Discord, Slack, Signal, SMS, …). Useful from shell scripts, cron jobs, CI hooks, and monitoring daemons — no agent loop, no LLM. |
-| `hermes secrets` | Manage external secret sources (currently Bitwarden Secrets Manager) for pulling API keys at process startup instead of from `~/.savarez/.env`. |
-| `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
+| `savarez secrets` | Manage external secret sources (currently Bitwarden Secrets Manager) for pulling API keys at process startup instead of from `~/.savarez/.env`. |
+| `savarez migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
 | `savarez status` | Show agent, auth, and platform status. |
 | `savarez cron` | Inspect and tick the cron scheduler. |
-| `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
+| `savarez kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
 | `savarez webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
-| `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
+| `savarez hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `savarez doctor` | Diagnose config and dependency issues. |
-| `hermes security audit` | On-demand supply-chain audit (OSV.dev) for the venv, plugin requirements, and pinned MCP servers. |
-| `hermes dump` | Copy-pasteable setup summary for support/debugging. |
-| `hermes prompt-size` | Show a byte breakdown of the system prompt + tool schemas (skills index, memory, profile). Runs offline. |
-| `hermes debug` | Debug tools — upload logs and system info for support. |
-| `hermes backup` | Back up Hermes home directory to a zip file. |
-| `hermes checkpoints` | Inspect / prune / clear `~/.savarez/checkpoints/` (the shadow store used by `/rollback`). Run with no args for a status overview. |
-| `hermes import` | Restore a Hermes backup from a zip file. |
+| `savarez security audit` | On-demand supply-chain audit (OSV.dev) for the venv, plugin requirements, and pinned MCP servers. |
+| `savarez dump` | Copy-pasteable setup summary for support/debugging. |
+| `savarez prompt-size` | Show a byte breakdown of the system prompt + tool schemas (skills index, memory, profile). Runs offline. |
+| `savarez debug` | Debug tools — upload logs and system info for support. |
+| `savarez backup` | Back up Savarez home directory to a zip file. |
+| `savarez checkpoints` | Inspect / prune / clear `~/.savarez/checkpoints/` (the shadow store used by `/rollback`). Run with no args for a status overview. |
+| `savarez import` | Restore a Savarez backup from a zip file. |
 | `savarez logs` | View, tail, and filter agent/gateway/error log files. |
 | `savarez config` | Show, edit, migrate, and query configuration files. |
-| `hermes pairing` | Approve or revoke messaging pairing codes. |
+| `savarez pairing` | Approve or revoke messaging pairing codes. |
 | `savarez skills` | Browse, install, publish, audit, and configure skills. |
-| `hermes bundles` | Group several skills under a single `/<name>` slash command. See [Skill Bundles](../user-guide/features/skills.md#skill-bundles). |
-| `hermes curator` | Background skill maintenance — status, run, pause, pin. See [Curator](../user-guide/features/curator.md). |
-| `hermes memory` | Configure external memory provider. Plugin-specific subcommands (e.g. `hermes honcho`) register automatically when their provider is active. |
-| `hermes acp` | Run Hermes as an ACP server for editor integration. |
-| `savarez mcp` | Manage MCP server configurations and run Hermes as an MCP server. |
+| `savarez bundles` | Group several skills under a single `/<name>` slash command. See [Skill Bundles](../user-guide/features/skills.md#skill-bundles). |
+| `savarez curator` | Background skill maintenance — status, run, pause, pin. See [Curator](../user-guide/features/curator.md). |
+| `savarez memory` | Configure external memory provider. Plugin-specific subcommands (e.g. `savarez honcho`) register automatically when their provider is active. |
+| `savarez acp` | Run Savarez as an ACP server for editor integration. |
+| `savarez mcp` | Manage MCP server configurations and run Savarez as an MCP server. |
 | `savarez plugins` | Manage Savarez AI Agent plugins (install, enable, disable, remove). |
-| `hermes portal` | Nous Portal status, subscription link, and Tool Gateway routing. See [Tool Gateway](../user-guide/features/tool-gateway.md). |
+| `savarez portal` | Nous Portal status, subscription link, and Tool Gateway routing. See [Tool Gateway](../user-guide/features/tool-gateway.md). |
 | `savarez tools` | Configure enabled tools per platform. |
-| `hermes computer-use` | Install or check the cua-driver backend (macOS Computer Use). |
+| `savarez computer-use` | Install or check the cua-driver backend (macOS Computer Use). |
 | `savarez sessions` | Browse, export, prune, rename, and delete sessions. |
-| `hermes insights` | Show token/cost/activity analytics. |
-| `hermes claw` | OpenClaw migration helpers. |
+| `savarez insights` | Show token/cost/activity analytics. |
+| `savarez claw` | OpenClaw migration helpers. |
 | `savarez dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
-| `savarez profile` | Manage profiles — multiple isolated Hermes instances. |
-| `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
-| `hermes version` | Show version information. |
+| `savarez profile` | Manage profiles — multiple isolated Savarez instances. |
+| `savarez completion` | Print shell completion scripts (bash/zsh/fish). |
+| `savarez version` | Show version information. |
 | `savarez update` | Pull latest code and reinstall dependencies (git installs), or check PyPI and `pip install --upgrade` (pip installs). `--check` previews without installing; `--backup` takes a pre-pull `SAVAREZ_HOME` snapshot. |
-| `savarez uninstall` | Remove Hermes from the system. |
+| `savarez uninstall` | Remove Savarez from the system. |
 
 ## `savarez chat`
 
@@ -118,7 +118,7 @@ Common options:
 Examples:
 
 ```bash
-hermes
+savarez
 savarez chat -q "Summarize the latest PRs"
 savarez chat --provider openrouter --model anthropic/claude-sonnet-4.6
 savarez chat --toolsets web,terminal,skills
@@ -127,16 +127,16 @@ savarez chat --worktree -q "Review this repo and open a PR"
 savarez chat --ignore-user-config --ignore-rules -q "Repro without my personal setup"
 ```
 
-### `hermes -z <prompt>` — scripted one-shot
+### `savarez -z <prompt>` — scripted one-shot
 
-For programmatic callers (shell scripts, CI, cron, parent processes piping in a prompt), `hermes -z` is the purest one-shot entry point: **single prompt in, final response text out, nothing else on stdout or stderr.** No banner, no spinner, no tool previews, no `Session:` line — just the agent's final reply as plain text.
+For programmatic callers (shell scripts, CI, cron, parent processes piping in a prompt), `savarez -z` is the purest one-shot entry point: **single prompt in, final response text out, nothing else on stdout or stderr.** No banner, no spinner, no tool previews, no `Session:` line — just the agent's final reply as plain text.
 
 ```bash
-hermes -z "What's the capital of France?"
+savarez -z "What's the capital of France?"
 # → Paris.
 
 # Parent scripts can cleanly capture the response:
-answer=$(hermes -z "summarize this" < /path/to/file.txt)
+answer=$(savarez -z "summarize this" < /path/to/file.txt)
 ```
 
 Per-run overrides (no mutation to `~/.savarez/config.yaml`):
@@ -147,16 +147,16 @@ Per-run overrides (no mutation to `~/.savarez/config.yaml`):
 | `--provider <provider>` | _(none)_ | Override the provider for this run |
 
 ```bash
-hermes -z "…" --provider openrouter --model openai/gpt-5.5
+savarez -z "…" --provider openrouter --model openai/gpt-5.5
 # or:
-HERMES_INFERENCE_MODEL=anthropic/claude-sonnet-4.6 hermes -z "…"
+HERMES_INFERENCE_MODEL=anthropic/claude-sonnet-4.6 savarez -z "…"
 ```
 
 Same agent, same tools, same skills — just strips every interactive / cosmetic layer. If you need tool output in the transcript too, use `savarez chat -q` instead; `-z` is explicitly for "I only want the final answer".
 
 ## `savarez model`
 
-Interactive provider + model selector. **This is the command for adding new providers, setting up API keys, and running OAuth flows.** Run it from your terminal — not from inside an active Hermes chat session.
+Interactive provider + model selector. **This is the command for adding new providers, setting up API keys, and running OAuth flows.** Run it from your terminal — not from inside an active Savarez chat session.
 
 ```bash
 savarez model
@@ -171,11 +171,11 @@ Use this when you want to:
 - save the new default into config
 
 :::warning savarez model vs /model — know the difference
-**`savarez model`** (run from your terminal, outside any Hermes session) is the **full provider setup wizard**. It can add new providers, run OAuth flows, prompt for API keys, and configure endpoints.
+**`savarez model`** (run from your terminal, outside any Savarez session) is the **full provider setup wizard**. It can add new providers, run OAuth flows, prompt for API keys, and configure endpoints.
 
-**`/model`** (typed inside an active Hermes chat session) can only **switch between providers and models you've already set up**. It cannot add new providers, run OAuth, or prompt for API keys.
+**`/model`** (typed inside an active Savarez chat session) can only **switch between providers and models you've already set up**. It cannot add new providers, run OAuth, or prompt for API keys.
 
-**If you need to add a new provider:** Exit your Hermes session first (`Ctrl+C` or `/quit`), then run `savarez model` from your terminal prompt.
+**If you need to add a new provider:** Exit your Savarez session first (`Ctrl+C` or `/quit`), then run `savarez model` from your terminal prompt.
 :::
 
 ### `/model` slash command (mid-session)
@@ -232,13 +232,13 @@ Options:
 | `--no-supervise` | On `run`: inside the s6-overlay Docker image, opt out of auto-supervision and use pre-s6 foreground semantics — gateway runs as the container's main process with no auto-restart. No-op outside the s6 image. Equivalent to setting `HERMES_GATEWAY_NO_SUPERVISE=1`. |
 
 :::tip WSL users
-Use `savarez gateway run` instead of `savarez gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'savarez gateway run'`. See [WSL FAQ](/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
+Use `savarez gateway run` instead of `savarez gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s savarez 'savarez gateway run'`. See [WSL FAQ](/reference/faq#wsl-gateway-keeps-disconnecting-or-savarez-gateway-start-fails) for details.
 :::
 
-## `hermes lsp`
+## `savarez lsp`
 
 ```bash
-hermes lsp <subcommand>
+savarez lsp <subcommand>
 ```
 
 Manage the Language Server Protocol integration. LSP runs real
@@ -294,10 +294,10 @@ Options:
 | `--reconfigure` | Backwards-compat alias — bare `savarez setup` on an existing install now does this by default. |
 | `--portal` | One-shot Nous Portal setup: log in via OAuth, set Nous as the inference provider, and opt into the [Tool Gateway](../user-guide/features/tool-gateway.md). Skips the rest of the wizard. |
 
-## `hermes portal`
+## `savarez portal`
 
 ```bash
-hermes portal [status|open|tools]
+savarez portal [status|open|tools]
 ```
 
 Inspect Nous Portal auth, Tool Gateway routing, and reach the subscription page. Subcommand-less invocation runs `status`.
@@ -310,20 +310,20 @@ Inspect Nous Portal auth, Tool Gateway routing, and reach the subscription page.
 
 For configuration of the gateway itself, see [Tool Gateway](../user-guide/features/tool-gateway.md). For the one-shot setup path, see `savarez setup --portal` above.
 
-## `hermes whatsapp`
+## `savarez whatsapp`
 
 ```bash
-hermes whatsapp
+savarez whatsapp
 ```
 
 Runs the WhatsApp pairing/setup flow, including mode selection and QR-code pairing.
 
-## `hermes slack`
+## `savarez slack`
 
 ```bash
-hermes slack manifest              # print manifest to stdout
-hermes slack manifest --write      # write to ~/.savarez/slack-manifest.json
-hermes slack manifest --slashes-only  # just the features.slash_commands array
+savarez slack manifest              # print manifest to stdout
+savarez slack manifest --write      # write to ~/.savarez/slack-manifest.json
+savarez slack manifest --slashes-only  # just the features.slash_commands array
 ```
 
 Generates a Slack app manifest that registers every gateway command in
@@ -337,11 +337,11 @@ reinstall if scopes or slash commands changed.
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `--write [PATH]` | stdout | Write to a file instead of stdout. Bare `--write` writes `$SAVAREZ_HOME/slack-manifest.json`. |
-| `--name NAME` | `Hermes` | Bot display name in Slack. |
+| `--name NAME` | `Savarez` | Bot display name in Slack. |
 | `--description DESC` | default blurb | Bot description shown in the Slack app directory. |
 | `--slashes-only` | off | Emit only `features.slash_commands` for merging into a manually-maintained manifest. |
 
-Run `hermes slack manifest --write` again after `savarez update` to pick
+Run `savarez slack manifest --write` again after `savarez update` to pick
 up any new commands.
 
 
@@ -381,11 +381,11 @@ savarez send --list telegram         # filter by platform
 ```
 
 
-## `hermes secrets`
+## `savarez secrets`
 
 ```bash
-hermes secrets bitwarden <subcommand>
-hermes secrets bw <subcommand>          # short alias
+savarez secrets bitwarden <subcommand>
+savarez secrets bw <subcommand>          # short alias
 ```
 
 Pull API keys from an external secret manager at process startup instead of storing them in `~/.savarez/.env`. Currently supports **Bitwarden Secrets Manager**. See the full guide: [Bitwarden integration](../user-guide/secrets/bitwarden.md).
@@ -401,10 +401,10 @@ Pull API keys from an external secret manager at process startup instead of stor
 | `disable` | Turn off the Bitwarden integration. |
 
 
-## `hermes migrate`
+## `savarez migrate`
 
 ```bash
-hermes migrate <type>
+savarez migrate <type>
 ```
 
 Diagnose and (optionally) rewrite the active `config.yaml` to replace references to retired models or deprecated settings. A timestamped backup of the original `config.yaml` is taken before any rewrite (skip with `--no-backup`).
@@ -420,13 +420,13 @@ Common flags for migration subcommands:
 | `--apply` | Rewrite `config.yaml` in-place (default: dry-run, no writes). |
 | `--no-backup` | Skip the timestamped backup of `config.yaml` when applying. |
 
-> Not to be confused with `hermes claw migrate` (one-shot import of OpenClaw configuration into Hermes) — `hermes migrate` is the top-level config-rewrite command.
+> Not to be confused with `savarez claw migrate` (one-shot import of OpenClaw configuration into Savarez) — `savarez migrate` is the top-level config-rewrite command.
 
 
-## `hermes proxy`
+## `savarez proxy`
 
 ```bash
-hermes proxy <subcommand>
+savarez proxy <subcommand>
 ```
 
 Run a local OpenAI-compatible HTTP server that forwards requests to an OAuth-authenticated upstream provider (e.g. Nous Portal, xAI). External apps can point at the proxy with any bearer token; the proxy attaches your real OAuth credentials on the way out. See [Subscription Proxy](../user-guide/features/subscription-proxy.md) for the full guide.
@@ -438,13 +438,13 @@ Run a local OpenAI-compatible HTTP server that forwards requests to an OAuth-aut
 | `providers` | List available proxy upstream providers. |
 
 
-## `hermes security`
+## `savarez security`
 
 ```bash
-hermes security <subcommand>
+savarez security <subcommand>
 ```
 
-On-demand vulnerability scan against [OSV.dev](https://osv.dev). Covers the Hermes venv (installed PyPI distributions), Python dependencies declared by plugins under `~/.savarez/plugins/`, and pinned `npx`/`uvx` MCP servers in `config.yaml`. Does NOT scan globally-installed packages or editor/browser extensions.
+On-demand vulnerability scan against [OSV.dev](https://osv.dev). Covers the Savarez venv (installed PyPI distributions), Python dependencies declared by plugins under `~/.savarez/plugins/`, and pinned `npx`/`uvx` MCP servers in `config.yaml`. Does NOT scan globally-installed packages or editor/browser extensions.
 
 | Subcommand | Description |
 |------------|-------------|
@@ -456,15 +456,15 @@ On-demand vulnerability scan against [OSV.dev](https://osv.dev). Covers the Herm
 |------|---------|-------------|
 | `--json` | off | Emit machine-readable JSON instead of human-readable text. |
 | `--fail-on <level>` | `critical` | Exit non-zero when any finding meets this severity (`low`, `moderate`, `high`, `critical`). |
-| `--skip-venv` | off | Skip scanning the Hermes Python venv. |
+| `--skip-venv` | off | Skip scanning the Savarez Python venv. |
 | `--skip-plugins` | off | Skip scanning plugin requirements files. |
 | `--skip-mcp` | off | Skip scanning pinned MCP servers in `config.yaml`. |
 
 
-## `hermes login` / `hermes logout` *(Deprecated)*
+## `savarez login` / `savarez logout` *(Deprecated)*
 
 :::caution
-`hermes login` has been removed. Use `savarez auth` to manage OAuth credentials, `savarez model` to select a provider, or `savarez setup` for full interactive setup.
+`savarez login` has been removed. Use `savarez auth` to manage OAuth credentials, `savarez model` to select a provider, or `savarez setup` for full interactive setup.
 :::
 
 ## `savarez auth`
@@ -481,7 +481,7 @@ savarez auth remove openrouter 2                          # Remove by index
 savarez auth reset openrouter                             # Clear cooldowns
 savarez auth status anthropic                             # Show auth status for a provider
 savarez auth logout anthropic                             # Log out and clear stored auth state
-savarez auth spotify                                      # Authenticate Hermes with Spotify via PKCE
+savarez auth spotify                                      # Authenticate Savarez with Spotify via PKCE
 ```
 
 Subcommands: `add`, `list`, `remove`, `reset`, `status`, `logout`, `spotify`. When called with no subcommand, launches the interactive management wizard.
@@ -515,10 +515,10 @@ savarez cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `status` | Check whether the cron scheduler is running. |
 | `tick` | Run due jobs once and exit. |
 
-## `hermes kanban`
+## `savarez kanban`
 
 ```bash
-hermes kanban [--board <slug>] <action> [options]
+savarez kanban [--board <slug>] <action> [options]
 ```
 
 Multi-profile, multi-project collaboration board. Each install can host many boards (one per project, repo, or domain); each board is a standalone queue with its own SQLite DB and dispatcher scope. New installs start with one board called `default`, whose DB is `~/.savarez/kanban.db` for back-compat; additional boards live at `~/.savarez/kanban/boards/<slug>/kanban.db`. The gateway-embedded dispatcher sweeps every board per tick.
@@ -527,9 +527,9 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 
 | Flag | Purpose |
 |------|---------|
-| `--board <slug>` | Operate on a specific board. Defaults to the current board (set via `hermes kanban boards switch`, the `HERMES_KANBAN_BOARD` env var, or `default`). |
+| `--board <slug>` | Operate on a specific board. Defaults to the current board (set via `savarez kanban boards switch`, the `HERMES_KANBAN_BOARD` env var, or `default`). |
 
-**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`; orchestrator profiles also get `kanban_list` and `kanban_unblock`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
+**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`; orchestrator profiles also get `kanban_list` and `kanban_unblock`) instead of shelling to `savarez kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
 
 | Action | Purpose |
 |--------|---------|
@@ -564,23 +564,23 @@ Examples:
 
 ```bash
 # Create a second board and put a task on it without switching away.
-hermes kanban boards create atm10-server --name "ATM10 Server" --icon 🎮
-hermes kanban --board atm10-server create "Restart server" --assignee ops
+savarez kanban boards create atm10-server --name "ATM10 Server" --icon 🎮
+savarez kanban --board atm10-server create "Restart server" --assignee ops
 
 # Switch the active board for subsequent calls.
-hermes kanban boards switch atm10-server
-hermes kanban list                  # shows atm10-server tasks
+savarez kanban boards switch atm10-server
+savarez kanban list                  # shows atm10-server tasks
 
 # Archive a board (recoverable) or hard-delete it.
-hermes kanban boards rm atm10-server
-hermes kanban boards rm atm10-server --delete
+savarez kanban boards rm atm10-server
+savarez kanban boards rm atm10-server --delete
 ```
 
 Board resolution order (highest precedence first): `--board <slug>` flag → `HERMES_KANBAN_BOARD` env var → `~/.savarez/kanban/current` file → `default`.
 
 All actions are also available as a slash command in the gateway (`/kanban …`), with the same argument surface — including `boards` subcommands and the `--board` flag.
 
-For the full design — comparison with Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise, eight collaboration patterns, four user stories, concurrency correctness proof — see `docs/hermes-kanban-v1-spec.pdf` in the repository or the [Kanban user guide](/user-guide/features/kanban).
+For the full design — comparison with Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise, eight collaboration patterns, four user stories, concurrency correctness proof — see `docs/savarez-kanban-v1-spec.pdf` in the repository or the [Kanban user guide](/user-guide/features/kanban).
 
 ## `savarez webhook`
 
@@ -626,13 +626,13 @@ savarez doctor [--fix]
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
 
-## `hermes dump`
+## `savarez dump`
 
 ```bash
-hermes dump [--show-keys]
+savarez dump [--show-keys]
 ```
 
-Outputs a compact, plain-text summary of your entire Hermes setup. Designed to be copy-pasted into Discord, GitHub issues, or Telegram when asking for support — no ANSI colors, no special formatting, just data.
+Outputs a compact, plain-text summary of your entire Savarez setup. Designed to be copy-pasted into Discord, GitHub issues, or Telegram when asking for support — no ANSI colors, no special formatting, just data.
 
 | Option | Description |
 |--------|-------------|
@@ -642,7 +642,7 @@ Outputs a compact, plain-text summary of your entire Hermes setup. Designed to b
 
 | Section | Details |
 |---------|---------|
-| **Header** | Hermes version, release date, git commit hash |
+| **Header** | Savarez version, release date, git commit hash |
 | **Environment** | OS, Python version, OpenAI SDK version |
 | **Identity** | Active profile name, SAVAREZ_HOME path |
 | **Model** | Configured default model and provider |
@@ -656,7 +656,7 @@ Outputs a compact, plain-text summary of your entire Hermes setup. Designed to b
 ### Example output
 
 ```
---- hermes dump ---
+--- savarez dump ---
 version:          0.8.0 (2026.4.8) [af4abd2f]
 os:               Linux 6.14.0-37-generic x86_64
 python:           3.11.14
@@ -699,13 +699,13 @@ config_overrides:
 - Quick sanity check when something isn't working
 
 :::tip
-`hermes dump` is specifically designed for sharing. For interactive diagnostics, use `savarez doctor`. For a visual overview, use `savarez status`.
+`savarez dump` is specifically designed for sharing. For interactive diagnostics, use `savarez doctor`. For a visual overview, use `savarez status`.
 :::
 
-## `hermes debug`
+## `savarez debug`
 
 ```bash
-hermes debug share [options]
+savarez debug share [options]
 ```
 
 Upload a debug report (system info + recent logs) to a paste service and get a shareable URL. Useful for quick support requests — includes everything a helper needs to diagnose your issue.
@@ -716,61 +716,61 @@ Upload a debug report (system info + recent logs) to a paste service and get a s
 | `--expire <days>` | Paste expiry in days (default: 7). |
 | `--local` | Print the report locally instead of uploading. |
 
-The report includes system info (OS, Python version, Hermes version), recent agent and gateway logs (512 KB limit per file), and redacted API key status. Keys are always redacted — no secrets are uploaded.
+The report includes system info (OS, Python version, Savarez version), recent agent and gateway logs (512 KB limit per file), and redacted API key status. Keys are always redacted — no secrets are uploaded.
 
 Paste services tried in order: paste.rs, dpaste.com.
 
 ### Examples
 
 ```bash
-hermes debug share              # Upload debug report, print URL
-hermes debug share --lines 500  # Include more log lines
-hermes debug share --expire 30  # Keep paste for 30 days
-hermes debug share --local      # Print report to terminal (no upload)
+savarez debug share              # Upload debug report, print URL
+savarez debug share --lines 500  # Include more log lines
+savarez debug share --expire 30  # Keep paste for 30 days
+savarez debug share --local      # Print report to terminal (no upload)
 ```
 
-## `hermes backup`
+## `savarez backup`
 
 ```bash
-hermes backup [options]
+savarez backup [options]
 ```
 
-Create a zip archive of your Hermes configuration, skills, sessions, and data. The backup excludes the hermes-agent codebase itself.
+Create a zip archive of your Savarez configuration, skills, sessions, and data. The backup excludes the savarez-agent codebase itself.
 
 | Option | Description |
 |--------|-------------|
-| `-o`, `--output <path>` | Output path for the zip file (default: `~/hermes-backup-<timestamp>.zip`). |
+| `-o`, `--output <path>` | Output path for the zip file (default: `~/savarez-backup-<timestamp>.zip`). |
 | `-q`, `--quick` | Quick snapshot: only critical state files (config.yaml, state.db, .env, auth, cron jobs). Much faster than a full backup. |
 | `-l`, `--label <name>` | Label for the snapshot (only used with `--quick`). |
 
-The backup uses SQLite's `backup()` API for safe copying, so it works correctly even when Hermes is running (WAL-mode safe).
+The backup uses SQLite's `backup()` API for safe copying, so it works correctly even when Savarez is running (WAL-mode safe).
 
 **What's excluded from the zip:**
 
 - `*.db-wal`, `*.db-shm`, `*.db-journal` — SQLite's WAL / shared-memory / journal sidecars. The `*.db` file already got a consistent snapshot via `sqlite3.backup()`; shipping the live sidecars alongside it would let a restore see a half-committed state.
 - `checkpoints/` — per-session trajectory caches. Hash-keyed and regenerated per session; wouldn't port cleanly to another install anyway.
-- The `hermes-agent` code itself (this is a user-data backup, not a repo snapshot).
+- The `savarez-agent` code itself (this is a user-data backup, not a repo snapshot).
 
 ### Examples
 
 ```bash
-hermes backup                           # Full backup to ~/hermes-backup-*.zip
-hermes backup -o /tmp/hermes.zip        # Full backup to specific path
-hermes backup --quick                   # Quick state-only snapshot
-hermes backup --quick --label "pre-upgrade"  # Quick snapshot with label
+savarez backup                           # Full backup to ~/savarez-backup-*.zip
+savarez backup -o /tmp/savarez.zip        # Full backup to specific path
+savarez backup --quick                   # Quick state-only snapshot
+savarez backup --quick --label "pre-upgrade"  # Quick snapshot with label
 ```
 
-## `hermes checkpoints`
+## `savarez checkpoints`
 
 ```bash
-hermes checkpoints [COMMAND]
+savarez checkpoints [COMMAND]
 ```
 
 Inspect and manage the shadow git store at `~/.savarez/checkpoints/` — the storage layer behind the in-session `/rollback` command. Safe to run any time; does not require the agent to be running.
 
 | Subcommand | Description |
 |------------|-------------|
-| `status` (default) | Show total size, project count, and per-project breakdown. Bare `hermes checkpoints` is equivalent. |
+| `status` (default) | Show total size, project count, and per-project breakdown. Bare `savarez checkpoints` is equivalent. |
 | `list` | Alias for `status`. |
 | `prune` | Force a cleanup sweep — delete orphan and stale projects, GC the store, enforce the size cap. Ignores the 24h idempotency marker. |
 | `clear` | Delete the entire checkpoint base. Irreversible; asks for confirmation unless `-f`. |
@@ -789,22 +789,22 @@ Inspect and manage the shadow git store at `~/.savarez/checkpoints/` — the sto
 ### Examples
 
 ```bash
-hermes checkpoints                                  # status overview
-hermes checkpoints prune --retention-days 3         # aggressive cleanup
-hermes checkpoints prune --max-size-mb 200          # tighten size cap once
-hermes checkpoints clear-legacy -f                  # drop v1 archive dirs
-hermes checkpoints clear -f                         # wipe everything
+savarez checkpoints                                  # status overview
+savarez checkpoints prune --retention-days 3         # aggressive cleanup
+savarez checkpoints prune --max-size-mb 200          # tighten size cap once
+savarez checkpoints clear-legacy -f                  # drop v1 archive dirs
+savarez checkpoints clear -f                         # wipe everything
 ```
 
 See [Checkpoints and `/rollback`](../user-guide/checkpoints-and-rollback.md) for the full architecture and the in-session commands.
 
-## `hermes import`
+## `savarez import`
 
 ```bash
-hermes import <zipfile> [options]
+savarez import <zipfile> [options]
 ```
 
-Restore a previously created Hermes backup into your Hermes home directory. All files in the archive overwrite existing files in your Hermes home; `--force` only skips the confirmation prompt that fires when the target already has a Hermes installation.
+Restore a previously created Savarez backup into your Savarez home directory. All files in the archive overwrite existing files in your Savarez home; `--force` only skips the confirmation prompt that fires when the target already has a Savarez installation.
 
 | Option | Description |
 |--------|-------------|
@@ -816,8 +816,8 @@ Stop the gateway before importing to avoid conflicts with running processes.
 
 ### Examples
 ```bash
-hermes import ~/hermes-backup-20260423.zip           # Prompts before overwriting existing config
-hermes import ~/hermes-backup-20260423.zip --force   # Overwrite without prompting
+savarez import ~/savarez-backup-20260423.zip           # Prompts before overwriting existing config
+savarez import ~/savarez-backup-20260423.zip --force   # Overwrite without prompting
 ```
 
 ## `savarez logs`
@@ -826,7 +826,7 @@ hermes import ~/hermes-backup-20260423.zip --force   # Overwrite without prompti
 savarez logs [log_name] [options]
 ```
 
-View, tail, and filter Hermes log files. All logs are stored in `~/.savarez/logs/` (or `<profile>/logs/` for non-default profiles).
+View, tail, and filter Savarez log files. All logs are stored in `~/.savarez/logs/` (or `<profile>/logs/` for non-default profiles).
 
 ### Log files
 
@@ -888,13 +888,13 @@ Lines without a parseable timestamp are included when `--since` is active (they 
 
 ### Log rotation
 
-Hermes uses Python's `RotatingFileHandler`. Old logs are rotated automatically — look for `agent.log.1`, `agent.log.2`, etc. The `savarez logs list` subcommand shows all log files including rotated ones.
+Savarez uses Python's `RotatingFileHandler`. Old logs are rotated automatically — look for `agent.log.1`, `agent.log.2`, etc. The `savarez logs list` subcommand shows all log files including rotated ones.
 
 
-## `hermes prompt-size`
+## `savarez prompt-size`
 
 ```bash
-hermes prompt-size [--platform <name>] [--json]
+savarez prompt-size [--platform <name>] [--json]
 ```
 
 Reports the fixed prompt budget for a fresh session — what gets sent on every
@@ -909,7 +909,7 @@ It builds the same system prompt the agent would, then breaks it down:
 - **Skills index** — the `<available_skills>` block. This is often the largest
   single block when many skills are installed.
 - **Memory** and **user profile** — your `MEMORY.md` / `USER.md` snapshots.
-- **Prompt tiers** — stable / context / volatile, matching how Hermes layers
+- **Prompt tiers** — stable / context / volatile, matching how Savarez layers
   the prompt for cache-friendliness.
 - **Tool schemas** — the JSON for all enabled tools (the other half of the
   fixed per-call payload).
@@ -918,13 +918,13 @@ Runs entirely offline — no API call, works with no credentials configured.
 
 ```bash
 # Human-readable breakdown for the CLI platform (default)
-hermes prompt-size
+savarez prompt-size
 
 # Simulate a messaging platform's prompt (different platform hint)
-hermes prompt-size --platform telegram
+savarez prompt-size --platform telegram
 
 # Machine-readable output for scripts
-hermes prompt-size --json
+savarez prompt-size --json
 ```
 
 :::tip
@@ -952,10 +952,10 @@ Subcommands:
 | `check` | Check for missing or stale config. |
 | `migrate` | Add newly introduced options interactively. |
 
-## `hermes pairing`
+## `savarez pairing`
 
 ```bash
-hermes pairing <list|approve|revoke|clear-pending>
+savarez pairing <list|approve|revoke|clear-pending>
 ```
 
 | Subcommand | Description |
@@ -1019,14 +1019,14 @@ Notes:
 - `--force` can override non-dangerous policy blocks for third-party/community skills.
 - `--force` does not override a `dangerous` scan verdict.
 - `--source skills-sh` searches the public `skills.sh` directory.
-- `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
+- `--source well-known` lets you point Savarez at a site exposing `/.well-known/skills/index.json`.
 - `--source browse-sh` searches [browse.sh](https://browse.sh)'s catalog of 200+ site-specific browser-automation skills. Identifiers look like `browse-sh/airbnb.com/search-listings-ddgioa`.
 - Passing an `http(s)://…/*.md` URL installs a single-file SKILL.md directly. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
 
-## `hermes bundles`
+## `savarez bundles`
 
 ```bash
-hermes bundles <subcommand>
+savarez bundles <subcommand>
 ```
 
 Skill bundles group several skills under one `/<bundle-name>` slash command. Invoking the bundle loads every referenced skill into a single combined user message. Storage: `~/.savarez/skill-bundles/<slug>.yaml`. See [Skill Bundles](../user-guide/features/skills.md#skill-bundles) for the YAML schema and behavior.
@@ -1044,23 +1044,23 @@ Subcommands:
 Examples:
 
 ```bash
-hermes bundles create backend-dev \
+savarez bundles create backend-dev \
   --skill github-code-review \
   --skill test-driven-development \
   --skill github-pr-workflow \
   -d "Backend feature work"
 
-hermes bundles list
-hermes bundles show backend-dev
-hermes bundles delete backend-dev
+savarez bundles list
+savarez bundles show backend-dev
+savarez bundles delete backend-dev
 ```
 
 In a chat session, `/bundles` lists installed bundles and `/<bundle-name>` loads one.
 
-## `hermes curator`
+## `savarez curator`
 
 ```bash
-hermes curator <subcommand>
+savarez curator <subcommand>
 ```
 
 The curator is an auxiliary-model background task that periodically reviews agent-created skills, prunes stale ones, consolidates overlaps, and archives obsolete skills. Bundled and hub-installed skills are never touched. Archives are recoverable; auto-deletion never happens.
@@ -1085,14 +1085,14 @@ The curator is an auxiliary-model background task that periodically reviews agen
 | `prune` | Manually prune skills the curator would normally clean up |
 | `list-archived` | List archived skills (recoverable via `restore`) |
 
-On a fresh install the first scheduled pass is deferred by one full `interval_hours` (7 days by default) — the gateway will not curate immediately on the first tick after `savarez update`. Use `hermes curator run --dry-run` to preview before that happens.
+On a fresh install the first scheduled pass is deferred by one full `interval_hours` (7 days by default) — the gateway will not curate immediately on the first tick after `savarez update`. Use `savarez curator run --dry-run` to preview before that happens.
 
 See [Curator](../user-guide/features/curator.md) for behavior and config.
 
-## `hermes fallback`
+## `savarez fallback`
 
 ```bash
-hermes fallback <subcommand>
+savarez fallback <subcommand>
 ```
 
 Manage the fallback provider chain. Fallback providers are tried in order when the primary model fails with rate-limit, overload, or connection errors.
@@ -1106,10 +1106,10 @@ Manage the fallback provider chain. Fallback providers are tried in order when t
 
 See [Fallback Providers](../user-guide/features/fallback-providers.md).
 
-## `hermes hooks`
+## `savarez hooks`
 
 ```bash
-hermes hooks <subcommand>
+savarez hooks <subcommand>
 ```
 
 Inspect shell-script hooks declared in `~/.savarez/config.yaml`, test them against synthetic payloads, and manage the first-use consent allowlist at `~/.savarez/shell-hooks-allowlist.json`.
@@ -1123,10 +1123,10 @@ Inspect shell-script hooks declared in `~/.savarez/config.yaml`, test them again
 
 See [Hooks](../user-guide/features/hooks.md) for event signatures and payload shapes.
 
-## `hermes memory`
+## `savarez memory`
 
 ```bash
-hermes memory <subcommand>
+savarez memory <subcommand>
 ```
 
 Set up and manage external memory provider plugins. Available providers: honcho, openviking, mem0, hindsight, holographic, retaindb, byterover, supermemory. Only one external provider can be active at a time. Built-in memory (MEMORY.md/USER.md) is always active.
@@ -1140,21 +1140,21 @@ Subcommands:
 | `off` | Disable external provider (built-in only). |
 
 :::info Provider-specific subcommands
-When an external memory provider is active, it may register its own top-level `hermes <provider>` command for provider-specific management (e.g. `hermes honcho` when Honcho is active). Inactive providers do not expose their subcommands. Run `savarez --help` to see what's currently wired in.
+When an external memory provider is active, it may register its own top-level `savarez <provider>` command for provider-specific management (e.g. `savarez honcho` when Honcho is active). Inactive providers do not expose their subcommands. Run `savarez --help` to see what's currently wired in.
 :::
 
-## `hermes acp`
+## `savarez acp`
 
 ```bash
-hermes acp
+savarez acp
 ```
 
-Starts Hermes as an ACP (Agent Client Protocol) stdio server for editor integration.
+Starts Savarez as an ACP (Agent Client Protocol) stdio server for editor integration.
 
 Related entrypoints:
 
 ```bash
-hermes-acp
+savarez-acp
 python -m acp_adapter
 ```
 
@@ -1172,14 +1172,14 @@ See [ACP Editor Integration](../user-guide/features/acp.md) and [ACP Internals](
 savarez mcp <subcommand>
 ```
 
-Manage MCP (Model Context Protocol) server configurations and run Hermes as an MCP server.
+Manage MCP (Model Context Protocol) server configurations and run Savarez as an MCP server.
 
 | Subcommand | Description |
 |------------|-------------|
 | *(none)* or `picker` | Interactive catalog picker — browse Nous-approved MCPs and install/enable/disable. |
 | `catalog` | List Nous-approved MCPs (plain text, scriptable). |
 | `install <name>` | Install a catalog entry (e.g. `savarez mcp install n8n`). |
-| `serve [-v\|--verbose]` | Run Hermes as an MCP server — expose conversations to other agents. |
+| `serve [-v\|--verbose]` | Run Savarez as an MCP server — expose conversations to other agents. |
 | `add <name> [--url URL] [--command CMD] [--args ...] [--auth oauth\|header]` | Add a custom MCP server with automatic tool discovery. |
 | `remove <name>` (alias: `rm`) | Remove an MCP server from config. |
 | `list` (alias: `ls`) | List configured MCP servers. |
@@ -1187,7 +1187,7 @@ Manage MCP (Model Context Protocol) server configurations and run Hermes as an M
 | `configure <name>` (alias: `config`) | Toggle tool selection for a server. |
 | `login <name>` | Force re-authentication for an OAuth-based MCP server. |
 
-See [MCP Config Reference](./mcp-config-reference.md), [Use MCP with Hermes](../guides/use-mcp-with-hermes.md), and [MCP Server Mode](../user-guide/features/mcp.md#running-hermes-as-an-mcp-server).
+See [MCP Config Reference](./mcp-config-reference.md), [Use MCP with Savarez](../guides/use-mcp-with-savarez.md), and [MCP Server Mode](../user-guide/features/mcp.md#running-savarez-as-an-mcp-server).
 
 ## `savarez plugins`
 
@@ -1216,7 +1216,7 @@ Provider plugin selections are saved to `config.yaml`:
 
 General plugin disabled list is stored in `config.yaml` under `plugins.disabled`.
 
-See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md).
+See [Plugins](../user-guide/features/plugins.md) and [Build a Savarez Plugin](../guides/build-a-savarez-plugin.md).
 
 ## `savarez tools`
 
@@ -1230,10 +1230,10 @@ savarez tools [--summary]
 
 Without `--summary`, this launches the interactive per-platform tool configuration UI.
 
-## `hermes computer-use`
+## `savarez computer-use`
 
 ```bash
-hermes computer-use <subcommand>
+savarez computer-use <subcommand>
 ```
 
 Subcommands:
@@ -1244,7 +1244,7 @@ Subcommands:
 | `install --upgrade` | Re-run the installer even if cua-driver is already on PATH. The upstream script always pulls the latest release, so this performs an in-place upgrade. |
 | `status` | Print whether `cua-driver` is on `$PATH` and which version is installed. |
 
-`hermes computer-use install` is the stable entry point for installing the
+`savarez computer-use install` is the stable entry point for installing the
 [cua-driver](https://github.com/trycua/cua) binary used by the
 `computer_use` toolset. It runs the same upstream installer that
 `savarez tools` invokes when you first enable Computer Use, so it's safe
@@ -1254,7 +1254,7 @@ it (for example, on returning-user setups).
 `savarez update` automatically re-runs the upstream installer at the end
 of the update if cua-driver is on PATH, so most users will not need to
 call `--upgrade` manually. Use it when upstream ships a fix you want
-right now without waiting for the next Hermes update.
+right now without waiting for the next Savarez update.
 
 ## `savarez sessions`
 
@@ -1274,10 +1274,10 @@ Subcommands:
 | `stats` | Show session-store statistics. |
 | `rename <session-id> <title>` | Set or change a session title. |
 
-## `hermes insights`
+## `savarez insights`
 
 ```bash
-hermes insights [--days N] [--source platform]
+savarez insights [--days N] [--source platform]
 ```
 
 | Option | Description |
@@ -1285,21 +1285,21 @@ hermes insights [--days N] [--source platform]
 | `--days <n>` | Analyze the last `n` days (default: 30). |
 | `--source <platform>` | Filter by source such as `cli`, `telegram`, or `discord`. |
 
-## `hermes claw`
+## `savarez claw`
 
 ```bash
-hermes claw migrate [options]
+savarez claw migrate [options]
 ```
 
-Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom path) and writes to `~/.savarez`. Automatically detects legacy directory names (`~/.clawdbot`, `~/.moltbot`) and config filenames (`clawdbot.json`, `moltbot.json`).
+Migrate your OpenClaw setup to Savarez. Reads from `~/.openclaw` (or a custom path) and writes to `~/.savarez`. Automatically detects legacy directory names (`~/.clawdbot`, `~/.moltbot`) and config filenames (`clawdbot.json`, `moltbot.json`).
 
 | Option | Description |
 |--------|-------------|
 | `--dry-run` | Preview what would be migrated without writing anything. |
 | `--preset <name>` | Migration preset: `full` (all compatible settings) or `user-data` (excludes infrastructure config). Neither preset imports secrets — pass `--migrate-secrets` explicitly. |
-| `--overwrite` | Overwrite existing Hermes files on conflicts (default: refuse to apply when the plan has conflicts). |
+| `--overwrite` | Overwrite existing Savarez files on conflicts (default: refuse to apply when the plan has conflicts). |
 | `--migrate-secrets` | Include API keys in migration. Required even under `--preset full`. |
-| `--no-backup` | Skip the pre-migration zip snapshot of `~/.savarez/` (by default a single restore-point archive is written to `~/.savarez/backups/pre-migration-*.zip` before apply; restorable with `hermes import`). |
+| `--no-backup` | Skip the pre-migration zip snapshot of `~/.savarez/` (by default a single restore-point archive is written to `~/.savarez/backups/pre-migration-*.zip` before apply; restorable with `savarez import`). |
 | `--source <path>` | Custom OpenClaw directory (default: `~/.openclaw`). |
 | `--workspace-target <path>` | Target directory for workspace instructions (AGENTS.md). |
 | `--skill-conflict <mode>` | Handle skill name collisions: `skip` (default), `overwrite`, or `rename`. |
@@ -1307,7 +1307,7 @@ Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom pat
 
 ### What gets migrated
 
-The migration covers 30+ categories across persona, memory, skills, model providers, messaging platforms, agent behavior, session policies, MCP servers, TTS, and more. Items are either **directly imported** into Hermes equivalents or **archived** for manual review.
+The migration covers 30+ categories across persona, memory, skills, model providers, messaging platforms, agent behavior, session policies, MCP servers, TTS, and more. Items are either **directly imported** into Savarez equivalents or **archived** for manual review.
 
 **Directly imported:** SOUL.md, MEMORY.md, USER.md, AGENTS.md, skills (4 source directories), default model, custom providers, MCP servers, messaging platform tokens and allowlists (Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost), agent defaults (reasoning effort, compression, human delay, timezone, sandbox), session reset policies, approval rules, TTS config, browser settings, tool settings, exec timeout, command allowlist, gateway config, and API keys from 3 sources.
 
@@ -1321,19 +1321,19 @@ For the complete config key mapping, SecretRef handling details, and post-migrat
 
 ```bash
 # Preview what would be migrated
-hermes claw migrate --dry-run
+savarez claw migrate --dry-run
 
 # Full migration (all compatible settings, no secrets)
-hermes claw migrate --preset full
+savarez claw migrate --preset full
 
 # Full migration including API keys
-hermes claw migrate --preset full --migrate-secrets
+savarez claw migrate --preset full --migrate-secrets
 
 # Migrate user data only (no secrets), overwrite conflicts
-hermes claw migrate --preset user-data --overwrite
+savarez claw migrate --preset user-data --overwrite
 
 # Migrate from a custom OpenClaw path
-hermes claw migrate --source /home/user/old-openclaw
+savarez claw migrate --source /home/user/old-openclaw
 ```
 
 ## `savarez dashboard`
@@ -1342,7 +1342,7 @@ hermes claw migrate --source /home/user/old-openclaw
 savarez dashboard [options]
 ```
 
-Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. Requires `pip install hermes-agent[web]` (FastAPI + Uvicorn). The embedded browser Chat tab is always available and additionally needs the `pty` extra (`pip install 'hermes-agent[web,pty]'`) plus a POSIX PTY environment such as Linux, macOS, or WSL2. See [Web Dashboard](/user-guide/features/web-dashboard) for full documentation.
+Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. Requires `pip install savarez-agent[web]` (FastAPI + Uvicorn). The embedded browser Chat tab is always available and additionally needs the `pty` extra (`pip install 'savarez-agent[web,pty]'`) plus a POSIX PTY environment such as Linux, macOS, or WSL2. See [Web Dashboard](/user-guide/features/web-dashboard) for full documentation.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -1367,7 +1367,7 @@ savarez dashboard --port 8080 --no-open
 savarez profile <subcommand>
 ```
 
-Manage profiles — multiple isolated Hermes instances, each with its own config, sessions, skills, and home directory.
+Manage profiles — multiple isolated Savarez instances, each with its own config, sessions, skills, and home directory.
 
 | Subcommand | Description |
 |------------|-------------|
@@ -1395,28 +1395,28 @@ savarez profile export work -o work-backup.tar.gz
 savarez profile import work-backup.tar.gz --name restored
 savarez profile install github.com/user/my-distro --alias
 savarez profile update work
-hermes -p work chat -q "Hello from work profile"
+savarez -p work chat -q "Hello from work profile"
 ```
 
-## `hermes completion`
+## `savarez completion`
 
 ```bash
-hermes completion [bash|zsh|fish]
+savarez completion [bash|zsh|fish]
 ```
 
-Print a shell completion script to stdout. Source the output in your shell profile for tab-completion of Hermes commands, subcommands, and profile names.
+Print a shell completion script to stdout. Source the output in your shell profile for tab-completion of Savarez commands, subcommands, and profile names.
 
 Examples:
 
 ```bash
 # Bash
-hermes completion bash >> ~/.bashrc
+savarez completion bash >> ~/.bashrc
 
 # Zsh
-hermes completion zsh >> ~/.zshrc
+savarez completion zsh >> ~/.zshrc
 
 # Fish
-hermes completion fish > ~/.config/fish/completions/hermes.fish
+savarez completion fish > ~/.config/fish/completions/savarez.fish
 ```
 
 ## `savarez update`
@@ -1425,9 +1425,9 @@ hermes completion fish > ~/.config/fish/completions/hermes.fish
 savarez update [--gateway] [--check] [--no-backup] [--backup] [--yes]
 ```
 
-Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install.
+Pulls the latest `savarez-agent` code and reinstalls dependencies in your venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install.
 
-**pip installs:** `savarez update` detects pip-based installations automatically — it queries PyPI for the latest release and runs `pip install --upgrade hermes-agent` instead of `git pull`. PyPI releases track tagged versions (major/minor releases), not every commit on `main`. Use `--check` to see if a newer PyPI release is available without installing.
+**pip installs:** `savarez update` detects pip-based installations automatically — it queries PyPI for the latest release and runs `pip install --upgrade savarez-agent` instead of `git pull`. PyPI releases track tagged versions (major/minor releases), not every commit on `main`. Use `--check` to see if a newer PyPI release is available without installing.
 
 | Option | Description |
 |--------|-------------|
@@ -1439,19 +1439,19 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, t
 
 Additional behavior:
 
-- **Gateway restart.** After a successful update, Hermes attempts to restart all running gateway profiles automatically so they pick up the new code. Use `savarez gateway restart` when you want to restart a gateway without applying an update.
-- **Pairing data snapshot.** Even when `--backup` is off, `savarez update` takes a lightweight snapshot of `~/.savarez/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
-- **Legacy `savarez.service` warning.** If Hermes detects a pre-rename `savarez.service` systemd unit (instead of the current `hermes-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.
+- **Gateway restart.** After a successful update, Savarez attempts to restart all running gateway profiles automatically so they pick up the new code. Use `savarez gateway restart` when you want to restart a gateway without applying an update.
+- **Pairing data snapshot.** Even when `--backup` is off, `savarez update` takes a lightweight snapshot of `~/.savarez/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `savarez backup restore --state pre-update` if a pull rewrites a file you were editing.
+- **Legacy `savarez.service` warning.** If Savarez detects a pre-rename `savarez.service` systemd unit (instead of the current `savarez-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.
 - **Exit codes.** `0` on success, `1` on pull/install/post-install errors, `2` on unexpected working-tree changes that block `git pull`.
 
 ## Maintenance commands
 
 | Command | Description |
 |---------|-------------|
-| `hermes version` | Print version information. |
+| `savarez version` | Print version information. |
 | `savarez update` | Pull latest changes and reinstall dependencies. |
-| `hermes postinstall` | Internal bootstrap. Runs once after `pip install hermes-agent` (or `savarez update` on pip installs) to install non-Python dependencies that pip cannot provide — Node.js runtime, headless browser, ripgrep, ffmpeg — and then trigger `savarez setup` if the profile has not been configured yet. Safe to re-run idempotently. |
-| `savarez uninstall [--full] [--yes]` | Remove Hermes, optionally deleting all config/data. |
+| `savarez postinstall` | Internal bootstrap. Runs once after `pip install savarez-agent` (or `savarez update` on pip installs) to install non-Python dependencies that pip cannot provide — Node.js runtime, headless browser, ripgrep, ffmpeg — and then trigger `savarez setup` if the profile has not been configured yet. Safe to re-run idempotently. |
+| `savarez uninstall [--full] [--yes]` | Remove Savarez, optionally deleting all config/data. |
 
 ## See also
 

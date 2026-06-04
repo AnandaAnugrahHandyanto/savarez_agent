@@ -1,10 +1,10 @@
-"""SimpleX Chat platform adapter (Hermes plugin).
+"""SimpleX Chat platform adapter (Savarez plugin).
 
 Connects to a simplex-chat daemon running in WebSocket mode.
 Inbound messages arrive via a persistent WebSocket connection.
 Outbound messages use the same WebSocket with JSON commands.
 
-This adapter ships as a Hermes platform plugin under
+This adapter ships as a Savarez platform plugin under
 ``plugins/platforms/simplex/``. The Savarez plugin loader scans the
 directory at startup, calls ``register(ctx)``, and the platform
 becomes available to ``gateway/run.py`` and ``tools/send_message_tool``
@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 # Lazy import: BasePlatformAdapter and friends live in the main repo.
-# Imported at module top because they're stdlib-only inside Hermes — no
+# Imported at module top because they're stdlib-only inside Savarez — no
 # external dependency that would block the plugin from loading.
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -67,7 +67,7 @@ HEALTH_CHECK_INTERVAL = 30.0
 HEALTH_CHECK_STALE_THRESHOLD = 120.0
 
 # Correlation ID prefix for requests we send so we can ignore our own echoes.
-_CORR_PREFIX = "hermes-"
+_CORR_PREFIX = "savarez-"
 
 
 # ---------------------------------------------------------------------------
@@ -656,7 +656,7 @@ async def _standalone_send(
             cmd_str = f"@{chat_id} {message}"
 
         payload = {
-            "corrId": f"hermes-snd-{int(time.time() * 1000)}",
+            "corrId": f"savarez-snd-{int(time.time() * 1000)}",
             "cmd": cmd_str,
         }
 
@@ -712,7 +712,7 @@ def interactive_setup() -> None:
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system at startup."""
+    """Plugin entry point — called by the Savarez plugin system at startup."""
     ctx.register_platform(
         name="simplex",
         label="SimpleX Chat",

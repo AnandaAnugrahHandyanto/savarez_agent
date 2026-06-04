@@ -155,7 +155,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
             raise ValueError(
                 f"Auxiliary compression model {aux_model} has a context "
                 f"window of {aux_context:,} tokens, which is below the "
-                f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Hermes "
+                f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Savarez "
                 f"Agent.  Choose a compression model with at least "
                 f"{MINIMUM_CONTEXT_LENGTH // 1000}K context (set "
                 f"auxiliary.compression.model in config.yaml), or set "
@@ -536,10 +536,10 @@ def compress_context(
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
     # Notify the context engine that the session_id rotated because of
-    # compression (not a fresh /new). Plugin engines (e.g. hermes-lcm) use
+    # compression (not a fresh /new). Plugin engines (e.g. savarez-lcm) use
     # boundary_reason="compression" to preserve DAG lineage across the
     # rollover instead of re-initializing fresh per-session state.
-    # See hermes-lcm#68. Built-in ContextCompressor ignores kwargs.
+    # See savarez-lcm#68. Built-in ContextCompressor ignores kwargs.
     try:
         _old_sid = locals().get("old_session_id")
         if _old_sid and hasattr(agent.context_compressor, "on_session_start"):

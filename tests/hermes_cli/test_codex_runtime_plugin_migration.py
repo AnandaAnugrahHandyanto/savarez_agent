@@ -487,23 +487,23 @@ class TestMigrate:
 
     def test_expose_hermes_tools_writes_callback_mcp_entry(self, tmp_path):
         """When expose_hermes_tools=True (production default), an
-        [mcp_servers.hermes-tools] entry is written so codex calls back
-        into Hermes for browser/web/delegate_task/vision/memory tools.
+        [mcp_servers.savarez-tools] entry is written so codex calls back
+        into Savarez for browser/web/delegate_task/vision/memory tools.
 
         This is the fix for 'all other tools that codex doesn't provide
-        should be useable by hermes' — quirk #7."""
+        should be useable by savarez' — quirk #7."""
         report = migrate({}, codex_home=tmp_path,
                          discover_plugins=False,
                          default_permission_profile=None,
                          expose_hermes_tools=True)
         text = (tmp_path / "config.toml").read_text()
-        assert "[mcp_servers.hermes-tools]" in text
+        assert "[mcp_servers.savarez-tools]" in text
         assert "hermes_tools_mcp_server" in text
         # Must include startup + tool timeouts so codex doesn't give up
         assert "startup_timeout_sec" in text
         assert "tool_timeout_sec" in text
         # And the entry is reported
-        assert "hermes-tools" in report.migrated
+        assert "savarez-tools" in report.migrated
 
     def test_expose_hermes_tools_disabled_skips_entry(self, tmp_path):
         """expose_hermes_tools=False suppresses the callback registration."""
@@ -512,7 +512,7 @@ class TestMigrate:
                 default_permission_profile=None,
                 expose_hermes_tools=False)
         text = (tmp_path / "config.toml").read_text()
-        assert "[mcp_servers.hermes-tools]" not in text
+        assert "[mcp_servers.savarez-tools]" not in text
         assert "hermes_tools_mcp_server" not in text
 
     def test_dry_run_doesnt_write(self, tmp_path):
@@ -574,7 +574,7 @@ class TestMigrate:
         assert MIGRATION_MARKER in new_text
 
     def test_managed_root_keys_stay_top_level_when_config_ends_in_table(self, tmp_path):
-        """TOML has no explicit 'leave current table' syntax. If Hermes appends
+        """TOML has no explicit 'leave current table' syntax. If Savarez appends
         root keys like default_permissions after a user table such as [features],
         Codex parses them as features.default_permissions and rejects the config.
         The managed block must therefore be inserted before the first table."""
@@ -596,7 +596,7 @@ class TestMigrate:
 
     def test_preserves_user_mcp_server_outside_managed_block(self, tmp_path):
         """Quirk #6: when a user adds their own MCP server entry directly
-        to ~/.codex/config.toml outside Hermes' managed block, re-running
+        to ~/.codex/config.toml outside Savarez' managed block, re-running
         migration must preserve it. Tested both above and below the
         managed block."""
         target = tmp_path / "config.toml"
@@ -606,7 +606,7 @@ class TestMigrate:
             'args = ["--above"]\n'
         )
         # First migrate — adds managed block below user content
-        migrate({"mcp_servers": {"hermes-mcp": {"command": "npx"}}},
+        migrate({"mcp_servers": {"savarez-mcp": {"command": "npx"}}},
                 codex_home=tmp_path, discover_plugins=False,
                 expose_hermes_tools=False)
         text = target.read_text()
@@ -618,14 +618,14 @@ class TestMigrate:
             text + "\n[mcp_servers.user-below]\ncommand = \"below-server\"\n"
         )
         # Re-migrate — both should survive
-        migrate({"mcp_servers": {"hermes-mcp": {"command": "npx"}}},
+        migrate({"mcp_servers": {"savarez-mcp": {"command": "npx"}}},
                 codex_home=tmp_path, discover_plugins=False,
                 expose_hermes_tools=False)
         final = target.read_text()
         assert "user-above" in final
         assert "user-below" in final
         # And our managed block is still there with the new content
-        assert "[mcp_servers.hermes-mcp]" in final
+        assert "[mcp_servers.savarez-mcp]" in final
 
     def test_skipped_keys_reported(self, tmp_path):
         report = migrate({
@@ -668,7 +668,7 @@ class TestStripUnmanagedPluginTables:
 
     When codex itself writes ``[plugins."<name>@<marketplace>"]`` tables
     (via the user running ``codex plugins enable`` directly), re-running
-    ``hermes codex-runtime migrate`` would re-emit them inside the managed
+    ``savarez codex-runtime migrate`` would re-emit them inside the managed
     block and the resulting duplicate-table-header would crash codex.
     """
 
@@ -801,7 +801,7 @@ class TestHermesHomeLeakGuard:
     Previously ``_build_hermes_tools_mcp_entry()`` read ``SAVAREZ_HOME``
     directly from ``os.environ``, so a pytest ``monkeypatch.setenv`` would
     leak a transient tempdir path into the user's real ``~/.codex/config.toml``
-    once codex spawned the hermes-tools MCP subprocess.
+    once codex spawned the savarez-tools MCP subprocess.
     """
 
     def test_tempdir_detector_recognizes_pytest_paths(self):
@@ -809,16 +809,16 @@ class TestHermesHomeLeakGuard:
             "/private/var/folders/abc/pytest-of-kshitij/pytest-137/popen-gw2/test_X/hermes_test"
         )
         assert _looks_like_test_tempdir(
-            "/tmp/pytest-of-user/pytest-12/test_X/hermes"
+            "/tmp/pytest-of-user/pytest-12/test_X/savarez"
         )
         assert _looks_like_test_tempdir(
             "/private/var/folders/zz/T/pytest-of-bob/pytest-1"
         )
 
     def test_tempdir_detector_accepts_real_hermes_home(self):
-        assert not _looks_like_test_tempdir("/Users/alice/.hermes")
-        assert not _looks_like_test_tempdir("/home/bob/.hermes")
-        assert not _looks_like_test_tempdir("/opt/hermes")
+        assert not _looks_like_test_tempdir("/Users/alice/.savarez")
+        assert not _looks_like_test_tempdir("/home/bob/.savarez")
+        assert not _looks_like_test_tempdir("/opt/savarez")
         assert not _looks_like_test_tempdir("")
 
     def test_pytest_tempdir_not_burned_into_mcp_env(self, monkeypatch):
@@ -842,7 +842,7 @@ class TestHermesHomeLeakGuard:
         # We can't easily create one in the test, so just use a stable path
         # outside any tempdir-detector needle. The detector checks for tempdir
         # markers, not for path existence.
-        real_path = "/Users/alice/.hermes"
+        real_path = "/Users/alice/.savarez"
         monkeypatch.setenv("SAVAREZ_HOME", real_path)
         entry = _build_hermes_tools_mcp_entry()
         env = entry.get("env", {})

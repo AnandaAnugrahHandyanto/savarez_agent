@@ -7,7 +7,7 @@
 #
 # Strategy (first hit wins — respects the user's existing tooling):
 #   1. modern `node` already on PATH
-#   2. ~/.savarez/node/ from a prior Hermes-managed install
+#   2. ~/.savarez/node/ from a prior Savarez-managed install
 #   3. fnm, proto, nvm (in that order) if the user already uses a version manager
 #   4. Termux `pkg`, macOS Homebrew
 #   5. pinned nodejs.org tarball into ~/.savarez/node/ (always works, zero shell rc edits)
@@ -229,7 +229,7 @@ ensure_node() {
     if [ -x "$SAVAREZ_HOME/node/bin/node" ]; then
         export PATH="$SAVAREZ_HOME/node/bin:$PATH"
         if _nb_have_modern_node; then
-            _nb_ok "Node $(node --version) found (Hermes-managed)"
+            _nb_ok "Node $(node --version) found (Savarez-managed)"
             HERMES_NODE_AVAILABLE=true
             return 0
         fi

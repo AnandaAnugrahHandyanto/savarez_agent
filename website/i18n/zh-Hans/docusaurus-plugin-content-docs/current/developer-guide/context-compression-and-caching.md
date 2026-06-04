@@ -40,7 +40,7 @@ context:
 
 ## 双重压缩系统
 
-Hermes 有两个独立运行的压缩层：
+Savarez 有两个独立运行的压缩层：
 
 ```
                      ┌──────────────────────────┐
@@ -264,7 +264,7 @@ max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 
 ### 策略：system_and_3
 
-Anthropic 每次请求最多允许 4 个 `cache_control` 断点。Hermes 使用"system_and_3"策略：
+Anthropic 每次请求最多允许 4 个 `cache_control` 断点。Savarez 使用"system_and_3"策略：
 
 ```
 Breakpoint 1: System prompt           (stable across all turns)

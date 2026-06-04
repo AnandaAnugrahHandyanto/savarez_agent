@@ -2,7 +2,7 @@
 
 Ported from openai/codex#18646 (`feat: add --ignore-user-config and --ignore-rules`).
 Codex's flags fully isolate a run from user-level config and exec-policy .rules
-files. In Hermes the equivalent isolation is:
+files. In Savarez the equivalent isolation is:
 
 * ``--ignore-user-config`` → skip ``~/.savarez/config.yaml`` in ``load_cli_config()``
   (credentials in ``.env`` are still loaded).
@@ -213,7 +213,7 @@ class TestArgparseFlagsRegistered:
         # two flags under test. If someone removes the flag from main.py, this
         # test keeps passing in isolation — but the E2E test below catches it.
         import argparse
-        parser = argparse.ArgumentParser(prog="hermes")
+        parser = argparse.ArgumentParser(prog="savarez")
         subs = parser.add_subparsers(dest="command")
         chat = subs.add_parser("chat")
         chat.add_argument("--ignore-user-config", action="store_true", default=False)
@@ -224,7 +224,7 @@ class TestArgparseFlagsRegistered:
         assert args.ignore_rules is True
 
     def test_main_py_registers_both_flags(self):
-        """E2E: the real hermes parser accepts both flags."""
+        """E2E: the real savarez parser accepts both flags."""
         from hermes_cli._parser import build_top_level_parser
 
         parser, _subparsers, chat_parser = build_top_level_parser()

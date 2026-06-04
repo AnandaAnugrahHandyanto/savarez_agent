@@ -42,13 +42,13 @@ savarez dashboard --no-open
 
 ## Prerequisites
 
-The default `hermes-agent` install does not ship the HTTP stack or PTY helper — those are optional extras. The **web dashboard** needs FastAPI and Uvicorn (`web` extra). The **Chat** tab also needs `ptyprocess` to spawn the embedded TUI behind a pseudo-terminal (`pty` extra on POSIX). Install both with:
+The default `savarez-agent` install does not ship the HTTP stack or PTY helper — those are optional extras. The **web dashboard** needs FastAPI and Uvicorn (`web` extra). The **Chat** tab also needs `ptyprocess` to spawn the embedded TUI behind a pseudo-terminal (`pty` extra on POSIX). Install both with:
 
 ```bash
-pip install 'hermes-agent[web,pty]'
+pip install 'savarez-agent[web,pty]'
 ```
 
-The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `pip install hermes-agent[all]` includes both extras and is the easiest path if you also want messaging/voice/etc.
+The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `pip install savarez-agent[all]` includes both extras and is the easiest path if you also want messaging/voice/etc.
 
 When you run `savarez dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
 
@@ -69,12 +69,12 @@ The status page auto-refreshes every 5 seconds.
 
 ### Chat
 
-The **Chat** tab embeds the full Hermes TUI (the same interface you get from `hermes --tui`) directly in the browser. Everything you can do in the terminal TUI — slash commands, model picker, tool-call cards, markdown streaming, clarify/sudo/approval prompts, skin theming — works identically here, because the dashboard is running the real TUI binary and rendering its ANSI output through [xterm.js](https://xtermjs.org/) with its WebGL renderer for pixel-perfect cell layout.
+The **Chat** tab embeds the full Savarez TUI (the same interface you get from `savarez --tui`) directly in the browser. Everything you can do in the terminal TUI — slash commands, model picker, tool-call cards, markdown streaming, clarify/sudo/approval prompts, skin theming — works identically here, because the dashboard is running the real TUI binary and rendering its ANSI output through [xterm.js](https://xtermjs.org/) with its WebGL renderer for pixel-perfect cell layout.
 
 **How it works:**
 
 - `/api/pty` opens a WebSocket authenticated with the dashboard's session token
-- The server spawns `hermes --tui` behind a POSIX pseudo-terminal
+- The server spawns `savarez --tui` behind a POSIX pseudo-terminal
 - Keystrokes travel to the PTY; ANSI output streams back to the browser
 - xterm.js's WebGL renderer paints each cell to an integer-pixel grid; mouse tracking (SGR 1006), wide characters (Unicode 11), and box-drawing glyphs all render natively
 - Resizing the browser window resizes the TUI via the `@xterm/addon-fit` addon
@@ -83,17 +83,17 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 
 **Prerequisites:**
 
-- Node.js (same requirement as `hermes --tui`; the TUI bundle is built on first launch)
-- `ptyprocess` — installed by the `pty` extra (`pip install 'hermes-agent[web,pty]'`, or `[all]` covers both)
+- Node.js (same requirement as `savarez --tui`; the TUI bundle is built on first launch)
+- `ptyprocess` — installed by the `pty` extra (`pip install 'savarez-agent[web,pty]'`, or `[all]` covers both)
 - POSIX kernel (Linux, macOS, or WSL2).  The `/chat` terminal pane specifically needs a POSIX PTY — native Windows Python has no equivalent, so on a native Windows install the rest of the dashboard (sessions, jobs, metrics, config editor) works but the `/chat` tab will show a banner telling you to use WSL2 for that feature.
 
 Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
 
-To point [Hermes Desktop](#connecting-hermes-desktop-to-a-remote-backend) at a dashboard running on another machine instead of its own bundled backend, see the remote-backend section below.
+To point [Savarez Desktop](#connecting-savarez-desktop-to-a-remote-backend) at a dashboard running on another machine instead of its own bundled backend, see the remote-backend section below.
 
-### Connecting Hermes Desktop to a remote backend
+### Connecting Savarez Desktop to a remote backend
 
-Hermes Desktop normally launches its own local backend, but it can also attach to a dashboard running on a remote machine (a VM, a homelab box, etc.) via **Settings → Gateway → Remote gateway**. This is the most common source of "Desktop says the backend is ready but chat never works" reports, because Desktop's readiness check verifies less than the live chat connection actually needs.
+Savarez Desktop normally launches its own local backend, but it can also attach to a dashboard running on a remote machine (a VM, a homelab box, etc.) via **Settings → Gateway → Remote gateway**. This is the most common source of "Desktop says the backend is ready but chat never works" reports, because Desktop's readiness check verifies less than the live chat connection actually needs.
 
 Desktop's "remote backend is ready" probe only hits `GET /api/status`, which is a public endpoint — it answers as soon as *any* dashboard is running on the host. The live chat connection is a **separate** WebSocket to `/api/ws` (and `/api/pty`), and that socket is gated by two more checks the status probe never touches:
 
@@ -106,7 +106,7 @@ Set a username and password, then run the dashboard bound to a reachable address
 
 ```ini
 [Service]
-EnvironmentFile=%h/.hermes/.env
+EnvironmentFile=%h/.savarez/.env
 ExecStart=/path/to/venv/bin/python -m hermes_cli.main dashboard \
     --host 0.0.0.0 --port 9119 --no-open
 ```
@@ -276,7 +276,7 @@ hint when it isn't.
 
 Approve and revoke messaging users without the CLI — how a remote admin
 onboards Telegram/Discord/etc. users to a paired gateway. Full parity with
-`hermes pairing`.
+`savarez pairing`.
 
 - **Pending requests** — each shows platform, code, user, and age, with an Approve button
 - **Approved users** — each shows platform and user, with a Revoke button
@@ -286,7 +286,7 @@ onboards Telegram/Discord/etc. users to a paired gateway. Full parity with
 
 ### Channels
 
-Connect Hermes to any messaging platform from the browser — full parity with
+Connect Savarez to any messaging platform from the browser — full parity with
 `savarez setup gateway`. The page lists every supported channel (Telegram,
 Discord, Slack, Matrix, Mattermost, WhatsApp, Signal, BlueBubbles/iMessage,
 Email, SMS/Twilio, DingTalk, Feishu/Lark, WeCom, WeChat, QQ Bot, Yuanbao, plus
@@ -303,9 +303,9 @@ the API server and webhook endpoints) with its live connection status.
 
 A consolidated administration panel for installation-wide operations:
 
-- **Host** — live system stats: OS / kernel, architecture, hostname, Python and Hermes versions, CPU core count + utilization, memory, disk usage of the Hermes home, uptime, and load average. (CPU/memory/disk come from `psutil` when installed; identity fields are always shown.) The Savarez version shows an **update-status badge** (up to date / N commits behind) and a **Check for updates** button. When an update is available on a git or pip install, an **Update now** button opens a confirmation dialog — showing how many commits you'll pull — before running `savarez update` in the background. On Docker/Nix/Homebrew installs the dashboard can't apply the update in place, so it shows the correct out-of-band command instead.
-- **Nous Portal** — login status, the active inference provider, and the Tool Gateway routing table (which tools run via the Portal vs. locally), with a link to manage your subscription. Read-only mirror of `hermes portal`.
-- **Skill curator** — the background skill-maintenance status (active / paused, interval, last run) with pause/resume and a run-now button. Mirrors `hermes curator`.
+- **Host** — live system stats: OS / kernel, architecture, hostname, Python and Savarez versions, CPU core count + utilization, memory, disk usage of the Savarez home, uptime, and load average. (CPU/memory/disk come from `psutil` when installed; identity fields are always shown.) The Savarez version shows an **update-status badge** (up to date / N commits behind) and a **Check for updates** button. When an update is available on a git or pip install, an **Update now** button opens a confirmation dialog — showing how many commits you'll pull — before running `savarez update` in the background. On Docker/Nix/Homebrew installs the dashboard can't apply the update in place, so it shows the correct out-of-band command instead.
+- **Nous Portal** — login status, the active inference provider, and the Tool Gateway routing table (which tools run via the Portal vs. locally), with a link to manage your subscription. Read-only mirror of `savarez portal`.
+- **Skill curator** — the background skill-maintenance status (active / paused, interval, last run) with pause/resume and a run-now button. Mirrors `savarez curator`.
 - **Gateway** — start, stop, and restart the messaging gateway, with live status (running/stopped, PID, state)
 - **Memory** — pick the external memory provider (or built-in only), and reset the built-in `MEMORY.md` / `USER.md` stores
 - **Credential pool** — add and remove the rotating API keys the agent round-robins through (per provider). Keys are redacted in the list; the raw value only ever reaches the agent.
@@ -474,7 +474,7 @@ same auth gate as the rest of `/api/`.
 | `GET /api/ops/checkpoints` · `POST .../prune` | Inspect / prune the `/rollback` store |
 | `POST /api/ops/hooks` · `DELETE /api/ops/hooks` | Create / remove a shell hook (consent-gated) |
 | `GET /api/system/stats` | Host stats — OS, CPU, memory, disk, uptime |
-| `GET /api/hermes/update/check` | Report update availability (commits behind, install method) without applying. `?force=1` busts the 6h cache |
+| `GET /api/savarez/update/check` | Report update availability (commits behind, install method) without applying. `?force=1` busts the 6h cache |
 | `GET /api/curator` · `PUT .../paused` · `POST .../run` | Skill-curator status + pause/resume + run |
 | `GET /api/portal` | Nous Portal auth + Tool Gateway routing (read-only) |
 | `POST /api/ops/prompt-size` · `/dump` · `/config-migrate` | Diagnostics (backgrounded) |
@@ -491,7 +491,7 @@ same auth gate as the rest of `/api/`.
 
 When the dashboard is bound to a public or non-loopback address — anything other than `127.0.0.1` / `localhost` — Savarez AI Agent engages an auth gate. Every request must carry a verified session cookie or it's bounced to the login page. Two providers ship in the box:
 
-- **[Username/password](#usernamepassword-provider-no-oauth-idp)** — the simplest way to put auth on a self-hosted / on-prem / homelab dashboard (and the recommended path for a [remote Hermes Desktop connection](#connecting-hermes-desktop-to-a-remote-backend)). No external identity provider.
+- **[Username/password](#usernamepassword-provider-no-oauth-idp)** — the simplest way to put auth on a self-hosted / on-prem / homelab dashboard (and the recommended path for a [remote Savarez Desktop connection](#connecting-savarez-desktop-to-a-remote-backend)). No external identity provider.
 - **OAuth (Nous Portal)** — for hosted deployments (typically Fly.io) where the dashboard is reachable over the public internet.
 
 Operator-owned dashboards bound to loopback are unaffected — no auth, no login page.
@@ -626,8 +626,8 @@ dashboard:
   oauth:
     provider: self-hosted
     self_hosted:
-      issuer: https://auth.example.com/application/o/hermes/   # required
-      client_id: hermes-dashboard                              # required
+      issuer: https://auth.example.com/application/o/savarez/   # required
+      client_id: savarez-dashboard                              # required
       scopes: "openid profile email"                           # optional (this is the default)
 ```
 
@@ -660,15 +660,15 @@ The ID token is what establishes identity — the access token is treated as opa
 
 [Keycloak](https://www.keycloak.org/) is one of the easiest self-hosted OIDC servers to stand up for a local test — it runs as a single container in dev mode (in-memory DB) and exposes textbook OIDC discovery. This walkthrough gets you from nothing to a working dashboard login in a few minutes.
 
-**1. Run Keycloak with a pre-configured realm.** Save this realm export as `realm-hermes.json` — it defines a `savarez` realm, a **public PKCE client** (`hermes-dashboard`), and a test user, all imported on boot so there's nothing to click in the admin UI:
+**1. Run Keycloak with a pre-configured realm.** Save this realm export as `realm-savarez.json` — it defines a `savarez` realm, a **public PKCE client** (`savarez-dashboard`), and a test user, all imported on boot so there's nothing to click in the admin UI:
 
 ```json
 {
-  "realm": "hermes",
+  "realm": "savarez",
   "enabled": true,
   "clients": [
     {
-      "clientId": "hermes-dashboard",
+      "clientId": "savarez-dashboard",
       "name": "Savarez AI Agent Dashboard",
       "enabled": true,
       "publicClient": true,
@@ -701,21 +701,21 @@ Start it (Keycloak 26+), mounting that file into the import directory:
 docker run --rm -p 8080:8080 \
   -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
   -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
-  -v "$PWD/realm-hermes.json:/opt/keycloak/data/import/realm-hermes.json:ro" \
+  -v "$PWD/realm-savarez.json:/opt/keycloak/data/import/realm-savarez.json:ro" \
   quay.io/keycloak/keycloak:26.0 \
   start-dev --import-realm
 ```
 
 Once it's up, the realm advertises standard OIDC discovery at
-`http://localhost:8080/realms/hermes/.well-known/openid-configuration` (issuer
-`http://localhost:8080/realms/hermes`). The admin console is at
+`http://localhost:8080/realms/savarez/.well-known/openid-configuration` (issuer
+`http://localhost:8080/realms/savarez`). The admin console is at
 `http://localhost:8080/` (`admin` / `admin`).
 
 **2. Point the dashboard at it.** The self-hosted plugin permits a loopback `http://` issuer (HTTPS is required for any non-loopback issuer), so the local Keycloak works as-is:
 
 ```bash
-export HERMES_DASHBOARD_OIDC_ISSUER="http://localhost:8080/realms/hermes"
-export HERMES_DASHBOARD_OIDC_CLIENT_ID="hermes-dashboard"
+export HERMES_DASHBOARD_OIDC_ISSUER="http://localhost:8080/realms/savarez"
+export HERMES_DASHBOARD_OIDC_CLIENT_ID="savarez-dashboard"
 export HERMES_DASHBOARD_PUBLIC_URL="http://localhost:9119"
 savarez dashboard --host 0.0.0.0 --port 9119 --no-open
 ```
@@ -729,7 +729,7 @@ engages the OAuth gate.
 
 > If you bind or browse on a different host/port, add that origin's
 > `…/auth/callback` to the client's **Valid redirect URIs** in the Keycloak
-> admin console (Clients → hermes-dashboard → Settings). The same pattern works
+> admin console (Clients → savarez-dashboard → Settings). The same pattern works
 > for Authentik, Zitadel, Authelia, and other OIDC servers — only the issuer
 > URL and client registration UI differ.
 
@@ -741,7 +741,7 @@ For deploys behind reverse proxies that don't reliably forward those headers (ma
 
 ```yaml
 dashboard:
-  public_url: "https://dashboard.example.com/hermes"
+  public_url: "https://dashboard.example.com/savarez"
 ```
 
 When set, the OAuth callback URL becomes `<public_url>/auth/callback` verbatim — `X-Forwarded-Prefix` is ignored on that code path because the operator has explicitly declared the public URL. This is intentional: stacking the prefix on top would double-prefix the common case where the prefix is already baked into `public_url`.
@@ -838,9 +838,9 @@ curl -s http://127.0.0.1:9119/api/status | jq '.auth_required, .auth_providers'
 
 The dashboard's React StatusPage shows the same fields under "Web server". A sidebar AuthWidget surfaces the current identity once you've signed in.
 
-## Connecting Hermes Desktop to a remote backend
+## Connecting Savarez Desktop to a remote backend
 
-Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateway → Remote gateway**, which asks for a **Remote URL** and a way to **Sign in**. (For the desktop app itself — install, settings, chat — see the [Hermes Desktop](/user-guide/desktop) page.)
+Savarez Desktop can drive a Savarez backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateway → Remote gateway**, which asks for a **Remote URL** and a way to **Sign in**. (For the desktop app itself — install, settings, chat — see the [Savarez Desktop](/user-guide/desktop) page.)
 
 You protect the remote dashboard with a **username and password** (the bundled [username/password provider](#usernamepassword-provider-no-oauth-idp)). Binding the dashboard to a non-loopback address engages its auth gate; the username/password provider is what the desktop app signs in against. Once signed in, Desktop reuses the session for the chat WebSocket automatically — there is no token to copy or paste.
 
@@ -863,17 +863,17 @@ savarez dashboard --no-open --host 0.0.0.0 --port 9119
 
 Prefer no plaintext at rest? Use `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH` with a scrypt hash instead — see [Username/password provider](#usernamepassword-provider-no-oauth-idp) for the full surface.
 
-If you run the dashboard as a systemd service, `~/.savarez/.env` is picked up automatically when the unit has `EnvironmentFile=%h/.hermes/.env`, so the credentials are in the environment at boot.
+If you run the dashboard as a systemd service, `~/.savarez/.env` is picked up automatically when the unit has `EnvironmentFile=%h/.savarez/.env`, so the credentials are in the environment at boot.
 
 :::warning
 The dashboard reads and writes your `.env` (API keys, secrets) and can run agent commands. Even behind a username and password, never expose it directly to the open internet. Put it behind a VPN. [Tailscale](https://tailscale.com/) is the clean option: bind to the machine's tailscale IP (`--host <tailscale-ip>`) and use `http://<tailscale-ip>:9119` as the Remote URL. Only devices on your tailnet can reach it.
 :::
 
-### In Hermes Desktop
+### In Savarez Desktop
 
 **Settings → Gateway → Remote gateway:**
 
-- **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` are supported if you front it with a reverse proxy)
+- **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/savarez` are supported if you front it with a reverse proxy)
 - **Sign in** — the app detects the username/password gateway and shows a **Sign in** button; click it and enter the credentials from step 1
 - **Save and reconnect** — switches the desktop shell onto the remote backend
 
@@ -937,8 +937,8 @@ Built-in themes:
 
 | Theme | Character |
 |-------|-----------|
-| **Hermes Teal** (`default`) | Dark teal + cream, system fonts, comfortable spacing |
-| **Hermes Teal (Large)** (`default-large`) | Same as default with 18px text and roomier spacing |
+| **Savarez Teal** (`default`) | Dark teal + cream, system fonts, comfortable spacing |
+| **Savarez Teal (Large)** (`default-large`) | Same as default with 18px text and roomier spacing |
 | **Midnight** (`midnight`) | Deep blue-violet, Inter + JetBrains Mono |
 | **Ember** (`ember`) | Warm crimson + bronze, Spectral serif + IBM Plex Mono |
 | **Mono** (`mono`) | Grayscale, IBM Plex, compact |

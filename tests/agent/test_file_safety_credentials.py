@@ -1,6 +1,6 @@
 """Tests for SAVAREZ_HOME credential-file read blocking in file_safety.
 
-Regression for https://github.com/NousResearch/hermes-agent/issues/17656 —
+Regression for https://github.com/NousResearch/savarez-agent/issues/17656 —
 ``read_file`` was previously only sandboxed against ``SAVAREZ_HOME`` itself,
 which left ``auth.json`` and ``.anthropic_oauth.json`` (plaintext provider
 keys + OAuth tokens) readable by the agent. A prompt-injection reaching
@@ -100,7 +100,7 @@ def test_skills_hub_block_still_applies(fake_home):
     hub_file = _create(fake_home, "skills/.hub/manifest.json")
     err = get_read_block_error(str(hub_file))
     assert err is not None
-    assert "internal Hermes cache file" in err
+    assert "internal Savarez cache file" in err
 
 
 def test_path_traversal_resolves_to_blocked(fake_home, tmp_path):
@@ -249,7 +249,7 @@ def test_mcp_tokens_dir_itself_blocked(fake_home):
 def test_identically_named_hermes_files_outside_home_not_blocked(
     fake_home, tmp_path
 ):
-    """Hermes-specific filenames (``auth.json``, ``mcp-tokens/``, ``google_oauth.json``)
+    """Savarez-specific filenames (``auth.json``, ``mcp-tokens/``, ``google_oauth.json``)
     outside SAVAREZ_HOME must remain readable — the gate is per-location for
     those, not per-filename. ``.env`` is the exception: it's blocked anywhere
     on disk (see test_project_local_env_blocked) because the basename always
@@ -301,7 +301,7 @@ def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):
     inherited by every profile."""
     import agent.file_safety as fs
 
-    root = tmp_path / "hermes"
+    root = tmp_path / "savarez"
     profile = root / "profiles" / "coder"
     profile.mkdir(parents=True)
     monkeypatch.setattr(fs, "_hermes_home_path", lambda: profile)

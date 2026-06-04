@@ -6,9 +6,9 @@ Source installs report their git revision live via ``git rev-parse`` (see
 the published Docker image because ``.dockerignore`` excludes ``.git``, so
 those callsites fall back to ``"(unknown)"`` / drop the banner suffix entirely.
 
-To make ``hermes dump`` and the startup banner identify the exact commit the
+To make ``savarez dump`` and the startup banner identify the exact commit the
 image was built from, the Docker build writes the build-time ``$HERMES_GIT_SHA``
-arg into ``<project_root>/.hermes_build_sha``.  This module is the single
+arg into ``<project_root>/.savarez_build_sha``.  This module is the single
 read-side helper consumed by both callsites — keeping the lookup in one place
 so the file path and missing-file behaviour stay consistent.
 
@@ -36,7 +36,7 @@ _BUILD_SHA_FILE = Path(__file__).parent.parent / ".hermes_build_sha"
 def get_build_sha(short: int = 8) -> Optional[str]:
     """Return the baked-in build SHA, truncated to ``short`` chars, or None.
 
-    Reads ``<project_root>/.hermes_build_sha`` if present.  The file is
+    Reads ``<project_root>/.savarez_build_sha`` if present.  The file is
     written by the Dockerfile's ``HERMES_GIT_SHA`` build-arg and contains
     the full 40-character commit hash on a single line.
     """

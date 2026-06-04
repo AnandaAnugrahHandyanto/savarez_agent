@@ -87,14 +87,14 @@ class TestCmdUpdatePip:
 
         mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
         monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.setattr(hm.sys, "prefix", "/tmp/hermes-launcher-venv")
+        monkeypatch.setattr(hm.sys, "prefix", "/tmp/savarez-launcher-venv")
         monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
 
         hm._cmd_update_pip(mock_args)
 
         assert mock_run.call_count == 1
-        assert mock_run.call_args.args[0] == ["/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent"]
-        assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"] == "/tmp/hermes-launcher-venv"
+        assert mock_run.call_args.args[0] == ["/usr/bin/uv", "pip", "install", "--upgrade", "savarez-agent"]
+        assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"] == "/tmp/savarez-launcher-venv"
 
     @patch("shutil.which", return_value="/usr/bin/uv")
     @patch("subprocess.run")
@@ -189,7 +189,7 @@ class TestCmdUpdateBranchFallback:
         """Regression for issue #26172: forks whose local HEAD already matches
         origin/main must still consult upstream/main before printing
         "Already up to date!" — otherwise a fork that's caught up to its own
-        origin but behind NousResearch/hermes-agent silently misses updates.
+        origin but behind NousResearch/savarez-agent silently misses updates.
         """
         from hermes_cli import main as hm
 
@@ -200,7 +200,7 @@ class TestCmdUpdateBranchFallback:
         with patch.object(
             hm,
             "_get_origin_url",
-            return_value="https://github.com/example/hermes-agent.git",
+            return_value="https://github.com/example/savarez-agent.git",
         ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
             cmd_update(mock_args)
 
@@ -431,9 +431,9 @@ class TestCmdUpdateProfileSkillSync:
             branch="main", verify_ok=True, commit_count="1"
         )
 
-        default_p = SimpleNamespace(name="default", path=Path("/fake/.hermes"))
-        active_p = SimpleNamespace(name="bit", path=Path("/fake/.hermes/profiles/bit"))
-        other_p = SimpleNamespace(name="work", path=Path("/fake/.hermes/profiles/work"))
+        default_p = SimpleNamespace(name="default", path=Path("/fake/.savarez"))
+        active_p = SimpleNamespace(name="bit", path=Path("/fake/.savarez/profiles/bit"))
+        other_p = SimpleNamespace(name="work", path=Path("/fake/.savarez/profiles/work"))
         all_profiles = [default_p, active_p, other_p]
 
         synced_paths = []
@@ -469,7 +469,7 @@ class TestCmdUpdateProfileSkillSync:
             branch="main", verify_ok=True, commit_count="1"
         )
 
-        default_p = SimpleNamespace(name="default", path=Path("/fake/.hermes"))
+        default_p = SimpleNamespace(name="default", path=Path("/fake/.savarez"))
         synced_paths = []
 
         def fake_seed(path, quiet=False):

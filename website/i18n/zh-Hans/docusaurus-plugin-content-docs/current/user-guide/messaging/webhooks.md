@@ -186,7 +186,7 @@ gh auth login
 
 ### 4. 测试
 
-在仓库中打开一个 pull request。webhook 触发后，Hermes 处理事件并在 PR 上发布审查评论。
+在仓库中打开一个 pull request。webhook 触发后，Savarez 处理事件并在 PR 上发布审查评论。
 
 ---
 

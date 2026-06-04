@@ -1,4 +1,4 @@
-"""Tests for Codex auth — tokens stored in Hermes auth store (~/.savarez/auth.json)."""
+"""Tests for Codex auth — tokens stored in Savarez auth store (~/.savarez/auth.json)."""
 
 import json
 import time
@@ -23,7 +23,7 @@ from hermes_cli.auth import (
 
 
 def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refresh_token: str = "refresh"):
-    """Write Codex tokens into the Hermes auth store."""
+    """Write Codex tokens into the Savarez auth store."""
     hermes_home.mkdir(parents=True, exist_ok=True)
     auth_store = {
         "version": 1,
@@ -51,7 +51,7 @@ def _jwt_with_exp(exp_epoch: int) -> str:
 
 
 def test_read_codex_tokens_success(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes"
+    hermes_home = tmp_path / "savarez"
     _setup_hermes_auth(hermes_home)
     monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
 
@@ -61,7 +61,7 @@ def test_read_codex_tokens_success(tmp_path, monkeypatch):
 
 
 def test_read_codex_tokens_missing(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes"
+    hermes_home = tmp_path / "savarez"
     hermes_home.mkdir(parents=True, exist_ok=True)
     # Empty auth store
     (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
@@ -73,7 +73,7 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
 
 
 def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes"
+    hermes_home = tmp_path / "savarez"
     _setup_hermes_auth(hermes_home, access_token="")
     monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
 
@@ -84,7 +84,7 @@ def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkey
 
 
 def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes"
+    hermes_home = tmp_path / "savarez"
     expiring_token = _jwt_with_exp(int(time.time()) - 10)
     _setup_hermes_auth(hermes_home, access_token=expiring_token, refresh_token="refresh-old")
     monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
@@ -104,7 +104,7 @@ def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, mo
 
 
 def test_resolve_codex_runtime_credentials_force_refresh(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes"
+    hermes_home = tmp_path / "savarez"
     _setup_hermes_auth(hermes_home, access_token="access-current", refresh_token="refresh-old")
     monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
 
@@ -132,7 +132,7 @@ def test_resolve_codex_runtime_credentials_falls_back_to_pool_when_singleton_emp
     re-auth, restore from backup) hit a bare HTTP 401 on chat but worked fine on
     auxiliary calls.  The fallback closes that divergence.
     """
-    hermes_home = tmp_path / "hermes"
+    hermes_home = tmp_path / "savarez"
     hermes_home.mkdir(parents=True, exist_ok=True)
     # Singleton: empty tokens (would normally raise AuthError).
     # Pool: valid access_token.
@@ -164,7 +164,7 @@ def test_resolve_codex_runtime_credentials_pool_fallback_skips_exhausted(tmp_pat
     """The pool fallback skips entries currently in an exhaustion cooldown window."""
     import time as _time
 
-    hermes_home = tmp_path / "hermes"
+    hermes_home = tmp_path / "savarez"
     hermes_home.mkdir(parents=True, exist_ok=True)
     future_reset = _time.time() + 3600  # 1h cooldown remaining
     auth_store = {
@@ -195,7 +195,7 @@ def test_resolve_codex_runtime_credentials_pool_fallback_skips_exhausted(tmp_pat
 
 def test_resolve_codex_runtime_credentials_pool_fallback_no_usable_entry(tmp_path, monkeypatch):
     """When both singleton and pool are empty/unusable, the original AuthError propagates."""
-    hermes_home = tmp_path / "hermes"
+    hermes_home = tmp_path / "savarez"
     hermes_home.mkdir(parents=True, exist_ok=True)
     auth_store = {
         "version": 1,
@@ -221,7 +221,7 @@ def test_resolve_provider_explicit_codex_does_not_fallback(monkeypatch):
 
 
 def test_save_codex_tokens_roundtrip(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes"
+    hermes_home = tmp_path / "savarez"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
     monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
@@ -241,7 +241,7 @@ def test_save_codex_tokens_syncs_credential_pool(tmp_path, monkeypatch):
     holding a consumed refresh token and stale error markers, causing an
     immediate 401 token_invalidated on the next request.
     """
-    hermes_home = tmp_path / "hermes"
+    hermes_home = tmp_path / "savarez"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps({
         "version": 1,
@@ -315,7 +315,7 @@ def test_save_codex_tokens_syncs_manual_device_code_entries(tmp_path, monkeypatc
     pool — but NOT independent ``manual:api_key`` entries (separate accounts /
     explicit API keys).
     """
-    hermes_home = tmp_path / "hermes"
+    hermes_home = tmp_path / "savarez"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps({
         "version": 1,
@@ -402,8 +402,8 @@ def test_import_codex_cli_tokens_missing(tmp_path, monkeypatch):
 
 
 def test_codex_tokens_not_written_to_shared_file(tmp_path, monkeypatch):
-    """Verify _save_codex_tokens writes only to Hermes auth store, not ~/.codex/."""
-    hermes_home = tmp_path / "hermes"
+    """Verify _save_codex_tokens writes only to Savarez auth store, not ~/.codex/."""
+    hermes_home = tmp_path / "savarez"
     codex_home = tmp_path / "codex-cli"
     hermes_home.mkdir(parents=True, exist_ok=True)
     codex_home.mkdir(parents=True, exist_ok=True)
@@ -412,23 +412,23 @@ def test_codex_tokens_not_written_to_shared_file(tmp_path, monkeypatch):
     monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-    _save_codex_tokens({"access_token": "hermes-at", "refresh_token": "hermes-rt"})
+    _save_codex_tokens({"access_token": "savarez-at", "refresh_token": "savarez-rt"})
 
-    # ~/.codex/auth.json should NOT exist — _save_codex_tokens only touches Hermes store
+    # ~/.codex/auth.json should NOT exist — _save_codex_tokens only touches Savarez store
     assert not (codex_home / "auth.json").exists()
 
-    # Hermes auth store should have the tokens
+    # Savarez auth store should have the tokens
     data = _read_codex_tokens()
-    assert data["tokens"]["access_token"] == "hermes-at"
+    assert data["tokens"]["access_token"] == "savarez-at"
 
 
 def test_resolve_returns_hermes_auth_store_source(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes"
+    hermes_home = tmp_path / "savarez"
     _setup_hermes_auth(hermes_home)
     monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
 
     creds = resolve_codex_runtime_credentials()
-    assert creds["source"] == "hermes-auth-store"
+    assert creds["source"] == "savarez-auth-store"
     assert creds["provider"] == "openai-codex"
     assert creds["base_url"] == DEFAULT_CODEX_BASE_URL
 

@@ -19,7 +19,7 @@ from hermes_cli import kanban_db as kb
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated SAVAREZ_HOME with an empty kanban DB."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -90,7 +90,7 @@ def test_cross_process_init_lock_uses_windows_byte_range_lock(tmp_path, monkeypa
 
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(home))
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
@@ -1508,7 +1508,7 @@ def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeyp
 
 def test_has_spawnable_ready_true_when_real_profile_present(kanban_home, monkeypatch):
     """``has_spawnable_ready`` returns True as soon as ANY ready task
-    has an assignee that maps to a real Hermes profile — preserves the
+    has an assignee that maps to a real Savarez profile — preserves the
     real "stuck" signal when a daily/agent task is queued."""
     from hermes_cli import profiles
     monkeypatch.setattr(
@@ -1516,7 +1516,7 @@ def test_has_spawnable_ready_true_when_real_profile_present(kanban_home, monkeyp
     )
     with kb.connect() as conn:
         kb.create_task(conn, title="terminal-task", assignee="orion-cc")
-        kb.create_task(conn, title="hermes-task", assignee="daily")
+        kb.create_task(conn, title="savarez-task", assignee="daily")
         assert kb.has_spawnable_ready(conn) is True
 
 
@@ -1942,7 +1942,7 @@ def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
         kb.set_workspace_path(conn, t, ws)
         assert ws.is_dir()
         kb.complete_task(conn, t, result="ok")
-    assert not ws.exists(), "Hermes-managed scratch dir should be cleaned up"
+    assert not ws.exists(), "Savarez-managed scratch dir should be cleaned up"
 
 
 def test_cleanup_workspace_refuses_path_outside_scratch_root(kanban_home, tmp_path):
@@ -1983,7 +1983,7 @@ def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeyp
     cleanup containment check must treat paths under it as managed even when
     they sit outside the active kanban home.
     """
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -2021,13 +2021,13 @@ def test_is_managed_scratch_path_rejects_real_source_tree(kanban_home, tmp_path)
 
 
 def test_is_managed_scratch_path_rejects_kanban_metadata_subtrees(kanban_home):
-    """Hermes' own DB/metadata/log subtrees under ``<kanban_home>/kanban`` are NOT managed.
+    """Savarez' own DB/metadata/log subtrees under ``<kanban_home>/kanban`` are NOT managed.
 
     Regression guard for the Copilot finding on #28819: a scratch task whose
     ``workspace_path`` was mis-set to the kanban home, the logs dir, or a
     board's metadata dir (i.e. the board root itself, not its ``workspaces/``
     child) must be refused. Without this, the containment check would happily
-    ``shutil.rmtree`` Hermes' DB/metadata/logs on task completion.
+    ``shutil.rmtree`` Savarez' DB/metadata/logs on task completion.
     """
     kanban_root = kanban_home / "kanban"
     kanban_root.mkdir(parents=True, exist_ok=True)
@@ -2200,7 +2200,7 @@ def test_session_id_compose_with_tenant_filter(kanban_home):
 # Shared-board path resolution (issue #19348)
 #
 # The kanban board is a cross-profile coordination primitive: a worker
-# spawned with `hermes -p <profile>` must read/write the same kanban.db
+# spawned with `savarez -p <profile>` must read/write the same kanban.db
 # as the dispatcher that claimed the task. These tests exercise the
 # path-resolution layer directly and would have caught the regression
 # where `kanban_db_path()` resolved to the active profile's SAVAREZ_HOME.
@@ -2219,7 +2219,7 @@ class TestSharedBoardPaths:
         self, tmp_path, monkeypatch
     ):
         # Standard install: SAVAREZ_HOME == ~/.savarez, no profile active.
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".savarez"
         default_home.mkdir()
         self._set_home(monkeypatch, tmp_path, default_home)
 
@@ -2238,7 +2238,7 @@ class TestSharedBoardPaths:
         # worker spawned with -p <profile> previously resolved to
         # ~/.savarez/profiles/<profile>/kanban.db. After the fix both
         # converge on ~/.savarez/kanban.db.
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".savarez"
         default_home.mkdir()
         profile_home = default_home / "profiles" / "nehemiahkanban"
         profile_home.mkdir(parents=True)
@@ -2264,7 +2264,7 @@ class TestSharedBoardPaths:
         # End-to-end convergence: resolve the path under each side's
         # SAVAREZ_HOME and confirm equality. This is the property the
         # dispatcher/worker handoff actually depends on.
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".savarez"
         default_home.mkdir()
         profile_home = default_home / "profiles" / "coder"
         profile_home.mkdir(parents=True)
@@ -2275,7 +2275,7 @@ class TestSharedBoardPaths:
         dispatcher_ws = kb.workspaces_root()
         dispatcher_log = kb.worker_log_path("t_handoff")
 
-        # Worker's perspective (profile activated by `hermes -p coder`).
+        # Worker's perspective (profile activated by `savarez -p coder`).
         monkeypatch.setenv("SAVAREZ_HOME", str(profile_home))
         worker_db = kb.kanban_db_path()
         worker_ws = kb.workspaces_root()
@@ -2291,8 +2291,8 @@ class TestSharedBoardPaths:
         # Docker / custom deployment: SAVAREZ_HOME points outside ~/.savarez.
         # `get_default_hermes_root()` returns env_home directly when it
         # is not a `<root>/profiles/<name>` shape and not under
-        # `Path.home() / ".hermes"`.
-        custom_root = tmp_path / "opt" / "hermes"
+        # `Path.home() / ".savarez"`.
+        custom_root = tmp_path / "opt" / "savarez"
         custom_root.mkdir(parents=True)
         self._set_home(monkeypatch, tmp_path, custom_root)
 
@@ -2302,10 +2302,10 @@ class TestSharedBoardPaths:
     def test_docker_profile_layout_uses_grandparent(
         self, tmp_path, monkeypatch
     ):
-        # Docker profile shape: SAVAREZ_HOME=/opt/hermes/profiles/coder;
-        # `get_default_hermes_root()` walks up to /opt/hermes because
+        # Docker profile shape: SAVAREZ_HOME=/opt/savarez/profiles/coder;
+        # `get_default_hermes_root()` walks up to /opt/savarez because
         # the immediate parent dir is named "profiles".
-        custom_root = tmp_path / "opt" / "hermes"
+        custom_root = tmp_path / "opt" / "savarez"
         profile = custom_root / "profiles" / "coder"
         profile.mkdir(parents=True)
         self._set_home(monkeypatch, tmp_path, profile)
@@ -2318,7 +2318,7 @@ class TestSharedBoardPaths:
     ):
         # Explicit override: HERMES_KANBAN_HOME beats every other
         # resolution rule.
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".savarez"
         profile_home = default_home / "profiles" / "any"
         profile_home.mkdir(parents=True)
         override = tmp_path / "shared-board"
@@ -2334,7 +2334,7 @@ class TestSharedBoardPaths:
 
     def test_empty_override_falls_through(self, tmp_path, monkeypatch):
         # Empty/whitespace override is treated as unset.
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".savarez"
         default_home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("SAVAREZ_HOME", str(default_home))
@@ -2348,7 +2348,7 @@ class TestSharedBoardPaths:
         # Belt-and-suspenders: round-trip a task across the two
         # SAVAREZ_HOME perspectives via a real SQLite file. Without the
         # fix the worker would open a different file and see no rows.
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".savarez"
         default_home.mkdir()
         profile_home = default_home / "profiles" / "nehemiahkanban"
         profile_home.mkdir(parents=True)
@@ -2372,7 +2372,7 @@ class TestSharedBoardPaths:
         # HERMES_KANBAN_DB pins the file path directly and beats both
         # HERMES_KANBAN_HOME and the `get_default_hermes_root()` path.
         # This is the env the dispatcher injects into workers.
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".savarez"
         default_home.mkdir()
         umbrella = tmp_path / "umbrella"
         umbrella.mkdir()
@@ -2393,7 +2393,7 @@ class TestSharedBoardPaths:
         self, tmp_path, monkeypatch
     ):
         # HERMES_KANBAN_WORKSPACES_ROOT pins the workspaces root directly.
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".savarez"
         default_home.mkdir()
         umbrella = tmp_path / "umbrella"
         umbrella.mkdir()
@@ -2414,7 +2414,7 @@ class TestSharedBoardPaths:
     ):
         # Empty/whitespace pins are treated as unset, same as
         # HERMES_KANBAN_HOME.
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".savarez"
         default_home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("SAVAREZ_HOME", str(default_home))
@@ -2431,7 +2431,7 @@ class TestSharedBoardPaths:
         # and HERMES_KANBAN_WORKSPACES_ROOT into the worker env so the
         # worker converges on the dispatcher's paths even when the
         # `-p <profile>` flag rewrites SAVAREZ_HOME.
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".savarez"
         default_home.mkdir()
         self._set_home(monkeypatch, tmp_path, default_home)
 
@@ -2562,7 +2562,7 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     Without this fallback, the gateway's kanban dispatcher crashes every
     60s and the kanban migration (``consecutive_failures`` ADD COLUMN) is
     retried forever — which is what the real-world user report shows
-    (see hermes-agent issue #22032).
+    (see savarez-agent issue #22032).
 
     NOTE: We do NOT use the ``kanban_home`` fixture here because that
     fixture pre-initializes the DB via ``kb.init_db()`` — putting the
@@ -2576,7 +2576,7 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -2625,7 +2625,7 @@ def test_unlink_tasks_triggers_recompute_ready(kanban_home):
     complete_task and unblock_task.
 
     Before the fix, child stayed 'todo' indefinitely after unlink; only the
-    next dispatcher tick or a manual 'hermes kanban recompute' would promote it.
+    next dispatcher tick or a manual 'savarez kanban recompute' would promote it.
     """
     with kb.connect() as conn:
         # A is done.
@@ -2764,7 +2764,7 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
 # Workers spawned by the dispatcher must use a `savarez` invocation that does
 # not depend on PATH being set up correctly. cron jobs, systemd User= services,
 # launchd jobs, and other detached processes routinely run with a stripped
-# $PATH that doesn't include the venv's bin/, so a bare `["hermes", ...]`
+# $PATH that doesn't include the venv's bin/, so a bare `["savarez", ...]`
 # spawn fails with FileNotFoundError and the task gets stuck. The resolver
 # prefers the PATH shim (familiar `ps` output) but falls back to the module
 # form so the spawn keeps working when PATH is missing the shim.
@@ -2777,9 +2777,9 @@ def test_resolve_hermes_argv_prefers_path_shim(monkeypatch):
     import hermes_cli.kanban_db as kb
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/hermes")
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/savarez")
     argv = kb._resolve_hermes_argv()
-    assert argv == ["/usr/local/bin/hermes"]
+    assert argv == ["/usr/local/bin/savarez"]
 
 
 def test_resolve_hermes_argv_absolutizes_relative_exe_shim(monkeypatch, tmp_path):
@@ -2787,10 +2787,10 @@ def test_resolve_hermes_argv_absolutizes_relative_exe_shim(monkeypatch, tmp_path
     import hermes_cli.kanban_db as kb
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("HERMES_BIN", ".\\hermes.exe")
+    monkeypatch.setenv("HERMES_BIN", ".\\savarez.exe")
     monkeypatch.setattr(kb, "_IS_WINDOWS", True)
 
-    assert kb._resolve_hermes_argv() == [os.path.abspath(".\\hermes.exe")]
+    assert kb._resolve_hermes_argv() == [os.path.abspath(".\\savarez.exe")]
 
 
 def test_resolve_hermes_argv_avoids_implicit_windows_batch_shim(monkeypatch, tmp_path):
@@ -2800,7 +2800,7 @@ def test_resolve_hermes_argv_avoids_implicit_windows_batch_shim(monkeypatch, tmp
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "hermes.CMD").write_text("@echo off\n", encoding="utf-8")
+    (bin_dir / "savarez.CMD").write_text("@echo off\n", encoding="utf-8")
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setenv("PATHEXT", ".CMD")
@@ -2814,7 +2814,7 @@ def test_resolve_hermes_argv_honors_hermes_bin_path_override(monkeypatch, tmp_pa
     import shutil
     import hermes_cli.kanban_db as kb
 
-    shim = tmp_path / "bin" / "hermes"
+    shim = tmp_path / "bin" / "savarez"
     shim.parent.mkdir()
     shim.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_BIN", str(shim))
@@ -2828,16 +2828,16 @@ def test_resolve_hermes_argv_hermes_bin_bare_name_uses_path(monkeypatch, tmp_pat
     import stat
     import hermes_cli.kanban_db as kb
 
-    cwd_hermes = tmp_path / "hermes"
+    cwd_hermes = tmp_path / "savarez"
     cwd_hermes.write_text("wrong\n", encoding="utf-8")
     cwd_hermes.chmod(cwd_hermes.stat().st_mode | stat.S_IXUSR)
-    path_hermes = tmp_path / "bin" / "hermes"
+    path_hermes = tmp_path / "bin" / "savarez"
     path_hermes.parent.mkdir()
     path_hermes.write_text("right\n", encoding="utf-8")
     path_hermes.chmod(path_hermes.stat().st_mode | stat.S_IXUSR)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PATH", str(path_hermes.parent))
-    monkeypatch.setenv("HERMES_BIN", "hermes")
+    monkeypatch.setenv("HERMES_BIN", "savarez")
 
     assert kb._resolve_hermes_argv() == [str(path_hermes)]
 
@@ -2847,10 +2847,10 @@ def test_resolve_hermes_argv_hermes_bin_bare_name_ignores_cwd(monkeypatch, tmp_p
     import sys
     import hermes_cli.kanban_db as kb
 
-    (tmp_path / "hermes.exe").write_text("wrong\n", encoding="utf-8")
+    (tmp_path / "savarez.exe").write_text("wrong\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("HERMES_BIN", "hermes")
+    monkeypatch.setenv("HERMES_BIN", "savarez")
     monkeypatch.setattr(kb, "_IS_WINDOWS", True)
 
     assert kb._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
@@ -2863,10 +2863,10 @@ def test_resolve_hermes_argv_hermes_bin_bare_cmd_uses_module_fallback(monkeypatc
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "hermes.CMD").write_text("@echo off\n", encoding="utf-8")
+    (bin_dir / "savarez.CMD").write_text("@echo off\n", encoding="utf-8")
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setenv("PATHEXT", ".CMD")
-    monkeypatch.setenv("HERMES_BIN", "hermes")
+    monkeypatch.setenv("HERMES_BIN", "savarez")
     monkeypatch.setattr(kb, "_IS_WINDOWS", True)
 
     assert kb._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
@@ -2878,7 +2878,7 @@ def test_resolve_hermes_argv_hermes_bin_unresolved_bare_name_falls_back(monkeypa
     import hermes_cli.kanban_db as kb
 
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("HERMES_BIN", "hermes")
+    monkeypatch.setenv("HERMES_BIN", "savarez")
 
     assert kb._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
 
@@ -2888,7 +2888,7 @@ def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeyp
 
     Pins the correct module name (NOT `savarez` — there is no top-level
     `savarez` package). Regression for #23198: the original PR shipped
-    `python -m hermes` which fails with `No module named hermes` on every
+    `python -m savarez` which fails with `No module named savarez` on every
     invocation.
     """
     import shutil
@@ -3033,7 +3033,7 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
     corrupt row doesn't turn the whole board response into an error.
     """
     # Set up an isolated kanban home so we can write a corrupt created_at.
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(home))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)

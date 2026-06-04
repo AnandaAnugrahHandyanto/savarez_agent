@@ -24,7 +24,7 @@ def _parse(argv):
     """Build the top-level parser and return the parsed args for ``argv``."""
     import argparse
 
-    parser = argparse.ArgumentParser(prog="hermes")
+    parser = argparse.ArgumentParser(prog="savarez")
     subparsers = parser.add_subparsers(dest="command")
     send_cmd.register_send_subparser(subparsers)
     return parser.parse_args(["send", *argv])
@@ -342,7 +342,7 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
     """
     import os
 
-    hermes_home = tmp_path / ".hermes"
+    hermes_home = tmp_path / ".savarez"
     hermes_home.mkdir()
     (hermes_home / ".env").write_text("SOME_TOKEN=abc123\n")
     (hermes_home / "config.yaml").write_text(
@@ -369,7 +369,7 @@ def test_load_hermes_env_does_not_override_existing(tmp_path, monkeypatch):
     """Existing env vars must not be clobbered by config.yaml values."""
     import os
 
-    hermes_home = tmp_path / ".hermes"
+    hermes_home = tmp_path / ".savarez"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text("TELEGRAM_HOME_CHANNEL: yaml_value\n")
 
@@ -387,7 +387,7 @@ def test_load_hermes_env_does_not_override_existing(tmp_path, monkeypatch):
 
 def test_load_hermes_env_handles_missing_files(tmp_path, monkeypatch):
     """No .env or config.yaml should be a silent no-op, not an exception."""
-    hermes_home = tmp_path / ".hermes"
+    hermes_home = tmp_path / ".savarez"
     hermes_home.mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
 

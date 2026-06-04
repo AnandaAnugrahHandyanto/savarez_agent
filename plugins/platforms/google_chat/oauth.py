@@ -82,7 +82,7 @@ except (ModuleNotFoundError, ImportError):
     # _hermes_home.py shim).
     def get_hermes_home() -> Path:
         val = os.environ.get("SAVAREZ_HOME", "").strip()
-        return Path(val) if val else Path.home() / ".hermes"
+        return Path(val) if val else Path.home() / ".savarez"
 
     def display_hermes_home() -> str:
         home = get_hermes_home()
@@ -199,7 +199,7 @@ def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
     except ImportError:
         logger.warning(
             "[google_chat_user_oauth] google-auth not installed; user-OAuth "
-            "attachment delivery is disabled. Install hermes-agent[google_chat]."
+            "attachment delivery is disabled. Install savarez-agent[google_chat]."
         )
         return None
 
@@ -388,7 +388,7 @@ def install_deps() -> bool:
     except subprocess.CalledProcessError as exc:
         print(f"ERROR: Failed to install dependencies: {exc}")
         print("Or install via the optional extra:")
-        print("  pip install 'hermes-agent[google_chat]'")
+        print("  pip install 'savarez-agent[google_chat]'")
         return False
 
 
@@ -628,7 +628,7 @@ def revoke(email: Optional[str] = None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Google Chat user-OAuth setup for Hermes (native attachment delivery)"
+        description="Google Chat user-OAuth setup for Savarez (native attachment delivery)"
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check", action="store_true",

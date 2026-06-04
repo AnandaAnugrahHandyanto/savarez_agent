@@ -1,10 +1,10 @@
 ---
 sidebar_position: 6
-title: "Use MCP with Hermes"
+title: "Use MCP with Savarez"
 description: "A practical guide to connecting MCP servers to Savarez AI Agent, filtering their tools, and using them safely in real workflows"
 ---
 
-# Use MCP with Hermes
+# Use MCP with Savarez
 
 This guide shows how to actually use MCP with Savarez AI Agent in day-to-day workflows.
 
@@ -13,13 +13,13 @@ If the feature page explains what MCP is, this guide is about how to get value f
 ## When should you use MCP?
 
 Use MCP when:
-- a tool already exists in MCP form and you do not want to build a native Hermes tool
-- you want Hermes to operate against a local or remote system through a clean RPC layer
+- a tool already exists in MCP form and you do not want to build a native Savarez tool
+- you want Savarez to operate against a local or remote system through a clean RPC layer
 - you want fine-grained per-server exposure control
-- you want to connect Hermes to internal APIs, databases, or company systems without modifying Hermes core
+- you want to connect Savarez to internal APIs, databases, or company systems without modifying Savarez core
 
 Do not use MCP when:
-- a built-in Hermes tool already solves the job well
+- a built-in Savarez tool already solves the job well
 - the server exposes a huge dangerous tool surface and you are not prepared to filter it
 - you only need one very narrow integration and a native tool would be simpler and safer
 
@@ -27,9 +27,9 @@ Do not use MCP when:
 
 Think of MCP as an adapter layer:
 
-- Hermes remains the agent
+- Savarez remains the agent
 - MCP servers contribute tools
-- Hermes discovers those tools at startup or reload time
+- Savarez discovers those tools at startup or reload time
 - the model can use them like normal tools
 - you control how much of each server is visible
 
@@ -37,12 +37,12 @@ That last part matters. Good MCP usage is not just “connect everything.” It 
 
 ## Step 1: install MCP support
 
-If you installed Hermes with the standard install script, MCP support is already included (the installer runs `uv pip install -e ".[all]"`).
+If you installed Savarez with the standard install script, MCP support is already included (the installer runs `uv pip install -e ".[all]"`).
 
 If you installed without extras and need to add MCP separately:
 
 ```bash
-cd ~/.savarez/hermes-agent
+cd ~/.savarez/savarez-agent
 uv pip install -e ".[mcp]"
 ```
 
@@ -63,7 +63,7 @@ mcp_servers:
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/my-project"]
 ```
 
-Then start Hermes:
+Then start Savarez:
 
 ```bash
 savarez chat
@@ -79,8 +79,8 @@ Inspect this project and summarize the repo layout.
 
 You can verify MCP in a few ways:
 
-- Hermes banner/status should show MCP integration when configured
-- ask Hermes what tools it has available
+- Savarez banner/status should show MCP integration when configured
+- ask Savarez what tools it has available
 - use `/reload-mcp` after config changes
 - check logs if the server failed to connect
 
@@ -109,32 +109,32 @@ mcp_servers:
 
 This is usually the best default for sensitive systems.
 
-## WSL2: bridge Hermes in WSL to Windows Chrome
+## WSL2: bridge Savarez in WSL to Windows Chrome
 
 This is the practical setup when:
 
-- Hermes runs inside WSL2
+- Savarez runs inside WSL2
 - the browser you want to control is your normal signed-in Chrome on Windows
 - `/browser connect` is awkward or unreliable from WSL
 
-In this setup, Hermes does **not** connect to Chrome directly. Instead:
+In this setup, Savarez does **not** connect to Chrome directly. Instead:
 
-- Hermes runs in WSL
-- Hermes starts a local stdio MCP server
+- Savarez runs in WSL
+- Savarez starts a local stdio MCP server
 - that MCP server is launched through Windows interop (`cmd.exe` or `powershell.exe`)
 - the MCP server attaches to your live Windows Chrome session
 
 Mental model:
 
 ```text
-Hermes (WSL) -> MCP stdio bridge -> Windows Chrome
+Savarez (WSL) -> MCP stdio bridge -> Windows Chrome
 ```
 
 ### Why this mode is useful
 
 - you keep your real Windows browser profile, cookies, and logins
-- Hermes stays in its supported Unix environment (WSL2)
-- browser control is exposed as MCP tools instead of relying on Hermes core browser transport
+- Savarez stays in its supported Unix environment (WSL2)
+- browser control is exposed as MCP tools instead of relying on Savarez core browser transport
 
 ### Recommended server
 
@@ -152,7 +152,7 @@ After saving the server:
 savarez mcp test chrome-devtools-win
 ```
 
-Then start a fresh Hermes session or run:
+Then start a fresh Savarez session or run:
 
 ```text
 /reload-mcp
@@ -160,7 +160,7 @@ Then start a fresh Hermes session or run:
 
 ### Typical prompt
 
-Once loaded, Hermes can use the MCP-prefixed browser tools directly. For example:
+Once loaded, Savarez can use the MCP-prefixed browser tools directly. For example:
 
 ```text
 调用 MCP 工具 mcp_chrome_devtools_win_list_pages，列出当前浏览器标签页。
@@ -168,7 +168,7 @@ Once loaded, Hermes can use the MCP-prefixed browser tools directly. For example
 
 ### When `/browser connect` is the wrong tool
 
-If Hermes runs in WSL and Chrome runs on Windows, `/browser connect` may fail even though Chrome is open and debuggable.
+If Savarez runs in WSL and Chrome runs on Windows, `/browser connect` may fail even though Chrome is open and debuggable.
 
 Common reasons:
 
@@ -180,8 +180,8 @@ In those cases, keep `/browser connect` for same-environment setups and use MCP 
 
 ### Known pitfalls
 
-- Start Hermes from a Windows-mounted path like `/mnt/c/Users/<you>` or `/mnt/c/workspace/...` when using Windows stdio executables through MCP.
-- If you start Hermes from `/root` or `/home/...`, Windows may emit a `UNC` current-directory warning before the MCP server starts.
+- Start Savarez from a Windows-mounted path like `/mnt/c/Users/<you>` or `/mnt/c/workspace/...` when using Windows stdio executables through MCP.
+- If you start Savarez from `/root` or `/home/...`, Windows may emit a `UNC` current-directory warning before the MCP server starts.
 - If `chrome-devtools-mcp --autoConnect` times out while enumerating pages, reduce background/frozen tabs in Chrome and retry.
 
 ### Example: blacklist dangerous actions
@@ -209,14 +209,14 @@ mcp_servers:
 
 ## What does filtering actually affect?
 
-There are two categories of MCP-exposed functionality in Hermes:
+There are two categories of MCP-exposed functionality in Savarez:
 
 1. Server-native MCP tools
 - filtered with:
   - `tools.include`
   - `tools.exclude`
 
-2. Hermes-added utility wrappers
+2. Savarez-added utility wrappers
 - filtered with:
   - `tools.resources`
   - `tools.prompts`
@@ -235,13 +235,13 @@ These wrappers only appear if:
 - your config allows them, and
 - the MCP server session actually supports those capabilities
 
-So Hermes will not pretend a server has resources/prompts if it does not.
+So Savarez will not pretend a server has resources/prompts if it does not.
 
 ## Common patterns
 
 ### Pattern 1: local project assistant
 
-Use MCP for a repo-local filesystem or git server when you want Hermes to reason over a bounded workspace.
+Use MCP for a repo-local filesystem or git server when you want Savarez to reason over a bounded workspace.
 
 ```yaml
 mcp_servers:
@@ -353,7 +353,7 @@ mcp_servers:
       resources: false
 ```
 
-Start Hermes and ask:
+Start Savarez and ask:
 
 ```text
 Search the codebase for references to MCP and summarize the main integration points.
@@ -393,13 +393,13 @@ mcp_servers:
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/project"]
 ```
 
-Now Hermes can combine them:
+Now Savarez can combine them:
 
 ```text
 Inspect the local project files, then create a GitHub issue summarizing the bug you find.
 ```
 
-That is where MCP gets powerful: multi-system workflows without changing Hermes core.
+That is where MCP gets powerful: multi-system workflows without changing Savarez core.
 
 ## Safe usage recommendations
 
@@ -458,7 +458,7 @@ Check:
 
 ### "Why do I see fewer tools than the MCP server advertises?"
 
-Because Hermes now respects your per-server policy and capability-aware registration. That is expected, and usually desirable.
+Because Savarez now respects your per-server policy and capability-aware registration. That is expected, and usually desirable.
 
 ### "How do I remove an MCP server without deleting the config?"
 

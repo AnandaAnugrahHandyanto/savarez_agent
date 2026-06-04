@@ -1,6 +1,6 @@
 """Tests for get_hermes_home() profile-mode fallback warning.
 
-Regression test for https://github.com/NousResearch/hermes-agent/issues/18594.
+Regression test for https://github.com/NousResearch/savarez-agent/issues/18594.
 
 When SAVAREZ_HOME is unset but an active_profile file indicates a non-default
 profile is active, get_hermes_home() should:
@@ -35,32 +35,32 @@ class TestGetHermesHomeProfileWarning:
     ):
         """Classic mode: no active_profile file → silent, returns ~/.savarez."""
         result = fresh_constants.get_hermes_home()
-        assert result == tmp_path / ".hermes"
+        assert result == tmp_path / ".savarez"
         assert "SAVAREZ_HOME fallback" not in capsys.readouterr().err
 
     def test_default_active_profile_no_warning(
         self, fresh_constants, tmp_path, capsys
     ):
         """active_profile=default → still no warning, returns ~/.savarez."""
-        hermes_dir = tmp_path / ".hermes"
+        hermes_dir = tmp_path / ".savarez"
         hermes_dir.mkdir()
         (hermes_dir / "active_profile").write_text("default\n")
         result = fresh_constants.get_hermes_home()
-        assert result == tmp_path / ".hermes"
+        assert result == tmp_path / ".savarez"
         assert "SAVAREZ_HOME fallback" not in capsys.readouterr().err
 
     def test_named_profile_unset_home_warns_once(
         self, fresh_constants, tmp_path, capsys
     ):
         """active_profile=coder + SAVAREZ_HOME unset → warn loudly, still return fallback."""
-        hermes_dir = tmp_path / ".hermes"
+        hermes_dir = tmp_path / ".savarez"
         hermes_dir.mkdir()
         (hermes_dir / "active_profile").write_text("coder\n")
 
         result = fresh_constants.get_hermes_home()
 
         # 1. Still returns the fallback — no import-time crash
-        assert result == tmp_path / ".hermes"
+        assert result == tmp_path / ".savarez"
         # 2. Stderr got the warning exactly once
         err = capsys.readouterr().err
         assert err.count("SAVAREZ_HOME fallback") == 1
@@ -77,9 +77,9 @@ class TestGetHermesHomeProfileWarning:
         self, fresh_constants, tmp_path, capsys, monkeypatch
     ):
         """Even if active_profile is 'coder', setting SAVAREZ_HOME suppresses warning."""
-        profile_dir = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_dir = tmp_path / ".savarez" / "profiles" / "coder"
         profile_dir.mkdir(parents=True)
-        (tmp_path / ".hermes" / "active_profile").write_text("coder\n")
+        (tmp_path / ".savarez" / "active_profile").write_text("coder\n")
         monkeypatch.setenv("SAVAREZ_HOME", str(profile_dir))
 
         result = fresh_constants.get_hermes_home()
@@ -91,14 +91,14 @@ class TestGetHermesHomeProfileWarning:
         self, fresh_constants, tmp_path, capsys
     ):
         """active_profile that can't be decoded → fall through silently."""
-        hermes_dir = tmp_path / ".hermes"
+        hermes_dir = tmp_path / ".savarez"
         hermes_dir.mkdir()
         # Write bytes that aren't valid utf-8
         (hermes_dir / "active_profile").write_bytes(b"\xff\xfe\x00\x00")
 
         result = fresh_constants.get_hermes_home()
 
-        assert result == tmp_path / ".hermes"
+        assert result == tmp_path / ".savarez"
         # Shouldn't crash; shouldn't warn either (can't tell what profile was intended)
         assert "SAVAREZ_HOME fallback" not in capsys.readouterr().err
 
@@ -106,11 +106,11 @@ class TestGetHermesHomeProfileWarning:
         self, fresh_constants, tmp_path, capsys
     ):
         """Empty active_profile file → treated as default, no warning."""
-        hermes_dir = tmp_path / ".hermes"
+        hermes_dir = tmp_path / ".savarez"
         hermes_dir.mkdir()
         (hermes_dir / "active_profile").write_text("")
 
         result = fresh_constants.get_hermes_home()
 
-        assert result == tmp_path / ".hermes"
+        assert result == tmp_path / ".savarez"
         assert "SAVAREZ_HOME fallback" not in capsys.readouterr().err

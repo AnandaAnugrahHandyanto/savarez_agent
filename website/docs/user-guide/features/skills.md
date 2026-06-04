@@ -10,7 +10,7 @@ Skills are on-demand knowledge documents the agent can load when needed. They fo
 
 All skills live in **`~/.savarez/skills/`** — the primary directory and source of truth. On fresh install, bundled skills are copied from the repo. Hub-installed and agent-created skills also go here. The agent can modify or delete any skill.
 
-You can also point Hermes at **external skill directories** — additional folders scanned alongside the local one. See [External Skill Directories](#external-skill-directories) below.
+You can also point Savarez at **external skill directories** — additional folders scanned alongside the local one. See [External Skill Directories](#external-skill-directories) below.
 
 See also:
 
@@ -24,7 +24,7 @@ By default every profile is seeded with the bundled skill catalog, and each `sav
 **At install time** (applies to the default `~/.savarez` profile):
 
 ```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --no-skills
+curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash -s -- --no-skills
 ```
 
 **At profile-create time** (named profiles):
@@ -44,7 +44,7 @@ savarez skills opt-in --sync      # undo: remove the marker and re-seed now
 All three paths write a `.no-bundled-skills` marker into the profile directory. While the marker is present, the installer, `savarez update`, and any skill sync all skip bundled-skill seeding for that profile. Delete the marker (or run `savarez skills opt-in`) to re-enable.
 
 :::note Safe by default
-`savarez skills opt-out` only stops *future* seeding — it never deletes anything already on disk. The optional `--remove` flag deletes bundled skills **only** when they are unmodified (byte-identical to the version Hermes installed). Skills you have edited, skills installed from the hub, and skills you wrote yourself are always kept.
+`savarez skills opt-out` only stops *future* seeding — it never deletes anything already on disk. The optional `--remove` flag deletes bundled skills **only** when they are unmodified (byte-identical to the version Savarez installed). Skills you have edited, skills installed from the hub, and skills you wrote yourself are always kept.
 :::
 
 ## Using Skills
@@ -62,7 +62,7 @@ Every installed skill is automatically available as a slash command:
 /excalidraw
 ```
 
-The bundled `plan` skill is a good example. Running `/plan [request]` loads the skill's instructions, telling Hermes to inspect context if needed, write a markdown implementation plan instead of executing the task, and save the result under `.hermes/plans/` relative to the active workspace/backend working directory.
+The bundled `plan` skill is a good example. Running `/plan [request]` loads the skill's instructions, telling Savarez to inspect context if needed, write a markdown implementation plan instead of executing the task, and save the result under `.savarez/plans/` relative to the active workspace/backend working directory.
 
 You can also interact with skills through natural conversation:
 
@@ -92,7 +92,7 @@ description: Brief description of what this skill does
 version: 1.0.0
 platforms: [macos, linux]     # Optional — restrict to specific OS platforms
 metadata:
-  hermes:
+  savarez:
     tags: [python, automation]
     category: devops
     fallback_for_toolsets: [web]    # Optional — conditional activation (see below)
@@ -152,7 +152,7 @@ If a response (or any text inside it — typically the last line) contains the l
 ```
 Here is your rendered chart:
 
-/home/user/.hermes/cache/chart-q4-2025.png
+/home/user/.savarez/cache/chart-q4-2025.png
 
 [[as_document]]
 ```
@@ -172,7 +172,7 @@ Skills can automatically show or hide themselves based on which tools are availa
 
 ```yaml
 metadata:
-  hermes:
+  savarez:
     fallback_for_toolsets: [web]      # Show ONLY when these toolsets are unavailable
     requires_toolsets: [terminal]     # Show ONLY when these toolsets are available
     fallback_for_tools: [web_search]  # Show ONLY when these specific tools are unavailable
@@ -202,7 +202,7 @@ required_environment_variables:
     required_for: full functionality
 ```
 
-When a missing value is encountered, Hermes asks for it securely only when the skill is actually loaded in the local CLI. You can skip setup and keep using the skill. Messaging surfaces never ask for secrets in chat — they tell you to use `savarez setup` or `~/.savarez/.env` locally instead.
+When a missing value is encountered, Savarez asks for it securely only when the skill is actually loaded in the local CLI. You can skip setup and keep using the skill. Messaging surfaces never ask for secrets in chat — they tell you to use `savarez setup` or `~/.savarez/.env` locally instead.
 
 Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](/user-guide/security#environment-variable-passthrough) for details.
 
@@ -212,7 +212,7 @@ Skills can also declare non-secret config settings (paths, preferences) stored i
 
 ```yaml
 metadata:
-  hermes:
+  savarez:
     config:
       - key: myplugin.path
         description: Path to the plugin data directory
@@ -250,7 +250,7 @@ See [Skill Settings](/user-guide/configuration#skill-settings) and [Creating Ski
 
 ## External Skill Directories
 
-If you maintain skills outside of Hermes — for example, a shared `~/.agents/skills/` directory used by multiple AI tools — you can tell Hermes to scan those directories too.
+If you maintain skills outside of Savarez — for example, a shared `~/.agents/skills/` directory used by multiple AI tools — you can tell Savarez to scan those directories too.
 
 Add `external_dirs` under the `skills` section in `~/.savarez/config.yaml`:
 
@@ -267,10 +267,10 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 ### How it works
 
 - **Create locally, update in place**: New agent-created skills are written to `~/.savarez/skills/`. Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
-- **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
+- **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Savarez process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
-- **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
+- **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Savarez ignores it without errors. Useful for optional shared directories that may not be present on every machine.
 
 ### Example
 
@@ -298,7 +298,7 @@ Skill bundles are tiny YAML files that group several skills under a single slash
 
 ```bash
 # Create a bundle for backend feature work
-hermes bundles create backend-dev \
+savarez bundles create backend-dev \
   --skill github-code-review \
   --skill test-driven-development \
   --skill github-pr-workflow \
@@ -331,7 +331,7 @@ instruction: |
 
 Fields:
 - `name` (optional — defaults to the filename stem) — the bundle's display name. Normalized to a hyphen slug for the slash command (`Backend Dev` → `/backend-dev`).
-- `description` (optional) — short text shown in `/bundles` and `hermes bundles list`.
+- `description` (optional) — short text shown in `/bundles` and `savarez bundles list`.
 - `skills` (required, non-empty list) — skill names or paths relative to your skills directory. Use the same identifier you'd pass to `/<skill-name>`.
 - `instruction` (optional) — extra guidance prepended to the loaded skill content. Useful for codifying "how we always use these together."
 
@@ -339,22 +339,22 @@ Fields:
 
 ```bash
 # List all installed bundles
-hermes bundles list
+savarez bundles list
 
 # Inspect one bundle
-hermes bundles show backend-dev
+savarez bundles show backend-dev
 
 # Create a bundle interactively (omit --skill flags to enter them one per line)
-hermes bundles create research
+savarez bundles create research
 
 # Overwrite an existing bundle
-hermes bundles create backend-dev --skill ... --force
+savarez bundles create backend-dev --skill ... --force
 
 # Delete a bundle
-hermes bundles delete backend-dev
+savarez bundles delete backend-dev
 
 # Re-scan ~/.savarez/skill-bundles/ and report changes
-hermes bundles reload
+savarez bundles reload
 ```
 
 From inside a chat session, `/bundles` lists every installed bundle and its skills.
@@ -436,8 +436,8 @@ savarez skills tap add myorg/skills-repo           # Add a custom GitHub source
 
 | Source | Example | Notes |
 |--------|---------|-------|
-| `official` | `official/security/1password` | Optional skills shipped with Hermes. |
-| `skills-sh` | `skills-sh/vercel-labs/agent-skills/vercel-react-best-practices` | Searchable via `savarez skills search <query> --source skills-sh`. Hermes resolves alias-style skills when the skills.sh slug differs from the repo folder. |
+| `official` | `official/security/1password` | Optional skills shipped with Savarez. |
+| `skills-sh` | `skills-sh/vercel-labs/agent-skills/vercel-react-best-practices` | Searchable via `savarez skills search <query> --source skills-sh`. Savarez resolves alias-style skills when the skills.sh slug differs from the repo folder. |
 | `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | Skills served directly from `/.well-known/skills/index.json` on a website. Search using the site or docs URL. |
 | `url` | `https://sharethis.chat/SKILL.md` | Direct HTTP(S) URL to a single-file `SKILL.md`. Name resolution: frontmatter → URL slug → interactive prompt → `--name` flag. |
 | `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |
@@ -445,11 +445,11 @@ savarez skills tap add myorg/skills-repo           # Add a custom GitHub source
 
 ### Integrated hubs and registries
 
-Hermes currently integrates with these skills ecosystems and discovery sources:
+Savarez currently integrates with these skills ecosystems and discovery sources:
 
 #### 1. Official optional skills (`official`)
 
-These are maintained in the Hermes repository itself and install with built-in trust.
+These are maintained in the Savarez repository itself and install with built-in trust.
 
 - Catalog: [Official Optional Skills Catalog](../../reference/optional-skills-catalog)
 - Source in repo: `optional-skills/`
@@ -462,7 +462,7 @@ savarez skills install official/security/1password
 
 #### 2. skills.sh (`skills-sh`)
 
-This is Vercel's public skills directory. Hermes can search it directly, inspect skill detail pages, resolve alias-style slugs, and install from the underlying source repo.
+This is Vercel's public skills directory. Savarez can search it directly, inspect skill detail pages, resolve alias-style slugs, and install from the underlying source repo.
 
 - Directory: [skills.sh](https://skills.sh/)
 - CLI/tooling repo: [vercel-labs/skills](https://github.com/vercel-labs/skills)
@@ -491,7 +491,7 @@ savarez skills install well-known:https://mintlify.com/docs/.well-known/skills/m
 
 #### 4. Direct GitHub skills (`github`)
 
-Hermes can install directly from GitHub repositories and GitHub-based taps. This is useful when you already know the repo/path or want to add your own custom source repo.
+Savarez can install directly from GitHub repositories and GitHub-based taps. This is useful when you already know the repo/path or want to add your own custom source repo.
 
 Default taps (browsable without any setup):
 - [openai/skills](https://github.com/openai/skills)
@@ -512,9 +512,9 @@ savarez skills tap add myorg/skills-repo
 [skills.sh schema](https://skills.sh/schemas/skills.sh.schema.json). Its
 `groupings` (each with a `title` and a list of skill names) are read at index
 time and become the category labels shown in the
-[Skills Hub](https://hermes-agent.nousresearch.com/docs) page — instead of a
+[Skills Hub](https://savarez-agent.nousresearch.com/docs) page — instead of a
 tag-derived guess. This is generic: any tap that ships the file gets real
-categorization, no Hermes-side changes required.
+categorization, no Savarez-side changes required.
 
 ```json
 {
@@ -531,34 +531,34 @@ categorization, no Hermes-side changes required.
 A third-party skills marketplace integrated as a community source.
 
 - Site: [clawhub.ai](https://clawhub.ai/)
-- Hermes source id: `clawhub`
+- Savarez source id: `clawhub`
 
 #### 6. Claude marketplace-style repos (`claude-marketplace`)
 
-Hermes supports marketplace repos that publish Claude-compatible plugin/marketplace manifests.
+Savarez supports marketplace repos that publish Claude-compatible plugin/marketplace manifests.
 
 Known integrated sources include:
 - [anthropics/skills](https://github.com/anthropics/skills)
 - [aiskillstore/marketplace](https://github.com/aiskillstore/marketplace)
 
-Hermes source id: `claude-marketplace`
+Savarez source id: `claude-marketplace`
 
 #### 7. LobeHub (`lobehub`)
 
-Hermes can search and convert agent entries from LobeHub's public catalog into installable Hermes skills.
+Savarez can search and convert agent entries from LobeHub's public catalog into installable Savarez skills.
 
 - Site: [LobeHub](https://lobehub.com/)
 - Public agents index: [chat-agents.lobehub.com](https://chat-agents.lobehub.com/)
 - Backing repo: [lobehub/lobe-chat-agents](https://github.com/lobehub/lobe-chat-agents)
-- Hermes source id: `lobehub`
+- Savarez source id: `lobehub`
 
 #### 8. browse.sh (`browse-sh`)
 
-Hermes integrates with [browse.sh](https://browse.sh), Browserbase's catalog of 200+ site-specific browser-automation SKILL.md files (Airbnb, Amazon, arXiv, 12306.cn, Etsy, Xero, and many more). Each skill describes how to drive one website end-to-end and is suitable for use with Hermes' browser tools and any browser-automation skills you already have installed.
+Savarez integrates with [browse.sh](https://browse.sh), Browserbase's catalog of 200+ site-specific browser-automation SKILL.md files (Airbnb, Amazon, arXiv, 12306.cn, Etsy, Xero, and many more). Each skill describes how to drive one website end-to-end and is suitable for use with Savarez' browser tools and any browser-automation skills you already have installed.
 
 - Site: [browse.sh](https://browse.sh/)
 - Catalog API: `https://browse.sh/api/skills`
-- Hermes source id: `browse-sh`
+- Savarez source id: `browse-sh`
 - Trust level: `community`
 
 ```bash
@@ -571,9 +571,9 @@ Identifiers use the form `browse-sh/<hostname>/<task-id>` and match the slug exp
 
 #### 9. Direct URL (`url`)
 
-Install a single-file `SKILL.md` directly from any HTTP(S) URL — useful when an author hosts a skill on their own site (no hub listing, no GitHub path to type). Hermes fetches the URL, parses the YAML frontmatter, security-scans it, and installs.
+Install a single-file `SKILL.md` directly from any HTTP(S) URL — useful when an author hosts a skill on their own site (no hub listing, no GitHub path to type). Savarez fetches the URL, parses the YAML frontmatter, security-scans it, and installs.
 
-- Hermes source id: `url`
+- Savarez source id: `url`
 - Identifier: the URL itself (no prefix needed)
 - Scope: **single-file `SKILL.md`** only. Multi-file skills with `references/` or `scripts/` need a manifest and should be published via one of the other sources above.
 
@@ -625,7 +625,7 @@ Important behavior:
 
 | Level | Source | Policy |
 |-------|--------|--------|
-| `builtin` | Ships with Hermes | Always trusted |
+| `builtin` | Ships with Savarez | Always trusted |
 | `official` | `optional-skills/` in the repo | Built-in trust, no third-party warning |
 | `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills`, `huggingface/skills`, `NVIDIA/skills` | More permissive policy than community sources |
 | `community` | Everything else (`skills.sh`, well-known endpoints, custom GitHub repos, most marketplaces) | Non-dangerous findings can be overridden with `--force`; `dangerous` verdicts stay blocked |
@@ -648,7 +648,7 @@ Skills hub operations use the GitHub API, which has a rate limit of 60 requests/
 
 ### Publishing a custom skill tap
 
-If you want to share a curated set of skills — for your team, your org, or publicly — you can publish them as a **tap**: a GitHub repository other Hermes users add with `savarez skills tap add <owner/repo>`. No server, no registry sign-up, no release pipeline. Just a directory of `SKILL.md` files.
+If you want to share a curated set of skills — for your team, your org, or publicly — you can publish them as a **tap**: a GitHub repository other Savarez users add with `savarez skills tap add <owner/repo>`. No server, no registry sign-up, no release pipeline. Just a directory of `SKILL.md` files.
 
 #### Repo layout
 
@@ -672,16 +672,16 @@ owner/repo
 Rules:
 - Each skill lives in its own directory under the tap's root path (default `skills/`).
 - The directory name becomes the skill's install slug.
-- Each skill directory must contain a `SKILL.md` with standard [SKILL.md frontmatter](#skillmd-format) (`name`, `description`, plus optional `metadata.hermes.tags`, `version`, `author`, `platforms`, `metadata.hermes.config`).
+- Each skill directory must contain a `SKILL.md` with standard [SKILL.md frontmatter](#skillmd-format) (`name`, `description`, plus optional `metadata.savarez.tags`, `version`, `author`, `platforms`, `metadata.savarez.config`).
 - Subdirectories like `references/`, `templates/`, `scripts/`, `assets/` are downloaded alongside `SKILL.md` at install time.
 - Skills whose directory name starts with `.` or `_` are ignored.
 
-Hermes discovers skills by listing every subdirectory of the tap path and probing each for `SKILL.md`.
+Savarez discovers skills by listing every subdirectory of the tap path and probing each for `SKILL.md`.
 
 #### Minimal tap example
 
 ```
-my-org/hermes-skills
+my-org/savarez-skills
 └── skills/
     └── deploy-runbook/
         └── SKILL.md
@@ -696,7 +696,7 @@ description: Our deployment runbook — services, rollback, Slack channels
 version: 1.0.0
 author: My Org Platform Team
 metadata:
-  hermes:
+  savarez:
     tags: [deployment, runbook, internal]
 ---
 
@@ -705,12 +705,12 @@ metadata:
 Step 1: ...
 ```
 
-After pushing that to GitHub, any Hermes user can subscribe and install:
+After pushing that to GitHub, any Savarez user can subscribe and install:
 
 ```bash
-savarez skills tap add my-org/hermes-skills
+savarez skills tap add my-org/savarez-skills
 savarez skills search deploy
-savarez skills install my-org/hermes-skills/deploy-runbook
+savarez skills install my-org/savarez-skills/deploy-runbook
 ```
 
 #### Non-default paths
@@ -739,7 +739,7 @@ Useful when you want to share one skill without asking the user to subscribe to 
 
 #### Trust levels for taps
 
-New taps are assigned `community` trust by default. Skills installed from them run through the standard security scan and show the third-party warning panel on first install. If your org or a widely-trusted source should get higher trust, add its repo to `TRUSTED_REPOS` in `tools/skills_hub.py` (requires a Hermes core PR).
+New taps are assigned `community` trust by default. Skills installed from them run through the standard security scan and show the third-party warning panel on first install. If your org or a widely-trusted source should get higher trust, add its repo to `TRUSTED_REPOS` in `tools/skills_hub.py` (requires a Savarez core PR).
 
 #### Tap management
 
@@ -761,14 +761,14 @@ Taps are stored in `~/.savarez/.hub/taps.json` (created on demand).
 
 ## Bundled skill updates (`savarez skills reset`)
 
-Hermes ships with a set of bundled skills in `skills/` inside the repo. On install and on every `savarez update`, a sync pass copies those into `~/.savarez/skills/` and records a manifest at `~/.savarez/skills/.bundled_manifest` mapping each skill name to the content hash at the time it was synced (the **origin hash**).
+Savarez ships with a set of bundled skills in `skills/` inside the repo. On install and on every `savarez update`, a sync pass copies those into `~/.savarez/skills/` and records a manifest at `~/.savarez/skills/.bundled_manifest` mapping each skill name to the content hash at the time it was synced (the **origin hash**).
 
-On each sync, Hermes recomputes the hash of your local copy and compares it to the origin hash:
+On each sync, Savarez recomputes the hash of your local copy and compares it to the origin hash:
 
 - **Unchanged** → safe to pull upstream changes, copy the new bundled version in, record the new origin hash.
 - **Changed** → treated as **user-modified** and skipped forever, so your edits never get stomped.
 
-The protection is good, but it has one sharp edge. If you edit a bundled skill and then later want to abandon your changes and go back to the bundled version by just copy-pasting from `~/.savarez/hermes-agent/skills/`, the manifest still holds the *old* origin hash from whenever the last successful sync ran. Your fresh copy-paste contents (current bundled hash) won't match that stale origin hash, so sync keeps flagging it as user-modified.
+The protection is good, but it has one sharp edge. If you edit a bundled skill and then later want to abandon your changes and go back to the bundled version by just copy-pasting from `~/.savarez/savarez-agent/skills/`, the manifest still holds the *old* origin hash from whenever the last successful sync ran. Your fresh copy-paste contents (current bundled hash) won't match that stale origin hash, so sync keeps flagging it as user-modified.
 
 `savarez skills reset` is the escape hatch:
 
@@ -793,7 +793,7 @@ The same command works in chat as a slash command:
 ```
 
 :::note Profiles
-Each profile has its own `.bundled_manifest` under its own `SAVAREZ_HOME`, so `hermes -p coder skills reset <name>` only affects that profile.
+Each profile has its own `.bundled_manifest` under its own `SAVAREZ_HOME`, so `savarez -p coder skills reset <name>` only affects that profile.
 :::
 
 ### Slash commands (inside chat)

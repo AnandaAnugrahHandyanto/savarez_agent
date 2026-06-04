@@ -255,7 +255,7 @@ Agent automatically:
 
 **Environment variables not picked up.**
 The adapter reads credentials from `~/.savarez/.env` (auto-merged at startup) or
-from `config.yaml`. Double-check the file lives under the active Hermes profile
+from `config.yaml`. Double-check the file lives under the active Savarez profile
 home and that there's no stray quoting around the URL/token. Restart the gateway
 after editing — env changes are only applied on process start.
 
@@ -271,5 +271,5 @@ The token must be a *Long-Lived Access Token* created from your HA user profile
 page (**Profile → Security → Long-lived access tokens**). Short-lived UI
 session tokens won't work. Also verify the base URL includes the scheme and
 port (e.g. `http://homeassistant.local:8123`) and is reachable from the host
-running Hermes — `curl -H "Authorization: Bearer <token>" <url>/api/` should
+running Savarez — `curl -H "Authorization: Bearer <token>" <url>/api/` should
 return `{"message": "API running."}`.

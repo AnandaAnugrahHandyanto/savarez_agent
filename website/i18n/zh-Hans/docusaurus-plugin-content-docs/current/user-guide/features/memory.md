@@ -213,13 +213,13 @@ memory:
 
 ## 外部记忆提供商
 
-对于超出 MEMORY.md 和 USER.md 范围的更深层持久化记忆，Hermes 内置了 8 个外部记忆提供商插件——包括 Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover 和 Supermemory。
+对于超出 MEMORY.md 和 USER.md 范围的更深层持久化记忆，Savarez 内置了 8 个外部记忆提供商插件——包括 Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover 和 Supermemory。
 
 外部提供商与内置记忆**并行**运行（而非替代），并增加了知识图谱、语义搜索、自动事实提取和跨会话用户建模等能力。
 
 ```bash
-hermes memory setup      # 选择并配置提供商
-hermes memory status     # 查看当前激活状态
+savarez memory setup      # 选择并配置提供商
+savarez memory status     # 查看当前激活状态
 ```
 
 有关每个提供商的完整详情、设置说明和对比，请参阅[记忆提供商](./memory-providers.md)指南。

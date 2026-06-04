@@ -761,8 +761,8 @@ class TestResolveUpdatePrompt:
     @pytest.mark.asyncio
     async def test_writes_response_file(self, tmp_path, monkeypatch):
         adapter = _make_adapter()
-        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path / ".hermes"))
-        (tmp_path / ".hermes").mkdir()
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path / ".savarez"))
+        (tmp_path / ".savarez").mkdir()
         adapter._update_prompt_state[1] = {
             "session_key": "sess-up-1",
             "message_id": "msg_up_003",
@@ -771,14 +771,14 @@ class TestResolveUpdatePrompt:
 
         await adapter._resolve_update_prompt(1, "y", "Alice")
 
-        assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
+        assert (tmp_path / ".savarez" / ".update_response").read_text() == "y"
         assert 1 not in adapter._update_prompt_state
 
     @pytest.mark.asyncio
     async def test_overwrites_existing_response_file(self, tmp_path, monkeypatch):
         adapter = _make_adapter()
-        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path / ".hermes"))
-        home = tmp_path / ".hermes"
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path / ".savarez"))
+        home = tmp_path / ".savarez"
         home.mkdir()
         (home / ".update_response").write_text("n")
         adapter._update_prompt_state[2] = {
@@ -794,9 +794,9 @@ class TestResolveUpdatePrompt:
     @pytest.mark.asyncio
     async def test_unknown_prompt_id_drops_silently(self, tmp_path, monkeypatch):
         adapter = _make_adapter()
-        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path / ".hermes"))
-        (tmp_path / ".hermes").mkdir()
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path / ".savarez"))
+        (tmp_path / ".savarez").mkdir()
 
         await adapter._resolve_update_prompt(99, "n", "Nobody")
 
-        assert not (tmp_path / ".hermes" / ".update_response").exists()
+        assert not (tmp_path / ".savarez" / ".update_response").exists()

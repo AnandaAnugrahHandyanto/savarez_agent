@@ -20,7 +20,7 @@ import pytest
 
 @pytest.fixture()
 def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("SAVAREZ_HOME", str(home))

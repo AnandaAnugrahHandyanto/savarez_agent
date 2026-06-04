@@ -15,7 +15,7 @@
 #   - A dataset JSONL file with one {"prompt": "..."} per line
 #
 # Usage:
-#   cd ~/.savarez/hermes-agent
+#   cd ~/.savarez/savarez-agent
 #   bash datagen-config-examples/run_browser_tasks.sh
 #
 # Output: data/browser_tasks_example/trajectories.jsonl

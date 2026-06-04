@@ -200,7 +200,7 @@ RUN chmod -R a+rX /opt/hermes && \
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
 # run as the default hermes user (UID 10000).
 
-# ---------- Link hermes-agent itself (editable) ----------
+# ---------- Link savarez-agent itself (editable) ----------
 # Deps are already installed in the cached layer above; `--no-deps` makes
 # this a fast (~1s) egg-link creation with no resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
@@ -213,7 +213,7 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 # we can't tell which commit the user is actually running.
 #
 # Fix: write the commit SHA passed via the HERMES_GIT_SHA build-arg to
-# /opt/hermes/.hermes_build_sha at build time, and have
+# /opt/hermes/.savarez_build_sha at build time, and have
 # hermes_cli/build_info.py read it at runtime.  Both `hermes dump` and
 # banner.get_git_banner_state() try the baked SHA first, then fall back
 # to live `git rev-parse` for source installs (unchanged behaviour).
@@ -224,8 +224,8 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 # every published image has it.
 ARG HERMES_GIT_SHA=
 RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
-        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha && \
-        chown hermes:hermes /opt/hermes/.hermes_build_sha; \
+        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.savarez_build_sha && \
+        chown hermes:hermes /opt/hermes/.savarez_build_sha; \
     fi
 
 # ---------- s6-overlay service wiring ----------

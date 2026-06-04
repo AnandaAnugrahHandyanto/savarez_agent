@@ -52,7 +52,7 @@ We considered tarballs, HTTP archives, a custom format. None of them beat git:
 - **Private repos work for free.** SSH keys, `git credential` helpers, GitHub CLI stored credentials — whatever auth your terminal is already set up for applies transparently.
 - **Reproducibility is a commit SHA.** The same thing pip and npm record.
 
-The tradeoff: recipients need git installed. On any machine running Hermes in 2026, that's already true.
+The tradeoff: recipients need git installed. On any machine running Savarez in 2026, that's already true.
 
 ## When should you use a distribution?
 
@@ -65,7 +65,7 @@ Good fits:
 
 Not a fit:
 
-- **You just want to back up a profile on your own machine.** Use [`savarez profile export` / `import`](../reference/profile-commands.md#hermes-profile-export) — that's what those are for.
+- **You just want to back up a profile on your own machine.** Use [`savarez profile export` / `import`](../reference/profile-commands.md#savarez-profile-export) — that's what those are for.
 - **You want to share API keys alongside the agent.** `auth.json` and `.env` are deliberately excluded from distributions. Each installer brings their own credentials.
 - **You want to share memories / sessions / conversation history.** Those are user data, not distribution content. Never shipped.
 
@@ -248,7 +248,7 @@ savarez profile install github.com/acme/support-bot --name support-eu --alias
 After install, the agent's profile contains a `.env.EXAMPLE`:
 
 ```
-# Environment variables required by this Hermes distribution.
+# Environment variables required by this Savarez distribution.
 # Copy to `.env` and fill in your own values before running.
 
 # OpenAI API key (for model access)
@@ -282,7 +282,7 @@ Distribution: research-bot
 Version:      1.0.0
 Description:  Autonomous research assistant with arXiv and web tools
 Author:       Your Name
-Requires:     Hermes >=0.12.0
+Requires:     Savarez >=0.12.0
 Source:       https://github.com/you/research-bot
 Installed:    2026-05-08T17:04:32+00:00
 
@@ -395,18 +395,18 @@ cd ~/.savarez/profiles/polymarket-trader
 git init && git add . && git commit -m "v1.0"
 git tag v1.0.0
 # Publish to a public GitHub repo
-git remote add origin https://github.com/you/hermes-polymarket-trader.git
+git remote add origin https://github.com/you/savarez-polymarket-trader.git
 git push -u origin main --tags
 
 # Anyone
-savarez profile install github.com/you/hermes-polymarket-trader --alias
+savarez profile install github.com/you/savarez-polymarket-trader --alias
 ```
 
 Tweet the install command. People who try it send you issues and PRs. If someone wants to customize, they fork — same git workflow everyone already knows.
 
 ### Product: ship an opinionated agent
 
-You built Hermes-on-top — maybe a compliance-monitoring harness, a customer-support stack, a domain-specific research platform. You want to distribute it as a product.
+You built Savarez-on-top — maybe a compliance-monitoring harness, a customer-support stack, a domain-specific research platform. You want to distribute it as a product.
 
 ```yaml
 # distribution.yaml
@@ -545,7 +545,7 @@ Profile distributions are unsigned by default. You're trusting:
 - **The git host** (GitHub / GitLab / wherever) to serve the bytes the author pushed.
 - **The author** to not ship a malicious SOUL, skills, or cron jobs.
 
-Cron jobs from a distribution are **not auto-scheduled** — the installer prints `hermes -p <name> cron list` and you enable them explicitly. SOUL.md and skills ARE active as soon as you start chatting with the profile, so read them before your first run if you're installing from someone you don't know.
+Cron jobs from a distribution are **not auto-scheduled** — the installer prints `savarez -p <name> cron list` and you enable them explicitly. SOUL.md and skills ARE active as soon as you start chatting with the profile, so read them before your first run if you're installing from someone you don't know.
 
 Rough analogy: installing a distribution is like installing a browser extension or a VS Code extension. Low friction, high power, trust the source. For internal company distributions, use a private repo and your normal git auth — nothing new to configure.
 
@@ -567,7 +567,7 @@ The short version:
 
 - [Profiles: Running Multiple Agents](./profiles.md) — the base concept
 - [Profile Commands reference](../reference/profile-commands.md) — every flag, every option
-- [`savarez profile export` / `import`](../reference/profile-commands.md#hermes-profile-export) — local backup / restore (not distribution)
-- [Using SOUL with Hermes](../guides/use-soul-with-hermes.md) — authoring personalities
+- [`savarez profile export` / `import`](../reference/profile-commands.md#savarez-profile-export) — local backup / restore (not distribution)
+- [Using SOUL with Savarez](../guides/use-soul-with-savarez.md) — authoring personalities
 - [Personality & SOUL](./features/personality.md) — how SOUL fits into the agent
 - [Skills catalog](../reference/skills-catalog.md) — skills you can bundle

@@ -8,21 +8,21 @@ description: "将 Savarez AI Agent 配置为 Mattermost 机器人"
 
 Savarez AI Agent 以机器人身份集成到 Mattermost，让你可以通过私信或团队频道与 AI 助手对话。Mattermost 是一个自托管的开源 Slack 替代品——运行在你自己的基础设施上，完全掌控数据。机器人通过 Mattermost 的 REST API（v4）和 WebSocket 连接以接收实时事件，将消息通过 Savarez AI Agent 管道（包括工具调用、记忆和推理）处理后实时响应。支持文本、文件附件、图片和斜杠命令。
 
-无需额外的 Mattermost 库——适配器使用 `aiohttp`，该库已作为 Hermes 的依赖项包含在内。
+无需额外的 Mattermost 库——适配器使用 `aiohttp`，该库已作为 Savarez 的依赖项包含在内。
 
-在开始配置之前，先了解大多数人最关心的部分：Hermes 进入你的 Mattermost 实例后的行为方式。
+在开始配置之前，先了解大多数人最关心的部分：Savarez 进入你的 Mattermost 实例后的行为方式。
 
-## Hermes 的行为方式
+## Savarez 的行为方式
 
 | 场景 | 行为 |
 |---------|----------|
-| **私信（DM）** | Hermes 响应每一条消息，无需 `@提及`。每个私信有独立的会话。 |
-| **公开/私有频道** | Hermes 仅在被 `@提及` 时响应。未被提及时，Hermes 忽略消息。 |
-| **线程（Thread）** | 若设置 `MATTERMOST_REPLY_MODE=thread`，Hermes 在你的消息下方以线程形式回复。线程上下文与父频道隔离。 |
-| **多用户共享频道** | 默认情况下，Hermes 在频道内按用户隔离会话历史。同一频道中的两个人不会共享同一份对话记录，除非你明确禁用该设置。 |
+| **私信（DM）** | Savarez 响应每一条消息，无需 `@提及`。每个私信有独立的会话。 |
+| **公开/私有频道** | Savarez 仅在被 `@提及` 时响应。未被提及时，Savarez 忽略消息。 |
+| **线程（Thread）** | 若设置 `MATTERMOST_REPLY_MODE=thread`，Savarez 在你的消息下方以线程形式回复。线程上下文与父频道隔离。 |
+| **多用户共享频道** | 默认情况下，Savarez 在频道内按用户隔离会话历史。同一频道中的两个人不会共享同一份对话记录，除非你明确禁用该设置。 |
 
 :::tip
-如果你希望 Hermes 以线程对话方式回复（嵌套在原始消息下方），请设置 `MATTERMOST_REPLY_MODE=thread`。默认值为 `off`，即在频道中发送普通消息。
+如果你希望 Savarez 以线程对话方式回复（嵌套在原始消息下方），请设置 `MATTERMOST_REPLY_MODE=thread`。默认值为 `off`，即在频道中发送普通消息。
 :::
 
 ### Mattermost 中的会话模型
@@ -85,7 +85,7 @@ group_sessions_per_user: false
 将 token 保存在安全的地方（例如密码管理器）。第五步中会用到它。
 
 :::tip
-你也可以使用**个人访问 token** 代替机器人账户。前往**个人资料** → **安全** → **个人访问 Token** → **创建 Token**。如果你希望 Hermes 以你自己的用户身份发帖而非独立的机器人用户，这种方式很有用。
+你也可以使用**个人访问 token** 代替机器人账户。前往**个人资料** → **安全** → **个人访问 Token** → **创建 Token**。如果你希望 Savarez 以你自己的用户身份发帖而非独立的机器人用户，这种方式很有用。
 :::
 
 ## 第三步：将机器人添加到频道
@@ -199,12 +199,12 @@ MATTERMOST_HOME_CHANNEL=abc123def456ghi789jkl012mn
 
 ## 回复模式
 
-`MATTERMOST_REPLY_MODE` 设置控制 Hermes 发布响应的方式：
+`MATTERMOST_REPLY_MODE` 设置控制 Savarez 发布响应的方式：
 
 | 模式 | 行为 |
 |------|----------|
-| `off`（默认） | Hermes 在频道中发送普通消息，与普通用户一样。 |
-| `thread` | Hermes 在你的原始消息下方以线程形式回复。在大量来回交流时保持频道整洁。 |
+| `off`（默认） | Savarez 在频道中发送普通消息，与普通用户一样。 |
+| `thread` | Savarez 在你的原始消息下方以线程形式回复。在大量来回交流时保持频道整洁。 |
 
 在你的 `~/.savarez/.env` 中设置：
 
@@ -298,7 +298,7 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 
 ### 机器人离线
 
-**原因**：Hermes gateway 未运行，或连接失败。
+**原因**：Savarez gateway 未运行，或连接失败。
 
 **解决方法**：检查 `savarez gateway` 是否正在运行。查看终端输出中的错误信息。常见问题：URL 错误、token 过期、Mattermost 服务器无法访问。
 

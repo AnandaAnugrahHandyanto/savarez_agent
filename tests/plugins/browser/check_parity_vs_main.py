@@ -13,7 +13,7 @@ which would be a real regression for users on the existing config keys.
 
 Run from the PR worktree:
 
-    cd ~/.savarez/hermes-agent/.worktrees/browser-providers-plugin
+    cd ~/.savarez/savarez-agent/.worktrees/browser-providers-plugin
     python tests/plugins/browser/check_parity_vs_main.py
 """
 from __future__ import annotations
@@ -29,14 +29,14 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Pin one path to current main, one to the PR worktree.
 # ``REPO_ROOT`` is ``.../.worktrees/browser-providers-plugin``; the main
-# checkout lives two levels up at ``~/.savarez/hermes-agent``.
-MAIN_DIR = REPO_ROOT.parent.parent  # ~/.savarez/hermes-agent
+# checkout lives two levels up at ``~/.savarez/savarez-agent``.
+MAIN_DIR = REPO_ROOT.parent.parent  # ~/.savarez/savarez-agent
 PR_DIR = REPO_ROOT  # the worktree we're in
 assert (MAIN_DIR / "tools" / "browser_tool.py").exists(), (
-    f"MAIN_DIR={MAIN_DIR} doesn't look like a hermes-agent checkout"
+    f"MAIN_DIR={MAIN_DIR} doesn't look like a savarez-agent checkout"
 )
 assert (PR_DIR / "tools" / "browser_tool.py").exists(), (
-    f"PR_DIR={PR_DIR} doesn't look like a hermes-agent checkout"
+    f"PR_DIR={PR_DIR} doesn't look like a savarez-agent checkout"
 )
 
 

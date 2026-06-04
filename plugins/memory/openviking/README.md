@@ -11,7 +11,7 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
 ## Setup
 
 ```bash
-hermes memory setup    # select "openviking"
+savarez memory setup    # select "openviking"
 ```
 
 Or manually:

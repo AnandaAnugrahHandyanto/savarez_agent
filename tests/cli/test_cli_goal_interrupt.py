@@ -27,7 +27,7 @@ import pytest
 @pytest.fixture
 def hermes_home(tmp_path, monkeypatch):
     """Isolated SAVAREZ_HOME so SessionDB.state_meta writes stay hermetic."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("SAVAREZ_HOME", str(home))

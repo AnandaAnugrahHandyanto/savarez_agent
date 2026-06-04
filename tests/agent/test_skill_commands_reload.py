@@ -44,7 +44,7 @@ def hermes_home(monkeypatch):
     module-level ``SAVAREZ_HOME`` / ``SKILLS_DIR`` constants in place so the
     isolation is local to this fixture's scope.
     """
-    td = tempfile.mkdtemp(prefix="hermes-reload-skills-")
+    td = tempfile.mkdtemp(prefix="savarez-reload-skills-")
     monkeypatch.setenv("SAVAREZ_HOME", td)
     home = Path(td)
     (home / "skills").mkdir(parents=True, exist_ok=True)

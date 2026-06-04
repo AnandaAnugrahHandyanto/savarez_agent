@@ -121,13 +121,13 @@ def detect_service_manager() -> ServiceManagerKind:
 def _s6_running() -> bool:
     """True when s6-svscan is running as PID 1 in this container.
 
-    Detection has to work for **both** root and the unprivileged hermes
+    Detection has to work for **both** root and the unprivileged savarez
     user (UID 10000). The obvious probe — ``Path('/proc/1/exe').resolve()``
     — only works as root: for any other UID, the symlink at
     ``/proc/1/exe`` is unreadable and ``resolve()`` silently returns the
     path unchanged, so the resolved name is the literal ``"exe"`` and
-    detection always fails. Since every Hermes runtime call inside the
-    container drops to hermes via ``s6-setuidgid``, that silent failure
+    detection always fails. Since every Savarez runtime call inside the
+    container drops to savarez via ``s6-setuidgid``, that silent failure
     made the entire service-manager runtime-registration path inert in
     production (PR #30136 review).
 
@@ -158,7 +158,7 @@ def _s6_running() -> bool:
 # in ``hermes_cli.gateway`` (systemd/launchd) and ``hermes_cli.gateway_windows``
 # (Windows Scheduled Tasks). The protocol's ``name`` parameter is currently
 # unused for host backends — they operate on whichever profile is currently
-# active (set via the ``hermes -p <profile>`` flag before the call). This
+# active (set via the ``savarez -p <profile>`` flag before the call). This
 # matches existing host-side semantics; the parameter shape is designed
 # for s6 where each profile maps to a distinct service directory.
 # ---------------------------------------------------------------------------
@@ -313,7 +313,7 @@ def get_service_manager() -> ServiceManager:
 # S6ServiceManager (container-only)
 #
 # Per-profile gateways are registered dynamically when `savarez profile create`
-# runs inside the container (Phase 4). Static services (main-hermes, dashboard)
+# runs inside the container (Phase 4). Static services (main-savarez, dashboard)
 # live in /etc/s6-overlay/s6-rc.d/ and are NOT managed by this class — they're
 # part of the image, not runtime-created.
 # ---------------------------------------------------------------------------
@@ -350,7 +350,7 @@ _HERMES_GID = 10000
 
 def _seed_supervise_skeleton(svc_dir: Path) -> None:
     """Pre-create the ``supervise/`` and top-level ``event/`` skeleton
-    inside a service directory, owned by the hermes user.
+    inside a service directory, owned by the savarez user.
 
     Why this exists
     ---------------
@@ -359,14 +359,14 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     ``0700``. It also ``mkfifo``s ``<svc>/supervise/control`` with mode
     ``0600``. Because s6-supervise runs as PID 1's effective UID (root)
     these dirs end up root-owned mode 0700, and an unprivileged client
-    (the ``savarez`` user — UID 10000 — running every Hermes runtime
+    (the ``savarez`` user — UID 10000 — running every Savarez runtime
     operation via ``s6-setuidgid``) gets ``EACCES`` on any ``s6-svc``,
     ``s6-svstat``, or ``s6-svwait`` invocation against the slot.
 
     The PR #30136 review surfaced this as a real product gap: the
     entire S6ServiceManager lifecycle (``register/start/stop/unregister
     _profile_gateway``) was inert in production because every operation
-    is dispatched as the hermes user.
+    is dispatched as the savarez user.
 
     Why this works
     --------------
@@ -376,21 +376,21 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     chown/chmod fix-up that would normally make event/ ``03730
     root:root`` is **skipped** entirely — s6-supervise just opens the
     pre-existing FIFOs and proceeds. So if we lay the skeleton down
-    with hermes ownership before triggering ``s6-svscanctl -a``,
+    with savarez ownership before triggering ``s6-svscanctl -a``,
     s6-supervise inherits our layout and never touches it.
 
     Layout produced
     ---------------
-    ``svc_dir/``                           hermes:hermes, 0755 (parent must already exist)
-    ``svc_dir/event/``                     hermes:hermes, 03730   (setgid + g+rwx + sticky)
-    ``svc_dir/supervise/``                 hermes:hermes, 0755
-    ``svc_dir/supervise/event/``           hermes:hermes, 03730
-    ``svc_dir/supervise/control``          hermes:hermes, 0660    (FIFO)
+    ``svc_dir/``                           savarez:savarez, 0755 (parent must already exist)
+    ``svc_dir/event/``                     savarez:savarez, 03730   (setgid + g+rwx + sticky)
+    ``svc_dir/supervise/``                 savarez:savarez, 0755
+    ``svc_dir/supervise/event/``           savarez:savarez, 03730
+    ``svc_dir/supervise/control``          savarez:savarez, 0660    (FIFO)
 
     The ``death_tally``, ``lock``, and ``status`` regular files end up
     written by s6-supervise itself (as root), but those land mode 0644 —
     world-readable — and ``s6-svstat`` only needs read access, so the
-    hermes user reads them fine.
+    savarez user reads them fine.
 
     If ``svc_dir/log/`` is present (the canonical s6 logger pattern —
     one s6-supervise instance per service, plus a second for its
@@ -398,7 +398,7 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     ``log/event/``, ``log/supervise/``, ``log/supervise/event/``,
     ``log/supervise/control``. Without this, unregister teardown
     would EACCES on the logger's supervise dir even after the parent
-    slot's supervise/ was hermes-owned.
+    slot's supervise/ was savarez-owned.
 
     Idempotency
     -----------
@@ -426,7 +426,7 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
         try:
             os.chown(path, _HERMES_UID, _HERMES_GID)
         except PermissionError:
-            # Running as the hermes user already — directory is hermes-
+            # Running as the savarez user already — directory is savarez-
             # owned by default. The chown is a no-op in that case, so
             # swallowing this keeps both root and unprivileged callers
             # on one code path.
@@ -462,7 +462,7 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     # see servicedir(7)), it gets its own s6-supervise instance and
     # needs the same skeleton. Without this, unregister teardown
     # would EACCES on the logger's root-owned supervise/ dir even
-    # when the parent slot's supervise/ is hermes-owned.
+    # when the parent slot's supervise/ is savarez-owned.
     log_dir = svc_dir / "log"
     if log_dir.is_dir():
         _mkdir_owned(log_dir / "event", 0o3730)
@@ -495,7 +495,7 @@ class S6Error(RuntimeError):
 class GatewayNotRegisteredError(S6Error):
     """Raised when a lifecycle method targets a slot that doesn't exist.
 
-    Most commonly: ``hermes -p typo gateway start`` when no profile
+    Most commonly: ``savarez -p typo gateway start`` when no profile
     ``typo`` exists. Carries the unprefixed profile name (not the
     full ``gateway-<profile>`` service-dir name) so callers can phrase
     a user-facing message like "no such gateway 'typo'".
@@ -537,7 +537,7 @@ class S6ServiceManager:
     """Per-profile gateway supervision via s6-overlay.
 
     Only handles runtime-registered services under
-    ``S6_DYNAMIC_SCANDIR``. Static services (main-hermes, dashboard)
+    ``S6_DYNAMIC_SCANDIR``. Static services (main-savarez, dashboard)
     are managed by s6-rc at image-build time and are out of scope.
     """
 
@@ -564,14 +564,14 @@ class S6ServiceManager:
 
         The script:
           1. Sources SAVAREZ_HOME (and any extra env) via with-contenv —
-             so e.g. ``-e SAVAREZ_HOME=/data/hermes`` is honored at run
+             so e.g. ``-e SAVAREZ_HOME=/data/savarez`` is honored at run
              time, not Python-substituted at registration time (OQ8-C).
           2. Resets ``HOME`` to ``/opt/data`` before the privilege drop
              so with-contenv's root HOME does not leak into the
              unprivileged gateway process.
           3. Activates the bundled venv.
-          4. Drops to the hermes user and exec's
-             ``hermes -p <profile> gateway run`` (or just ``hermes
+          4. Drops to the savarez user and exec's
+             ``savarez -p <profile> gateway run`` (or just ``savarez
              gateway run`` for the default profile — see below).
 
         Special case: ``profile == "default"`` emits ``savarez gateway
@@ -602,7 +602,7 @@ class S6ServiceManager:
             "set -e",
             "export HOME=/opt/data",
             "cd /opt/data",
-            ". /opt/hermes/.venv/bin/activate",
+            ". /opt/savarez/.venv/bin/activate",
         ]
         for k, v in sorted(extra_env.items()):
             lines.append(f"export {k}={shlex.quote(v)}")
@@ -617,11 +617,11 @@ class S6ServiceManager:
         if profile == "default":
             gateway_cmd = "savarez gateway run"
         else:
-            gateway_cmd = f"hermes -p {shlex.quote(profile)} gateway run"
+            gateway_cmd = f"savarez -p {shlex.quote(profile)} gateway run"
         # Skip the drop when already non-root (setgroups() lacks CAP_SETGID →
         # s6 boot-loop).
         lines.append(f'[ "$(id -u)" = 0 ] || exec {gateway_cmd}')
-        lines.append(f"exec s6-setuidgid hermes {gateway_cmd}")
+        lines.append(f"exec s6-setuidgid savarez {gateway_cmd}")
         return "\n".join(lines) + "\n"
 
     @staticmethod
@@ -631,8 +631,8 @@ class S6ServiceManager:
         OQ8-C: persist to ``${SAVAREZ_HOME}/logs/gateways/<profile>/``.
         CRITICAL: the SAVAREZ_HOME path is sourced from the runtime env
         via with-contenv — NOT Python-substituted at registration time
-        — so a container started with ``-e SAVAREZ_HOME=/data/hermes``
-        gets its logs under /data/hermes/logs/..., not the build-time
+        — so a container started with ``-e SAVAREZ_HOME=/data/savarez``
+        gets its logs under /data/savarez/logs/..., not the build-time
         default.
 
         Output routing — the script is two action directives, applied
@@ -675,10 +675,10 @@ class S6ServiceManager:
             f': "${{SAVAREZ_HOME:=/opt/data}}"\n'
             f'log_dir="$SAVAREZ_HOME/logs/gateways/{prof}"\n'
             f'mkdir -p "$log_dir"\n'
-            f'chown -R hermes:hermes "$log_dir" 2>/dev/null || true\n'
+            f'chown -R savarez:savarez "$log_dir" 2>/dev/null || true\n'
             # Skip the drop when already non-root (CAP_SETGID).
             f'[ "$(id -u)" = 0 ] || exec s6-log 1 n10 s1000000 T "$log_dir"\n'
-            f'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T "$log_dir"\n'
+            f'exec s6-setuidgid savarez s6-log 1 n10 s1000000 T "$log_dir"\n'
         )
 
     # -- lifecycle ---------------------------------------------------------
@@ -823,11 +823,11 @@ class S6ServiceManager:
             log_run.write_text(self._render_log_run(profile))
             log_run.chmod(0o755)
 
-            # Pre-create the supervise/ skeleton with hermes ownership
+            # Pre-create the supervise/ skeleton with savarez ownership
             # BEFORE we publish the slot. s6-supervise will EEXIST our
             # dirs/FIFOs and inherit the ownership, so the runtime
             # s6-svc / s6-svstat / s6-svwait calls (all dispatched as
-            # the hermes user) won't hit EACCES on root-owned 0700
+            # the savarez user) won't hit EACCES on root-owned 0700
             # dirs. See ``_seed_supervise_skeleton`` for the full
             # rationale.
             _seed_supervise_skeleton(tmp_dir)
@@ -909,7 +909,7 @@ class S6ServiceManager:
         # live s6-supervise, so rmtree can remove them. Files inside
         # supervise/ are root-owned (death_tally, lock, status, written
         # by s6-supervise itself) — but the parent supervise/ directory
-        # is hermes-owned (see ``_seed_supervise_skeleton``), and on
+        # is savarez-owned (see ``_seed_supervise_skeleton``), and on
         # POSIX you only need write+execute on the parent to remove
         # contained files regardless of file ownership.
         shutil.rmtree(svc_dir, ignore_errors=True)

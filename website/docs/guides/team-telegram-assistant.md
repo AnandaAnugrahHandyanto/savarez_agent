@@ -29,7 +29,7 @@ Before starting, make sure you have:
 - **An LLM provider configured** — at minimum, an API key for OpenAI, Anthropic, or another supported provider in `~/.savarez/.env`
 
 :::tip
-A $5/month VPS is plenty for running the gateway. Hermes itself is lightweight — the LLM API calls are what cost money, and those happen remotely.
+A $5/month VPS is plenty for running the gateway. Savarez itself is lightweight — the LLM API calls are what cost money, and those happen remotely.
 :::
 
 ---
@@ -41,7 +41,7 @@ Every Telegram bot starts with **@BotFather** — Telegram's official bot for cr
 1. **Open Telegram** and search for `@BotFather`, or go to [t.me/BotFather](https://t.me/BotFather)
 
 2. **Send `/newbot`** — BotFather will ask you two things:
-   - **Display name** — what users see (e.g., `Team Hermes Assistant`)
+   - **Display name** — what users see (e.g., `Team Savarez Assistant`)
    - **Username** — must end in `bot` (e.g., `myteam_hermes_bot`)
 
 3. **Copy the bot token** — BotFather replies with something like:
@@ -155,7 +155,7 @@ savarez gateway stop
 savarez gateway status
 
 # View live logs
-journalctl --user -u hermes-gateway -f
+journalctl --user -u savarez-gateway -f
 
 # Keep running after SSH logout
 sudo loginctl enable-linger $USER
@@ -163,7 +163,7 @@ sudo loginctl enable-linger $USER
 # Linux servers — explicit system-service commands
 sudo savarez gateway start --system
 sudo savarez gateway status --system
-journalctl -u hermes-gateway -f
+journalctl -u savarez-gateway -f
 ```
 
 ```bash
@@ -220,7 +220,7 @@ DM pairing is more flexible — you don't need to collect user IDs upfront. Here
 
 3. **You approve it** on the server:
    ```bash
-   hermes pairing approve telegram XKGH5N7P
+   savarez pairing approve telegram XKGH5N7P
    ```
 
 4. **They're in** — the bot immediately starts responding to their messages
@@ -229,13 +229,13 @@ DM pairing is more flexible — you don't need to collect user IDs upfront. Here
 
 ```bash
 # See all pending and approved users
-hermes pairing list
+savarez pairing list
 
 # Revoke someone's access
-hermes pairing revoke telegram 987654321
+savarez pairing revoke telegram 987654321
 
 # Clear expired pending codes
-hermes pairing clear-pending
+savarez pairing clear-pending
 ```
 
 :::tip
@@ -291,7 +291,7 @@ Users can also change this per-session with the `/verbose` command in chat.
 
 Customize how the bot communicates by editing `~/.savarez/SOUL.md`:
 
-For a full guide, see [Use SOUL.md with Hermes](/guides/use-soul-with-hermes).
+For a full guide, see [Use SOUL.md with Savarez](/guides/use-soul-with-savarez).
 
 ```markdown
 # Soul
@@ -397,13 +397,13 @@ This way, even if someone asks the bot to run something destructive, your host s
 savarez gateway status
 
 # Watch live logs (Linux)
-journalctl --user -u hermes-gateway -f
+journalctl --user -u savarez-gateway -f
 
 # Watch live logs (macOS)
 tail -f ~/.savarez/logs/gateway.log
 ```
 
-### Keep Hermes Updated
+### Keep Savarez Updated
 
 From Telegram, send `/update` to the bot — it will pull the latest version and restart. Or from the server:
 
@@ -416,7 +416,7 @@ savarez gateway stop && savarez gateway start
 
 | What | Location |
 |------|----------|
-| Gateway logs | `journalctl --user -u hermes-gateway` (Linux) or `~/.savarez/logs/gateway.log` (macOS) |
+| Gateway logs | `journalctl --user -u savarez-gateway` (Linux) or `~/.savarez/logs/gateway.log` (macOS) |
 | Cron job output | `~/.savarez/cron/output/{job_id}/{timestamp}.md` |
 | Cron job definitions | `~/.savarez/cron/jobs.json` |
 | Pairing data | `~/.savarez/pairing/` |

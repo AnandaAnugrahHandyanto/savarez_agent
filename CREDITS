@@ -1,0 +1,11 @@
+Savarez AI Agent is a fork of Hermes Agent by Nous Research.
+
+Original Hermes Agent:
+  https://github.com/NousResearch/hermes-agent
+  https://hermes-agent.nousresearch.com
+
+This fork includes rebranding to Savarez, configuration path changes,
+service name updates, and dashboard redesign.
+
+Contributors:
+  - Savarez (Telegram: @Savarez)

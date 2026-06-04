@@ -1,4 +1,4 @@
-# Hermes Achievements Implementation Spec (Detailed)
+# Savarez Achievements Implementation Spec (Detailed)
 
 This document is implementation-facing detail to execute the performance refactor later.
 
@@ -48,7 +48,7 @@ Responsibilities:
 - expose age and staleness checks
 
 Storage path:
-- `~/.savarez/plugins/hermes-achievements/scan_snapshot.json`
+- `~/.savarez/plugins/savarez-achievements/scan_snapshot.json`
 
 Methods (conceptual):
 - `get()` -> snapshot | null
@@ -125,7 +125,7 @@ Compatibility guidance:
 - Add metadata keys without breaking old callers.
 
 Checkpoint file (new):
-- `~/.savarez/plugins/hermes-achievements/scan_checkpoint.json`
+- `~/.savarez/plugins/savarez-achievements/scan_checkpoint.json`
 
 Suggested checkpoint shape:
 ```json
@@ -204,9 +204,9 @@ Notes:
 - frontend request hygiene: `dashboard/dist/index.js` (or source if available)
 - plugin metadata: `dashboard/manifest.json`
 - persisted runtime files:
-  - `~/.savarez/plugins/hermes-achievements/state.json` (existing unlock state)
-  - `~/.savarez/plugins/hermes-achievements/scan_snapshot.json` (new)
-  - `~/.savarez/plugins/hermes-achievements/scan_checkpoint.json` (new)
+  - `~/.savarez/plugins/savarez-achievements/state.json` (existing unlock state)
+  - `~/.savarez/plugins/savarez-achievements/scan_snapshot.json` (new)
+  - `~/.savarez/plugins/savarez-achievements/scan_checkpoint.json` (new)
 
 ---
 

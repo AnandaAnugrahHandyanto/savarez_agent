@@ -36,7 +36,7 @@ For building a context engine plugin, see [Context Engine Plugins](/developer-gu
 
 ## Dual Compression System
 
-Hermes has two separate compression layers that operate independently:
+Savarez has two separate compression layers that operate independently:
 
 ```
                      ┌──────────────────────────┐
@@ -289,7 +289,7 @@ conversation prefix. Uses Anthropic's `cache_control` breakpoints.
 
 ### Strategy: system_and_3
 
-Anthropic allows a maximum of 4 `cache_control` breakpoints per request. Hermes
+Anthropic allows a maximum of 4 `cache_control` breakpoints per request. Savarez
 uses the "system_and_3" strategy:
 
 ```

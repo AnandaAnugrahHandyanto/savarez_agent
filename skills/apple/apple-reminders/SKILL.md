@@ -6,7 +6,7 @@ author: Savarez AI Agent
 license: MIT
 platforms: [macos]
 metadata:
-  hermes:
+  savarez:
     tags: [Reminders, tasks, todo, macOS, Apple]
 prerequisites:
   commands: [remindctl]

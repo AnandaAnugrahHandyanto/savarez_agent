@@ -179,7 +179,7 @@ def format_nous_portal_entitlement_message(
 
     if account_info is None:
         return (
-            f"Hermes could not verify your Nous Portal entitlement, so {capability} "
+            f"Savarez could not verify your Nous Portal entitlement, so {capability} "
             f"is unavailable. Run `savarez model` to refresh your login, or check "
             f"billing at {billing_url}."
         )
@@ -187,7 +187,7 @@ def format_nous_portal_entitlement_message(
     if not account_info.logged_in:
         if account_info.inference_credential_present:
             return (
-                f"Nous inference credentials are configured, but Hermes cannot verify "
+                f"Nous inference credentials are configured, but Savarez cannot verify "
                 f"your Nous Portal paid access for {capability}. Log in with "
                 f"`savarez model` to enable Portal-managed features. Billing and "
                 f"credits are managed at {billing_url}."
@@ -199,7 +199,7 @@ def format_nous_portal_entitlement_message(
 
     if account_info.paid_service_access is None:
         detail = (
-            f"Hermes could not verify your Nous Portal paid access, so {capability} "
+            f"Savarez could not verify your Nous Portal paid access, so {capability} "
             f"is unavailable."
         )
         if account_info.error:
@@ -213,7 +213,7 @@ def format_nous_portal_entitlement_message(
     reason = access.reason if access else None
     if reason == "account_missing":
         return (
-            f"Hermes could not find a Nous Portal account or organisation for this "
+            f"Savarez could not find a Nous Portal account or organisation for this "
             f"login, so {capability} is unavailable. Run `savarez model` to "
             f"authenticate again; if the problem persists, contact Nous support."
         )
@@ -221,7 +221,7 @@ def format_nous_portal_entitlement_message(
     if reason == "no_usable_credits" or account_info.paid_service_access is False:
         message = _no_paid_access_message(account_info, capability, billing_url)
         if include_refresh_hint and not account_info.fresh:
-            message += " If you recently bought credits, run `savarez model` to refresh Hermes."
+            message += " If you recently bought credits, run `savarez model` to refresh Savarez."
         return message
 
     return (

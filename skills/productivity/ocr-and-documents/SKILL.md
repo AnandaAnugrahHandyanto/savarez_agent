@@ -6,7 +6,7 @@ author: Savarez AI Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  savarez:
     tags: [PDF, Documents, Research, Arxiv, Text-Extraction, OCR]
     related_skills: [powerpoint]
 ---

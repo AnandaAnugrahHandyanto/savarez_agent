@@ -1,4 +1,4 @@
-# nix/nixosModules.nix — NixOS module for hermes-agent
+# nix/nixosModules.nix — NixOS module for savarez-agent
 #
 # Two modes:
 #   container.enable = false (default) → native systemd service
@@ -17,7 +17,7 @@
 # writable tool prefixes for npm i -g, pip install, uv tool install, etc.
 #
 # Usage:
-#   services.hermes-agent = {
+#   services.savarez-agent = {
 #     enable = true;
 #     settings.model = "anthropic/claude-sonnet-4";
 #     environmentFiles = [ config.sops.secrets."hermes/env".path ];
@@ -27,14 +27,14 @@
   flake.nixosModules.default = { config, lib, pkgs, ... }:
 
   let
-    cfg = config.services.hermes-agent;
+    cfg = config.services.savarez-agent;
     effectivePackage =
       if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ]
       then cfg.package
       else cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
-    hermes-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+    savarez-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
-    # Deep-merge config type (from 0xrsydn/nix-hermes-agent)
+    # Deep-merge config type (from 0xrsydn/nix-savarez-agent)
     deepConfigType = lib.types.mkOptionType {
       name = "hermes-config-attrs";
       description = "Hermes YAML config (attrset), merged deeply via lib.recursiveUpdate.";
@@ -66,7 +66,7 @@
       )
     );
 
-    containerName = "hermes-agent";
+    containerName = "savarez-agent";
     containerDataDir = "/data";     # stateDir mount point inside container
     containerHomeDir = "/home/hermes";
 
@@ -202,14 +202,14 @@
       else cfg.workingDirectory;
 
   in {
-    options.services.hermes-agent = with lib; {
+    options.services.savarez-agent = with lib; {
       enable = mkEnableOption "Savarez AI Agent gateway service";
 
       # ── Package ──────────────────────────────────────────────────────────
       package = mkOption {
         type = types.package;
-        default = hermes-agent;
-        description = "The hermes-agent package to use.";
+        default = savarez-agent;
+        description = "The savarez-agent package to use.";
       };
 
       # ── Service identity ─────────────────────────────────────────────────
@@ -235,7 +235,7 @@
       stateDir = mkOption {
         type = types.str;
         default = "/var/lib/hermes";
-        description = "State directory. Contains .hermes/ subdir (SAVAREZ_HOME).";
+        description = "State directory. Contains .savarez/ subdir (SAVAREZ_HOME).";
       };
 
       workingDirectory = mkOption {
@@ -526,7 +526,7 @@
           the sealed Python venv. These are resolved by uv alongside core
           dependencies — no PYTHONPATH patching or collision risk.
 
-          Use this for optional extras already declared in hermes-agent's
+          Use this for optional extras already declared in savarez-agent's
           pyproject.toml (e.g. "hindsight", "honcho", "voice").
           Use extraPythonPackages for external packages not in pyproject.toml.
         '';
@@ -600,7 +600,7 @@
 
       # ── Merge MCP servers into settings ────────────────────────────────
       (lib.mkIf (cfg.mcpServers != { }) {
-        services.hermes-agent.settings.mcp_servers = lib.mapAttrs (_name: srv:
+        services.savarez-agent.settings.mcp_servers = lib.mapAttrs (_name: srv:
           # Stdio transport
           lib.optionalAttrs (srv.command != null) { inherit (srv) command args; }
           // lib.optionalAttrs (srv.env != { }) { inherit (srv) env; }
@@ -648,7 +648,7 @@
       # gateway service instead of creating a separate ~/.savarez/.
       (lib.mkIf cfg.addToSystemPackages {
         environment.systemPackages = [ effectivePackage ];
-        environment.variables.SAVAREZ_HOME = "${cfg.stateDir}/.hermes";
+        environment.variables.SAVAREZ_HOME = "${cfg.stateDir}/.savarez";
       })
 
       # ── Host user group membership ─────────────────────────────────────
@@ -664,7 +664,7 @@
           names = map lib.getName cfg.extraPlugins;
         in [{
           assertion = (lib.length names) == (lib.length (lib.unique names));
-          message = "services.hermes-agent.extraPlugins: duplicate plugin names detected: ${toString names}. If using fetchFromGitHub, set name = \"plugin-name\" to disambiguate.";
+          message = "services.savarez-agent.extraPlugins: duplicate plugin names detected: ${toString names}. If using fetchFromGitHub, set name = \"plugin-name\" to disambiguate.";
         }];
       }
 
@@ -674,7 +674,7 @@
           names = map lib.getName cfg.extraPlugins;
         in [{
           assertion = (lib.length names) == (lib.length (lib.unique names));
-          message = "services.hermes-agent.extraPlugins: duplicate plugin names detected: ${toString names}. If using fetchFromGitHub, set name = \"plugin-name\" to disambiguate.";
+          message = "services.savarez-agent.extraPlugins: duplicate plugin names detected: ${toString names}. If using fetchFromGitHub, set name = \"plugin-name\" to disambiguate.";
         }];
       }
 
@@ -693,7 +693,7 @@
       (lib.mkIf (cfg.container.enable && !cfg.addToSystemPackages && cfg.container.hostUsers != []) {
         warnings = [
           ''
-            services.hermes-agent: container.enable is true and container.hostUsers
+            services.savarez-agent: container.enable is true and container.hostUsers
             is set, but addToSystemPackages is false. Without a host-installed hermes
             binary, container routing will not work for interactive users.
             Set addToSystemPackages = true or ensure hermes is on PATH.
@@ -705,12 +705,12 @@
       {
         systemd.tmpfiles.rules = [
           "d ${cfg.stateDir}                2770 ${cfg.user} ${cfg.group} - -"
-          "d ${cfg.stateDir}/.hermes        2770 ${cfg.user} ${cfg.group} - -"
-          "d ${cfg.stateDir}/.hermes/cron   2770 ${cfg.user} ${cfg.group} - -"
-          "d ${cfg.stateDir}/.hermes/sessions 2770 ${cfg.user} ${cfg.group} - -"
-          "d ${cfg.stateDir}/.hermes/logs   2770 ${cfg.user} ${cfg.group} - -"
-          "d ${cfg.stateDir}/.hermes/memories 2770 ${cfg.user} ${cfg.group} - -"
-          "d ${cfg.stateDir}/.hermes/plugins 2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.savarez        2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.savarez/cron   2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.savarez/sessions 2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.savarez/logs   2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.savarez/memories 2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.savarez/plugins 2770 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/home           0750 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.workingDirectory}         2770 ${cfg.user} ${cfg.group} - -"
         ];
@@ -718,25 +718,25 @@
 
       # ── Activation: link config + auth + documents ────────────────────
       {
-        system.activationScripts."hermes-agent-setup" = lib.stringAfter ([ "users" ] ++ lib.optional (config.system.activationScripts ? setupSecrets) "setupSecrets") ''
+        system.activationScripts."savarez-agent-setup" = lib.stringAfter ([ "users" ] ++ lib.optional (config.system.activationScripts ? setupSecrets) "setupSecrets") ''
           # Ensure directories exist (activation runs before tmpfiles)
-          mkdir -p ${cfg.stateDir}/.hermes
+          mkdir -p ${cfg.stateDir}/.savarez
           mkdir -p ${cfg.stateDir}/home
           mkdir -p ${cfg.workingDirectory}
-          chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
-          chmod 2770 ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.workingDirectory}
+          chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${cfg.stateDir}/.savarez ${cfg.stateDir}/home ${cfg.workingDirectory}
+          chmod 2770 ${cfg.stateDir} ${cfg.stateDir}/.savarez ${cfg.workingDirectory}
           chmod 0750 ${cfg.stateDir}/home
 
           # Create subdirs, set setgid + group-writable, migrate existing files.
           # Nix-managed files (config.yaml, .env, .managed) stay 0640/0644.
-          find ${cfg.stateDir}/.hermes -maxdepth 1 \
+          find ${cfg.stateDir}/.savarez -maxdepth 1 \
             \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
             -exec chmod g+rw {} + 2>/dev/null || true
           for _subdir in cron sessions logs memories plugins; do
-            mkdir -p "${cfg.stateDir}/.hermes/$_subdir"
-            chown ${cfg.user}:${cfg.group} "${cfg.stateDir}/.hermes/$_subdir"
-            chmod 2770 "${cfg.stateDir}/.hermes/$_subdir"
-            find "${cfg.stateDir}/.hermes/$_subdir" -type f \
+            mkdir -p "${cfg.stateDir}/.savarez/$_subdir"
+            chown ${cfg.user}:${cfg.group} "${cfg.stateDir}/.savarez/$_subdir"
+            chmod 2770 "${cfg.stateDir}/.savarez/$_subdir"
+            find "${cfg.stateDir}/.savarez/$_subdir" -type f \
               -exec chmod g+rw {} + 2>/dev/null || true
           done
 
@@ -744,63 +744,63 @@
           # Preserves user-added keys (skills, streaming, etc.); Nix keys win.
           # If configFile is user-provided (not generated), overwrite instead of merge.
           ${if cfg.configFile != null then ''
-            install -o ${cfg.user} -g ${cfg.group} -m 0640 -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
+            install -o ${cfg.user} -g ${cfg.group} -m 0640 -D ${configFile} ${cfg.stateDir}/.savarez/config.yaml
           '' else ''
-            ${configMergeScript} ${generatedConfigFile} ${cfg.stateDir}/.hermes/config.yaml
-            chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/config.yaml
-            chmod 0640 ${cfg.stateDir}/.hermes/config.yaml
+            ${configMergeScript} ${generatedConfigFile} ${cfg.stateDir}/.savarez/config.yaml
+            chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.savarez/config.yaml
+            chmod 0640 ${cfg.stateDir}/.savarez/config.yaml
           ''}
 
           # Managed mode marker (so interactive shells also detect NixOS management)
-          touch ${cfg.stateDir}/.hermes/.managed
-          chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.managed
-          chmod 0644 ${cfg.stateDir}/.hermes/.managed
+          touch ${cfg.stateDir}/.savarez/.managed
+          chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.savarez/.managed
+          chmod 0644 ${cfg.stateDir}/.savarez/.managed
 
           # Container mode metadata — tells the host CLI to exec into the
           # container instead of running locally. Removed when container mode
           # is disabled so the host CLI falls back to native execution.
           ${if cfg.container.enable then ''
-            cat > ${cfg.stateDir}/.hermes/.container-mode <<'HERMES_CONTAINER_MODE_EOF'
+            cat > ${cfg.stateDir}/.savarez/.container-mode <<'HERMES_CONTAINER_MODE_EOF'
     # Written by NixOS activation script. Do not edit manually.
     backend=${cfg.container.backend}
     container_name=${containerName}
     exec_user=${cfg.user}
     hermes_bin=${containerDataDir}/current-package/bin/hermes
     HERMES_CONTAINER_MODE_EOF
-            chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.container-mode
-            chmod 0644 ${cfg.stateDir}/.hermes/.container-mode
+            chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.savarez/.container-mode
+            chmod 0644 ${cfg.stateDir}/.savarez/.container-mode
           '' else ''
-            rm -f ${cfg.stateDir}/.hermes/.container-mode
+            rm -f ${cfg.stateDir}/.savarez/.container-mode
 
             # Remove symlink bridge for hostUsers
             ${lib.concatStringsSep "\n" (map (user:
               let
                 userHome = config.users.users.${user}.home;
-                symlinkPath = "${userHome}/.hermes";
+                symlinkPath = "${userHome}/.savarez";
               in ''
-                if [ -L "${symlinkPath}" ] && [ "$(readlink "${symlinkPath}")" = "${cfg.stateDir}/.hermes" ]; then
+                if [ -L "${symlinkPath}" ] && [ "$(readlink "${symlinkPath}")" = "${cfg.stateDir}/.savarez" ]; then
                   rm -f "${symlinkPath}"
-                  echo "hermes-agent: removed symlink ${symlinkPath}"
+                  echo "savarez-agent: removed symlink ${symlinkPath}"
                 fi
               '') cfg.container.hostUsers)}
           ''}
 
           # ── Symlink bridge for interactive users ───────────────────────
-          # Create ~/.savarez -> stateDir/.hermes for each hostUser so the
+          # Create ~/.savarez -> stateDir/.savarez for each hostUser so the
           # host CLI shares state with the container service.
           # Only runs when container mode is enabled.
           ${lib.optionalString cfg.container.enable
             (lib.concatStringsSep "\n" (map (user:
               let
                 userHome = config.users.users.${user}.home;
-                symlinkPath = "${userHome}/.hermes";
-                target = "${cfg.stateDir}/.hermes";
+                symlinkPath = "${userHome}/.savarez";
+                target = "${cfg.stateDir}/.savarez";
               in ''
                 if [ -d "${symlinkPath}" ] && [ ! -L "${symlinkPath}" ]; then
                   # Real directory — back it up, then create symlink.
                   # (ln -sfn cannot atomically replace a directory.)
                   _backup="${symlinkPath}.bak.$(date +%s)"
-                  echo "hermes-agent: backing up existing ${symlinkPath} to $_backup"
+                  echo "savarez-agent: backing up existing ${symlinkPath} to $_backup"
                   mv "${symlinkPath}" "$_backup"
                 fi
                 # For everything else (existing symlink, doesn't exist, etc.)
@@ -812,10 +812,10 @@
           # Seed auth file if provided
           ${lib.optionalString (cfg.authFile != null) ''
             ${if cfg.authFileForceOverwrite then ''
-              install -o ${cfg.user} -g ${cfg.group} -m 0600 ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json
+              install -o ${cfg.user} -g ${cfg.group} -m 0600 ${cfg.authFile} ${cfg.stateDir}/.savarez/auth.json
             '' else ''
-              if [ ! -f ${cfg.stateDir}/.hermes/auth.json ]; then
-                install -o ${cfg.user} -g ${cfg.group} -m 0600 ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json
+              if [ ! -f ${cfg.stateDir}/.savarez/auth.json ]; then
+                install -o ${cfg.user} -g ${cfg.group} -m 0600 ${cfg.authFile} ${cfg.stateDir}/.savarez/auth.json
               fi
             ''}
           ''}
@@ -824,7 +824,7 @@
           # Hermes reads $SAVAREZ_HOME/.env at startup via load_hermes_dotenv(),
           # so this is the single source of truth for both native and container mode.
           ${lib.optionalString (cfg.environment != {} || cfg.environmentFiles != []) ''
-            ENV_FILE="${cfg.stateDir}/.hermes/.env"
+            ENV_FILE="${cfg.stateDir}/.savarez/.env"
             install -o ${cfg.user} -g ${cfg.group} -m 0640 /dev/null "$ENV_FILE"
             cat > "$ENV_FILE" <<'HERMES_NIX_ENV_EOF'
     ${envFileContent}
@@ -844,7 +844,7 @@
 
         # ── Declarative plugins ─────────────────────────────────────────
         # Remove stale managed symlinks (plugins removed from config)
-        find ${cfg.stateDir}/.hermes/plugins -maxdepth 1 -type l -name 'nix-managed-*' -delete 2>/dev/null || true
+        find ${cfg.stateDir}/.savarez/plugins -maxdepth 1 -type l -name 'nix-managed-*' -delete 2>/dev/null || true
 
         ${lib.concatStringsSep "\n" (map (plugin:
           let
@@ -854,8 +854,8 @@
               echo "ERROR: extraPlugins entry '${plugin}' has no plugin.yaml" >&2
               exit 1
             fi
-            ln -sfn ${plugin} ${cfg.stateDir}/.hermes/plugins/nix-managed-${name}
-            chown -h ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/plugins/nix-managed-${name}
+            ln -sfn ${plugin} ${cfg.stateDir}/.savarez/plugins/nix-managed-${name}
+            chown -h ${cfg.user}:${cfg.group} ${cfg.stateDir}/.savarez/plugins/nix-managed-${name}
           '') cfg.extraPlugins)}
         '';
       }
@@ -864,7 +864,7 @@
       # MODE A: Native systemd service (default)
       # ══════════════════════════════════════════════════════════════════
       (lib.mkIf (!cfg.container.enable) {
-        systemd.services.hermes-agent = {
+        systemd.services.savarez-agent = {
           description = "Savarez AI Agent Gateway";
           wantedBy = [ "multi-user.target" ];
           after = [ "network-online.target" ];
@@ -872,7 +872,7 @@
 
           environment = {
             HOME = cfg.stateDir;
-            SAVAREZ_HOME = "${cfg.stateDir}/.hermes";
+            SAVAREZ_HOME = "${cfg.stateDir}/.savarez";
             HERMES_MANAGED = "true";
             MESSAGING_CWD = cfg.workingDirectory;
           };
@@ -925,7 +925,7 @@
         # Ensure the container runtime is available
         virtualisation.docker.enable = lib.mkDefault (cfg.container.backend == "docker");
 
-        systemd.services.hermes-agent = {
+        systemd.services.savarez-agent = {
           description = "Savarez AI Agent Gateway (container)";
           wantedBy = [ "multi-user.target" ];
           after = [ "network-online.target" ]
@@ -968,7 +968,7 @@
                 ${lib.concatStringsSep " " (map (v: "--volume ${v}") cfg.container.extraVolumes)} \
                 --env HERMES_UID="$HERMES_UID" \
                 --env HERMES_GID="$HERMES_GID" \
-                --env SAVAREZ_HOME=${containerDataDir}/.hermes \
+                --env SAVAREZ_HOME=${containerDataDir}/.savarez \
                 --env HERMES_MANAGED=true \
                 --env HOME=${containerHomeDir} \
                 --env MESSAGING_CWD=${containerWorkDir} \

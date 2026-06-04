@@ -1,6 +1,6 @@
 """Harness: `docker run <image> gateway run` redirects to supervised mode.
 
-Before the s6 migration, ``docker run nousresearch/hermes-agent gateway
+Before the s6 migration, ``docker run nousresearch/savarez-agent gateway
 run`` was the standard pattern — the gateway ran as the container's
 main process, container exit code matched gateway exit code, no
 supervision. With s6 as PID 1, the same invocation now auto-redirects
@@ -271,7 +271,7 @@ def test_supervised_gateway_does_not_recurse(
     # recursion guard fails, s6 would respawn fresh `gateway run`
     # processes on every cycle, leaving multiple Python-process
     # descendants under the gateway-default supervise tree.
-    r = _sh(container_name, "ps -eo pid,cmd | grep -v grep | grep -E 'python.*hermes.*gateway run' | wc -l")
+    r = _sh(container_name, "ps -eo pid,cmd | grep -v grep | grep -E 'python.*savarez.*gateway run' | wc -l")
     assert r.returncode == 0
     n = int(r.stdout.strip() or 0)
     assert n <= 1, (
@@ -283,7 +283,7 @@ def test_supervised_gateway_does_not_recurse(
 
     # Stronger positive assertion: there should be exactly one
     # `sleep infinity` process whose parent is the main-wrapper.sh
-    # CMD process (PID 17 typically). The static `main-hermes`
+    # CMD process (PID 17 typically). The static `main-savarez`
     # service has its own `sleep infinity` child; THAT one is fine
     # and unrelated to our redirect.
     r = _sh(

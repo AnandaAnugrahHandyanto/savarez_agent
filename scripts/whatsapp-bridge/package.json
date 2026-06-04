@@ -1,5 +1,5 @@
 {
-  "name": "hermes-whatsapp-bridge",
+  "name": "savarez-whatsapp-bridge",
   "version": "1.0.0",
   "description": "WhatsApp bridge for Savarez AI Agent using Baileys",
   "private": true,

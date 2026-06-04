@@ -40,7 +40,7 @@ When it finishes, you're back at your terminal ready to chat.
 
 ### What if I'm SSH'd into a server?
 
-OAuth needs a browser, but the loopback callback runs on the machine where Hermes is running. Two options:
+OAuth needs a browser, but the loopback callback runs on the machine where Savarez is running. Two options:
 
 ```bash
 # Option A: SSH port forwarding (preferred)
@@ -57,7 +57,7 @@ See [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) for the full walkthr
 ## 3. Verify it worked
 
 ```bash
-hermes portal info
+savarez portal info
 ```
 
 You should see:
@@ -91,7 +91,7 @@ Try something that exercises both the model and the Tool Gateway:
 Hey, search the web for "Savarez AI Agent release notes" and summarize the top 3 hits.
 ```
 
-You should see Hermes call `web_search` (Firecrawl-backed, through the gateway) and respond with a summary. If the search runs and the response makes sense, you're done — the Portal is wired up end to end.
+You should see Savarez call `web_search` (Firecrawl-backed, through the gateway) and respond with a summary. If the search runs and the response makes sense, you're done — the Portal is wired up end to end.
 
 ## 5. Pick the model you actually want
 
@@ -118,11 +118,11 @@ Pick a different default permanently:
 savarez config set model.default anthropic/claude-sonnet-4.6
 ```
 
-### Don't pick Hermes-4 for agent work
+### Don't pick Savarez-4 for agent work
 
-Hermes-4-70B and Hermes-4-405B are available on the Portal at deep discounts, but they're **chat/reasoning models**, not tool-call-tuned. They will struggle with multi-step agent loops. Use them via [Nous Chat](https://chat.nousresearch.com) for conversation/research work, or through the [subscription proxy](/user-guide/features/subscription-proxy) from non-agent tools. For Savarez AI Agent itself, stick to the frontier agentic models above.
+Savarez-4-70B and Savarez-4-405B are available on the Portal at deep discounts, but they're **chat/reasoning models**, not tool-call-tuned. They will struggle with multi-step agent loops. Use them via [Nous Chat](https://chat.nousresearch.com) for conversation/research work, or through the [subscription proxy](/user-guide/features/subscription-proxy) from non-agent tools. For Savarez AI Agent itself, stick to the frontier agentic models above.
 
-The Portal's own [info page](https://portal.nousresearch.com/info) carries this warning too — it's the official Nous guidance, not just a Hermes-side opinion.
+The Portal's own [info page](https://portal.nousresearch.com/info) carries this warning too — it's the official Nous guidance, not just a Savarez-side opinion.
 
 ## 6. (Optional) Customize Tool Gateway routing
 
@@ -136,12 +136,12 @@ savarez tools
 # → TTS              → "Nous Subscription"     (recommended)
 ```
 
-These rows appear in `savarez tools` even before you've logged into Nous Portal — if you pick "Nous Subscription" without an active session, Hermes runs the Portal login inline (without changing your inference provider or your other tools).
+These rows appear in `savarez tools` even before you've logged into Nous Portal — if you pick "Nous Subscription" without an active session, Savarez runs the Portal login inline (without changing your inference provider or your other tools).
 
 Verify your mix with:
 
 ```bash
-hermes portal tools
+savarez portal tools
 ```
 
 You'll see per-tool routing — `via Nous Portal` for the ones routed through the subscription, and the partner name (`browserbase`, `firecrawl`, etc.) for the ones using your own keys.
@@ -156,7 +156,7 @@ savarez setup voice
 # → pick a speech-to-text backend (local faster-whisper is free, no setup)
 ```
 
-Then in any messaging-platform session (Telegram, Discord, Signal, etc.), send a voice message and Hermes will transcribe it, respond, and reply with synthesized voice — all on your Portal subscription.
+Then in any messaging-platform session (Telegram, Discord, Signal, etc.), send a voice message and Savarez will transcribe it, respond, and reply with synthesized voice — all on your Portal subscription.
 
 ## 8. (Optional) Cron + always-on workflows
 
@@ -172,18 +172,18 @@ The cron job runs unattended, calls the model + web search + summarization all t
 
 ## Profiles and multi-user setups
 
-If you use [Hermes profiles](/user-guide/profiles) (e.g. a separate config per project), the Portal refresh token is automatically shared across all profiles via a shared token store. Sign in once on any profile, and the rest pick it up automatically.
+If you use [Savarez profiles](/user-guide/profiles) (e.g. a separate config per project), the Portal refresh token is automatically shared across all profiles via a shared token store. Sign in once on any profile, and the rest pick it up automatically.
 
 For team setups where multiple humans share a machine, each human has their own Portal account → each home directory holds its own `~/.savarez/auth.json` → no token sharing across users. This is the right boundary.
 
 ## Troubleshooting
 
-### `hermes portal info` shows "not logged in" after `savarez setup --portal`
+### `savarez portal info` shows "not logged in" after `savarez setup --portal`
 
 The OAuth flow didn't complete. Re-run it:
 
 ```bash
-hermes portal
+savarez portal
 ```
 
 If your browser doesn't open or the callback fails, you're likely on a remote/headless host — see [OAuth over SSH](/guides/oauth-over-ssh) for the port-forwarding and manual-paste workarounds.
@@ -203,7 +203,7 @@ savarez model
 # pick Nous Portal
 ```
 
-Re-verify with `hermes portal info`.
+Re-verify with `savarez portal info`.
 
 ### Tool Gateway tools showing partner names instead of "via Nous Portal"
 
@@ -218,7 +218,7 @@ Some users intentionally mix — e.g. routing web through Nous but using their o
 
 ### "Re-authentication required" mid-session
 
-Your Portal refresh token was invalidated (password change, manual revoke, session expiry). The token is now quarantined locally so Hermes doesn't replay it endlessly. Just log in again:
+Your Portal refresh token was invalidated (password change, manual revoke, session expiry). The token is now quarantined locally so Savarez doesn't replay it endlessly. Just log in again:
 
 ```bash
 savarez auth add nous
@@ -235,15 +235,15 @@ The Portal catalog mirrors OpenRouter's model list (300+). If a model is missing
 /model openai/o1-2025-12-17
 ```
 
-If a model is genuinely unavailable, [open an issue](https://github.com/NousResearch/hermes-agent/issues) — most gaps are routing config we can update.
+If a model is genuinely unavailable, [open an issue](https://github.com/NousResearch/savarez-agent/issues) — most gaps are routing config we can update.
 
 ### Billing not appearing on my Portal account
 
-`hermes portal info` will tell you whether you're actually routing through the Portal or some other provider. Common causes:
+`savarez portal info` will tell you whether you're actually routing through the Portal or some other provider. Common causes:
 
 - `model.provider` set to `openrouter`/`anthropic`/etc. instead of `nous`
 - An OAuth refresh failure that fell back to a different configured provider
-- Multiple Hermes profiles where you're using the wrong one (check `savarez profile current`)
+- Multiple Savarez profiles where you're using the wrong one (check `savarez profile current`)
 
 ### Want to revoke and start clean
 
@@ -270,7 +270,7 @@ That's the deal. If you're using more than two of those backends anyway, the sub
 
 - **[Nous Portal integration page](/integrations/nous-portal)** — Overview of what's in the subscription
 - **[Tool Gateway](/user-guide/features/tool-gateway)** — Full details on every gateway-routed tool
-- **[Subscription proxy](/user-guide/features/subscription-proxy)** — Use your Portal subscription from non-Hermes tools
+- **[Subscription proxy](/user-guide/features/subscription-proxy)** — Use your Portal subscription from non-Savarez tools
 - **[Voice mode](/user-guide/features/voice-mode)** — Set up voice conversations on the Portal subscription
 - **[OAuth over SSH](/guides/oauth-over-ssh)** — Remote / headless login patterns
-- **[Profiles](/user-guide/profiles)** — Share one Portal login across multiple Hermes configurations
+- **[Profiles](/user-guide/profiles)** — Share one Portal login across multiple Savarez configurations

@@ -3,18 +3,18 @@ unsupported `docker run --user <arbitrary-uid>:<gid>` start with actionable
 guidance, while still allowing:
 
   - root start (id -u == 0)
-  - `--user <hermes-uid>` (the supported non-root start, #34648 / #34837)
+  - `--user <savarez-uid>` (the supported non-root start, #34648 / #34837)
 
 Background: in the tini era `docker run --user $(id -u):$(id -g)` was used to
 make container-written files match the host user. Under s6-overlay this can't
 work — the bootstrap (UID remap, volume/build-tree chown, config seeding) needs
-root, and the baked image dirs are owned by the hermes build UID, so an
+root, and the baked image dirs are owned by the savarez build UID, so an
 arbitrary pinned UID can't write them (EACCES on a bind mount, hard crash on a
 named volume). The supported path is root start + HERMES_UID/HERMES_GID (or the
-PUID/PGID aliases), which remaps the hermes user and chowns the volume.
+PUID/PGID aliases), which remaps the savarez user and chowns the volume.
 
-The guard fires only when the current UID is neither root NOR the hermes UID,
-so the #34648 `--user 10000:10000` case (pinning to the hermes UID itself) is
+The guard fires only when the current UID is neither root NOR the savarez UID,
+so the #34648 `--user 10000:10000` case (pinning to the savarez UID itself) is
 unaffected.
 
 Extraction + stubbed-shell-run mirrors
@@ -47,7 +47,7 @@ def _guard_block(text: str) -> str:
         r"(cur_uid=\"\$\(id -u\)\"\nif \[ \"\$cur_uid\" != 0 \](?:.*\n)*?fi)",
         text,
     )
-    assert m, "expected the --user guard block (cur_uid + non-root/non-hermes check)"
+    assert m, "expected the --user guard block (cur_uid + non-root/non-savarez check)"
     return m.group(1)
 
 
@@ -55,9 +55,9 @@ def _guard_block(text: str) -> str:
 def test_guard_present_and_mentions_remediation(path: Path) -> None:
     text = _read(path)
     block = _guard_block(text)
-    # Must check non-root AND non-hermes-uid (so --user 10000:10000 is allowed).
+    # Must check non-root AND non-savarez-uid (so --user 10000:10000 is allowed).
     assert '"$cur_uid" != 0' in block
-    assert '"$cur_uid" != "$(id -u hermes)"' in block
+    assert '"$cur_uid" != "$(id -u savarez)"' in block
     assert "exit 1" in block
     # Must point users at the supported env vars.
     assert "HERMES_UID" in block and "HERMES_GID" in block
@@ -74,8 +74,8 @@ def _run_guard(text: str, *, cur_uid: int, hermes_uid: int = 10000) -> subproces
     with tempfile.TemporaryDirectory() as d:
         script = (
             "set -e\n"
-            # Stub `id`: `id -u` -> cur_uid; `id -u hermes` -> hermes_uid.
-            f'id() {{ if [ "$2" = hermes ]; then echo {hermes_uid}; else echo {cur_uid}; fi; }}\n'
+            # Stub `id`: `id -u` -> cur_uid; `id -u savarez` -> hermes_uid.
+            f'id() {{ if [ "$2" = savarez ]; then echo {hermes_uid}; else echo {cur_uid}; fi; }}\n'
             + block
             + "\necho GUARD_PASSED\n"  # only reached when the guard allows through
         )
@@ -85,7 +85,7 @@ def _run_guard(text: str, *, cur_uid: int, hermes_uid: int = 10000) -> subproces
 
 
 def test_arbitrary_user_uid_is_rejected() -> None:
-    """An arbitrary host UID (1000), neither root nor hermes, is rejected."""
+    """An arbitrary host UID (1000), neither root nor savarez, is rejected."""
     for text in (_read(STAGE2_HOOK), _read(MAIN_WRAPPER)):
         proc = _run_guard(text, cur_uid=1000, hermes_uid=10000)
         assert proc.returncode == 1, f"expected rejection, got rc={proc.returncode}"
@@ -102,7 +102,7 @@ def test_root_start_passes() -> None:
 
 
 def test_user_pinned_to_hermes_uid_passes() -> None:
-    """`--user 10000:10000` (the hermes UID itself) is the supported non-root
+    """`--user 10000:10000` (the savarez UID itself) is the supported non-root
     start from #34648 / #34837 and must NOT be blocked."""
     for text in (_read(STAGE2_HOOK), _read(MAIN_WRAPPER)):
         proc = _run_guard(text, cur_uid=10000, hermes_uid=10000)
@@ -111,7 +111,7 @@ def test_user_pinned_to_hermes_uid_passes() -> None:
 
 
 def test_user_pinned_to_remapped_hermes_uid_passes() -> None:
-    """After a HERMES_UID remap the hermes UID is e.g. 4242; a container pinned
+    """After a HERMES_UID remap the savarez UID is e.g. 4242; a container pinned
     to that same UID must still pass (cur_uid == hermes_uid)."""
     for text in (_read(STAGE2_HOOK), _read(MAIN_WRAPPER)):
         proc = _run_guard(text, cur_uid=4242, hermes_uid=4242)

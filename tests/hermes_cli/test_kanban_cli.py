@@ -15,7 +15,7 @@ from hermes_cli import kanban_db as kb
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -194,7 +194,7 @@ def test_run_slash_tenant_filter(kanban_home):
 
 
 def test_run_slash_session_filter(kanban_home):
-    """`hermes kanban list --session <id>` filters by the originating
+    """`savarez kanban list --session <id>` filters by the originating
     chat session id stamped on tasks created from inside an ACP loop."""
     from hermes_cli import kanban_db as kb
     with kb.connect() as conn:

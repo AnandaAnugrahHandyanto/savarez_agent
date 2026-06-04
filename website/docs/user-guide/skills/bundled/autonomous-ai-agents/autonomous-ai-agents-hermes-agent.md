@@ -15,7 +15,7 @@ Configure, extend, or contribute to Savarez AI Agent.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/autonomous-ai-agents/hermes-agent` |
+| Path | `skills/autonomous-ai-agents/savarez-agent` |
 | Version | `2.1.0` |
 | Author | Savarez AI Agent + Teknium |
 | License | MIT |
@@ -26,36 +26,36 @@ Configure, extend, or contribute to Savarez AI Agent.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Savarez loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Savarez AI Agent
 
-Savarez AI Agent is an open-source AI agent framework by Nous Research that runs in your terminal, messaging platforms, and IDEs. It belongs to the same category as Claude Code (Anthropic), Codex (OpenAI), and OpenClaw — autonomous coding and task-execution agents that use tool calling to interact with your system. Hermes works with any LLM provider (OpenRouter, Anthropic, OpenAI, DeepSeek, local models, and 15+ others) and runs on Linux, macOS, and WSL.
+Savarez AI Agent is an open-source AI agent framework by Nous Research that runs in your terminal, messaging platforms, and IDEs. It belongs to the same category as Claude Code (Anthropic), Codex (OpenAI), and OpenClaw — autonomous coding and task-execution agents that use tool calling to interact with your system. Savarez works with any LLM provider (OpenRouter, Anthropic, OpenAI, DeepSeek, local models, and 15+ others) and runs on Linux, macOS, and WSL.
 
-What makes Hermes different:
+What makes Savarez different:
 
-- **Self-improving through skills** — Hermes learns from experience by saving reusable procedures as skills. When it solves a complex problem, discovers a workflow, or gets corrected, it can persist that knowledge as a skill document that loads into future sessions. Skills accumulate over time, making the agent better at your specific tasks and environment.
+- **Self-improving through skills** — Savarez learns from experience by saving reusable procedures as skills. When it solves a complex problem, discovers a workflow, or gets corrected, it can persist that knowledge as a skill document that loads into future sessions. Skills accumulate over time, making the agent better at your specific tasks and environment.
 - **Persistent memory across sessions** — remembers who you are, your preferences, environment details, and lessons learned. Pluggable memory backends (built-in, Honcho, Mem0, and more) let you choose how memory works.
 - **Multi-platform gateway** — the same agent runs on Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Email, and 10+ other platforms with full tool access, not just chat.
 - **Provider-agnostic** — swap models and providers mid-workflow without changing anything else. Credential pools rotate across multiple API keys automatically.
-- **Profiles** — run multiple independent Hermes instances with isolated configs, sessions, skills, and memory.
+- **Profiles** — run multiple independent Savarez instances with isolated configs, sessions, skills, and memory.
 - **Extensible** — plugins, MCP servers, custom tools, webhook triggers, cron scheduling, and the full Python ecosystem.
 
-People use Hermes for software development, research, system administration, data analysis, content creation, home automation, and anything else that benefits from an AI agent with persistent context and full system access.
+People use Savarez for software development, research, system administration, data analysis, content creation, home automation, and anything else that benefits from an AI agent with persistent context and full system access.
 
 **This skill helps you work with Savarez AI Agent effectively** — setting it up, configuring features, spawning additional agent instances, troubleshooting issues, finding the right commands and settings, and understanding how the system works when you need to extend or contribute to it.
 
-**Docs:** https://hermes-agent.nousresearch.com/docs/
+**Docs:** https://savarez-agent.nousresearch.com/docs/
 
 ## Quick Start
 
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
 
 # Interactive chat (default)
-hermes
+savarez
 
 # Single query
 savarez chat -q "What is the capital of France?"
@@ -77,7 +77,7 @@ savarez doctor
 ### Global Flags
 
 ```
-hermes [flags] [command]
+savarez [flags] [command]
 
   --version, -V             Show version
   --resume, -r SESSION      Resume session by ID or title
@@ -149,7 +149,7 @@ savarez skills tap add REPO  Add a GitHub repo as skill source
 ### MCP Servers
 
 ```
-savarez mcp serve            Run Hermes as an MCP server
+savarez mcp serve            Run Savarez as an MCP server
 savarez mcp add NAME         Add an MCP server (--url or --command)
 savarez mcp remove NAME      Remove an MCP server
 savarez mcp list             List configured servers
@@ -159,7 +159,7 @@ savarez mcp configure NAME   Toggle tool selection
 
 How the built-in MCP client connects servers (stdio/HTTP), auto-discovers
 their tools, and exposes them as first-class tools, plus catalog install
-(`savarez mcp install <name>`): `skill_view(name="hermes-agent", file_path="references/native-mcp.md")`.
+(`savarez mcp install <name>`): `skill_view(name="savarez-agent", file_path="references/native-mcp.md")`.
 
 ### Gateway (Messaging Platforms)
 
@@ -174,7 +174,7 @@ savarez gateway setup        Configure platforms
 
 Supported platforms: Telegram, Discord, Slack, WhatsApp, Signal, Email, SMS, Matrix, Mattermost, Home Assistant, DingTalk, Feishu, WeCom, BlueBubbles (iMessage), Weixin (WeChat), API Server, Webhooks. Open WebUI connects via the API Server adapter.
 
-Platform docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/
+Platform docs: https://savarez-agent.nousresearch.com/docs/user-guide/messaging/
 
 ### Sessions
 
@@ -210,7 +210,7 @@ savarez webhook test NAME    Send a test POST
 ```
 
 Full setup, route config, payload templating, and event-driven agent-run
-patterns: `skill_view(name="hermes-agent", file_path="references/webhooks.md")`.
+patterns: `skill_view(name="savarez-agent", file_path="references/webhooks.md")`.
 
 ### Profiles
 
@@ -238,16 +238,16 @@ savarez auth reset PROVIDER  Clear exhaustion status
 ### Other
 
 ```
-hermes insights [--days N]  Usage analytics
+savarez insights [--days N]  Usage analytics
 savarez update               Update to latest version
-hermes pairing list/approve/revoke  DM authorization
+savarez pairing list/approve/revoke  DM authorization
 savarez plugins list/install/remove  Plugin management
-hermes honcho setup/status  Honcho memory integration (requires honcho plugin)
-hermes memory setup/status/off  Memory provider config
-hermes completion bash|zsh  Shell completions
-hermes acp                  ACP server (IDE integration)
-hermes claw migrate         Migrate from OpenClaw
-savarez uninstall            Uninstall Hermes
+savarez honcho setup/status  Honcho memory integration (requires honcho plugin)
+savarez memory setup/status/off  Memory provider config
+savarez completion bash|zsh  Shell completions
+savarez acp                  ACP server (IDE integration)
+savarez claw migrate         Migrate from OpenClaw
+savarez uninstall            Uninstall Savarez
 ```
 
 ---
@@ -256,7 +256,7 @@ savarez uninstall            Uninstall Hermes
 
 Type these during an interactive chat session. New commands land fairly
 often; if something below looks stale, run `/help` in-session for the
-authoritative list or see the [live slash commands reference](https://hermes-agent.nousresearch.com/docs/reference/slash-commands).
+authoritative list or see the [live slash commands reference](https://savarez-agent.nousresearch.com/docs/reference/slash-commands).
 The registry of record is `hermes_cli/commands.py` — every consumer
 (autocomplete, Telegram menu, Slack mapping, `/help`) derives from it.
 
@@ -270,13 +270,13 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 /compress            Manually compress context
 /stop                Kill background processes
 /rollback [N]        Restore filesystem checkpoint
-/snapshot [sub]      Create or restore state snapshots of Hermes config/state (CLI)
+/snapshot [sub]      Create or restore state snapshots of Savarez config/state (CLI)
 /background <prompt> Run prompt in background
 /queue <prompt>      Queue for next turn
 /steer <prompt>      Inject a message after the next tool call without interrupting
 /agents (/tasks)     Show active agents and running tasks
 /resume [name]       Resume a named session
-/goal [text|sub]     Set a standing goal Hermes works on across turns until achieved
+/goal [text|sub]     Set a standing goal Savarez works on across turns until achieved
                      (subcommands: status, pause, resume, clear)
 /redraw              Force a full UI repaint (CLI)
 ```
@@ -290,7 +290,7 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 /verbose             Cycle: off → new → all → verbose
 /voice [on|off|tts]  Voice mode
 /yolo                Toggle approval bypass
-/busy [sub]          Control what Enter does while Hermes is working (CLI)
+/busy [sub]          Control what Enter does while Savarez is working (CLI)
                      (subcommands: queue, steer, interrupt, status)
 /indicator [style]   Pick the TUI busy-indicator style (CLI)
                      (styles: kaomoji, emoji, unicode, ascii)
@@ -320,7 +320,7 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 /deny                Deny a pending command (gateway)
 /restart             Restart gateway (gateway)
 /sethome             Set current chat as home channel (gateway)
-/update              Update Hermes to latest (gateway)
+/update              Update Savarez to latest (gateway)
 /topic [sub]         Enable or inspect Telegram DM topic sessions (gateway)
 /platforms (/gateway) Show platform connection status (gateway)
 ```
@@ -366,7 +366,7 @@ $SAVAREZ_HOME/skills/        Installed skills
 ~/.savarez/state.db          Canonical session store (SQLite + FTS5)
 ~/.savarez/logs/             Gateway and error logs
 ~/.savarez/auth.json         OAuth tokens and credential pools
-~/.savarez/hermes-agent/     Source code (if git-installed)
+~/.savarez/savarez-agent/     Source code (if git-installed)
 ```
 
 Profiles use `~/.savarez/profiles/<name>/` with the same layout.
@@ -389,7 +389,7 @@ Edit with `savarez config edit` or `savarez config set section.key value`.
 | `delegation` | `model`, `provider`, `base_url`, `api_key`, `max_iterations` (50), `reasoning_effort` |
 | `checkpoints` | `enabled`, `max_snapshots` (50) |
 
-Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/configuration
+Full config reference: https://savarez-agent.nousresearch.com/docs/user-guide/configuration
 
 ### Providers
 
@@ -419,7 +419,7 @@ Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/con
 | Custom endpoint | Config | `model.base_url` + `model.api_key` in config.yaml |
 | GitHub Copilot ACP | External | `COPILOT_CLI_PATH` or Copilot CLI |
 
-Full provider docs: https://hermes-agent.nousresearch.com/docs/integrations/providers
+Full provider docs: https://savarez-agent.nousresearch.com/docs/integrations/providers
 
 ### Toolsets
 
@@ -466,7 +466,7 @@ Tool changes take effect on `/reset` (new session). They do NOT apply mid-conver
 
 ## Security & Privacy Toggles
 
-Common "why is Hermes doing X to my output / tool calls / commands?" toggles — and the exact commands to change them. Most of these need a fresh session (`/reset` in chat, or start a new `savarez` invocation) because they're read once at startup.
+Common "why is Savarez doing X to my output / tool calls / commands?" toggles — and the exact commands to change them. Most of these need a fresh session (`/reset` in chat, or start a new `savarez` invocation) because they're read once at startup.
 
 ### Secret redaction in tool output
 
@@ -494,7 +494,7 @@ savarez config set privacy.redact_pii false   # disable (default)
 
 ### Command approval prompts
 
-By default (`approvals.mode: manual`), Hermes prompts the user before running shell commands flagged as destructive (`rm -rf`, `git reset --hard`, etc.). The modes are:
+By default (`approvals.mode: manual`), Savarez prompts the user before running shell commands flagged as destructive (`rm -rf`, `git reset --hard`, etc.). The modes are:
 
 - `manual` — always prompt (default)
 - `smart` — use an auxiliary LLM to auto-approve low-risk commands, prompt on high-risk
@@ -506,7 +506,7 @@ savarez config set approvals.mode off         # bypass everything (not recommend
 ```
 
 Per-invocation bypass without changing config:
-- `hermes --yolo …`
+- `savarez --yolo …`
 - `export HERMES_YOLO_MODE=1`
 
 Note: YOLO / `approvals.mode: off` does NOT turn off secret redaction. They are independent.
@@ -557,9 +557,9 @@ Voice commands: `/voice on` (voice-to-voice), `/voice tts` (always voice), `/voi
 
 ---
 
-## Spawning Additional Hermes Instances
+## Spawning Additional Savarez Instances
 
-Run additional Hermes processes as fully independent subprocesses — separate sessions, tools, and environments.
+Run additional Savarez processes as fully independent subprocesses — separate sessions, tools, and environments.
 
 ### When to Use This vs delegate_task
 
@@ -582,11 +582,11 @@ terminal(command="savarez chat -q 'Set up CI/CD for ~/myapp'", background=true)
 
 ### Interactive PTY Mode (via tmux)
 
-Hermes uses prompt_toolkit, which requires a real terminal. Use tmux for interactive spawning:
+Savarez uses prompt_toolkit, which requires a real terminal. Use tmux for interactive spawning:
 
 ```
 # Start
-terminal(command="tmux new-session -d -s agent1 -x 120 -y 40 'hermes'", timeout=10)
+terminal(command="tmux new-session -d -s agent1 -x 120 -y 40 'savarez'", timeout=10)
 
 # Wait for startup, then send a message
 terminal(command="sleep 8 && tmux send-keys -t agent1 'Build a FastAPI auth service' Enter", timeout=15)
@@ -605,11 +605,11 @@ terminal(command="tmux send-keys -t agent1 '/exit' Enter && sleep 2 && tmux kill
 
 ```
 # Agent A: backend
-terminal(command="tmux new-session -d -s backend -x 120 -y 40 'hermes -w'", timeout=10)
+terminal(command="tmux new-session -d -s backend -x 120 -y 40 'savarez -w'", timeout=10)
 terminal(command="sleep 8 && tmux send-keys -t backend 'Build REST API for user management' Enter", timeout=15)
 
 # Agent B: frontend
-terminal(command="tmux new-session -d -s frontend -x 120 -y 40 'hermes -w'", timeout=10)
+terminal(command="tmux new-session -d -s frontend -x 120 -y 40 'savarez -w'", timeout=10)
 terminal(command="sleep 8 && tmux send-keys -t frontend 'Build React dashboard for user management' Enter", timeout=15)
 
 # Check progress, relay context between them
@@ -621,10 +621,10 @@ terminal(command="tmux send-keys -t frontend 'Here is the API schema from the ba
 
 ```
 # Resume most recent session
-terminal(command="tmux new-session -d -s resumed 'hermes --continue'", timeout=10)
+terminal(command="tmux new-session -d -s resumed 'savarez --continue'", timeout=10)
 
 # Resume specific session
-terminal(command="tmux new-session -d -s resumed 'hermes --resume 20260225_143052_a1b2c3'", timeout=10)
+terminal(command="tmux new-session -d -s resumed 'savarez --resume 20260225_143052_a1b2c3'", timeout=10)
 ```
 
 ### Tips
@@ -679,7 +679,7 @@ the `cronjob` tool, the `savarez cron` CLI (`list`, `add`, `edit`,
   header/footer instead of being mirrored into the target gateway
   session (keeps role alternation intact).
 
-User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/cron
+User docs: https://savarez-agent.nousresearch.com/docs/user-guide/features/cron
 
 ### Curator (skill lifecycle)
 
@@ -687,7 +687,7 @@ Background maintenance for agent-created skills. Tracks usage, marks
 idle skills stale, archives stale ones, keeps a pre-run tar.gz backup
 so nothing is lost.
 
-- **CLI:** `hermes curator <verb>` — `status`, `run`, `pause`, `resume`,
+- **CLI:** `savarez curator <verb>` — `status`, `run`, `pause`, `resume`,
   `pin`, `unpin`, `archive`, `restore`, `prune`, `backup`, `rollback`.
 - **Slash:** `/curator <subcommand>` mirrors the CLI.
 - **Scope:** only touches skills with `created_by: "agent"` provenance.
@@ -700,12 +700,12 @@ so nothing is lost.
 
 Config: `curator.*` (`enabled`, `interval_hours`, `min_idle_hours`,
 `stale_after_days`, `archive_after_days`, `backup.*`).
-User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/curator
+User docs: https://savarez-agent.nousresearch.com/docs/user-guide/features/curator
 
 ### Kanban (multi-agent work queue)
 
 Durable SQLite board for multi-profile / multi-worker collaboration.
-Users drive it via `hermes kanban <verb>`; dispatcher-spawned workers
+Users drive it via `savarez kanban <verb>`; dispatcher-spawned workers
 see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK`, and
 orchestrator profiles can opt into the broader `kanban` toolset. Normal
 sessions still have zero `kanban_*` schema footprint unless configured.
@@ -729,13 +729,13 @@ sessions still have zero `kanban_*` schema footprint unless configured.
   `HERMES_KANBAN_BOARD` pinned in env); tenant is a soft namespace
   within a board for workspace-path + memory-key isolation.
 
-User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban
+User docs: https://savarez-agent.nousresearch.com/docs/user-guide/features/kanban
 
 ---
 
 ## Windows-Specific Quirks
 
-Hermes runs natively on Windows (PowerShell, cmd, Windows Terminal, git-bash
+Savarez runs natively on Windows (PowerShell, cmd, Windows Terminal, git-bash
 mintty, VS Code integrated terminal). Most of it just works, but a handful
 of differences between Win32 and POSIX have bitten us — document new ones
 here as you hit them so the next person (or the next session) doesn't
@@ -777,7 +777,7 @@ Notepad are the usual culprit.
 or initialized") from the sandbox child process — it can't create an
 `AF_INET` socket, so the loopback-TCP RPC fallback fails before
 `connect()`. Root cause is usually **not** a broken Winsock LSP; it's
-Hermes's own env scrubber dropping `SYSTEMROOT` / `WINDIR` / `COMSPEC`
+Savarez's own env scrubber dropping `SYSTEMROOT` / `WINDIR` / `COMSPEC`
 from the child env. Python's `socket` module needs `SYSTEMROOT` to locate
 `mswsock.dll`. Fixed via the `_WINDOWS_ESSENTIAL_ENV_VARS` allowlist in
 `tools/code_execution_tool.py`. If you still hit it, echo `os.environ`
@@ -818,7 +818,7 @@ Git touches it`. Cosmetic — the repo's `.gitattributes` normalizes. Don't
 let editors auto-convert committed POSIX-newline files to CRLF.
 
 **Forward slashes work almost everywhere.** `C:/Users/...` is accepted by
-every Hermes tool and most Windows APIs. Prefer forward slashes in code
+every Savarez tool and most Windows APIs. Prefer forward slashes in code
 and logs — avoids shell-escaping backslashes in bash.
 
 ---
@@ -849,7 +849,7 @@ and logs — avoids shell-escaping backslashes in bash.
 ### Skills not showing
 1. `savarez skills list` — verify installed
 2. `savarez skills config` — check platform enablement
-3. Load explicitly: `/skill name` or `hermes -s name`
+3. Load explicitly: `/skill name` or `savarez -s name`
 
 ### Gateway issues
 Check logs first:
@@ -860,7 +860,7 @@ grep -i "failed to send\|error" ~/.savarez/logs/gateway.log | tail -20
 Common gateway problems:
 - **Gateway dies on SSH logout**: Enable linger: `sudo loginctl enable-linger $USER`
 - **Gateway dies on WSL2 close**: WSL2 requires `systemd=true` in `/etc/wsl.conf` for systemd services to work. Without it, gateway falls back to `nohup` (dies when session closes).
-- **Gateway crash loop**: Reset the failed state: `systemctl --user reset-failed hermes-gateway`
+- **Gateway crash loop**: Reset the failed state: `systemctl --user reset-failed savarez-gateway`
 
 ### Platform-specific issues
 - **Discord bot silent**: Must enable **Message Content Intent** in Bot → Privileged Gateway Intents.
@@ -880,33 +880,33 @@ savarez config set auxiliary.vision.model <model_name>
 
 | Looking for... | Location |
 |----------------|----------|
-| Config options | `savarez config edit` or [Configuration docs](https://hermes-agent.nousresearch.com/docs/user-guide/configuration) |
-| Available tools | `savarez tools list` or [Tools reference](https://hermes-agent.nousresearch.com/docs/reference/tools-reference) |
-| Slash commands | `/help` in session or [Slash commands reference](https://hermes-agent.nousresearch.com/docs/reference/slash-commands) |
-| Skills catalog | `savarez skills browse` or [Skills catalog](https://hermes-agent.nousresearch.com/docs/reference/skills-catalog) |
-| Provider setup | `savarez model` or [Providers guide](https://hermes-agent.nousresearch.com/docs/integrations/providers) |
-| Platform setup | `savarez gateway setup` or [Messaging docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/) |
-| MCP servers | `savarez mcp list` or [MCP guide](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) |
-| Profiles | `savarez profile list` or [Profiles docs](https://hermes-agent.nousresearch.com/docs/user-guide/profiles) |
-| Cron jobs | `savarez cron list` or [Cron docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron) |
-| Memory | `hermes memory status` or [Memory docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) |
-| Env variables | `savarez config env-path` or [Env vars reference](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) |
-| CLI commands | `savarez --help` or [CLI reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) |
+| Config options | `savarez config edit` or [Configuration docs](https://savarez-agent.nousresearch.com/docs/user-guide/configuration) |
+| Available tools | `savarez tools list` or [Tools reference](https://savarez-agent.nousresearch.com/docs/reference/tools-reference) |
+| Slash commands | `/help` in session or [Slash commands reference](https://savarez-agent.nousresearch.com/docs/reference/slash-commands) |
+| Skills catalog | `savarez skills browse` or [Skills catalog](https://savarez-agent.nousresearch.com/docs/reference/skills-catalog) |
+| Provider setup | `savarez model` or [Providers guide](https://savarez-agent.nousresearch.com/docs/integrations/providers) |
+| Platform setup | `savarez gateway setup` or [Messaging docs](https://savarez-agent.nousresearch.com/docs/user-guide/messaging/) |
+| MCP servers | `savarez mcp list` or [MCP guide](https://savarez-agent.nousresearch.com/docs/user-guide/features/mcp) |
+| Profiles | `savarez profile list` or [Profiles docs](https://savarez-agent.nousresearch.com/docs/user-guide/profiles) |
+| Cron jobs | `savarez cron list` or [Cron docs](https://savarez-agent.nousresearch.com/docs/user-guide/features/cron) |
+| Memory | `savarez memory status` or [Memory docs](https://savarez-agent.nousresearch.com/docs/user-guide/features/memory) |
+| Env variables | `savarez config env-path` or [Env vars reference](https://savarez-agent.nousresearch.com/docs/reference/environment-variables) |
+| CLI commands | `savarez --help` or [CLI reference](https://savarez-agent.nousresearch.com/docs/reference/cli-commands) |
 | Gateway logs | `~/.savarez/logs/gateway.log` |
 | Session files | `savarez sessions browse` (reads state.db) |
-| Source code | `~/.savarez/hermes-agent/` |
+| Source code | `~/.savarez/savarez-agent/` |
 
 ---
 
 ## Contributor Quick Reference
 
-For occasional contributors and PR authors. Full developer docs: https://hermes-agent.nousresearch.com/docs/developer-guide/
+For occasional contributors and PR authors. Full developer docs: https://savarez-agent.nousresearch.com/docs/developer-guide/
 
 ### Project Layout
 
 <!-- ascii-guard-ignore -->
 ```
-hermes-agent/
+savarez-agent/
 ├── run_agent.py          # AIAgent — core conversation loop
 ├── model_tools.py        # Tool discovery and dispatch
 ├── toolsets.py           # Toolset definitions

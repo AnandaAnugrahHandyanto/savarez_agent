@@ -29,7 +29,7 @@ def test_main_wrapper_preserves_docker_workdir() -> None:
     # Must restore original cwd before exec'ing the user command.
     # The restore cd must appear AFTER venv activation but BEFORE the
     # first exec / if-block.
-    activate_idx = text.index("/opt/hermes/.venv/bin/activate")
+    activate_idx = text.index("/opt/savarez/.venv/bin/activate")
     restore_idx = text.index('cd "$_hermes_orig_cwd"')
     exec_idx = text.index("if [ $# -eq 0 ]")
     assert activate_idx < restore_idx < exec_idx, (
@@ -43,7 +43,7 @@ def test_dashboard_run_resets_home_before_dropping_privileges() -> None:
 
     assert "#!/command/with-contenv sh" in text
     assert "export HOME=/opt/data" in text
-    assert "exec s6-setuidgid hermes savarez dashboard" in text
+    assert "exec s6-setuidgid savarez savarez dashboard" in text
 
 
 def test_dashboard_run_does_not_derive_insecure_from_bind_host() -> None:

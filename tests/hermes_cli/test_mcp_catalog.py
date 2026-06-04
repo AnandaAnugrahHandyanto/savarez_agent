@@ -47,7 +47,7 @@ def catalog_dir(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolate_hermes_home(tmp_path, monkeypatch):
     """Redirect all config I/O to a temp SAVAREZ_HOME."""
-    hh = tmp_path / "hermes-home"
+    hh = tmp_path / "savarez-home"
     hh.mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(hh))
     monkeypatch.setattr(
@@ -571,7 +571,7 @@ class TestCatalogDiagnostics:
         show_catalog()
         out = capsys.readouterr().out
         assert "futuristic" in out
-        assert "requires a newer Hermes" in out
+        assert "requires a newer Savarez" in out
 
 
 # ---------------------------------------------------------------------------

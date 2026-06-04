@@ -140,9 +140,9 @@ class TestFirecrawlClientConfig:
     def test_nous_auth_token_respects_hermes_home_override(self, tmp_path):
         """Auth lookup should read from SAVAREZ_HOME/auth.json, not ~/.savarez/auth.json."""
         real_home = tmp_path / "real-home"
-        (real_home / ".hermes").mkdir(parents=True)
+        (real_home / ".savarez").mkdir(parents=True)
 
-        hermes_home = tmp_path / "hermes-home"
+        hermes_home = tmp_path / "savarez-home"
         hermes_home.mkdir()
         (hermes_home / "auth.json").write_text(json.dumps({
             "providers": {

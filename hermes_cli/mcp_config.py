@@ -869,7 +869,7 @@ def mcp_command(args):
         handler(args)
     else:
         # No subcommand — drop the user into the catalog picker. This is the
-        # "try enabling and it flows you into setup" UX matching `hermes plugin`.
+        # "try enabling and it flows you into setup" UX matching `savarez plugin`.
         from hermes_cli.mcp_picker import run_picker
         run_picker()
         print(color("  Commands:", Colors.CYAN))

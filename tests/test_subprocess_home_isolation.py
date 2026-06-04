@@ -4,7 +4,7 @@ Verifies that subprocesses (terminal, execute_code, background processes)
 receive a per-profile HOME directory while the Python process's own HOME
 and Path.home() remain unchanged.
 
-See: https://github.com/NousResearch/hermes-agent/issues/4426
+See: https://github.com/NousResearch/savarez-agent/issues/4426
 """
 
 import os
@@ -26,7 +26,7 @@ class TestGetSubprocessHome:
         assert get_subprocess_home() is None
 
     def test_returns_none_when_home_dir_missing(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
+        hermes_home = tmp_path / ".savarez"
         hermes_home.mkdir()
         monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         # No home/ subdirectory created
@@ -34,7 +34,7 @@ class TestGetSubprocessHome:
         assert get_subprocess_home() is None
 
     def test_returns_path_when_home_dir_exists(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
+        hermes_home = tmp_path / ".savarez"
         hermes_home.mkdir()
         profile_home = hermes_home / "home"
         profile_home.mkdir()
@@ -44,7 +44,7 @@ class TestGetSubprocessHome:
 
     def test_returns_profile_specific_path(self, tmp_path, monkeypatch):
         """Named profiles get their own isolated HOME."""
-        profile_dir = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_dir = tmp_path / ".savarez" / "profiles" / "coder"
         profile_dir.mkdir(parents=True)
         profile_home = profile_dir / "home"
         profile_home.mkdir()
@@ -53,7 +53,7 @@ class TestGetSubprocessHome:
         assert get_subprocess_home() == str(profile_home)
 
     def test_two_profiles_get_different_homes(self, tmp_path, monkeypatch):
-        base = tmp_path / ".hermes" / "profiles"
+        base = tmp_path / ".savarez" / "profiles"
         for name in ("alpha", "beta"):
             p = base / name
             p.mkdir(parents=True)
@@ -120,7 +120,7 @@ class TestMakeRunEnvHomeInjection:
     """Verify _make_run_env() injects HOME into subprocess envs."""
 
     def test_injects_home_when_profile_home_exists(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes"
+        hermes_home = tmp_path / "savarez"
         hermes_home.mkdir()
         (hermes_home / "home").mkdir()
         monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
@@ -133,7 +133,7 @@ class TestMakeRunEnvHomeInjection:
         assert result["HOME"] == str(hermes_home / "home")
 
     def test_no_injection_when_home_dir_missing(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes"
+        hermes_home = tmp_path / "savarez"
         hermes_home.mkdir()
         # No home/ subdirectory
         monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
@@ -186,7 +186,7 @@ class TestSanitizeSubprocessEnvHomeInjection:
     """Verify _sanitize_subprocess_env() injects HOME for background procs."""
 
     def test_injects_home_when_profile_home_exists(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes"
+        hermes_home = tmp_path / "savarez"
         hermes_home.mkdir()
         (hermes_home / "home").mkdir()
         monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
@@ -198,7 +198,7 @@ class TestSanitizeSubprocessEnvHomeInjection:
         assert result["HOME"] == str(hermes_home / "home")
 
     def test_no_injection_when_home_dir_missing(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes"
+        hermes_home = tmp_path / "savarez"
         hermes_home.mkdir()
         monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
 
@@ -243,7 +243,7 @@ class TestProfileBootstrap:
 
     def test_create_profile_bootstraps_home_dir(self, tmp_path, monkeypatch):
         """create_profile() should create home/ inside the profile dir."""
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".savarez"
         home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("SAVAREZ_HOME", str(home))
@@ -263,7 +263,7 @@ class TestPythonProcessUnchanged:
     def test_path_home_unchanged_after_subprocess_home_resolved(
         self, tmp_path, monkeypatch
     ):
-        hermes_home = tmp_path / "hermes"
+        hermes_home = tmp_path / "savarez"
         hermes_home.mkdir()
         (hermes_home / "home").mkdir()
         monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))

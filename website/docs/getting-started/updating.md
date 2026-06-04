@@ -24,13 +24,13 @@ PyPI releases track **tagged versions** (major and minor releases), not every co
 
 ```bash
 savarez update --check    # see if a newer release is on PyPI
-savarez update            # runs pip install --upgrade hermes-agent
+savarez update            # runs pip install --upgrade savarez-agent
 ```
 
 Or manually:
 
 ```bash
-pip install --upgrade hermes-agent    # or: uv pip install --upgrade hermes-agent
+pip install --upgrade savarez-agent    # or: uv pip install --upgrade savarez-agent
 ```
 
 :::tip
@@ -41,12 +41,12 @@ pip install --upgrade hermes-agent    # or: uv pip install --upgrade hermes-agen
 
 When you run `savarez update`, the following steps occur:
 
-1. **Pairing-data snapshot** — a lightweight pre-update state snapshot is saved (covers `~/.savarez/pairing/`, Feishu comment rules, and other state files that get modified at runtime). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md), or by extracting the most recent quick-snapshot zip Hermes wrote next to your `~/.savarez/` directory.
+1. **Pairing-data snapshot** — a lightweight pre-update state snapshot is saved (covers `~/.savarez/pairing/`, Feishu comment rules, and other state files that get modified at runtime). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md), or by extracting the most recent quick-snapshot zip Savarez wrote next to your `~/.savarez/` directory.
 2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
-3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the eight critical files every `savarez` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `savarez update` once the upstream fix lands.
+3. **Post-pull syntax validation + auto-rollback** — after the pull, Savarez compiles the eight critical files every `savarez` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Savarez runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `savarez update` once the upstream fix lands.
 4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 5. **Config migration** — detects new config options added since your version and prompts you to set them
-6. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.
+6. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Savarez can map the running PID back to a profile.
 
 ### Updating against a non-default branch: `--branch`
 
@@ -57,7 +57,7 @@ savarez update --branch release-candidate
 savarez update --check --branch experimental   # preview behindness only
 ```
 
-If your local checkout is on a different branch, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
+If your local checkout is on a different branch, Savarez auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
 
 ### Preview-only: `savarez update --check`
 
@@ -81,19 +81,19 @@ updates:
 
 `--backup` was the always-on behavior in earlier builds, but it was adding minutes to every update on large homes, so it's now opt-in. The lightweight pairing-data snapshot above still runs unconditionally.
 
-### Windows: another `hermes.exe` is running
+### Windows: another `savarez.exe` is running
 
-On Windows, `savarez update` will refuse to run if it detects another `hermes.exe` process holding the venv's entry-point executable open — most commonly the Hermes Desktop app's spawned backend, an open `savarez` REPL in another terminal, or a running gateway:
+On Windows, `savarez update` will refuse to run if it detects another `savarez.exe` process holding the venv's entry-point executable open — most commonly the Savarez Desktop app's spawned backend, an open `savarez` REPL in another terminal, or a running gateway:
 
 ```
 $ savarez update
-✗ Another hermes.exe is running:
-    PID 12345  hermes.exe
+✗ Another savarez.exe is running:
+    PID 12345  savarez.exe
 
-  Updating now would fail to overwrite ...\venv\Scripts\hermes.exe because
+  Updating now would fail to overwrite ...\venv\Scripts\savarez.exe because
   Windows blocks REPLACE on a running executable.
 
-  Close Hermes Desktop, exit any open `savarez` REPLs, and
+  Close Savarez Desktop, exit any open `savarez` REPLs, and
   stop the gateway (`savarez gateway stop`) before retrying.
   Override with `savarez update --force` if you've already
   confirmed those processes will not write to the venv.
@@ -149,10 +149,10 @@ You no longer need to wrap `savarez update` in `screen` or `tmux` to survive a t
 ### Checking your current version
 
 ```bash
-hermes version
+savarez version
 ```
 
-Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/hermes-agent/releases).
+Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/savarez-agent/releases).
 
 ### Updating from Messaging Platforms
 
@@ -169,7 +169,7 @@ This pulls the latest code, updates dependencies, and restarts running gateways.
 If you installed manually (not via the quick installer):
 
 ```bash
-cd /path/to/hermes-agent
+cd /path/to/savarez-agent
 export VIRTUAL_ENV="$(pwd)/venv"
 
 # Pull latest code
@@ -188,7 +188,7 @@ savarez config migrate   # Interactively add any missing options
 If an update introduces a problem, you can roll back to a previous version:
 
 ```bash
-cd /path/to/hermes-agent
+cd /path/to/savarez-agent
 
 # List recent versions
 git log --oneline -10
@@ -218,10 +218,10 @@ If you installed via Nix flake, updates are managed through the Nix package mana
 
 ```bash
 # Update the flake input
-nix flake update hermes-agent
+nix flake update savarez-agent
 
 # Or rebuild with the latest
-nix profile upgrade hermes-agent
+nix profile upgrade savarez-agent
 ```
 
 Nix installations are immutable — rollback is handled by Nix's generation system:
@@ -247,15 +247,15 @@ The uninstaller gives you the option to keep your configuration files (`~/.savar
 ### pip installs
 
 ```bash
-pip uninstall hermes-agent
+pip uninstall savarez-agent
 rm -rf ~/.savarez            # Optional — keep if you plan to reinstall
 ```
 
 ### Manual Uninstall
 
 ```bash
-rm -f ~/.local/bin/hermes
-rm -rf /path/to/hermes-agent
+rm -f ~/.local/bin/savarez
+rm -rf /path/to/savarez-agent
 rm -rf ~/.savarez            # Optional — keep if you plan to reinstall
 ```
 
@@ -263,7 +263,7 @@ rm -rf ~/.savarez            # Optional — keep if you plan to reinstall
 If you installed the gateway as a system service, stop and disable it first:
 ```bash
 savarez gateway stop
-# Linux: systemctl --user disable hermes-gateway
-# macOS: launchctl remove ai.hermes.gateway
+# Linux: systemctl --user disable savarez-gateway
+# macOS: launchctl remove ai.savarez.gateway
 ```
 :::

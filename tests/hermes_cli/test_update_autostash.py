@@ -252,7 +252,7 @@ def test_restore_stashed_changes_keeps_going_when_drop_fails(monkeypatch, tmp_pa
 def test_restore_stashed_changes_always_resets_on_conflict(monkeypatch, tmp_path, capsys):
     """Conflicts always auto-reset (no prompt) and return False, even interactively.
 
-    Leaving conflict markers in source files makes hermes unrunnable (SyntaxError).
+    Leaving conflict markers in source files makes savarez unrunnable (SyntaxError).
     The stash is preserved for manual recovery; cmd_update continues normally.
     """
     calls = []
@@ -653,7 +653,7 @@ def test_cmd_update_managed_clone_cleans_instead_of_stashing(monkeypatch, tmp_pa
     # Official origin → not a fork.
     monkeypatch.setattr(
         hermes_main, "_get_origin_url",
-        lambda *a, **kw: "https://github.com/NousResearch/hermes-agent.git",
+        lambda *a, **kw: "https://github.com/NousResearch/savarez-agent.git",
     )
     clean_calls = []
     monkeypatch.setattr(
@@ -689,7 +689,7 @@ def test_cmd_update_fork_still_uses_stash(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
     monkeypatch.setattr(
         hermes_main, "_get_origin_url",
-        lambda *a, **kw: "https://github.com/someuser/hermes-agent.git",
+        lambda *a, **kw: "https://github.com/someuser/savarez-agent.git",
     )
     clean_calls = []
     monkeypatch.setattr(

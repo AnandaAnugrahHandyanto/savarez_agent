@@ -8,15 +8,15 @@ description: "将 Savarez AI Agent 设置为钉钉聊天机器人"
 
 Savarez AI Agent 可作为聊天机器人集成到钉钉（DingTalk），让你通过单聊或群聊与 AI 助手对话。机器人通过钉钉的 Stream Mode（流模式）连接——一种长连接 WebSocket，无需公网 URL 或 webhook 服务器——并通过钉钉的 session webhook API 以 markdown 格式回复消息。
 
-在开始设置之前，先了解大多数人最关心的内容：Hermes 进入你的钉钉工作空间后的行为方式。
+在开始设置之前，先了解大多数人最关心的内容：Savarez 进入你的钉钉工作空间后的行为方式。
 
-## Hermes 的行为方式
+## Savarez 的行为方式
 
 | 场景 | 行为 |
 |---------|----------|
-| **单聊（1:1 对话）** | Hermes 响应每条消息，无需 `@提及`，每个单聊有独立会话。 |
-| **群聊** | Hermes 仅在被 `@提及` 时响应，未被提及则忽略消息。 |
-| **多用户共享群聊** | 默认情况下，Hermes 在群内按用户隔离会话历史。同一群中的两个用户不共享同一对话记录，除非你明确禁用该功能。 |
+| **单聊（1:1 对话）** | Savarez 响应每条消息，无需 `@提及`，每个单聊有独立会话。 |
+| **群聊** | Savarez 仅在被 `@提及` 时响应，未被提及则忽略消息。 |
+| **多用户共享群聊** | 默认情况下，Savarez 在群内按用户隔离会话历史。同一群中的两个用户不共享同一对话记录，除非你明确禁用该功能。 |
 
 ### 钉钉中的会话模型
 
@@ -44,7 +44,7 @@ group_sessions_per_user: false
 安装所需的 Python 包：
 
 ```bash
-pip install "hermes-agent[dingtalk]"
+pip install "savarez-agent[dingtalk]"
 ```
 
 或单独安装：
@@ -106,7 +106,7 @@ savarez gateway setup
 - **手动粘贴。** 如果你已有凭证（或扫码不方便），在提示时粘贴你的 Client ID、Client Secret 和允许的用户 ID。
 
 :::note openClaw 品牌披露
-由于钉钉的 `verification_uri_complete` 在 API 层硬编码为 openClaw 身份，在 Alibaba / DingTalk-Real-AI 在服务端注册 Hermes 专属模板之前，二维码目前以 `openClaw` 来源字符串进行授权。这仅是钉钉呈现授权界面的方式——你创建的机器人完全属于你，且对你的租户私有。
+由于钉钉的 `verification_uri_complete` 在 API 层硬编码为 openClaw 身份，在 Alibaba / DingTalk-Real-AI 在服务端注册 Savarez 专属模板之前，二维码目前以 `openClaw` 来源字符串进行授权。这仅是钉钉呈现授权界面的方式——你创建的机器人完全属于你，且对你的租户私有。
 :::
 
 ### 方式 B：手动配置
@@ -174,7 +174,7 @@ savarez gateway
 
 ### AI 卡片
 
-Hermes 可以使用钉钉 AI 卡片代替纯 markdown 消息进行回复。卡片提供更丰富、更结构化的展示，并支持在 agent 生成响应时进行流式更新。
+Savarez 可以使用钉钉 AI 卡片代替纯 markdown 消息进行回复。卡片提供更丰富、更结构化的展示，并支持在 agent 生成响应时进行流式更新。
 
 要启用 AI 卡片，在 `config.yaml` 中配置卡片模板 ID：
 
@@ -190,7 +190,7 @@ platforms:
 
 ### Emoji 反应
 
-Hermes 会自动在你的消息上添加 emoji 反应以显示处理状态：
+Savarez 会自动在你的消息上添加 emoji 反应以显示处理状态：
 
 - 🤔Thinking — 机器人开始处理你的消息时添加
 - 🥳Done — 响应完成时添加（替换 Thinking 反应）
@@ -253,7 +253,7 @@ pip install dingtalk-stream httpx
 
 ### 机器人离线
 
-**原因**：Hermes gateway 未运行，或连接失败。
+**原因**：Savarez gateway 未运行，或连接失败。
 
 **解决方法**：检查 `savarez gateway` 是否正在运行。查看终端输出中的错误信息。常见问题：凭证错误、应用被停用、`dingtalk-stream` 或 `httpx` 未安装。
 

@@ -44,16 +44,16 @@ cloudflared tunnel --url http://localhost:8646
 ngrok http 8646
 
 # devtunnel
-devtunnel create hermes-line --allow-anonymous
-devtunnel port create hermes-line -p 8646 --protocol https
-devtunnel host hermes-line
+devtunnel create savarez-line --allow-anonymous
+devtunnel port create savarez-line -p 8646 --protocol https
+devtunnel host savarez-line
 ```
 
 复制 `https://...` URL — 稍后将其设置为 webhook URL。**保持隧道运行**以便测试。生产环境请配置固定的 Cloudflare 命名隧道，避免重启后 webhook URL 变更。
 
 ---
 
-## 第三步：配置 Hermes
+## 第三步：配置 Savarez
 
 在 `~/.savarez/.env` 中添加：
 
@@ -186,7 +186,7 @@ LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # 默认推送目标
 
 **postback 按钮始终不出现。** 要么 LLM 的响应速度快于 `LINE_SLOW_RESPONSE_THRESHOLD`，要么其他气泡（工具进度、流式输出）已提前消耗了 reply token。参见"LLM 响应缓慢"中的抑制配置。
 
-**"already in use by another profile"。** 同一个频道访问 token 已被另一个运行中的 Hermes profile 占用。请停止另一个 gateway，或使用独立的频道。
+**"already in use by another profile"。** 同一个频道访问 token 已被另一个运行中的 Savarez profile 占用。请停止另一个 gateway，或使用独立的频道。
 
 ---
 

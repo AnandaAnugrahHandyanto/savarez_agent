@@ -4,7 +4,7 @@ sidebar_position: 9
 
 # Adding a Platform Adapter
 
-This guide covers adding a new messaging platform to the Hermes gateway. A platform adapter connects Hermes to an external messaging service (Telegram, Discord, WeCom, etc.) so users can interact with the agent through that service.
+This guide covers adding a new messaging platform to the Savarez gateway. A platform adapter connects Savarez to an external messaging service (Telegram, Discord, WeCom, etc.) so users can interact with the agent through that service.
 
 :::tip
 There are two ways to add a platform:
@@ -30,7 +30,7 @@ Inbound messages are received by the adapter and forwarded via `self.handle_mess
 
 ## Plugin Path (Recommended)
 
-The plugin system lets you add a platform adapter without modifying any core Hermes code. Your plugin is a directory with two files:
+The plugin system lets you add a platform adapter without modifying any core Savarez code. Your plugin is a directory with two files:
 
 ```
 ~/.savarez/plugins/my-platform/
@@ -40,7 +40,7 @@ The plugin system lets you add a platform adapter without modifying any core Her
 
 ### PLUGIN.yaml
 
-Plugin metadata. The `requires_env` and `optional_env` blocks auto-populate `savarez config` UI entries (see [Surfacing Env Vars](#surfacing-env-vars-in-hermes-config) below).
+Plugin metadata. The `requires_env` and `optional_env` blocks auto-populate `savarez config` UI entries (see [Surfacing Env Vars](#surfacing-env-vars-in-savarez-config) below).
 
 ```yaml
 name: my-platform
@@ -115,7 +115,7 @@ def _env_enablement() -> dict | None:
 
 
 def register(ctx):
-    """Plugin entry point — called by the Hermes plugin system."""
+    """Plugin entry point — called by the Savarez plugin system."""
     ctx.register_platform(
         name="my_platform",
         label="My Platform",
@@ -345,7 +345,7 @@ requires_env:
     url: "https://my-platform.example.com/bots"
     password: true
   - name: MY_PLATFORM_CHANNEL
-    description: "Channel to join (e.g. #hermes)"
+    description: "Channel to join (e.g. #savarez)"
     prompt: "Channel"
     password: false
 optional_env:
@@ -461,7 +461,7 @@ See `plugins/platforms/irc/` in the repo for a complete working example — a fu
 ## Step-by-Step Checklist (Built-in Path)
 
 :::note
-This checklist is for adding a platform directly to the Hermes core codebase — typically done by core contributors for officially supported platforms. Community/third-party platforms should use the [Plugin Path](#plugin-path-recommended) above.
+This checklist is for adding a platform directly to the Savarez core codebase — typically done by core contributors for officially supported platforms. Community/third-party platforms should use the [Plugin Path](#plugin-path-recommended) above.
 :::
 
 ### 1. Platform Enum
@@ -571,8 +571,8 @@ Five touchpoints:
 
 ### 8. Toolsets
 
-1. **`toolsets.py`** — Add `"hermes-newplat"` toolset definition with `_HERMES_CORE_TOOLS`
-2. **`toolsets.py`** — Add `"hermes-newplat"` to the `"hermes-gateway"` includes list
+1. **`toolsets.py`** — Add `"savarez-newplat"` toolset definition with `_HERMES_CORE_TOOLS`
+2. **`toolsets.py`** — Add `"savarez-newplat"` to the `"savarez-gateway"` includes list
 
 ### 9. Optional: Platform Hints
 
@@ -606,7 +606,7 @@ Create `tests/gateway/test_newplat.py` covering:
 | `website/docs/user-guide/messaging/newplat.md` | Full platform setup page |
 | `website/docs/user-guide/messaging/index.md` | Platform comparison table, architecture diagram, toolsets table, security section, next-steps link |
 | `website/docs/reference/environment-variables.md` | All NEWPLAT_* env vars |
-| `website/docs/reference/toolsets-reference.md` | hermes-newplat toolset |
+| `website/docs/reference/toolsets-reference.md` | savarez-newplat toolset |
 | `website/docs/integrations/index.md` | Platform link |
 | `website/sidebars.ts` | Sidebar entry for the docs page |
 | `website/docs/developer-guide/architecture.md` | Adapter count + listing |

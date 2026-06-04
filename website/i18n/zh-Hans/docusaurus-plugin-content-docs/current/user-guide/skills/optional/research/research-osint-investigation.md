@@ -25,7 +25,7 @@ description: "公开记录 OSINT 调查框架 — SEC EDGAR 文件、USAspending
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时看到的指令内容。
+以下是 Savarez 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时看到的指令内容。
 :::
 
 # OSINT 调查 — 公开记录交叉核查
@@ -113,7 +113,7 @@ python3 SKILL_DIR/scripts/fetch_ofac_sdn.py --out data/ofac_sdn.csv
 
 # ICIJ 离岸泄露 — 首次使用时下载约 70 MB 批量 CSV，
 # 之后在本地搜索。缓存 30 天，存储于
-# $HERMES_OSINT_CACHE/icij/（默认：~/.cache/hermes-osint/icij/）。
+# $HERMES_OSINT_CACHE/icij/（默认：~/.cache/savarez-osint/icij/）。
 python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
     --out data/icij.csv
 ```

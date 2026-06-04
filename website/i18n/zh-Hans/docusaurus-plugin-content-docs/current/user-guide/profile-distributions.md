@@ -52,7 +52,7 @@ savarez profile install github.com/you/my-research-agent --alias
 - **私有仓库开箱即用。** SSH 密钥、`git credential` helper、GitHub CLI 存储的凭据——终端已配置好的任何认证方式都能透明生效。
 - **可复现性即 commit SHA。** 与 pip 和 npm 的记录方式相同。
 
-权衡之处：接收方需要安装 git。在 2026 年运行 Hermes 的任何机器上，这已是既成事实。
+权衡之处：接收方需要安装 git。在 2026 年运行 Savarez 的任何机器上，这已是既成事实。
 
 ## 什么时候应该使用分发？
 
@@ -65,7 +65,7 @@ savarez profile install github.com/you/my-research-agent --alias
 
 不适合的场景：
 
-- **你只想在自己的机器上备份一个 profile。** 使用 [`savarez profile export` / `import`](../reference/profile-commands.md#hermes-profile-export)——那正是这两个命令的用途。
+- **你只想在自己的机器上备份一个 profile。** 使用 [`savarez profile export` / `import`](../reference/profile-commands.md#savarez-profile-export)——那正是这两个命令的用途。
 - **你想随 agent 一起共享 API 密钥。** `auth.json` 和 `.env` 被刻意排除在分发之外。每个安装者使用自己的凭据。
 - **你想共享记忆 / 会话 / 对话历史。** 这些是用户数据，不是分发内容，永远不会被发送。
 
@@ -248,7 +248,7 @@ savarez profile install github.com/acme/support-bot --name support-eu --alias
 安装后，agent 的 profile 中包含一个 `.env.EXAMPLE`：
 
 ```
-# Environment variables required by this Hermes distribution.
+# Environment variables required by this Savarez distribution.
 # Copy to `.env` and fill in your own values before running.
 
 # OpenAI API key (for model access)
@@ -282,7 +282,7 @@ Distribution: research-bot
 Version:      1.0.0
 Description:  Autonomous research assistant with arXiv and web tools
 Author:       Your Name
-Requires:     Hermes >=0.12.0
+Requires:     Savarez >=0.12.0
 Source:       https://github.com/you/research-bot
 Installed:    2026-05-08T17:04:32+00:00
 
@@ -395,18 +395,18 @@ cd ~/.savarez/profiles/polymarket-trader
 git init && git add . && git commit -m "v1.0"
 git tag v1.0.0
 # 发布到公开 GitHub 仓库
-git remote add origin https://github.com/you/hermes-polymarket-trader.git
+git remote add origin https://github.com/you/savarez-polymarket-trader.git
 git push -u origin main --tags
 
 # 任何人
-savarez profile install github.com/you/hermes-polymarket-trader --alias
+savarez profile install github.com/you/savarez-polymarket-trader --alias
 ```
 
 发推分享安装命令。尝试的人会给你提 issue 和 PR。想要自定义的人可以 fork——与大家已熟悉的 git 工作流完全相同。
 
 ### 产品：发布有主见的 agent
 
-你在 Hermes 之上构建了产品——也许是合规监控框架、客服技术栈、特定领域的研究平台。你想以产品形式分发它。
+你在 Savarez 之上构建了产品——也许是合规监控框架、客服技术栈、特定领域的研究平台。你想以产品形式分发它。
 
 ```yaml
 # distribution.yaml
@@ -545,7 +545,7 @@ Profile 分发默认不带签名。你信任的是：
 - **git 托管平台**（GitHub / GitLab / 其他平台）能够提供作者推送的原始内容。
 - **作者**不会发布恶意的 SOUL、技能或 cron 任务。
 
-来自分发的 cron 任务**不会自动调度**——安装器会打印 `hermes -p <name> cron list`，你需要显式启用它们。SOUL.md 和技能在你开始与 profile 对话后立即生效，因此如果你从不熟悉的来源安装，请在第一次运行前阅读它们。
+来自分发的 cron 任务**不会自动调度**——安装器会打印 `savarez -p <name> cron list`，你需要显式启用它们。SOUL.md 和技能在你开始与 profile 对话后立即生效，因此如果你从不熟悉的来源安装，请在第一次运行前阅读它们。
 
 粗略类比：安装分发就像安装浏览器扩展或 VS Code 扩展。低摩擦、高权限，信任来源。对于公司内部分发，使用私有仓库和你现有的 git 认证——无需额外配置。
 
@@ -567,7 +567,7 @@ Profile 分发默认不带签名。你信任的是：
 
 - [Profiles：运行多个 Agent](./profiles.md) — 基础概念
 - [Profile 命令参考](../reference/profile-commands.md) — 每个标志、每个选项
-- [`savarez profile export` / `import`](../reference/profile-commands.md#hermes-profile-export) — 本地备份 / 恢复（非分发）
-- [在 Hermes 中使用 SOUL](../guides/use-soul-with-hermes.md) — 编写个性
+- [`savarez profile export` / `import`](../reference/profile-commands.md#savarez-profile-export) — 本地备份 / 恢复（非分发）
+- [在 Savarez 中使用 SOUL](../guides/use-soul-with-savarez.md) — 编写个性
 - [个性与 SOUL](./features/personality.md) — SOUL 在 agent 中的作用
 - [技能目录](../reference/skills-catalog.md) — 可打包的技能

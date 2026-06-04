@@ -5,9 +5,9 @@ Pull API keys from [Bitwarden Secrets Manager](https://bitwarden.com/products/se
 ## How it works
 
 1. You create a **machine account** in Bitwarden Secrets Manager, give it read access to a project, and generate an **access token**.
-2. Hermes stores that single token in `~/.savarez/.env` as `BWS_ACCESS_TOKEN`.
-3. Every time `savarez` (or the gateway, or a cron job) starts, after `~/.savarez/.env` has loaded, Hermes calls `bws secret list <project_id>` and sets the returned keys into `os.environ`.
-4. By default Hermes **overrides** values already in your environment, so Bitwarden is the source of truth — rotate a key once in the web app and every Hermes process picks it up on next start. Flip `override_existing: false` in config if you want `.env` to win instead.
+2. Savarez stores that single token in `~/.savarez/.env` as `BWS_ACCESS_TOKEN`.
+3. Every time `savarez` (or the gateway, or a cron job) starts, after `~/.savarez/.env` has loaded, Savarez calls `bws secret list <project_id>` and sets the returned keys into `os.environ`.
+4. By default Savarez **overrides** values already in your environment, so Bitwarden is the source of truth — rotate a key once in the web app and every Savarez process picks it up on next start. Flip `override_existing: false` in config if you want `.env` to win instead.
 
 The `bws` binary is auto-downloaded into `~/.savarez/bin/` on first use — no `apt`, no `brew`, no `sudo`.
 
@@ -24,9 +24,9 @@ You set up the machine account *in the web app*, where your normal 2FA applies. 
 In the [Bitwarden web app](https://vault.bitwarden.com) (or [vault.bitwarden.eu](https://vault.bitwarden.eu) for EU accounts):
 
 1. Switch to **Secrets Manager** from the product switcher.
-2. Create or pick a **Project** (e.g. "Hermes keys").
+2. Create or pick a **Project** (e.g. "Savarez keys").
 3. Add your provider keys as secrets. The secret **Name** becomes the environment variable name — use `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, etc.
-4. **Machine accounts → New machine account → My Hermes machine** → **Projects** tab → grant Read access to your project.
+4. **Machine accounts → New machine account → My Savarez machine** → **Projects** tab → grant Read access to your project.
 5. **Access tokens** tab → **Create access token** → **Never** expires (or pick a date) → copy the token (starts with `0.`). Bitwarden cannot retrieve it again — keep the copy.
 
 Secrets Manager is included on the Bitwarden free tier with limits; no paid plan needed to try this.
@@ -34,7 +34,7 @@ Secrets Manager is included on the Bitwarden free tier with limits; no paid plan
 ### 2. Run the wizard
 
 ```bash
-hermes secrets bitwarden setup
+savarez secrets bitwarden setup
 ```
 
 It will:
@@ -49,7 +49,7 @@ It will:
 Non-interactive setup is also supported via flags:
 
 ```bash
-hermes secrets bitwarden setup \
+savarez secrets bitwarden setup \
   --access-token "$BWS_ACCESS_TOKEN" \
   --server-url https://vault.bitwarden.eu \
   --project-id <project-uuid>
@@ -58,7 +58,7 @@ hermes secrets bitwarden setup \
 ### 3. Confirm
 
 ```bash
-hermes secrets bitwarden status
+savarez secrets bitwarden status
 ```
 
 From now on, every `savarez` invocation pulls fresh secrets at startup. You'll see a one-line summary in stderr the first time secrets are applied in a process.
@@ -67,12 +67,12 @@ From now on, every `savarez` invocation pulls fresh secrets at startup. You'll s
 
 | Command | What it does |
 |---|---|
-| `hermes secrets bitwarden setup` | Interactive wizard (install binary, prompt for token, pick project, test fetch) |
-| `hermes secrets bitwarden status` | Show config + binary version + token presence |
-| `hermes secrets bitwarden sync` | Dry-run: pull secrets now and show what would be applied |
-| `hermes secrets bitwarden sync --apply` | Pull and export into the current shell's environment |
-| `hermes secrets bitwarden install` | Just download the pinned `bws` binary (no auth required) |
-| `hermes secrets bitwarden disable` | Flip `enabled: false`; leaves token + project id in place |
+| `savarez secrets bitwarden setup` | Interactive wizard (install binary, prompt for token, pick project, test fetch) |
+| `savarez secrets bitwarden status` | Show config + binary version + token presence |
+| `savarez secrets bitwarden sync` | Dry-run: pull secrets now and show what would be applied |
+| `savarez secrets bitwarden sync --apply` | Pull and export into the current shell's environment |
+| `savarez secrets bitwarden install` | Just download the pinned `bws` binary (no auth required) |
+| `savarez secrets bitwarden disable` | Flip `enabled: false`; leaves token + project id in place |
 
 ## Configuration
 
@@ -102,11 +102,11 @@ secrets:
 
 ## Failure modes
 
-Bitwarden never blocks Hermes startup. If anything goes wrong, you'll see a one-line warning in stderr and Hermes continues with whatever credentials `.env` already had:
+Bitwarden never blocks Savarez startup. If anything goes wrong, you'll see a one-line warning in stderr and Savarez continues with whatever credentials `.env` already had:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `BWS_ACCESS_TOKEN is not set` | Enabled in config but token cleared from `.env` | Re-run `hermes secrets bitwarden setup` |
+| `BWS_ACCESS_TOKEN is not set` | Enabled in config but token cleared from `.env` | Re-run `savarez secrets bitwarden setup` |
 | `bws exited 1: invalid access token` | Token revoked or wrong | Generate a new token, re-run setup |
 | `[400 Bad Request] {"error":"invalid_client"}` | Token is for a Bitwarden region other than the one `bws` is calling (e.g. EU token hitting the US identity endpoint) | Re-run setup and pick the right region, or set `secrets.bitwarden.server_url` to `https://vault.bitwarden.eu` (or your self-hosted URL) |
 | `bws timed out` | Network blocked or Bitwarden API slow | Check connectivity to `api.bitwarden.com` (or your `server_url`) |
@@ -116,9 +116,9 @@ Bitwarden never blocks Hermes startup. If anything goes wrong, you'll see a one-
 ## Security notes
 
 - The bootstrap token (`BWS_ACCESS_TOKEN`) is itself sensitive — anyone with it can read every secret the machine account has access to. Treat it the same as any other API key.
-- Hermes will refuse to let Bitwarden overwrite the bootstrap token itself, even with `override_existing: true`. If you store `BWS_ACCESS_TOKEN` as a secret inside the project, it's silently skipped during apply.
+- Savarez will refuse to let Bitwarden overwrite the bootstrap token itself, even with `override_existing: true`. If you store `BWS_ACCESS_TOKEN` as a secret inside the project, it's silently skipped during apply.
 - The `bws` binary download is verified against the published SHA-256 checksum from the same GitHub release. Mismatch aborts the install.
-- The pinned version (`bws v2.0.0` at time of writing) is updated through PRs to this repo — Hermes does not auto-upgrade `bws` to "latest" because upstream release shapes can change.
+- The pinned version (`bws v2.0.0` at time of writing) is updated through PRs to this repo — Savarez does not auto-upgrade `bws` to "latest" because upstream release shapes can change.
 
 ## When NOT to use this
 
@@ -126,4 +126,4 @@ Bitwarden never blocks Hermes startup. If anything goes wrong, you'll see a one-
 - **Air-gapped environments** that can't reach `api.bitwarden.com`.
 - **CI/CD** where the existing secrets-injection mechanism (GitHub Actions secrets, Vault, etc.) is already set up — pick one path, not two.
 
-The good case for this is multi-machine fleets, shared dev boxes, gateway VPSes, or any setup where you want centralized rotation and revocation across multiple Hermes installations.
+The good case for this is multi-machine fleets, shared dev boxes, gateway VPSes, or any setup where you want centralized rotation and revocation across multiple Savarez installations.

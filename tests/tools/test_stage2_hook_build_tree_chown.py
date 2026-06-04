@@ -1,11 +1,11 @@
 """Contract test: the s6-overlay stage2 hook re-chowns the build trees under
-$INSTALL_DIR (/opt/hermes/.venv, ui-tui, node_modules) to the runtime hermes
-UID whenever they are not already hermes-owned — INDEPENDENTLY of whether
+$INSTALL_DIR (/opt/savarez/.venv, ui-tui, node_modules) to the runtime savarez
+UID whenever they are not already savarez-owned — INDEPENDENTLY of whether
 $SAVAREZ_HOME ownership already matches.
 
 Regression guard for the HERMES_UID/PUID remap path broken by #35027.
 
-`usermod -u <new> hermes` re-chowns the hermes home dir ($SAVAREZ_HOME ==
+`usermod -u <new> savarez` re-chowns the savarez home dir ($SAVAREZ_HOME ==
 /opt/data) to the new UID as a side effect. #35027 gated the build-tree chown
 behind `stat $SAVAREZ_HOME != hermes_uid`, so after any remap that stat is
 already satisfied and the build-tree chown was silently skipped — leaving
@@ -77,11 +77,11 @@ def _run_build_tree_block(
         log = dpath / "chown.log"
         # Stubs:
         #   stat -c %u <path>  -> echo the simulated venv owner
-        #   id -u hermes       -> handled via actual_hermes_uid var below
+        #   id -u savarez       -> handled via actual_hermes_uid var below
         #   chown ...          -> record that it fired
         script = (
             "set -eu\n"
-            f'INSTALL_DIR="/opt/hermes"\n'
+            f'INSTALL_DIR="/opt/savarez"\n'
             f'actual_hermes_uid={hermes_uid}\n'
             f'stat() {{ echo {venv_owner}; }}\n'
             f'chown() {{ echo fired >> "{log}"; }}\n'
@@ -101,22 +101,22 @@ def test_chown_fires_when_venv_owner_differs(stage2_text: str) -> None:
     fired = _run_build_tree_block(stage2_text, venv_owner=10000, hermes_uid=4242)
     assert fired, (
         "build-tree chown must fire when the venv is not owned by the runtime "
-        "hermes UID, regardless of $SAVAREZ_HOME ownership (#35027 regression)"
+        "savarez UID, regardless of $SAVAREZ_HOME ownership (#35027 regression)"
     )
 
 
 def test_chown_skipped_when_venv_already_owned(stage2_text: str) -> None:
-    """Idempotency: once the venv is hermes-owned, the recursive chown is
+    """Idempotency: once the venv is savarez-owned, the recursive chown is
     skipped on subsequent boots."""
     fired = _run_build_tree_block(stage2_text, venv_owner=4242, hermes_uid=4242)
     assert not fired, (
         "build-tree chown must be skipped when the venv already matches the "
-        "runtime hermes UID (avoid expensive recursive chown on every restart)"
+        "runtime savarez UID (avoid expensive recursive chown on every restart)"
     )
 
 
 def test_chown_skipped_for_default_uid(stage2_text: str) -> None:
-    """No remap: venv owned by the default build UID (10000) and hermes is
+    """No remap: venv owned by the default build UID (10000) and savarez is
     still 10000 — nothing to do."""
     fired = _run_build_tree_block(stage2_text, venv_owner=10000, hermes_uid=10000)
     assert not fired

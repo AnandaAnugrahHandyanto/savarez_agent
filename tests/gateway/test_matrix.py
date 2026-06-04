@@ -325,14 +325,14 @@ class TestMatrixConfigLoading:
     def test_matrix_user_id_stored_in_extra(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_abc123")
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
-        monkeypatch.setenv("MATRIX_USER_ID", "@hermes:example.org")
+        monkeypatch.setenv("MATRIX_USER_ID", "@savarez:example.org")
 
         from gateway.config import GatewayConfig, _apply_env_overrides
         config = GatewayConfig()
         _apply_env_overrides(config)
 
         mc = config.platforms[Platform.MATRIX]
-        assert mc.extra.get("user_id") == "@hermes:example.org"
+        assert mc.extra.get("user_id") == "@savarez:example.org"
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +537,7 @@ class TestMatrixReplyFallbackStripping:
 # ---------------------------------------------------------------------------
 
 class TestMatrixBangCommandAlias:
-    """Matrix clients may reserve /commands, so Hermes supports !commands."""
+    """Matrix clients may reserve /commands, so Savarez supports !commands."""
 
     def setup_method(self):
         self.adapter = _make_adapter()

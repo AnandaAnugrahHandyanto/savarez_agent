@@ -28,17 +28,17 @@ def _make_auth_store(pool: dict | None = None, providers: dict | None = None) ->
 
 @pytest.fixture()
 def profile_env(tmp_path, monkeypatch):
-    """Set up a global root + an active profile under Path.home()/.hermes/profiles/coder.
+    """Set up a global root + an active profile under Path.home()/.savarez/profiles/coder.
 
     * Path.home() -> tmp_path
-    * Global root -> tmp_path/.hermes            (has its own auth.json fixture)
-    * Profile     -> tmp_path/.hermes/profiles/coder   (active, SAVAREZ_HOME points here)
+    * Global root -> tmp_path/.savarez            (has its own auth.json fixture)
+    * Profile     -> tmp_path/.savarez/profiles/coder   (active, SAVAREZ_HOME points here)
 
     This mirrors the real "named profile mounted under the default root"
     layout that profile users actually have on disk.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    global_root = tmp_path / ".hermes"
+    global_root = tmp_path / ".savarez"
     global_root.mkdir()
     profile_dir = global_root / "profiles" / "coder"
     profile_dir.mkdir(parents=True)
@@ -282,7 +282,7 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 # ``resolve_nous_access_token``) call ``_load_provider_state`` directly with
 # a profile-loaded auth store rather than going through
 # ``get_provider_auth_state``. Without the fallback wired into
-# ``_load_provider_state`` itself, those helpers raise ``"Hermes is not
+# ``_load_provider_state`` itself, those helpers raise ``"Savarez is not
 # logged into Nous Portal"`` even though the user has a valid global Nous
 # login. These tests pin the per-provider shadowing into the helper.
 # ---------------------------------------------------------------------------
@@ -379,7 +379,7 @@ def test_classic_mode_does_not_double_read_same_file(tmp_path, monkeypatch):
     profile and global resolve to the same directory.
     """
     # Put Path.home() under a subdir so the seat belt in _auth_file_path()
-    # sees tmp_path/home/.hermes as the "real home" — which is NOT equal
+    # sees tmp_path/home/.savarez as the "real home" — which is NOT equal
     # to the SAVAREZ_HOME we set (tmp_path/classic), so the guard passes.
     fake_home = tmp_path / "home"
     fake_home.mkdir()

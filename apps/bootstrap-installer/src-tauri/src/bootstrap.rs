@@ -637,12 +637,12 @@ async fn run_bootstrap(
 
     // 4. Resolve install_root. install.ps1 doesn't (yet) report this back
     // explicitly; we infer it from $HermesHome which Stage-Repository clones
-    // the repo INTO at $HermesHome\hermes-agent. Mirrors hermes_constants.
+    // the repo INTO at $HermesHome\savarez-agent. Mirrors hermes_constants.
     let hermes_home = args
         .hermes_home
         .clone()
         .unwrap_or_else(|| crate::paths::hermes_home().to_string_lossy().into_owned());
-    let install_root = PathBuf::from(&hermes_home).join("hermes-agent");
+    let install_root = PathBuf::from(&hermes_home).join("savarez-agent");
 
     // Copy ourselves to SAVAREZ_HOME/hermes-setup.exe so the desktop app can
     // re-invoke us with `--update` and shortcuts have a stable target. This is

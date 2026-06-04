@@ -1,4 +1,4 @@
-"""Tests for the `hermes proxy` subcommand and its upstream adapters."""
+"""Tests for the `savarez proxy` subcommand and its upstream adapters."""
 
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ def test_nous_adapter_get_credential_uses_runtime_resolver(tmp_path, monkeypatch
     _write_auth_store(tmp_path, {
         "access_token": "access-tok",
         "refresh_token": "refresh-tok",
-        "client_id": "hermes-cli",
+        "client_id": "savarez-cli",
         "portal_base_url": "https://portal.nousresearch.com",
         "inference_base_url": "https://inference-api.nousresearch.com/v1",
     })
@@ -149,7 +149,7 @@ def test_nous_adapter_retry_credential_force_refreshes_on_jwt_401(tmp_path, monk
     _write_auth_store(tmp_path, {
         "access_token": "jwt-access",
         "refresh_token": "refresh-tok",
-        "client_id": "hermes-cli",
+        "client_id": "savarez-cli",
         "portal_base_url": "https://portal.nousresearch.com",
         "inference_base_url": "https://inference-api.nousresearch.com/v1",
         "agent_key": "jwt-access",
@@ -692,7 +692,7 @@ def test_server_forwards_chat_completions():
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{proxy_base}/v1/chat/completions",
-                    json={"model": "Hermes-4-70B",
+                    json={"model": "Savarez-4-70B",
                           "messages": [{"role": "user", "content": "hi"}]},
                     headers={"Authorization": "Bearer client-dummy-key"},
                 ) as resp:
@@ -703,7 +703,7 @@ def test_server_forwards_chat_completions():
             assert len(captured["requests"]) == 1
             req = captured["requests"][0]
             assert req["auth"] == "Bearer real-portal-key"
-            assert "Hermes-4-70B" in req["body"]
+            assert "Savarez-4-70B" in req["body"]
         finally:
             await proxy_runner.cleanup()
             await upstream_runner.cleanup()
@@ -728,7 +728,7 @@ def test_server_retries_once_with_adapter_retry_credential_on_401():
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{proxy_base}/v1/chat/completions",
-                    json={"model": "Hermes-4-70B"},
+                    json={"model": "Savarez-4-70B"},
                 ) as resp:
                     assert resp.status == 200
                     data = await resp.json()

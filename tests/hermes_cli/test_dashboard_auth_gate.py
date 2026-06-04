@@ -51,7 +51,7 @@ def test_loopback_protected_route_accepts_session_token(client_loopback):
     """The injected SPA token unlocks protected /api/ routes."""
     r = client_loopback.get(
         "/api/sessions",
-        headers={"X-Hermes-Session-Token": web_server._SESSION_TOKEN},
+        headers={"X-Savarez-Session-Token": web_server._SESSION_TOKEN},
     )
     # 200 or 404 (no sessions yet) both prove the auth layer let it through.
     # 500 is also acceptable if there's a downstream issue unrelated to auth.
@@ -93,7 +93,7 @@ def test_loopback_host_header_validation_still_enforced(client_loopback):
     ("192.168.1.5", False, True),
     ("10.0.0.1",  True,  False),
     ("100.64.0.1", False, True),    # Tailscale CGNAT — treated as public
-    ("hermes-agent-prod-abc.fly.dev", False, True),
+    ("savarez-agent-prod-abc.fly.dev", False, True),
 ])
 def test_should_require_auth_truth_table(host, allow_public, expected):
     from hermes_cli.web_server import should_require_auth

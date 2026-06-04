@@ -13,7 +13,7 @@ Claude Code Routines offers three ways to trigger an automation:
 **1. Scheduled (cron)**
 > "Every night at 2am: pull the top bug from Linear, attempt a fix, and open a draft PR."
 
-Hermes equivalent — works today:
+Savarez equivalent — works today:
 ```bash
 savarez cron create "0 2 * * *" \
   "Pull the top bug from the issue tracker, attempt a fix, and open a draft PR." \
@@ -24,7 +24,7 @@ savarez cron create "0 2 * * *" \
 **2. GitHub Events (webhook)**
 > "Flag PRs that touch the /auth-provider module and post to #auth-changes."
 
-Hermes equivalent — works today:
+Savarez equivalent — works today:
 ```bash
 savarez webhook subscribe auth-watch \
   --events "pull_request" \
@@ -35,14 +35,14 @@ savarez webhook subscribe auth-watch \
 **3. API Triggers**
 > "Read the alert payload, find the owning service, post a triage summary to #oncall."
 
-Hermes equivalent — works today:
+Savarez equivalent — works today:
 ```bash
 savarez webhook subscribe alert-triage \
   --prompt "Alert: {alert.name} — Severity: {alert.severity}. Find the owning service, investigate, and post a triage summary with proposed first steps." \
   --deliver slack
 ```
 
-Every use case in their blog post — backlog triage, docs drift, deploy verification, alert correlation, library porting, bespoke PR review — has a working Hermes implementation. No new features needed. It's been shipping since March 2026.
+Every use case in their blog post — backlog triage, docs drift, deploy verification, alert correlation, library porting, bespoke PR review — has a working Savarez implementation. No new features needed. It's been shipping since March 2026.
 
 ---
 
@@ -66,7 +66,7 @@ Every use case in their blog post — backlog triage, docs drift, deploy verific
 
 ---
 
-## Things Hermes Does That Routines Can't
+## Things Savarez Does That Routines Can't
 
 ### Script Injection
 
@@ -116,7 +116,7 @@ Your nightly triage can run on Claude. Your deploy verification can run on GPT. 
 
 Claude Code Routines: **5 routines per day** on Pro. **25 on Enterprise.** That's their ceiling.
 
-Hermes has no daily limit. Run 500 automations a day if you want. The only constraint is your API budget, and you choose which models to use for which tasks.
+Savarez has no daily limit. Run 500 automations a day if you want. The only constraint is your API budget, and you choose which models to use for which tasks.
 
 A nightly backlog triage on Sonnet costs roughly $0.02-0.05. A monitoring check on DeepSeek costs fractions of a cent. You control the economics.
 
@@ -127,7 +127,7 @@ A nightly backlog triage on Sonnet costs roughly $0.02-0.05. A monitoring check 
 Savarez AI Agent is open source and free. The automation infrastructure — cron scheduler, webhook platform, skill system, multi-platform delivery — is built in.
 
 ```bash
-pip install hermes-agent
+pip install savarez-agent
 savarez setup
 ```
 
@@ -149,11 +149,11 @@ savarez webhook subscribe pr-review \
   --deliver github_comment
 ```
 
-Full automation templates gallery: [hermes-agent.nousresearch.com/docs/guides/automation-templates](https://hermes-agent.nousresearch.com/docs/guides/automation-templates)
+Full automation templates gallery: [savarez-agent.nousresearch.com/docs/guides/automation-templates](https://savarez-agent.nousresearch.com/docs/guides/automation-templates)
 
-Documentation: [hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com)
+Documentation: [savarez-agent.nousresearch.com](https://savarez-agent.nousresearch.com)
 
-GitHub: [github.com/NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)
+GitHub: [github.com/NousResearch/savarez-agent](https://github.com/NousResearch/savarez-agent)
 
 ---
 

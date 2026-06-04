@@ -67,7 +67,7 @@ class MyMemoryProvider(MemoryProvider):
 
 | 方法 | 用途 | 是否必须实现？ |
 |--------|---------|-----------------|
-| `get_config_schema()` | 为 `hermes memory setup` 声明配置字段 | **是** |
+| `get_config_schema()` | 为 `savarez memory setup` 声明配置字段 | **是** |
 | `save_config(values, hermes_home)` | 将非敏感配置写入原生位置 | **是**（除非仅使用环境变量） |
 
 ### 可选 Hook
@@ -85,7 +85,7 @@ class MyMemoryProvider(MemoryProvider):
 
 ## 配置 Schema
 
-`get_config_schema()` 返回一个字段描述符列表，供 `hermes memory setup` 使用：
+`get_config_schema()` 返回一个字段描述符列表，供 `savarez memory setup` 使用：
 
 ```python
 def get_config_schema(self):
@@ -107,7 +107,7 @@ def get_config_schema(self):
         {
             "key": "project",
             "description": "Project identifier",
-            "default": "hermes",
+            "default": "savarez",
         },
     ]
 ```
@@ -115,7 +115,7 @@ def get_config_schema(self):
 `secret: True` 且带有 `env_var` 的字段写入 `.env`。非敏感字段传递给 `save_config()`。
 
 :::tip 最简 Schema 与完整 Schema
-`get_config_schema()` 中的每个字段都会在 `hermes memory setup` 期间提示用户输入。选项较多的 provider 应保持 schema 精简——只包含用户**必须**配置的字段（API key、必要凭证）。可选配置请在配置文件参考文档中说明（例如 `$SAVAREZ_HOME/myprovider.json`），而不是在 setup 向导中逐一提示。这样既能保持 setup 流程简洁，又支持高级配置。可参考 Supermemory provider 的实现——它只提示输入 API key，其余选项均位于 `supermemory.json` 中。
+`get_config_schema()` 中的每个字段都会在 `savarez memory setup` 期间提示用户输入。选项较多的 provider 应保持 schema 精简——只包含用户**必须**配置的字段（API key、必要凭证）。可选配置请在配置文件参考文档中说明（例如 `$SAVAREZ_HOME/myprovider.json`），而不是在 setup 向导中逐一提示。这样既能保持 setup 流程简洁，又支持高级配置。可参考 Supermemory provider 的实现——它只提示输入 API key，其余选项均位于 `supermemory.json` 中。
 :::
 
 ## 保存配置
@@ -202,14 +202,14 @@ mgr.shutdown_all()
 
 ## 添加 CLI 命令
 
-Memory provider 插件可以注册自己的 CLI 子命令树（例如 `hermes my-provider status`、`hermes my-provider config`）。这套系统基于约定发现，无需修改核心文件。
+Memory provider 插件可以注册自己的 CLI 子命令树（例如 `savarez my-provider status`、`savarez my-provider config`）。这套系统基于约定发现，无需修改核心文件。
 
 ### 工作原理
 
 1. 在插件目录中添加 `cli.py` 文件
 2. 定义 `register_cli(subparser)` 函数来构建 argparse 树
 3. memory 插件系统在启动时通过 `discover_plugin_cli_commands()` 自动发现
-4. 你的命令以 `hermes <provider-name> <subcommand>` 的形式出现
+4. 你的命令以 `savarez <provider-name> <subcommand>` 的形式出现
 
 **仅对活跃 provider 开放：** 你的 CLI 命令只在你的 provider 是配置中活跃的 `memory.provider` 时才会出现。如果用户尚未配置你的 provider，你的命令不会显示在 `savarez --help` 中。
 
@@ -226,10 +226,10 @@ def my_command(args):
     elif sub == "config":
         print("Showing config...")
     else:
-        print("Usage: hermes my-provider <status|config>")
+        print("Usage: savarez my-provider <status|config>")
 
 def register_cli(subparser) -> None:
-    """构建 hermes my-provider 的 argparse 树。
+    """构建 savarez my-provider 的 argparse 树。
 
     在 argparse 初始化时由 discover_plugin_cli_commands() 调用。
     """

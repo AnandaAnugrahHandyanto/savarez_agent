@@ -61,7 +61,7 @@ class TestDoctorEnvFileEncoding:
     ):
         import pathlib
 
-        hermes_home = tmp_path / ".hermes"
+        hermes_home = tmp_path / ".savarez"
         hermes_home.mkdir()
         # Write a UTF-8 .env containing an em dash (U+2014 = e2 80 94). The
         # 0x94 byte is exactly the one the issue reporter hit: it's invalid
@@ -193,7 +193,7 @@ class TestHonchoDoctorConfigDetection:
 def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
     """Doctor should present CLI-gated tools as available in CLI context."""
     project_root = tmp_path / "project"
-    hermes_home = tmp_path / ".hermes"
+    hermes_home = tmp_path / ".savarez"
     project_root.mkdir()
     hermes_home.mkdir()
 
@@ -220,7 +220,7 @@ def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
 
 
 def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):
-    unit_path = tmp_path / "hermes-gateway.service"
+    unit_path = tmp_path / "savarez-gateway.service"
     unit_path.write_text("[Unit]\n")
 
     monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
@@ -261,7 +261,7 @@ class TestDoctorMemoryProviderSection:
 
     def _make_hermes_home(self, tmp_path, provider=""):
         """Create a minimal SAVAREZ_HOME with config.yaml."""
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".savarez"
         home.mkdir(parents=True, exist_ok=True)
         import yaml
         config = {"memory": {"provider": provider}} if provider else {"memory": {}}
@@ -356,7 +356,7 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
 
 
 def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir(parents=True, exist_ok=True)
 
     import yaml
@@ -408,7 +408,7 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
 
 
 def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
         "model:\n"
@@ -446,7 +446,7 @@ def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
 
 
 def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(monkeypatch, tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
         "model:\n"
@@ -498,7 +498,7 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
 def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     monkeypatch, tmp_path, provider, default_model
 ):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
         "model:\n"
@@ -543,7 +543,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
 
 
 def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir(parents=True, exist_ok=True)
     (home / ".env").write_text("KIMI_CN_API_KEY=***\n", encoding="utf-8")
     (home / "config.yaml").write_text(
@@ -582,7 +582,7 @@ def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
 
 
 def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser(monkeypatch, tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
     project = tmp_path / "project"
@@ -626,7 +626,7 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
 
 
 def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
     (home / ".env").write_text("KIMI_CN_API_KEY=sk-test\n", encoding="utf-8")
@@ -674,7 +674,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
 
 
 def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(monkeypatch, tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
     (home / ".env").write_text("DASHSCOPE_API_KEY=sk-test\n", encoding="utf-8")
@@ -730,7 +730,7 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
 
 @pytest.mark.parametrize("base_url", [None, "https://opencode.ai/zen/go/v1"])
 def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path, base_url):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
     (home / ".env").write_text("OPENCODE_GO_API_KEY=***\n", encoding="utf-8")
@@ -787,7 +787,7 @@ class TestGitHubTokenCheck:
     """Tests for GitHub token / gh auth detection in doctor."""
 
     def test_no_token_and_not_gh_authenticated_shows_warn(self, monkeypatch, tmp_path):
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".savarez"
         home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("SAVAREZ_HOME", str(home))
         monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
@@ -804,7 +804,7 @@ class TestGitHubTokenCheck:
         assert "60 req/hr" in out
 
     def test_token_env_present_shows_ok(self, monkeypatch, tmp_path):
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".savarez"
         home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("SAVAREZ_HOME", str(home))
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_test123")
@@ -821,7 +821,7 @@ class TestGitHubTokenCheck:
         assert "GitHub token configured" in out
 
     def test_gh_authenticated_without_env_token_shows_ok(self, monkeypatch, tmp_path):
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".savarez"
         home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("SAVAREZ_HOME", str(home))
         # No GITHUB_TOKEN or GH_TOKEN
@@ -870,7 +870,7 @@ def _run_doctor_with_healthy_oauth_fallback(
     minimax_oauth_status: dict,
     xai_oauth_status: dict | None = None,
 ) -> str:
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
         "model:\n"
@@ -1039,7 +1039,7 @@ class TestDoctorXaiOAuthStatus:
 
     def _run(self, monkeypatch, tmp_path, *, xai_auth_fn) -> str:
         """Run doctor with a controlled xAI auth callable; return stdout."""
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".savarez"
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
         project = tmp_path / "project"
@@ -1114,7 +1114,7 @@ class TestDoctorXaiOAuthStatus:
 
     def test_import_failure_does_not_crash_doctor(self, monkeypatch, tmp_path):
         """Doctor must not crash when get_xai_oauth_auth_status cannot be imported."""
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".savarez"
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
         project = tmp_path / "project"
@@ -1146,7 +1146,7 @@ class TestDoctorXaiOAuthStatus:
 
     def test_import_failure_does_not_affect_other_providers(self, monkeypatch, tmp_path):
         """Nous / Codex / Gemini / MiniMax rows must survive an xAI import failure."""
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".savarez"
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
         project = tmp_path / "project"
@@ -1207,7 +1207,7 @@ class TestDoctorCodexCliHintPlacement:
     """
 
     def _run(self, monkeypatch, tmp_path, *, codex_logged_in: bool, codex_cli_present: bool) -> str:
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".savarez"
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
         project = tmp_path / "project"
@@ -1294,7 +1294,7 @@ class TestDoctorStaleMaxIterationsDrift:
         import io
         from argparse import Namespace
 
-        hermes_home = tmp_path / ".hermes"
+        hermes_home = tmp_path / ".savarez"
         hermes_home.mkdir(parents=True)
         (hermes_home / "config.yaml").write_text(
             f"agent:\n  max_turns: {cfg_turns}\n", encoding="utf-8"

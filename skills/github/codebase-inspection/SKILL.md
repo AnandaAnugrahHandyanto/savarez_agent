@@ -6,7 +6,7 @@ author: Savarez AI Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  savarez:
     tags: [LOC, Code Analysis, pygount, Codebase, Metrics, Repository]
     related_skills: [github-repo-management]
 prerequisites:

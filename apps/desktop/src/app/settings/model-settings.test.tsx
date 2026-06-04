@@ -41,7 +41,7 @@ describe('ModelSettings', () => {
     await renderModelSettings()
 
     await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
-    expect(screen.getByText('nous / hermes-4')).toBeTruthy()
+    expect(screen.getByText('nous /.savarez-4')).toBeTruthy()
   })
 
   it('renders the auxiliary task rows', async () => {

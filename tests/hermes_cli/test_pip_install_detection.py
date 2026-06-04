@@ -36,7 +36,7 @@ def test_recommended_update_command_pip():
     cmd = recommended_update_command_for_method("pip")
     assert "pip install" in cmd or "uv pip install" in cmd
     assert "--upgrade" in cmd
-    assert "hermes-agent" in cmd
+    assert "savarez-agent" in cmd
 
 
 def test_stamp_file_takes_precedence(tmp_path):
@@ -87,7 +87,7 @@ def test_banner_warns_on_pip_install(tmp_path):
     from rich.console import Console
     from hermes_cli import banner
 
-    hh = tmp_path / ".hermes"
+    hh = tmp_path / ".savarez"
     hh.mkdir()
     (hh / ".install_method").write_text("pip\n")
 
@@ -113,7 +113,7 @@ def test_banner_no_pip_warning_on_git_install(tmp_path):
     from rich.console import Console
     from hermes_cli import banner
 
-    hh = tmp_path / ".hermes"
+    hh = tmp_path / ".savarez"
     hh.mkdir()
     (hh / ".install_method").write_text("git\n")
 

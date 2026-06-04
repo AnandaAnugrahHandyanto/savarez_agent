@@ -44,7 +44,7 @@ def _load_plugin_router():
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

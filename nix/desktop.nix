@@ -101,7 +101,7 @@ stdenv.mkDerivation {
 
   meta = with lib; {
     description = "Native Electron desktop shell for Savarez AI Agent";
-    homepage = "https://github.com/NousResearch/hermes-agent";
+    homepage = "https://github.com/NousResearch/savarez-agent";
     license = licenses.mit;
     platforms = platforms.unix;
     mainProgram = "hermes-desktop";

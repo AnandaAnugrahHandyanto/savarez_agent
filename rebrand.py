@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Savarez rebranding script.
-Changes all user-facing Hermes branding to Savarez across the codebase.
+Changes all user-facing Savarez branding to Savarez across the codebase.
 """
 import os
 import re

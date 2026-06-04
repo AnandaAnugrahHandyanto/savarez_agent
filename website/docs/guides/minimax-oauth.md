@@ -6,7 +6,7 @@ description: "Log into MiniMax via browser OAuth and use MiniMax-M2.7 models in 
 
 # MiniMax OAuth
 
-Savarez AI Agent supports **MiniMax** through a browser-based OAuth login flow, using the same credentials as the [MiniMax portal](https://www.minimax.io). No API key or credit card is required — log in once and Hermes automatically refreshes your session.
+Savarez AI Agent supports **MiniMax** through a browser-based OAuth login flow, using the same credentials as the [MiniMax portal](https://www.minimax.io). No API key or credit card is required — log in once and Savarez automatically refreshes your session.
 
 The transport reuses the `anthropic_messages` adapter (MiniMax exposes an Anthropic Messages-compatible endpoint at `/anthropic`), so all existing tool-calling, streaming, and context features work without any adapter changes.
 
@@ -36,12 +36,12 @@ The transport reuses the `anthropic_messages` adapter (MiniMax exposes an Anthro
 # Launch the provider and model picker
 savarez model
 # → Select "MiniMax (OAuth)" from the provider list
-# → Hermes opens your browser to the MiniMax authorization page
+# → Savarez opens your browser to the MiniMax authorization page
 # → Approve access in the browser
 # → Select a model (MiniMax-M2.7 or MiniMax-M2.7-highspeed)
 # → Start chatting
 
-hermes
+savarez
 ```
 
 After the first login, credentials are stored under `~/.savarez/auth.json` and are refreshed automatically before each session.
@@ -70,16 +70,16 @@ On servers or containers where no browser is available:
 savarez auth add minimax-oauth --no-browser
 ```
 
-Hermes will print the verification URL and user code — open the URL on any device and enter the code when prompted.
+Savarez will print the verification URL and user code — open the URL on any device and enter the code when prompted.
 
 ## The OAuth Flow
 
-Hermes implements a PKCE browser OAuth flow against the MiniMax OAuth endpoints:
+Savarez implements a PKCE browser OAuth flow against the MiniMax OAuth endpoints:
 
-1. Hermes generates a PKCE verifier / challenge pair and a random state value.
+1. Savarez generates a PKCE verifier / challenge pair and a random state value.
 2. It POSTs to `{base_url}/oauth/code` with the challenge and receives a `user_code` and `verification_uri`.
 3. Your browser opens `verification_uri`. If prompted, enter the `user_code`.
-4. Hermes polls `{base_url}/oauth/token` until the token arrives (or the deadline passes).
+4. Savarez polls `{base_url}/oauth/token` until the token arrives (or the deadline passes).
 5. Tokens (`access_token`, `refresh_token`, expiry) are saved to `~/.savarez/auth.json` under the `minimax-oauth` key.
 
 Token refresh (standard OAuth `refresh_token` grant) runs automatically at each session start when the access token is within 60 seconds of expiry.
@@ -140,10 +140,10 @@ model:
 All of the following resolve to `minimax-oauth`:
 
 ```bash
-hermes --provider minimax-oauth    # canonical
-hermes --provider minimax-portal   # alias
-hermes --provider minimax-global   # alias
-hermes --provider minimax_oauth    # alias (underscore form)
+savarez --provider minimax-oauth    # canonical
+savarez --provider minimax-portal   # alias
+savarez --provider minimax-global   # alias
+savarez --provider minimax_oauth    # alias (underscore form)
 ```
 
 ## Environment Variables
@@ -158,7 +158,7 @@ The `minimax-oauth` provider does **not** use `MINIMAX_API_KEY` or `MINIMAX_BASE
 To use `minimax-oauth` as the active provider, set `model.provider: minimax-oauth` in `config.yaml` (use `savarez setup` for the guided flow), or pass `--provider minimax-oauth` for a single invocation:
 
 ```bash
-hermes --provider minimax-oauth
+savarez --provider minimax-oauth
 ```
 
 ## Models
@@ -176,21 +176,21 @@ Both models support up to 200,000 tokens of context.
 
 ### Token expired — not re-logging in automatically
 
-Hermes refreshes the token on every session start if it is within 60 seconds of expiry. If the access token is already expired (for example, after a long offline period), the refresh happens automatically on the next request. If refresh fails with `refresh_token_reused` or `invalid_grant`, Hermes marks the session as requiring re-login.
+Savarez refreshes the token on every session start if it is within 60 seconds of expiry. If the access token is already expired (for example, after a long offline period), the refresh happens automatically on the next request. If refresh fails with `refresh_token_reused` or `invalid_grant`, Savarez marks the session as requiring re-login.
 
-When the refresh failure is terminal (HTTP 4xx, `invalid_grant`, revoked grant, etc.), Hermes marks the refresh token as dead and quarantines it locally so it doesn't keep replaying the doomed exchange. The agent surfaces a single "re-authentication required" message and stays out of the way until you log in again.
+When the refresh failure is terminal (HTTP 4xx, `invalid_grant`, revoked grant, etc.), Savarez marks the refresh token as dead and quarantines it locally so it doesn't keep replaying the doomed exchange. The agent surfaces a single "re-authentication required" message and stays out of the way until you log in again.
 
 **Fix:** run `savarez auth add minimax-oauth` again to start a fresh login. The quarantine clears on the next successful exchange.
 
 ### Authorization timed out
 
-The device-code flow has a finite expiry window. If you don't approve the login in time, Hermes raises a timeout error.
+The device-code flow has a finite expiry window. If you don't approve the login in time, Savarez raises a timeout error.
 
 **Fix:** re-run `savarez auth add minimax-oauth` (or `savarez model`). The flow starts fresh.
 
 ### State mismatch (possible CSRF)
 
-Hermes detected that the `state` value returned by the authorization server does not match what it sent.
+Savarez detected that the `state` value returned by the authorization server does not match what it sent.
 
 **Fix:** re-run the login. If it persists, check for a proxy or redirect that is modifying the OAuth response.
 
@@ -202,7 +202,7 @@ If `savarez` cannot open a browser window, use `--no-browser`:
 savarez auth add minimax-oauth --no-browser
 ```
 
-Hermes prints the URL and code. Open the URL on any device and complete the flow there.
+Savarez prints the URL and code. Open the URL on any device and complete the flow there.
 
 ### "Not logged into MiniMax OAuth" error at runtime
 

@@ -763,7 +763,7 @@ class TestInstallArchiveMemberValidation:
         member.size = len(payload)
         archive, checksums = self._write_archive(tmp_path, member, payload)
 
-        hermes_home = tmp_path / "hermes-home"
+        hermes_home = tmp_path / "savarez-home"
         monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         with patch("tools.tirith_security._download_file",
                    side_effect=self._download_side_effect(archive, checksums)):
@@ -790,7 +790,7 @@ class TestInstallArchiveMemberValidation:
         member.linkname = "/bin/sh"
         archive, checksums = self._write_archive(tmp_path, member)
 
-        hermes_home = tmp_path / "hermes-home"
+        hermes_home = tmp_path / "savarez-home"
         monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         with patch("tools.tirith_security._download_file",
                    side_effect=self._download_side_effect(archive, checksums)):
@@ -1169,9 +1169,9 @@ class TestHermesHomeIsolation:
     def test_failure_marker_respects_hermes_home(self):
         """_failure_marker_path must use SAVAREZ_HOME, not hardcoded ~/.savarez."""
         from tools.tirith_security import _failure_marker_path
-        with patch.dict(os.environ, {"SAVAREZ_HOME": "/custom/hermes"}):
+        with patch.dict(os.environ, {"SAVAREZ_HOME": "/custom/savarez"}):
             result = _failure_marker_path()
-        assert result == "/custom/hermes/.tirith-install-failed"
+        assert result == "/custom/savarez/.tirith-install-failed"
 
     def test_conftest_isolation_prevents_real_home_writes(self):
         """The conftest autouse fixture sets SAVAREZ_HOME; verify it's active."""
@@ -1187,7 +1187,7 @@ class TestHermesHomeIsolation:
             # falls back to the account database; compute expected under the
             # same environment instead of after patch.dict restores HOME.
             os.environ.pop("SAVAREZ_HOME", None)
-            expected = os.path.join(os.path.expanduser("~"), ".hermes")
+            expected = os.path.join(os.path.expanduser("~"), ".savarez")
             result = _get_hermes_home()
         assert result == expected
 

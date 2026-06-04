@@ -614,14 +614,14 @@ class TestRegistration:
 
 
 # ---------------------------------------------------------------------------
-# Toolset: discord / discord_admin only in hermes-discord
+# Toolset: discord / discord_admin only in savarez-discord
 # ---------------------------------------------------------------------------
 
 class TestToolsetInclusion:
     def test_discord_tools_in_hermes_discord_toolset(self):
         from toolsets import TOOLSETS
-        assert "discord" in TOOLSETS["hermes-discord"]["tools"]
-        assert "discord_admin" in TOOLSETS["hermes-discord"]["tools"]
+        assert "discord" in TOOLSETS["savarez-discord"]["tools"]
+        assert "discord_admin" in TOOLSETS["savarez-discord"]["tools"]
 
     def test_discord_tools_not_in_core_tools(self):
         from toolsets import _HERMES_CORE_TOOLS
@@ -631,7 +631,7 @@ class TestToolsetInclusion:
     def test_discord_tools_not_in_other_toolsets(self):
         from toolsets import TOOLSETS
         for name, ts in TOOLSETS.items():
-            if name in {"hermes-discord", "hermes-gateway", "discord", "discord_admin"}:
+            if name in {"savarez-discord", "savarez-gateway", "discord", "discord_admin"}:
                 continue
             tools = ts.get("tools", [])
             assert "discord" not in tools or name == "discord", (
@@ -1114,7 +1114,7 @@ class TestModelToolsIntegration:
         mock_req.return_value = {"flags": 0}
 
         from model_tools import get_tool_definitions
-        tools = get_tool_definitions(enabled_toolsets=["hermes-discord"], quiet_mode=True)
+        tools = get_tool_definitions(enabled_toolsets=["savarez-discord"], quiet_mode=True)
         discord_admin_tool = next(
             (t for t in tools if t.get("function", {}).get("name") == "discord_admin"),
             None,
@@ -1135,7 +1135,7 @@ class TestModelToolsIntegration:
         mock_req.return_value = {"flags": 0}
 
         from model_tools import get_tool_definitions
-        tools = get_tool_definitions(enabled_toolsets=["hermes-discord"], quiet_mode=True)
+        tools = get_tool_definitions(enabled_toolsets=["savarez-discord"], quiet_mode=True)
         names = [t.get("function", {}).get("name") for t in tools]
         assert "discord" not in names
         assert "discord_admin" not in names

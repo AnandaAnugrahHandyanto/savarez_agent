@@ -26,7 +26,7 @@ description: "只读 EVM 客户端：跨 8 条链的钱包、代币、Gas"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Savarez 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # EVM Blockchain Skill

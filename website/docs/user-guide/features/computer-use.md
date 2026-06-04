@@ -32,12 +32,12 @@ Pick whichever path is most convenient — both run the same upstream installer:
 **Option 1: dedicated CLI command (most direct).**
 
 ```
-hermes computer-use install
+savarez computer-use install
 ```
 
 This fetches and runs the upstream cua-driver installer:
 `curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh`.
-Use `hermes computer-use status` to verify the install.
+Use `savarez computer-use status` to verify the install.
 
 **Option 2: enable the toolset interactively.**
 
@@ -48,30 +48,30 @@ After installing, regardless of which path you took:
 
 3. Grant macOS permissions when prompted:
    - **System Settings → Privacy & Security → Accessibility** → allow the
-     terminal (or Hermes app).
+     terminal (or Savarez app).
    - **System Settings → Privacy & Security → Screen Recording** → allow
      the same.
 4. Start a session with the toolset enabled:
    ```
-   hermes -t computer_use chat
+   savarez -t computer_use chat
    ```
    or add `computer_use` to your enabled toolsets in `~/.savarez/config.yaml`.
 
 ## Keeping cua-driver up to date
 
 The cua-driver project ships fixes regularly (e.g. v0.1.6 fixed a Safari
-window-focus bug for UTM workflows). Hermes refreshes the binary in two
+window-focus bug for UTM workflows). Savarez refreshes the binary in two
 places so you don't get stuck on a stale release:
 
-- **`savarez update`** — when you update Hermes itself, if `cua-driver` is
+- **`savarez update`** — when you update Savarez itself, if `cua-driver` is
   on PATH the upstream installer re-runs at the end of the update.
   No-op for non-macOS users and for users without cua-driver installed.
-- **`hermes computer-use install --upgrade`** — manual force-refresh.
+- **`savarez computer-use install --upgrade`** — manual force-refresh.
   Re-runs the upstream installer regardless of whether cua-driver is
   already installed. Use this when you want the latest fix without
   waiting for the next agent update.
 
-`hermes computer-use status` shows the installed version next to the
+`savarez computer-use status` shows the installed version next to the
 binary path.
 
 ## Quick example
@@ -109,7 +109,7 @@ image blocks.
 
 ## Safety
 
-Hermes applies multi-layer guardrails:
+Savarez applies multi-layer guardrails:
 
 - Destructive actions (click, type, drag, scroll, key, focus_app) require
   approval — either interactively via the CLI dialog or via the
@@ -126,7 +126,7 @@ Pair with `approvals.mode: manual` in `~/.savarez/config.yaml` if you want every
 
 ## Token efficiency
 
-Screenshots are expensive. Hermes applies four layers of optimisation:
+Screenshots are expensive. Savarez applies four layers of optimisation:
 
 - **Screenshot eviction** — the Anthropic adapter keeps only the 3 most
   recent screenshots in context; older ones become `[screenshot removed
@@ -175,7 +175,7 @@ HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
 ## Troubleshooting
 
 **`computer_use backend unavailable: cua-driver is not installed`** — Run
-`hermes computer-use install` to fetch the cua-driver binary, or run
+`savarez computer-use install` to fetch the cua-driver binary, or run
 `savarez tools` and enable the Computer Use toolset.
 
 **Clicks seem to have no effect** — Capture and verify. A modal you
@@ -191,6 +191,6 @@ reconsider.
 
 ## See also
 
-- [Universal skill: `macos-computer-use`](https://github.com/NousResearch/hermes-agent/blob/main/skills/apple/macos-computer-use/SKILL.md)
+- [Universal skill: `macos-computer-use`](https://github.com/NousResearch/savarez-agent/blob/main/skills/apple/macos-computer-use/SKILL.md)
 - [cua-driver source (trycua/cua)](https://github.com/trycua/cua)
 - [Browser automation](./browser.md) for cross-platform web tasks.

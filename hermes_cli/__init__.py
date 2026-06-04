@@ -1,8 +1,8 @@
 """
-Hermes CLI - Unified command-line interface for Savarez AI Agent.
+Savarez CLI - Unified command-line interface for Savarez AI Agent.
 
 Provides subcommands for:
-- savarez chat          - Interactive chat (same as ./hermes)
+- savarez chat          - Interactive chat (same as ./savarez)
 - savarez gateway       - Run gateway in foreground
 - savarez gateway start - Start gateway service
 - savarez gateway stop  - Stop gateway service

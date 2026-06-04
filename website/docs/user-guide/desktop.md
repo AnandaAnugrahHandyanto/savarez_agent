@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3
 title: "Desktop App"
-description: "The native Hermes desktop app — a polished experience for chatting with Hermes, with streaming tool output, side-by-side previews, a file browser, voice, cron, profiles, skills, and settings. macOS, Windows, and Linux."
+description: "The native Savarez desktop app — a polished experience for chatting with Savarez, with streaming tool output, side-by-side previews, a file browser, voice, cron, profiles, skills, and settings. macOS, Windows, and Linux."
 ---
 
 # Desktop App
@@ -11,10 +11,10 @@ The Savarez desktop app is a native app built around the **same** agent you get 
 It runs on **macOS, Windows, and Linux**.
 
 :::tip Which interface is which?
-Hermes has several front ends that all talk to the same agent:
+Savarez has several front ends that all talk to the same agent:
 
 - **Desktop App** (this page) — a native application with a purpose-built UI for chat, configuration, and management.
-- **CLI** (`savarez`) and **[TUI](./tui.md)** (`hermes --tui`) — terminal interfaces.
+- **CLI** (`savarez`) and **[TUI](./tui.md)** (`savarez --tui`) — terminal interfaces.
 - **[Web Dashboard](./features/web-dashboard.md)** (`savarez dashboard`) — a browser admin panel; its optional **Chat** tab embeds the TUI through a pseudo-terminal.
 
 Pick whichever fits the moment. They share state, so you can start a session in one and resume it in another.
@@ -22,24 +22,24 @@ Pick whichever fits the moment. They share state, so you can start a session in 
 
 ## Install
 
-### With the Hermes Desktop installer on MacOS or Windows (recommended)
+### With the Savarez Desktop installer on MacOS or Windows (recommended)
 
-[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
+[Download the Savarez Desktop installer](https://savarez-agent.nousresearch.com/desktop) from our website and run it.
 
 ### With the CLI installer on Linux, MacOS, or Windows
 
 Add `--include-desktop` to the regular install script.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --include-desktop
+curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash -s -- --include-desktop
 ```
 
-### With an existing Hermes installation
+### With an existing Savarez installation
 
-If you already have Hermes installed, simply run
+If you already have Savarez installed, simply run
 
 ```bash
-hermes desktop
+savarez desktop
 ```
 
 That uses your current config, keys, sessions, and skills.
@@ -53,19 +53,19 @@ The desktop app is organized as a chat-first window with a left sidebar for navi
 The center of the app. You get:
 
 - **Streaming responses** with live tool activity and structured tool-call summaries as the agent works.
-- **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
+- **The same conversation history** as every other Savarez surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
 
-Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
+Chatting against a Savarez instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Savarez Desktop to a remote backend](./features/web-dashboard.md#connecting-savarez-desktop-to-a-remote-backend).
 
 ### File browser
 
-Explore and preview the working directory without leaving the app — useful for following along as the agent reads, writes, and edits files. Set the initial project directory with `hermes desktop --cwd <path>` (or the `HERMES_DESKTOP_CWD` environment variable).
+Explore and preview the working directory without leaving the app — useful for following along as the agent reads, writes, and edits files. Set the initial project directory with `savarez desktop --cwd <path>` (or the `HERMES_DESKTOP_CWD` environment variable).
 
 ### Voice
 
-Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md) available elsewhere. On macOS the OS will prompt once for microphone access.
+Talk to Savarez and hear it back, the same [voice mode](./features/voice-mode.md) available elsewhere. On macOS the OS will prompt once for microphone access.
 
 ### Settings & onboarding
 
@@ -73,11 +73,11 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 
 ### Management panes
 
-The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
+The app also surfaces the broader Savarez management surface so you don't have to drop to a terminal:
 
 - **Skills** — browse, install, and manage [skills](./features/skills.md).
-- **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron).
-- **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
+- **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#savarez-cron).
+- **Profiles** — switch between [Savarez profiles](./profiles.md) (isolated config/skills/sessions).
 - **Messaging** — set up gateway channels.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
 
@@ -85,11 +85,11 @@ The app also surfaces the broader Hermes management surface so you don't have to
 
 The app checks for updates in the background and offers a one-click update when one is ready.
 
-The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
+The [manual update process](https://savarez-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
 
-## CLI reference: `hermes desktop`
+## CLI reference: `savarez desktop`
 
-To launch via the CLI, simply run `hermes desktop`. By default it installs workspace Node dependencies, builds the current OS's unpacked Electron app, then launches that packaged artifact.
+To launch via the CLI, simply run `savarez desktop`. By default it installs workspace Node dependencies, builds the current OS's unpacked Electron app, then launches that packaged artifact.
 
 | Flag                 | Description                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------- |
@@ -98,17 +98,17 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 | `--build-only`       | Build the desktop app but do not launch it (used by `savarez update`)                      |
 | `--source`           | Launch via `electron .` against `apps/desktop/dist` instead of the packaged app           |
 | `--cwd PATH`         | Initial project directory for desktop chat sessions (sets `HERMES_DESKTOP_CWD`)           |
-| `--hermes-root PATH` | Override the Hermes source root the app uses (sets `HERMES_DESKTOP_HERMES_ROOT`)          |
+| `--savarez-root PATH` | Override the Savarez source root the app uses (sets `HERMES_DESKTOP_HERMES_ROOT`)          |
 | `--ignore-existing`  | Force the app to ignore any `savarez` CLI already on `PATH` during backend resolution      |
 | `--fake-boot`        | Enable deterministic boot delays for validating the startup UI                            |
 
 ## How it works
 
-The packaged app ships only the Electron shell. On first launch it installs the Savarez AI Agent runtime into `SAVAREZ_HOME` (`~/.savarez`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. The React renderer talks to a `savarez dashboard` backend over the standard gateway APIs and reuses the agent rather than reimplementing it. Install, backend-resolution, and self-update logic live in the Electron main process.
+The packaged app ships only the Electron shell. On first launch it installs the Savarez AI Agent runtime into `SAVAREZ_HOME` (`~/.savarez`, or `%LOCALAPPDATA%\savarez` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. The React renderer talks to a `savarez dashboard` backend over the standard gateway APIs and reuses the agent rather than reimplementing it. Install, backend-resolution, and self-update logic live in the Electron main process.
 
 ## Connecting to a remote backend
 
-By default the app starts and manages its own **local** backend. You can instead point it at a Hermes backend running on another machine — a VPS, a home server, or a Mini behind Tailscale.
+By default the app starts and manages its own **local** backend. You can instead point it at a Savarez backend running on another machine — a VPS, a home server, or a Mini behind Tailscale.
 
 The connection has two halves: on the backend you protect the dashboard with a **username and password**, and in the app you enter the backend's URL and sign in with those credentials. Binding the dashboard to a non-loopback address automatically engages its auth gate, so the username/password provider is what lets the desktop app through.
 
@@ -137,7 +137,7 @@ Make sure the **gateway is running** on the remote host as well if you rely on m
 
 Prefer not to keep a plaintext password at rest? Set `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH` to a scrypt hash instead — compute it with `python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('PW'))"`. Full configuration surface (config.yaml keys, every env var, the rate limiter): [Web Dashboard → Username/password provider](./features/web-dashboard.md#usernamepassword-provider-no-oauth-idp).
 
-Running the dashboard as a systemd service? Give the unit `EnvironmentFile=%h/.hermes/.env` so the credentials are in the environment at boot.
+Running the dashboard as a systemd service? Give the unit `EnvironmentFile=%h/.savarez/.env` so the credentials are in the environment at boot.
 
 :::warning
 The dashboard reads and writes your `.env` (API keys, secrets) and can run agent commands. Even behind a username and password, never expose it directly to the open internet — put it behind a VPN. [Tailscale](https://tailscale.com/) is the clean option: bind to the machine's tailscale IP (`--host <tailscale-ip>`) and use `http://<tailscale-ip>:9119` as the Remote URL so only your tailnet can reach it.
@@ -147,7 +147,7 @@ The dashboard reads and writes your `.env` (API keys, secrets) and can run agent
 
 **Settings → Gateway → Remote gateway:**
 
-1. **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` work if you front it with a reverse proxy)
+1. **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/savarez` work if you front it with a reverse proxy)
 2. **Sign in** — the app detects that the backend requires a username and password and shows a **Sign in** button. Click it, enter the credentials from step 1, and the app authenticates against the backend's login page.
 3. **Save and reconnect** — switches the desktop shell onto the remote backend. The session refreshes automatically; you stay signed in across restarts when `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is set.
 
@@ -160,7 +160,7 @@ You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_U
 - **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value. Without it the token-signing key is regenerated per boot, invalidating all sessions.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
 
-For the same setup from the web-dashboard angle, see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend); the env vars are catalogued under [Environment Variables → Web Dashboard & Hermes Desktop](../reference/environment-variables.md#web-dashboard--hermes-desktop).
+For the same setup from the web-dashboard angle, see [Web Dashboard → Connecting Savarez Desktop to a remote backend](./features/web-dashboard.md#connecting-savarez-desktop-to-a-remote-backend); the env vars are catalogued under [Environment Variables → Web Dashboard & Savarez Desktop](../reference/environment-variables.md#web-dashboard--savarez-desktop).
 
 ## Troubleshooting
 
@@ -174,13 +174,13 @@ Common resets:
 
 ```bash
 # Force a clean first-launch setup (macOS/Linux)
-rm "$HOME/.savarez/hermes-agent/.hermes-bootstrap-complete"
+rm "$HOME/.savarez/savarez-agent/.savarez-bootstrap-complete"
 
 # Rebuild a broken Python venv (macOS/Linux)
-rm -rf "$HOME/.savarez/hermes-agent/venv"
+rm -rf "$HOME/.savarez/savarez-agent/venv"
 
 # Reset a stuck macOS microphone prompt
-tccutil reset Microphone com.nousresearch.hermes
+tccutil reset Microphone com.nousresearch.savarez
 ```
 
 ## Building from source

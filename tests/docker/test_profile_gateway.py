@@ -1,6 +1,6 @@
 """Harness: per-profile gateway start/stop inside the container.
 
-Phase 4 wires `hermes -p <profile> gateway start/stop` through the s6
+Phase 4 wires `savarez -p <profile> gateway start/stop` through the s6
 ServiceManager dispatch path inside the container — so the lifecycle
 commands now bring up an s6-supervised gateway rather than refusing
 with the pre-Phase-4 informational message.
@@ -83,7 +83,7 @@ def test_profile_create_then_gateway_start(
     r = _sh(container_name, f"test -d /run/service/gateway-{PROFILE}")
     assert r.returncode == 0, "s6 service slot not created on profile create"
 
-    r = _sh(container_name, f"hermes -p {PROFILE} gateway start", timeout=60)
+    r = _sh(container_name, f"savarez -p {PROFILE} gateway start", timeout=60)
     assert r.returncode == 0, (
         f"gateway start failed: stderr={r.stderr!r} stdout={r.stdout!r}"
     )
@@ -99,7 +99,7 @@ def test_profile_create_then_gateway_start(
         f"{_svstat(container_name)!r}"
     )
 
-    r = _sh(container_name, f"hermes -p {PROFILE} gateway stop", timeout=30)
+    r = _sh(container_name, f"savarez -p {PROFILE} gateway stop", timeout=30)
     assert r.returncode == 0
 
     time.sleep(2)
@@ -122,7 +122,7 @@ def test_profile_delete_stops_gateway(
     time.sleep(3)
 
     _sh(container_name, f"savarez profile create {PROFILE}")
-    _sh(container_name, f"hermes -p {PROFILE} gateway start", timeout=60)
+    _sh(container_name, f"savarez -p {PROFILE} gateway start", timeout=60)
     time.sleep(3)
 
     r = _sh(

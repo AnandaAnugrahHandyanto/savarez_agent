@@ -95,7 +95,7 @@ class TestHermesTokenStorage:
 
         mock_client = MagicMock()
         mock_client.model_dump.return_value = {
-            "client_id": "hermes-123",
+            "client_id": "savarez-123",
             "client_secret": "secret",
         }
         asyncio.run(storage.set_client_info(mock_client))
@@ -596,7 +596,7 @@ def test_build_oauth_auth_preserves_server_url_path():
     breaking RFC 9728 protected-resource validation against servers whose PRM
     advertises a path-scoped resource (Notion). The MCP SDK strips the path
     itself for authorization-server discovery via
-    ``OAuthContext.get_authorization_base_url``; Hermes must not pre-strip.
+    ``OAuthContext.get_authorization_base_url``; Savarez must not pre-strip.
     """
     from tools import mcp_oauth
 

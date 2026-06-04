@@ -1,7 +1,7 @@
 """Regression tests for _apply_profile_override SAVAREZ_HOME guard (issue #22502).
 
-When SAVAREZ_HOME is set to the hermes root (e.g. systemd hardcodes
-SAVAREZ_HOME=/root/.hermes), _apply_profile_override must still read
+When SAVAREZ_HOME is set to the savarez root (e.g. systemd hardcodes
+SAVAREZ_HOME=/root/.savarez), _apply_profile_override must still read
 active_profile and update SAVAREZ_HOME to the profile directory.
 
 When SAVAREZ_HOME is already a profile directory (.../profiles/<name>),
@@ -26,7 +26,7 @@ def _run_apply_profile_override(
     Returns the value of os.environ["SAVAREZ_HOME"] after the call,
     or None if unset.
     """
-    hermes_root = tmp_path / ".hermes"
+    hermes_root = tmp_path / ".savarez"
     hermes_root.mkdir(parents=True, exist_ok=True)
 
     if active_profile is not None:
@@ -41,7 +41,7 @@ def _run_apply_profile_override(
     else:
         monkeypatch.delenv("SAVAREZ_HOME", raising=False)
 
-    monkeypatch.setattr(sys, "argv", argv or ["hermes", "gateway", "start"])
+    monkeypatch.setattr(sys, "argv", argv or ["savarez", "gateway", "start"])
 
     from hermes_cli.main import _apply_profile_override
     _apply_profile_override()
@@ -52,7 +52,7 @@ def _run_apply_profile_override(
 class TestApplyProfileOverrideHermesHomeGuard:
     """Regression guard for issue #22502.
 
-    Verifies that SAVAREZ_HOME pointing to the hermes root does NOT suppress
+    Verifies that SAVAREZ_HOME pointing to the savarez root does NOT suppress
     the active_profile check, while SAVAREZ_HOME already pointing to a
     profile directory IS trusted as-is.
     """
@@ -60,14 +60,14 @@ class TestApplyProfileOverrideHermesHomeGuard:
     def test_hermes_home_at_root_with_active_profile_is_redirected(
         self, tmp_path, monkeypatch
     ):
-        """SAVAREZ_HOME=/root/.hermes + active_profile=coder must redirect
+        """SAVAREZ_HOME=/root/.savarez + active_profile=coder must redirect
         SAVAREZ_HOME to .../profiles/coder.
 
-        Bug scenario from #22502: systemd sets SAVAREZ_HOME to the hermes root
+        Bug scenario from #22502: systemd sets SAVAREZ_HOME to the savarez root
         and the user switches to a profile via `savarez profile use`.
         Before the fix, the guard returned early and active_profile was ignored.
         """
-        hermes_root = tmp_path / ".hermes"
+        hermes_root = tmp_path / ".savarez"
         hermes_root.mkdir(parents=True, exist_ok=True)
 
         result = _run_apply_profile_override(
@@ -93,7 +93,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         with SAVAREZ_HOME already set to a specific profile must stay in that
         profile.
         """
-        hermes_root = tmp_path / ".hermes"
+        hermes_root = tmp_path / ".savarez"
         profile_dir = hermes_root / "profiles" / "coder"
         profile_dir.mkdir(parents=True, exist_ok=True)
 
@@ -101,7 +101,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("SAVAREZ_HOME", str(profile_dir))
-        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "start"])
+        monkeypatch.setattr(sys, "argv", ["savarez", "gateway", "start"])
 
         from hermes_cli.main import _apply_profile_override
         _apply_profile_override()
@@ -126,12 +126,12 @@ class TestApplyProfileOverrideHermesHomeGuard:
 
     def test_hermes_home_unset_default_profile_no_redirect(self, tmp_path, monkeypatch):
         """active_profile=default must not redirect SAVAREZ_HOME."""
-        hermes_root = tmp_path / ".hermes"
+        hermes_root = tmp_path / ".savarez"
         hermes_root.mkdir(parents=True, exist_ok=True)
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.delenv("SAVAREZ_HOME", raising=False)
-        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "start"])
+        monkeypatch.setattr(sys, "argv", ["savarez", "gateway", "start"])
         (hermes_root / "active_profile").write_text("default")
 
         from hermes_cli.main import _apply_profile_override

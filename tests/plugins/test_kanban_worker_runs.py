@@ -49,7 +49,7 @@ def _load_plugin_router():
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated SAVAREZ_HOME with an empty kanban DB."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -279,7 +279,7 @@ def test_inspect_run_live_pid(client, monkeypatch):
         "num_threads": 4,
         "status": "sleeping",
         "create_time": time.time() - 300,
-        "cmdline": ["python", "-m", "hermes"],
+        "cmdline": ["python", "-m", "savarez"],
     }
     fake_proc.num_fds.return_value = 12
     mock_psutil.Process.return_value = fake_proc

@@ -9,9 +9,9 @@ body:
         Thanks for reporting a bug! Please fill out the sections below so we can reproduce and fix it quickly.
 
         **Before submitting**, please:
-        - [ ] Search [existing issues](https://github.com/NousResearch/hermes-agent/issues) to avoid duplicates
+        - [ ] Search [existing issues](https://github.com/NousResearch/savarez-agent/issues) to avoid duplicates
         - [ ] Update to the latest version (`savarez update`) and confirm the bug still exists
-        - [ ] Run `hermes debug share` and paste the links below (see Debug Report section)
+        - [ ] Run `savarez debug share` and paste the links below (see Debug Report section)
 
   - type: textarea
     id: description
@@ -88,12 +88,12 @@ body:
     attributes:
       label: Debug Report
       description: |
-        Run `hermes debug share` from your terminal and paste the links it prints here.
+        Run `savarez debug share` from your terminal and paste the links it prints here.
         This uploads your system info, config, and recent logs to a paste service automatically.
 
         If you're in an interactive chat session, you can also use the `/debug` slash command — it does the same thing.
 
-        If the upload fails, run `hermes debug share --local` and paste the output directly.
+        If the upload fails, run `savarez debug share --local` and paste the output directly.
       placeholder: |
         Report   https://paste.rs/abc123
         agent.log   https://paste.rs/def456
@@ -119,10 +119,10 @@ body:
       placeholder: "3.11.9"
 
   - type: input
-    id: hermes-version
+    id: savarez-version
     attributes:
-      label: Hermes Version
-      description: Output of `hermes version`
+      label: Savarez Version
+      description: Output of `savarez version`
       placeholder: "2.1.0"
 
   - type: textarea
@@ -131,7 +131,7 @@ body:
       label: Additional Logs / Traceback (optional)
       description: |
         The debug report above covers most logs. Use this field for any extra error output, 
-        tracebacks, or screenshots not captured by `hermes debug share`.
+        tracebacks, or screenshots not captured by `savarez debug share`.
       render: shell
 
   - type: textarea

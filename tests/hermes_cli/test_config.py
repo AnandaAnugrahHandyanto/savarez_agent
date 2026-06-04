@@ -30,7 +30,7 @@ class TestGetHermesHome:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("SAVAREZ_HOME", None)
             home = get_hermes_home()
-            assert home == Path.home() / ".hermes"
+            assert home == Path.home() / ".savarez"
 
     def test_env_override(self):
         with patch.dict(os.environ, {"SAVAREZ_HOME": "/custom/path"}):
@@ -120,7 +120,7 @@ class TestLoadConfigParseFailure:
             ), f"expected WARNING log, got: {[r.message for r in caplog.records]}"
 
             # stderr also got a user-visible message (with the ⚠️ marker so it
-            # stands out at hermes startup before logging is configured)
+            # stands out at savarez startup before logging is configured)
             captured = capsys.readouterr()
             assert "savarez config:" in captured.err
             assert str(tmp_path / "config.yaml") in captured.err
@@ -886,7 +886,7 @@ class TestEnvWriteDenylist:
     the session token lives in the SPA's HTML where any future plugin
     XSS or local process could exfiltrate it). Without this gate, an
     attacker who steals the token could plant
-    ``LD_PRELOAD=/tmp/evil.so`` in ``.env`` and own the next Hermes
+    ``LD_PRELOAD=/tmp/evil.so`` in ``.env`` and own the next Savarez
     process on next startup via the dotenv → ``os.environ`` chain in
     ``hermes_cli/env_loader.py``.
 

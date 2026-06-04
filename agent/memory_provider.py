@@ -75,7 +75,7 @@ class MemoryProvider(ABC):
             prompts would corrupt user representations).
           - agent_identity (str): Profile name (e.g. "coder"). Use for
             per-profile provider identity scoping.
-          - agent_workspace (str): Shared workspace name (e.g. "hermes").
+          - agent_workspace (str): Shared workspace name (e.g. "savarez").
           - parent_session_id (str): For subagents, the parent's session_id.
           - user_id (str): Platform user identifier (gateway sessions).
           - user_id_alt (str): Optional alternate stable platform user identifier.
@@ -244,7 +244,7 @@ class MemoryProvider(ABC):
     def get_config_schema(self) -> List[Dict[str, Any]]:
         """Return config fields this provider needs for setup.
 
-        Used by 'hermes memory setup' to walk the user through configuration.
+        Used by 'savarez memory setup' to walk the user through configuration.
         Each field is a dict with:
           key:         config key name (e.g. 'api_key', 'mode')
           description: human-readable description
@@ -262,7 +262,7 @@ class MemoryProvider(ABC):
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         """Write non-secret config to the provider's native location.
 
-        Called by 'hermes memory setup' after collecting user inputs.
+        Called by 'savarez memory setup' after collecting user inputs.
         ``values`` contains only non-secret fields (secrets go to .env).
         ``hermes_home`` is the active SAVAREZ_HOME directory path.
 

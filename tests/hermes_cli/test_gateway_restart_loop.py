@@ -28,7 +28,7 @@ class TestGatewayLifecyclePattern:
         "savarez gateway restart",
         "savarez gateway stop",
         "savarez gateway start",
-        "hermes  gateway  restart",         # double spaces
+        "savarez  gateway  restart",         # double spaces
         "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
         "HERMES GATEWAY RESTART",           # uppercase
     ])
@@ -36,19 +36,19 @@ class TestGatewayLifecyclePattern:
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
     @pytest.mark.parametrize("text", [
-        "launchctl kickstart gui/501/ai.hermes.gateway",
-        "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist",
-        "launchctl stop ai.hermes.gateway",
-        "systemctl restart hermes-gateway",
-        "systemctl stop hermes-gateway.service",
-        "systemctl start hermes-gateway",
+        "launchctl kickstart gui/501/ai.savarez.gateway",
+        "launchctl unload ~/Library/LaunchAgents/ai.savarez.gateway.plist",
+        "launchctl stop ai.savarez.gateway",
+        "systemctl restart savarez-gateway",
+        "systemctl stop savarez-gateway.service",
+        "systemctl start savarez-gateway",
     ])
     def test_service_manager_commands(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
     @pytest.mark.parametrize("text", [
         "kill savarez gateway process",
-        "pkill -f hermes.*gateway",
+        "pkill -f savarez.*gateway",
     ])
     def test_kill_commands(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
@@ -84,7 +84,7 @@ class TestCronCreateLifecycleBlock:
         args = Namespace(
             cron_command="create",
             schedule="30m",
-            prompt="Upgrade hermes then run savarez gateway restart",
+            prompt="Upgrade savarez then run savarez gateway restart",
             name=None,
             deliver=None,
             repeat=None,
@@ -105,7 +105,7 @@ class TestCronCreateLifecycleBlock:
         args = Namespace(
             cron_command="create",
             schedule="0 9 * * *",
-            prompt="Run launchctl kickstart -k gui/501/ai.hermes.gateway",
+            prompt="Run launchctl kickstart -k gui/501/ai.savarez.gateway",
             name=None,
             deliver=None,
             repeat=None,

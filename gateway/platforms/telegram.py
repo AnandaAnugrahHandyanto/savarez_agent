@@ -642,7 +642,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         Supergroup/forum topics use ``message_thread_id``. True Bot API Direct
         Messages topics can opt in with explicit ``direct_messages_topic_id``
-        metadata. Hermes-created private-chat topic lanes are marked with
+        metadata. Savarez-created private-chat topic lanes are marked with
         ``telegram_dm_topic_reply_fallback``. Live replies send the private
         topic thread id together with a reply anchor; synthetic/resumed sends
         without an anchor use ``direct_messages_topic_id`` when metadata has it.
@@ -1155,7 +1155,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "Telegram polling could not recover after %d retries (%ds total wait). "
             "The previous gateway session is still held open on Telegram's servers, "
             "or another process is using the same bot token. "
-            "To recover: ensure no other Hermes or OpenClaw instance is running "
+            "To recover: ensure no other Savarez or OpenClaw instance is running "
             "with this token, then restart the gateway with 'savarez gateway restart'."
             % (MAX_CONFLICT_RETRIES, sum(10 + i * 10 for i in range(1, MAX_CONFLICT_RETRIES + 1)))
         )
@@ -1531,7 +1531,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # server's filesystem rather than a relative HTTP path. PTB needs
             # local_mode=True so download_*() reads from disk instead of issuing
             # an HTTP GET that would 404. Requires that the same path is
-            # readable by the Hermes process (shared mount, same machine, etc.).
+            # readable by the Savarez process (shared mount, same machine, etc.).
             if self.config.extra.get("local_mode"):
                 builder = builder.local_mode(True)
                 logger.info("[%s] Using Telegram local_mode (read files from disk)", self.name)
@@ -1666,7 +1666,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "TELEGRAM_WEBHOOK_URL is set. Without it, the "
                         "webhook endpoint accepts forged updates from "
                         "anyone who can reach it — see "
-                        "https://github.com/NousResearch/hermes-agent/"
+                        "https://github.com/NousResearch/savarez-agent/"
                         "security/advisories/GHSA-3vpc-7q5r-276h.\n\n"
                         "Generate a secret and set it in your .env:\n"
                         "  export TELEGRAM_WEBHOOK_SECRET=\"$(openssl rand -hex 32)\"\n\n"
@@ -3631,7 +3631,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         script_name, extra_args, success_label, is_state_verb = entry
 
-        script_path = _Path.home() / ".hermes" / "scripts" / "gmail-triage" / script_name
+        script_path = _Path.home() / ".savarez" / "scripts" / "gmail-triage" / script_name
         if not script_path.exists():
             await query.answer(text=f"❌ {script_name} missing")
             logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)
@@ -4798,7 +4798,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _explicit_bot_mentions_exclude_self(self, message: Message) -> bool:
         """Return True when explicit bot handles target other bots, not this one.
 
-        Telegram groups can contain several Hermes bot profiles. A message like
+        Telegram groups can contain several Savarez bot profiles. A message like
         ``@bot3 hi @bot4`` must not wake ``@bot1`` through reply/wake-word
         fallbacks. Treat explicit bot-handle mentions as an exclusive routing
         hint: if at least one @...bot username is present and none matches this

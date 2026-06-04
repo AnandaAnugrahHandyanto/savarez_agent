@@ -12,7 +12,7 @@ Quick answers and fixes for the most common questions and issues.
 
 ## Frequently Asked Questions
 
-### What LLM providers work with Hermes?
+### What LLM providers work with Savarez?
 
 Savarez AI Agent works with any OpenAI-compatible API. Supported providers include:
 
@@ -30,38 +30,38 @@ Set your provider with `savarez model` or by editing `~/.savarez/.env`. See the 
 
 ### Does it work on Windows?
 
-**Not natively.** Savarez AI Agent requires a Unix-like environment. On Windows, install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Hermes from inside it. The standard install command works perfectly in WSL2:
+**Not natively.** Savarez AI Agent requires a Unix-like environment. On Windows, install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Savarez from inside it. The standard install command works perfectly in WSL2:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
 ```
 
-### I run Hermes in WSL2. What's the best way to control my normal Windows Chrome?
+### I run Savarez in WSL2. What's the best way to control my normal Windows Chrome?
 
 Prefer an MCP bridge over `/browser connect`.
 
 Recommended pattern:
 
-- run Hermes inside WSL2
+- run Savarez inside WSL2
 - keep using your normal signed-in Chrome on Windows
 - add `chrome-devtools-mcp` as an MCP server through `cmd.exe` or `powershell.exe`
-- let Hermes use the resulting MCP browser tools
+- let Savarez use the resulting MCP browser tools
 
-This is more reliable than trying to force Hermes core browser transport to attach directly across the WSL2/Windows boundary.
+This is more reliable than trying to force Savarez core browser transport to attach directly across the WSL2/Windows boundary.
 
 See:
 
-- [Use MCP with Hermes](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
+- [Use MCP with Savarez](../guides/use-mcp-with-savarez.md#wsl2-bridge-savarez-in-wsl-to-windows-chrome)
 - [Browser Automation](../user-guide/features/browser.md#wsl2--windows-chrome-prefer-mcp-over-browser-connect)
 
 ### Does it work on Android / Termux?
 
-Yes — Hermes now has a tested Termux install path for Android phones.
+Yes — Savarez now has a tested Termux install path for Android phones.
 
 Quick install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
 ```
 
 For the fully explicit manual steps, supported extras, and current limitations, see the [Termux guide](../getting-started/termux.md).
@@ -82,7 +82,7 @@ savarez model
 # API base URL: http://localhost:11434/v1
 # API key: ollama
 # Model name: qwen3.5:27b
-# Context length: 64000   ← Hermes minimum; set this to match your server's actual context window
+# Context length: 64000   ← Savarez minimum; set this to match your server's actual context window
 ```
 
 Or configure it directly in `config.yaml`:
@@ -94,16 +94,16 @@ model:
   base_url: http://localhost:11434/v1
 ```
 
-Hermes persists the endpoint, provider, and base URL in `config.yaml` so it survives restarts. If your local server has exactly one model loaded, `/model custom` auto-detects it. You can also set `provider: custom` in config.yaml — it's a first-class provider, not an alias for anything else.
+Savarez persists the endpoint, provider, and base URL in `config.yaml` so it survives restarts. If your local server has exactly one model loaded, `/model custom` auto-detects it. You can also set `provider: custom` in config.yaml — it's a first-class provider, not an alias for anything else.
 
 This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See the [Configuration guide](../user-guide/configuration.md) for details.
 
 :::tip Ollama users
-If you set a custom `num_ctx` in Ollama (e.g., `ollama run --num_ctx 64000`), make sure to set the matching context length in Hermes — Ollama's `/api/show` reports the model's *maximum* context, not the effective `num_ctx` you configured.
+If you set a custom `num_ctx` in Ollama (e.g., `ollama run --num_ctx 64000`), make sure to set the matching context length in Savarez — Ollama's `/api/show` reports the model's *maximum* context, not the effective `num_ctx` you configured.
 :::
 
 :::tip Timeouts with local models
-Hermes auto-detects local endpoints and relaxes streaming timeouts (read timeout raised from 120s to 1800s, stale stream detection disabled). If you still hit timeouts on very large contexts, set `HERMES_STREAM_READ_TIMEOUT=1800` in your `.env`. See the [Local LLM guide](../guides/local-llm-on-mac.md#timeouts) for details.
+Savarez auto-detects local endpoints and relaxes streaming timeouts (read timeout raised from 120s to 1800s, stale stream detection disabled). If you still hit timeouts on very large contexts, set `HERMES_STREAM_READ_TIMEOUT=1800` in your `.env`. See the [Local LLM guide](../guides/local-llm-on-mac.md#timeouts) for details.
 :::
 
 ### How much does it cost?
@@ -123,7 +123,7 @@ Both persist across sessions. See [Memory](../user-guide/features/memory.md) and
 
 ### Can I use it in my own Python project?
 
-Yes. Import the `AIAgent` class and use Hermes programmatically:
+Yes. Import the `AIAgent` class and use Savarez programmatically:
 
 ```python
 from run_agent import AIAgent
@@ -140,7 +140,7 @@ See the [Python Library guide](../user-guide/features/code-execution.md) for ful
 
 ### Installation Issues
 
-#### `hermes: command not found` after installation
+#### `savarez: command not found` after installation
 
 **Cause:** Your shell hasn't reloaded the updated PATH.
 
@@ -155,8 +155,8 @@ source ~/.zshrc     # zsh
 
 If it still doesn't work, verify the install location:
 ```bash
-which hermes
-ls ~/.local/bin/hermes
+which savarez
+ls ~/.local/bin/savarez
 ```
 
 :::tip
@@ -165,7 +165,7 @@ The installer adds `~/.local/bin` to your PATH. If you use a non-standard shell 
 
 #### Python version too old
 
-**Cause:** Hermes requires Python 3.11 or newer.
+**Cause:** Savarez requires Python 3.11 or newer.
 
 **Solution:**
 ```bash
@@ -180,9 +180,9 @@ The installer handles this automatically — if you see this error during manual
 
 #### Terminal commands say `node: command not found` (or `nvm`, `pyenv`, `asdf`, …)
 
-**Cause:** Hermes builds a per-session environment snapshot by running `bash -l` once at startup. A bash login shell reads `/etc/profile`, `~/.bash_profile`, and `~/.profile`, but **does not source `~/.bashrc`** — so tools that install themselves there (`nvm`, `asdf`, `pyenv`, `cargo`, custom `PATH` exports) stay invisible to the snapshot. This most commonly happens when Hermes runs under systemd or in a minimal shell where nothing has pre-loaded the interactive shell profile.
+**Cause:** Savarez builds a per-session environment snapshot by running `bash -l` once at startup. A bash login shell reads `/etc/profile`, `~/.bash_profile`, and `~/.profile`, but **does not source `~/.bashrc`** — so tools that install themselves there (`nvm`, `asdf`, `pyenv`, `cargo`, custom `PATH` exports) stay invisible to the snapshot. This most commonly happens when Savarez runs under systemd or in a minimal shell where nothing has pre-loaded the interactive shell profile.
 
-**Solution:** Hermes auto-sources `~/.bashrc` by default. If that's not enough — e.g. you're a zsh user whose PATH lives in `~/.zshrc`, or you init `nvm` from a standalone file — list the extra files to source in `~/.savarez/config.yaml`:
+**Solution:** Savarez auto-sources `~/.bashrc` by default. If that's not enough — e.g. you're a zsh user whose PATH lives in `~/.zshrc`, or you init `nvm` from a standalone file — list the extra files to source in `~/.savarez/config.yaml`:
 
 ```yaml
 terminal:
@@ -223,9 +223,9 @@ source ~/.bashrc
 ```bash
 # Don't use sudo with the installer — it installs to ~/.local/bin
 # If you previously installed with sudo, clean up:
-sudo rm /usr/local/bin/hermes
+sudo rm /usr/local/bin/savarez
 # Then re-run the standard installer
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
 ```
 
 ---
@@ -239,7 +239,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 **Solution:** Exit your session and use `savarez model` from your terminal to add new providers:
 
 ```bash
-# Exit the Hermes chat session first (Ctrl+C or /quit)
+# Exit the Savarez chat session first (Ctrl+C or /quit)
 
 # Run the full provider setup wizard
 savarez model
@@ -305,7 +305,7 @@ savarez chat --model openrouter/meta-llama/llama-3.1-70b-instruct
 
 #### Context length exceeded
 
-**Cause:** The conversation has grown too long for the model's context window, or Hermes detected the wrong context length for your model.
+**Cause:** The conversation has grown too long for the model's context window, or Savarez detected the wrong context length for your model.
 
 **Solution:**
 ```bash
@@ -319,7 +319,7 @@ savarez chat
 savarez chat --model openrouter/google/gemini-3-flash-preview
 ```
 
-If this happens on the first long conversation, Hermes may have the wrong context length for your model. Check what it detected:
+If this happens on the first long conversation, Savarez may have the wrong context length for your model. Check what it detected:
 
 Look at the CLI startup line — it shows the detected context length (e.g., `📊 Context limit: 128000 tokens`). You can also check with `/usage` during a session.
 
@@ -351,14 +351,14 @@ See [Context Length Detection](../integrations/providers.md#context-length-detec
 
 #### Command blocked as dangerous
 
-**Cause:** Hermes detected a potentially destructive command (e.g., `rm -rf`, `DROP TABLE`). This is a safety feature.
+**Cause:** Savarez detected a potentially destructive command (e.g., `rm -rf`, `DROP TABLE`). This is a safety feature.
 
 **Solution:** When prompted, review the command and type `y` to approve it. You can also:
 - Ask the agent to use a safer alternative
 - See the full list of dangerous patterns in the [Security docs](../user-guide/security.md)
 
 :::tip
-This is working as intended — Hermes never silently runs destructive commands. The approval prompt shows you exactly what will execute.
+This is working as intended — Savarez never silently runs destructive commands. The approval prompt shows you exactly what will execute.
 :::
 
 #### `sudo` not working via messaging gateway
@@ -437,7 +437,7 @@ Configure in `~/.savarez/config.yaml` under your gateway's settings. See the [Me
 **Solution:**
 ```bash
 # Install core messaging gateway dependencies
-pip install "hermes-agent[messaging]"  # Telegram, Discord, Slack, and shared gateway deps
+pip install "savarez-agent[messaging]"  # Telegram, Discord, Slack, and shared gateway deps
 
 # Check for port conflicts
 lsof -i :8080
@@ -457,8 +457,8 @@ savarez config show
 savarez gateway run
 
 # Option 2: Persistent via tmux (survives terminal close)
-tmux new -s hermes 'savarez gateway run'
-# Reattach later: tmux attach -t hermes
+tmux new -s savarez 'savarez gateway run'
+# Reattach later: tmux attach -t savarez
 
 # Option 3: Background via nohup
 nohup savarez gateway run > ~/.savarez/logs/gateway.log 2>&1 &
@@ -496,7 +496,7 @@ savarez gateway start      # Detects the updated plist and reloads
 You can verify the plist has the correct PATH:
 ```bash
 /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:PATH" \
-  ~/Library/LaunchAgents/ai.hermes.gateway.plist
+  ~/Library/LaunchAgents/ai.savarez.gateway.plist
 ```
 
 ---
@@ -557,7 +557,7 @@ savarez chat --continue
 **Solution:**
 ```bash
 # Ensure MCP dependencies are installed (already included in standard install)
-cd ~/.savarez/hermes-agent && uv pip install -e ".[mcp]"
+cd ~/.savarez/savarez-agent && uv pip install -e ".[mcp]"
 
 # For npm-based servers, ensure Node.js is available
 node --version
@@ -590,13 +590,13 @@ mcp_servers:
 # Verify MCP servers are configured
 savarez config show | grep -A 12 mcp_servers
 
-# Restart Hermes or reload MCP after config changes
+# Restart Savarez or reload MCP after config changes
 savarez chat
 ```
 
 See also:
 - [MCP (Model Context Protocol)](/user-guide/features/mcp)
-- [Use MCP with Hermes](/guides/use-mcp-with-hermes)
+- [Use MCP with Savarez](/guides/use-mcp-with-savarez)
 - [MCP Config Reference](/reference/mcp-config-reference)
 
 #### MCP timeout errors
@@ -609,7 +609,7 @@ See also:
 - For remote HTTP MCP servers, check network connectivity
 
 :::warning
-If an MCP server crashes mid-request, Hermes will report a timeout. Check the server's own logs (not just Hermes logs) to diagnose the root cause.
+If an MCP server crashes mid-request, Savarez will report a timeout. Check the server's own logs (not just Savarez logs) to diagnose the root cause.
 :::
 
 ---
@@ -618,7 +618,7 @@ If an MCP server crashes mid-request, Hermes will report a timeout. Check the se
 
 ### How do profiles differ from just setting SAVAREZ_HOME?
 
-Profiles are a managed layer on top of `SAVAREZ_HOME`. You *could* manually set `SAVAREZ_HOME=/some/path` before every command, but profiles handle all the plumbing for you: creating the directory structure, generating shell aliases (`hermes-work`), tracking the active profile in `~/.savarez/active_profile`, and syncing skill updates across all profiles automatically. They also integrate with tab completion so you don't have to remember paths.
+Profiles are a managed layer on top of `SAVAREZ_HOME`. You *could* manually set `SAVAREZ_HOME=/some/path` before every command, but profiles handle all the plumbing for you: creating the directory structure, generating shell aliases (`savarez-work`), tracking the active profile in `~/.savarez/active_profile`, and syncing skill updates across all profiles automatically. They also integrate with tab completion so you don't have to remember paths.
 
 ### Can two profiles share the same bot token?
 
@@ -645,7 +645,7 @@ There is no hard limit. Each profile is just a directory under `~/.savarez/profi
 
 **Scenario:** You use GPT-5.4 as your daily driver, but Gemini or Grok writes better social media content. Manually switching models every time is tedious.
 
-**Solution: Delegation config.** Hermes can route subagents to a different model automatically. Set this in `~/.savarez/config.yaml`:
+**Solution: Delegation config.** Savarez can route subagents to a different model automatically. Set this in `~/.savarez/config.yaml`:
 
 ```yaml
 delegation:
@@ -653,7 +653,7 @@ delegation:
   provider: "openrouter"                    # provider for subagents
 ```
 
-Now when you tell Hermes "write me a Twitter thread about X" and it spawns a `delegate_task` subagent, that subagent runs on Gemini instead of your main model. Your primary conversation stays on GPT-5.4.
+Now when you tell Savarez "write me a Twitter thread about X" and it spawns a `delegate_task` subagent, that subagent runs on Gemini instead of your main model. Your primary conversation stays on GPT-5.4.
 
 You can also be explicit in your prompt: *"Delegate a task to write social media posts about our product launch. Use your subagent for the actual writing."* The agent will use `delegate_task`, which automatically picks up the delegation config.
 
@@ -669,9 +669,9 @@ See [Subagent Delegation](../user-guide/features/delegation.md) for more on how 
 
 ### Running multiple agents on one WhatsApp number (per-chat binding)
 
-**Scenario:** In OpenClaw, you had multiple independent agents bound to specific WhatsApp chats — one for a family shopping list group, another for your private chat. Can Hermes do this?
+**Scenario:** In OpenClaw, you had multiple independent agents bound to specific WhatsApp chats — one for a family shopping list group, another for your private chat. Can Savarez do this?
 
-**Current limitation:** Hermes profiles each require their own WhatsApp number/session. You cannot bind multiple profiles to different chats on the same WhatsApp number — the WhatsApp bridge (Baileys) uses one authenticated session per number.
+**Current limitation:** Savarez profiles each require their own WhatsApp number/session. You cannot bind multiple profiles to different chats on the same WhatsApp number — the WhatsApp bridge (Baileys) uses one authenticated session per number.
 
 **Workarounds:**
 
@@ -687,7 +687,7 @@ See [Profiles](../user-guide/profiles.md) and [WhatsApp setup](../user-guide/mes
 
 ### Controlling what shows up in Telegram (hiding logs and reasoning)
 
-**Scenario:** You see gateway exec logs, Hermes reasoning, and tool call details in Telegram instead of just the final output.
+**Scenario:** You see gateway exec logs, Savarez reasoning, and tool call details in Telegram instead of just the final output.
 
 **Solution:** The `display.tool_progress` setting in `config.yaml` controls how much tool activity is shown:
 
@@ -733,7 +733,7 @@ Skills with very long descriptions are truncated to 40 characters in the Telegra
 
 **Scenario:** You have a Telegram or Discord thread where multiple people mention the bot. You want all mentions in that thread to be part of one shared conversation, not separate per-user sessions.
 
-**Current behavior:** Hermes creates sessions keyed by user ID on most platforms, so each person gets their own conversation context. This is by design for privacy and context isolation.
+**Current behavior:** Savarez creates sessions keyed by user ID on most platforms, so each person gets their own conversation context. This is by design for privacy and context isolation.
 
 **Workarounds:**
 
@@ -743,7 +743,7 @@ Skills with very long descriptions are truncated to 40 characters in the Telegra
 
 3. **Use a Discord channel.** Discord sessions are keyed by channel, so all users in the same channel share context. Use a dedicated channel for the shared conversation.
 
-### Exporting Hermes to another machine
+### Exporting Savarez to another machine
 
 **Scenario:** You've built up skills, cron jobs, and memories on one machine and want to move everything to a new dedicated Linux box.
 
@@ -751,22 +751,22 @@ Skills with very long descriptions are truncated to 40 characters in the Telegra
 
 1. Install Savarez AI Agent on the new machine:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
    ```
 
 2. On the **source machine**, create a full backup:
    ```bash
-   hermes backup
+   savarez backup
    ```
-   This creates a zip of your entire `~/.savarez/` directory — config, API keys, memories, skills, sessions, and profiles — saved to your home directory as `~/hermes-backup-<timestamp>.zip`.
+   This creates a zip of your entire `~/.savarez/` directory — config, API keys, memories, skills, sessions, and profiles — saved to your home directory as `~/savarez-backup-<timestamp>.zip`.
 
 3. Copy the zip to the new machine and import it:
    ```bash
    # On the source machine
-   scp ~/hermes-backup-<timestamp>.zip newmachine:~/
+   scp ~/savarez-backup-<timestamp>.zip newmachine:~/
 
    # On the new machine
-   hermes import ~/hermes-backup-<timestamp>.zip
+   savarez import ~/savarez-backup-<timestamp>.zip
    ```
 
 4. On the new machine, run `savarez setup` to verify API keys and provider config are working.
@@ -785,9 +785,9 @@ savarez profile import ./work-backup.tar.gz work
 
 The imported profile will have all config, memories, sessions, and skills from the export. You may need to update paths or re-authenticate with providers if the new machine has a different setup.
 
-### `hermes backup` vs `savarez profile export`
+### `savarez backup` vs `savarez profile export`
 
-| Feature | `hermes backup` | `savarez profile export` |
+| Feature | `savarez backup` | `savarez profile export` |
 | :--- | :--- | :--- |
 | **Use Case** | **Full machine migration** | **Porting/sharing a specific profile** |
 | **Scope** | Global (entire `~/.savarez` directory) | Local (single profile directory) |
@@ -797,18 +797,18 @@ The imported profile will have all config, memories, sessions, and skills from t
 
 **Manual fallback (rsync):** If you prefer to copy files directly, exclude the code repo:
 ```bash
-rsync -av --exclude='hermes-agent' ~/.savarez/ newmachine:~/.savarez/
+rsync -av --exclude='savarez-agent' ~/.savarez/ newmachine:~/.savarez/
 ```
 
 :::tip
-`hermes backup` produces a consistent snapshot even while Savarez is actively running. The restored archive excludes machine-local runtime files like `gateway.pid` and `cron.pid`.
+`savarez backup` produces a consistent snapshot even while Savarez is actively running. The restored archive excludes machine-local runtime files like `gateway.pid` and `cron.pid`.
 :::
 
 ### Permission denied when reloading shell after install
 
-**Scenario:** After running the Hermes installer, `source ~/.zshrc` gives a permission denied error.
+**Scenario:** After running the Savarez installer, `source ~/.zshrc` gives a permission denied error.
 
-**Cause:** This usually happens when `~/.zshrc` (or `~/.bashrc`) has incorrect file permissions, or when the installer couldn't write to it cleanly. It's not a Hermes-specific issue — it's a shell config permissions problem.
+**Cause:** This usually happens when `~/.zshrc` (or `~/.bashrc`) has incorrect file permissions, or when the installer couldn't write to it cleanly. It's not a Savarez-specific issue — it's a shell config permissions problem.
 
 **Solution:**
 ```bash
@@ -855,6 +855,6 @@ If using OpenRouter, make sure your API key has credits. A 400 from OpenRouter o
 
 If your issue isn't covered here:
 
-1. **Search existing issues:** [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
+1. **Search existing issues:** [GitHub Issues](https://github.com/NousResearch/savarez-agent/issues)
 2. **Ask the community:** [Nous Research Discord](https://discord.gg/nousresearch)
-3. **File a bug report:** Include your OS, Python version (`python3 --version`), Hermes version (`savarez --version`), and the full error message
+3. **File a bug report:** Include your OS, Python version (`python3 --version`), Savarez version (`savarez --version`), and the full error message

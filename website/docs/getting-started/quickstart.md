@@ -6,7 +6,7 @@ description: "Your first conversation with Savarez AI Agent — from install to 
 
 # Quickstart
 
-This guide gets you from zero to a working Hermes setup that survives real use. Install, choose a provider, verify a working chat, and know exactly what to do when something breaks.
+This guide gets you from zero to a working Savarez setup that survives real use. Install, choose a provider, verify a working chat, and know exactly what to do when something breaks.
 
 ## Prefer to watch?
 
@@ -27,7 +27,7 @@ This guide gets you from zero to a working Hermes setup that survives real use. 
 
 - Brand new and want the shortest path to a working setup
 - Switching providers and don't want to lose time to config mistakes
-- Setting up Hermes for a team, bot, or always-on workflow
+- Setting up Savarez for a team, bot, or always-on workflow
 - Tired of "it installed, but it still does nothing"
 
 ## The fastest path
@@ -36,13 +36,13 @@ Pick the row that matches your goal:
 
 | Goal | Do this first | Then do this |
 |---|---|---|
-| I just want Hermes working on my machine | `savarez setup` | Run a real chat and verify it responds |
+| I just want Savarez working on my machine | `savarez setup` | Run a real chat and verify it responds |
 | I already know my provider | `savarez model` | Save the config, then start chatting |
 | I want a bot or always-on setup | `savarez gateway setup` after CLI works | Connect Telegram, Discord, Slack, or another platform |
 | I want a local or self-hosted model | `savarez model` → custom endpoint | Verify the endpoint, model name, and context length |
 | I want multi-provider fallback | `savarez model` first | Add routing and fallback only after the base chat works |
 
-**Rule of thumb:** if Hermes cannot complete a normal chat, do not add more features yet. Get one clean conversation working first, then layer on gateway, cron, skills, voice, or routing.
+**Rule of thumb:** if Savarez cannot complete a normal chat, do not add more features yet. Get one clean conversation working first, then layer on gateway, cron, skills, voice, or routing.
 
 ---
 
@@ -51,8 +51,8 @@ Pick the row that matches your goal:
 **Option A — pip (simplest):**
 
 ```bash
-pip install hermes-agent
-hermes postinstall     # optional: installs Node.js, browser, ripgrep, ffmpeg + runs setup
+pip install savarez-agent
+savarez postinstall     # optional: installs Node.js, browser, ripgrep, ffmpeg + runs setup
 ```
 
 PyPI releases track tagged versions (major/minor releases), not every commit on `main`. For bleeding-edge, use Option B.
@@ -61,12 +61,12 @@ PyPI releases track tagged versions (major/minor releases), not every commit on 
 
 ```bash
 # Linux / macOS / WSL2 / Android (Termux)
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
 ```
 
 Prefer native installers for desktop use?
 
-- **Desktop downloads:** [GitHub Releases](https://github.com/NousResearch/hermes-agent/releases/latest)
+- **Desktop downloads:** [GitHub Releases](https://github.com/NousResearch/savarez-agent/releases/latest)
 
 :::tip Android / Termux
 If you're installing on a phone, see the dedicated [Termux guide](./termux.md) for the tested manual path, supported extras, and current Android-specific limitations.
@@ -154,7 +154,7 @@ You can switch providers at any time with `savarez model` — no lock-in. For a 
 
 ### How settings are stored
 
-Hermes separates secrets from normal config:
+Savarez separates secrets from normal config:
 
 - **Secrets and tokens** → `~/.savarez/.env`
 - **Non-secret settings** → `~/.savarez/config.yaml`
@@ -172,14 +172,14 @@ The right value goes to the right file automatically.
 ## 3. Run Your First Chat
 
 ```bash
-hermes            # classic CLI
-hermes --tui      # modern TUI (recommended)
+savarez            # classic CLI
+savarez --tui      # modern TUI (recommended)
 ```
 
 You'll see a welcome banner with your model, available tools, and skills. Use a prompt that's specific and easy to verify:
 
 :::tip Pick your interface
-Hermes ships with two terminal interfaces: the classic `prompt_toolkit` CLI and a newer [TUI](../user-guide/tui.md) with modal overlays, mouse selection, and non-blocking input. Both share the same sessions, slash commands, and config — try each with `savarez` vs `hermes --tui`.
+Savarez ships with two terminal interfaces: the classic `prompt_toolkit` CLI and a newer [TUI](../user-guide/tui.md) with modal overlays, mouse selection, and non-blocking input. Both share the same sessions, slash commands, and config — try each with `savarez` vs `savarez --tui`.
 :::
 
 ```
@@ -197,7 +197,7 @@ Help me set up a clean GitHub PR workflow for this codebase.
 **What success looks like:**
 
 - The banner shows your chosen model/provider
-- Hermes replies without error
+- Savarez replies without error
 - It can use a tool if needed (terminal, file read, web search)
 - The conversation continues normally for more than one turn
 
@@ -208,8 +208,8 @@ If that works, you're past the hardest part.
 Before moving on, make sure resume works:
 
 ```bash
-hermes --continue    # Resume the most recent session
-hermes -c            # Short form
+savarez --continue    # Resume the most recent session
+savarez -c            # Short form
 ```
 
 That should bring you back to the session you just had. If it doesn't, check whether you're in the same profile and whether the session actually saved. This matters later when you're juggling multiple setups or machines.
@@ -274,9 +274,9 @@ savarez config set terminal.backend ssh       # Remote server
 ### Voice mode
 
 ```bash
-# From the Hermes install directory (the curl installer placed it at
-# ~/.savarez/hermes-agent on Linux/macOS or %LOCALAPPDATA%\hermes\hermes-agent on Windows):
-cd ~/.savarez/hermes-agent
+# From the Savarez install directory (the curl installer placed it at
+# ~/.savarez/savarez-agent on Linux/macOS or %LOCALAPPDATA%\savarez\savarez-agent on Windows):
+cd ~/.savarez/savarez-agent
 uv pip install -e ".[voice]"
 # Includes faster-whisper for free local speech-to-text
 ```
@@ -285,9 +285,9 @@ Then in the CLI: `/voice on`. Press `Ctrl+B` to record. See [Voice Mode](../user
 
 ### Skills
 
-Skills are on-demand instruction documents that teach Hermes how to do a specific task — deploy to Kubernetes, open a GitHub PR, fine-tune a model, search for GIFs. Each is a `SKILL.md` file with a name, a description, and a step-by-step procedure. The agent reads the short descriptions for free and only loads a skill's full content when a task actually calls for it, so adding skills doesn't bloat every request.
+Skills are on-demand instruction documents that teach Savarez how to do a specific task — deploy to Kubernetes, open a GitHub PR, fine-tune a model, search for GIFs. Each is a `SKILL.md` file with a name, a description, and a step-by-step procedure. The agent reads the short descriptions for free and only loads a skill's full content when a task actually calls for it, so adding skills doesn't bloat every request.
 
-Hermes ships with a catalog of bundled skills already installed in `~/.savarez/skills/`. You can add more from the Skills Hub, or write your own.
+Savarez ships with a catalog of bundled skills already installed in `~/.savarez/skills/`. You can add more from the Skills Hub, or write your own.
 
 **Browse and install from the hub:**
 
@@ -303,7 +303,7 @@ The install argument is a `source/path` slug from the hub — `openai/skills/k8s
 
 ```bash
 /k8s deploy the staging manifest          # run the skill with a request
-/k8s                                       # load it and let Hermes ask what you need
+/k8s                                       # load it and let Savarez ask what you need
 ```
 
 This works in the CLI and in any connected messaging platform. You don't have to install everything up front — the agent picks the right bundled skill on its own during normal conversation when a task matches one.
@@ -327,10 +327,10 @@ mcp_servers:
 ACP support ships with the standard `[all]` extras, so the curl installer already includes it. Just run:
 
 ```bash
-hermes acp
+savarez acp
 ```
 
-(If you installed without `[all]`, run `cd ~/.savarez/hermes-agent && uv pip install -e ".[acp]"` first.)
+(If you installed without `[all]`, run `cd ~/.savarez/savarez-agent && uv pip install -e ".[acp]"` first.)
 
 See [ACP Editor Integration](../user-guide/features/acp.md).
 
@@ -342,10 +342,10 @@ These are the problems that waste the most time:
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Hermes opens but gives empty or broken replies | Provider auth or model selection is wrong | Run `savarez model` again and confirm provider, model, and auth |
+| Savarez opens but gives empty or broken replies | Provider auth or model selection is wrong | Run `savarez model` again and confirm provider, model, and auth |
 | Custom endpoint "works" but returns garbage | Wrong base URL, model name, or not actually OpenAI-compatible | Verify the endpoint in a separate client first |
 | Gateway starts but nobody can message it | Bot token, allowlist, or platform setup is incomplete | Re-run `savarez gateway setup` and check `savarez gateway status` |
-| `hermes --continue` can't find old session | Switched profiles or session never saved | Check `savarez sessions list` and confirm you're in the right profile |
+| `savarez --continue` can't find old session | Switched profiles or session never saved | Check `savarez sessions list` and confirm you're in the right profile |
 | Model unavailable or odd fallback behavior | Provider routing or fallback settings are too aggressive | Keep routing off until the base provider is stable |
 | `savarez doctor` flags config problems | Config values are missing or stale | Fix the config, retest a plain chat before adding features |
 
@@ -357,7 +357,7 @@ When something feels off, use this order:
 2. `savarez model`
 3. `savarez setup`
 4. `savarez sessions list`
-5. `hermes --continue`
+5. `savarez --continue`
 6. `savarez gateway status`
 
 That sequence gets you from "broken vibes" back to a known state fast.
@@ -375,7 +375,7 @@ That sequence gets you from "broken vibes" back to a known state fast.
 | `savarez doctor` | Diagnose issues |
 | `savarez update` | Update to latest version |
 | `savarez gateway` | Start the messaging gateway |
-| `hermes --continue` | Resume last session |
+| `savarez --continue` | Resume last session |
 
 ## Next Steps
 

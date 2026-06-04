@@ -208,8 +208,8 @@ def test_dashboard_restarts_after_crash(
         time.sleep(0.5)
     assert first_pid is not None, "Could not capture initial dashboard PID"
 
-    # Kill the dashboard. The dashboard process runs as hermes, so the
-    # hermes user can kill it (same UID).
+    # Kill the dashboard. The dashboard process runs as savarez, so the
+    # savarez user can kill it (same UID).
     docker_exec(container_name, "kill", "-9", first_pid)
 
     # s6 backs off ~1s before restart; allow up to 15s for the new
@@ -277,7 +277,7 @@ except urllib.error.HTTPError as h:
     # single bash string stays clean. The 'PY' delimiter is quoted to
     # disable shell expansion inside the heredoc body.
     probe = (
-        "/opt/hermes/.venv/bin/python - <<'PY'\n"
+        "/opt/savarez/.venv/bin/python - <<'PY'\n"
         f"{py_program}"
         "PY"
     )

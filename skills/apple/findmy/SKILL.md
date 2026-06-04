@@ -6,7 +6,7 @@ author: Savarez AI Agent
 license: MIT
 platforms: [macos]
 metadata:
-  hermes:
+  savarez:
     tags: [FindMy, AirTag, location, tracking, macOS, Apple]
 ---
 

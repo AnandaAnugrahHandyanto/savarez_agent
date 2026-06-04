@@ -1138,7 +1138,7 @@ def init_agent(
                         from hermes_cli.profiles import get_active_profile_name
                         _profile = get_active_profile_name()
                         _init_kwargs["agent_identity"] = _profile
-                        _init_kwargs["agent_workspace"] = "hermes"
+                        _init_kwargs["agent_workspace"] = "savarez"
                     except Exception:
                         pass
                     agent._memory_manager.initialize_all(**_init_kwargs)

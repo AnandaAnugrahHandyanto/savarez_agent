@@ -8,7 +8,7 @@ sidebar_position: 2
 
 ## 什么是 profile？
 
-profile 是一个独立的 Hermes 主目录。每个 profile 拥有自己的目录，其中包含各自的 `config.yaml`、`.env`、`SOUL.md`、记忆、会话、技能、cron 任务和状态数据库。profile 让你可以为不同用途运行独立的 agent——编程助手、个人机器人、研究 agent——而不会混淆 Hermes 状态。
+profile 是一个独立的 Savarez 主目录。每个 profile 拥有自己的目录，其中包含各自的 `config.yaml`、`.env`、`SOUL.md`、记忆、会话、技能、cron 任务和状态数据库。profile 让你可以为不同用途运行独立的 agent——编程助手、个人机器人、研究 agent——而不会混淆 Savarez 状态。
 
 创建 profile 后，它会自动成为独立的命令。创建名为 `coder` 的 profile，你立即就拥有了 `coder chat`、`coder setup`、`coder gateway start` 等命令。
 
@@ -20,7 +20,7 @@ coder setup                       # 配置 API 密钥和模型
 coder chat                        # 开始对话
 ```
 
-就这些。`coder` 现在是拥有独立配置、记忆和状态的 Hermes profile。
+就这些。`coder` 现在是拥有独立配置、记忆和状态的 Savarez profile。
 
 ## 创建 profile
 
@@ -81,15 +81,15 @@ coder skills list             # 列出 coder 的技能
 coder config set model.default anthropic/claude-sonnet-4
 ```
 
-别名支持所有 hermes 子命令——底层实际上是 `hermes -p <name>`。
+别名支持所有 savarez 子命令——底层实际上是 `savarez -p <name>`。
 
 ### `-p` 标志
 
 你也可以通过任意命令显式指定 profile：
 
 ```bash
-hermes -p coder chat
-hermes --profile=coder doctor
+savarez -p coder chat
+savarez --profile=coder doctor
 savarez chat -p coder -q "hello"    # 可在任意位置使用
 ```
 
@@ -116,7 +116,7 @@ CLI 始终显示当前活跃的 profile：
 
 profile 常与工作区或沙箱混淆，但它们是不同的概念：
 
-- **profile** 为 Hermes 提供独立的状态目录：`config.yaml`、`.env`、`SOUL.md`、会话、记忆、日志、cron 任务和 gateway 状态。
+- **profile** 为 Savarez 提供独立的状态目录：`config.yaml`、`.env`、`SOUL.md`、会话、记忆、日志、cron 任务和 gateway 状态。
 - **工作区**或**工作目录**是终端命令的起始位置，由 `terminal.cwd` 单独控制。
 - **沙箱**用于限制文件系统访问。profile **不**对 agent 进行沙箱隔离。
 
@@ -130,7 +130,7 @@ terminal:
   cwd: /absolute/path/to/project
 ```
 
-在 local 后端使用 `cwd: "."` 表示"Hermes 启动时所在的目录"，而非"profile 目录"。
+在 local 后端使用 `cwd: "."` 表示"Savarez 启动时所在的目录"，而非"profile 目录"。
 
 另请注意：
 
@@ -166,14 +166,14 @@ nano ~/.savarez/profiles/assistant/.env
 ### 持久化服务
 
 ```bash
-coder gateway install         # 创建 hermes-gateway-coder systemd/launchd 服务
-assistant gateway install     # 创建 hermes-gateway-assistant 服务
+coder gateway install         # 创建 savarez-gateway-coder systemd/launchd 服务
+assistant gateway install     # 创建 savarez-gateway-assistant 服务
 ```
 
 每个 profile 拥有独立的服务名称，各自独立运行。
 
 :::note 在官方 Docker 镜像中
-各 profile 的 gateway 由 [s6-overlay](https://github.com/just-containers/s6-overlay)（容器中的 PID 1）监管，因此 `savarez profile create <name>` 会自动在 `/run/service/gateway-<name>/` 注册 s6 服务槽。`hermes -p <name> gateway start/stop/restart` 会调度到 `s6-svc` 而非直接启动裸进程——崩溃后自动重启，`docker restart` 会保留之前运行的 gateway 集合。详见 [各 profile gateway 监管](/user-guide/docker#per-profile-gateway-supervision)。
+各 profile 的 gateway 由 [s6-overlay](https://github.com/just-containers/s6-overlay)（容器中的 PID 1）监管，因此 `savarez profile create <name>` 会自动在 `/run/service/gateway-<name>/` 注册 s6 服务槽。`savarez -p <name> gateway start/stop/restart` 会调度到 `s6-svc` 而非直接启动裸进程——崩溃后自动重启，`docker restart` 会保留之前运行的 gateway 集合。详见 [各 profile gateway 监管](/user-guide/docker#per-profile-gateway-supervision)。
 :::
 
 ## 配置 profile
@@ -235,17 +235,17 @@ savarez profile delete coder
 
 ```bash
 # Bash
-eval "$(hermes completion bash)"
+eval "$(savarez completion bash)"
 
 # Zsh
-eval "$(hermes completion zsh)"
+eval "$(savarez completion zsh)"
 ```
 
 将该行添加到 `~/.bashrc` 或 `~/.zshrc` 以启用持久补全。支持补全 `-p` 后的 profile 名称、profile 子命令及顶级命令。
 
 ## 工作原理
 
-profile 使用 `SAVAREZ_HOME` 环境变量。运行 `coder chat` 时，包装脚本在启动 hermes 前将 `SAVAREZ_HOME` 设置为 `~/.savarez/profiles/coder`。由于代码库中 119+ 个文件通过 `get_hermes_home()` 解析路径，Hermes 状态会自动限定在 profile 目录范围内——包括配置、会话、记忆、技能、状态数据库、gateway PID、日志和 cron 任务。
+profile 使用 `SAVAREZ_HOME` 环境变量。运行 `coder chat` 时，包装脚本在启动 savarez 前将 `SAVAREZ_HOME` 设置为 `~/.savarez/profiles/coder`。由于代码库中 119+ 个文件通过 `get_hermes_home()` 解析路径，Savarez 状态会自动限定在 profile 目录范围内——包括配置、会话、记忆、技能、状态数据库、gateway PID、日志和 cron 任务。
 
 这与终端工作目录是分开的。工具执行从 `terminal.cwd` 开始（或在 local 后端使用 `cwd: "."` 时从启动目录开始），而非自动从 `SAVAREZ_HOME` 开始。
 

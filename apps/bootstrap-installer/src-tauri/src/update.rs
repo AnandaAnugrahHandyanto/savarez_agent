@@ -35,7 +35,7 @@ use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
 
 /// `savarez update` exit code meaning "another hermes process is holding the
 /// venv shim open / dirty precondition" — see _cmd_update_impl in
-/// hermes_cli/main.py (sys.exit(2)). We surface a targeted message for this.
+///.savarez_cli/main.py (sys.exit(2)). We surface a targeted message for this.
 const UPDATE_EXIT_CONCURRENT: i32 = 2;
 
 /// How long to wait for the old desktop process to release the venv shim
@@ -104,7 +104,7 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
 
 async fn run_update(app: AppHandle) -> Result<()> {
     let hermes_home = crate::paths::hermes_home();
-    let install_root = hermes_home.join("hermes-agent");
+    let install_root = hermes_home.join("savarez-agent");
     let update_branch = update_branch_from_args(std::env::args().skip(1))
         .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
         .unwrap_or_else(|| "main".to_string());
@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn venv_hermes_is_under_install_root() {
-        let root = Path::new("/x/hermes-agent");
+        let root = Path::new("/x/savarez-agent");
         let shim = venv_hermes(root);
         assert!(shim.starts_with(root));
         assert!(shim.to_string_lossy().contains("venv"));

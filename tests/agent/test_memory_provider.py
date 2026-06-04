@@ -576,7 +576,7 @@ class TestUserInstalledProviderDiscovery:
         """
         from plugins.memory import load_memory_provider
         plugin_dir = tmp_path / "plugins" / "nestedimpl"
-        impl_dir = plugin_dir / "adapters" / "hermes"  # adapters/ has no __init__.py
+        impl_dir = plugin_dir / "adapters" / "savarez"  # adapters/ has no __init__.py
         impl_dir.mkdir(parents=True)
         (impl_dir / "__init__.py").write_text(
             "from agent.memory_provider import MemoryProvider\n"
@@ -590,7 +590,7 @@ class TestUserInstalledProviderDiscovery:
             "    def handle_tool_call(self, *a, **kw): return '{}'\n"
         )
         (plugin_dir / "__init__.py").write_text(
-            "from .adapters.hermes import MyProvider\n"
+            "from .adapters.savarez import MyProvider\n"
             "def register(ctx):\n"
             "    ctx.register_memory_provider(MyProvider())\n"
         )
@@ -846,7 +846,7 @@ class TestSetupFieldFiltering:
     def test_when_clause_no_condition_always_shown(self):
         """Fields without 'when' are always included."""
         schema = [
-            {"key": "bank_id", "default": "hermes"},
+            {"key": "bank_id", "default": "savarez"},
             {"key": "budget", "default": "mid"},
         ]
         fields = self._filter_fields(schema, {"mode": "cloud"})

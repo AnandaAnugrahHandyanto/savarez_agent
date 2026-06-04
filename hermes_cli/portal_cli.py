@@ -1,6 +1,6 @@
-"""``hermes portal`` — the human-readable entry point for Nous Portal.
+"""``savarez portal`` — the human-readable entry point for Nous Portal.
 
-Running ``hermes portal`` with no subcommand performs the one-shot Portal
+Running ``savarez portal`` with no subcommand performs the one-shot Portal
 onboarding: OAuth login, pick a Nous model, switch the inference provider to
 Nous, and offer to enable the Tool Gateway. It is the friendly alias for
 ``savarez auth add nous --type oauth`` (which still works), is identical to
@@ -28,7 +28,7 @@ from hermes_cli.config import load_config
 
 DEFAULT_PORTAL_URL = "https://portal.nousresearch.com"
 SUBSCRIPTION_URL = "https://portal.nousresearch.com/manage-subscription"
-DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway"
+DOCS_URL = "https://savarez-agent.nousresearch.com/docs/user-guide/features/tool-gateway"
 
 
 def _cmd_status(args) -> int:
@@ -58,7 +58,7 @@ def _cmd_status(args) -> int:
     else:
         print(f"  Auth:    {color('not logged in', Colors.YELLOW)}")
         print(f"  Sign up: {SUBSCRIPTION_URL}")
-        print(f"  Login:   hermes portal")
+        print(f"  Login:   savarez portal")
 
     # Provider selection (independent of auth)
     model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
@@ -143,7 +143,7 @@ def _cmd_tools(args) -> int:
     print(color("  ────────────────────", Colors.MAGENTA))
 
     if not features.nous_auth_present:
-        print(color("  Not logged into Nous Portal — sign in with `hermes portal`.", Colors.YELLOW))
+        print(color("  Not logged into Nous Portal — sign in with `savarez portal`.", Colors.YELLOW))
         print()
 
     label_width = max(len(label) for _, label, _ in catalog)
@@ -189,10 +189,10 @@ def _cmd_login(args) -> int:
 
 
 def portal_command(args) -> int:
-    """Top-level dispatch for `hermes portal <subcommand>`."""
+    """Top-level dispatch for `savarez portal <subcommand>`."""
     sub = getattr(args, "portal_command", None)
     if sub in {None, "", "login"}:
-        # Default to the one-shot onboarding — `hermes portal` is the
+        # Default to the one-shot onboarding — `savarez portal` is the
         # human-readable alias for `savarez auth add nous --type oauth` /
         # `savarez setup --portal`.
         return _cmd_login(args)
@@ -204,17 +204,17 @@ def portal_command(args) -> int:
     if sub == "tools":
         return _cmd_tools(args)
     print(f"Unknown portal subcommand: {sub}", file=sys.stderr)
-    print("Run `hermes portal -h` for usage.", file=sys.stderr)
+    print("Run `savarez portal -h` for usage.", file=sys.stderr)
     return 1
 
 
 def add_parser(subparsers) -> None:
-    """Register `hermes portal` on the given argparse subparsers object."""
+    """Register `savarez portal` on the given argparse subparsers object."""
     portal_parser = subparsers.add_parser(
         "portal",
         help="Set up Nous Portal (login, model pick, Tool Gateway); see also `portal info`",
         description=(
-            "Run `hermes portal` with no subcommand to log in to Nous Portal "
+            "Run `savarez portal` with no subcommand to log in to Nous Portal "
             "and set it up — pick a model, set Nous as your provider, and offer "
             "the Tool Gateway (the human-readable alias for `savarez auth add "
             "nous --type oauth`, identical to `savarez setup --portal`). "

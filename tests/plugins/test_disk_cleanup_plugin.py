@@ -28,7 +28,7 @@ def _isolate_env(tmp_path, monkeypatch):
     but we want the plugin to work with a predictable subpath. We reset
     SAVAREZ_HOME here for clarity.
     """
-    hermes_home = tmp_path / ".hermes"
+    hermes_home = tmp_path / ".savarez"
     hermes_home.mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
     yield hermes_home
@@ -88,7 +88,7 @@ class TestIsSafePath:
 
     def test_accepts_tmp_hermes_prefix(self, _isolate_env, tmp_path):
         dg = _load_lib()
-        assert dg.is_safe_path(Path("/tmp/hermes-abc/x.log")) is True
+        assert dg.is_safe_path(Path("/tmp/savarez-abc/x.log")) is True
 
     def test_rejects_plain_tmp(self, _isolate_env):
         dg = _load_lib()

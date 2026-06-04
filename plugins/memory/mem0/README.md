@@ -10,7 +10,7 @@ Server-side LLM fact extraction with semantic search, reranking, and automatic d
 ## Setup
 
 ```bash
-hermes memory setup    # select "mem0"
+savarez memory setup    # select "mem0"
 ```
 
 Or manually:
@@ -25,7 +25,7 @@ Config file: `$SAVAREZ_HOME/mem0.json`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `user_id` | `hermes-user` | User identifier on Mem0 |
+| `user_id` | `savarez-user` | User identifier on Mem0 |
 | `agent_id` | `savarez` | Agent identifier |
 | `rerank` | `true` | Enable reranking for recall |
 

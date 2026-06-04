@@ -9,12 +9,12 @@ description: "如何为 Savarez AI Agent 构建图像生成后端插件"
 图像生成 provider 插件注册一个后端，用于处理所有 `image_generate` 工具调用——DALL·E、gpt-image、Grok、Flux、Imagen、Stable Diffusion、fal、Replicate、本地 ComfyUI 装置，任何后端均可。内置 provider（OpenAI、OpenAI-Codex、xAI）均以插件形式提供。你可以通过在 `plugins/image_gen/<name>/` 目录下放置一个目录来添加新的 provider，或覆盖内置 provider。
 
 :::tip
-图像生成是 Hermes 支持的多种**后端插件**之一。其他插件（各有更专用的 ABC）包括：[Memory Provider 插件](/developer-guide/memory-provider-plugin)、[Context Engine 插件](/developer-guide/context-engine-plugin) 和 [Model Provider 插件](/developer-guide/model-provider-plugin)。通用工具/hook/CLI 插件请参阅 [构建 Hermes 插件](/guides/build-a-hermes-plugin)。
+图像生成是 Savarez 支持的多种**后端插件**之一。其他插件（各有更专用的 ABC）包括：[Memory Provider 插件](/developer-guide/memory-provider-plugin)、[Context Engine 插件](/developer-guide/context-engine-plugin) 和 [Model Provider 插件](/developer-guide/model-provider-plugin)。通用工具/hook/CLI 插件请参阅 [构建 Savarez 插件](/guides/build-a-savarez-plugin)。
 :::
 
 ## 发现机制
 
-Hermes 在三个位置扫描图像生成后端：
+Savarez 在三个位置扫描图像生成后端：
 
 1. **内置** — `<repo>/plugins/image_gen/<name>/`（以 `kind: backend` 自动加载，始终可用）
 2. **用户** — `~/.savarez/plugins/image_gen/<name>/`（通过 `plugins.enabled` 选择启用）
@@ -248,7 +248,7 @@ error_response(
 ## 测试
 
 ```bash
-export SAVAREZ_HOME=/tmp/hermes-imggen-test
+export SAVAREZ_HOME=/tmp/savarez-imggen-test
 mkdir -p $SAVAREZ_HOME/plugins/image_gen/my-backend
 # …copy __init__.py + plugin.yaml into that dir…
 
@@ -260,7 +260,7 @@ echo "image_gen:" >> $SAVAREZ_HOME/config.yaml
 echo "  provider: my-backend" >> $SAVAREZ_HOME/config.yaml
 
 # Exercise it
-hermes -z "Generate an image of a corgi in a spacesuit"
+savarez -z "Generate an image of a corgi in a spacesuit"
 ```
 
 或交互式操作：`savarez tools` → "Image Generation" → 选择 `my-backend` → 根据提示输入 API key。
@@ -279,10 +279,10 @@ hermes -z "Generate an image of a corgi in a spacesuit"
 my-backend-imggen = "my_backend_imggen_package"
 ```
 
-`my_backend_imggen_package` 必须暴露一个顶层 `register` 函数。完整配置请参阅通用插件指南中的 [通过 pip 分发](/guides/build-a-hermes-plugin#distribute-via-pip)。
+`my_backend_imggen_package` 必须暴露一个顶层 `register` 函数。完整配置请参阅通用插件指南中的 [通过 pip 分发](/guides/build-a-savarez-plugin#distribute-via-pip)。
 
 ## 相关页面
 
 - [图像生成](/user-guide/features/image-generation) — 面向用户的功能文档
 - [插件概览](/user-guide/features/plugins) — 所有插件类型一览
-- [构建 Hermes 插件](/guides/build-a-hermes-plugin) — 通用工具/hook/斜杠命令指南
+- [构建 Savarez 插件](/guides/build-a-savarez-plugin) — 通用工具/hook/斜杠命令指南

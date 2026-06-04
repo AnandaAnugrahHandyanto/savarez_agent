@@ -11,7 +11,7 @@ the gateway down until something starts it.
 
 An orchestrator that wants the gateway running from first boot sets
 HERMES_GATEWAY_BOOTSTRAP_STATE=running; stage2-hook.sh (installed as
-/etc/cont-init.d/01-hermes-setup, which runs lexicographically BEFORE
+/etc/cont-init.d/01-savarez-setup, which runs lexicographically BEFORE
 02-reconcile-profiles) seeds the state file so the reconciler sees
 prior_state=running and brings the slot up on the very first boot.
 

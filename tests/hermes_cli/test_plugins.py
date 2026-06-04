@@ -1,4 +1,4 @@
-"""Tests for the Hermes plugin system (hermes_cli.plugins)."""
+"""Tests for the Savarez plugin system (hermes_cli.plugins)."""
 
 import logging
 import sys
@@ -97,12 +97,12 @@ class TestPluginDiscovery:
         assert mgr._plugins["hello_plugin"].enabled
 
     def test_discover_project_plugins(self, tmp_path, monkeypatch):
-        """Plugins in ./.hermes/plugins/ are discovered."""
+        """Plugins in ./.savarez/plugins/ are discovered."""
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         monkeypatch.chdir(project_dir)
         monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "true")
-        plugins_dir = project_dir / ".hermes" / "plugins"
+        plugins_dir = project_dir / ".savarez" / "plugins"
         _make_plugin_dir(plugins_dir, "proj_plugin")
 
         mgr = PluginManager()
@@ -116,7 +116,7 @@ class TestPluginDiscovery:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         monkeypatch.chdir(project_dir)
-        plugins_dir = project_dir / ".hermes" / "plugins"
+        plugins_dir = project_dir / ".savarez" / "plugins"
         _make_plugin_dir(plugins_dir, "proj_plugin")
 
         mgr = PluginManager()
@@ -388,7 +388,7 @@ class TestPluginHooks:
         mgr.discover_and_load()
 
         assert mgr.invoke_hook("pre_tool_call", tool_name="test", args={}) == [
-            "hermes.observer.v1"
+            "savarez.observer.v1"
         ]
 
     def test_hook_exception_does_not_propagate(self, tmp_path, monkeypatch):

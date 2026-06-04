@@ -1,12 +1,12 @@
-"""Tests for the Nous-Hermes-3/4 non-agentic warning detector.
+"""Tests for the Nous-Savarez-3/4 non-agentic warning detector.
 
 Prior to this check, the warning fired on any model whose name contained
-``"hermes"`` anywhere (case-insensitive). That false-positived on unrelated
-local Modelfiles such as ``hermes-brain:qwen3-14b-ctx16k`` — a tool-capable
-Qwen3 wrapper that happens to live under the "hermes" tag namespace.
+``"savarez"`` anywhere (case-insensitive). That false-positived on unrelated
+local Modelfiles such as ``savarez-brain:qwen3-14b-ctx16k`` — a tool-capable
+Qwen3 wrapper that happens to live under the "savarez" tag namespace.
 
 ``is_nous_hermes_non_agentic`` should only match the actual Nous Research
-Hermes-3 / Hermes-4 chat family.
+Savarez-3 / Savarez-4 chat family.
 """
 
 from __future__ import annotations
@@ -23,22 +23,22 @@ from hermes_cli.model_switch import (
 @pytest.mark.parametrize(
     "model_name",
     [
-        "NousResearch/Hermes-3-Llama-3.1-70B",
-        "NousResearch/Hermes-3-Llama-3.1-405B",
-        "hermes-3",
-        "Hermes-3",
-        "hermes-4",
-        "hermes-4-405b",
+        "NousResearch/Savarez-3-Llama-3.1-70B",
+        "NousResearch/Savarez-3-Llama-3.1-405B",
+        "savarez-3",
+        "Savarez-3",
+        "savarez-4",
+        "savarez-4-405b",
         "hermes_4_70b",
         "openrouter/hermes3:70b",
-        "openrouter/nousresearch/hermes-4-405b",
+        "openrouter/nousresearch/savarez-4-405b",
         "NousResearch/Hermes3",
-        "hermes-3.1",
+        "savarez-3.1",
     ],
 )
 def test_matches_real_nous_hermes_chat_models(model_name: str) -> None:
     assert is_nous_hermes_non_agentic(model_name), (
-        f"expected {model_name!r} to be flagged as Nous Hermes 3/4"
+        f"expected {model_name!r} to be flagged as Nous Savarez 3/4"
     )
     assert _check_hermes_model_warning(model_name) == _HERMES_MODEL_WARNING
 
@@ -47,9 +47,9 @@ def test_matches_real_nous_hermes_chat_models(model_name: str) -> None:
     "model_name",
     [
         # Kyle's local Modelfile — qwen3:14b under a custom tag
-        "hermes-brain:qwen3-14b-ctx16k",
-        "hermes-brain:qwen3-14b-ctx32k",
-        "hermes-honcho:qwen3-8b-ctx8k",
+        "savarez-brain:qwen3-14b-ctx16k",
+        "savarez-brain:qwen3-14b-ctx32k",
+        "savarez-honcho:qwen3-8b-ctx8k",
         # Plain unrelated models
         "qwen3:14b",
         "qwen3-coder:30b",
@@ -60,20 +60,20 @@ def test_matches_real_nous_hermes_chat_models(model_name: str) -> None:
         "openai/gpt-4o",
         "google/gemini-2.5-flash",
         "deepseek-chat",
-        # Non-chat Hermes models we don't warn about
-        "hermes-llm-2",
+        # Non-chat Savarez models we don't warn about
+        "savarez-llm-2",
         "hermes2-pro",
-        "nous-hermes-2-mistral",
+        "nous-savarez-2-mistral",
         # Edge cases
         "",
-        "hermes",  # bare "hermes" isn't the 3/4 family
-        "hermes-brain",
-        "brain-hermes-3-impostor",  # "3" not preceded by /: boundary
+        "savarez",  # bare "savarez" isn't the 3/4 family
+        "savarez-brain",
+        "brain-savarez-3-impostor",  # "3" not preceded by /: boundary
     ],
 )
 def test_does_not_match_unrelated_models(model_name: str) -> None:
     assert not is_nous_hermes_non_agentic(model_name), (
-        f"expected {model_name!r} NOT to be flagged as Nous Hermes 3/4"
+        f"expected {model_name!r} NOT to be flagged as Nous Savarez 3/4"
     )
     assert _check_hermes_model_warning(model_name) == ""
 

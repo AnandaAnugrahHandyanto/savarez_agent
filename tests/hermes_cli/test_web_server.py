@@ -46,7 +46,7 @@ def _install_example_plugin(_isolate_hermes_home):
     The user-plugin source is preferred over a transient
     ``HERMES_BUNDLED_PLUGINS`` override because the bundled dir is
     resolved per-call (other tests in the suite implicitly rely on the
-    real bundled plugins — kanban, hermes-achievements, model providers
+    real bundled plugins — kanban, savarez-achievements, model providers
     — being available, and globally swapping that root would yank them
     all). User plugins are first in the discovery search order, so
     laying down the fixture here is enough.
@@ -139,7 +139,7 @@ class TestReloadEnv:
         os.environ.pop("TEST_RELOAD_VAR", None)
 
     def test_removes_deleted_known_vars(self, tmp_path):
-        """reload_env() removes known Hermes vars not present in .env."""
+        """reload_env() removes known Savarez vars not present in .env."""
         env_file = tmp_path / ".env"
         env_file.write_text("")  # empty .env
         # Pick a known key from OPTIONAL_ENV_VARS
@@ -151,7 +151,7 @@ class TestReloadEnv:
             assert count >= 1
 
     def test_does_not_remove_unknown_vars(self, tmp_path):
-        """reload_env() preserves non-Hermes env vars even when absent from .env."""
+        """reload_env() preserves non-Savarez env vars even when absent from .env."""
         env_file = tmp_path / ".env"
         env_file.write_text("")
         with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
@@ -637,27 +637,27 @@ class TestWebServerEndpoints:
 
         monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "docker")
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
-        web_server._ACTION_PROCS.pop("hermes-update", None)
-        web_server._ACTION_RESULTS.pop("hermes-update", None)
+        web_server._ACTION_PROCS.pop("savarez-update", None)
+        web_server._ACTION_RESULTS.pop("savarez-update", None)
 
-        resp = self.client.post("/api/hermes/update")
+        resp = self.client.post("/api/savarez/update")
 
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is False
-        assert data["name"] == "hermes-update"
+        assert data["name"] == "savarez-update"
         assert data["pid"] is None
         assert data["error"] == "docker_update_unsupported"
-        assert "docker pull nousresearch/hermes-agent:latest" in data["message"]
+        assert "docker pull nousresearch/savarez-agent:latest" in data["message"]
         assert spawned is False
 
-        status = self.client.get("/api/actions/hermes-update/status")
+        status = self.client.get("/api/actions/savarez-update/status")
         assert status.status_code == 200
         status_data = status.json()
         assert status_data["running"] is False
         assert status_data["exit_code"] == 1
         assert status_data["pid"] is None
-        assert any("docker pull nousresearch/hermes-agent:latest" in line for line in status_data["lines"])
+        assert any("docker pull nousresearch/savarez-agent:latest" in line for line in status_data["lines"])
 
     def test_update_hermes_spawns_on_non_docker_install(self, monkeypatch):
         import hermes_cli.web_server as web_server
@@ -676,14 +676,14 @@ class TestWebServerEndpoints:
 
         monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "git")
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
-        web_server._ACTION_PROCS.pop("hermes-update", None)
-        web_server._ACTION_RESULTS.pop("hermes-update", None)
+        web_server._ACTION_PROCS.pop("savarez-update", None)
+        web_server._ACTION_RESULTS.pop("savarez-update", None)
 
-        resp = self.client.post("/api/hermes/update")
+        resp = self.client.post("/api/savarez/update")
 
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "pid": 12345, "name": "hermes-update"}
-        assert calls == [(["update"], "hermes-update")]
+        assert resp.json() == {"ok": True, "pid": 12345, "name": "savarez-update"}
+        assert calls == [(["update"], "savarez-update")]
 
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
@@ -1020,7 +1020,7 @@ class TestWebServerEndpoints:
 
         resp = self.client.post(
             "/api/model/set",
-            json={"scope": "main", "provider": "nous", "model": "hermes-4"},
+            json={"scope": "main", "provider": "nous", "model": "savarez-4"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -1171,7 +1171,7 @@ class TestWebServerEndpoints:
 
         resp = self.client.post(
             "/api/model/set",
-            json={"scope": "main", "provider": "nous", "model": "hermes-4"},
+            json={"scope": "main", "provider": "nous", "model": "savarez-4"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -1581,7 +1581,7 @@ class TestNewEndpoints:
         assert resp.status_code == 200
         wrapper_path = wrapper_dir / "writer"
         assert wrapper_path.exists()
-        assert wrapper_path.read_text() == '#!/bin/sh\nexec hermes -p writer "$@"\n'
+        assert wrapper_path.read_text() == '#!/bin/sh\nexec savarez -p writer "$@"\n'
 
     def test_profiles_create_with_clone_from_default_copies_default_skills(self, monkeypatch):
         from hermes_constants import get_hermes_home
@@ -3311,12 +3311,12 @@ class TestPluginAPIAuth:
         """Auth must be plugin-agnostic, not kanban-specific.
 
         The middleware fix is at the gate level (no per-plugin allowlist),
-        so any plugin's API surface — kanban, hermes-achievements, future
+        so any plugin's API surface — kanban, savarez-achievements, future
         plugins — must require the session token. Hit a non-kanban plugin
         path to lock that in.
         """
-        # Real plugin path (hermes-achievements is loaded by default).
-        resp = self.client.get("/api/plugins/hermes-achievements/overview")
+        # Real plugin path (savarez-achievements is loaded by default).
+        resp = self.client.get("/api/plugins/savarez-achievements/overview")
         assert resp.status_code == 401
         # Same for an arbitrary plugin namespace that doesn't even exist —
         # the middleware should 401 before routing decides 404, so an
@@ -3469,7 +3469,7 @@ class TestDashboardPluginManifestExtensions:
 # /api/pty WebSocket — terminal bridge for the dashboard "Chat" tab.
 #
 # These tests drive the endpoint with a tiny fake command (typically ``cat``
-# or ``sh -c 'printf …'``) instead of the real ``hermes --tui`` binary.  The
+# or ``sh -c 'printf …'``) instead of the real ``savarez --tui`` binary.  The
 # endpoint resolves its argv through ``_resolve_chat_argv``, so tests
 # monkeypatch that hook.
 # ---------------------------------------------------------------------------
@@ -3561,7 +3561,7 @@ class TestPtyWebSocket:
             self.ws_module,
             "_resolve_chat_argv",
             lambda resume=None, sidecar_url=None: (
-                ["/bin/sh", "-c", "printf hermes-ws-ok"],
+                ["/bin/sh", "-c", "printf savarez-ws-ok"],
                 None,
                 None,
             ),
@@ -3580,9 +3580,9 @@ class TestPtyWebSocket:
                     break
                 if frame:
                     buf += frame
-                if b"hermes-ws-ok" in buf:
+                if b"savarez-ws-ok" in buf:
                     break
-            assert b"hermes-ws-ok" in buf
+            assert b"savarez-ws-ok" in buf
 
     def test_client_input_reaches_child_stdin(self, monkeypatch):
         # ``cat`` echoes stdin back, so a write → read round-trip proves

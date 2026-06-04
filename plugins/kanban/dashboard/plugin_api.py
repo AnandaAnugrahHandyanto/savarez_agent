@@ -813,7 +813,7 @@ class UpdateTaskBody(BaseModel):
     result: Optional[str] = None
     block_reason: Optional[str] = None
     # Structured handoff fields — forwarded to complete_task when status
-    # transitions to 'done'. Dashboard parity with ``hermes kanban
+    # transitions to 'done'. Dashboard parity with ``savarez kanban
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
@@ -1276,7 +1276,7 @@ def list_diagnostics(
 
     Severity-filterable so the UI can render "just the critical ones"
     or the CLI can grep. Useful for the board-header attention strip
-    AND for ``hermes kanban diagnostics`` which shells to this
+    AND for ``savarez kanban diagnostics`` which shells to this
     endpoint when the dashboard's running, or invokes the engine
     directly when it isn't.
     """
@@ -1572,7 +1572,7 @@ def reclaim_task_endpoint(
     Used by the dashboard recovery popover when an operator wants to
     abort a stuck worker (e.g. one that keeps hallucinating card ids)
     without waiting for the claim TTL. Maps 1:1 to
-    ``hermes kanban reclaim <task_id> --reason ...``.
+    ``savarez kanban reclaim <task_id> --reason ...``.
     """
     board = _resolve_board(board)
     conn = _conn(board=board)
@@ -1606,7 +1606,7 @@ def specify_task_endpoint(
     board: Optional[str] = Query(None),
 ):
     """Flesh out a triage-column task via the auxiliary LLM and promote
-    it to ``todo``. Maps 1:1 to ``hermes kanban specify <task_id>``.
+    it to ``todo``. Maps 1:1 to ``savarez kanban specify <task_id>``.
 
     Returns the outcome shape used by the CLI: ``{ok, task_id, reason,
     new_title}``. A non-OK outcome is NOT an HTTP error — the UI renders
@@ -1663,7 +1663,7 @@ def reassign_task_endpoint(
     Used by the dashboard recovery popover when an operator wants to
     retry a task with a different worker profile (e.g. switch to a
     smarter model after the assigned profile keeps hallucinating).
-    Maps 1:1 to ``hermes kanban reassign <task_id> <profile> [--reclaim]``.
+    Maps 1:1 to ``savarez kanban reassign <task_id> <profile> [--reclaim]``.
     """
     board = _resolve_board(board)
     conn = _conn(board=board)
@@ -1763,7 +1763,7 @@ def _configured_home_channels() -> list[dict]:
 
 
 def _active_profile_name() -> str:
-    """Return the current Hermes profile name for notify-sub ownership."""
+    """Return the current Savarez profile name for notify-sub ownership."""
     try:
         from hermes_cli.profiles import get_active_profile_name
         return get_active_profile_name() or "default"
@@ -2223,7 +2223,7 @@ def decompose_task_endpoint(
 ):
     """Fan a triage-column task out into a graph of child tasks via the
     auxiliary LLM, routed to specialist profiles by description. Maps
-    1:1 to ``hermes kanban decompose <task_id>``.
+    1:1 to ``savarez kanban decompose <task_id>``.
 
     Returns the outcome shape used by the CLI: ``{ok, task_id, reason,
     fanout, child_ids, new_title}``. A non-OK outcome is NOT an HTTP

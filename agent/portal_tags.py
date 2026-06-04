@@ -1,6 +1,6 @@
 """Centralized Nous Portal request tags.
 
-Every Hermes request that hits the Nous Portal — main agent loop, auxiliary
+Every Savarez request that hits the Nous Portal — main agent loop, auxiliary
 client (compression / titles / vision / web_extract / session_search / etc.),
 and any future code path — must carry the same product-attribution tags so
 Nous can attribute usage to Savarez AI Agent and bucket it by client release.
@@ -8,8 +8,8 @@ Nous can attribute usage to Savarez AI Agent and bucket it by client release.
 Tag shape (sent in OpenAI-compatible ``extra_body['tags']``):
 
     [
-        "product=hermes-agent",
-        "client=hermes-client-v<__version__>",
+        "product=savarez-agent",
+        "client=savarez-client-v<__version__>",
     ]
 
 The version is sourced live from ``hermes_cli.__version__`` so it auto-aligns
@@ -35,7 +35,7 @@ from typing import List
 
 
 def _hermes_version() -> str:
-    """Return the current Hermes release version, e.g. ``"0.13.0"``.
+    """Return the current Savarez release version, e.g. ``"0.13.0"``.
 
     Falls back to ``"unknown"`` if ``hermes_cli`` cannot be imported (should
     never happen in a real install — guarded for defensive testing).
@@ -50,9 +50,9 @@ def _hermes_version() -> str:
 def hermes_client_tag() -> str:
     """Return the ``client=...`` tag for Nous Portal requests.
 
-    Format: ``client=hermes-client-v<MAJOR>.<MINOR>.<PATCH>``.
+    Format: ``client=savarez-client-v<MAJOR>.<MINOR>.<PATCH>``.
     """
-    return f"client=hermes-client-v{_hermes_version()}"
+    return f"client=savarez-client-v{_hermes_version()}"
 
 
 def nous_portal_tags() -> List[str]:
@@ -61,4 +61,4 @@ def nous_portal_tags() -> List[str]:
     Always returns a fresh list so callers can mutate it freely
     (e.g. ``merged_extra.setdefault("tags", []).extend(nous_portal_tags())``).
     """
-    return ["product=hermes-agent", hermes_client_tag()]
+    return ["product=savarez-agent", hermes_client_tag()]

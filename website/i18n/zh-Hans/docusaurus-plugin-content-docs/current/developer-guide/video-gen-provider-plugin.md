@@ -23,7 +23,7 @@ description: "如何为 Savarez AI Agent 构建视频生成后端插件"
 
 ## 发现机制
 
-Hermes 在三个位置扫描视频生成后端：
+Savarez 在三个位置扫描视频生成后端：
 
 1. **内置** — `<repo>/plugins/video_gen/<name>/`（通过 `kind: backend` 自动加载）
 2. **用户** — `~/.savarez/plugins/video_gen/<name>/`（通过 `plugins.enabled` 选择启用）

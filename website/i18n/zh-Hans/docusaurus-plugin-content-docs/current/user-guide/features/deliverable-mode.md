@@ -47,7 +47,7 @@ Agent 需要使用的机制很简单：将文件渲染到绝对路径（例如 `
 
 ## Kanban：Artifacts 随完成通知一并发送
 
-如果使用 Hermes 的 kanban（看板）多 agent 工作流，worker 可以在调用 `kanban_complete` 时附加可交付文件：
+如果使用 Savarez 的 kanban（看板）多 agent 工作流，worker 可以在调用 `kanban_complete` 时附加可交付文件：
 
 ```python
 kanban_complete(

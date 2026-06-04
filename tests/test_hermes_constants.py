@@ -24,11 +24,11 @@ class TestGetDefaultHermesRoot:
         monkeypatch.delenv("SAVAREZ_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        assert get_default_hermes_root() == tmp_path / ".hermes"
+        assert get_default_hermes_root() == tmp_path / ".savarez"
 
     def test_hermes_home_is_native(self, tmp_path, monkeypatch):
         """When SAVAREZ_HOME = ~/.savarez, returns ~/.savarez."""
-        native = tmp_path / ".hermes"
+        native = tmp_path / ".savarez"
         native.mkdir()
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("SAVAREZ_HOME", str(native))
@@ -36,7 +36,7 @@ class TestGetDefaultHermesRoot:
 
     def test_hermes_home_is_profile(self, tmp_path, monkeypatch):
         """When SAVAREZ_HOME is a profile under ~/.savarez, returns ~/.savarez."""
-        native = tmp_path / ".hermes"
+        native = tmp_path / ".savarez"
         profile = native / "profiles" / "coder"
         profile.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -53,7 +53,7 @@ class TestGetDefaultHermesRoot:
 
     def test_hermes_home_is_custom_path(self, tmp_path, monkeypatch):
         """Any SAVAREZ_HOME outside ~/.savarez is treated as the root."""
-        custom = tmp_path / "my-hermes-data"
+        custom = tmp_path / "my-savarez-data"
         custom.mkdir()
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("SAVAREZ_HOME", str(custom))
@@ -70,31 +70,31 @@ class TestGetDefaultHermesRoot:
         assert get_default_hermes_root() == docker_root
 
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
-        """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.savarez."""
+        """Native Windows falls back to %LOCALAPPDATA%\\savarez, not ~/.savarez."""
         local_appdata = tmp_path / "LocalAppData"
         monkeypatch.delenv("SAVAREZ_HOME", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
 
-        assert get_default_hermes_root() == local_appdata / "hermes"
+        assert get_default_hermes_root() == local_appdata / "savarez"
 
     def test_no_hermes_home_uses_windows_path_when_localappdata_missing(self, tmp_path, monkeypatch):
-        """Windows fallback still uses AppData/Local/hermes without LOCALAPPDATA."""
+        """Windows fallback still uses AppData/Local/savarez without LOCALAPPDATA."""
         home = tmp_path / "Home"
         monkeypatch.delenv("SAVAREZ_HOME", raising=False)
         monkeypatch.delenv("LOCALAPPDATA", raising=False)
         monkeypatch.setattr(Path, "home", lambda: home)
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
 
-        assert get_default_hermes_root() == home / "AppData" / "Local" / "hermes"
+        assert get_default_hermes_root() == home / "AppData" / "Local" / "savarez"
 
 
 class TestGetHermesHome:
     """Tests for get_hermes_home() platform-aware fallback."""
 
     def test_windows_fallback_uses_localappdata(self, tmp_path, monkeypatch):
-        """When SAVAREZ_HOME is unset on Windows, use %LOCALAPPDATA%\\hermes."""
+        """When SAVAREZ_HOME is unset on Windows, use %LOCALAPPDATA%\\savarez."""
         local_appdata = tmp_path / "LocalAppData"
         monkeypatch.delenv("SAVAREZ_HOME", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
@@ -102,7 +102,7 @@ class TestGetHermesHome:
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
         monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
 
-        assert get_hermes_home() == local_appdata / "hermes"
+        assert get_hermes_home() == local_appdata / "savarez"
 
 
 class TestIsContainer:
@@ -214,7 +214,7 @@ class TestSecureParentDir:
 
     def test_safe_path_calls_chmod(self, tmp_path, monkeypatch):
         """Normal nested path (depth >= 3) should call os.chmod."""
-        safe_dir = tmp_path / "home" / "user" / ".hermes"
+        safe_dir = tmp_path / "home" / "user" / ".savarez"
         safe_dir.mkdir(parents=True)
         target = safe_dir / "auth.json"
         target.touch()

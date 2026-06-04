@@ -25,8 +25,8 @@ be online at the same time. Common reasons:
   memory and skills
 
 Every profile already gets its own per-platform LaunchAgent
-(`ai.hermes.gateway-<name>.plist`) or systemd user service
-(`hermes-gateway-<name>.service`). This guide adds the patterns for managing
+(`ai.savarez.gateway-<name>.plist`) or systemd user service
+(`savarez-gateway-<name>.service`). This guide adds the patterns for managing
 them collectively.
 
 ## Quick start
@@ -60,7 +60,7 @@ automatically on crash and on user login.
 
 The CLI ships with single-profile lifecycle commands. To act across every
 profile, wrap them in a shell loop. Put the snippet below in
-`~/.local/bin/hermes-gateways` and `chmod +x` it:
+`~/.local/bin/savarez-gateways` and `chmod +x` it:
 
 ```sh
 #!/bin/sh
@@ -70,7 +70,7 @@ set -eu
 profiles="default coder personal-bot research"
 
 usage() {
-  echo "Usage: hermes-gateways {start|stop|restart|status|list}"
+  echo "Usage: savarez-gateways {start|stop|restart|status|list}"
 }
 
 run_for_profile() {
@@ -79,7 +79,7 @@ run_for_profile() {
   if [ "$profile" = "default" ]; then
     savarez gateway "$action"
   else
-    hermes -p "$profile" gateway "$action"
+    savarez -p "$profile" gateway "$action"
   fi
 }
 
@@ -104,16 +104,16 @@ esac
 Then:
 
 ```bash
-hermes-gateways start      # start every configured profile
-hermes-gateways stop       # stop every configured profile
-hermes-gateways restart    # restart all
-hermes-gateways status     # status across all
-hermes-gateways list       # delegates to `savarez gateway list`
+savarez-gateways start      # start every configured profile
+savarez-gateways stop       # stop every configured profile
+savarez-gateways restart    # restart all
+savarez-gateways status     # status across all
+savarez-gateways list       # delegates to `savarez gateway list`
 ```
 
 :::tip
 The `default` profile is targeted with `savarez gateway <action>` (no `-p`),
-not `hermes -p default gateway <action>`. The wrapper above handles both forms.
+not `savarez -p default gateway <action>`. The wrapper above handles both forms.
 :::
 
 ## Manage one profile
@@ -130,7 +130,7 @@ coder gateway install    # create the LaunchAgent / systemd unit
 coder gateway uninstall  # remove the service file
 ```
 
-These are equivalent to `hermes -p coder gateway <action>` — useful if a
+These are equivalent to `savarez -p coder gateway <action>` — useful if a
 profile alias is not on `PATH` or if you target profiles dynamically from a
 script.
 
@@ -141,11 +141,11 @@ never clash:
 
 | Platform | Path                                                              |
 | -------- | ----------------------------------------------------------------- |
-| macOS    | `~/Library/LaunchAgents/ai.hermes.gateway-<profile>.plist`        |
-| Linux    | `~/.config/systemd/user/hermes-gateway-<profile>.service`         |
+| macOS    | `~/Library/LaunchAgents/ai.savarez.gateway-<profile>.plist`        |
+| Linux    | `~/.config/systemd/user/savarez-gateway-<profile>.service`         |
 
-The default profile keeps the historical names: `ai.hermes.gateway.plist` /
-`hermes-gateway.service`.
+The default profile keeps the historical names: `ai.savarez.gateway.plist` /
+`savarez-gateway.service`.
 
 ## Viewing logs
 
@@ -171,7 +171,7 @@ The CLI also has a structured log viewer:
 
 ```bash
 savarez logs --tail              # follow default profile
-hermes -p coder logs --tail     # follow one profile
+savarez -p coder logs --tail     # follow one profile
 savarez logs --help              # filters, levels, JSON output
 ```
 
@@ -179,9 +179,9 @@ savarez logs --help              # filters, levels, JSON output
 
 ```bash
 savarez profile list             # profiles + model + gateway state
-hermes-gateways status          # full status across every profile
-launchctl list | grep hermes    # macOS — PIDs and labels
-systemctl --user list-units 'hermes-gateway-*'   # Linux — units
+savarez-gateways status          # full status across every profile
+launchctl list | grep savarez    # macOS — PIDs and labels
+systemctl --user list-units 'savarez-gateway-*'   # Linux — units
 ```
 
 ## Editing configuration
@@ -209,7 +209,7 @@ After editing `.env` or `config.yaml`, restart the affected gateway:
 ```bash
 coder gateway restart
 # or, for everything:
-hermes-gateways restart
+savarez-gateways restart
 ```
 
 ## Keeping the host awake
@@ -255,7 +255,7 @@ use a third-party tool.
 
 ```bash
 # Inhibit suspend while a command runs
-systemd-inhibit --what=idle:sleep --who=hermes --why="gateways running" \
+systemd-inhibit --what=idle:sleep --who=savarez --why="gateways running" \
   sleep infinity &
 
 # Allow user services to keep running after logout (recommended)
@@ -263,7 +263,7 @@ sudo loginctl enable-linger "$USER"
 ```
 
 After enabling lingering, your systemd user units (including
-`hermes-gateway-<profile>.service`) continue running across SSH disconnects
+`savarez-gateway-<profile>.service`) continue running across SSH disconnects
 and reboots.
 
 ## Token-conflict safety
@@ -286,7 +286,7 @@ every profile:
 
 ```bash
 savarez update
-hermes-gateways restart
+savarez-gateways restart
 ```
 
 User-modified skills are never overwritten.
@@ -317,16 +317,16 @@ kill -KILL <pid>          # if that fails after a few seconds
 
 ```bash
 # macOS
-launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway-<profile>.plist
-launchctl load   ~/Library/LaunchAgents/ai.hermes.gateway-<profile>.plist
+launchctl unload ~/Library/LaunchAgents/ai.savarez.gateway-<profile>.plist
+launchctl load   ~/Library/LaunchAgents/ai.savarez.gateway-<profile>.plist
 
 # Linux
-systemctl --user restart hermes-gateway-<profile>.service
+systemctl --user restart savarez-gateway-<profile>.service
 ```
 
 ### Health check
 
 ```bash
 savarez doctor                  # default profile
-hermes -p <profile> doctor     # one profile
+savarez -p <profile> doctor     # one profile
 ```

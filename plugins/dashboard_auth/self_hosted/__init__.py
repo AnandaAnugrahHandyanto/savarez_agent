@@ -47,8 +47,8 @@ same precedence convention as the ``nous`` plugin)::
       oauth:
         provider: self-hosted
         self_hosted:
-          issuer: https://auth.example.com/application/o/hermes/   # required
-          client_id: hermes-dashboard                              # required
+          issuer: https://auth.example.com/application/o/savarez/   # required
+          client_id: savarez-dashboard                              # required
           scopes: "openid profile email"                           # optional
 
     # Environment overrides (Docker/Fly secret injection)
@@ -553,7 +553,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
 
         The verified ID token is stored in ``Session.access_token`` so the
         per-request ``verify_session`` re-verifies a real JWT. The opaque
-        OAuth access token is intentionally NOT stored — Hermes does not call
+        OAuth access token is intentionally NOT stored — Savarez does not call
         any resource API with it; the dashboard only needs identity.
         """
         user_id = str(claims.get("sub", ""))

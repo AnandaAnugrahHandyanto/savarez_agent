@@ -25,7 +25,7 @@ Canvas LMS 集成 — 使用 API token（令牌）认证获取已注册课程和
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Savarez 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # Canvas LMS — 课程与作业访问

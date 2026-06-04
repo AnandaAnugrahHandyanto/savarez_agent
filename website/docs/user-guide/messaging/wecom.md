@@ -6,7 +6,7 @@ description: "Connect Savarez AI Agent to WeCom via the AI Bot WebSocket gateway
 
 # WeCom (Enterprise WeChat)
 
-Connect Hermes to [WeCom](https://work.weixin.qq.com/) (企业微信), Tencent's enterprise messaging platform. The adapter uses WeCom's AI Bot WebSocket gateway for real-time bidirectional communication — no public endpoint or webhook needed.
+Connect Savarez to [WeCom](https://work.weixin.qq.com/) (企业微信), Tencent's enterprise messaging platform. The adapter uses WeCom's AI Bot WebSocket gateway for real-time bidirectional communication — no public endpoint or webhook needed.
 
 See also: [WeCom Callback](./wecom-callback.md) for inbound webhook setup.
 
@@ -27,7 +27,7 @@ See also: [WeCom Callback](./wecom-callback.md) for inbound webhook setup.
 savarez gateway setup
 ```
 
-Select **WeCom** and scan the QR code with your WeCom mobile app. Hermes will automatically create a bot application with the correct permissions and save the credentials.
+Select **WeCom** and scan the QR code with your WeCom mobile app. Savarez will automatically create a bot application with the correct permissions and save the credentials.
 
 The setup wizard will:
 1. Display a QR code in your terminal
@@ -49,7 +49,7 @@ If scan-to-create is not available, the wizard falls back to manual input:
 Keep the Bot Secret private. Anyone with it can impersonate your bot.
 :::
 
-### Step 2: Configure Hermes
+### Step 2: Configure Savarez
 
 #### Option A: Interactive Setup (Recommended)
 

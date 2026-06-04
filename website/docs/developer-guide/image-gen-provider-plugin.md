@@ -9,12 +9,12 @@ description: "How to build an image-generation backend plugin for Savarez AI Age
 Image-gen provider plugins register a backend that services every `image_generate` tool call — DALL·E, gpt-image, Grok, Flux, Imagen, Stable Diffusion, fal, Replicate, a local ComfyUI rig, anything. Built-in providers (OpenAI, OpenAI-Codex, xAI) all ship as plugins. You can add a new one, or override a bundled one, by dropping a directory into `plugins/image_gen/<name>/`.
 
 :::tip
-Image-gen is one of several **backend plugins** Hermes supports. The others (with more specialized ABCs) are [Memory Provider Plugins](/developer-guide/memory-provider-plugin), [Context Engine Plugins](/developer-guide/context-engine-plugin), and [Model Provider Plugins](/developer-guide/model-provider-plugin). General tool/hook/CLI plugins live in [Build a Hermes Plugin](/guides/build-a-hermes-plugin).
+Image-gen is one of several **backend plugins** Savarez supports. The others (with more specialized ABCs) are [Memory Provider Plugins](/developer-guide/memory-provider-plugin), [Context Engine Plugins](/developer-guide/context-engine-plugin), and [Model Provider Plugins](/developer-guide/model-provider-plugin). General tool/hook/CLI plugins live in [Build a Savarez Plugin](/guides/build-a-savarez-plugin).
 :::
 
 ## How discovery works
 
-Hermes scans for image-gen backends in three places:
+Savarez scans for image-gen backends in three places:
 
 1. **Bundled** — `<repo>/plugins/image_gen/<name>/` (auto-loaded with `kind: backend`, always available)
 2. **User** — `~/.savarez/plugins/image_gen/<name>/` (opt-in via `plugins.enabled`)
@@ -248,7 +248,7 @@ Drop a user plugin at `~/.savarez/plugins/image_gen/<name>/` with the same `name
 ## Testing
 
 ```bash
-export SAVAREZ_HOME=/tmp/hermes-imggen-test
+export SAVAREZ_HOME=/tmp/savarez-imggen-test
 mkdir -p $SAVAREZ_HOME/plugins/image_gen/my-backend
 # …copy __init__.py + plugin.yaml into that dir…
 
@@ -260,7 +260,7 @@ echo "image_gen:" >> $SAVAREZ_HOME/config.yaml
 echo "  provider: my-backend" >> $SAVAREZ_HOME/config.yaml
 
 # Exercise it
-hermes -z "Generate an image of a corgi in a spacesuit"
+savarez -z "Generate an image of a corgi in a spacesuit"
 ```
 
 Or interactively: `savarez tools` → "Image Generation" → select `my-backend` → enter API key if prompted.
@@ -279,10 +279,10 @@ Or interactively: `savarez tools` → "Image Generation" → select `my-backend`
 my-backend-imggen = "my_backend_imggen_package"
 ```
 
-`my_backend_imggen_package` must expose a top-level `register` function. See [Distribute via pip](/guides/build-a-hermes-plugin#distribute-via-pip) in the general plugin guide for the full setup.
+`my_backend_imggen_package` must expose a top-level `register` function. See [Distribute via pip](/guides/build-a-savarez-plugin#distribute-via-pip) in the general plugin guide for the full setup.
 
 ## Related pages
 
 - [Image Generation](/user-guide/features/image-generation) — user-facing feature documentation
 - [Plugins overview](/user-guide/features/plugins) — all plugin types at a glance
-- [Build a Hermes Plugin](/guides/build-a-hermes-plugin) — general tools/hooks/slash commands guide
+- [Build a Savarez Plugin](/guides/build-a-savarez-plugin) — general tools/hooks/slash commands guide

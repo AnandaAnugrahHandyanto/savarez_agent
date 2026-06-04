@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the Hermes TUI under HERMES_DEV_PERF and summarize the pipeline.
+"""Drive the Savarez TUI under HERMES_DEV_PERF and summarize the pipeline.
 
 Usage:
   scripts/profile-tui.py [--session SID] [--hold KEY] [--seconds N] [--rate HZ]
@@ -42,7 +42,7 @@ try:
 except ImportError:
     def get_hermes_home() -> Path:  # type: ignore[misc]
         val = (os.environ.get("SAVAREZ_HOME") or "").strip()
-        return Path(val) if val else Path.home() / ".hermes"
+        return Path(val) if val else Path.home() / ".savarez"
 
 DEFAULT_TUI_DIR = Path(
     os.environ.get("HERMES_TUI_DIR")
@@ -536,7 +536,7 @@ def loop_mode(args: argparse.Namespace) -> int:
 
     tui_dir = Path(args.tui_dir).resolve()
     src_root = tui_dir / "src"
-    pkg_root = tui_dir / "packages" / "hermes-ink" / "src"
+    pkg_root = tui_dir / "packages" / "savarez-ink" / "src"
 
     def collect_mtimes() -> dict[str, float]:
         mtimes: dict[str, float] = {}

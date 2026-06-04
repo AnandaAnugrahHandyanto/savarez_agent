@@ -147,7 +147,7 @@ class TestRebuildVenv:
 
     def test_retries_with_clear_when_dir_already_exists(self, tmp_path):
         """On Windows, rmtree can silently fail when an open handle holds a
-        file in the venv (running hermes.exe, gateway, AV scanner). uv then
+        file in the venv (running savarez.exe, gateway, AV scanner). uv then
         refuses with ``Caused by: A directory already exists at: venv``.
         Make sure we don't give up — retry with ``--clear`` to force uv past
         the stale directory and rebuild successfully."""

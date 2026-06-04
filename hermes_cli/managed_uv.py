@@ -1,6 +1,6 @@
 """Managed uv — one path, no guessing.
 
-Hermes owns its own uv binary at ``$SAVAREZ_HOME/bin/uv`` (or ``uv.exe`` on
+Savarez owns its own uv binary at ``$SAVAREZ_HOME/bin/uv`` (or ``uv.exe`` on
 Windows).  Every code path that needs uv resolves it from that single location.
 If the binary is missing, ``ensure_uv()`` bootstraps it via the official
 standalone installer with ``UV_UNMANAGED_INSTALL`` / ``UV_INSTALL_DIR`` pointed
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def managed_uv_path() -> Path:
-    """Return the path where Hermes keeps *its* uv binary.
+    """Return the path where Savarez keeps *its* uv binary.
 
     ``$SAVAREZ_HOME/bin/uv`` on POSIX, ``$SAVAREZ_HOME\\bin\\uv.exe`` on
     Windows.  The directory may not exist yet — callers should use
@@ -109,7 +109,7 @@ def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> b
     On Windows, ``shutil.rmtree(..., ignore_errors=True)`` can silently leave
     the venv directory partially intact when another process is holding an
     open handle to a file inside it (typical culprits: a running
-    ``hermes.exe`` REPL, the gateway, AV scanners). If we don't notice that
+    ``savarez.exe`` REPL, the gateway, AV scanners). If we don't notice that
     and just call ``uv venv``, uv refuses with
     ``Caused by: A directory already exists at: venv`` and the *whole
     update* falls back to installing on top of the stale venv — which has

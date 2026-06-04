@@ -25,7 +25,7 @@ Poll RSS, JSON APIs, and GitHub with watermark dedup.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Savarez loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Watchers
@@ -81,7 +81,7 @@ Watch a GitHub repo (set `GITHUB_TOKEN` in `~/.savarez/.env` to avoid the 60 req
 
 ```bash
 python $SAVAREZ_HOME/skills/devops/watchers/scripts/watch_github.py \
-  --name hermes-issues --repo NousResearch/hermes-agent --scope issues
+  --name savarez-issues --repo NousResearch/savarez-agent --scope issues
 ```
 
 Poll an arbitrary JSON API:

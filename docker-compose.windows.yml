@@ -11,24 +11,24 @@
 #
 services:
   gateway:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes
+    image: nousresearch/savarez-agent:latest
+    container_name: savarez
     restart: unless-stopped
     volumes:
-      - ${USERPROFILE}/.hermes:/opt/data
+      - ${USERPROFILE}/.savarez:/opt/data
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
     command: ["gateway", "run"]
 
   dashboard:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes-dashboard
+    image: nousresearch/savarez-agent:latest
+    container_name: savarez-dashboard
     restart: unless-stopped
     depends_on:
       - gateway
     volumes:
-      - ${USERPROFILE}/.hermes:/opt/data
+      - ${USERPROFILE}/.savarez:/opt/data
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000

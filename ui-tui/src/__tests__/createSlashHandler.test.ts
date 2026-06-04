@@ -622,7 +622,7 @@ describe('createSlashHandler', () => {
             }
 
             if (method === 'command.dispatch') {
-              return Promise.resolve({ type: 'skill', message: skillMessage, name: 'hermes-agent-dev' })
+              return Promise.resolve({ type: 'skill', message: skillMessage, name: 'savarez-agent-dev' })
             }
 
             return Promise.resolve({})
@@ -633,9 +633,9 @@ describe('createSlashHandler', () => {
     })
 
     const h = createSlashHandler(ctx)
-    expect(h('/hermes-agent-dev')).toBe(true)
+    expect(h('/savarez-agent-dev')).toBe(true)
     await vi.waitFor(() => {
-      expect(ctx.transcript.sys).toHaveBeenCalledWith('⚡ loading skill: hermes-agent-dev')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('⚡ loading skill: savarez-agent-dev')
     })
     expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
   })

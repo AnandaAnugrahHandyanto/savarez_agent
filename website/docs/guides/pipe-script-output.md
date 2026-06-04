@@ -20,7 +20,7 @@ Use it for:
 - Quick one-shot messages from a terminal
 - Piping any tool's output anywhere (`make | savarez send --to slack:#builds`)
 
-The command reuses the same credentials and platform adapters that `hermes
+The command reuses the same credentials and platform adapters that `savarez
 gateway` already uses, so there's no second configuration surface to
 maintain.
 
@@ -76,7 +76,7 @@ savarez send --list telegram
 | `platform:#channel` | `discord:#ops` | Human-friendly channel name (resolved against the channel directory) |
 | `platform:+E164` | `signal:+15551234567` | Phone-addressed platforms: Signal, SMS, WhatsApp |
 
-Any platform Hermes ships adapters for works as a target:
+Any platform Savarez ships adapters for works as a target:
 `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`,
 `mattermost`, `feishu`, `dingtalk`, `wecom`, `weixin`, `email`, and
 others.
@@ -102,7 +102,7 @@ branch on them the same way they would on `curl` or `grep`.
 2. **`--file PATH`** — `savarez send --to telegram --file msg.txt`
 3. **Piped stdin** — `echo hi | savarez send --to telegram`
 
-When stdin is a TTY (no pipe), Hermes does **not** wait for input — you'll
+When stdin is a TTY (no pipe), Savarez does **not** wait for input — you'll
 get a clear usage error instead. This keeps scripts from hanging if they
 accidentally omit the body.
 
@@ -124,8 +124,8 @@ if [ "$ram_pct" -ge 85 ]; then
 fi
 ```
 
-Because `savarez send` reuses your Hermes config, the same script works on
-any host where Hermes is installed — no need to export bot tokens into
+Because `savarez send` reuses your Savarez config, the same script works on
+any host where Savarez is installed — no need to export bot tokens into
 each machine's environment manually.
 
 :::tip Don't alert the gateway about itself
@@ -153,7 +153,7 @@ fi
 ```bash
 # Crontab entry
 0 9 * * * /usr/local/bin/generate-metrics.sh \
-  | /home/me/.hermes/bin/savarez send \
+  | /home/me/.savarez/bin/savarez send \
       --to telegram --subject "Daily metrics $(date +%Y-%m-%d)"
 ```
 
@@ -224,7 +224,7 @@ IDs.
 
 ## Comparison with Other Approaches
 
-| Approach | Multi-platform | Reuses Hermes creds | Needs gateway | Best for |
+| Approach | Multi-platform | Reuses Savarez creds | Needs gateway | Best for |
 |----------|----------------|---------------------|---------------|----------|
 | `savarez send` | ✅ | ✅ | No (bot-token) | Everything below |
 | Raw `curl` to each platform | Each scripted separately | Manual | No | Critical watchdogs |

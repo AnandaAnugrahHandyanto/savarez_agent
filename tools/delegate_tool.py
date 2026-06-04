@@ -112,7 +112,7 @@ def _get_subagent_approval_callback():
 
 # Build a description fragment listing toolsets available for subagents.
 # Excludes toolsets where ALL tools are blocked, composite/platform toolsets
-# (hermes-* prefixed), and scenario toolsets.
+# (savarez-* prefixed), and scenario toolsets.
 #
 # NOTE: "delegation" is in this exclusion set so the subagent-facing
 # capability hint string (_TOOLSET_LIST_STR) doesn't advertise it as a
@@ -124,7 +124,7 @@ _SUBAGENT_TOOLSETS = sorted(
     name
     for name, defn in TOOLSETS.items()
     if name not in _EXCLUDED_TOOLSET_NAMES
-    and not name.startswith("hermes-")
+    and not name.startswith("savarez-")
     and not all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
 )
 _TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
@@ -470,10 +470,10 @@ def _is_mcp_toolset_name(name: str) -> bool:
 def _expand_parent_toolsets(parent_toolsets: set) -> set:
     """Expand composite toolsets so individual toolset names are recognized.
 
-    When a parent uses a composite toolset like ``hermes-cli`` (which bundles
+    When a parent uses a composite toolset like ``savarez-cli`` (which bundles
     all core tools), the child may request individual toolsets such as ``web``
     or ``terminal``.  A simple name-based intersection would reject them
-    because ``"web" != "hermes-cli"``.
+    because ``"web" != "savarez-cli"``.
 
     This helper collects the tool names from each parent toolset, then adds
     the names of any individual toolsets whose tools are a *subset* of the
@@ -944,7 +944,7 @@ def _build_child_agent(
 
     if toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks.
-        # Expand composite toolsets (e.g. hermes-cli) so that individual
+        # Expand composite toolsets (e.g. savarez-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
@@ -2783,7 +2783,7 @@ DELEGATE_TASK_SCHEMA = {
                     "See agent/copilot_acp_client.py for the implementation. "
                     "IMPORTANT: Do NOT set this unless the user has explicitly told you "
                     "a specific ACP-compatible CLI is installed and configured. "
-                    "Leave empty to use the parent's default transport (Hermes subagents)."
+                    "Leave empty to use the parent's default transport (Savarez subagents)."
                 ),
             },
             "acp_args": {

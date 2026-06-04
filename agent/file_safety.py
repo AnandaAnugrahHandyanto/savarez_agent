@@ -17,7 +17,7 @@ def _hermes_home_path() -> Path:
 
 
 def _hermes_root_path() -> Path:
-    """Resolve the Hermes root dir (always the parent of any profile, never per-profile)."""
+    """Resolve the Savarez root dir (always the parent of any profile, never per-profile)."""
     try:
         from hermes_constants import get_default_hermes_root  # local import to avoid cycles
         return get_default_hermes_root()
@@ -104,7 +104,7 @@ def is_write_denied(path: str) -> bool:
         if resolved.startswith(prefix):
             return True
 
-    # Hermes control-plane files: block both the ACTIVE profile's view
+    # Savarez control-plane files: block both the ACTIVE profile's view
     # (hermes_home) AND the global root view. Without the root pass, a
     # profile-mode session leaves <root>/auth.json + <root>/config.yaml
     # writable — letting a prompt-injected write_file overwrite the global
@@ -163,14 +163,14 @@ _BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
 
 
 def get_read_block_error(path: str) -> Optional[str]:
-    """Return an error message when a read targets a denied Hermes path.
+    """Return an error message when a read targets a denied Savarez path.
 
     Three categories are blocked:
 
-      * Internal Hermes cache files under ``SAVAREZ_HOME/skills/.hub`` —
+      * Internal Savarez cache files under ``SAVAREZ_HOME/skills/.hub`` —
         readable metadata that an attacker could use as a prompt-injection
         carrier.
-      * Credential / secret stores under SAVAREZ_HOME and the global Hermes
+      * Credential / secret stores under SAVAREZ_HOME and the global Savarez
         root: ``auth.json``, ``auth.lock``, ``.anthropic_oauth.json``,
         ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
         and anything under ``mcp-tokens/``. These hold plaintext provider keys,
@@ -210,7 +210,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     resolved = Path(path).expanduser().resolve()
 
     # Resolve BOTH the active SAVAREZ_HOME (profile-aware) AND the global
-    # Hermes root so credential stores at <root>/auth.json etc. are also
+    # Savarez root so credential stores at <root>/auth.json etc. are also
     # blocked when running under a profile (SAVAREZ_HOME points at
     # <root>/profiles/<name> in profile mode). Same shape as the write
     # deny widening (#15981, #14157).
@@ -235,7 +235,7 @@ def get_read_block_error(path: str) -> Optional[str]:
             except ValueError:
                 continue
             return (
-                f"Access denied: {path} is an internal Hermes cache file "
+                f"Access denied: {path} is an internal Savarez cache file "
                 "and cannot be read directly to prevent prompt injection. "
                 "Use the skills_list or skill_view tools instead."
             )
@@ -262,7 +262,7 @@ def get_read_block_error(path: str) -> Optional[str]:
                 continue
             if resolved == blocked:
                 return (
-                    f"Access denied: {path} is a Hermes credential store "
+                    f"Access denied: {path} is a Savarez credential store "
                     "and cannot be read directly. Provider tools consume "
                     "these credentials through internal channels. "
                     "(Defense-in-depth — not a security boundary; the "
@@ -278,7 +278,7 @@ def get_read_block_error(path: str) -> Optional[str]:
             continue
         if resolved == mcp_tokens:
             return (
-                f"Access denied: {path} is the Hermes MCP token directory "
+                f"Access denied: {path} is the Savarez MCP token directory "
                 "and cannot be read directly. (Defense-in-depth — not a "
                 "security boundary; the terminal tool can still bypass.)"
             )
@@ -287,7 +287,7 @@ def get_read_block_error(path: str) -> Optional[str]:
         except ValueError:
             continue
         return (
-            f"Access denied: {path} is a Hermes MCP token file "
+            f"Access denied: {path} is a Savarez MCP token file "
             "and cannot be read directly. (Defense-in-depth — not a "
             "security boundary; the terminal tool can still bypass.)"
         )
@@ -311,7 +311,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Cross-profile write guard (#TBD)
 #
-# Hermes profiles are separate SAVAREZ_HOME dirs under
+# Savarez profiles are separate SAVAREZ_HOME dirs under
 # ``<root>/profiles/<name>/``. Each profile has its own skills/, plugins/,
 # cron/, memories/. When an agent runs under one profile, writing into
 # ANOTHER profile's directories is almost always wrong — those skills /
@@ -324,8 +324,8 @@ def get_read_block_error(path: str) -> Optional[str]:
 # as the dangerous-command approval flow — the agent is told the boundary
 # exists, and explicit user direction is required to cross it.
 #
-# Reference: May 2026 incident where a hermes-security profile session
-# edited skills under both ``~/.savarez/profiles/hermes-security/skills/``
+# Reference: May 2026 incident where a savarez-security profile session
+# edited skills under both ``~/.savarez/profiles/savarez-security/skills/``
 # AND ``~/.savarez/skills/`` (the default profile's skills) without realizing
 # the second path belonged to a different profile.
 # ---------------------------------------------------------------------------
@@ -365,7 +365,7 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
     """Classify a write target as cross-profile if it lands in another
     profile's scoped area (skills/plugins/cron/memories).
 
-    Returns ``None`` when the target is outside Hermes scope, or is inside
+    Returns ``None`` when the target is outside Savarez scope, or is inside
     the ACTIVE profile, or doesn't hit a profile-scoped area. Otherwise
     returns a dict with:
 
@@ -428,7 +428,7 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
     """Return a model-facing warning string when ``path`` is cross-profile.
 
     Returns ``None`` when the write is in-scope (same profile) or outside
-    Hermes entirely. Caller is expected to surface the warning to the
+    Savarez entirely. Caller is expected to surface the warning to the
     agent as a tool-result error, NOT to silently allow the write — the
     agent must either get explicit user direction to proceed, or pass
     ``cross_profile=True`` to its write tool.
@@ -442,7 +442,7 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
         return None
     return (
         f"Cross-profile write blocked by soft guard: {info['target_path']} "
-        f"belongs to Hermes profile {info['target_profile']!r}, but the "
+        f"belongs to Savarez profile {info['target_profile']!r}, but the "
         f"agent is running under profile {info['active_profile']!r}. "
         f"Editing another profile's {info['area']}/ will affect that "
         f"profile's future sessions, not the one you are currently in. "
@@ -459,7 +459,7 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
 # Non-local terminal backends (Docker, Daytona, etc.) bind a sandbox-local
 # directory to the container's ``$HOME``. The on-disk layout looks like
 #
-#   <SAVAREZ_HOME>/profiles/<name>/sandboxes/<backend>/<task>/home/.hermes/...
+#   <SAVAREZ_HOME>/profiles/<name>/sandboxes/<backend>/<task>/home/.savarez/...
 #
 # When the agent (running host-side) speculates that authoritative profile
 # state lives at one of those sandbox-mirror paths, the write lands on the
@@ -468,46 +468,46 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
 # disk two divergent copies accumulate. See #32049 for evidence.
 #
 # This guard is path-shape-only: it detects the
-# ``…/sandboxes/<backend>/<task>/home/.hermes/…`` segment and warns
-# regardless of which Hermes profile is active. It does NOT cover the
+# ``…/sandboxes/<backend>/<task>/home/.savarez/…`` segment and warns
+# regardless of which Savarez profile is active. It does NOT cover the
 # inner-container case where the bind mount strips the ``sandboxes/`` prefix
-# (the agent's view inside the container is plain ``/root/.hermes/...``);
+# (the agent's view inside the container is plain ``/root/.savarez/...``);
 # that case needs a separate dispatch-layer or host-side ``profile_state``
 # tool.
 # ---------------------------------------------------------------------------
 
 
 def _find_sandbox_mirror_segments(parts: tuple) -> Optional[int]:
-    """Return the index of the inner ``.hermes`` part in a sandbox-mirror path.
+    """Return the index of the inner ``.savarez`` part in a sandbox-mirror path.
 
-    Matches ``…/sandboxes/<backend>/<task>/home/.hermes/…`` and returns the
-    index where the inner Hermes-state portion starts. Returns ``None`` for
+    Matches ``…/sandboxes/<backend>/<task>/home/.savarez/…`` and returns the
+    index where the inner Savarez-state portion starts. Returns ``None`` for
     paths that do not contain the sandbox-mirror shape.
     """
     for i, part in enumerate(parts):
         if part != "sandboxes":
             continue
-        # Need at least: sandboxes / <backend> / <task> / home / .hermes / <thing>
+        # Need at least: sandboxes / <backend> / <task> / home / .savarez / <thing>
         if i + 5 >= len(parts):
             continue
-        if parts[i + 3] == "home" and parts[i + 4] == ".hermes":
+        if parts[i + 3] == "home" and parts[i + 4] == ".savarez":
             return i + 4
     return None
 
 
 def classify_sandbox_mirror_target(path: str) -> Optional[dict]:
-    """Classify a write target as a sandbox-mirror of authoritative Hermes state.
+    """Classify a write target as a sandbox-mirror of authoritative Savarez state.
 
     Returns ``None`` when the path does not match the sandbox-mirror shape.
     Otherwise returns a dict with:
 
       * ``target_path``: the resolved path string
-      * ``mirror_root``: the ``…/sandboxes/<backend>/<task>/home/.hermes``
+      * ``mirror_root``: the ``…/sandboxes/<backend>/<task>/home/.savarez``
         prefix (so callers can show users which sandbox owns the mirror)
-      * ``inner_path``: the portion under the mirror's ``.hermes`` (what the
+      * ``inner_path``: the portion under the mirror's ``.savarez`` (what the
         agent likely meant to address on the host)
 
-    Detection is path-shape-only — does not require any Hermes resolver to
+    Detection is path-shape-only — does not require any Savarez resolver to
     succeed, so it works correctly even when called from contexts where
     SAVAREZ_HOME resolution would be ambiguous.
     """
@@ -552,7 +552,7 @@ def get_sandbox_mirror_warning(path: str) -> Optional[str]:
         f"Sandbox-mirror write blocked by soft guard: {info['target_path']} "
         f"sits under {info['mirror_root']!r}, which is a per-task mirror "
         f"created by a non-local terminal backend (docker/daytona/etc.). "
-        f"Writes here land on a copy that the host Hermes process never "
+        f"Writes here land on a copy that the host Savarez process never "
         f"reads — the authoritative file is likely {info['inner_path']!r} "
         f"under the real SAVAREZ_HOME. Use the host-side tool for "
         f"authoritative state (e.g. ``memory`` for memories), or address "
@@ -567,9 +567,9 @@ def get_sandbox_mirror_warning(path: str) -> Optional[str]:
 # Container-context mirror guard (inner-container case — #32049 follow-up)
 #
 # Brian's shape-based detector (#32213) catches paths that still carry the
-# full ``…/sandboxes/<backend>/<task>/home/.hermes/…`` prefix on the host.
+# full ``…/sandboxes/<backend>/<task>/home/.savarez/…`` prefix on the host.
 # But when file tools execute *inside* the container the bind-mount strips
-# that prefix: the agent sees plain ``/root/.hermes/…``.  The root:root
+# that prefix: the agent sees plain ``/root/.savarez/…``.  The root:root
 # ownership on the divergent SOUL.md in #32049 confirms this is the primary
 # failure mode.
 #
@@ -615,7 +615,7 @@ def get_container_mirror_warning(
     mirror_prefix: str | None = None,
 ) -> Optional[str]:
     """Return a model-facing warning when *path* lands in the container's
-    sandbox mirror of authoritative Hermes state.
+    sandbox mirror of authoritative Savarez state.
 
     The caller supplies ``mirror_prefix`` only when the current file-tool
     backend is known to execute inside a Docker sandbox. Same contract as
@@ -629,7 +629,7 @@ def get_container_mirror_warning(
     return (
         f"Sandbox-mirror write blocked by soft guard: {info['target_path']} "
         f"sits under {info['mirror_root']!r}, which is the container's "
-        f"bind-mounted home — a per-task mirror that the host Hermes "
+        f"bind-mounted home — a per-task mirror that the host Savarez "
         f"process never reads. The authoritative file is "
         f"{info['inner_path']!r} under the real SAVAREZ_HOME. Use the "
         f"host-side tool for authoritative state (e.g. ``memory`` for "

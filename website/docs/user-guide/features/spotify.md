@@ -1,8 +1,8 @@
 # Spotify
 
-Hermes can control Spotify directly — playback, queue, search, playlists, saved tracks/albums, and listening history — using Spotify's official Web API with PKCE OAuth. Tokens are stored in `~/.savarez/auth.json` and refreshed automatically on 401; you only log in once per machine.
+Savarez can control Spotify directly — playback, queue, search, playlists, saved tracks/albums, and listening history — using Spotify's official Web API with PKCE OAuth. Tokens are stored in `~/.savarez/auth.json` and refreshed automatically on 401; you only log in once per machine.
 
-Unlike Hermes' built-in OAuth integrations (Google, GitHub Copilot, Codex), Spotify requires every user to register their own lightweight developer app. Spotify does not let third parties ship a public OAuth app that anyone can use. It takes about two minutes and `savarez auth spotify` walks you through it.
+Unlike Savarez' built-in OAuth integrations (Google, GitHub Copilot, Codex), Spotify requires every user to register their own lightweight developer app. Spotify does not let third parties ship a public OAuth app that anyone can use. It takes about two minutes and `savarez auth spotify` walks you through it.
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ savarez tools
 
 Scroll to `🎵 Spotify`, press space to toggle it on, then `s` to save. The same toggle is also available during the first-run `savarez setup` / `savarez setup tools` flow. Spotify stays opt-in, so enabling it there runs the same provider-aware configuration as `savarez tools`.
 
-Hermes drops you straight into the OAuth flow — if you don't have a Spotify app yet, it walks you through creating one inline. Once you finish, the toolset is enabled AND authenticated in one pass.
+Savarez drops you straight into the OAuth flow — if you don't have a Spotify app yet, it walks you through creating one inline. Once you finish, the toolset is enabled AND authenticated in one pass.
 
 If you prefer to do the steps separately (or you're re-authing later), use the two-step flow below.
 
@@ -44,7 +44,7 @@ savarez auth spotify
 
 The 7 Spotify tools only appear in the agent's toolset after step 1 — they're off by default so users who don't want them don't ship extra tool schemas on every API call.
 
-If no `HERMES_SPOTIFY_CLIENT_ID` is set, Hermes walks you through the app registration inline:
+If no `HERMES_SPOTIFY_CLIENT_ID` is set, Savarez walks you through the app registration inline:
 
 1. Opens `https://developer.spotify.com/dashboard` in your browser
 2. Prints the exact values to paste into Spotify's "Create app" form
@@ -60,17 +60,17 @@ When the dashboard opens, click **Create app** and fill in:
 
 | Field | Value |
 |-------|-------|
-| App name | anything (e.g. `hermes-agent`) |
-| App description | anything (e.g. `personal Hermes integration`) |
+| App name | anything (e.g. `savarez-agent`) |
+| App description | anything (e.g. `personal Savarez integration`) |
 | Website | leave blank |
 | Redirect URI | `http://127.0.0.1:43827/spotify/callback` |
 | Which API/SDKs? | check **Web API** |
 
-Agree to the terms and click **Save**. On the next page click **Settings** → copy the **Client ID** and paste it into the Hermes prompt. That's the only value Hermes needs — PKCE doesn't use a client secret.
+Agree to the terms and click **Save**. On the next page click **Settings** → copy the **Client ID** and paste it into the Savarez prompt. That's the only value Savarez needs — PKCE doesn't use a client secret.
 
 ### Running over SSH / in a headless environment
 
-If `SSH_CLIENT` or `SSH_TTY` is set, Hermes skips the automatic browser open during both the wizard and the OAuth step. Copy the dashboard URL and the authorization URL Hermes prints, open them in a browser on your local machine, and proceed normally — the local HTTP listener still runs on the remote host on port `43827`. Your laptop's browser can't reach the remote loopback without an SSH local-forward:
+If `SSH_CLIENT` or `SSH_TTY` is set, Savarez skips the automatic browser open during both the wizard and the OAuth step. Copy the dashboard URL and the authorization URL Savarez prints, open them in a browser on your local machine, and proceed normally — the local HTTP listener still runs on the remote host on port `43827`. Your laptop's browser can't reach the remote loopback without an SSH local-forward:
 
 ```bash
 ssh -N -L 43827:127.0.0.1:43827 user@remote-host
@@ -84,7 +84,7 @@ For jump-box / bastion setups and other gotchas (mosh, tmux, port conflicts), se
 savarez auth status spotify
 ```
 
-Shows whether tokens are present and when the access token expires. Refresh is automatic: when any Spotify API call returns 401, the client exchanges the refresh token and retries once. Refresh tokens persist across Hermes restarts, so you only re-auth if you revoke the app in your Spotify account settings or run `savarez auth logout spotify`.
+Shows whether tokens are present and when the access token expires. Refresh is automatic: when any Spotify API call returns 401, the client exchanges the refresh token and retries once. Refresh tokens persist across Savarez restarts, so you only re-auth if you revoke the app in your Spotify account settings or run `savarez auth logout spotify`.
 
 ## Using it
 
@@ -129,9 +129,9 @@ Control and inspect playback, plus fetch recently played history.
 
 ### Home Assistant-managed speakers
 
-If Home Assistant manages speakers that already support Spotify Connect (for example Sonos, Echo, Nest, or other Connect-capable speakers), they appear in `spotify_devices list` automatically whenever Spotify can see them. Hermes does not need a Home Assistant ↔ Spotify bridge for this path — Spotify handles the device routing natively.
+If Home Assistant manages speakers that already support Spotify Connect (for example Sonos, Echo, Nest, or other Connect-capable speakers), they appear in `spotify_devices list` automatically whenever Spotify can see them. Savarez does not need a Home Assistant ↔ Spotify bridge for this path — Spotify handles the device routing natively.
 
-Ask Hermes to transfer playback by the speaker's display name (for example, “transfer Spotify to the kitchen speaker”), or call `spotify_devices list` and pass the exact `device_id` to `spotify_devices transfer` when scripting. If the speaker is missing, open the Spotify app or the speaker's Spotify integration once so Spotify registers it as an active Connect target.
+Ask Savarez to transfer playback by the speaker's display name (for example, “transfer Spotify to the kitchen speaker”), or call `spotify_devices list` and pass the exact `device_id` to `spotify_devices transfer` when scripting. If the speaker is missing, open the Spotify app or the speaker's Spotify integration once so Spotify registers it as an active Connect target.
 
 #### `spotify_queue`
 | Action | Purpose | Premium? |
@@ -185,7 +185,7 @@ Read-only tools work on Free accounts. Anything that mutates playback or the que
 
 ## Scheduling: Spotify + cron
 
-Because Spotify tools are regular Hermes tools, a cron job running in a Hermes session can trigger playback on any schedule. No new code needed.
+Because Spotify tools are regular Savarez tools, a cron job running in a Savarez session can trigger playback on any schedule. No new code needed.
 
 ### Morning wake-up playlist
 
@@ -197,7 +197,7 @@ savarez cron add \
 ```
 
 What happens at 7am every weekday:
-1. Cron spins up a headless Hermes session.
+1. Cron spins up a headless Savarez session.
 2. Agent reads the prompt, calls `spotify_devices list` to find "kitchen speaker" by name, then `spotify_devices transfer` → `spotify_playback set_volume` → `spotify_playback set_shuffle` → `spotify_search` + `spotify_playback play`.
 3. Music starts on the target speaker. Total cost: one session, a few tool calls, no human input.
 
@@ -235,19 +235,19 @@ To revoke the app on Spotify's side, visit [Apps connected to your account](http
 
 **`403 Forbidden — Premium required`** — You're on a Free account trying to use a playback-mutating action. See the feature matrix above.
 
-**`204 No Content` on `get_currently_playing`** — nothing is currently playing on any device. This is Spotify's normal response, not an error; Hermes surfaces it as an explanatory empty result (`is_playing: false`).
+**`204 No Content` on `get_currently_playing`** — nothing is currently playing on any device. This is Spotify's normal response, not an error; Savarez surfaces it as an explanatory empty result (`is_playing: false`).
 
-**`INVALID_CLIENT: Invalid redirect URI`** — the redirect URI in your Spotify app settings doesn't match what Hermes is using. The default is `http://127.0.0.1:43827/spotify/callback`. Either add that to your app's allowed redirect URIs, or set `HERMES_SPOTIFY_REDIRECT_URI` in `~/.savarez/.env` to whatever you registered.
+**`INVALID_CLIENT: Invalid redirect URI`** — the redirect URI in your Spotify app settings doesn't match what Savarez is using. The default is `http://127.0.0.1:43827/spotify/callback`. Either add that to your app's allowed redirect URIs, or set `HERMES_SPOTIFY_REDIRECT_URI` in `~/.savarez/.env` to whatever you registered.
 
-**`429 Too Many Requests`** — Spotify's rate limit. Hermes returns a friendly error; wait a minute and retry. If this persists, you're probably running a tight loop in a script — Spotify's quota resets roughly every 30 seconds.
+**`429 Too Many Requests`** — Spotify's rate limit. Savarez returns a friendly error; wait a minute and retry. If this persists, you're probably running a tight loop in a script — Spotify's quota resets roughly every 30 seconds.
 
 **`401 Unauthorized` keeps coming back** — Your refresh token was revoked (usually because you removed the app from your account, or the app was deleted). Run `savarez auth spotify` again.
 
-**Wizard doesn't open the browser** — If you're over SSH or in a container without a display, Hermes detects it and skips the auto-open. Copy the dashboard URL it prints and open it manually.
+**Wizard doesn't open the browser** — If you're over SSH or in a container without a display, Savarez detects it and skips the auto-open. Copy the dashboard URL it prints and open it manually.
 
 ## Advanced: custom scopes
 
-By default Hermes requests the scopes needed for every shipped tool. Override if you want to restrict access:
+By default Savarez requests the scopes needed for every shipped tool. Override if you want to restrict access:
 
 ```bash
 savarez auth spotify --scope "user-read-playback-state user-modify-playback-state playlist-read-private"

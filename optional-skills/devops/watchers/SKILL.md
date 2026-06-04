@@ -6,7 +6,7 @@ author: Savarez AI Agent
 license: MIT
 platforms: [linux, macos]
 metadata:
-  hermes:
+  savarez:
     tags: [cron, polling, rss, github, http, automation, monitoring]
     category: devops
     requires_toolsets: [terminal]
@@ -66,7 +66,7 @@ Watch a GitHub repo (set `GITHUB_TOKEN` in `~/.savarez/.env` to avoid the 60 req
 
 ```bash
 python $SAVAREZ_HOME/skills/devops/watchers/scripts/watch_github.py \
-  --name hermes-issues --repo NousResearch/hermes-agent --scope issues
+  --name savarez-issues --repo NousResearch/savarez-agent --scope issues
 ```
 
 Poll an arbitrary JSON API:

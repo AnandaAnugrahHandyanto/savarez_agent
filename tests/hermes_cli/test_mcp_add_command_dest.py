@@ -25,11 +25,11 @@ import argparse
 
 
 def _build_parser():
-    """Minimal replica of the slice of the hermes parser that exhibits
+    """Minimal replica of the slice of the savarez parser that exhibits
     the bug: top-level subparsers (dest="command") and ``mcp add`` with
     its ``--command`` flag.
     """
-    parser = argparse.ArgumentParser(prog="hermes")
+    parser = argparse.ArgumentParser(prog="savarez")
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("chat")

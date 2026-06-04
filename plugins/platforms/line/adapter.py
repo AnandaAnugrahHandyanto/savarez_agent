@@ -1284,7 +1284,7 @@ class LineAdapter(BasePlatformAdapter):
             from hermes_constants import get_hermes_home
             hermes_home = Path(get_hermes_home()).resolve()
         except Exception:
-            hermes_home = Path.home().joinpath(".hermes").resolve()
+            hermes_home = Path.home().joinpath(".savarez").resolve()
 
         allowed_roots = {
             Path(tempfile.gettempdir()).resolve(),
@@ -1603,7 +1603,7 @@ def interactive_setup() -> None:
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system at startup."""
+    """Plugin entry point — called by the Savarez plugin system at startup."""
     ctx.register_platform(
         name="line",
         label="LINE",

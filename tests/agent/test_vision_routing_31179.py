@@ -42,7 +42,7 @@ import pytest
 def isolated_home(monkeypatch):
     """Temp SAVAREZ_HOME with config + clean credential env vars."""
     test_home = tempfile.mkdtemp(prefix="hermes_test_31179_")
-    hermes_home = os.path.join(test_home, ".hermes")
+    hermes_home = os.path.join(test_home, ".savarez")
     os.makedirs(hermes_home)
     monkeypatch.setenv("SAVAREZ_HOME", hermes_home)
 
@@ -61,7 +61,7 @@ def _write_config(home: str, text: str) -> None:
 
 
 def _fresh_modules():
-    """Drop cached hermes modules so each test reloads against current env."""
+    """Drop cached savarez modules so each test reloads against current env."""
     for mod in list(sys.modules.keys()):
         if mod.startswith(("agent.auxiliary_client", "agent.image_routing",
                            "tools.vision_tools", "tools.browser_tool",

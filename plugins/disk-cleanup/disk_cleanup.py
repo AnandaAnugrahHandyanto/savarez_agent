@@ -15,7 +15,7 @@ Rules:
   - chrome-profile→ prompt after 14 days (deep only)
   - >500 MB files → prompt always (deep only)
 
-Scope: strictly SAVAREZ_HOME and /tmp/hermes-*
+Scope: strictly SAVAREZ_HOME and /tmp/savarez-*
 Never touches: ~/.savarez/logs/ or any system directory.
 """
 
@@ -35,7 +35,7 @@ except Exception:  # pragma: no cover — plugin may load before constants resol
 
     def get_hermes_home() -> Path:  # type: ignore[no-redef]
         val = (os.environ.get("SAVAREZ_HOME") or "").strip()
-        return Path(val).resolve() if val else (Path.home() / ".hermes").resolve()
+        return Path(val).resolve() if val else (Path.home() / ".savarez").resolve()
 
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ def get_log_file() -> Path:
 # ---------------------------------------------------------------------------
 
 def is_safe_path(path: Path) -> bool:
-    """Accept only paths under SAVAREZ_HOME or ``/tmp/hermes-*``.
+    """Accept only paths under SAVAREZ_HOME or ``/tmp/savarez-*``.
 
     Rejects Windows mounts (``/mnt/c`` etc.) and any system directory.
     """
@@ -74,9 +74,9 @@ def is_safe_path(path: Path) -> bool:
         return True
     except (ValueError, OSError):
         pass
-    # Allow /tmp/hermes-* explicitly
+    # Allow /tmp/savarez-* explicitly
     parts = path.parts
-    if len(parts) >= 3 and parts[1] == "tmp" and parts[2].startswith("hermes-"):
+    if len(parts) >= 3 and parts[1] == "tmp" and parts[2].startswith("savarez-"):
         return True
     return False
 
@@ -298,7 +298,7 @@ def quick() -> Dict[str, Any]:
     _PROTECTED_TOP_LEVEL = {
         "logs", "memories", "sessions", "cron", "cronjobs",
         "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
-        "hermes-agent", "backups", "profiles", ".worktrees",
+        "savarez-agent", "backups", "profiles", ".worktrees",
     }
     empty_removed = 0
     try:
@@ -477,7 +477,7 @@ def guess_category(path: Path) -> Optional[str]:
         if top in {
             "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
             "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
-            "auth.json", "hermes-agent",
+            "auth.json", "savarez-agent",
         }:
             return None
         if top == "cron" or top == "cronjobs":
@@ -492,7 +492,7 @@ def guess_category(path: Path) -> Optional[str]:
         if top == "cache":
             return "temp"
     except ValueError:
-        # Path isn't under SAVAREZ_HOME (e.g. /tmp/hermes-*) — fall through.
+        # Path isn't under SAVAREZ_HOME (e.g. /tmp/savarez-*) — fall through.
         pass
 
     name = path.name

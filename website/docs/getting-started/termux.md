@@ -4,7 +4,7 @@ title: "Android / Termux"
 description: "Run Savarez AI Agent directly on an Android phone with Termux"
 ---
 
-# Hermes on Android with Termux
+# Savarez on Android with Termux
 
 This is the tested path for running Savarez AI Agent directly on an Android phone through [Termux](https://termux.dev/).
 
@@ -13,7 +13,7 @@ It gives you a working local CLI on the phone, plus the core extras that are cur
 ## What is supported in the tested path?
 
 The tested Termux bundle installs:
-- the Hermes CLI
+- the Savarez CLI
 - cron support
 - PTY/background terminal support
 - Telegram gateway support (manual / best-effort background runs)
@@ -37,16 +37,16 @@ A few features still need desktop/server-style dependencies that are not publish
 - Docker-based terminal isolation is not available inside Termux
 - Android may still suspend Termux background jobs, so gateway persistence is best-effort rather than a normal managed service
 
-That does not stop Hermes from working well as a phone-native CLI agent — it just means the recommended mobile install is intentionally narrower than the desktop/server install.
+That does not stop Savarez from working well as a phone-native CLI agent — it just means the recommended mobile install is intentionally narrower than the desktop/server install.
 
 ---
 
 ## Option 1: One-line installer
 
-Hermes now ships a Termux-aware installer path:
+Savarez now ships a Termux-aware installer path:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
 ```
 
 On Termux, the installer automatically:
@@ -77,11 +77,11 @@ Why these packages?
 - `ripgrep` — fast file search
 - `ffmpeg` — media / TTS conversions
 
-### 2. Clone Hermes
+### 2. Clone Savarez
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
+git clone https://github.com/NousResearch/savarez-agent.git
+cd savarez-agent
 ```
 
 ### 3. Create a virtual environment
@@ -110,7 +110,7 @@ python -m pip install -e '.' -c constraints-termux.txt
 ### 5. Put `savarez` on your Termux PATH
 
 ```bash
-ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
+ln -sf "$PWD/venv/bin/savarez" "$PREFIX/bin/savarez"
 ```
 
 `$PREFIX/bin` is already on PATH in Termux, so this makes the `savarez` command persist across new shells without re-activating the venv every time.
@@ -118,14 +118,14 @@ ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
 ### 6. Verify the install
 
 ```bash
-hermes version
+savarez version
 savarez doctor
 ```
 
-### 7. Start Hermes
+### 7. Start Savarez
 
 ```bash
-hermes
+savarez
 ```
 
 ---

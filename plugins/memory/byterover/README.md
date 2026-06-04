@@ -14,7 +14,7 @@ npm install -g byterover-cli
 ## Setup
 
 ```bash
-hermes memory setup    # select "byterover"
+savarez memory setup    # select "byterover"
 ```
 
 Or manually:

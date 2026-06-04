@@ -1,17 +1,17 @@
 ---
 sidebar_position: 3
 title: "内置工具参考"
-description: "Hermes 内置工具权威参考，按工具集分组"
+description: "Savarez 内置工具权威参考，按工具集分组"
 ---
 
 # 内置工具参考
 
-本页记录 Hermes 的内置工具，按工具集分组。可用性因平台、凭据和已启用的工具集而异。
+本页记录 Savarez 的内置工具，按工具集分组。可用性因平台、凭据和已启用的工具集而异。
 
 **当前注册表快速统计：** 约 70 个工具 —— 10 个浏览器工具（核心）+ 2 个 CDP 门控浏览器工具、4 个文件工具、10 个 RL 工具、4 个 Home Assistant 工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、7 个 Spotify 工具（由内置 `spotify` 插件注册）、5 个 Yuanbao 工具、7 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`mixture_of_agents`、`send_message`、`todo`、`computer_use`、`process`）。
 
 :::tip MCP 工具
-除内置工具外，Hermes 还可从 MCP 服务器动态加载工具。MCP 工具以 `mcp_<server>_` 为前缀（例如，`github` MCP 服务器的 `mcp_github_create_issue`）。配置方法见 [MCP 集成](/user-guide/features/mcp)。
+除内置工具外，Savarez 还可从 MCP 服务器动态加载工具。MCP 工具以 `mcp_<server>_` 为前缀（例如，`github` MCP 服务器的 `mcp_github_create_issue`）。配置方法见 [MCP 集成](/user-guide/features/mcp)。
 :::
 
 ## `browser` 工具集
@@ -48,7 +48,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
-| `execute_code` | 运行可以编程方式调用 Hermes 工具的 Python 脚本。当需要 3 次以上工具调用且调用之间有处理逻辑、需要在大型工具输出进入上下文前过滤/压缩、需要条件分支（…）时使用。 | — |
+| `execute_code` | 运行可以编程方式调用 Savarez 工具的 Python 脚本。当需要 3 次以上工具调用且调用之间有处理逻辑、需要在大型工具输出进入上下文前过滤/压缩、需要条件分支（…）时使用。 | — |
 
 ## `cronjob` 工具集
 
@@ -64,7 +64,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `feishu_doc` 工具集
 
-仅限飞书文档评论智能回复处理器（`gateway/platforms/feishu_comment.py`）使用。不在 `hermes-cli` 或常规飞书聊天适配器中暴露。
+仅限飞书文档评论智能回复处理器（`gateway/platforms/feishu_comment.py`）使用。不在 `savarez-cli` 或常规飞书聊天适配器中暴露。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
@@ -184,7 +184,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `video` 工具集
 
-可选工具集（默认 `hermes-cli` 集中不加载）。通过 `--toolsets video` 添加，或在 `toolsets:` 配置中包含 `video`。
+可选工具集（默认 `savarez-cli` 集中不加载）。通过 `--toolsets video` 添加，或在 `toolsets:` 配置中包含 `video`。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
@@ -192,7 +192,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `video_gen` 工具集
 
-可选工具集（默认 `hermes-cli` 集中不加载）。通过 `--toolsets video_gen` 添加，或在 `savarez tools` → Video Generation 中启用（同时引导你选择后端）。
+可选工具集（默认 `savarez-cli` 集中不加载）。通过 `--toolsets video_gen` 添加，或在 `savarez tools` → Video Generation 中启用（同时引导你选择后端）。
 
 后端以插件形式存放于 `plugins/video_gen/<name>/`：
 
@@ -226,7 +226,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `discord` 工具集
 
-在 `hermes-discord` 平台工具集（仅 gateway）上注册。使用与消息适配器相同的 bot token。
+在 `savarez-discord` 平台工具集（仅 gateway）上注册。使用与消息适配器相同的 bot token。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
@@ -234,7 +234,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `discord_admin` 工具集
 
-在 `hermes-discord` 平台工具集上注册。审核操作需要 bot 持有相应的 Discord 权限。
+在 `savarez-discord` 平台工具集上注册。审核操作需要 bot 持有相应的 Discord 权限。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
@@ -242,7 +242,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `spotify` 工具集
 
-由内置 `spotify` 插件注册。需要 OAuth token——运行一次 `hermes spotify setup` 进行授权。
+由内置 `spotify` 插件注册。需要 OAuth token——运行一次 `savarez spotify setup` 进行授权。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
@@ -254,9 +254,9 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | `spotify_albums` | 获取 Spotify 专辑元数据或专辑曲目。 | Spotify OAuth |
 | `spotify_library` | 列出、保存或移除用户已保存的 Spotify 曲目或专辑。 | Spotify OAuth |
 
-## `hermes-yuanbao` 工具集
+## `savarez-yuanbao` 工具集
 
-仅在 `hermes-yuanbao` 平台工具集上注册。元宝是腾讯的聊天应用；这些工具驱动其私信/群组/表情包 API。
+仅在 `savarez-yuanbao` 平台工具集上注册。元宝是腾讯的聊天应用；这些工具驱动其私信/群组/表情包 API。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|

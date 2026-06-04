@@ -488,7 +488,7 @@ def test_default_slot_autostarts_when_root_state_running(tmp_path: Path) -> None
     "container_argv",
     [
         ("gateway", "run"),
-        ("/init", "/opt/hermes/docker/main-wrapper.sh", "gateway", "run"),
+        ("/init", "/opt/savarez/docker/main-wrapper.sh", "gateway", "run"),
     ],
 )
 def test_legacy_gateway_run_cmd_seeds_default_running_state(
@@ -520,7 +520,7 @@ def test_legacy_gateway_run_cmd_seeds_default_running_state(
     "container_argv",
     [
         ("gateway", "run", "--no-supervise"),
-        ("/init", "/opt/hermes/docker/main-wrapper.sh", "gateway", "run", "--no-supervise"),
+        ("/init", "/opt/savarez/docker/main-wrapper.sh", "gateway", "run", "--no-supervise"),
     ],
 )
 def test_legacy_gateway_run_no_supervise_does_not_seed_s6_state(

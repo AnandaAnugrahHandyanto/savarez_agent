@@ -2,7 +2,7 @@
 """Google Workspace API CLI for Savarez AI Agent.
 
 Uses the Google Workspace CLI (`gws`) when available, but preserves the
-existing Hermes-facing JSON contract and falls back to the Python client
+existing Savarez-facing JSON contract and falls back to the Python client
 libraries if `gws` is not installed.
 
 Usage:

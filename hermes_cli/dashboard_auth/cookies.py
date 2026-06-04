@@ -29,10 +29,10 @@ https://datatracker.ietf.org/doc/html/draft-west-cookie-prefixes):
   * Gated HTTPS, direct deploy (Path=/) — ``__Host-`` prefix. Binds the
     cookie to the exact origin (no Domain attribute) — strongest spec
     guarantee.
-  * Gated HTTPS, behind a reverse-proxy prefix (Path=/hermes) —
+  * Gated HTTPS, behind a reverse-proxy prefix (Path=/savarez) —
     ``__Secure-`` prefix. ``__Host-`` is disallowed when Path != "/";
     ``__Secure-`` keeps the Secure-required hardening without the
-    Path constraint, and the explicit ``Path=/hermes`` covers
+    Path constraint, and the explicit ``Path=/savarez`` covers
     same-origin app isolation.
 
 The setters and readers BOTH consult the active prefix because the
@@ -89,7 +89,7 @@ def _resolved_name(bare: str, *, use_https: bool, prefix: str) -> str:
 def _cookie_path(prefix: str) -> str:
     """Cookie ``Path`` attribute for the active deploy shape.
 
-    Under ``X-Forwarded-Prefix: /hermes`` we want ``Path=/hermes`` so:
+    Under ``X-Forwarded-Prefix: /savarez`` we want ``Path=/savarez`` so:
       a) the browser sends the cookie back on requests under the prefix
          (browsers omit the cookie if request path doesn't start with
          Path);
@@ -132,7 +132,7 @@ def set_session_cookies(
     persist anything. If a future contract revision starts emitting refresh
     tokens, this helper will write the RT cookie again with no other change.
 
-    ``prefix`` is the normalised X-Forwarded-Prefix value (e.g. ``/hermes``)
+    ``prefix`` is the normalised X-Forwarded-Prefix value (e.g. ``/savarez``)
     or ``""`` for a direct deploy. It influences both the cookie name
     (``__Host-`` vs ``__Secure-`` vs bare) and the ``Path`` attribute.
     """

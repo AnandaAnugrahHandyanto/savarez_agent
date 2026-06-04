@@ -76,8 +76,8 @@ class _TinyImageHandler(http.server.BaseHTTPRequestHandler):
 @pytest.fixture
 def http_server(tmp_path, monkeypatch):
     """Spin up a localhost HTTP server and isolate SAVAREZ_HOME under tmp_path."""
-    monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path / ".hermes"))
-    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path / ".savarez"))
+    (tmp_path / ".savarez").mkdir()
 
     # Force the constants/image cache helpers to re-read SAVAREZ_HOME.
     import sys

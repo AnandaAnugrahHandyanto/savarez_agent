@@ -25,7 +25,7 @@ Public-records OSINT investigation framework — SEC EDGAR filings, USAspending 
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Savarez loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # OSINT Investigation — Public Records Cross-Reference
@@ -132,7 +132,7 @@ python3 SKILL_DIR/scripts/fetch_ofac_sdn.py --out data/ofac_sdn.csv
 
 # ICIJ Offshore Leaks — downloads ~70 MB bulk CSV on first use,
 # then searches it locally. Cached for 30 days under
-# $HERMES_OSINT_CACHE/icij/ (default: ~/.cache/hermes-osint/icij/).
+# $HERMES_OSINT_CACHE/icij/ (default: ~/.cache/savarez-osint/icij/).
 python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
     --out data/icij.csv
 ```

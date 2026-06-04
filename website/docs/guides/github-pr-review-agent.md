@@ -27,7 +27,7 @@ description: "Build an automated AI code reviewer that monitors your repos, revi
 This guide uses **cron jobs** to poll for PRs on a schedule — no server or public endpoint needed. Works behind NAT and firewalls.
 
 :::tip Want real-time reviews instead?
-If you have a public endpoint available, check out [Automated GitHub PR Comments with Webhooks](./webhook-github-pr-review.md) — GitHub pushes events to Hermes instantly when PRs are opened or updated.
+If you have a public endpoint available, check out [Automated GitHub PR Comments with Webhooks](./webhook-github-pr-review.md) — GitHub pushes events to Savarez instantly when PRs are opened or updated.
 :::
 
 ---
@@ -60,16 +60,16 @@ Use `deliver: "local"` to save reviews to `~/.savarez/cron/output/`. Great for t
 
 ## Step 1: Verify the Setup
 
-Make sure Hermes can access GitHub. Start a chat:
+Make sure Savarez can access GitHub. Start a chat:
 
 ```bash
-hermes
+savarez
 ```
 
 Test with a simple command:
 
 ```
-Run: gh pr list --repo NousResearch/hermes-agent --state open --limit 3
+Run: gh pr list --repo NousResearch/savarez-agent --state open --limit 3
 ```
 
 You should see a list of open PRs. If this works, you're ready.
@@ -78,16 +78,16 @@ You should see a list of open PRs. If this works, you're ready.
 
 ## Step 2: Try a Manual Review
 
-Still in the chat, ask Hermes to review a real PR:
+Still in the chat, ask Savarez to review a real PR:
 
 ```
 Review this pull request. Read the diff, check for bugs, security issues,
 and code quality. Be specific about line numbers and quote problematic code.
 
-Run: gh pr diff 3888 --repo NousResearch/hermes-agent
+Run: gh pr diff 3888 --repo NousResearch/savarez-agent
 ```
 
-Hermes will:
+Savarez will:
 1. Execute `gh pr diff` to fetch the code changes
 2. Read through the entire diff
 3. Produce a structured review with specific findings
@@ -98,7 +98,7 @@ If you're happy with the quality, time to automate it.
 
 ## Step 3: Create a Review Skill
 
-A skill gives Hermes consistent review guidelines that persist across sessions and cron runs. Without one, review quality varies.
+A skill gives Savarez consistent review guidelines that persist across sessions and cron runs. Without one, review quality varies.
 
 ```bash
 mkdir -p ~/.savarez/skills/code-review
@@ -143,7 +143,7 @@ Verify it loaded — start `savarez` and you should see `code-review` in the ski
 
 ## Step 4: Teach It Your Conventions
 
-This is what makes the reviewer actually useful. Start a session and teach Hermes your team's standards:
+This is what makes the reviewer actually useful. Start a session and teach Savarez your team's standards:
 
 ```
 Remember: In our backend repo, we use Python with FastAPI.
@@ -280,7 +280,7 @@ The gateway runs in a minimal environment. Ensure `gh` is in the system PATH and
 
 ### Reviews are too generic
 1. Add the `code-review` skill (Step 3)
-2. Teach Hermes your conventions via memory (Step 4)
+2. Teach Savarez your conventions via memory (Step 4)
 3. The more context it has about your stack, the better the reviews
 
 ### Cron job doesn't run
@@ -298,6 +298,6 @@ GitHub allows 5,000 API requests/hour for authenticated users. Each PR review us
 
 - **[Webhook-Based PR Reviews](./webhook-github-pr-review.md)** — get instant reviews when PRs are opened (requires a public endpoint)
 - **[Daily Briefing Bot](/guides/daily-briefing-bot)** — combine PR reviews with your morning news digest
-- **[Build a Plugin](/guides/build-a-hermes-plugin)** — wrap the review logic into a shareable plugin
+- **[Build a Plugin](/guides/build-a-savarez-plugin)** — wrap the review logic into a shareable plugin
 - **[Profiles](/user-guide/profiles)** — run a dedicated reviewer profile with its own memory and config
 - **[Fallback Providers](/user-guide/features/fallback-providers)** — ensure reviews run even when one provider is down

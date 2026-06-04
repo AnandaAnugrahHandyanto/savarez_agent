@@ -29,7 +29,7 @@ def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch
     assert "gpt-5.1-codex" in models
     assert "gpt-5.3-codex" in models
     # Codex CLI marks Spark unsupported in the public API, but the Codex
-    # backend still accepts it via the OAuth-backed CLI/Hermes route.
+    # backend still accepts it via the OAuth-backed CLI/Savarez route.
     assert "gpt-5.3-codex-spark" in models
     # Non-codex-suffixed models are included when the cache says they're available
     assert "gpt-5.4" in models
@@ -163,7 +163,7 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
     monkeypatch.setattr("builtins.input", lambda prompt="": next(choices))
     monkeypatch.setattr(
         "hermes_cli.auth.get_codex_auth_status",
-        lambda: {"logged_in": True, "source": "hermes-auth-store"},
+        lambda: {"logged_in": True, "source": "savarez-auth-store"},
     )
     monkeypatch.setattr(
         "hermes_cli.auth.resolve_codex_runtime_credentials",
@@ -202,7 +202,7 @@ def test_model_command_uses_existing_codex_session_without_relogin(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt="": next(choices))
     monkeypatch.setattr(
         "hermes_cli.auth.get_codex_auth_status",
-        lambda: {"logged_in": True, "source": "hermes-auth-store"},
+        lambda: {"logged_in": True, "source": "savarez-auth-store"},
     )
     monkeypatch.setattr(
         "hermes_cli.auth.resolve_codex_runtime_credentials",

@@ -29,7 +29,7 @@ Teams 会议流水线使用**仅限应用**（daemon）身份验证从 Microsoft
 2. 导航至 **Identity → Applications → App registrations**。
 3. 点击 **New registration**。
 4. 填写以下内容：
-   - **Name：**`Hermes Teams Meeting Pipeline`（或任何你能识别的名称）。
+   - **Name：**`Savarez Teams Meeting Pipeline`（或任何你能识别的名称）。
    - **Supported account types：***Accounts in this organizational directory only (Single tenant)*。
    - **Redirect URI：**留空——仅限应用的身份验证不需要此项。
 5. 点击 **Register**。
@@ -43,7 +43,7 @@ Teams 会议流水线使用**仅限应用**（daemon）身份验证从 Microsoft
 
 1. 在左侧导航栏中，打开 **Certificates & secrets**。
 2. 点击 **New client secret**。
-3. **Description：**`hermes-graph-secret`。**Expires：**根据你的轮换策略选择合适的值（通常为 6-24 个月）。
+3. **Description：**`savarez-graph-secret`。**Expires：**根据你的轮换策略选择合适的值（通常为 6-24 个月）。
 4. 点击 **Add**。
 5. 立即复制 **Value** 列的值——该值仅显示一次。此值即为 `MSGRAPH_CLIENT_SECRET`。
 
@@ -95,19 +95,19 @@ Microsoft 专门为 Teams 提供了**应用程序访问策略**（Application Ac
 在已安装并连接 MicrosoftTeams 模块的管理员 PowerShell 中（`Connect-MicrosoftTeams`）执行：
 
 ```powershell
-# Create a policy scoped to the Hermes app
+# Create a policy scoped to the Savarez app
 New-CsApplicationAccessPolicy `
-  -Identity "Hermes-Meeting-Pipeline-Policy" `
+  -Identity "Savarez-Meeting-Pipeline-Policy" `
   -AppIds "<MSGRAPH_CLIENT_ID>" `
-  -Description "Restrict Hermes meeting pipeline to allow-listed users"
+  -Description "Restrict Savarez meeting pipeline to allow-listed users"
 
 # Grant the policy to specific users whose meetings the pipeline may read
 Grant-CsApplicationAccessPolicy `
-  -PolicyName "Hermes-Meeting-Pipeline-Policy" `
+  -PolicyName "Savarez-Meeting-Pipeline-Policy" `
   -Identity "alice@example.com"
 
 Grant-CsApplicationAccessPolicy `
-  -PolicyName "Hermes-Meeting-Pipeline-Policy" `
+  -PolicyName "Savarez-Meeting-Pipeline-Policy" `
   -Identity "bob@example.com"
 ```
 
@@ -137,7 +137,7 @@ chmod 600 ~/.savarez/.env
 
 ## 步骤 6：验证令牌流程
 
-Hermes 内置了 Graph 身份验证冒烟测试。在 Hermes 安装目录下执行：
+Savarez 内置了 Graph 身份验证冒烟测试。在 Savarez 安装目录下执行：
 
 ```python
 python -c "

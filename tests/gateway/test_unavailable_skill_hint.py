@@ -28,7 +28,7 @@ import pytest
 @pytest.fixture
 def tmp_skills(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Isolated skills dir + SAVAREZ_HOME so the real user config is untouched."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".savarez"
     home.mkdir()
     (home / "skills").mkdir()
     monkeypatch.setenv("SAVAREZ_HOME", str(home))

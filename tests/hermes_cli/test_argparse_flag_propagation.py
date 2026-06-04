@@ -1,7 +1,7 @@
 """Tests for parent→subparser flag propagation.
 
 When flags like --yolo, -w, -s exist on both the parent parser and the 'chat'
-subparser, placing the flag BEFORE the subcommand (e.g. 'hermes --yolo chat')
+subparser, placing the flag BEFORE the subcommand (e.g. 'savarez --yolo chat')
 must not silently drop the flag value.
 
 Regression test for: argparse subparser default=False overwriting parent's
@@ -19,13 +19,13 @@ import pytest
 
 
 def _build_parser():
-    """Build the hermes argument parser from the real code.
+    """Build the savarez argument parser from the real code.
 
     We import the real main() and extract the parser it builds.
     Since main() is a large function that does much more than parse args,
     we replicate just the parser structure here to avoid side effects.
     """
-    parser = argparse.ArgumentParser(prog="hermes")
+    parser = argparse.ArgumentParser(prog="savarez")
     parser.add_argument("--resume", "-r", metavar="SESSION", default=None)
     parser.add_argument(
         "--continue", "-c", dest="continue_last", nargs="?",
@@ -167,7 +167,7 @@ class TestAcceptHooksOnAgentSubparsers:
         ["acp", "--accept-hooks", "--help"],
     ])
     def test_accepted_at_every_position(self, argv):
-        """Invoking `hermes <argv>` must exit 0 (help) rather than
+        """Invoking `savarez <argv>` must exit 0 (help) rather than
         failing with `unrecognized arguments`."""
         import subprocess
         result = subprocess.run(

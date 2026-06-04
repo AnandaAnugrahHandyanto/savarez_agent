@@ -1,4 +1,4 @@
-"""Tests for ``hermes gui`` desktop launcher wiring."""
+"""Tests for ``savarez gui`` desktop launcher wiring."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _ns(**kw):
 
 
 def _make_desktop_tree(tmp_path: Path) -> Path:
-    root = tmp_path / "hermes-agent"
+    root = tmp_path / "savarez-agent"
     desktop_dir = root / "apps" / "desktop"
     desktop_dir.mkdir(parents=True)
     (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
@@ -40,11 +40,11 @@ def _make_packaged_executable(root: Path, monkeypatch, platform: str = "darwin")
     monkeypatch.setattr(cli_main.sys, "platform", platform)
     desktop_dir = root / "apps" / "desktop"
     if platform == "darwin":
-        exe = desktop_dir / "release" / "mac-arm64" / "Hermes.app" / "Contents" / "MacOS" / "Hermes"
+        exe = desktop_dir / "release" / "mac-arm64" / "Savarez.app" / "Contents" / "MacOS" / "Savarez"
     elif platform == "win32":
-        exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
+        exe = desktop_dir / "release" / "win-unpacked" / "Savarez.exe"
     else:
-        exe = desktop_dir / "release" / "linux-unpacked" / "hermes"
+        exe = desktop_dir / "release" / "linux-unpacked" / "savarez"
     exe.parent.mkdir(parents=True)
     exe.write_text("", encoding="utf-8")
     return exe
@@ -79,7 +79,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
 
 def test_gui_forwards_desktop_environment_overrides(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
-    hermes_root = tmp_path / "custom-hermes"
+    hermes_root = tmp_path / "custom-savarez"
     cwd = tmp_path / "project"
     hermes_root.mkdir()
     cwd.mkdir()
@@ -249,8 +249,8 @@ def test_gui_source_mode_uses_renderer_build_and_electron(tmp_path, monkeypatch)
 @pytest.mark.parametrize(
     "argv",
     [
-        ["hermes", "gui"],
-        ["hermes", "-m", "gpt5", "gui"],
+        ["savarez", "gui"],
+        ["savarez", "-m", "gpt5", "gui"],
     ],
 )
 def test_gui_is_known_builtin_for_plugin_gating(argv):
@@ -313,7 +313,7 @@ def test_compute_desktop_content_hash_stable(tmp_path, monkeypatch):
     """_compute_desktop_content_hash returns the same digest for identical trees."""
     root = _make_desktop_tree(tmp_path)
     (root / "apps" / "desktop" / "main.js").write_text("console.log('hi')", encoding="utf-8")
-    (root / "package.json").write_text('{"name":"hermes"}', encoding="utf-8")
+    (root / "package.json").write_text('{"name":"savarez"}', encoding="utf-8")
     (root / "package-lock.json").write_text('{}', encoding="utf-8")
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
 

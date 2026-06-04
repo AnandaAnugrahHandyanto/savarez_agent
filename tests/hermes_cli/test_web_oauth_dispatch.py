@@ -31,7 +31,7 @@ from fastapi.testclient import TestClient
 from hermes_cli.web_server import _SESSION_TOKEN, app
 
 client = TestClient(app)
-HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
+HEADERS = {"X-Savarez-Session-Token": _SESSION_TOKEN}
 
 
 def _fake_nous_device_data():
@@ -220,7 +220,7 @@ def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(
         "status": "pending",
         "error_message": None,
         "portal_base_url": "https://portal.nousresearch.com",
-        "client_id": "hermes-cli",
+        "client_id": "savarez-cli",
         "device_code": "device-code",
         "interval": 5,
         "expires_at": time.time() + 600,

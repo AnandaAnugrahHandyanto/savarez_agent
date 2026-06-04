@@ -138,12 +138,12 @@ class TestHappyPath:
     def test_custom_redirect_uri_is_forwarded(self, capsys):
         captured: dict = {}
         self._run(
-            args=_ns(redirect_uri="https://hermes.example.com/auth/callback"),
+            args=_ns(redirect_uri="https:/.savarez.example.com/auth/callback"),
             captured=captured,
         )
         assert (
             captured["body"]["custom_redirect_uri"]
-            == "https://hermes.example.com/auth/callback"
+            == "https:/.savarez.example.com/auth/callback"
         )
 
     def test_non_default_portal_is_persisted(self, capsys):

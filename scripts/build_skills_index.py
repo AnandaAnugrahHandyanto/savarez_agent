@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Hermes Skills Index — a centralized JSON catalog of all skills.
+"""Build the Savarez Skills Index — a centralized JSON catalog of all skills.
 
 This script crawls every skill source (skills.sh, GitHub taps, official,
 clawhub, lobehub, claude-marketplace) and writes a JSON index with resolved
@@ -29,7 +29,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
 # Ensure SAVAREZ_HOME is set (needed by tools/skills_hub.py imports)
-os.environ.setdefault("SAVAREZ_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
+os.environ.setdefault("SAVAREZ_HOME", os.path.join(os.path.expanduser("~"), ".savarez"))
 
 from tools.skills_hub import (
     GitHubAuth,
@@ -241,7 +241,7 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
 
 
 def main():
-    print("Building Hermes Skills Index...", flush=True)
+    print("Building Savarez Skills Index...", flush=True)
     overall_start = time.time()
 
     auth = GitHubAuth()

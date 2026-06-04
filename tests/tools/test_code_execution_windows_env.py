@@ -317,7 +317,7 @@ class TestPosixEquivalence:
         "CONDA_PREFIX": "/opt/conda",
         # HERMES_* handling (#27303): only the operational allowlist passes;
         # every other HERMES_* is dropped (the broad prefix was removed).
-        "SAVAREZ_HOME": "/home/alice/.hermes",        # allowlisted → kept
+        "SAVAREZ_HOME": "/home/alice/.savarez",        # allowlisted → kept
         "HERMES_PROFILE": "default",                 # allowlisted → kept
         "HERMES_INTERACTIVE": "1",                   # not allowlisted → dropped
         "HERMES_BASE_URL": "https://api.internal",   # not allowlisted → dropped

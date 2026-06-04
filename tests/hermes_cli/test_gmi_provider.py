@@ -147,7 +147,7 @@ class TestGmiDoctor:
     def test_run_doctor_checks_gmi_models_endpoint(self, monkeypatch, tmp_path):
         from hermes_cli import doctor as doctor_mod
 
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".savarez"
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
         (home / ".env").write_text("GMI_API_KEY=***\n", encoding="utf-8")
@@ -307,7 +307,7 @@ class TestGmiMainFlow:
             "hermes_cli.main.cmd_chat",
             lambda args: recorded.setdefault("provider", args.provider),
         )
-        monkeypatch.setattr(sys, "argv", ["hermes", "chat", "--provider", "gmi"])
+        monkeypatch.setattr(sys, "argv", ["savarez", "chat", "--provider", "gmi"])
 
         from hermes_cli.main import main
 

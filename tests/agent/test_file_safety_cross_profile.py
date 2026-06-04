@@ -1,12 +1,12 @@
-"""Tests for the cross-Hermes-profile write guard in agent/file_safety.
+"""Tests for the cross-Savarez-profile write guard in agent/file_safety.
 
-The guard fires when a tool tries to write into another Hermes profile's
+The guard fires when a tool tries to write into another Savarez profile's
 skills/plugins/cron/memories directory. It's a soft guard — defense in
 depth, NOT a security boundary — but it prevents the agent from silently
 corrupting a profile that belongs to a different session.
 
-Reference: May 2026 incident — a hermes-security profile session
-accidentally edited skills under both ~/.savarez/profiles/hermes-security/skills/
+Reference: May 2026 incident — a savarez-security profile session
+accidentally edited skills under both ~/.savarez/profiles/savarez-security/skills/
 AND ~/.savarez/skills/ (the default profile's skills), realizing only
 afterwards that the second path belonged to a different profile.
 """
@@ -18,14 +18,14 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Helpers — set up a fake Hermes root with two profiles, monkeypatch the
+# Helpers — set up a fake Savarez root with two profiles, monkeypatch the
 # resolver helpers so the classifier sees the test layout.
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def fake_hermes(tmp_path, monkeypatch):
-    """Build a fake Hermes layout:
+    """Build a fake Savarez layout:
 
         <tmp>/
           skills/foo/SKILL.md           # default profile
@@ -33,20 +33,20 @@ def fake_hermes(tmp_path, monkeypatch):
           cron/<state>
           memories/MEMORY.md
           profiles/
-            hermes-security/
+            savarez-security/
               skills/foo/SKILL.md       # named profile
               plugins/...
             coder/
               skills/foo/SKILL.md       # another named profile
     """
-    root = tmp_path / "fake-hermes"
+    root = tmp_path / "fake-savarez"
     (root / "skills" / "foo").mkdir(parents=True)
     (root / "skills" / "foo" / "SKILL.md").write_text("# default skill\n")
     (root / "plugins" / "foo").mkdir(parents=True)
     (root / "memories").mkdir(parents=True)
     (root / "cron").mkdir(parents=True)
 
-    sec_home = root / "profiles" / "hermes-security"
+    sec_home = root / "profiles" / "savarez-security"
     (sec_home / "skills" / "foo").mkdir(parents=True)
     (sec_home / "skills" / "foo" / "SKILL.md").write_text("# sec skill\n")
     (sec_home / "plugins").mkdir(parents=True)
@@ -92,7 +92,7 @@ class TestResolveActiveProfileName:
     def test_named_profile(self, fake_hermes, monkeypatch):
         _set_active_home(monkeypatch, fake_hermes["security_home"])
         from agent.file_safety import _resolve_active_profile_name
-        assert _resolve_active_profile_name() == "hermes-security"
+        assert _resolve_active_profile_name() == "savarez-security"
 
     def test_falls_back_to_default_on_resolution_failure(self, fake_hermes, monkeypatch):
         """If SAVAREZ_HOME resolution raises, return 'default' rather than crashing the tool."""
@@ -128,7 +128,7 @@ class TestClassifyCrossProfileTarget:
             str(fake_hermes["default_home"] / "skills" / "foo" / "SKILL.md")
         )
         assert result is not None
-        assert result["active_profile"] == "hermes-security"
+        assert result["active_profile"] == "savarez-security"
         assert result["target_profile"] == "default"
         assert result["area"] == "skills"
 
@@ -141,7 +141,7 @@ class TestClassifyCrossProfileTarget:
         )
         assert result is not None
         assert result["active_profile"] == "default"
-        assert result["target_profile"] == "hermes-security"
+        assert result["target_profile"] == "savarez-security"
 
     def test_named_to_named_cross_profile(self, fake_hermes, monkeypatch):
         _set_active_home(monkeypatch, fake_hermes["security_home"])
@@ -164,7 +164,7 @@ class TestClassifyCrossProfileTarget:
     def test_non_hermes_path_returns_none(self, fake_hermes, monkeypatch, tmp_path):
         _set_active_home(monkeypatch, fake_hermes["security_home"])
         from agent.file_safety import classify_cross_profile_target
-        # Path outside any Hermes root
+        # Path outside any Savarez root
         assert classify_cross_profile_target(str(tmp_path / "random.txt")) is None
 
     def test_hermes_config_not_classified_as_cross_profile(self, fake_hermes, monkeypatch):
@@ -201,7 +201,7 @@ class TestGetCrossProfileWarning:
         assert warn is not None
         # Must name BOTH profiles so the model knows which is which.
         assert "default" in warn
-        assert "hermes-security" in warn
+        assert "savarez-security" in warn
         # Must name the bypass kwarg.
         assert "cross_profile=True" in warn
         # Must reference the area.

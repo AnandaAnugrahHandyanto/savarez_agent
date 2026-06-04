@@ -6,7 +6,7 @@ description: "Set up Savarez AI Agent as an email assistant via IMAP/SMTP"
 
 # Email Setup
 
-Hermes can receive and reply to emails using standard IMAP and SMTP protocols. Send an email to the agent's address and it replies in-thread — no special client or bot API needed. Works with Gmail, Outlook, Yahoo, Fastmail, or any provider that supports IMAP/SMTP.
+Savarez can receive and reply to emails using standard IMAP and SMTP protocols. Send an email to the agent's address and it replies in-thread — no special client or bot API needed. Works with Gmail, Outlook, Yahoo, Fastmail, or any provider that supports IMAP/SMTP.
 
 :::info Gateway adapter only: no external dependencies
 This page covers the Email gateway adapter, which uses Python's built-in `imaplib`, `smtplib`, and `email` modules. No additional packages or external services are required for this gateway path.
@@ -50,7 +50,7 @@ Most email providers support IMAP/SMTP. Check your provider's documentation for:
 
 ---
 
-## Step 1: Configure Hermes
+## Step 1: Configure Savarez
 
 The easiest way:
 
@@ -66,7 +66,7 @@ Add to `~/.savarez/.env`:
 
 ```bash
 # Required
-EMAIL_ADDRESS=hermes@gmail.com
+EMAIL_ADDRESS=savarez@gmail.com
 EMAIL_PASSWORD=abcd efgh ijkl mnop    # App password (not your regular password)
 EMAIL_IMAP_HOST=imap.gmail.com
 EMAIL_SMTP_HOST=smtp.gmail.com
@@ -142,7 +142,7 @@ When enabled, attachment and inline parts are skipped before payload decoding. T
 
 ## Access Control
 
-Email access follows the same pattern as all other Hermes platforms:
+Email access follows the same pattern as all other Savarez platforms:
 
 1. **`EMAIL_ALLOWED_USERS` set** → only emails from those addresses are processed
 2. **No allowlist set** → unknown senders get a pairing code

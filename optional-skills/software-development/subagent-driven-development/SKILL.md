@@ -6,7 +6,7 @@ author: Savarez AI Agent (adapted from obra/superpowers)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  savarez:
     tags: [delegation, subagent, implementation, workflow, parallel]
     related_skills: [plan, requesting-code-review, test-driven-development]
 ---

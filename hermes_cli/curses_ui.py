@@ -1,4 +1,4 @@
-"""Shared curses-based UI components for Hermes CLI.
+"""Shared curses-based UI components for Savarez CLI.
 
 Used by `savarez tools` and `savarez skills` for interactive checklists.
 Provides a curses multi-select with keyboard navigation, plus a

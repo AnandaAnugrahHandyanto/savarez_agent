@@ -1,7 +1,7 @@
 ---
 sidebar_position: 12
 title: "Cron Troubleshooting"
-description: "Diagnose and fix common Hermes cron issues — jobs not firing, delivery failures, skill loading errors, and performance problems"
+description: "Diagnose and fix common Savarez cron issues — jobs not firing, delivery failures, skill loading errors, and performance problems"
 ---
 
 # Cron Troubleshooting
@@ -144,7 +144,7 @@ If a job ran and failed, you may see error context in:
 ### Check 2: Common error patterns
 
 **"No such file or directory" for scripts**
-The `script` path must be an absolute path (or relative to the Hermes config directory). Verify:
+The `script` path must be an absolute path (or relative to the Savarez config directory). Verify:
 ```bash
 ls ~/.savarez/scripts/your-script.py   # Must exist
 savarez cron edit <job_id> --script ~/.savarez/scripts/your-script.py
@@ -165,7 +165,7 @@ The scheduler uses file-based locking to prevent overlapping ticks. If two gatew
 
 Kill duplicate gateway processes:
 ```bash
-ps aux | grep hermes
+ps aux | grep savarez
 # Kill duplicate processes, keep only one
 ```
 
@@ -202,7 +202,7 @@ Scripts that dump megabytes of output will slow down the agent and may hit token
 savarez cron list                    # Show all jobs, states, next_run times
 savarez cron run <job_id>            # Schedule for next tick (for testing)
 savarez cron edit <job_id>           # Fix configuration issues
-savarez logs                         # View recent Hermes logs
+savarez logs                         # View recent Savarez logs
 savarez skills list                  # Verify installed skills
 ```
 
@@ -214,7 +214,7 @@ If you've worked through this guide and the issue persists:
 
 1. Run the job with `savarez cron run <job_id>` (fires on next gateway tick) and watch for errors in the chat output
 2. Check `~/.savarez/logs/agent.log` for scheduler messages and `~/.savarez/logs/errors.log` for warnings
-3. Open an issue at [github.com/NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) with:
+3. Open an issue at [github.com/NousResearch/savarez-agent](https://github.com/NousResearch/savarez-agent) with:
    - The job ID and schedule
    - The delivery target
    - What you expected vs. what happened

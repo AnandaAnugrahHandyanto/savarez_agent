@@ -22,7 +22,7 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONTAINER_TAG = "hermes"
+_DEFAULT_CONTAINER_TAG = "savarez"
 _DEFAULT_MAX_RECALL_RESULTS = 10
 _DEFAULT_PROFILE_FREQUENCY = 50
 _DEFAULT_CAPTURE_MODE = "all"
@@ -273,14 +273,14 @@ class _SupermemoryClient:
             api_key=api_key,
             timeout=timeout,
             max_retries=0,
-            default_headers={"x-sm-source": "hermes"},
+            default_headers={"x-sm-source": "savarez"},
         )
 
     def _merge_metadata(self, metadata: Optional[dict]) -> dict:
-        # sm_source routes Hermes writes into the "Hermes" Space in the Supermemory
+        # sm_source routes Savarez writes into the "Savarez" Space in the Supermemory
         # app so the user can filter / bulk-manage them per source agent. This is a
         # functional routing key for the user, not vendor telemetry.
-        merged = {"sm_source": "hermes", **(metadata or {})}
+        merged = {"sm_source": "savarez", **(metadata or {})}
         legacy_source = merged.pop("source", None)
         if legacy_source and "type" not in merged:
             merged["type"] = str(legacy_source)
@@ -379,7 +379,7 @@ class _SupermemoryClient:
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
-                "x-sm-source": "hermes",
+                "x-sm-source": "savarez",
             },
             method="POST",
         )
@@ -483,7 +483,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             return False
 
     def get_config_schema(self):
-        # Only prompt for the API key during `hermes memory setup`.
+        # Only prompt for the API key during `savarez memory setup`.
         # All other options are documented for $SAVAREZ_HOME/supermemory.json
         # or the SUPERMEMORY_CONTAINER_TAG env var.
         return [

@@ -1,6 +1,6 @@
 # Adding a New Messaging Platform
 
-There are two ways to add a platform to the Hermes gateway:
+There are two ways to add a platform to the Savarez gateway:
 
 ## Plugin Path (Recommended for Community/Third-Party)
 
@@ -8,7 +8,7 @@ Create a plugin directory in `~/.savarez/plugins/` (or under `plugins/platforms/
 for bundled plugins) with a `plugin.yaml` and `adapter.py`.  The adapter
 inherits from `BasePlatformAdapter` and registers via
 `ctx.register_platform()` in the `register(ctx)` entry point.  This requires
-**zero changes to core Hermes code**.
+**zero changes to core Savarez code**.
 
 The plugin system automatically handles: adapter creation, config parsing,
 user authorization, cron delivery, send_message routing, system prompt hints,
@@ -61,7 +61,7 @@ plugin guide with code examples and hook documentation.
 
 ## Built-in Path (Core Contributors Only)
 
-Checklist for integrating a platform directly into the Hermes core.
+Checklist for integrating a platform directly into the Savarez core.
 Use this as a reference when building a built-in adapter — every item here
 is a real integration point. Missing any of them will cause broken
 functionality, missing features, or inconsistent behavior.
@@ -206,18 +206,18 @@ inappropriate formatting (e.g., markdown on platforms that don't render it).
 Add a named toolset for your platform:
 
 ```python
-"hermes-your-platform": {
+"savarez-your-platform": {
     "description": "Your Platform bot toolset",
     "tools": _HERMES_CORE_TOOLS,
     "includes": []
 },
 ```
 
-And add it to the `hermes-gateway` composite:
+And add it to the `savarez-gateway` composite:
 
 ```python
-"hermes-gateway": {
-    "includes": [..., "hermes-your-platform"]
+"savarez-gateway": {
+    "includes": [..., "savarez-your-platform"]
 }
 ```
 
@@ -368,7 +368,7 @@ After implementing everything, verify with:
 python -m pytest tests/ -q
 
 # Grep for your platform name to find any missed integration points
-grep -r "telegram\|discord\|whatsapp\|slack" gateway/ tools/ agent/ cron/ hermes_cli/ toolsets.py \
+grep -r "telegram\|discord\|whatsapp\|slack" gateway/ tools/ agent/ cron/.savarez_cli/ toolsets.py \
   --include="*.py" -l | sort -u
 # Check each file in the output — if it mentions other platforms but not yours, you missed it
 ```

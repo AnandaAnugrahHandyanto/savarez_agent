@@ -9,7 +9,7 @@ None — uses SQLite (always available). NumPy optional for HRR algebra.
 ## Setup
 
 ```bash
-hermes memory setup    # select "holographic"
+savarez memory setup    # select "holographic"
 ```
 
 Or manually:
@@ -19,7 +19,7 @@ savarez config set memory.provider holographic
 
 ## Config
 
-Config in `config.yaml` under `plugins.hermes-memory-store`:
+Config in `config.yaml` under `plugins.savarez-memory-store`:
 
 | Key | Default | Description |
 |-----|---------|-------------|

@@ -114,10 +114,10 @@ _MATRIX_BANG_COMMAND_RE = re.compile(
 
 
 def _resolve_matrix_bang_command(name: str) -> str | None:
-    """Resolve a ``!command`` token to a dispatchable Hermes command token.
+    """Resolve a ``!command`` token to a dispatchable Savarez command token.
 
     Matrix clients often reserve leading ``/`` for local client commands.
-    Hermes accepts ``!command`` as a Matrix-friendly alias, but only for
+    Savarez accepts ``!command`` as a Matrix-friendly alias, but only for
     commands that the gateway can actually dispatch so ordinary exclamations
     remain normal chat text.
 
@@ -165,7 +165,7 @@ def _resolve_matrix_bang_command(name: str) -> str | None:
 
 
 def _normalize_matrix_bang_command(text: str) -> str:
-    """Convert Matrix ``!command`` aliases to normal Hermes ``/command`` text."""
+    """Convert Matrix ``!command`` aliases to normal Savarez ``/command`` text."""
     if not text or not text.startswith("!"):
         return text
     match = _MATRIX_BANG_COMMAND_RE.match(text)
@@ -827,7 +827,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 await crypto_db.start()
                 self._crypto_db = crypto_db
 
-                _acct_id = self._user_id or "hermes"
+                _acct_id = self._user_id or "savarez"
                 _pickle_key = f"{_acct_id}:{self._device_id or 'default'}"
                 crypto_store = PgCryptoStore(
                     account_id=_acct_id,

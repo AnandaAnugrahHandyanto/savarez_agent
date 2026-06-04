@@ -3,10 +3,10 @@
 
 Usage (via cron with --no-agent):
 
-    savarez cron create hermes-issues \\
+    savarez cron create savarez-issues \\
       --schedule "*/5 * * * *" --no-agent \\
       --script "$SAVAREZ_HOME/skills/devops/watchers/scripts/watch_github.py" \\
-      --script-args "--name hermes-issues --repo NousResearch/hermes-agent --scope issues"
+      --script-args "--name savarez-issues --repo NousResearch/savarez-agent --scope issues"
 
 Set GITHUB_TOKEN (or GH_TOKEN) in ~/.savarez/.env to avoid the 60 req/hr
 anonymous rate limit.
@@ -112,7 +112,7 @@ def main() -> int:
 
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "Hermes-Watcher/1.0",
+        "User-Agent": "Savarez-Watcher/1.0",
     }
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:

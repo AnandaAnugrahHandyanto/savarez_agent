@@ -139,7 +139,7 @@ def test_s6_running_false_when_comm_unreadable(
 ) -> None:
     """Regression: /proc/1/exe was unreadable to UID 10000 and
     resolve() silently returned the unresolved path, making detection
-    always-False inside the container under the hermes user. The new
+    always-False inside the container under the savarez user. The new
     probe must FAIL CLOSED — not raise — when /proc/1/comm can't be
     read.
     """
@@ -416,7 +416,7 @@ def test_s6_manager_kind_and_supports_registration() -> None:
 #
 # The skeleton helper pre-creates the dirs and FIFOs that s6-supervise
 # would otherwise create as root mode 0700, locking out the
-# unprivileged hermes user from every lifecycle op. These tests run
+# unprivileged savarez user from every lifecycle op. These tests run
 # against tmp_path and assert the produced layout — the live-container
 # verification (against real s6-svc / s6-svstat) lives in
 # tests/docker/test_s6_profile_gateway_integration.py.
@@ -464,7 +464,7 @@ def test_seed_supervise_skeleton_handles_log_subservice(tmp_path) -> None:
 
     Without this, ``unregister_profile_gateway``'s rmtree would EACCES
     on the logger's root-owned supervise dir even after the parent
-    slot's supervise/ was hermes-owned.
+    slot's supervise/ was savarez-owned.
     """
     import stat
 
@@ -534,8 +534,8 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
     assert run_path.stat().st_mode & 0o111  # executable
     run_text = run_path.read_text()
     assert "export HOME=/opt/data" in run_text
-    assert "hermes -p coder gateway run" in run_text
-    assert "s6-setuidgid hermes" in run_text
+    assert "savarez -p coder gateway run" in run_text
+    assert "s6-setuidgid savarez" in run_text
     # Sentinel marking this as the supervised-child invocation. Without
     # it, the supervised `gateway run` would re-enter the s6 redirect
     # in `_gateway_command_inner` and recurse. See the matching guard
@@ -588,7 +588,7 @@ def test_render_run_script_resets_home_before_exec() -> None:
     run_text = S6ServiceManager._render_run_script("coder", {})
 
     assert "export HOME=/opt/data" in run_text
-    assert "exec s6-setuidgid hermes hermes -p coder gateway run" in run_text
+    assert "exec s6-setuidgid savarez savarez -p coder gateway run" in run_text
 
 
 def test_s6_register_rejects_invalid_profile_name(s6_scandir) -> None:

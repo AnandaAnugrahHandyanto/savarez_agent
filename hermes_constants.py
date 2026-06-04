@@ -19,7 +19,7 @@ _SAVAREZ_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
 
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
-    """Set a context-local Hermes home override and return its reset token.
+    """Set a context-local Savarez home override and return its reset token.
 
     This is for in-process, per-task scoping.  It deliberately does not mutate
     ``os.environ`` because that is shared by every thread in the process.
@@ -29,12 +29,12 @@ def set_hermes_home_override(path: str | Path | None) -> Token:
 
 
 def reset_hermes_home_override(token: Token) -> None:
-    """Restore the previous context-local Hermes home override."""
+    """Restore the previous context-local Savarez home override."""
     _SAVAREZ_HOME_OVERRIDE.reset(token)
 
 
 def get_hermes_home_override() -> str | None:
-    """Return the active context-local Hermes home override, if any."""
+    """Return the active context-local Savarez home override, if any."""
     override = _SAVAREZ_HOME_OVERRIDE.get()
     if override is _UNSET or not override:
         return None
@@ -42,7 +42,7 @@ def get_hermes_home_override() -> str | None:
 
 
 def _get_platform_default_hermes_home() -> Path:
-    """Return the platform-native default Hermes home path."""
+    """Return the platform-native default Savarez home path."""
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
         base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
@@ -51,7 +51,7 @@ def _get_platform_default_hermes_home() -> Path:
 
 
 def get_hermes_home() -> Path:
-    """Return the Hermes home directory (default: platform-native path).
+    """Return the Savarez home directory (default: platform-native path).
 
     Reads SAVAREZ_HOME env var, falls back to the platform-native default.
     This is the single source of truth — all other copies should import this.
@@ -64,7 +64,7 @@ def get_hermes_home() -> Path:
     callers that import this at load time.  Subprocess spawners are
     expected to propagate ``SAVAREZ_HOME`` explicitly (see the systemd
     template in ``hermes_cli/gateway.py`` and the kanban dispatcher in
-    ``hermes_cli/kanban_db.py``).  See https://github.com/NousResearch/hermes-agent/issues/18594.
+    ``hermes_cli/kanban_db.py``).  See https://github.com/NousResearch/savarez-agent/issues/18594.
     """
     override = get_hermes_home_override()
     if override:
@@ -109,10 +109,10 @@ def get_hermes_home() -> Path:
 
 
 def get_default_hermes_root() -> Path:
-    """Return the root Hermes directory for profile-level operations.
+    """Return the root Savarez directory for profile-level operations.
 
-    In standard deployments this is the platform-native Hermes home
-    (``~/.savarez`` on POSIX, ``%LOCALAPPDATA%\\hermes`` on native Windows).
+    In standard deployments this is the platform-native Savarez home
+    (``~/.savarez`` on POSIX, ``%LOCALAPPDATA%\\savarez`` on native Windows).
 
     In Docker or custom deployments where ``SAVAREZ_HOME`` points outside
     ``~/.savarez`` (e.g. ``/opt/data``), returns ``SAVAREZ_HOME`` directly
@@ -151,7 +151,7 @@ def get_default_hermes_root() -> Path:
 def _get_packaged_data_dir(name: str) -> Path | None:
     """Return an installed data-files directory if one exists.
 
-    Used to discover bundled skills/optional-skills when Hermes is installed
+    Used to discover bundled skills/optional-skills when Savarez is installed
     from a wheel that emitted them via setuptools data_files.
     """
     candidates = []
@@ -222,7 +222,7 @@ def get_bundled_skills_dir(default: Path | None = None) -> Path:
 
 
 def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
-    """Resolve a Hermes subdirectory with backward compatibility.
+    """Resolve a Savarez subdirectory with backward compatibility.
 
     New installs get the consolidated layout (e.g. ``cache/images``).
     Existing installs that already have the old path (e.g. ``image_cache``)
@@ -249,7 +249,7 @@ def display_hermes_home() -> str:
 
         default:  ``~/.savarez``
         profile:  ``~/.savarez/profiles/coder``
-        custom:   ``/opt/hermes-custom``
+        custom:   ``/opt/savarez-custom``
 
     Use this in **user-facing** print/log messages instead of hardcoding
     ``~/.savarez``.  For code that needs a real ``Path``, use
@@ -270,7 +270,7 @@ def secure_parent_dir(path: Path) -> None:
     prevent catastrophic host bricking when ``SAVAREZ_HOME`` or other path
     env vars resolve to an unexpected location.
 
-    See https://github.com/NousResearch/hermes-agent/issues/25821.
+    See https://github.com/NousResearch/savarez-agent/issues/25821.
     """
     parent = path.parent.resolve()
     # Refuse root and its direct children (/usr, /home, /var, /tmp, …).
@@ -287,7 +287,7 @@ def get_subprocess_home() -> str | None:
 
     When ``{SAVAREZ_HOME}/home/`` exists on disk, subprocesses should use it
     as ``HOME`` so system tools (git, ssh, gh, npm …) write their configs
-    inside the Hermes data directory instead of the OS-level ``/root`` or
+    inside the Savarez data directory instead of the OS-level ``/root`` or
     ``~/``.  This provides:
 
     * **Docker persistence** — tool configs land inside the persistent volume.

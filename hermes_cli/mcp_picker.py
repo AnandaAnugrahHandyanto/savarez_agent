@@ -4,7 +4,7 @@ Lists every catalog entry plus any custom MCP servers the user has added via
 ``savarez mcp add``, lets them pick one, and routes to install / enable /
 disable / uninstall / configure-tools flows.
 
-Mirrors the `hermes plugin` picker UX: arrow keys to navigate, ENTER on a row
+Mirrors the `savarez plugin` picker UX: arrow keys to navigate, ENTER on a row
 to act on it. The action depends on current status:
 
   not installed (catalog)   → install  (clone/bootstrap if needed, prompt for creds)
@@ -122,7 +122,7 @@ def _enable_disable(name: str, *, enable: bool) -> None:
     save_config(cfg)
     print(color(
         f"  ✓ '{name}' {'enabled' if enable else 'disabled'}. "
-        "Start a new Hermes session for changes to take effect.",
+        "Start a new Savarez session for changes to take effect.",
         Colors.GREEN,
     ))
 
@@ -250,7 +250,7 @@ def _print_rows_text(rows: List[_Row]) -> None:
         Colors.DIM,
     ))
 
-    # Surface manifest-version warnings so users know when their Hermes is
+    # Surface manifest-version warnings so users know when their Savarez is
     # too old to install everything in the catalog.
     diags = catalog_diagnostics()
     future = [d for d in diags if d[1] == "future_manifest"]
@@ -258,7 +258,7 @@ def _print_rows_text(rows: List[_Row]) -> None:
         print()
         for name, _, msg in future:
             print(color(
-                f"  ⚠ '{name}' requires a newer Hermes — run `savarez update` "
+                f"  ⚠ '{name}' requires a newer Savarez — run `savarez update` "
                 "to install this entry.",
                 Colors.YELLOW,
             ))

@@ -1,5 +1,5 @@
 """
-Top-level argparse construction for the hermes CLI.
+Top-level argparse construction for the savarez CLI.
 
 Lives in its own module so other modules (e.g. ``relaunch.py``) can
 introspect the parser to discover which flags exist without running the
@@ -39,29 +39,29 @@ def _inherited_flag(parser, *args, **kwargs):
 
 _EPILOGUE = """
 Examples:
-    hermes                        Start interactive chat
+    savarez                        Start interactive chat
     savarez chat -q "Hello"        Single query mode
-    hermes --tui                  Launch the modern TUI (or set display.interface: tui)
-    hermes --cli                  Force the classic REPL (overrides display.interface: tui)
-    hermes -c                     Resume the most recent session
-    hermes -c "my project"        Resume a session by name (latest in lineage)
-    hermes --resume <session_id>  Resume a specific session by ID
+    savarez --tui                  Launch the modern TUI (or set display.interface: tui)
+    savarez --cli                  Force the classic REPL (overrides display.interface: tui)
+    savarez -c                     Resume the most recent session
+    savarez -c "my project"        Resume a session by name (latest in lineage)
+    savarez --resume <session_id>  Resume a specific session by ID
     savarez setup                  Run setup wizard
-    hermes logout                 Clear stored authentication
+    savarez logout                 Clear stored authentication
     savarez auth add <provider>    Add a pooled credential
     savarez auth list              List pooled credentials
     savarez auth remove <p> <t>    Remove pooled credential by index, id, or label
     savarez auth reset <provider>  Clear exhaustion status for a provider
     savarez model                  Select default model
-    hermes fallback [list]        Show fallback provider chain
-    hermes fallback add           Add a fallback provider (same picker as `savarez model`)
-    hermes fallback remove        Remove a fallback provider from the chain
+    savarez fallback [list]        Show fallback provider chain
+    savarez fallback add           Add a fallback provider (same picker as `savarez model`)
+    savarez fallback remove        Remove a fallback provider from the chain
     savarez config                 View configuration
     savarez config edit            Edit config in $EDITOR
     savarez config set model gpt-4 Set a config value
     savarez gateway                Run messaging gateway
-    hermes -s hermes-agent-dev,github-auth
-    hermes -w                     Start in isolated git worktree
+    savarez -s savarez-agent-dev,github-auth
+    savarez -w                     Start in isolated git worktree
     savarez gateway install        Install gateway background service
     savarez sessions list          List past sessions
     savarez sessions browse        Interactive session picker
@@ -70,14 +70,14 @@ Examples:
     savarez logs -f                Follow agent.log in real time
     savarez logs errors            View errors.log
     savarez logs --since 1h        Lines from the last hour
-    hermes debug share             Upload debug report for support
+    savarez debug share             Upload debug report for support
     savarez update                 Update to latest version
     savarez dashboard              Start web UI dashboard (port 9119)
     savarez dashboard --stop       Stop running dashboard processes
     savarez dashboard --status     List running dashboard processes
 
 For more help on a command:
-    hermes <command> --help
+    savarez <command> --help
 """
 
 
@@ -89,7 +89,7 @@ def build_top_level_parser():
     other subparsers via ``subparsers.add_parser(...)``.
     """
     parser = argparse.ArgumentParser(
-        prog="hermes",
+        prog="savarez",
         description="Savarez AI Agent - AI assistant with tool-calling capabilities",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_EPILOGUE,

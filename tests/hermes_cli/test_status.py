@@ -77,7 +77,7 @@ def test_show_status_reports_nous_auth_error(monkeypatch, capsys, tmp_path):
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
-    assert "Nous Portal   ✗ not logged in (run: hermes portal)" in output
+    assert "Nous Portal   ✗ not logged in (run: savarez portal)" in output
     assert "Error:      Refresh session has been revoked" in output
     assert "Access exp:" in output
     assert "Key exp:" in output
@@ -183,13 +183,13 @@ class TestShowStatusXaiOAuth:
         import hermes_cli.auth as auth_mod
         status_mod = _base_xai_mocks(monkeypatch, tmp_path)
         monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status",
-                            lambda: {"logged_in": True, "auth_store": "/home/u/.hermes/auth.json"},
+                            lambda: {"logged_in": True, "auth_store": "/home/u/.savarez/auth.json"},
                             raising=False)
 
         status_mod.show_status(SimpleNamespace(all=False, deep=False))
         out = capsys.readouterr().out
 
-        assert "Auth file:  /home/u/.hermes/auth.json" in out
+        assert "Auth file:  /home/u/.savarez/auth.json" in out
 
     def test_logged_in_shows_last_refresh(self, monkeypatch, capsys, tmp_path):
         import hermes_cli.auth as auth_mod

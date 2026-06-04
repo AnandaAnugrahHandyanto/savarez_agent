@@ -1,1 +1,1 @@
-# Hermes plugins package
+# Savarez plugins package

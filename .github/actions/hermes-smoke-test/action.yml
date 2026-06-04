@@ -1,4 +1,4 @@
-name: Hermes smoke test
+name: Savarez smoke test
 description: >
   Run the image's built-in entrypoint against `--help` and `dashboard --help`
   to catch basic runtime regressions before publishing.  Requires the image
@@ -8,23 +8,23 @@ description: >
 
 inputs:
   image:
-    description: Fully-qualified image tag (e.g. nousresearch/hermes-agent:test)
+    description: Fully-qualified image tag (e.g. nousresearch/savarez-agent:test)
     required: true
 
 runs:
   using: composite
   steps:
-    - name: Ensure /tmp/hermes-test is hermes-writable
+    - name: Ensure /tmp/savarez-test is savarez-writable
       shell: bash
       run: |
-        # The image runs as the hermes user (UID 10000).  GitHub Actions
-        # creates /tmp/hermes-test root-owned by default, which hermes
+        # The image runs as the savarez user (UID 10000).  GitHub Actions
+        # creates /tmp/savarez-test root-owned by default, which savarez
         # can't write to — chown it to match the in-container UID before
         # bind-mounting.  Real users doing `docker run -v ~/.savarez:...`
         # with their own UID hit the same issue and have their own
         # remediations (HERMES_UID env var, or chown locally).
-        mkdir -p /tmp/hermes-test
-        sudo chown -R 10000:10000 /tmp/hermes-test
+        mkdir -p /tmp/savarez-test
+        sudo chown -R 10000:10000 /tmp/savarez-test
 
     - name: savarez --help
       shell: bash
@@ -35,7 +35,7 @@ runs:
         # silently neutered by the s6-overlay migration — stage2-hook
         # ignores its CMD args, so the smoke test was a no-op.
         docker run --rm \
-          -v /tmp/hermes-test:/opt/data \
+          -v /tmp/savarez-test:/opt/data \
           "${{ inputs.image }}" --help
 
     - name: savarez dashboard --help
@@ -46,5 +46,5 @@ runs:
         # the Dockerfile is excluding the dashboard subcommand from the
         # installed package.
         docker run --rm \
-          -v /tmp/hermes-test:/opt/data \
+          -v /tmp/savarez-test:/opt/data \
           "${{ inputs.image }}" dashboard --help

@@ -20,11 +20,11 @@ The simplest path: a one-click installer with a guided, point-and-click setup. N
 
 ### 1. Download and install
 
-[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) for macOS or Windows, then open it. On first launch it finishes setting itself up (usually under a minute).
+[Download the Savarez Desktop installer](https://savarez-agent.nousresearch.com/desktop) for macOS or Windows, then open it. On first launch it finishes setting itself up (usually under a minute).
 
 ### 2. Connect Nous Portal
 
-When the app opens, you'll see a "Let's get you set up" screen. Click **Nous Portal** (marked **Recommended**). Your browser opens — create a [Nous Portal](https://portal.nousresearch.com) account (or sign in), choose the **Free** plan, and authorize Hermes. The app connects automatically.
+When the app opens, you'll see a "Let's get you set up" screen. Click **Nous Portal** (marked **Recommended**). Your browser opens — create a [Nous Portal](https://portal.nousresearch.com) account (or sign in), choose the **Free** plan, and authorize Savarez. The app connects automatically.
 
 ### 3. Pick the free Nemotron 3 Ultra model
 
@@ -47,10 +47,10 @@ Prefer the terminal? You'll need macOS, Linux, or Windows via [WSL](https://lear
 ### 1. Install Savarez AI Agent
 
 ```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash
 ```
 
-Prefer to review first? Download [`install.sh`](https://hermes-agent.nousresearch.com/install.sh), inspect it, then run it.
+Prefer to review first? Download [`install.sh`](https://savarez-agent.nousresearch.com/install.sh), inspect it, then run it.
 
 After it finishes, reload your shell:
 
@@ -64,7 +64,7 @@ source ~/.bashrc   # or source ~/.zshrc
 savarez setup
 ```
 
-Select **Quick Setup**. Hermes opens a browser tab and waits for you to finish the next steps.
+Select **Quick Setup**. Savarez opens a browser tab and waits for you to finish the next steps.
 
 ### 3. Create a Nous Portal account
 
@@ -89,7 +89,7 @@ The `:free` tag is what keeps it on the no-cost tier, so make sure you pick that
 Complete the remaining Quick Setup prompts, then run:
 
 ```bash
-hermes
+savarez
 ```
 
 That's it — you're talking to Nemotron 3 Ultra, free.
@@ -103,13 +103,13 @@ Already set up with another model?
 
 ## Troubleshooting
 
-- **Don't see the model in the list?** Make sure you finished the Nous Portal connection and that you're on the **Free** plan. In the CLI, `hermes portal info` confirms you're logged in and routing through Nous.
+- **Don't see the model in the list?** Make sure you finished the Nous Portal connection and that you're on the **Free** plan. In the CLI, `savarez portal info` confirms you're logged in and routing through Nous.
 - **Picked the wrong variant?** Re-select `nvidia/nemotron-3-ultra:free` — the `:free` suffix is required to stay on the no-cost tier.
 - **Browser didn't open / you're on a remote host (CLI)?** See [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) for port-forwarding and manual-paste workarounds.
 
 ## See also
 
 - **[Desktop App](/user-guide/desktop)** — The native one-click app (macOS, Windows, Linux)
-- **[Run Savarez AI Agent with Nous Portal](/guides/run-hermes-with-nous-portal)** — Full Portal walkthrough: models, Tool Gateway, and verification
+- **[Run Savarez AI Agent with Nous Portal](/guides/run-savarez-with-nous-portal)** — Full Portal walkthrough: models, Tool Gateway, and verification
 - **[Nous Portal integration](/integrations/nous-portal)** — What's in the subscription
 - **[Quickstart](/getting-started/quickstart)** — Install-to-chat in under 5 minutes

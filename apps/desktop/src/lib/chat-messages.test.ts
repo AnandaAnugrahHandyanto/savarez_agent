@@ -85,7 +85,7 @@ describe('toChatMessages', () => {
     const [message] = toChatMessages([
       {
         role: 'assistant',
-        content: "MEDIA:/Users/brooklyn/.hermes/cache/audio/tts_20260501_222725.mp3\n\nhow's that sound?",
+        content: "MEDIA:/Users/brooklyn/.savarez/cache/audio/tts_20260501_222725.mp3\n\nhow's that sound?",
         timestamp: 1
       }
     ])

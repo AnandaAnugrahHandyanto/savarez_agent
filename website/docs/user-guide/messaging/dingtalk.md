@@ -8,15 +8,15 @@ description: "Set up Savarez AI Agent as a DingTalk chatbot"
 
 Savarez AI Agent integrates with DingTalk (钉钉) as a chatbot, letting you chat with your AI assistant through direct messages or group chats. The bot connects via DingTalk's Stream Mode — a long-lived WebSocket connection that requires no public URL or webhook server — and replies using markdown-formatted messages through DingTalk's session webhook API.
 
-Before setup, here's the part most people want to know: how Hermes behaves once it's in your DingTalk workspace.
+Before setup, here's the part most people want to know: how Savarez behaves once it's in your DingTalk workspace.
 
-## How Hermes Behaves
+## How Savarez Behaves
 
 | Context | Behavior |
 |---------|----------|
-| **DMs (1:1 chat)** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
-| **Group chats** | Hermes responds when you `@mention` it. Without a mention, Hermes ignores the message. |
-| **Shared groups with multiple users** | By default, Hermes isolates session history per user inside the group. Two people talking in the same group do not share one transcript unless you explicitly disable that. |
+| **DMs (1:1 chat)** | Savarez responds to every message. No `@mention` needed. Each DM has its own session. |
+| **Group chats** | Savarez responds when you `@mention` it. Without a mention, Savarez ignores the message. |
+| **Shared groups with multiple users** | By default, Savarez isolates session history per user inside the group. Two people talking in the same group do not share one transcript unless you explicitly disable that. |
 
 ### Session Model in DingTalk
 
@@ -44,7 +44,7 @@ This guide walks you through the full setup process — from creating your DingT
 Install the required Python packages:
 
 ```bash
-pip install "hermes-agent[dingtalk]"
+pip install "savarez-agent[dingtalk]"
 ```
 
 Or individually:
@@ -106,7 +106,7 @@ Select **DingTalk** when prompted. The setup wizard can authorize via one of two
 - **Manual paste.** If you already have credentials (or QR scanning isn't convenient), paste your Client ID, Client Secret, and allowed user IDs when prompted.
 
 :::note openClaw branding disclosure
-Because DingTalk's `verification_uri_complete` is hardcoded to the openClaw identity at the API layer, the QR currently authorizes under an `openClaw` source string until Alibaba / DingTalk-Real-AI registers a Hermes-specific template server-side. This is purely how DingTalk presents the consent screen — the bot you create is fully yours and private to your tenant.
+Because DingTalk's `verification_uri_complete` is hardcoded to the openClaw identity at the API layer, the QR currently authorizes under an `openClaw` source string until Alibaba / DingTalk-Real-AI registers a Savarez-specific template server-side. This is purely how DingTalk presents the consent screen — the bot you create is fully yours and private to your tenant.
 :::
 
 ### Option B: Manual Configuration
@@ -174,7 +174,7 @@ You can run `savarez gateway` in the background or as a systemd service for pers
 
 ### AI Cards
 
-Hermes can reply using DingTalk AI Cards instead of plain markdown messages. Cards provide a richer, more structured display and support streaming updates as the agent generates its response.
+Savarez can reply using DingTalk AI Cards instead of plain markdown messages. Cards provide a richer, more structured display and support streaming updates as the agent generates its response.
 
 To enable AI Cards, configure a card template ID in `config.yaml`:
 
@@ -190,7 +190,7 @@ You can find your card template ID in the DingTalk Developer Console under your 
 
 ### Emoji Reactions
 
-Hermes automatically adds emoji reactions to your messages to show processing status:
+Savarez automatically adds emoji reactions to your messages to show processing status:
 
 - 🤔Thinking — added when the bot starts processing your message
 - 🥳Done — added when the response is complete (replaces the Thinking reaction)
