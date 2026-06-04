@@ -316,9 +316,12 @@ def decide_image_input_mode(
 
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
-        logger.info("Image routing: mode=native [model %s reports vision capability]", model)
+        logger.debug("Image routing: mode=native [model %s reports vision capability]", model)
         return "native"
-    logger.info("Image routing: mode=text [model %s does not report vision capability]", model)
+    if supports is False:
+        logger.debug("Image routing: mode=text [model %s does not support vision]", model)
+        return "text"
+    logger.debug("Image routing: mode=text [model %s vision capability unknown]", model)
     return "text"
 
 
