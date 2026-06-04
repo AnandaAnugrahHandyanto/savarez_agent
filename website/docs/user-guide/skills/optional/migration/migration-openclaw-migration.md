@@ -17,7 +17,7 @@ Migrate a user's OpenClaw customization footprint into Savarez AI Agent. Imports
 | Source | Optional — install with `savarez skills install official/migration/openclaw-migration` |
 | Path | `optional-skills/migration/openclaw-migration` |
 | Version | `1.0.0` |
-| Author | Savarez AI Agent (Nous Research) |
+| Author | Savarez AI Agent (Ananda Anugrah Handyanto) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Migration`, `OpenClaw`, `Savarez`, `Memory`, `Persona`, `Import` |

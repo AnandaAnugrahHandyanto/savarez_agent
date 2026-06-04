@@ -157,4 +157,4 @@ GitHub: [github.com/AnandaAnugrahHandyanto/savarez-agent](https://github.com/Ana
 
 ---
 
-*Savarez AI Agent is built by [Nous Research](https://nousresearch.com). Open source, model-agnostic, runs on your infrastructure.*
+*Savarez AI Agent is built by [Ananda Anugrah Handyanto](https://nousresearch.com). Open source, model-agnostic, runs on your infrastructure.*
