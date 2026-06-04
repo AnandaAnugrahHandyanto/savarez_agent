@@ -75,3 +75,42 @@ class TestSupersedeMigration:
         assert row["content"] == "legacy fact from before the migration"
         # Existing rows are live: superseded_at defaults to NULL.
         assert row["superseded_at"] is None
+
+
+class TestRemoveFactLineageCleanup:
+    """remove_fact must not leave dangling fact_supersedes rows."""
+
+    def _seed_lineage(self, store, new_id, old_id):
+        store._conn.execute(
+            "INSERT INTO fact_supersedes (new_id, old_id) VALUES (?, ?)",
+            (new_id, old_id),
+        )
+        store._conn.commit()
+
+    def test_removing_new_id_clears_lineage(self, tmp_path):
+        store = MemoryStore(db_path=str(tmp_path / "m.db"))
+        old_id = store.add_fact("old version of the fact")
+        new_id = store.add_fact("new version of the fact")
+        self._seed_lineage(store, new_id, old_id)
+
+        store.remove_fact(new_id)
+
+        dangling = store._conn.execute(
+            "SELECT COUNT(*) FROM fact_supersedes WHERE new_id = ? OR old_id = ?",
+            (new_id, new_id),
+        ).fetchone()[0]
+        assert dangling == 0
+
+    def test_removing_old_id_clears_lineage(self, tmp_path):
+        store = MemoryStore(db_path=str(tmp_path / "m.db"))
+        old_id = store.add_fact("old version of the fact")
+        new_id = store.add_fact("new version of the fact")
+        self._seed_lineage(store, new_id, old_id)
+
+        store.remove_fact(old_id)
+
+        dangling = store._conn.execute(
+            "SELECT COUNT(*) FROM fact_supersedes WHERE new_id = ? OR old_id = ?",
+            (old_id, old_id),
+        ).fetchone()[0]
+        assert dangling == 0
