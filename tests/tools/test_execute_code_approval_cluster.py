@@ -119,6 +119,10 @@ def gw_session(monkeypatch):
     with A._lock:
         A._gateway_queues.pop(session_key, None)
         A._gateway_notify_cbs.pop(session_key, None)
+        previous_session_approvals = set(A._session_approved.get(session_key, set()))
+        had_permanent_execute_code = "execute_code" in A._permanent_approved
+        A._session_approved.pop(session_key, None)
+        A._permanent_approved.discard("execute_code")
     try:
         yield session_key
     finally:
@@ -126,6 +130,14 @@ def gw_session(monkeypatch):
         with A._lock:
             A._gateway_queues.pop(session_key, None)
             A._gateway_notify_cbs.pop(session_key, None)
+            if previous_session_approvals:
+                A._session_approved[session_key] = previous_session_approvals
+            else:
+                A._session_approved.pop(session_key, None)
+            if had_permanent_execute_code:
+                A._permanent_approved.add("execute_code")
+            else:
+                A._permanent_approved.discard("execute_code")
 
 
 def _register_resolver(session_key: str, result):
@@ -174,6 +186,43 @@ def test_guard_gateway_user_approves_is_one_shot(gw_session):
     assert res.get("user_approved") is True
     # One-shot: approval must NOT persist to future scripts.
     assert A.is_approved(gw_session, "execute_code") is False
+
+
+def test_guard_gateway_session_approval_persists(gw_session):
+    try:
+        _register_resolver(gw_session, "session")
+        result = A.check_execute_code_guard("import os", "local")
+        assert result["approved"] is True
+        assert A.is_approved(gw_session, "execute_code") is True
+        # Second call must short-circuit without registering a new resolver
+        result2 = A.check_execute_code_guard("print(2)", "local")
+        assert result2["approved"] is True
+    finally:
+        with A._lock:
+            approvals = A._session_approved.get(gw_session)
+            if approvals is not None:
+                approvals.discard("execute_code")
+
+
+def test_guard_gateway_always_approval_persists_permanently(gw_session, monkeypatch):
+    saved_allowlists = []
+    monkeypatch.setattr(
+        A, "save_permanent_allowlist",
+        lambda patterns: saved_allowlists.append(set(patterns)),
+    )
+    try:
+        _register_resolver(gw_session, "always")
+        result = A.check_execute_code_guard("import os", "local")
+        assert result["approved"] is True
+        assert A.is_approved(gw_session, "execute_code") is True
+        assert "execute_code" in A._permanent_approved
+        assert saved_allowlists and "execute_code" in saved_allowlists[-1]
+    finally:
+        with A._lock:
+            approvals = A._session_approved.get(gw_session)
+            if approvals is not None:
+                approvals.discard("execute_code")
+            A._permanent_approved.discard("execute_code")  # cleanup
 
 
 def test_guard_gateway_user_denies_blocks(gw_session):

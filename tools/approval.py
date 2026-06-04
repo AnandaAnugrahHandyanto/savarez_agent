@@ -1534,8 +1534,7 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     pattern_key = "execute_code"
     description = (
         "execute_code script execution. The script can spawn subprocesses or "
-        "mutate files without passing through terminal command approval; "
-        "approval is one-shot for this run."
+        "mutate files without passing through terminal command approval."
     )
 
     # Isolated backends already sandbox the child — matches the container skip
@@ -1580,6 +1579,9 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
+    if is_approved(session_key, pattern_key):
+        return {"approved": True, "message": None}
+
     # Built only now (past the early-return gates) so the common non-approval
     # paths don't pay to copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
@@ -1674,9 +1676,13 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
             "user_consent": False,
         }
 
-    # Approved — one-shot only. Deliberately NO approve_session/approve_permanent:
-    # each execute_code script is distinct arbitrary code, so approval never
-    # persists to future scripts.
+    if choice == "session":
+        approve_session(session_key, pattern_key)
+    elif choice == "always":
+        approve_session(session_key, pattern_key)
+        approve_permanent(pattern_key)
+        save_permanent_allowlist(_permanent_approved)
+
     return {"approved": True, "message": None,
             "user_approved": True, "description": description}
 
