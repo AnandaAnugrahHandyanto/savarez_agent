@@ -1108,10 +1108,22 @@ Do the legacy thing.
 
         description = SKILL_VIEW_SCHEMA["description"]
         assert "skill-repeat-guard-v0" in description
-        assert "Do not call again for the exact same skill/file" in description
-        assert "compression/resume" in description
-        assert "different file_path" in description
-        assert "authority or safety uncertainty" in description
+        assert "first relevant skill load is mandatory" in description
+        assert "prompt guidance only" in description
+        assert "not runtime caching or enforcement" in description
+        assert "Avoid unnecessary repeat calls" in description
+        assert "protective replay is correct" in description
+        for trigger in (
+            "compression/resume/context loss",
+            "different file_path/reference",
+            "skill changed or may have changed",
+            "user asked for refresh",
+            "new phase/hard gate",
+            "authority/safety/live-state ambiguity",
+        ):
+            assert trigger in description
+        assert "SOUL" not in description
+        assert "persona" not in description.lower()
 
 
 class TestSkillViewCollisionDetection:

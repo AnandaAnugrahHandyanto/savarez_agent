@@ -279,10 +279,25 @@ class TestBuildSkillsSystemPrompt:
 
         assert "skill-repeat-guard-v0" in result
         assert "First relevant skill load remains mandatory" in result
-        assert "do not reload the exact same skill/file" in result
-        assert "Ambiguous replay remains protective" in result
+        assert "mandatory first relevant skill load" in result
+        assert "prompt guidance" in result
+        assert "not runtime caching or enforcement" in result
+        assert "repeat load is usually unnecessary" in result
+        assert "Protective replay remains correct" in result
+        for trigger in (
+            "compression, resume, or other context loss",
+            "different file_path or linked reference",
+            "skill changed or may have changed",
+            "user asks for a refresh",
+            "new phase or hard gate",
+            "authority, safety",
+            "repo/live-state",
+        ):
+            assert trigger in result
         assert "TASK_PACKs and handoffs are orientation only" in result
         assert "not authority" in result
+        assert "SOUL" not in result
+        assert "persona" not in result.lower()
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1287,5 +1302,4 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
