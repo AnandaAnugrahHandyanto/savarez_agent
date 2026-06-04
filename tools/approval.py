@@ -1257,6 +1257,26 @@ def check_all_command_guards(command: str, env_type: str,
     # Dangerous command check (detection only, no approval)
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
 
+    # GitHub authority-policy classification. This is deliberately layered on
+    # top of the existing Tirith + dangerous-pattern checks: green GitHub
+    # commands may avoid unnecessary prompts only when no other guard warns,
+    # while yellow/red GitHub operations become approval warnings even if the
+    # generic dangerous-command regexes would otherwise miss them.
+    github_decision = None
+    try:
+        from tools.github_authority import (
+            classify_github_command,
+            log_github_authority_decision,
+        )
+
+        github_decision = classify_github_command(command)
+        log_github_authority_decision(command, github_decision)
+    except Exception as exc:
+        # Classification is advisory. A classifier bug must not disable the
+        # baseline terminal safety path.
+        logger.debug("GitHub authority classification failed: %s", exc, exc_info=True)
+        github_decision = None
+
     # --- Phase 2: Decide ---
 
     # Collect warnings that need approval
@@ -1280,6 +1300,20 @@ def check_all_command_guards(command: str, env_type: str,
         if not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
 
+    if github_decision is not None and github_decision.tier in {"yellow", "red"}:
+        github_key = f"github-authority:{github_decision.tier}:{github_decision.command_family or 'unknown'}"
+        github_desc = (
+            f"GitHub authority {github_decision.tier} operation: {github_decision.reason}. "
+            "Yellow operations require recorded mechanical preflight evidence; "
+            "red operations require explicit Yunuen approval."
+        )
+        if not is_approved(session_key, github_key):
+            # Treat policy warnings like Tirith warnings for persistence: they
+            # may be approved for the current/session flow, but they must not
+            # be permanently allowlisted and must not expose the CLI [a]lways
+            # option. Red/yellow gates remain deliberate per-action decisions.
+            warnings.append((github_key, github_desc, True))
+
     # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
@@ -1287,8 +1321,13 @@ def check_all_command_guards(command: str, env_type: str,
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
-    # (openai/codex#13860).
-    if approval_mode == "smart":
+    # (openai/codex#13860). GitHub authority yellow/red policy warnings are
+    # excluded because they require objective preflight/Yunuen gates, not an
+    # auxiliary risk guess.
+    has_github_authority_warning = any(
+        key.startswith("github-authority:") for key, _, _ in warnings
+    )
+    if approval_mode == "smart" and not has_github_authority_warning:
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         verdict = _smart_approve(command, combined_desc_for_llm)
         if verdict == "approve":
