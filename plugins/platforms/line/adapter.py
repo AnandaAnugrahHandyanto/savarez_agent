@@ -133,6 +133,22 @@ MEDIA_TOKEN_TTL_SECONDS = 1800  # 30 minutes; LINE caches the URL aggressively
 LINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per LINE docs
 LINE_AV_MAX_BYTES = 200 * 1024 * 1024  # 200 MB for voice/video
 
+_LINE_MESSAGE_TYPES = {
+    "text": MessageType.TEXT,
+    "image": MessageType.PHOTO,
+    "audio": MessageType.AUDIO,
+    "video": MessageType.VIDEO,
+    "file": MessageType.DOCUMENT,
+    "sticker": MessageType.STICKER,
+    "location": MessageType.LOCATION,
+}
+
+
+def _line_msg_type(line_type: str) -> MessageType:
+    """Map a LINE webhook message type to Hermes' canonical message type."""
+    return _LINE_MESSAGE_TYPES.get(line_type, MessageType.TEXT)
+
+
 # A 1×1 transparent PNG used as fallback video preview thumbnail when no
 # explicit preview is supplied — LINE requires ``previewImageUrl`` for
 # video messages. Sourced from the Python stdlib (no Pillow dependency).
@@ -968,7 +984,7 @@ class LineAdapter(BasePlatformAdapter):
 
         event_obj = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT if msg_type == "text" else MessageType.IMAGE,
+            message_type=_line_msg_type(msg_type),
             source=source_obj,
             raw_message=event,
             message_id=message_id,
