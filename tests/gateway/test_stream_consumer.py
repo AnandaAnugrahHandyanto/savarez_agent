@@ -1005,6 +1005,35 @@ class TestSegmentBreakOnToolBoundary:
             pass
 
     @pytest.mark.asyncio
+    async def test_multiple_pending_previews_survive_for_base_final_replay(self):
+        """Several tool-boundary previews can all be stale after final replay."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_new"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        first_preview = "Answer start\n"
+        second_preview = "Answer start\nMore streamed rows\n"
+        final_replay = second_preview + "Final status: tool boundary reached"
+
+        consumer._preview_message_ids = ["msg_first"]
+        consumer._preview_message_text = first_preview
+        consumer._reset_segment_state()
+
+        consumer._preview_message_ids = ["msg_second_1", "msg_second_2"]
+        consumer._preview_message_text = second_preview
+        consumer._reset_segment_state()
+
+        assert consumer.preview_cleanup_ids_for_final(final_replay) == (
+            "msg_first",
+            "msg_second_1",
+            "msg_second_2",
+        )
+
+    @pytest.mark.asyncio
     async def test_segment_tail_flush_ids_survive_for_base_final_replay(self):
         send_count = 0
 

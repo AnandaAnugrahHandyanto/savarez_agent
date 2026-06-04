@@ -86,6 +86,14 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+
+def _wrap_stream_preview_cleanup_reply(response: Any, agent_result: Dict[str, Any]) -> Any:
+    """Attach stale stream-preview cleanup ids to a pending final reply."""
+    cleanup_ids = tuple(agent_result.get("stream_preview_cleanup_ids") or ())
+    if response and cleanup_ids and not agent_result.get("already_sent"):
+        return DeliveryCleanupReply(response, cleanup_message_ids=cleanup_ids)
+    return response
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -9423,14 +9431,7 @@ class GatewayRunner:
             if _footer_line and response and not agent_result.get("already_sent"):
                 response = f"{response}\n\n{_footer_line}"
 
-            _stream_cleanup_ids = tuple(
-                agent_result.get("stream_preview_cleanup_ids") or ()
-            )
-            if response and _stream_cleanup_ids and not agent_result.get("already_sent"):
-                response = DeliveryCleanupReply(
-                    response,
-                    cleanup_message_ids=_stream_cleanup_ids,
-                )
+            response = _wrap_stream_preview_cleanup_reply(response, agent_result)
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {

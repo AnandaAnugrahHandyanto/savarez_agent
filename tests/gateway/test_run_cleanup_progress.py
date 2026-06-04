@@ -403,6 +403,73 @@ async def test_delivery_cleanup_reply_deletes_after_successful_final_send():
     ]
 
 
+def test_stream_preview_cleanup_ids_wrap_final_response():
+    gateway_run = importlib.import_module("gateway.run")
+
+    wrapped = gateway_run._wrap_stream_preview_cleanup_reply(
+        "complete final answer",
+        {
+            "stream_preview_cleanup_ids": ("old_preview_1", "old_preview_2"),
+            "already_sent": False,
+        },
+    )
+
+    assert isinstance(wrapped, DeliveryCleanupReply)
+    assert str(wrapped) == "complete final answer"
+    assert wrapped.cleanup_message_ids == ("old_preview_1", "old_preview_2")
+
+
+def test_stream_preview_cleanup_ids_do_not_wrap_already_sent_response():
+    gateway_run = importlib.import_module("gateway.run")
+
+    wrapped = gateway_run._wrap_stream_preview_cleanup_reply(
+        "complete final answer",
+        {
+            "stream_preview_cleanup_ids": ("old_preview_1",),
+            "already_sent": True,
+        },
+    )
+
+    assert wrapped == "complete final answer"
+    assert not isinstance(wrapped, DeliveryCleanupReply)
+
+
+@pytest.mark.asyncio
+async def test_delivery_cleanup_reply_continues_after_delete_failure():
+    adapter = CleanupCaptureAdapter()
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    event = MessageEvent(
+        text="prompt",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="user_msg",
+    )
+    session_key = "agent:main:telegram:group:-1001"
+    delete_attempts = []
+
+    async def flaky_delete(chat_id, message_id):
+        delete_attempts.append({"chat_id": chat_id, "message_id": str(message_id)})
+        if message_id == "old_preview_1":
+            raise RuntimeError("delete flood-control")
+        return True
+
+    async def handler(_event):
+        return DeliveryCleanupReply(
+            "complete final answer",
+            cleanup_message_ids=("old_preview_1", "old_preview_2"),
+        )
+
+    adapter.delete_message = flaky_delete
+    adapter.set_message_handler(handler)
+
+    await adapter._process_message_background(event, session_key)
+
+    assert [entry["message_id"] for entry in delete_attempts] == [
+        "old_preview_1",
+        "old_preview_2",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_delivery_cleanup_reply_keeps_preview_when_final_send_fails():
     adapter = CleanupCaptureAdapter()

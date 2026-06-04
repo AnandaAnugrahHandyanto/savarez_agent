@@ -149,6 +149,8 @@ class GatewayStreamConsumer:
         # cleanup must delete the whole stale preview, not just the latest id.
         self._preview_message_ids: list[str] = []
         self._preview_message_text = ""
+        self._pending_preview_cleanup_candidates: list[tuple[list[str], str]] = []
+        # Back-compat mirrors used by older tests/debug probes.
         self._pending_preview_cleanup_ids: list[str] = []
         self._pending_preview_cleanup_text = ""
         self._already_sent = False
@@ -224,7 +226,7 @@ class GatewayStreamConsumer:
             return ()
 
         cleanup_ids: list[str] = []
-        candidates = [(self._pending_preview_cleanup_ids, self._pending_preview_cleanup_text)]
+        candidates = list(self._pending_preview_cleanup_candidates)
         if include_current:
             candidates.append((self._preview_message_ids, self._preview_message_text))
         for ids, preview_text in candidates:
@@ -847,15 +849,56 @@ class GatewayStreamConsumer:
                 continue
             self._preview_message_ids.append(message_id)
 
+    def _sync_pending_preview_cleanup_mirror(self) -> None:
+        """Keep legacy pending-cleanup fields aligned with all candidates."""
+        ids: list[str] = []
+        text = ""
+        for candidate_ids, candidate_text in self._pending_preview_cleanup_candidates:
+            if not text and candidate_text:
+                text = candidate_text
+            for message_id in candidate_ids:
+                if message_id not in ids:
+                    ids.append(message_id)
+        self._pending_preview_cleanup_ids = ids
+        self._pending_preview_cleanup_text = text
+
+    def _add_pending_preview_cleanup_candidate(
+        self,
+        message_ids: list[str],
+        preview_text: str,
+    ) -> None:
+        ids: list[str] = []
+        for message_id in message_ids:
+            if not message_id:
+                continue
+            message_id = str(message_id)
+            if message_id == "__no_edit__" or message_id in ids:
+                continue
+            ids.append(message_id)
+        preview_text = self._preview_text_for_cleanup(preview_text)
+        if not ids or not preview_text:
+            return
+
+        for index, (existing_ids, existing_text) in enumerate(
+            self._pending_preview_cleanup_candidates
+        ):
+            if existing_ids == ids:
+                if len(preview_text) > len(existing_text):
+                    self._pending_preview_cleanup_candidates[index] = (
+                        ids, preview_text,
+                    )
+                    self._sync_pending_preview_cleanup_mirror()
+                return
+
+        self._pending_preview_cleanup_candidates.append((ids, preview_text))
+        self._sync_pending_preview_cleanup_mirror()
+
     def _stage_current_preview_for_replay_cleanup(self) -> None:
         """Preserve the visible preview group across a tool-boundary reset."""
-        if (
-            self._preview_message_ids
-            and self._preview_message_text
-            and not self._pending_preview_cleanup_ids
-        ):
-            self._pending_preview_cleanup_ids = list(self._preview_message_ids)
-            self._pending_preview_cleanup_text = self._preview_message_text
+        self._add_pending_preview_cleanup_candidate(
+            list(self._preview_message_ids),
+            self._preview_message_text,
+        )
 
     def _stale_preview_cleanup_ids(self, current_message_id: Optional[str]) -> list[str]:
         """Return stale preview ids to delete after a replacement final send."""
@@ -873,14 +916,20 @@ class GatewayStreamConsumer:
         current_message_id: Optional[str],
     ) -> None:
         """Delete a prior overflow preview only after a matching replay lands."""
-        ids = list(self.preview_cleanup_ids_for_final(
-            final_text,
-            include_current=False,
-        ))
+        final_text = self._preview_text_for_cleanup(final_text)
+        ids: list[str] = []
+        remaining_candidates: list[tuple[list[str], str]] = []
+        for candidate_ids, preview_text in self._pending_preview_cleanup_candidates:
+            if preview_text and final_text.startswith(preview_text):
+                for message_id in candidate_ids:
+                    if message_id not in ids:
+                        ids.append(message_id)
+            else:
+                remaining_candidates.append((candidate_ids, preview_text))
         if not ids:
             return
-        self._pending_preview_cleanup_ids = []
-        self._pending_preview_cleanup_text = ""
+        self._pending_preview_cleanup_candidates = remaining_candidates
+        self._sync_pending_preview_cleanup_mirror()
         delete_fn = getattr(self.adapter, "delete_message", None)
         if delete_fn is None:
             return
@@ -1018,6 +1067,10 @@ class GatewayStreamConsumer:
                             stale_id, e,
                         )
 
+        await self._cleanup_pending_preview_after_replay(
+            final_text,
+            current_message_id=last_message_id,
+        )
         self._message_id = last_message_id
         self._preview_message_ids = []
         self._already_sent = True
@@ -1279,6 +1332,10 @@ class GatewayStreamConsumer:
             # don't try to edit something we can't address.
             self._message_id = "__no_edit__"
             self._message_created_ts = None
+        await self._cleanup_pending_preview_after_replay(
+            text,
+            current_message_id=self._message_id,
+        )
         self._preview_message_ids = []
         self._already_sent = True
         self._last_sent_text = text

@@ -1669,8 +1669,13 @@ _RETRYABLE_ERROR_PATTERNS = (
 
 # Type for message handlers.  Handlers may return a plain string (normal
 # reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
+# a ``DeliveryCleanupReply`` to delete stale intermediate messages only after
+# the final reply has landed successfully, or
 # ``None`` when the response was already delivered (e.g. via streaming).
-MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+MessageHandler = Callable[
+    [MessageEvent],
+    Awaitable[Optional[Union[str, "EphemeralReply", "DeliveryCleanupReply"]]],
+]
 
 
 def resolve_channel_prompt(
