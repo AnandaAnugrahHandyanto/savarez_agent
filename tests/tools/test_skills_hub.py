@@ -2201,3 +2201,46 @@ class TestInstallPathSafety:
 
         assert not (skills_dir / "bad-skill" / "leak.txt").exists()
         assert secret.read_text() == "data exfiltration payload\n"
+
+
+# ---------------------------------------------------------------------------
+# do_update — must not bypass blocked scan verdicts
+# ---------------------------------------------------------------------------
+
+
+class TestDoUpdateRespectsBlockedVerdict:
+    """Regression test for #38041: do_update() must not pass force=True to
+    do_install(), otherwise blocked scan verdicts are silently overridden."""
+
+    def test_do_update_does_not_force_install(self):
+        """do_update must call do_install without force=True."""
+        from hermes_cli.skills_hub import do_update
+
+        fake_updates = [
+            {
+                "name": "test-skill",
+                "identifier": "owner/repo/test-skill",
+                "status": "update_available",
+            }
+        ]
+
+        calls = []
+
+        def mock_do_install(identifier, **kwargs):
+            calls.append(kwargs)
+
+        mock_lock = MagicMock()
+        mock_lock.get_installed.return_value = {
+            "install_path": "~/.hermes/skills/test-skill",
+        }
+
+        with patch("hermes_cli.skills_hub.do_install", mock_do_install), \
+             patch("tools.skills_hub.check_for_skill_updates", return_value=fake_updates), \
+             patch("tools.skills_hub.HubLockFile", return_value=mock_lock):
+            do_update()
+
+        assert len(calls) == 1
+        assert calls[0].get("force") is not True, (
+            "do_update() must not pass force=True to do_install(); "
+            "this bypasses blocked scan verdicts (#38041)"
+        )

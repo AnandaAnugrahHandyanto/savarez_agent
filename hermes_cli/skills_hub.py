@@ -958,7 +958,7 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
         installed = lock.get_installed(entry["name"])
         category = _derive_category_from_install_path(installed.get("install_path", "")) if installed else ""
         c.print(f"[bold]Updating:[/] {entry['name']}")
-        do_install(entry["identifier"], category=category, force=True, console=c)
+        do_install(entry["identifier"], category=category, console=c)
 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 
