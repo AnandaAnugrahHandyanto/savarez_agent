@@ -18,6 +18,26 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
+def _safe_float_env(name: str, default: float) -> float:
+    """Read an env var as float, returning *default* if missing or non-numeric."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return default
+
+def _safe_int_env(name: str, default: int) -> int:
+    """Read an env var as int, returning *default* if missing or non-numeric."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 # Slack conversation IDs: C (public channel), G (private/group channel), D (DM).
@@ -1290,7 +1310,7 @@ async def _send_email(extra, chat_id, message):
     password = os.getenv("EMAIL_PASSWORD", "")
     smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
     try:
-        smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+        smtp_port = _safe_int_env("EMAIL_SMTP_PORT", 587)
     except (ValueError, TypeError):
         smtp_port = 587
 

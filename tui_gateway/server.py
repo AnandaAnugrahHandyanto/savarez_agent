@@ -29,6 +29,26 @@ from tui_gateway.transport import (
 
 logger = logging.getLogger(__name__)
 
+def _safe_float_env(name: str, default: float) -> float:
+    """Read an env var as float, returning *default* if missing or non-numeric."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return default
+
+def _safe_int_env(name: str, default: int) -> int:
+    """Read an env var as int, returning *default* if missing or non-numeric."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"
@@ -129,7 +149,7 @@ _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _cfg_path = None
 try:
-    _slash_timeout = float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S") or "45")
+    _slash_timeout = _safe_float_env("HERMES_TUI_SLASH_TIMEOUT_S", 45.0)
 except (ValueError, TypeError):
     _slash_timeout = 45.0
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
@@ -160,7 +180,7 @@ _LONG_HANDLERS = frozenset(
 
 try:
     _rpc_pool_workers = max(
-        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "4")
+        2, _safe_int_env("HERMES_TUI_RPC_POOL_WORKERS", 4)
     )
 except (ValueError, TypeError):
     _rpc_pool_workers = 4
@@ -2118,7 +2138,7 @@ def _apply_personality_to_session(
 
 def _cfg_max_turns(cfg: dict, default: int) -> int:
     try:
-        env_max = int(os.environ.get("HERMES_TUI_MAX_TURNS", "") or 0)
+        env_max = _safe_int_env("HERMES_TUI_MAX_TURNS", 0)
         if env_max > 0:
             return env_max
     except (TypeError, ValueError):

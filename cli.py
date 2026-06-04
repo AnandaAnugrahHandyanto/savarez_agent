@@ -45,6 +45,26 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
+def _safe_float_env(name: str, default: float) -> float:
+    """Read an env var as float, returning *default* if missing or non-numeric."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return default
+
+def _safe_int_env(name: str, default: int) -> int:
+    """Read an env var as int, returning *default* if missing or non-numeric."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
 
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
@@ -3248,7 +3268,7 @@ class HermesCLI:
             self.max_turns = CLI_CONFIG["max_turns"]
         elif os.getenv("HERMES_MAX_ITERATIONS"):
             try:
-                self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS", ""))
+                self.max_turns = _safe_int_env("HERMES_MAX_ITERATIONS", 0)
             except (TypeError, ValueError):
                 self.max_turns = 90
         else:
@@ -15226,7 +15246,7 @@ class HermesCLI:
                 if getattr(self, "agent", None) and getattr(self, "_agent_running", False):
                     self.agent.interrupt(f"received signal {signum}")
                     try:
-                        _grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
+                        _grace = _safe_float_env("HERMES_SIGTERM_GRACE", 1.5)
                     except (TypeError, ValueError):
                         _grace = 1.5
                     if _grace > 0:
@@ -15773,7 +15793,7 @@ def main(
             if _agent is not None:
                 _agent.interrupt(f"received signal {signum}")
                 try:
-                    _grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
+                    _grace = _safe_float_env("HERMES_SIGTERM_GRACE", 1.5)
                 except (TypeError, ValueError):
                     _grace = 1.5
                 if _grace > 0:

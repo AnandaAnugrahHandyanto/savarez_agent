@@ -24,6 +24,26 @@ from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
+def _safe_float_env(name: str, default: float) -> float:
+    """Read an env var as float, returning *default* if missing or non-numeric."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return default
+
+def _safe_int_env(name: str, default: int) -> int:
+    """Read an env var as int, returning *default* if missing or non-numeric."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
 # should_send_media_as_audio() below.
@@ -3979,11 +3999,11 @@ class BasePlatformAdapter(ABC):
             return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
         # custom mode — tolerate malformed env vars instead of crashing.
         try:
-            min_ms = int(os.getenv("HERMES_HUMAN_DELAY_MIN_MS", "800"))
+            min_ms = _safe_int_env("HERMES_HUMAN_DELAY_MIN_MS", 800)
         except (TypeError, ValueError):
             min_ms = 800
         try:
-            max_ms = int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", "2500"))
+            max_ms = _safe_int_env("HERMES_HUMAN_DELAY_MAX_MS", 2500)
         except (TypeError, ValueError):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
