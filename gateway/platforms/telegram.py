@@ -1506,11 +1506,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name,
             )
             return False
-        
+
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
             return False
-        
+
         try:
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
@@ -1600,7 +1600,7 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
-            
+
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
@@ -1620,7 +1620,7 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            
+
             # Start polling — retry initialize() for transient TLS resets
             try:
                 from telegram.error import NetworkError, TimedOut
@@ -1719,7 +1719,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
                 )
-            
+
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
             # gateway command there automatically adds it to the Telegram menu.
@@ -1762,7 +1762,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
-            
+
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
@@ -1779,7 +1779,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
 
             return True
-            
+
         except Exception as e:
             self._release_platform_lock()
             message = f"Telegram startup failed: {e}"
@@ -1858,7 +1858,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
         try:
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -1873,12 +1873,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
                     for chunk in chunks
                 ]
-            
+
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
             used_thread_fallback = False
-            
+
             try:
                 from telegram.error import NetworkError as _NetErr
             except ImportError:
@@ -2094,7 +2094,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "thread_fallback": used_thread_fallback,
                 },
             )
-            
+
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             err_str = str(e).lower()
@@ -3539,6 +3539,74 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return
 
+        # --- Drumbeat approval callbacks (drumbeat:<action>:<draft_id> or <action>:<draft_id>) ---
+        try:
+            from gateway.drumbeat_handler import parse_drumbeat_callback_data, DrumbeatApprovalHandler
+
+            drumbeat_data = parse_drumbeat_callback_data(data)
+            if drumbeat_data:
+                action = drumbeat_data["action"]
+                draft_id = drumbeat_data["draft_id"]
+
+                # Authorization check
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to approve drafts.")
+                    return
+
+                # Handle the approval action
+                handler = DrumbeatApprovalHandler()
+                success, message, paste_text = handler.handle_approval(draft_id, action)
+
+                user_display = getattr(query.from_user, "first_name", "User")
+
+                # Answer the callback query
+                await query.answer(text=message)
+
+                # Edit the message if successful
+                if success:
+                    try:
+                        if paste_text:
+                            # For approve: show the paste-ready text
+                            await query.edit_message_text(
+                                text=f"✅ Approved by {user_display}\n\n{paste_text}",
+                                parse_mode=None,  # Keep text plain to avoid markdown parsing issues
+                                reply_markup=None,
+                            )
+                        else:
+                            # For reject/skip/edit: show the decision
+                            await query.edit_message_text(
+                                text=f"{message} by {user_display}",
+                                parse_mode=ParseMode.MARKDOWN_V2,
+                                reply_markup=None,
+                            )
+                    except Exception as edit_exc:
+                        logger.warning(
+                            "[%s] Failed to edit Drumbeat approval message: %s",
+                            self.name, edit_exc
+                        )
+
+                logger.info(
+                    "[%s] Drumbeat approval: draft=%s action=%s success=%s user=%s",
+                    self.name, draft_id, action, success, user_display
+                )
+                return
+        except ImportError:
+            # Drumbeat handler not available (optional dependency)
+            pass
+        except Exception as exc:
+            logger.error(
+                "[%s] Drumbeat approval callback failed: %s",
+                self.name, exc, exc_info=True
+            )
+            # Don't return - allow fallthrough to other handlers
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return
@@ -3718,11 +3786,11 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
         try:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
-            
+
             with open(audio_path, "rb") as audio_file:
                 ext = os.path.splitext(audio_path)[1].lower()
                 # .ogg / .opus files -> send as voice (round playable bubble)
@@ -4132,7 +4200,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image natively as a Telegram photo.
-        
+
         Tries URL-based send first (fast, works for <5MB images).
         Falls back to downloading and uploading as file (supports up to 10MB).
         """
@@ -4228,7 +4296,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
         try:
             _anim_thread = self._metadata_thread_id(metadata)
             reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
@@ -4303,10 +4371,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """Get information about a Telegram chat."""
         if not self._bot:
             return {"name": "Unknown", "type": "dm"}
-        
+
         try:
             chat = await self._bot.get_chat(int(chat_id))
-            
+
             chat_type = "dm"
             if chat.type == ChatType.GROUP:
                 chat_type = "group"
@@ -4316,7 +4384,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_type = "forum"
             elif chat.type == ChatType.CHANNEL:
                 chat_type = "channel"
-            
+
             return {
                 "name": chat.title or chat.full_name or str(chat_id),
                 "type": chat_type,
@@ -5420,11 +5488,11 @@ class TelegramAdapter(BasePlatformAdapter):
         msg_type = self._media_message_type(msg)
 
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
-        
+
         # Add caption as text
         if msg.caption:
             event.text = self._clean_bot_trigger_text(msg.caption)
-        
+
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
             await self._handle_sticker(msg, event)
@@ -5867,15 +5935,27 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         chat = message.chat
         user = message.from_user
-        
+
         # Determine chat type.  Normalize through ``str`` so tests/mocks and
         # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
         # string-like, but mocks often provide plain strings).
-        telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        # The split-on-dot approach handles both "supergroup" strings and
+        # "ChatType.SUPERGROUP" enum reprs. For test mocks that stringify to
+        # "<MagicMock ...>", extract chat type keywords from the full string.
+        raw_type_str = str(getattr(chat, "type", "")).lower()
+        telegram_chat_type = raw_type_str.split(".")[-1]
+        # Remove trailing mock artifacts like "' id='123'>"
+        telegram_chat_type = telegram_chat_type.split("'")[0].split(">")[0].strip()
+
         chat_type = "dm"
         if telegram_chat_type in {"group", "supergroup"}:
             chat_type = "group"
         elif telegram_chat_type == "channel":
+            chat_type = "channel"
+        # Fallback: if the cleaned split failed, search the full string for keywords
+        elif chat_type == "dm" and ("supergroup" in raw_type_str or "group" in raw_type_str):
+            chat_type = "group"
+        elif chat_type == "dm" and "channel" in raw_type_str:
             chat_type = "channel"
 
         # Resolve Telegram topic name and skill binding.
@@ -5954,7 +6034,7 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_topic=chat_topic,
             message_id=str(message.message_id),
         )
-        
+
         # Extract reply context if this message is a reply.
         # Prefer Telegram's native partial quote (message.quote, TextQuote)
         # so a user replying to a single selected substring of a prior
