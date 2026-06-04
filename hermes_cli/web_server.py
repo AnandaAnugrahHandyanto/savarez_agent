@@ -7338,13 +7338,13 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
+    if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+
     # --- auth + loopback check (before accept so we can close cleanly) ---
     if not _ws_auth_ok(ws):
         await ws.close(code=4401)
-        return
-
-    if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
         return
 
     await ws.accept()
@@ -7457,12 +7457,12 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
-
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
+        return
+
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
         return
 
     from tui_gateway.ws import handle_ws
@@ -7488,12 +7488,12 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
-
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
+        return
+
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
         return
 
     channel = _channel_or_close_code(ws)
@@ -7516,12 +7516,12 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
-
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
+        return
+
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
         return
 
     channel = _channel_or_close_code(ws)
