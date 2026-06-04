@@ -1160,6 +1160,104 @@ class TestWebServerEndpoints:
         assert model_cfg["provider"] == "openrouter"
         assert model_cfg.get("base_url", "") == ""
 
+    def test_create_custom_provider_persists_named_provider_key_and_active_model(self, monkeypatch):
+        """Desktop custom-provider setup should persist a reusable provider,
+        keep the API key in .env via key_env, and optionally make it active."""
+        from hermes_cli.config import load_config, load_env
+        import hermes_cli.models as models
+
+        monkeypatch.setattr(models, "fetch_api_models", lambda api_key, base_url, timeout=5.0: ["router-model"])
+
+        resp = self.client.post(
+            "/api/providers/custom",
+            json={
+                "name": "My Router",
+                "base_url": "https://my-router.example/v1",
+                "api_key": "router-secret",
+                "model": "router-model",
+                "make_active": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["slug"] == "my-router"
+        assert data["provider"] == "my-router"
+        assert data["key_env"] == "CUSTOM_PROVIDER_MY_ROUTER_API_KEY"
+
+        env = load_env()
+        assert env["CUSTOM_PROVIDER_MY_ROUTER_API_KEY"] == "router-secret"
+
+        cfg = load_config()
+        assert cfg["providers"]["my-router"] == {
+            "name": "My Router",
+            "api": "https://my-router.example/v1",
+            "key_env": "CUSTOM_PROVIDER_MY_ROUTER_API_KEY",
+            "default_model": "router-model",
+            "models": ["router-model"],
+        }
+        assert cfg["model"] == {
+            "provider": "my-router",
+            "default": "router-model",
+        }
+
+        options = self.client.get("/api/model/options").json()
+        row = next(provider for provider in options["providers"] if provider["slug"] == "my-router")
+        assert options["provider"] == "my-router"
+        assert row["is_current"] is True
+        assert "router-model" in row["models"]
+
+    def test_create_custom_provider_can_discover_models_without_user_model(self, monkeypatch):
+        """Settings only needs base_url + api_key; model list comes from /models."""
+        from hermes_cli.config import load_config, load_env
+        import hermes_cli.models as models
+
+        captured = {}
+
+        def fake_fetch_api_models(api_key, base_url, timeout=5.0):
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+            captured["timeout"] = timeout
+            return ["openai/gpt-4.1-mini", "anthropic/claude-haiku-4.5"]
+
+        monkeypatch.setattr(models, "fetch_api_models", fake_fetch_api_models)
+
+        resp = self.client.post(
+            "/api/providers/custom",
+            json={
+                "base_url": "https://ai-router.app/api/v1",
+                "api_key": "router-secret",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["slug"] == "ai-router-app"
+        assert data["provider"] == "ai-router-app"
+        assert data["model"] == "openai/gpt-4.1-mini"
+        assert data["models"] == ["openai/gpt-4.1-mini", "anthropic/claude-haiku-4.5"]
+        assert captured == {
+            "api_key": "router-secret",
+            "base_url": "https://ai-router.app/api/v1",
+            "timeout": 8.0,
+        }
+
+        env = load_env()
+        assert env["CUSTOM_PROVIDER_AI_ROUTER_APP_API_KEY"] == "router-secret"
+
+        cfg = load_config()
+        assert cfg["providers"]["ai-router-app"] == {
+            "name": "ai-router.app",
+            "api": "https://ai-router.app/api/v1",
+            "key_env": "CUSTOM_PROVIDER_AI_ROUTER_APP_API_KEY",
+            "default_model": "openai/gpt-4.1-mini",
+            "models": ["openai/gpt-4.1-mini", "anthropic/claude-haiku-4.5"],
+        }
+        model_cfg = cfg.get("model")
+        assert not isinstance(model_cfg, dict) or model_cfg.get("provider") != "ai-router-app"
+
     def test_set_model_main_gateway_failure_does_not_block_save(self, monkeypatch):
         """A Portal/gateway hiccup must never prevent saving the model."""
         import hermes_cli.nous_subscription as ns
@@ -3967,4 +4065,3 @@ class TestValidateProviderCredential:
     def test_empty_value_rejected(self):
         data = self._post("OPENAI_API_KEY", "   ").json()
         assert data["ok"] is False
-

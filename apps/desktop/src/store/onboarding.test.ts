@@ -8,6 +8,7 @@ import {
   type OnboardingContext,
   refreshOnboarding,
   requestDesktopOnboarding,
+  saveOnboardingCustomProvider,
   saveOnboardingLocalEndpoint
 } from './onboarding'
 
@@ -271,5 +272,97 @@ describe('saveOnboardingLocalEndpoint', () => {
     expect(result.ok).toBe(false)
     expect(result.message).toContain('No provider can serve the selected model.')
     expect($desktopOnboarding.get().configured).not.toBe(true)
+  })
+})
+
+describe('saveOnboardingCustomProvider', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+  })
+
+  function readyGateway(): OnboardingContext['requestGateway'] {
+    return async method => {
+      if (method === 'reload.env') {
+        return {} as never
+      }
+
+      if (method === 'setup.status') {
+        return { provider_configured: true } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        return { ok: true } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+  }
+
+  it('persists a custom provider with base URL and API key', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/custom') {
+        return {
+          ok: true,
+          provider: 'ai-router',
+          slug: 'ai-router',
+          key_env: 'CUSTOM_PROVIDER_AI_ROUTER_API_KEY',
+          model: 'openai/gpt-4.1-mini',
+          models: ['openai/gpt-4.1-mini']
+        }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const onCompleted = vi.fn()
+
+    const result = await saveOnboardingCustomProvider(
+      {
+        apiKey: 'router-secret',
+        baseUrl: 'https://ai-router.app/v1'
+      },
+      { onCompleted, requestGateway: readyGateway() }
+    )
+
+    expect(result.ok).toBe(true)
+    expect(calls).toEqual([
+      {
+        path: '/api/providers/custom',
+        body: {
+          api_key: 'router-secret',
+          base_url: 'https://ai-router.app/v1',
+          make_active: true
+        }
+      }
+    ])
+    expect(onCompleted).toHaveBeenCalledTimes(1)
+    expect($desktopOnboarding.get().configured).toBe(true)
+  })
+
+  it('requires a base URL before saving a custom provider', async () => {
+    const api = vi.fn()
+    installApiMock(api)
+
+    const result = await saveOnboardingCustomProvider(
+      {
+        apiKey: 'router-secret',
+        baseUrl: ''
+      },
+      { requestGateway: readyGateway() }
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('endpoint URL')
+    expect(api).not.toHaveBeenCalled()
   })
 })

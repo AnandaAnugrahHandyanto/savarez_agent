@@ -10,9 +10,10 @@ import {
 } from '@/components/desktop-onboarding-overlay'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { listOAuthProviders } from '@/hermes'
+import { createCustomProvider, listOAuthProviders } from '@/hermes'
 import { ChevronDown, ExternalLink, KeyRound, Loader2, Save } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
@@ -392,7 +393,115 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
 function NoProviderKeys() {
   return (
     <div className="grid min-h-32 place-items-center px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
-      No provider API keys available.
+      No catalog provider API keys available.
+    </div>
+  )
+}
+
+function CustomProviderCard() {
+  const [apiKey, setApiKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [error, setError] = useState<null | string>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const canSave = baseUrl.trim().length > 0
+
+  async function submit() {
+    if (!canSave || saving) {
+      return
+    }
+
+    setSaving(true)
+    setError(null)
+
+    try {
+      const result = await createCustomProvider({
+        api_key: apiKey,
+        base_url: baseUrl
+      })
+
+      notify({
+        kind: 'success',
+        message: `${result.name || result.provider || 'Custom provider'} is available in the model picker.`,
+        title: 'Custom provider saved'
+      })
+      setApiKey('')
+      setBaseUrl('')
+      setExpanded(false)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not save custom provider.'
+
+      setError(message)
+      notifyError(err, 'Failed to save custom provider')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      className={cn(
+        'group/card rounded-[6px] px-2 py-2 transition-colors',
+        !expanded && 'hover:bg-(--ui-row-hover-background)',
+        expanded && 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)'
+      )}
+    >
+      <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
+        <button
+          className="flex min-w-44 flex-1 items-center gap-2 py-1 text-left"
+          onClick={() => setExpanded(v => !v)}
+          type="button"
+        >
+          <span className="size-2 shrink-0 rounded-full bg-(--ui-stroke-secondary)" />
+          <span className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
+            Custom provider
+          </span>
+          <ChevronDown className={cn('size-3.5 shrink-0 text-muted-foreground transition', expanded && 'rotate-180')} />
+        </button>
+        <div
+          className="w-full sm:w-80 sm:shrink-0"
+          onFocus={() => {
+            if (!expanded) {
+              setExpanded(true)
+            }
+          }}
+        >
+          <Input
+            aria-label="Custom provider API key"
+            autoComplete="off"
+            className="font-mono"
+            onChange={e => setApiKey(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && void submit()}
+            placeholder="Paste custom provider key"
+            size="sm"
+            type="password"
+            value={apiKey}
+          />
+        </div>
+      </div>
+      {expanded && (
+        <div className="mt-3 grid gap-2.5 pl-4">
+          <label className="grid gap-1.5 text-xs font-medium">
+            Base URL
+            <Input
+              autoComplete="off"
+              className="font-mono"
+              onChange={e => setBaseUrl(e.target.value)}
+              placeholder="https://ai-router.app/v1"
+              size="sm"
+              type="url"
+              value={baseUrl}
+            />
+          </label>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          <div className="flex justify-end">
+            <Button disabled={!canSave || saving} onClick={() => void submit()} size="sm">
+              {saving ? <Loader2 className="size-4 animate-spin" /> : <Save />}
+              {saving ? 'Saving' : 'Save custom provider'}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -444,22 +553,20 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
   if (showApiKeys) {
     return (
       <SettingsContent>
-        {keyGroups.length > 0 ? (
-          <div className="grid gap-2">
-            {keyGroups.map(group => (
-              <ProviderKeyCard
-                expanded={openProvider === group.name}
-                group={group}
-                key={group.name}
-                onExpand={() => setOpenProvider(group.name)}
-                onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
-                rowProps={rowProps}
-              />
-            ))}
-          </div>
-        ) : (
-          <NoProviderKeys />
-        )}
+        <div className="grid gap-2">
+          <CustomProviderCard />
+          {keyGroups.map(group => (
+            <ProviderKeyCard
+              expanded={openProvider === group.name}
+              group={group}
+              key={group.name}
+              onExpand={() => setOpenProvider(group.name)}
+              onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+              rowProps={rowProps}
+            />
+          ))}
+          {keyGroups.length === 0 && <NoProviderKeys />}
+        </div>
       </SettingsContent>
     )
   }
