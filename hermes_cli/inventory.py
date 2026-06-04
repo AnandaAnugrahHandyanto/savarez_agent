@@ -118,6 +118,7 @@ def build_models_payload(
     capabilities: bool = False,
     force_fresh_nous_tier: bool = False,
     max_models: int = 50,
+    lazy_probing: bool = False,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.
@@ -155,6 +156,7 @@ def build_models_payload(
         custom_providers=ctx.custom_providers,
         force_fresh_nous_tier=force_fresh_nous_tier,
         max_models=max_models,
+        lazy_probing=lazy_probing,
     )
 
     # --- Deduplicate: remove models from aggregators that overlap with
