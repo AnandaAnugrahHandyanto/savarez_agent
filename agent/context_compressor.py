@@ -2084,4 +2084,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
             logger.info("Compression #%d complete", self.compression_count)
 
+        # Park last_prompt_tokens at -1 so should_defer_preflight_to_real_usage()
+        # returns True until update_from_response() receives the real post-compress
+        # token count.  Without this the flag is never set and the guard never fires.
+        self.last_prompt_tokens = -1
+        self.awaiting_real_usage_after_compression = True
+
         return compressed
