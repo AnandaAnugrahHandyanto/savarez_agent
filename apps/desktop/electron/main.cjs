@@ -1347,22 +1347,42 @@ async function applyUpdates(opts = {}) {
 
     // Detached so the updater outlives this process — it needs us GONE before
     // `hermes update` will run (the venv shim is locked while we live).
-    const child = spawn(updater, updaterArgs, {
-      cwd: HERMES_HOME,
-      env: {
-        ...process.env,
-        HERMES_HOME,
-        PATH: [path.join(HERMES_HOME, 'node', 'bin'), venvBin, process.env.PATH]
-          .filter(Boolean)
-          .join(path.delimiter)
-      },
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: false
-    })
+    // On macOS we must use `open -a` because macOS kills detached Tauri/GUI
+    // child processes when the spawning process exits (race condition between
+    // app.quit() and the child's exec). open(1) returns immediately and
+    // launchd adopts the child, keeping it alive independently of the parent.
+    let child
+    if (IS_MAC) {
+      child = spawn('open', ['-a', updater, '--args', ...updaterArgs], {
+        cwd: HERMES_HOME,
+        env: {
+          ...process.env,
+          HERMES_HOME,
+          PATH: [path.join(HERMES_HOME, 'node', 'bin'), venvBin, process.env.PATH]
+            .filter(Boolean)
+            .join(path.delimiter)
+        },
+        detached: true,
+        stdio: 'ignore'
+      })
+    } else {
+      child = spawn(updater, updaterArgs, {
+        cwd: HERMES_HOME,
+        env: {
+          ...process.env,
+          HERMES_HOME,
+          PATH: [path.join(HERMES_HOME, 'node', 'bin'), venvBin, process.env.PATH]
+            .filter(Boolean)
+            .join(path.delimiter)
+        },
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: IS_WINDOWS
+      })
+    }
     child.unref()
 
-    rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
+    rememberLog(`[updates] launched updater via ${IS_MAC ? 'open -a' : 'spawn'}: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
 
     // Give the OS a beat to register the new process, then quit. The updater
     // rebuilds and relaunches us when it's done.
@@ -1551,9 +1571,21 @@ fi
     return { ok: true, backendUpdated: true, rebuiltApp }
   }
 
-  const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
+  // On macOS, use osascript to run the swap script so it survives app.quit()
+  // without showing any UI (osascript runs under launchd, not tied to this process).
+  let child
+  if (IS_MAC) {
+    // Escape the script path for AppleScript single-quote handling
+    const escapedScriptPath = scriptPath.replace(/'/g, "'\\''")
+    child = spawn('osascript', ['-e', `do shell script "bash '${escapedScriptPath}'" &`], {
+      detached: true,
+      stdio: 'ignore'
+    })
+  } else {
+    child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
+  }
   child.unref()
-  rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
+  rememberLog(`[updates] launched mac swap+relaunch via ${IS_MAC ? 'osascript' : 'spawn'}: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
 
   setTimeout(() => app.quit(), 600)
   return { ok: true, handedOff: true, rebuiltApp, targetApp }
