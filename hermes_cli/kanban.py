@@ -81,6 +81,19 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
     }
 
 
+def _task_token_dict(t: kb.Task) -> dict[str, Any]:
+    """Return a dictionary of token accounting fields, omitting None values."""
+    d: dict[str, Any] = {}
+    for attr in ("total_input_tokens", "total_output_tokens",
+                 "total_cache_read_tokens", "total_cache_write_tokens",
+                 "total_reasoning_tokens", "total_tokens",
+                 "estimated_cost_usd", "cost_status"):
+        val = getattr(t, attr, None)
+        if val is not None:
+            d[attr] = val
+    return d
+
+
 def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
     st = getattr(args, "state_type", None)
     sn = getattr(args, "state_name", None)
@@ -433,6 +446,35 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         metavar="VALUE",
         help="With --state-type: keep runs whose column equals this value",
     )
+
+    # --- token ---
+    p_token = sub.add_parser("token", help="Show token usage for a task by name or ID")
+    p_token.add_argument("query", nargs="?", default=None,
+                         help="Task ID (t_xxx), title substring, 'ls' to list all, or 'stats' for aggregates")
+    p_token.add_argument("--json", action="store_true",
+                         help="Emit token data as JSON")
+    p_token.add_argument("--since",
+                         default=None,
+                         help="For 'stats': only include tasks completed after this date (ISO 8601 or '7d', '30d')")
+    p_token.add_argument("--assignee",
+                         default=None,
+                         help="For 'ls' or 'stats': filter by assignee profile")
+    p_token.add_argument("--status",
+                         default=None,
+                         help="For 'ls': filter by task status (done, ready, running, ...)")
+    p_token.add_argument("--limit", type=int, default=None,
+                         help="For 'ls': max number of tasks to show")
+    p_token.add_argument("--granularity",
+                         choices=("day", "month", "year"), default=None,
+                         help="For 'stats': group by time period (day, month, year).  Recommended with --since")
+    p_token.add_argument("--sort",
+                         choices=("tokens", "cost"), default=None,
+                         help="For 'ls' or 'stats --top': sort by token count or cost")
+    p_token.add_argument("--top", type=int, default=None,
+                         help="For 'stats': show top N most expensive tasks")
+    p_token.add_argument("--scope",
+                         default=None,
+                         help="Board slug to query, or 'all' for all boards")
 
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
@@ -936,6 +978,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
+        "token":    _cmd_token,
         "assign":   _cmd_assign,
         "reclaim":  _cmd_reclaim,
         "reassign": _cmd_reassign,
@@ -1486,6 +1529,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             "latest_summary": latest_summary,
             "parents": parents,
             "children": children,
+            "token_usage": _task_token_dict(task),
             "comments": [
                 {"author": c.author, "body": c.body, "created_at": c.created_at}
                 for c in comments
@@ -1579,6 +1623,19 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  started:   {_fmt_ts(task.started_at)}")
     if task.completed_at:
         print(f"  completed: {_fmt_ts(task.completed_at)}")
+    # Token accounting — only show when data exists.
+    if task.total_tokens is not None:
+        _parts = [f"in: {task.total_input_tokens or 0:,}",
+                   f"out: {task.total_output_tokens or 0:,}"]
+        if task.total_cache_read_tokens:
+            _parts.append(f"cache: {task.total_cache_read_tokens:,}")
+        if task.total_reasoning_tokens:
+            _parts.append(f"reasoning: {task.total_reasoning_tokens:,}")
+        _line = f"  tokens:    {task.total_tokens:,} ({', '.join(_parts)})"
+        if task.estimated_cost_usd is not None:
+            _status = f" ({task.cost_status})" if task.cost_status else ""
+            _line += f" — ${task.estimated_cost_usd:.6f}{_status}"
+        print(_line)
     if parents:
         print(f"  parents:   {', '.join(parents)}")
     if children:
@@ -1625,6 +1682,372 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 print(f"        → {r.summary.splitlines()[0][:160]}")
             if r.error:
                 print(f"        ! {r.error.splitlines()[0][:160]}")
+    return 0
+
+
+def _cmd_token(args: argparse.Namespace) -> int:
+    """Show token usage for a task by ID or name search."""
+    query = getattr(args, "query", None) or ""
+    query = query.strip()
+
+    # Sub-commands: ls / stats
+    if query.lower() in ("ls", "list"):
+        return _cmd_token_ls(args)
+    if query.lower() == "stats":
+        return _cmd_token_stats(args)
+
+    if not query:
+        print("Usage: hermes kanban token <task_id_or_name>", file=sys.stderr)
+        print("  <task_id_or_name>   Search by t_xxx ID or title substring", file=sys.stderr)
+        print("  ls                  List all tasks with token data", file=sys.stderr)
+        print("  stats               Show aggregate token statistics", file=sys.stderr)
+        print("  --since <date>      For stats: only tasks after this date", file=sys.stderr)
+        print("  --assignee <name>   Filter by assignee", file=sys.stderr)
+        return 2
+
+    with kb.connect_closing() as conn:
+        task = None
+        lower = query.lower()
+        if lower.startswith("t_") and len(lower) >= 10:
+            task = kb.get_task(conn, lower)
+
+        if task is None:
+            matches = kb.search_tasks_by_title(conn, query, limit=10, status=None)
+        else:
+            matches = [task]
+
+        if not matches:
+            print("No task found matching " + repr(query), file=sys.stderr)
+            return 1
+
+        if getattr(args, "json", False):
+            data = []
+            for t in matches:
+                entry = {"task_id": t.id, "title": t.title, "status": t.status}
+                tu = _task_token_dict(t)
+                if tu:
+                    entry["token_usage"] = tu
+                data.append(entry)
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+            return 0
+
+        for t in matches:
+            _print_token_for_task(t)
+    return 0
+
+
+def _print_token_for_task(t: "kb.Task") -> None:
+    """Print token info for a single task."""
+    print()
+    print("Task " + t.id + ": " + t.title)
+    print("  status:    " + t.status)
+    if t.total_tokens is not None:
+        parts = ["in: " + _fmt_num(t.total_input_tokens or 0),
+                 "out: " + _fmt_num(t.total_output_tokens or 0)]
+        if t.total_cache_read_tokens:
+            parts.append("cache: " + _fmt_num(t.total_cache_read_tokens))
+        if t.total_reasoning_tokens:
+            parts.append("reasoning: " + _fmt_num(t.total_reasoning_tokens))
+        line = "  tokens:    " + _fmt_num(t.total_tokens) + " (" + ", ".join(parts) + ")"
+        if t.estimated_cost_usd is not None:
+            status_str = " (" + t.cost_status + ")" if t.cost_status else ""
+            line += " — $" + "{:.6f}".format(t.estimated_cost_usd) + status_str
+        print(line)
+    else:
+        print("  tokens:    (none - no token data recorded)")
+
+
+def _fmt_num(n: Optional[int]) -> str:
+    """Format an integer with commas."""
+    if n is None:
+        return "0"
+    try:
+        return "{:,}".format(int(n))
+    except (TypeError, ValueError):
+        return str(n)
+
+
+def _cache_hit_rate(cache: Optional[int], inp: Optional[int]) -> str:
+    """Calculate cache hit rate as percentage: cache / (cache + input) * 100.
+
+    Returns a formatted string like ``98.13%`` or ``-`` when incalculable.
+    """
+    if cache is None or inp is None or (cache + inp) == 0:
+        return "-"
+    try:
+        rate = (float(cache) / (float(cache) + float(inp))) * 100.0
+        return f"{rate:.2f}%"
+    except (TypeError, ValueError, ZeroDivisionError):
+        return "-"
+
+
+def _parse_since(value: Optional[str]) -> Optional[int]:
+    """Parse a --since value into a Unix timestamp, or None."""
+    if not value:
+        return None
+    value = value.strip()
+    now = int(time.time())
+    # Relative: 7d, 30d
+    if value.endswith("d"):
+        try:
+            days = int(value[:-1])
+            return now - days * 86400
+        except (TypeError, ValueError):
+            pass
+    # Try ISO 8601
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(value)
+        return int(dt.timestamp())
+    except Exception:
+        pass
+    return None
+
+
+def _bar_chart_inline(values: list[int], max_width: int = 15) -> list[str]:
+    """Create simple horizontal bar chart strings from values.
+
+    Matches the style of ``insights.py:_bar_chart``.  Returns one string
+    per input value (e.g. ``"███████████"``).  Empty strings for zero values.
+    """
+    peak = max(values) if values else 1
+    if peak == 0:
+        return ["" for _ in values]
+    return ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
+
+
+def _accumulate_stats(t, acc: dict) -> None:
+    """Accumulate a single task's token data into a stats bucket dict.
+
+    Mutates ``acc`` in place by adding the task's input, output, cache,
+    total, reasoning tokens and estimated cost.  Buckets that have not
+    been seen before must be pre-initialised with zero values.
+    """
+    acc["tasks"] += 1
+    acc["input"] += t.total_input_tokens or 0
+    acc["output"] += t.total_output_tokens or 0
+    acc["cache"] += t.total_cache_read_tokens or 0
+    acc["total"] += t.total_tokens or 0
+    acc["cost"] += t.estimated_cost_usd or 0.0
+
+
+def _cmd_token_ls(args: argparse.Namespace) -> int:
+    """List all tasks with token data on the current board."""
+    assignee = getattr(args, "assignee", None) or None
+    status = getattr(args, "status", None) or None
+    limit = getattr(args, "limit", None) or None
+    show_json = getattr(args, "json", False)
+    sort_by = getattr(args, "sort", None)
+
+    with kb.connect_closing() as conn:
+        tasks = kb.list_tasks(conn, assignee=assignee, status=status,
+                              include_archived=False, limit=limit)
+        with_token = [t for t in tasks if t.total_tokens is not None]
+
+        if not with_token:
+            print("No tasks with token data found.")
+            return 0
+
+        # Sort if requested
+        if sort_by == "tokens":
+            with_token.sort(key=lambda t: t.total_tokens or 0, reverse=True)
+        elif sort_by == "cost":
+            with_token.sort(key=lambda t: t.estimated_cost_usd or 0.0, reverse=True)
+
+        if show_json:
+            data = []
+            for t in with_token:
+                entry = {"task_id": t.id, "title": t.title, "status": t.status}
+                entry["token_usage"] = _task_token_dict(t)
+                data.append(entry)
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+            return 0
+
+        # Text output: header + per-task line
+        print(f"{'ID':<22} {'TITLE':<46} {'TOKENS':<12} {'HITRATE':<9}")
+        print("-" * 90)
+        for t in with_token:
+            tok_str = _fmt_num(t.total_tokens)
+            hit = _cache_hit_rate(t.total_cache_read_tokens, t.total_input_tokens)
+            title = t.title[:44]
+            print(f"{t.id:<22} {title:<46} {tok_str:<12} {hit:<9}")
+
+        # Summary line
+        total_in = sum(t.total_input_tokens or 0 for t in with_token)
+        total_out = sum(t.total_output_tokens or 0 for t in with_token)
+        total_cache = sum(t.total_cache_read_tokens or 0 for t in with_token)
+        total_all = sum(t.total_tokens or 0 for t in with_token)
+        total_hit = _cache_hit_rate(total_cache, total_in)
+        print("-" * 90)
+        parts = [f"in: {_fmt_num(total_in)}", f"out: {_fmt_num(total_out)}"]
+        if total_cache:
+            parts.append(f"cache: {_fmt_num(total_cache)}")
+        print(f"{'TOTAL':<22} {'':<46} {_fmt_num(total_all):<12} {total_hit:<9} ({', '.join(parts)})")
+    return 0
+
+
+def _cmd_token_stats(args: argparse.Namespace) -> int:
+    """Show aggregate token statistics."""
+    assignee = getattr(args, "assignee", None) or None
+    since_str = getattr(args, "since", None)
+    since_ts = _parse_since(since_str)
+    show_json = getattr(args, "json", False)
+    granularity = getattr(args, "granularity", None)
+    top_n = getattr(args, "top", None)
+    scope = getattr(args, "scope", None) or None
+
+    # Collect tasks from one or all boards
+    boards_to_query: list[str | None] = [None]  # None = current board
+    if scope == "all":
+        try:
+            boards_to_query = [None] + [
+                b["slug"] for b in kb.list_boards()
+                if b["slug"] != kb.get_current_board()
+            ]
+        except Exception:
+            boards_to_query = [None]
+
+    with_token: list = []
+    for slug in boards_to_query:
+        try:
+            conn_ctx = kb.connect_closing(board=slug)
+        except Exception:
+            continue
+        with conn_ctx as conn:
+            fetched = kb.list_tasks(conn, assignee=assignee, status="done",
+                                    include_archived=False)
+            if since_ts is not None:
+                fetched = [t for t in fetched
+                           if t.completed_at is not None and t.completed_at >= since_ts]
+            with_token.extend(t for t in fetched if t.total_tokens is not None)
+
+    if not with_token:
+        print("No token data found for the given filters.")
+        return 0
+
+    total_in = sum(t.total_input_tokens or 0 for t in with_token)
+    total_out = sum(t.total_output_tokens or 0 for t in with_token)
+    total_cache = sum(t.total_cache_read_tokens or 0 for t in with_token)
+    total_all = sum(t.total_tokens or 0 for t in with_token)
+    total_cost = sum(t.estimated_cost_usd or 0.0 for t in with_token)
+    count = len(with_token)
+    avg_total = total_all // count if count else 0
+
+    # Per-assignee breakdown
+    by_assignee: dict[str, dict] = {}
+    for t in with_token:
+        a = t.assignee or "(unassigned)"
+        if a not in by_assignee:
+            by_assignee[a] = {"tasks": 0, "input": 0, "output": 0,
+                              "cache": 0, "total": 0, "cost": 0.0}
+        _accumulate_stats(t, by_assignee[a])
+
+    # Time-bucket aggregation for --granularity
+    by_time: dict[str, dict] = {}
+    if granularity:
+        from datetime import datetime
+        for t in with_token:
+            if t.completed_at is None:
+                continue
+            dt = datetime.fromtimestamp(t.completed_at)
+            if granularity == "day":
+                key = dt.strftime("%Y-%m-%d")
+            elif granularity == "month":
+                key = dt.strftime("%Y-%m")
+            elif granularity == "year":
+                key = dt.strftime("%Y")
+            else:
+                continue
+            if key not in by_time:
+                by_time[key] = {"tasks": 0, "input": 0, "output": 0,
+                                "cache": 0, "total": 0, "cost": 0.0}
+            _accumulate_stats(t, by_time[key])
+
+    if show_json:
+        data: dict = {
+            "task_count": count,
+            "total_tokens": total_all,
+            "total_input_tokens": total_in,
+            "total_output_tokens": total_out,
+            "total_cache_read_tokens": total_cache,
+            "total_cost_usd": round(total_cost, 6),
+            "average_tokens_per_task": avg_total,
+            "by_assignee": {
+                a: {
+                    "task_count": s["tasks"],
+                    "input_tokens": s["input"],
+                    "output_tokens": s["output"],
+                    "cache_read_tokens": s["cache"],
+                    "total_tokens": s["total"],
+                    "cost_usd": round(s["cost"], 6),
+                }
+                for a, s in sorted(by_assignee.items())
+            },
+        }
+        if since_str:
+            data["since"] = since_str
+        if by_time:
+            data["by_time"] = by_time
+        if top_n:
+            sorted_tasks = sorted(with_token,
+                                  key=lambda t: t.total_tokens or 0, reverse=True)
+            data["top_tasks"] = [
+                {"task_id": t.id, "title": t.title, "total_tokens": t.total_tokens,
+                 "estimated_cost_usd": t.estimated_cost_usd}
+                for t in sorted_tasks[:top_n]
+            ]
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return 0
+
+    # Text output
+    since_label = f" (since {since_str})" if since_str else ""
+    board_label = f" (scope: {scope})" if scope else ""
+    print(f"📊 Kanban Token Statistics{since_label}{board_label}")
+    print(f"   Tasks with data: {count}")
+    print()
+
+    # Time bucket section
+    if by_time:
+        print(f"   📅 By {granularity}")
+        sorted_keys = sorted(by_time.keys())
+        vals = [by_time[k]["total"] for k in sorted_keys]
+        bars = _bar_chart_inline(vals, max_width=15)
+        print(f"   {'':>12} {'tasks':>6} {'tokens':>12} {'bar':<17}")
+        for i, k in enumerate(sorted_keys):
+            b = by_time[k]
+            print(f"   {k:>12} {b['tasks']:>6} {_fmt_num(b['total']):>12} {bars[i]:<17}")
+        print()
+
+    # Overview table
+    print(f"   {'':>20} {'total':>12} {'input':>12} {'output':>12} {'cache':>12} {'hitrate':>9}")
+    print(f"   {'─'*20} {'─'*12} {'─'*12} {'─'*12} {'─'*12} {'─'*9}")
+    all_hit = _cache_hit_rate(total_cache, total_in)
+    print(f"   {'ALL':>20} {_fmt_num(total_all):>12} {_fmt_num(total_in):>12} "
+          f"{_fmt_num(total_out):>12} {_fmt_num(total_cache):>12} {all_hit:>9}")
+    print(f"   {'':>20} {'':>12} {'':>12} {'':>12} {'':>12} {'':>9}")
+    print(f"   {'Per assignee:':>20}")
+    for a in sorted(by_assignee.keys()):
+        s = by_assignee[a]
+        label = a[:18]
+        hit = _cache_hit_rate(s["cache"], s["input"])
+        print(f"   {label:>20} {_fmt_num(s['total']):>12} {_fmt_num(s['input']):>12} "
+              f"{_fmt_num(s['output']):>12} {_fmt_num(s['cache']):>12} {hit:>9}")
+    print()
+    if total_cost > 0:
+        print(f"   Estimated cost: ${total_cost:.6f}")
+    print(f"   Average tokens/task: {_fmt_num(avg_total)}")
+
+    # Top N most expensive tasks
+    if top_n:
+        sorted_tasks = sorted(with_token,
+                              key=lambda t: t.total_tokens or 0, reverse=True)
+        top_tasks = sorted_tasks[:top_n]
+        print()
+        print(f"   🏆 Top {top_n} by tokens")
+        print(f"   {'':>10} {'tokens':>12} {'title'}")
+        for i, t in enumerate(top_tasks, 1):
+            title = t.title[:50]
+            print(f"   #{i:<8} {_fmt_num(t.total_tokens or 0):>12}  {title}")
     return 0
 
 
@@ -2748,6 +3171,9 @@ _SLASH_KANBAN_HELP = """\
 Common subcommands:
   `list` (alias `ls`)   List tasks on the current board
   `show <id>`           Task details + comments + events
+  `token <query>`       Search a task by name/ID and show token usage
+  `token ls`            List all tasks with token data
+  `token stats`         Aggregate token statistics (--since, --assignee)
   `stats`               Per-status / per-assignee counts
   `create <title>…`     Create a task (auto-subscribes you to events)
   `comment <id> <msg>`  Append a comment
