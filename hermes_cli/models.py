@@ -2168,6 +2168,23 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             live = fetch_api_models(api_key, base_url)
             if live:
                 return live
+    if normalized == "lmstudio":
+        base_url = (
+            os.getenv("LM_BASE_URL", "")
+            or _get_custom_base_url()
+            or "http://127.0.0.1:1234/v1"
+        )
+        api_key = os.getenv("LM_API_KEY", "")
+        try:
+            live = fetch_lmstudio_models(api_key=api_key, base_url=base_url)
+            if live:
+                return live
+        except Exception:
+            pass
+        # Fallback: try OpenAI-compatible /v1/models endpoint
+        fallback = fetch_api_models(api_key, base_url)
+        if fallback:
+            return fallback
     # Bedrock uses live discovery keyed by the resolved AWS region so that
     # EU/AP users see eu.*/ap.* model IDs instead of the static us.* list.
     # Note: early return intentionally skips _MODELS_DEV_PREFERRED merge
