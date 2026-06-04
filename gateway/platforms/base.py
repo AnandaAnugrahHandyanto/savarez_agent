@@ -439,6 +439,39 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
         return {}, {"proxy": proxy_url}
 
 
+async def http_request(session, method: str, url: str, *, timeout: float = 30, **kwargs):
+    """Task-safe HTTP request using :func:`asyncio.wait_for`.
+
+    Replaces ``aiohttp.ClientTimeout`` to avoid ``"Timeout context manager
+    should be used inside a task"`` errors when invoked via
+    :func:`asyncio.run_coroutine_threadsafe` from cron jobs or
+    ``model_tools._run_async``.
+
+    The caller **must** enter the response as a context manager to manage
+    connection release::
+
+        resp = await http_request(session, "get", url)
+        async with resp:
+            return await resp.json()
+
+    Parameters
+    ----------
+    session
+        An ``aiohttp.ClientSession`` instance.
+    method
+        HTTP method (``"get"``, ``"post"``, ``"put"``, …).
+    url
+        Full URL to request.
+    timeout
+        Timeout in seconds (default 30).
+    **kwargs
+        Forwarded to ``session.request(method, url, **kwargs)``.
+    """
+    async def _send():
+        return await getattr(session, method)(url, **kwargs)
+    return await asyncio.wait_for(_send(), timeout=timeout)
+
+
 def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = None) -> bool:
     """Return True when ``hostname`` matches a ``NO_PROXY`` entry.
 
