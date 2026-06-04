@@ -99,6 +99,37 @@ def test_cli_main_status_returns_1_when_daemon_down(daemon_down, capsys):
     assert "not running" in out
 
 
+def test_cli_main_status_daemon_down_includes_start_hint(daemon_down, capsys):
+    rc = dv.cli_main(["status"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "hermes-delegation watch" in out
+    assert "start:" in out
+
+
+def test_cli_main_status_daemon_down_includes_verify_hint(daemon_down, capsys):
+    rc = dv.cli_main(["status"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "verify:" in out
+    assert "`/delegation status` again after starting" in out
+
+
+def test_cli_main_status_daemon_down_exits_1(daemon_down, capsys):
+    # regression: exit code stays 1 so it remains usable as a health check.
+    rc = dv.cli_main(["status"])
+    capsys.readouterr()
+    assert rc == 1
+
+
+def test_cli_main_status_daemon_up_includes_socket(daemon_up, capsys):
+    # regression: the up-state output still mentions the socket path.
+    rc = dv.cli_main(["status"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "socket:" in out
+
+
 # ---------------------------------------------------------------------------
 # verify
 # ---------------------------------------------------------------------------

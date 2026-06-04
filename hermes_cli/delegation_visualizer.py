@@ -137,7 +137,8 @@ def _cmd_status(args) -> int:
 
     print("daemon: not running")
     print(f"  socket: {socket_path}")
-    print("  hint:   start it with `hermes-delegation watch &`")
+    print("  start:  hermes-delegation watch &")
+    print("  verify: run `/delegation status` again after starting the daemon")
     return 1
 
 
