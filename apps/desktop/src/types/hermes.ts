@@ -394,6 +394,61 @@ export interface AnalyticsTotals {
   total_sessions: number
 }
 
+export interface KanbanCounts {
+  blocked: number
+  done: number
+  review: number
+  running: number
+  todo: number
+}
+
+export interface KanbanBoard {
+  archived?: boolean
+  color?: null | string
+  counts: KanbanCounts
+  description?: null | string
+  icon?: null | string
+  name: string
+  slug: string
+  total_tasks: number
+}
+
+export interface KanbanTaskEvent {
+  created_at?: number
+  kind: string
+  message?: string
+  payload?: unknown
+}
+
+export interface KanbanTask {
+  assignee?: null | string
+  body?: null | string
+  children?: string[]
+  comments_count?: number
+  completed_at?: null | number
+  created_at?: number
+  id: string
+  last_failure_error?: null | string
+  parents?: string[]
+  progress?: null | number
+  recent_events?: KanbanTaskEvent[]
+  result?: null | string
+  status: string
+  started_at?: null | number
+  title: string
+  updated_at?: number
+}
+
+export interface KanbanBoardsResponse {
+  boards: KanbanBoard[]
+}
+
+export interface KanbanTasksResponse {
+  board: Pick<KanbanBoard, 'description' | 'name' | 'slug'>
+  counts: KanbanCounts
+  tasks: KanbanTask[]
+}
+
 export interface CronJob {
   deliver?: null | string
   enabled: boolean

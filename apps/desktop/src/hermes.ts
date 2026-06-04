@@ -15,6 +15,8 @@ import type {
   EnvVarInfo,
   HermesConfig,
   HermesConfigRecord,
+  KanbanBoardsResponse,
+  KanbanTasksResponse,
   LogsResponse,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
@@ -66,6 +68,8 @@ export type {
   GatewayReadyPayload,
   HermesConfig,
   HermesConfigRecord,
+  KanbanBoardsResponse,
+  KanbanTasksResponse,
   LogsResponse,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
@@ -145,6 +149,18 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
 export function getSessionMessages(id: string): Promise<SessionMessagesResponse> {
   return window.hermesDesktop.api<SessionMessagesResponse>({
     path: `/api/sessions/${encodeURIComponent(id)}/messages`
+  })
+}
+
+export function getKanbanBoards(): Promise<KanbanBoardsResponse> {
+  return window.hermesDesktop.api<KanbanBoardsResponse>({
+    path: '/api/kanban/boards'
+  })
+}
+
+export function getKanbanTasks(board: string): Promise<KanbanTasksResponse> {
+  return window.hermesDesktop.api<KanbanTasksResponse>({
+    path: `/api/kanban/tasks?board=${encodeURIComponent(board)}`
   })
 }
 
