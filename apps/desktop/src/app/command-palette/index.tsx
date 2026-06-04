@@ -182,7 +182,7 @@ export function CommandPalette() {
           {
             icon: Wrench,
             id: 'nav-skills',
-            keywords: ['tools', 'toolsets', 'providers'],
+            keywords: ['tools', 'toolsets'],
             label: 'Skills & Tools',
             run: go(SKILLS_ROUTE)
           },

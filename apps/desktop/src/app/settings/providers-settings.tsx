@@ -90,15 +90,13 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
   return groups.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name))
 }
 
-// A single inline credential field: an always-visible input (Cursor-style)
-// that shows the redacted current value as its placeholder so a set key reads
-// as "•••• / 1234…wxyz" without an extra reveal click. Save appears once typed;
-// otherwise a set key offers Remove.
+// A single credential field: a set key shows as a filled read-only input
+// (redacted value) that edits in place on click. Save appears once typed; a set
+// key also offers Remove, and Esc cancels without closing the overlay.
 function KeyField({
   compact = false,
   info,
   label,
-  naked = false,
   placeholder,
   rowProps,
   varKey
@@ -106,9 +104,6 @@ function KeyField({
   compact?: boolean
   info: EnvVarInfo
   label?: string
-  // Non-key override fields render as a boxless, content-sized text input (like
-  // the search field) — no background/border, grows with what you type.
-  naked?: boolean
   placeholder?: string
   rowProps: KeyRowProps
   varKey: string
@@ -135,63 +130,35 @@ function KeyField({
     }
   }
 
-  // Advanced overrides render smaller + quieter than the primary key field so the
-  // key stays the visual anchor and the overrides read as the secondary knobs.
-  // Padding-driven sizing via the shared control variants — no fixed heights.
+  // Advanced overrides render quieter (xs) than the primary key field so the key
+  // stays the visual anchor. Padding-driven sizing — no fixed heights.
   const inputSize = compact ? 'xs' : 'sm'
-
-  // Boxless input chrome for `naked` override fields: transparent, no border,
-  // content-sized via `field-sizing`, right-anchored so it hugs the key column.
-  const nakedClass =
-    'max-w-full rounded-[2.5px] border border-(--ui-stroke-tertiary) bg-transparent px-1.5 py-0.5 text-right font-mono text-[0.6875rem] text-foreground [field-sizing:content] transition-colors placeholder:text-muted-foreground focus:border-(--ui-stroke-secondary) focus:outline-none'
-
   const editType = info.is_password ? 'password' : 'text'
 
   // A set value reads as a single filled, read-only field (showing the redacted
   // value). Clicking it drops into edit mode in place — no Replace/Cancel chrome.
   const control =
     info.is_set && !editing ? (
-      naked ? (
-        <input
-          className={cn(nakedClass, 'cursor-pointer text-muted-foreground')}
-          onFocus={startEdit}
-          readOnly
-          value={masked}
-        />
-      ) : (
-        <Input
-          className="cursor-pointer font-mono text-muted-foreground"
-          onFocus={startEdit}
-          readOnly
-          size={inputSize}
-          value={masked}
-        />
-      )
+      <Input
+        className="cursor-pointer font-mono text-muted-foreground"
+        onFocus={startEdit}
+        readOnly
+        size={inputSize}
+        value={masked}
+      />
     ) : (
-      <div className={cn('grid gap-1', naked && 'justify-items-end')}>
-        <div className={cn('flex items-center gap-2', naked && 'justify-end')}>
-          {naked ? (
-            <input
-              autoFocus={editing}
-              className={nakedClass}
-              onChange={update}
-              onKeyDown={keydown}
-              placeholder={placeholder ?? 'Paste key'}
-              type={editType}
-              value={draft}
-            />
-          ) : (
-            <Input
-              autoFocus={editing}
-              className="min-w-0 flex-1 font-mono"
-              onChange={update}
-              onKeyDown={keydown}
-              placeholder={placeholder ?? 'Paste key'}
-              size={inputSize}
-              type={editType}
-              value={draft}
-            />
-          )}
+      <div className="grid gap-1">
+        <div className="flex items-center gap-2">
+          <Input
+            autoFocus={editing}
+            className="min-w-0 flex-1 font-mono"
+            onChange={update}
+            onKeyDown={keydown}
+            placeholder={placeholder ?? 'Paste key'}
+            size={inputSize}
+            type={editType}
+            value={draft}
+          />
           {dirty && (
             <Button disabled={busy} onClick={() => void onSave(varKey)} size="sm">
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Save />}
@@ -200,12 +167,7 @@ function KeyField({
           )}
         </div>
         {editing && (
-          <div
-            className={cn(
-              'flex items-center gap-1 text-[0.6875rem]',
-              naked ? 'justify-self-end' : 'justify-self-start'
-            )}
-          >
+          <div className="flex items-center gap-1 text-[0.6875rem]">
             {info.is_set && (
               <>
                 <Button
@@ -226,30 +188,23 @@ function KeyField({
       </div>
     )
 
-  // Compact (advanced) fields mirror the header's label-left / input-right
-  // columns so they line up under the primary key field. Key overrides keep the
-  // full-width boxed input; non-key overrides render boxless + right-anchored.
-  if (compact) {
-    return (
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        {label && (
-          <label className="min-w-44 flex-1 text-[length:var(--conversation-caption-font-size)] leading-snug text-(--ui-text-tertiary)">
-            {label}
-          </label>
-        )}
-        <div className={cn('sm:w-80 sm:shrink-0', naked ? 'flex min-w-0 justify-end' : 'w-full')}>{control}</div>
-      </div>
-    )
-  }
+  // Standard stacked form field: small muted label above, input below. Same shape
+  // for the primary key and every advanced override — just smaller when compact.
+  // Empty advanced inputs (not labels) fade back, brightening on hover/focus/set.
+  const dim = compact && !info.is_set
 
   return (
-    <div className="grid gap-1">
+    <div className="grid gap-1.5">
       {label && (
         <label className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
           {label}
         </label>
       )}
-      {control}
+      {dim ? (
+        <div className="opacity-55 transition-opacity focus-within:opacity-100 hover:opacity-100">{control}</div>
+      ) : (
+        control
+      )}
     </div>
   )
 }
@@ -333,7 +288,6 @@ function ProviderKeyCard({
               info={info}
               key={key}
               label={isKeyVar(key, info) ? key : friendlyFieldLabel(key, info)}
-              naked={!isKeyVar(key, info)}
               placeholder={advancedPlaceholder(key, info)}
               rowProps={rowProps}
               varKey={key}
