@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Add app</h2>
+<form method="post" action="/apps" class="inline">
+  <input name="app_id" placeholder="1477376905" required pattern="[0-9]+">
+  <input name="name" placeholder="Optional name">
+  <button>Add</button>
+</form>
+<p><a href="/apps?include_archived={{ 'false' if include_archived else 'true' }}">{{ 'Hide archived apps' if include_archived else 'Show archived apps' }}</a></p>
+<table>
+<tr><th>App ID</th><th>Name</th><th>Reviews</th><th>Latest review</th><th>Status</th><th>Actions</th></tr>
+{% for app in apps %}
+<tr>
+  <td>{{ app.app_id }}</td><td>{{ app.name or '' }}</td><td>{{ app.review_count }}</td><td>{{ app.latest_review_at or '' }}</td>
+  <td>{{ 'archived' if app.archived_at else 'active' }}</td>
+  <td>
+    {% if app.archived_at %}
+    <form method="post" action="/apps/{{ app.app_id }}/restore"><button>Restore</button></form>
+    {% else %}
+    <form method="post" action="/apps/{{ app.app_id }}/refresh"><button>Refresh</button></form>
+    <form method="post" action="/apps/{{ app.app_id }}/archive"><button>Archive</button></form>
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}
+</table>
+{% endblock %}

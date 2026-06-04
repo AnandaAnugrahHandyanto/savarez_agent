@@ -1,0 +1,8 @@
+<table><tr><th>When</th><th>Run</th><th>App</th><th>Country</th><th>Sort</th><th>Page</th><th>Status</th><th>Error</th></tr>
+{% if stats is defined %}
+  {% for error in stats.recent_errors %}<tr><td>{{ error.created_at }}</td><td>{{ error.run_id or '' }}</td><td>{{ error.app_id or '' }}</td><td>{{ error.country or '' }}</td><td>{{ error.sort or '' }}</td><td>{{ error.page or '' }}</td><td>{{ error.status_code or '' }}</td><td>{{ error.error }}</td></tr>{% endfor %}
+{% endif %}
+{% if errors is defined %}
+  {% for error in errors %}<tr><td>{{ error.created_at }}</td><td>{{ error.run_id or '' }}</td><td>{{ error.app_id or '' }}</td><td>{{ error.country or '' }}</td><td>{{ error.sort or '' }}</td><td>{{ error.page or '' }}</td><td>{{ error.status_code or '' }}</td><td>{{ error.error }}</td></tr>{% endfor %}
+{% endif %}
+</table>

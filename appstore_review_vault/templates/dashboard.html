@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="cards">
+  <div class="card"><b>{{ stats.app_count }}</b><span>active apps</span></div>
+  <div class="card"><b>{{ stats.archived_app_count }}</b><span>archived apps</span></div>
+  <div class="card"><b>{{ stats.review_count }}</b><span>reviews</span></div>
+</section>
+<form method="post" action="/refresh-all"><button>Refresh all active apps</button></form>
+{% if stats.last_run %}
+<h2>Last run</h2>
+<table><tr><th>ID</th><th>Status</th><th>Requests</th><th>Reviews</th><th>New</th><th>Errors</th></tr>
+<tr><td>{{ stats.last_run.id }}</td><td>{{ stats.last_run.status }}</td><td>{{ stats.last_run.request_count }}</td><td>{{ stats.last_run.review_count }}</td><td>{{ stats.last_run.new_review_count }}</td><td>{{ stats.last_run.error_count }}</td></tr>
+</table>
+{% endif %}
+<h2>Recent errors</h2>
+{% include "error_table.html" with context %}
+{% endblock %}

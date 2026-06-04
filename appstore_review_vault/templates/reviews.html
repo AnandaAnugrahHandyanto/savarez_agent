@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Reviews</h2>
+<form method="get" action="/reviews" class="filters">
+  <select name="app_id"><option value="">All apps</option>{% for app in apps %}<option value="{{ app.app_id }}" {% if filters.app_id == app.app_id %}selected{% endif %}>{{ app.name or app.app_id }}</option>{% endfor %}</select>
+  <select name="country"><option value="">All countries</option>{% for c in ['us','gb','ca','au'] %}<option value="{{ c }}" {% if filters.country == c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+  <select name="rating"><option value="">Any rating</option>{% for r in [1,2,3,4,5] %}<option value="{{ r }}" {% if filters.rating == r %}selected{% endif %}>{{ r }}</option>{% endfor %}</select>
+  <select name="sort_source"><option value="">Any source sort</option>{% for s in ['mostrecent','mosthelpful'] %}<option value="{{ s }}" {% if filters.sort_source == s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+  <input name="version" placeholder="Version" value="{{ filters.version or '' }}">
+  <input name="q" placeholder="Search title/body" value="{{ filters.q or '' }}">
+  <label><input type="checkbox" name="include_archived" value="true" {% if filters.include_archived %}checked{% endif %}> Include archived</label>
+  <button>Filter</button>
+  <a class="button" href="/reviews.csv?{{ request.url.query }}">CSV</a>
+</form>
+<table>
+<tr><th>App</th><th>Countries</th><th>Rating</th><th>Version</th><th>Title</th><th>Body</th><th>Author</th><th>Updated</th><th>Sorts</th></tr>
+{% for review in reviews %}
+<tr>
+<td>{{ review.app_name or review.app_id }}</td><td>{{ review.countries or '' }}</td><td>{{ review.rating or '' }}</td><td>{{ review.version or '' }}</td>
+<td>{% if review.review_url %}<a href="{{ review.review_url }}">{{ review.title or '' }}</a>{% else %}{{ review.title or '' }}{% endif %}</td>
+<td>{{ (review.body or '')[:300] }}</td><td>{{ review.author_name or '' }}</td><td>{{ review.updated_at_apple or '' }}</td><td>{{ review.source_sorts or '' }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endblock %}
