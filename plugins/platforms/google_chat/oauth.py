@@ -110,6 +110,24 @@ except (ModuleNotFoundError, ImportError):
             return env_path.parent.parent
         return env_path
 
+    def get_default_hermes_root() -> Path:
+        # Mirror hermes_constants.get_default_hermes_root(): resolve the
+        # profile root so host-wide files (the shared client secret) are
+        # found regardless of which profile is active.
+        native_home = Path.home() / ".hermes"
+        env_home = os.environ.get("HERMES_HOME", "").strip()
+        if not env_home:
+            return native_home
+        env_path = Path(env_home)
+        try:
+            env_path.resolve().relative_to(native_home.resolve())
+            return native_home
+        except ValueError:
+            pass
+        if env_path.parent.name == "profiles":
+            return env_path.parent.parent
+        return env_path
+
     def display_hermes_home() -> str:
         home = get_hermes_home()
         try:
