@@ -458,6 +458,130 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
     assert [e["id"] for e in read_credential_pool("openrouter")] == ["prof-new"]
 
 
+
+# ---------------------------------------------------------------------------
+# Shared Codex pool — root/default is source of truth in profile mode
+# ---------------------------------------------------------------------------
+
+
+def test_codex_pool_prefers_global_even_when_profile_has_stale_entries(profile_env):
+    """Codex is a shared OAuth pool; stale profile-local entries must not shadow root."""
+    from hermes_cli.auth import read_credential_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "glob-codex",
+            "label": "root-codex",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "device_code",
+            "access_token": "root-access",
+            "refresh_token": "root-refresh",
+        }],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "prof-stale",
+            "label": "stale-profile-codex",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "device_code",
+            "access_token": "stale-access",
+            "refresh_token": "stale-refresh",
+            "last_status": "exhausted",
+            "last_error_code": 429,
+        }],
+    }))
+
+    entries = read_credential_pool("openai-codex")
+    assert [e["id"] for e in entries] == ["glob-codex"]
+    assert entries[0]["access_token"] == "root-access"
+
+
+def test_whole_pool_uses_global_codex_even_when_profile_has_stale_codex(profile_env):
+    """Whole-pool reads should not reintroduce stale profile Codex entries."""
+    from hermes_cli.auth import read_credential_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "glob-codex",
+            "label": "root-codex",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "device_code",
+            "access_token": "root-access",
+            "refresh_token": "root-refresh",
+        }],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "prof-stale",
+            "label": "stale-profile-codex",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "device_code",
+            "access_token": "stale-access",
+            "refresh_token": "stale-refresh",
+        }],
+        "openrouter": [{
+            "id": "prof-or",
+            "label": "profile-or",
+            "auth_type": "api_key",
+            "priority": 0,
+            "source": "manual",
+            "access_token": "sk-profile",
+        }],
+    }))
+
+    pool = read_credential_pool(None)
+    assert [e["id"] for e in pool["openai-codex"]] == ["glob-codex"]
+    assert [e["id"] for e in pool["openrouter"]] == ["prof-or"]
+
+
+def test_write_credential_pool_writes_shared_codex_to_global_not_profile(profile_env):
+    """Pool refresh/exhaustion updates for shared Codex must mutate root, not fork profile auth."""
+    from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "glob-old",
+            "label": "root-old",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "device_code",
+            "access_token": "old-access",
+            "refresh_token": "old-refresh",
+        }],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "prof-stale",
+            "label": "stale-profile-codex",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "device_code",
+            "access_token": "stale-access",
+            "refresh_token": "stale-refresh",
+        }],
+    }))
+
+    write_credential_pool("openai-codex", [{
+        "id": "glob-new",
+        "label": "root-new",
+        "auth_type": "oauth",
+        "priority": 0,
+        "source": "device_code",
+        "access_token": "new-access",
+        "refresh_token": "new-refresh",
+    }])
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert global_data["credential_pool"]["openai-codex"][0]["id"] == "glob-new"
+    assert profile_data["credential_pool"]["openai-codex"][0]["id"] == "prof-stale"
+    assert [e["id"] for e in read_credential_pool("openai-codex")] == ["glob-new"]
+
+
 # ---------------------------------------------------------------------------
 # get_active_provider — global active_provider fallback (issue #18594 follow-up)
 #
