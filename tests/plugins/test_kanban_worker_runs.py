@@ -23,6 +23,9 @@ from fastapi.testclient import TestClient
 from hermes_cli import kanban_db as kb
 
 
+PLUGIN_MOD_NAME = "hermes_dashboard_plugin_kanban_worker_runs_test"
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -33,17 +36,35 @@ def _load_plugin_router():
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
 
-    mod_name = "hermes_dashboard_plugin_kanban_worker_runs_test"
     # Re-use a cached module if already loaded to avoid duplicate-router issues.
-    if mod_name in sys.modules:
-        return sys.modules[mod_name].router
+    if PLUGIN_MOD_NAME in sys.modules:
+        return sys.modules[PLUGIN_MOD_NAME].router
 
-    spec = importlib.util.spec_from_file_location(mod_name, plugin_file)
+    spec = importlib.util.spec_from_file_location(PLUGIN_MOD_NAME, plugin_file)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[mod_name] = mod
+    sys.modules[PLUGIN_MOD_NAME] = mod
     spec.loader.exec_module(mod)
     return mod.router
+
+
+def _patch_terminate_reclaimed_worker(monkeypatch, replacement):
+    """Patch the termination hook used by both the test and plugin modules.
+
+    Some CLI tests intentionally evict ``hermes_cli.*`` from ``sys.modules`` to
+    verify config reload behavior. Pytest has already imported this test module
+    by then, so its module-level ``kb`` reference can differ from the
+    ``kanban_db`` module imported later by the dynamically loaded dashboard
+    plugin. Patch both identities so this test remains order-independent.
+    """
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", replacement)
+    plugin_mod = sys.modules.get(PLUGIN_MOD_NAME)
+    if plugin_mod is not None:
+        monkeypatch.setattr(
+            plugin_mod.kanban_db,
+            "_terminate_reclaimed_worker",
+            replacement,
+        )
 
 
 @pytest.fixture
@@ -377,7 +398,7 @@ def test_terminate_run_ok(client, monkeypatch):
         sent.append((pid, prev_lock))
         return {"signal": "SIGTERM", "delivered": True}
 
-    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", _fake_terminate)
+    _patch_terminate_reclaimed_worker(monkeypatch, _fake_terminate)
 
     r = client.post(
         f"/api/plugins/kanban/runs/{run_id}/terminate",
@@ -419,7 +440,7 @@ def test_terminate_run_409_task_not_reclaimable(client, monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("_terminate_reclaimed_worker should not be called")
 
-    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", _boom)
+    _patch_terminate_reclaimed_worker(monkeypatch, _boom)
 
     r = client.post(
         f"/api/plugins/kanban/runs/{run_id}/terminate",
