@@ -38,7 +38,10 @@ let _currentLocale = getInitialLocale()
 
 function normalizeLocale(raw: string): string {
   const lc = raw.toLowerCase()
-  if (lc.startsWith('zh')) return 'zh-CN'
+  if (lc.startsWith('zh')) {
+    if (lc === 'zh-tw' || lc === 'zh-hk' || lc === 'zh-mo') return 'zh-Hant'
+    return 'zh-CN'
+  }
   if (lc.startsWith('ja')) return 'ja'
   if (lc.startsWith('ko')) return 'ko'
   if (lc.startsWith('de')) return 'de'

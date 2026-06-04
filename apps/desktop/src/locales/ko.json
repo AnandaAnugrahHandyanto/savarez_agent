@@ -858,5 +858,6 @@
   "provider.desc.parallel": "AI 네이티브 웹 검색 및 추출용 Parallel API 키",
   "titlebar.language": "언어",
   "titlebar.languageDesc": "인터페이스의 표시 언어를 선택하세요.",
-  "language.zh-Hant": "中文（繁體）"
+  "language.zh-Hant": "中文（繁體）",
+  "language.pt-BR": "Português (Brasil)"
 }
