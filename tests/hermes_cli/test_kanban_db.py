@@ -999,6 +999,48 @@ def test_worker_context_includes_parent_results_and_comments(kanban_home):
 # Dispatcher
 # ---------------------------------------------------------------------------
 
+def test_dispatch_provider_backoff_defers_ready_task(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    monkeypatch.setattr(kb, "_task_provider_model", lambda task: ("openai-codex", "gpt-5.5"))
+    monkeypatch.setattr("agent.provider_backoff.provider_backoff_remaining", lambda *_: 240)
+    spawned = []
+
+    def fake_spawn(task, workspace):
+        spawned.append(task.id)
+        return 123
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="codex worker", assignee="alice")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert spawned == []
+    assert res.spawned == []
+    assert res.respawn_guarded == [(t, "provider_backoff:openai-codex:gpt-5.5:240s")]
+    assert task is not None and task.status == "ready"
+    assert any(e.kind == "respawn_guarded" for e in events)
+
+
+def test_dispatch_provider_backoff_dry_run_does_not_mutate(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    monkeypatch.setattr(kb, "_task_provider_model", lambda task: ("openai-codex", "gpt-5.5"))
+    monkeypatch.setattr("agent.provider_backoff.provider_backoff_remaining", lambda *_: 120)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="codex dry run", assignee="alice")
+        res = kb.dispatch_once(conn, dry_run=True)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert res.spawned == []
+    assert res.respawn_guarded == [(t, "provider_backoff:openai-codex:gpt-5.5:120s")]
+    assert task is not None and task.status == "ready"
+    assert not any(e.kind == "respawn_guarded" for e in events)
+
+
 def test_dispatch_dry_run_does_not_claim(kanban_home, all_assignees_spawnable):
     with kb.connect() as conn:
         t1 = kb.create_task(conn, title="a", assignee="alice")
@@ -2110,6 +2152,7 @@ def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
 
     # Clear module cache so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()
+    kb._JOURNAL_CONFIGURED_PATHS.clear()
 
     real_connect = _sqlite3.connect
 
@@ -2288,22 +2331,33 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
 # ---------------------------------------------------------------------------
 # Dispatcher spawn invocation — _resolve_hermes_argv()
 #
-# Workers spawned by the dispatcher must use a `hermes` invocation that does
-# not depend on PATH being set up correctly. cron jobs, systemd User= services,
-# launchd jobs, and other detached processes routinely run with a stripped
-# $PATH that doesn't include the venv's bin/, so a bare `["hermes", ...]`
-# spawn fails with FileNotFoundError and the task gets stuck. The resolver
-# prefers the PATH shim (familiar `ps` output) but falls back to the module
-# form so the spawn keeps working when PATH is missing the shim.
+# Workers spawned by the dispatcher must use an invocation that does not import
+# stale PATH shims.  By default the resolver uses ``sys.executable -m
+# hermes_cli.main`` so gateway-spawned workers inherit the live source tree via
+# PYTHONPATH.  PATH shim use is opt-in via HERMES_KANBAN_WORKER_USE_PATH_SHIM.
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_hermes_argv_prefers_path_shim(monkeypatch):
-    """When `hermes` is on PATH, use the shim — preserves familiar ps output."""
+def test_resolve_hermes_argv_uses_module_invocation_by_default(monkeypatch):
+    """Ignore PATH shims by default so workers do not import stale source."""
+    import sys
     import shutil
     import hermes_cli.kanban_db as kb
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_WORKER_USE_PATH_SHIM", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/hermes")
+    argv = kb._resolve_hermes_argv()
+    assert argv == [sys.executable, "-m", "hermes_cli.main"]
+
+
+def test_resolve_hermes_argv_can_opt_into_path_shim(monkeypatch):
+    """Explicit opt-in preserves the old PATH shim behavior when needed."""
+    import shutil
+    import hermes_cli.kanban_db as kb
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_USE_PATH_SHIM", "1")
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/hermes")
     argv = kb._resolve_hermes_argv()
     assert argv == ["/usr/local/bin/hermes"]

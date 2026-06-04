@@ -417,6 +417,35 @@ DANGEROUS_PATTERNS = [
     # into a single -X token. Catches the same threat class.
     (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b',
      "sudo with combined-flag privilege escalation"),
+    # ====================================================================
+    # USER CUSTOM PATTERNS (~/.hermes/patches/dangerous_patterns_custom.diff)
+    # 사용자 보호 영역. 텔레그램 인라인 키보드로 ✅/❌ 확인 후 진행.
+    # 본체 update 시 덮어쓰임 → ~/.hermes/patches/에 사본 보관 + 재적용 필요.
+    # ====================================================================
+    # M1 SSH (macmini, macmini-ts, yk-start@, 192.168.0.13, 100.79.172.26)
+    (r'\bssh\b[^|;&\n]*?(\bmacmini(-ts)?\b|\byk-start@|192\.168\.0\.13|100\.79\.172\.26)',
+     "SSH to protected M1 host (invest-system + KCC viewer)"),
+    # invest-system 경로/키워드 (M1 보호 영역)
+    (r'\binvest-system\b|/Users/yk-start/Cowork',
+     "invest-system M1 protected area"),
+    # KCC source 수정 (M1 운영 코드)
+    (r'(KCC|ktguitar-command-center|command-center)[^|;&\n]*\bsrc/|\bdashboard/src\b',
+     "KCC/dashboard source modification (M1 ops code)"),
+    # launchctl service manipulation (LaunchAgent 변경)
+    (r'\blaunchctl\s+(bootout|bootstrap|unload|load)\b',
+     "launchctl service load/unload (LaunchAgent change)"),
+    # Hermes 핵심 메모리 자체 덮어쓰기 (자가 보호)
+    (r'(>|\btee\b)[^|;&\n]*?\.hermes/(SOUL\.md|memories/(MEMORY|USER)\.md)',
+     "Hermes core memory file overwrite (self-protection)"),
+    # 한빛바이오팜 영업·BD 영역 (사용자 5개 역할 밖, 대표 지시 후만)
+    (r'\bhanvit-web\b|\bhb-biop\b|한빛\s*(영업|BD|sales)|hanvit[^|;&\n]*sales',
+     "Hanvit sales/BD area (owner approval required)"),
+    # .env 평문 출력 (secret-hygiene)
+    (r'\b(cat|head|tail|less|more)\s+[^|;&\n]*\.env\b',
+     "plain-text .env file read (secret exposure risk)"),
+    # secret/token export 평문
+    (r'\bexport\s+[A-Z_]*(TOKEN|SECRET|KEY|PASSWORD|API_KEY)=',
+     "plain-text secret export (use .env + os.getenv)"),
 ]
 
 

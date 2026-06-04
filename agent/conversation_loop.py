@@ -32,6 +32,7 @@ from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.provider_backoff import record_provider_stall
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
@@ -963,6 +964,42 @@ def run_conversation(
         approx_request_tokens = estimate_request_tokens_rough(
             api_messages, tools=agent.tools or None
         )
+
+        # Codex Responses has a known transport failure mode where very large
+        # contexts sit accepted-but-silent until the TTFB watchdog closes the
+        # stream.  Avoid burning a request and producing No-first-byte noise by
+        # pre-compressing obviously large turns before the network call.
+        if agent.api_mode == "codex_responses" and agent.provider == "openai-codex":
+            try:
+                _codex_large_ctx_threshold = int(
+                    os.getenv("HERMES_CODEX_PREFLIGHT_COMPRESS_TOKENS", "120000")
+                )
+            except (TypeError, ValueError):
+                _codex_large_ctx_threshold = 120000
+            if _codex_large_ctx_threshold > 0 and approx_tokens >= _codex_large_ctx_threshold:
+                original_len = len(messages)
+                agent._emit_status(
+                    f"🗜️ Codex context is large (~{approx_tokens:,} tokens) — "
+                    "compressing before API call..."
+                )
+                messages, active_system_prompt = agent._compress_context(
+                    messages, system_message,
+                    approx_tokens=approx_tokens,
+                    task_id=effective_task_id,
+                )
+                conversation_history = None
+                if len(messages) < original_len:
+                    logger.warning(
+                        "Codex preflight compression: %d -> %d messages at ~%s tokens",
+                        original_len, len(messages), f"{approx_tokens:,}",
+                    )
+                    api_call_count -= 1
+                    agent._api_call_count = api_call_count
+                    try:
+                        agent.iteration_budget.refund()
+                    except Exception:
+                        pass
+                    continue
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, approx_request_tokens
@@ -2091,6 +2128,20 @@ def run_conversation(
                     classified.retryable, classified.should_compress,
                     classified.should_rotate_credential, classified.should_fallback,
                 )
+                if classified.reason == FailoverReason.codex_transport_stall:
+                    try:
+                        _backoff_remaining = record_provider_stall(
+                            agent.provider,
+                            agent.model,
+                            reason=classified.reason.value,
+                        )
+                        if _backoff_remaining > 0:
+                            logger.warning(
+                                "Codex transport stall backoff active for provider=%s model=%s remaining=%ss",
+                                agent.provider, agent.model, _backoff_remaining,
+                            )
+                    except Exception:
+                        logger.debug("Failed to record Codex transport stall backoff", exc_info=True)
 
                 recovered_with_pool, has_retried_429 = agent._recover_with_credential_pool(
                     status_code=status_code,
@@ -2650,6 +2701,31 @@ def run_conversation(
                             "failed": True,
                             "compression_exhausted": True,
                         }
+
+                if (
+                    classified.reason == FailoverReason.codex_transport_stall
+                    and classified.should_compress
+                ):
+                    compression_attempts += 1
+                    if compression_attempts <= max_compression_attempts:
+                        agent._emit_status(
+                            f"🗜️ Codex transport stalled with large context "
+                            f"(~{approx_tokens:,} tokens) — compressing before retry..."
+                        )
+                        original_len = len(messages)
+                        messages, active_system_prompt = agent._compress_context(
+                            messages, system_message,
+                            approx_tokens=approx_tokens,
+                            task_id=effective_task_id,
+                        )
+                        conversation_history = None
+                        if len(messages) < original_len:
+                            time.sleep(2)
+                            restart_with_compressed_messages = True
+                            break
+                    logger.info(
+                        "Codex transport stall large-context compression did not reduce messages; continuing normal retry path."
+                    )
 
                 # Check for context-length errors BEFORE generic 4xx handler.
                 # The classifier detects context overflow from: explicit error

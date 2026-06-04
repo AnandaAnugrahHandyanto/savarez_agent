@@ -2902,20 +2902,17 @@ def launchd_plist_is_current() -> bool:
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
-    Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
-    ``launchctl kickstart`` cycle — no daemon-reload is needed. We still bootout/
-    bootstrap to make launchd re-read the updated plist immediately.
+    This helper intentionally does *not* unload/reload the launchd job. Gateway
+    restarts are routed through ``launchctl kickstart -k`` so an in-gateway
+    restart request cannot boot itself out, die on SIGTERM, and leave the
+    service unloaded.
     """
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-    label = get_launchd_label()
-    # Bootout/bootstrap so launchd picks up the new definition
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
-    print("↻ Updated gateway launchd service definition to match the current Hermes install")
+    print("↻ Updated gateway launchd service definition on disk; use kickstart restart to apply safely")
     return True
 
 
@@ -5426,35 +5423,41 @@ def _gateway_command_inner(args):
             return
 
         if restart_all:
-            # --all: stop every gateway process across all profiles, then start fresh
-            service_stopped = False
+            # --all: restart supervised services through their restart entrypoint,
+            # then sweep only stale manual processes. On macOS this must never
+            # route through launchd_stop()/bootout: an in-gateway restart can die
+            # after unloading itself and leave no service behind.
+            service_restarted = False
             if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
                 try:
-                    systemd_stop(system=system)
-                    service_stopped = True
+                    systemd_restart(system=system)
+                    service_restarted = True
                 except subprocess.CalledProcessError:
                     pass
             elif is_macos() and get_launchd_plist_path().exists():
                 try:
-                    launchd_stop()
-                    service_stopped = True
+                    launchd_restart()
+                    service_restarted = True
                 except subprocess.CalledProcessError:
                     pass
             elif is_windows():
                 from hermes_cli import gateway_windows
-                if gateway_windows.is_installed():
-                    try:
-                        gateway_windows.stop()
-                        service_stopped = True
-                    except (subprocess.CalledProcessError, RuntimeError):
-                        pass
-            killed = kill_gateway_processes(all_profiles=True)
-            total = killed + (1 if service_stopped else 0)
-            if total:
-                print(f"✓ Stopped {total} gateway process(es) across all profiles")
+                try:
+                    gateway_windows.restart()
+                    service_restarted = True
+                except (subprocess.CalledProcessError, RuntimeError):
+                    pass
+
+            exclude_pids = _get_service_pids() if service_restarted else None
+            killed = kill_gateway_processes(all_profiles=True, exclude_pids=exclude_pids)
+            if killed:
+                print(f"✓ Stopped {killed} stale gateway process(es) across all profiles")
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
 
-            # Start the current profile's service fresh
+            if service_restarted:
+                print("✓ Gateway service restart requested")
+                return
+
             print("Starting gateway...")
             if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
                 systemd_start(system=system)
@@ -5462,12 +5465,6 @@ def _gateway_command_inner(args):
                 launchd_start()
             elif is_windows():
                 from hermes_cli import gateway_windows
-                # On Windows, even without a registered Scheduled Task / Startup
-                # entry, gateway_windows.start() uses the safe detached
-                # pythonw.exe launcher.  Do not fall back to run_gateway() here:
-                # when invoked from a gateway-hosted agent/tool call, foreground
-                # run_gateway() is tied to the very gateway process we just
-                # stopped and can die before the replacement is stable.
                 gateway_windows.start()
             else:
                 run_gateway(verbose=0)

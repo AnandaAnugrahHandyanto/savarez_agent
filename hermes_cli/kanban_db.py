@@ -101,6 +101,8 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+_TRANSIENT_PRAGMA_RETRY_DELAYS = (0.05, 0.15, 0.35)
+
 
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
@@ -575,7 +577,9 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     # A concurrent connect(board=normed) after the rename/delete recreates
     # an empty sqlite file via mkdir(exist_ok=True); the cache entry must be
     # dropped first so the schema init pass re-runs on that fresh file.
-    _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
+    resolved_db = str((d / "kanban.db").resolve())
+    _INITIALIZED_PATHS.discard(resolved_db)
+    _JOURNAL_CONFIGURED_PATHS.discard(resolved_db)
 
     if archive:
         archive_root = boards_root() / "_archived"
@@ -658,6 +662,9 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Structured task-level metadata for routing/origin contracts. Distinct
+    # from task_runs.metadata, which is per-attempt handoff data.
+    metadata: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -671,6 +678,14 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        metadata_value: Optional[dict] = None
+        if "metadata" in keys and row["metadata"]:
+            try:
+                parsed_meta = json.loads(row["metadata"])
+                if isinstance(parsed_meta, dict):
+                    metadata_value = parsed_meta
+            except Exception:
+                metadata_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -727,6 +742,7 @@ class Task:
             session_id=(
                 row["session_id"] if "session_id" in keys else None
             ),
+            metadata=metadata_value,
         )
 
 
@@ -864,7 +880,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
-    session_id           TEXT
+    session_id           TEXT,
+    -- Structured task-level metadata for routing/origin contracts. Per-run
+    -- worker handoff metadata stays in task_runs.metadata.
+    metadata             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -952,6 +971,7 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 # ---------------------------------------------------------------------------
 
 _INITIALIZED_PATHS: set[str] = set()
+_JOURNAL_CONFIGURED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 
@@ -1132,6 +1152,37 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
+def _execute_transient_pragma(conn: Any, sql: str, *, db_label: str) -> None:
+    """Execute a cheap connection-local PRAGMA with bounded transient I/O retry.
+
+    Busy gateway dispatcher ticks can collide with active worker connections on
+    APFS/SQLite metadata updates and surface ``sqlite3.OperationalError: disk
+    I/O error`` even when external ``integrity_check`` remains clean.  These
+    per-connection PRAGMAs are idempotent, so a short bounded retry avoids
+    failing the whole dispatcher tick while preserving real errors.
+    """
+    attempts = len(_TRANSIENT_PRAGMA_RETRY_DELAYS) + 1
+    for attempt in range(attempts):
+        try:
+            conn.execute(sql)
+            return
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            is_transient_io = "disk i/o error" in message
+            if not is_transient_io or attempt >= attempts - 1:
+                raise
+            delay = _TRANSIENT_PRAGMA_RETRY_DELAYS[attempt]
+            _log.warning(
+                "kanban db: transient sqlite PRAGMA failure on %s (%s); retrying in %.2fs (%d/%d)",
+                db_label,
+                sql,
+                delay,
+                attempt + 1,
+                attempts - 1,
+            )
+            time.sleep(delay)
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -1172,17 +1223,21 @@ def connect(
     try:
         conn.row_factory = sqlite3.Row
         with _INIT_LOCK:
-            # WAL activation can take an exclusive lock while SQLite creates the
-            # sidecar files for a fresh database. Keep it in the same process-local
-            # critical section as schema initialization so concurrent gateway
-            # startup threads do not race before _INITIALIZED_PATHS is populated.
-            # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
-            # falls back to DELETE with one WARNING so kanban stays usable there.
-            # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-            from hermes_state import apply_wal_with_fallback
-            apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
+            # WAL activation writes database header/journal metadata and can take
+            # an exclusive lock.  It only needs to run once per process per DB
+            # path; re-running PRAGMA journal_mode=WAL on every short-lived
+            # dispatcher/readiness connection races active worker connections on
+            # busy boards and can surface as transient sqlite3 ``disk I/O error``
+            # even while PRAGMA integrity_check remains clean.  Cache the journal
+            # setup separately from schema initialization so repeat connects only
+            # apply cheap per-connection pragmas.
+            if resolved not in _JOURNAL_CONFIGURED_PATHS:
+                from hermes_state import apply_wal_with_fallback
+                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                _JOURNAL_CONFIGURED_PATHS.add(resolved)
+            db_label = f"kanban.db ({path.name})"
+            _execute_transient_pragma(conn, "PRAGMA synchronous=NORMAL", db_label=db_label)
+            _execute_transient_pragma(conn, "PRAGMA foreign_keys=ON", db_label=db_label)
             needs_init = resolved not in _INITIALIZED_PATHS
             if needs_init:
                 # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
@@ -1224,6 +1279,7 @@ def init_db(
     # schema + migration pass unconditionally.
     with _INIT_LOCK:
         _INITIALIZED_PATHS.discard(resolved)
+        _JOURNAL_CONFIGURED_PATHS.discard(resolved)
     with contextlib.closing(connect(path)):
         pass
     return path
@@ -1352,6 +1408,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # creation path that doesn't set the env var (CLI, dashboard).
         _add_column_if_missing(
             conn, "tasks", "session_id", "session_id TEXT"
+        )
+
+    if "metadata" not in cols:
+        # Structured task-level metadata used by gateway routing/origin
+        # contracts. Per-run worker handoff metadata remains in task_runs.
+        _add_column_if_missing(
+            conn, "tasks", "metadata", "metadata TEXT"
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -1544,6 +1607,7 @@ def create_task(
     max_retries: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -1709,8 +1773,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, session_id, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1730,6 +1794,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
                         session_id,
+                        json.dumps(metadata, ensure_ascii=False) if metadata else None,
                     ),
                 )
                 for pid in parents:
@@ -1748,8 +1813,19 @@ def create_task(
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
+                        "metadata": metadata,
                     },
                 )
+                if task_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "initial_status=blocked",
+                            "metadata": metadata,
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -5028,6 +5104,61 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     return None
 
 
+def _task_provider_model(task: Task) -> tuple[Optional[str], Optional[str]]:
+    """Best-effort provider/model inference for a dispatcher-spawned task.
+
+    The worker itself activates ``hermes -p <assignee>`` and reads that
+    profile's config.  The dispatcher only needs a coarse provider label for
+    provider-wide backoff checks, so this helper deliberately reads only
+    non-secret config fields and never touches .env/auth files.
+    """
+    provider: Optional[str] = None
+    model: Optional[str] = task.model_override or None
+    if not task.assignee:
+        return provider, model
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+        profile_arg = normalize_profile_name(task.assignee)
+        profile_home = Path(resolve_profile_env(profile_arg))
+        cfg_path = profile_home / "config.yaml"
+        if not cfg_path.is_file():
+            return provider, model
+        import yaml  # type: ignore
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, dict):
+            return provider, model
+        model_cfg = data.get("model") or {}
+        if isinstance(model_cfg, dict):
+            provider = model_cfg.get("provider") or provider
+            if model is None:
+                model = model_cfg.get("default") or model_cfg.get("model")
+        provider = data.get("provider") or provider
+        if model is None:
+            model = data.get("model") if isinstance(data.get("model"), str) else model
+    except Exception:
+        return None, task.model_override or None
+    return (str(provider) if provider else None, str(model) if model else None)
+
+
+def _provider_backoff_guard(task: Task) -> tuple[bool, Optional[str]]:
+    """Return (guarded, reason) if this task's provider is in backoff."""
+    provider, model = _task_provider_model(task)
+    if provider != "openai-codex":
+        return False, None
+    try:
+        from agent.provider_backoff import provider_backoff_remaining
+        remaining = provider_backoff_remaining(provider, model or "all")
+    except Exception:
+        remaining = 0
+    if remaining > 0:
+        label = f"provider_backoff:{provider}"
+        if model:
+            label += f":{model}"
+        label += f":{int(remaining)}s"
+        return True, label
+    return False, None
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -5260,6 +5391,18 @@ def dispatch_once(
                         {"reason": guard_reason},
                     )
             continue
+        task_for_backoff = get_task(conn, row["id"])
+        if task_for_backoff is not None:
+            backoff_guarded, backoff_reason = _provider_backoff_guard(task_for_backoff)
+            if backoff_guarded:
+                result.respawn_guarded.append((row["id"], backoff_reason or "provider_backoff"))
+                if not dry_run:
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "respawn_guarded",
+                            {"reason": backoff_reason or "provider_backoff"},
+                        )
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
@@ -5339,6 +5482,18 @@ def dispatch_once(
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        task_for_backoff = get_task(conn, row["id"])
+        if task_for_backoff is not None:
+            backoff_guarded, backoff_reason = _provider_backoff_guard(task_for_backoff)
+            if backoff_guarded:
+                result.respawn_guarded.append((row["id"], backoff_reason or "provider_backoff"))
+                if not dry_run:
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "respawn_guarded",
+                            {"reason": backoff_reason or "provider_backoff"},
+                        )
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
@@ -5479,6 +5634,19 @@ def _module_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
+def _source_root() -> str:
+    """Return the source root for this imported Hermes checkout."""
+    return str(Path(__file__).resolve().parents[1])
+
+
+def _prepend_pythonpath(env: dict[str, str], path: str) -> None:
+    """Prepend a path to PYTHONPATH without duplicating existing entries."""
+    existing = env.get("PYTHONPATH", "")
+    parts = [p for p in existing.split(os.pathsep) if p]
+    parts = [p for p in parts if os.path.abspath(p) != os.path.abspath(path)]
+    env["PYTHONPATH"] = os.pathsep.join([path, *parts])
+
+
 def _absolute_hermes_path(path: str) -> str:
     """Return an absolute filesystem path for a resolved Hermes shim."""
     expanded = os.path.expanduser(path)
@@ -5554,24 +5722,17 @@ def _resolve_hermes_argv() -> list[str]:
     1. ``$HERMES_BIN`` — explicit operator override. Path-like values are
        normalized to absolute paths; bare command names keep normal PATH
        semantics and never prefer a same-directory file before ``PATH``.
-    2. ``shutil.which("hermes")`` — the console-script shim, normalized to
-       an absolute path. On Windows, ``which`` can return a relative
-       ``.\\hermes.CMD`` when the current directory is on ``PATH``; directly
-       launching batch shims is also unsafe with task-derived argv. The
-       dispatcher therefore falls back to the interpreter-bound module form
-       for implicit ``.cmd`` / ``.bat`` shims.
-    3. ``sys.executable -m hermes_cli.main`` — fallback for setups where
-       Hermes is launched from a venv and the ``hermes`` shim is not on
-       the dispatcher's ``$PATH`` (cron, systemd ``User=`` services,
-       launchd jobs, detached processes, etc.). Goes through the running
-       interpreter so the result is independent of ``$PATH``.
+    2. ``sys.executable -m hermes_cli.main`` — default for dispatcher workers.
+       The spawn environment prepends this checkout's source root to
+       ``PYTHONPATH``, so workers import the same live code as the gateway
+       even when ``PATH`` points at an older installed ``hermes`` shim.
+    3. ``shutil.which("hermes")`` — legacy fallback for setups that explicitly
+       opt into the path shim with ``HERMES_KANBAN_WORKER_USE_PATH_SHIM=1``.
 
     Mirrors ``gateway.run._resolve_hermes_bin`` for the same reason. Kept
     local (not imported from gateway) because ``hermes_cli`` sits below
     ``gateway`` in the dependency order.
     """
-    import shutil
-
     env_bin = os.environ.get("HERMES_BIN", "").strip()
     if env_bin:
         if _looks_like_path(env_bin):
@@ -5581,9 +5742,10 @@ def _resolve_hermes_argv() -> list[str]:
             return _hermes_path_argv(resolved_env_bin)
         return _module_hermes_argv()
 
-    hermes_bin = _safe_which_no_cwd("hermes") if _IS_WINDOWS else shutil.which("hermes")
-    if hermes_bin:
-        return _hermes_path_argv(hermes_bin)
+    if os.environ.get("HERMES_KANBAN_WORKER_USE_PATH_SHIM") == "1":
+        hermes_bin = _safe_which_no_cwd("hermes") if _IS_WINDOWS else shutil.which("hermes")
+        if hermes_bin:
+            return _hermes_path_argv(hermes_bin)
     return _module_hermes_argv()
 
 
@@ -5680,6 +5842,7 @@ def _default_spawn(
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
+    _prepend_pythonpath(env, _source_root())
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root

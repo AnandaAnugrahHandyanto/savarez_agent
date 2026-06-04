@@ -491,13 +491,55 @@ class TestLaunchdServiceRecovery:
 
         gateway_cli.launchd_install()
 
-        label = gateway_cli.get_launchd_label()
-        domain = gateway_cli._launchd_domain()
         assert "--replace" in plist_path.read_text(encoding="utf-8")
-        assert calls[:2] == [
-            ["launchctl", "bootout", f"{domain}/{label}"],
-            ["launchctl", "bootstrap", domain, str(plist_path)],
-        ]
+        assert calls == []
+
+    def test_refresh_launchd_plist_never_bootouts_running_service(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+        assert "--replace" in plist_path.read_text(encoding="utf-8")
+        assert calls == []
+
+    def test_gateway_restart_all_on_macos_uses_kickstart_restart_not_bootout(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_dispatch_all_via_service_manager_if_s6", lambda action: False)
+        monkeypatch.setattr(gateway_cli, "_dispatch_via_service_manager_if_s6", lambda action: False)
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda **kwargs: calls.append(("kill", kwargs)) or 0)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda **kwargs: calls.append(("wait", kwargs)))
+        monkeypatch.setattr(gateway_cli, "run_gateway", lambda verbose=0: calls.append(("run", verbose)))
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", **{"all": True}, system=False))
+
+        launchctl_calls = [call for call in calls if isinstance(call, list) and call[:1] == ["launchctl"]]
+        assert ["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"] not in launchctl_calls
+        assert ["launchctl", "kickstart", "-k", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"] in launchctl_calls
 
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"

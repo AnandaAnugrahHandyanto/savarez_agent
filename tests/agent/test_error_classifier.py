@@ -34,6 +34,12 @@ class ReadTimeout(MockTransportError):
 class ConnectError(MockTransportError):
     pass
 
+class APIConnectionError(MockTransportError):
+    pass
+
+class APITimeoutError(MockTransportError):
+    pass
+
 
 class RemoteProtocolError(MockTransportError):
     pass
@@ -53,7 +59,7 @@ class TestFailoverReason:
     def test_enum_members_exist(self):
         expected = {
             "auth", "auth_permanent", "billing", "rate_limit",
-            "overloaded", "server_error", "timeout",
+            "overloaded", "server_error", "timeout", "codex_transport_stall",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
             "multimodal_tool_content_unsupported",
@@ -635,6 +641,29 @@ class TestClassifyApiError:
         e = ConnectError("Connection refused")
         result = classify_api_error(e)
         assert result.reason == FailoverReason.timeout
+
+    def test_openai_codex_api_connection_error_classifies_as_transport_stall(self):
+        e = APIConnectionError("No first byte from provider in 45s")
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.5",
+            approx_tokens=90000,
+        )
+        assert result.reason == FailoverReason.codex_transport_stall
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_openai_codex_transport_stall_large_context_requests_compression(self):
+        e = APITimeoutError("No first byte from provider in 45s")
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.5",
+            approx_tokens=130000,
+        )
+        assert result.reason == FailoverReason.codex_transport_stall
+        assert result.should_compress is True
 
     def test_connection_error_builtin(self):
         e = ConnectionError("Connection reset by peer")

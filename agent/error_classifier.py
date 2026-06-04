@@ -38,6 +38,7 @@ class FailoverReason(enum.Enum):
 
     # Transport
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
+    codex_transport_stall = "codex_transport_stall"  # Codex Responses no-first-byte/APIConnectionError
 
     # Context / payload
     context_overflow = "context_overflow"  # Context too large — compress, not failover
@@ -483,6 +484,31 @@ def classify_api_error(
         return ClassifiedError(**defaults)
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
+
+    # OpenAI Codex OAuth / chatgpt.com Responses streams can intermittently
+    # accept a request but fail to deliver the first event before the local
+    # TTFB watchdog closes the connection.  The SDK then surfaces this as a
+    # TimeoutError or APIConnectionError.  Classify it separately from generic
+    # transport timeouts so the gateway/Kanban dispatcher can apply a
+    # provider-wide backoff instead of immediately spawning the next worker.
+    if provider_lower == "openai-codex" and (
+        "no first byte" in error_msg
+        or error_type in {"APIConnectionError", "APITimeoutError"}
+        or (
+            error_type == "TimeoutError"
+            and "non-streaming api call timed out" in error_msg
+        )
+    ):
+        should_compress = approx_tokens >= 120000 or num_messages > 200
+        return _result(
+            FailoverReason.codex_transport_stall,
+            retryable=True,
+            should_compress=should_compress,
+            error_context={
+                "approx_tokens": approx_tokens,
+                "num_messages": num_messages,
+            },
+        )
 
     # Anthropic thinking block signature invalid (400).
     # Don't gate on provider — OpenRouter proxies Anthropic errors, so the

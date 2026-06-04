@@ -251,6 +251,7 @@ def _handle_send(args):
     force_document_attachments = "[[as_document]]" in message
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    cleaned_message = BasePlatformAdapter.sanitize_user_visible_content(cleaned_message)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
@@ -581,6 +582,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         _feishu_available = False
 
     media_files = media_files or []
+    message = BasePlatformAdapter.sanitize_user_visible_content(message)
 
     if platform == Platform.SLACK and message:
         try:

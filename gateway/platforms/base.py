@@ -2750,6 +2750,86 @@ class BasePlatformAdapter(ABC):
         lowered = error.lower()
         return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
 
+    @staticmethod
+    def sanitize_user_visible_content(content: str) -> str:
+        """Strip internal context-compression artifacts before user delivery.
+
+        Compression handoff summaries and todo snapshots are model-context
+        artifacts, not user-facing content. If a model echoes one of those
+        blocks, remove the internal block at the final gateway boundary so it
+        cannot leak into Telegram/Slack/etc.
+        """
+        if not content:
+            return content
+
+        original = str(content)
+        text = original
+
+        # Remove a full leading compaction block if the response starts with
+        # the handoff marker. Stop at the explicit END marker when present.
+        # If the END marker is missing but the text clearly contains the
+        # structured handoff summary, drop the whole response into the safe
+        # fallback instead of leaking internal summary headings/body text.
+        compaction_markers = (
+            "[CONTEXT COMPACTION — REFERENCE ONLY]",
+            "[CONTEXT COMPACTION - REFERENCE ONLY]",
+        )
+        compaction_section_markers = (
+            "## Active Task",
+            "## Goal",
+            "## Constraints & Preferences",
+            "## Completed Actions",
+            "## Active State",
+            "## In Progress",
+            "## Blocked",
+            "## Key Decisions",
+            "## Resolved Questions",
+            "## Pending User Asks",
+            "## Relevant Files",
+            "## Remaining Work",
+            "## Critical Context",
+        )
+        stripped = text.lstrip()
+        leading_ws_len = len(text) - len(stripped)
+        if stripped.startswith(compaction_markers):
+            end_re = re.search(r"(?im)^--- END OF CONTEXT SUMMARY.*$", stripped)
+            if end_re:
+                stripped = stripped[end_re.end():].lstrip("\r\n \t")
+            elif any(marker in stripped for marker in compaction_section_markers):
+                stripped = ""
+            else:
+                # Marker-only quote without the structured summary: remove the
+                # marker line but keep the rest to avoid over-stripping normal
+                # answers that merely mention the phrase.
+                stripped = "\n".join(stripped.splitlines()[1:]).lstrip("\r\n \t")
+            text = text[:leading_ws_len] + stripped
+
+        # Drop standalone internal marker lines wherever they appear.
+        internal_line_patterns = (
+            r"^\s*--- END OF CONTEXT SUMMARY.*$",
+            r"^\s*\[Your active task list was preserved across context compression\]\s*$",
+            r"^\s*Earlier turns were compacted into the summary below.*$",
+            r"^\s*Do NOT answer questions or fulfill requests mentioned in this summary.*$",
+        )
+        for pattern in internal_line_patterns:
+            text = re.sub(pattern, "", text, flags=re.IGNORECASE | re.MULTILINE)
+
+        # Remove obvious todo-injection bullets immediately following a leaked
+        # snapshot marker. This is intentionally conservative: only bullets
+        # with the compact status marker shape are stripped.
+        text = re.sub(
+            r"(?im)^\s*- \[[x> ~?]\] [A-Za-z0-9_.-]+\. .+ \((pending|in_progress|completed|cancelled)\)\s*$",
+            "",
+            text,
+        )
+
+        # Normalize excessive blank lines introduced by removals.
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+        if not text and original.strip():
+            return "이전 내부 압축 메모가 응답에 섞여 제거했습니다. 같은 요청을 다시 보내주시면 이어서 처리하겠습니다."
+        return text
+
     def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
         """Unwrap a handler response into (text, ttl_seconds).
 
@@ -2789,6 +2869,8 @@ class BasePlatformAdapter(ABC):
         network errors, sends the user a brief delivery-failure notice so they
         know to retry rather than waiting indefinitely.
         """
+
+        content = self.sanitize_user_visible_content(content)
 
         result = await self.send(
             chat_id=chat_id,
@@ -3589,6 +3671,7 @@ class BasePlatformAdapter(ABC):
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
                 text_content = text_content.replace("[[as_document]]", "").strip()
                 text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
+                text_content = self.sanitize_user_visible_content(text_content)
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 

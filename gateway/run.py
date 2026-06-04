@@ -2546,6 +2546,9 @@ class GatewayRunner:
     def _status_action_gerund(self) -> str:
         return "restarting" if self._restart_requested else "shutting down"
 
+    def _status_action_gerund_ko(self) -> str:
+        return "재시작" if self._restart_requested else "종료"
+
     def _queue_during_drain_enabled(self) -> bool:
         # Both "queue" and "steer" modes imply the user doesn't want messages
         # to be lost during restart — queue them for the newly-spawned gateway
@@ -3105,9 +3108,9 @@ class GatewayRunner:
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                message = f"⏳ 게이트웨이 {self._status_action_gerund_ko()} 중입니다 — 복귀 후 다음 턴으로 처리하도록 대기열에 넣었습니다."
             else:
-                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                message = f"⏳ 게이트웨이가 {self._status_action_gerund_ko()} 중이라 지금은 새로운 턴을 받을 수 없습니다."
 
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -3235,19 +3238,19 @@ class GatewayRunner:
                 if start_ts:
                     elapsed_min = int((now - start_ts) / 60)
                     if elapsed_min > 0:
-                        status_parts.append(f"{elapsed_min} min elapsed")
+                        status_parts.append(f"{elapsed_min}분 경과")
                 if max_iter:
-                    status_parts.append(f"iteration {iteration}/{max_iter}")
+                    status_parts.append(f"반복 {iteration}/{max_iter}")
                 if current_tool:
-                    status_parts.append(f"running: {current_tool}")
+                    status_parts.append(f"실행 중: {current_tool}")
             except Exception:
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         if is_steer_mode:
             message = (
-                f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
+                f"⏩ 진행 중인 작업에 메시지를 끼워 넣었습니다{status_detail}. "
+                f"다음 도구 호출 이후에 반영됩니다."
             )
         elif is_queue_mode and demoted_for_subagents:
             # #30170 — explain the demotion so the user knows their
@@ -3259,13 +3262,13 @@ class GatewayRunner:
             )
         elif is_queue_mode:
             message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
+                f"⏳ 다음 턴을 위해 대기열에 넣었습니다{status_detail}. "
+                f"현재 작업이 끝나면 답변드리겠습니다."
             )
         else:
             message = (
-                f"⚡ Interrupting current task{status_detail}. "
-                f"I'll respond to your message shortly."
+                f"⚡ 현재 작업을 중단합니다{status_detail}. "
+                f"잠시 후 메시지에 답변드리겠습니다."
             )
 
         # First-touch onboarding: the very first time a user sends a message
@@ -3364,14 +3367,14 @@ class GatewayRunner:
         """
         active = self._snapshot_running_agents()
 
-        action = "restarting" if self._restart_requested else "shutting down"
+        action_ko = "재시작" if self._restart_requested else "종료"
         hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            "현재 작업이 중단됩니다. "
+            "재시작 후 아무 메시지나 보내주시면 중단된 지점부터 이어서 진행해 보겠습니다."
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else "현재 작업이 중단됩니다."
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        msg = f"⚠️ 게이트웨이 {action_ko} 중입니다 — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -4557,10 +4560,12 @@ class GatewayRunner:
         self._release_running_agent_state(session_key)
 
         synthetic_text = (
-            f"[Session was just handed off from CLI (\"{cli_title}\") to this "
-            f"channel. The full prior conversation history is loaded above. "
-            f"Briefly confirm you're working here and summarize what we were "
-            f"working on, so the user can continue from this device.]"
+            f"[세션이 방금 CLI(\"{cli_title}\")에서 이 채널로 핸드오프되었습니다. "
+            f"전체 이전 대화 기록은 위에 로드되어 있습니다. "
+            f"한국어로 1~2문장 이내로 핸드오프 수신을 짧게 확인하고, "
+            f"현재 진행 중인 작업을 한국어로 간결하게 요약해 주세요. "
+            f"context-compaction·handoff·reference summary 같은 원본 메타 컨텍스트를 "
+            f"그대로 덤프하지 말고, 가장 최근의 활성 작업 지점부터 이어서 진행하세요.]"
         )
 
         synthetic_event = MessageEvent(
@@ -5426,6 +5431,29 @@ class GatewayRunner:
                 or "database disk image is malformed" in msg
             )
 
+        def _board_db_quick_check_ok(db_path: str) -> bool:
+            """Return True when a suspected-corrupt board DB probes healthy.
+
+            Busy WAL boards can transiently raise ``file is not a database``
+            while a short-lived dispatcher connection races another connection's
+            journal/checkpoint work.  Before disabling dispatch for the whole
+            board, verify the DB through a separate read-only quick_check.  A
+            clean probe means the prior error was lock/journal churn, not page
+            corruption.
+            """
+            try:
+                uri = f"file:{db_path}?mode=ro"
+                probe = sqlite3.connect(uri, uri=True, timeout=5, isolation_level=None)
+                try:
+                    row = probe.execute("PRAGMA quick_check").fetchone()
+                finally:
+                    probe.close()
+            except sqlite3.DatabaseError:
+                return False
+            except OSError:
+                return False
+            return bool(row and (row[0] or "").lower() == "ok")
+
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
@@ -5464,6 +5492,15 @@ class GatewayRunner:
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
+                    if _board_db_quick_check_ok(fingerprint[0]):
+                        logger.warning(
+                            "kanban dispatcher: board %s database raised %s during "
+                            "connect but read-only quick_check is ok; treating as "
+                            "transient journal contention and skipping this tick",
+                            slug,
+                            exc,
+                        )
+                        return None
                     disabled_corrupt_boards[slug] = fingerprint
                     logger.error(
                         "kanban dispatcher: board %s database %s is not a valid "
@@ -6791,6 +6828,54 @@ class GatewayRunner:
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
         
+        # AI Staff OS stage0: optional record-only/fail-closed classifier.
+        # Disabled by default and intentionally placed after authorization so
+        # pairing/unauthorized flows remain unchanged.  When enabled it is
+        # terminal for every classified decision: no card creation, no agent
+        # dispatch, no ready promotion, and no worker/queue activation. Slash
+        # commands bypass this hook and keep their normal command routing.
+        if (
+            not is_internal
+            and event.get_command() is None
+            and str(os.getenv("HERMES_AI_STAFF_STAGE0_RECORD_ONLY", "")).strip().lower()
+            in {"1", "true", "yes", "on"}
+        ):
+            try:
+                from gateway.kanban_routing import (
+                    build_stage0_record_only_decision as _stage0_decision,
+                    load_routing_map as _stage0_load_routing_map,
+                )
+
+                _stage0_result = _stage0_decision(
+                    source=source,
+                    text=event.text or "",
+                    routing_map=_stage0_load_routing_map(),
+                )
+                logger.info(
+                    "ai-staff-os stage0 record-only decision=%s route=%s board=%s anchor=%s",
+                    _stage0_result.decision,
+                    _stage0_result.route_key,
+                    _stage0_result.board,
+                    _stage0_result.anchor_task_id,
+                )
+                if _stage0_result.decision == "PASS_RECORD_ONLY":
+                    return (
+                        "AI Staff OS stage0 record-only: "
+                        f"{_stage0_result.reason}. agent dispatch 없이 분류만 완료했습니다."
+                    )
+                if _stage0_result.decision == "NO_DUPLICATE":
+                    return (
+                        "AI Staff OS stage0 record-only: "
+                        f"{_stage0_result.reason}. 중복 후보라 dispatch 없이 종료했습니다."
+                    )
+                return (
+                    "AI Staff OS stage0 fail-closed: "
+                    f"{_stage0_result.reason}. 기록 전용 후보로 차단했습니다."
+                )
+            except Exception as _stage0_exc:
+                logger.warning("ai-staff-os stage0 classifier failed: %s", _stage0_exc)
+                return "AI Staff OS stage0 fail-closed: classifier_error. 기록 전용 후보로 차단했습니다."
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via
@@ -7153,6 +7238,21 @@ class GatewayRunner:
             # /agents (/tasks alias) should be query-only and never interrupt.
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
+
+            # /handoff is a control-plane snapshot. It should not interrupt an
+            # active turn; at worst it captures the transcript as of the last
+            # persisted message and tells the user where the pack was written.
+            if _cmd_def_inner and _cmd_def_inner.name == "handoff":
+                return await self._handle_handoff_command(event)
+
+            # /autopilot rollover is a session-boundary operation; do not run it
+            # mid-turn because it resets the session and dispatches a synthetic
+            # resume event. Users should wait or /stop first.
+            if _cmd_def_inner and _cmd_def_inner.name == "autopilot":
+                return (
+                    "⏳ Agent is running — `/autopilot rollover` can't run mid-turn. "
+                    "Wait for the current response or `/stop` first."
+                )
 
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
@@ -7558,6 +7658,12 @@ class GatewayRunner:
 
         if canonical == "title":
             return await self._handle_title_command(event)
+
+        if canonical == "handoff":
+            return await self._handle_handoff_command(event)
+
+        if canonical == "autopilot":
+            return await self._handle_autopilot_command(event)
 
         if canonical == "resume":
             return await self._handle_resume_command(event)
@@ -8306,6 +8412,38 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
+
+        # Explicit handoff resume: when a user starts a fresh session and asks
+        # to continue from a handoff pack, inject the latest pack as reference
+        # context. This does not auto-reset sessions and does not persist the
+        # handoff content back into transcript except as part of this user turn.
+        try:
+            from gateway.handoff_pack import (
+                build_handoff_reference,
+                find_latest_handoff,
+                should_resume_from_handoff,
+            )
+
+            if should_resume_from_handoff(event.text):
+                _handoff_path = find_latest_handoff(source)
+                if _handoff_path is not None:
+                    event.text = (
+                        build_handoff_reference(_handoff_path)
+                        + "\n\n[CURRENT USER MESSAGE]\n"
+                        + (event.text or "")
+                    )
+                    logger.info(
+                        "Injected handoff reference for session %s from %s",
+                        session_entry.session_id,
+                        _handoff_path,
+                    )
+                else:
+                    logger.info(
+                        "Handoff resume requested for session %s but no latest handoff found",
+                        session_entry.session_id,
+                    )
+        except Exception as exc:
+            logger.debug("handoff resume injection failed: %s", exc, exc_info=True)
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -9045,6 +9183,30 @@ class GatewayRunner:
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
+            # Bounded Discord → Slack/Kanban recovery bridge.
+            # This is intentionally fail-closed and metadata-required: Discord
+            # direct-mention turns only trigger recovery when the inbound text
+            # contains an explicit Slack thread target and Kanban card target.
+            # Recovery failures are logged but never block the Discord response.
+            try:
+                from gateway.discord_recovery import perform_recovery_if_requested as _recover_discord
+
+                await _recover_discord(self, event, response)
+            except Exception as _recovery_err:
+                logger.warning("Discord recovery bridge failed unexpectedly: %s", _recovery_err)
+
+            # Bounded Slack → Discord/Kanban relay bridge.
+            # This is intentionally fail-closed and metadata-required: Slack
+            # turns only trigger relay when the inbound text contains an explicit
+            # Discord target and Kanban card target. Relay failures are logged
+            # but never block the Slack response.
+            try:
+                from gateway.slack_discord_relay import perform_relay_if_requested as _relay_slack_discord
+
+                await _relay_slack_discord(self, event, response)
+            except Exception as _relay_err:
+                logger.warning("Slack→Discord relay bridge failed unexpectedly: %s", _relay_err)
+
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
@@ -9574,6 +9736,22 @@ class GatewayRunner:
             break
 
         is_create = action == "create"
+        if is_create and requested_board is None:
+            try:
+                from gateway.kanban_routing import load_routing_map, route_kanban_create_tokens
+
+                routed_tokens, routed_request = route_kanban_create_tokens(
+                    tokens,
+                    source=event.source,
+                    routing_map=load_routing_map(),
+                )
+                if routed_request:
+                    tokens = routed_tokens
+                    text = shlex.join(tokens)
+                    if routed_request.board:
+                        requested_board = routed_request.board
+            except Exception as exc:  # pragma: no cover - routing must not break /kanban
+                logger.warning("kanban create routing failed; falling back to slash text: %s", exc)
 
         try:
             output = await asyncio.to_thread(run_slash, text)
@@ -10628,6 +10806,182 @@ class GatewayRunner:
 
         available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
         return t("gateway.personality.unknown", name=args, available=available)
+
+    def _load_handoff_transcript(self, session_entry, source: SessionSource) -> list[dict[str, Any]]:
+        """Load transcript for a handoff, falling back to the last non-empty session.
+
+        Autopilot rollover can be invoked from a freshly-created control session
+        whose transcript has not accumulated useful messages yet. In that case,
+        use the most recent same-platform/same-user session with messages so the
+        generated handoff contains the previous work context instead of an empty
+        placeholder.
+        """
+        current_session_id = str(getattr(session_entry, "session_id", "") or "")
+        try:
+            history = self.session_store.load_transcript(current_session_id)
+        except Exception as exc:
+            logger.debug("Could not load current handoff transcript: %s", exc)
+            history = []
+        if history:
+            return history
+
+        db = getattr(self.session_store, "_db", None)
+        if db is None:
+            return []
+
+        platform = getattr(getattr(source, "platform", None), "value", None) or str(getattr(source, "platform", ""))
+        source_user_id = str(getattr(source, "user_id", "") or "")
+        try:
+            candidates = db.list_sessions_rich(
+                source=platform or None,
+                limit=12,
+                include_children=True,
+                order_by_last_active=True,
+            )
+        except Exception as exc:
+            logger.debug("Could not list fallback handoff sessions: %s", exc)
+            return []
+
+        for row in candidates:
+            candidate_id = str(row.get("id", "") or "")
+            if not candidate_id or candidate_id == current_session_id:
+                continue
+            if source_user_id and str(row.get("user_id", "") or "") != source_user_id:
+                continue
+            if int(row.get("message_count") or 0) <= 0:
+                continue
+            try:
+                fallback_history = db.get_messages_as_conversation(candidate_id)
+            except Exception as exc:
+                logger.debug("Could not load fallback handoff transcript %s: %s", candidate_id, exc)
+                continue
+            if fallback_history:
+                marker = {
+                    "role": "system",
+                    "content": f"handoff context recovered from previous session {candidate_id}",
+                }
+                return [marker, *fallback_history]
+        return []
+
+    async def _handle_autopilot_command(self, event: MessageEvent) -> str:
+        """Handle /autopilot gateway control-plane commands.
+
+        Gate D live scope implements only ``/autopilot rollover``: create a
+        handoff pack, verify it can be read back, reset the current session, and
+        dispatch a synthetic resume turn. It does not restart the gateway or
+        change provider/model/config.
+        """
+        args = (event.get_command_args() or "").strip().lower()
+        if args not in {"rollover", "session-rollover", "session_rollover"}:
+            return "Usage: /autopilot rollover"
+
+        source = event.source
+        try:
+            from gateway.handoff_pack import (
+                build_handoff_pack,
+                build_handoff_reference,
+                find_latest_handoff,
+                write_handoff_pack,
+            )
+        except Exception as exc:
+            logger.warning("autopilot rollover unavailable: %s", exc, exc_info=True)
+            return f"⚠️ Autopilot rollover is unavailable: {exc}"
+
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self._load_handoff_transcript(session_entry, source)
+        pack = build_handoff_pack(
+            session_entry=session_entry,
+            source=source,
+            messages=history,
+            reason="autopilot-rollover",
+        )
+        paths = write_handoff_pack(pack)
+
+        latest = find_latest_handoff(source)
+        if latest is None or latest != paths.latest_summary_path or not latest.exists():
+            return "⚠️ Autopilot rollover 중단: 최신 핸드오프 파일 read-back 검증에 실패했습니다."
+        try:
+            build_handoff_reference(latest, max_chars=4000)
+        except Exception as exc:
+            logger.warning("autopilot rollover handoff read-back failed: %s", exc, exc_info=True)
+            return f"⚠️ Autopilot rollover 중단: 핸드오프 read-back 실패: {exc}"
+
+        reset_event = MessageEvent(
+            text="/new Autopilot rollover",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=event.raw_message,
+            message_id=event.message_id,
+            platform_update_id=event.platform_update_id,
+            channel_prompt=event.channel_prompt,
+            internal=True,
+        )
+        await self._handle_reset_command(reset_event)
+
+        resume_event = MessageEvent(
+            text="handoff 읽고 이어가",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=event.raw_message,
+            message_id=event.message_id,
+            platform_update_id=event.platform_update_id,
+            channel_prompt=event.channel_prompt,
+            internal=True,
+        )
+        resume_result = await self._handle_message(resume_event)
+        resume_text = "" if resume_result is None else str(resume_result)
+        return (
+            "Autopilot rollover staging 완료.\n"
+            f"핸드오프: `{latest}`\n"
+            "새 세션을 만든 뒤 synthetic resume 이벤트를 dispatch했습니다.\n"
+            f"Resume result: {resume_text}"
+        )
+
+    async def _handle_handoff_command(self, event: MessageEvent) -> str:
+        """Handle /handoff for gateway platforms.
+
+        `/handoff` writes a file-backed reference pack for the current session.
+        `/handoff status` reports the latest pack for this chat/thread. It never
+        resets the session and never restarts the gateway.
+        """
+        args = (event.get_command_args() or "").strip().lower()
+        source = event.source
+        try:
+            from gateway.handoff_pack import (
+                build_handoff_pack,
+                find_latest_handoff,
+                write_handoff_pack,
+            )
+        except Exception as exc:
+            logger.warning("handoff command unavailable: %s", exc, exc_info=True)
+            return f"⚠️ Handoff pack is unavailable: {exc}"
+
+        if args in {"status", "show", "latest"}:
+            latest = find_latest_handoff(source)
+            if latest is None:
+                return "핸드오프 파일이 아직 없습니다. `/handoff`로 먼저 생성하세요."
+            return (
+                "최근 핸드오프 파일:\n"
+                f"`{latest}`\n\n"
+                "새 세션에서는 `handoff 읽고 이어가`라고 입력하면 됩니다."
+            )
+
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self._load_handoff_transcript(session_entry, source)
+        pack = build_handoff_pack(
+            session_entry=session_entry,
+            source=source,
+            messages=history,
+            reason=args or "manual",
+        )
+        paths = write_handoff_pack(pack)
+        return (
+            "핸드오프 파일을 만들었습니다.\n"
+            f"최신 파일: `{paths.latest_summary_path}`\n"
+            f"보존본: `{paths.summary_path}`\n\n"
+            "작업 단위가 끝난 뒤 `/new`를 사용하고, 새 세션에서 "
+            "`handoff 읽고 이어가`라고 입력하세요."
+        )
 
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
@@ -14404,7 +14758,7 @@ class GatewayRunner:
             metadata = {"thread_id": thread_id} if thread_id else None
             result = await adapter.send(
                 str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
+                "♻ 게이트웨이를 정상적으로 재시작했습니다. 세션은 그대로 이어집니다.",
                 metadata=metadata,
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")
@@ -14445,7 +14799,7 @@ class GatewayRunner:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        message = "♻️ 게이트웨이 온라인 — Hermes가 다시 준비되었습니다."
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)

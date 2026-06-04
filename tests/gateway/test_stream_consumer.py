@@ -84,6 +84,39 @@ class TestCleanForDisplay:
         # But "media:" is lowercase so won't match either
         assert result == text
 
+    def test_context_compaction_block_stripped_from_stream_display(self):
+        """Streaming display path strips leaked context handoff summaries."""
+        text = """[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.
+## Active Task
+Do not show this.
+--- END OF CONTEXT SUMMARY ---
+
+실제 스트리밍 답변"""
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert result == "실제 스트리밍 답변"
+        assert "CONTEXT COMPACTION" not in result
+
+    def test_context_compaction_only_stream_display_uses_safe_fallback(self):
+        """If sanitizer removes all streamed text, return a safe fallback."""
+        result = GatewayStreamConsumer._clean_for_display(
+            "[CONTEXT COMPACTION — REFERENCE ONLY]\n--- END OF CONTEXT SUMMARY ---"
+        )
+        assert "내부 압축 메모" in result
+
+    def test_unclosed_context_compaction_stream_display_uses_safe_fallback(self):
+        """Streaming display must not leak unclosed context handoff summaries."""
+        result = GatewayStreamConsumer._clean_for_display(
+            "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.\n"
+            "## Active Task\n"
+            "Do not show this.\n\n"
+            "## Critical Context\n"
+            "Internal summary body without an END marker."
+        )
+        assert "내부 압축 메모" in result
+        assert "Active Task" not in result
+        assert "Critical Context" not in result
+        assert "Internal summary" not in result
+
 
 # ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────
 
