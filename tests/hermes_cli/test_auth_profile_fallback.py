@@ -554,3 +554,67 @@ def test_resolve_provider_uses_global_active_provider(profile_env, monkeypatch):
     )
 
     assert auth.resolve_provider("auto") == "nous"
+
+
+# ---------------------------------------------------------------------------
+# is_provider_explicitly_configured — global active_provider fallback
+# (issue #18594 follow-up)
+#
+# ``is_provider_explicitly_configured`` gates auto-discovery of external
+# credentials (Claude Code's ~/.claude/.credentials.json) behind the user's
+# explicit provider choice. Its step-1 active_provider read must use the same
+# global-root fallback as ``get_active_provider`` / ``resolve_provider``;
+# otherwise a named profile that inherits the global active_provider resolves
+# (and selects) that provider via ``resolve_provider('auto')`` yet the
+# credential-pool seeding (agent/credential_pool.py) and auxiliary fallback
+# (agent/auxiliary_client.py) treat it as "not explicit" and skip it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _no_anthropic_env(monkeypatch):
+    """Strip Anthropic env vars so step 3 cannot mask the step-1 fallback."""
+    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_explicitly_configured_honors_global_active_provider(profile_env, _no_anthropic_env):
+    """Empty profile + global active_provider: anthropic counts as explicit."""
+    from hermes_cli.auth import is_provider_explicitly_configured
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(
+        providers={"anthropic": {"access_token": "ant-global"}},
+        active_provider="anthropic",
+    ))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    assert is_provider_explicitly_configured("anthropic") is True
+
+
+def test_explicitly_configured_profile_active_provider_shadows_global(profile_env, _no_anthropic_env):
+    """A profile's own active_provider shadows global — global choice is not explicit here."""
+    from hermes_cli.auth import is_provider_explicitly_configured
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(
+        providers={"anthropic": {"access_token": "ant-global"}},
+        active_provider="anthropic",
+    ))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(
+        providers={"openrouter": {"access_token": "or-profile"}},
+        active_provider="openrouter",
+    ))
+
+    # Profile selected openrouter, so anthropic (the global choice) is NOT
+    # the profile's explicit provider; the profile's own selection is.
+    assert is_provider_explicitly_configured("anthropic") is False
+    assert is_provider_explicitly_configured("openrouter") is True
+
+
+def test_explicitly_configured_false_when_neither_selects_provider(profile_env, _no_anthropic_env):
+    """No active_provider anywhere → the fallback must not invent one."""
+    from hermes_cli.auth import is_provider_explicitly_configured
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={}))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    assert is_provider_explicitly_configured("anthropic") is False
