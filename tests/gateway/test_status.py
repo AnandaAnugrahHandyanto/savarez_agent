@@ -1036,3 +1036,40 @@ class TestReadProcessCmdlinePsFallback:
         )
         result = status._read_process_cmdline(12345)
         assert "hermes_cli/main.py" in result
+
+
+class TestCronTickerStatus:
+    def test_cron_ticker_block_roundtrips(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.write_runtime_status(gateway_state="running")
+        status.write_cron_ticker_status(
+            state="running", interval_seconds=60, tick_count=7,
+            last_tick_at="2026-05-30T12:00:00Z", last_error=None,
+        )
+        rec = status.read_runtime_status()
+        assert rec["cron_ticker"]["state"] == "running"
+        assert rec["cron_ticker"]["tick_count"] == 7
+        assert rec["cron_ticker"]["interval_seconds"] == 60
+        assert rec["gateway_state"] == "running"  # base fields preserved
+
+    def test_cron_ticker_partial_update_preserves_prior_fields(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.write_cron_ticker_status(state="running", interval_seconds=60, tick_count=1)
+        status.write_cron_ticker_status(tick_count=2, last_tick_at="2026-05-30T12:00:01Z")
+        block = status.read_runtime_status()["cron_ticker"]
+        assert block["tick_count"] == 2
+        assert block["interval_seconds"] == 60  # untouched fields survive
+
+    def test_cron_ticker_failed_import_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.write_cron_ticker_status(state="failed_import", last_error="SyntaxError: bad")
+        block = status.read_runtime_status()["cron_ticker"]
+        assert block["state"] == "failed_import"
+        assert "SyntaxError" in block["last_error"]
+
+    def test_cron_ticker_explicit_none_clears_prior_error(self, tmp_path, monkeypatch):
+        """A recovering tick passes last_error=None to clear a stale error."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.write_cron_ticker_status(state="running", last_error="boom")
+        status.write_cron_ticker_status(state="running", last_error=None)
+        assert status.read_runtime_status()["cron_ticker"]["last_error"] is None

@@ -86,7 +86,7 @@ def cron_list(show_all: bool = False):
         repeat_completed = repeat_info.get("completed", 0)
         repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
 
-        deliver = job.get("deliver", ["local"])
+        deliver = job.get("deliver") or ["local"]
         if isinstance(deliver, str):
             deliver = [deliver]
         deliver_str = ", ".join(deliver)
@@ -151,6 +151,33 @@ def cron_tick():
     tick(verbose=True)
 
 
+# A healthy ticker stamps every CRON_TICK_INTERVAL (60s); 3× gives margin for a
+# slow tick without false alarms. Intentionally distinct from the gateway's
+# HEARTBEAT_STALE_SECONDS (1800s) "alive-but-hung" threshold: this is the
+# liveness backstop for when the supervisor hasn't written state="stopped" yet,
+# so a dead ticker surfaces in ~3 min instead of 30.
+_TICKER_NOT_ALIVE_SECONDS = 180
+
+
+def _read_cron_ticker_health():
+    """Return ``(state, age_seconds | None, last_error | None)`` from
+    gateway_state.json, or ``(None, None, None)`` when unavailable."""
+    try:
+        from datetime import datetime, timezone
+        from gateway.status import read_runtime_status
+
+        block = (read_runtime_status() or {}).get("cron_ticker")
+        if not block:
+            return (None, None, None)
+        age = None
+        if last := block.get("last_tick_at"):
+            ts = datetime.fromisoformat(last.replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - ts).total_seconds()
+        return (block.get("state"), age, block.get("last_error"))
+    except Exception:
+        return (None, None, None)
+
+
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
@@ -160,7 +187,19 @@ def cron_status():
 
     pids = find_gateway_pids()
     if pids:
-        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
+        state, age, err = _read_cron_ticker_health()
+        if state == "failed_import":
+            print(color(f"✗ Cron ticker failed to start: {err}", Colors.RED))
+            print(color("  Fix cron/scheduler.py, then run: hermes gateway restart", Colors.DIM))
+        elif state is None or age is None:
+            print(color("⚠ Gateway running but cron ticker status unknown", Colors.YELLOW))
+            print(color("  If jobs aren't firing, run: hermes gateway restart", Colors.DIM))
+        elif state in {"stalled", "stopped"} or age >= _TICKER_NOT_ALIVE_SECONDS:
+            print(color("⚠ Gateway running but cron ticker is NOT alive — jobs are NOT firing", Colors.RED))
+            print(color(f"  Last tick {age:.0f}s ago. Run: hermes gateway restart", Colors.DIM))
+        else:
+            print(color("✓ Cron ticker healthy — jobs will fire automatically", Colors.GREEN))
+            print(color(f"  Last tick {age:.0f}s ago", Colors.DIM))
         print(f"  PID: {', '.join(map(str, pids))}")
     else:
         print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))

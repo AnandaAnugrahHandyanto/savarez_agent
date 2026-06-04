@@ -19185,6 +19185,41 @@ def _run_planned_stop_watcher(
         stop_event.wait(poll_interval)
 
 
+from gateway.status import write_cron_ticker_status, _utc_now_iso
+
+CRON_TICK_INTERVAL = 60          # ticker interval (seconds)
+SUPERVISOR_CHECK_INTERVAL = 30   # how often the supervisor checks liveness
+HEARTBEAT_STALE_SECONDS = 1800   # alive but no tick for this long → HUNG (log only)
+_CRON_BACKOFF_BASE = 30          # first respawn delay (seconds)
+_CRON_BACKOFF_CAP = 120          # max respawn delay (≈2 ticks)
+
+_cron_last_tick_monotonic: float = 0.0
+_cron_heartbeat_lock = threading.Lock()
+
+
+def cron_tick(*args, **kwargs):
+    """Lazy indirection to ``cron.scheduler.tick``: keeps the scheduler import
+    out of gateway-import time (a broken scheduler must not crash the gateway —
+    #20302) while staying patchable in tests."""
+    from cron.scheduler import tick
+    return tick(*args, **kwargs)
+
+
+def _stamp_cron_heartbeat() -> None:
+    """Update the in-process liveness signal (authoritative for the supervisor)."""
+    global _cron_last_tick_monotonic
+    with _cron_heartbeat_lock:
+        _cron_last_tick_monotonic = time.monotonic()
+
+
+def _cron_heartbeat_age() -> Optional[float]:
+    """Seconds since the last tick, or None if the ticker has never stamped."""
+    with _cron_heartbeat_lock:
+        if not _cron_last_tick_monotonic:
+            return None
+        return time.monotonic() - _cron_last_tick_monotonic
+
+
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
     """
     Background thread that ticks the cron scheduler at a regular interval.
@@ -19199,7 +19234,6 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     image/audio/document cache + expired ``hermes debug share`` pastes
     once per hour.
     """
-    from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
     from hermes_cli.debug import _sweep_expired_pastes
 
@@ -19210,11 +19244,34 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
+    consecutive_errors = 0
+    _stamp_cron_heartbeat()
+    try:
+        write_cron_ticker_status(state="running", interval_seconds=interval,
+                                 tick_count=0, last_tick_at=_utc_now_iso(), last_error=None)
+    except Exception:
+        pass
+
     while not stop_event.is_set():
+        last_error = None
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop)
+            consecutive_errors = 0
         except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+            consecutive_errors += 1
+            last_error = repr(e)
+            logger.warning("Cron tick failed (%d consecutive); continuing",
+                           consecutive_errors, exc_info=True)
+        except BaseException as e:
+            # KeyboardInterrupt cannot reach a non-main thread and SystemExit
+            # kills only this thread; stop_event is our sole shutdown signal.
+            # Honor it, else continue — re-raising a deterministic fatal would
+            # only hot-loop the supervisor's respawn.
+            if stop_event.is_set():
+                break
+            consecutive_errors += 1
+            last_error = repr(e)
+            logger.error("Cron tick hit a non-Exception fault; continuing", exc_info=True)
 
         tick_count += 1
 
@@ -19276,8 +19333,109 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
 
-        stop_event.wait(timeout=interval)
+        _stamp_cron_heartbeat()
+        try:
+            write_cron_ticker_status(state="running", tick_count=tick_count,
+                                     last_tick_at=_utc_now_iso(), last_error=last_error)
+        except Exception:
+            pass
+
+        # Normal cadence is `interval`; on error never hot-loop (min 1s).
+        stop_event.wait(timeout=max(1, interval) if consecutive_errors else interval)
     logger.info("Cron ticker stopped")
+    try:
+        write_cron_ticker_status(state="stopped")
+    except Exception:
+        pass
+
+
+def _spawn_cron_worker(cron_stop, adapters, loop, interval):
+    """Start a fresh cron-ticker worker thread and return it."""
+    thread = threading.Thread(
+        target=_start_cron_ticker,
+        args=(cron_stop,),
+        kwargs={"adapters": adapters, "loop": loop, "interval": interval},
+        daemon=True,
+        name="cron-ticker",
+    )
+    thread.start()
+    return thread
+
+
+def _cron_supervisor_loop(sup_stop, state):
+    """Daemon supervisor: respawn a DEAD worker (retry forever, capped
+    exponential backoff) and surface a HUNG one.
+
+    A hung worker (alive but heartbeat stale) is logged, never killed or
+    respawned — CPython cannot force-kill a thread, and the ``.tick.lock``
+    backstops double-fire. There is deliberately no terminal give-up state:
+    alerting is log-only, so giving up would silently recreate the very
+    indefinite-outage bug this exists to fix. Backoff resets once healthy.
+    """
+    consecutive_deaths = 0
+    while not sup_stop.wait(SUPERVISOR_CHECK_INTERVAL):
+        try:
+            worker = state["worker"]
+            if not worker.is_alive():
+                consecutive_deaths += 1
+                backoff = min(_CRON_BACKOFF_BASE * 2 ** (consecutive_deaths - 1), _CRON_BACKOFF_CAP)
+                logger.critical("Cron ticker thread is DEAD; jobs are NOT firing. "
+                                "Respawn #%d in %ds.", consecutive_deaths, backoff)
+                try:
+                    write_cron_ticker_status(state="stopped",
+                                             last_error=f"thread died; respawn #{consecutive_deaths}")
+                except Exception:
+                    pass
+                if sup_stop.wait(backoff):
+                    break
+                state["worker"] = _spawn_cron_worker(state["cron_stop"], state["adapters"],
+                                                     state["loop"], state["interval"])
+                continue
+
+            age = _cron_heartbeat_age()
+            if age is not None and age >= HEARTBEAT_STALE_SECONDS:
+                logger.critical("Cron ticker alive but no tick for %.0fs (>%ds) — possible "
+                                "hang; jobs may not be firing.", age, HEARTBEAT_STALE_SECONDS)
+                try:
+                    write_cron_ticker_status(state="stalled", last_error=f"no tick for {age:.0f}s")
+                except Exception:
+                    pass
+            elif age is not None:
+                consecutive_deaths = 0  # healthy → reset backoff
+        except Exception:
+            # The watchdog must outlive a transient fault in its own loop —
+            # e.g. _spawn_cron_worker hitting a thread/fd limit. Dying here
+            # would silently recreate the un-watched dead-ticker bug this
+            # supervisor exists to prevent. Log loudly and retry next cycle;
+            # backoff state is preserved so we don't reset on a spawn failure.
+            logger.critical("Cron supervisor loop iteration failed; "
+                            "retrying next cycle.", exc_info=True)
+
+
+def _cron_preflight_or_status():
+    """Import ``cron.scheduler`` and confirm ``tick`` is callable BEFORE spawning
+    the ticker. ``import_module`` compiles the module, so a ``SyntaxError`` is
+    caught here (the #20302 silent-death repro). On failure: log CRITICAL, mark
+    ``failed_import``, and return ``(False, reason)`` so the gateway continues
+    WITHOUT cron rather than dying silently."""
+    import importlib
+    try:
+        sched = importlib.import_module("cron.scheduler")
+        if not callable(getattr(sched, "tick", None)):
+            raise ImportError("cron.scheduler.tick is not callable")
+        return True, None
+    except (Exception, SystemExit) as e:  # surface ANY import-time fault (incl.
+        # SyntaxError, and a module that sys.exit()s at import) — but let a
+        # KeyboardInterrupt during the import propagate so Ctrl-C still aborts
+        # startup instead of silently continuing cron-less.
+        reason = f"{type(e).__name__}: {e}"
+        logger.critical("Cron scheduler preflight FAILED — ticker will NOT start; "
+                        "cron jobs will not fire: %s", reason, exc_info=True)
+        try:
+            write_cron_ticker_status(state="failed_import", last_error=reason)
+        except Exception:
+            pass
+        return False, reason
 
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
@@ -19637,18 +19795,32 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
         return True
     
-    # Start background cron ticker so scheduled jobs fire automatically.
-    # Pass the event loop so cron delivery can use live adapters (E2EE support).
+    # Start background cron ticker so scheduled jobs fire automatically, guarded
+    # by a supervisor that respawns it if it dies. Preflight the scheduler import
+    # first so a broken cron.scheduler is reported loudly instead of silently
+    # killing the thread (#20302). On preflight failure the gateway runs on
+    # without cron rather than failing to start.
+    cron_ok, _ = _cron_preflight_or_status()
     cron_stop = threading.Event()
-    cron_thread = threading.Thread(
-        target=_start_cron_ticker,
-        args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
-        daemon=True,
-        name="cron-ticker",
-    )
-    cron_thread.start()
-    
+    sup_stop = threading.Event()
+    cron_state = None
+    sup_thread = None
+    if cron_ok:
+        loop = asyncio.get_running_loop()
+        # Shared with the supervisor; it overwrites cron_state["worker"] on each
+        # respawn, so teardown must join cron_state["worker"] (the live one) —
+        # NOT the original handle, which is dead after any respawn.
+        cron_state = {"worker": _spawn_cron_worker(cron_stop, runner.adapters, loop, CRON_TICK_INTERVAL),
+                      "cron_stop": cron_stop, "adapters": runner.adapters,
+                      "loop": loop, "interval": CRON_TICK_INTERVAL}
+        sup_thread = threading.Thread(
+            target=_cron_supervisor_loop,
+            args=(sup_stop, cron_state),
+            daemon=True,
+            name="cron-supervisor",
+        )
+        sup_thread.start()
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
@@ -19657,9 +19829,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
     
-    # Stop cron ticker cleanly
+    # Stop the supervisor before the worker so it cannot respawn it mid-teardown.
+    sup_stop.set()
+    if sup_thread is not None:
+        sup_thread.join(timeout=5)
     cron_stop.set()
-    cron_thread.join(timeout=5)
+    if cron_state is not None:
+        cron_state["worker"].join(timeout=5)
 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()
