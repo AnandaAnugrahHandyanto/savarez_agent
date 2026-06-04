@@ -234,6 +234,17 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
 
+    # Preserve the desktop-spawned process-level session token before
+    # ``override=True`` clobbers it with the pinned value from .env.
+    # The Desktop app sets HERMES_DASHBOARD_TUI=1 and injects its own
+    # auto-generated token via the process environment (main.cjs).
+    # A pinned HERMES_DASHBOARD_SESSION_TOKEN in .env is meant for
+    # *remote* mode only; letting it override the desktop's token
+    # causes a token mismatch → infinite SIGTERM boot loop (#38575).
+    _desktop_token: str | None = None
+    if os.environ.get("HERMES_DASHBOARD_TUI") == "1":
+        _desktop_token = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN")
+
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
@@ -241,6 +252,12 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
+
+    # Restore the desktop token if .env overwrote it.
+    if _desktop_token is not None:
+        current = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN")
+        if current != _desktop_token:
+            os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] = _desktop_token
 
     _apply_external_secret_sources(home_path)
 

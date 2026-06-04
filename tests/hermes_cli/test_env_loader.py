@@ -103,3 +103,47 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_desktop_token_preserved_despite_pinned_dotenv(tmp_path, monkeypatch):
+    """Desktop-spawned process-level HERMES_DASHBOARD_SESSION_TOKEN must not
+    be clobbered by a pinned value in .env (fixes #38575 boot loop)."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=pinned-from-dotenv\n",
+        encoding="utf-8",
+    )
+
+    # Simulate the Desktop app spawning the backend: it sets
+    # HERMES_DASHBOARD_TUI=1 and injects its own auto-generated token.
+    monkeypatch.setenv("HERMES_DASHBOARD_TUI", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-auto-generated-token")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    # The desktop's auto-generated token must survive, not be replaced
+    # by the pinned value from .env.
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "desktop-auto-generated-token"
+
+
+def test_pinned_token_applied_when_not_desktop_mode(tmp_path, monkeypatch):
+    """Without HERMES_DASHBOARD_TUI, the pinned token from .env should
+    apply normally (remote-backend use case)."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=pinned-for-remote\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("HERMES_DASHBOARD_TUI", raising=False)
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "pinned-for-remote"
