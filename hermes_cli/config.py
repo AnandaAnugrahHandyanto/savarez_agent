@@ -2739,6 +2739,7 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "tool",
         "advanced": True,
+        "type": "url",
     },
     "FIRECRAWL_GATEWAY_URL": {
         "description": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
@@ -2747,6 +2748,7 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "tool",
         "advanced": True,
+        "type": "url",
     },
     "TOOL_GATEWAY_DOMAIN": {
         "description": "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",
@@ -2763,6 +2765,9 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "tool",
         "advanced": True,
+        "type": "enum",
+        "enum_values": ["http", "https"],
+        "default": "https",
     },
     "TOOL_GATEWAY_USER_TOKEN": {
         "description": "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise read from the Hermes auth store)",
@@ -2787,6 +2792,7 @@ OPTIONAL_ENV_VARS = {
         "tools": ["web_search"],
         "password": False,
         "category": "tool",
+        "type": "url",
     },
     "BRAVE_SEARCH_API_KEY": {
         "description": "Brave Search API subscription token (free tier: 2,000 queries/mo)",
@@ -2826,6 +2832,10 @@ OPTIONAL_ENV_VARS = {
         "tools": ["browser_navigate", "browser_click"],
         "password": False,
         "category": "tool",
+        "type": "int",
+        "default": 300,
+        "min": 30,
+        "max": 3600,
     },
     "AGENT_BROWSER_ENGINE": {
         "description": "Browser engine for local mode: auto (default Chrome), lightpanda (faster, no screenshots), chrome",
@@ -2835,6 +2845,9 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "tool",
         "advanced": True,
+        "type": "enum",
+        "enum_values": ["auto", "lightpanda", "chrome"],
+        "default": "auto",
     },
     "CAMOFOX_URL": {
         "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
@@ -2843,6 +2856,7 @@ OPTIONAL_ENV_VARS = {
         "tools": ["browser_navigate", "browser_click"],
         "password": False,
         "category": "tool",
+        "type": "url",
     },
     "FAL_KEY": {
         "description": "FAL API key for image and video generation",
@@ -3098,6 +3112,8 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
         "advanced": True,
+        "type": "bool",
+        "default": "true",
     },
     "MATRIX_FREE_RESPONSE_ROOMS": {
         "description": "Comma-separated Matrix room IDs where bot responds without @mention",
@@ -3114,6 +3130,8 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
         "advanced": True,
+        "type": "bool",
+        "default": "true",
     },
     "MATRIX_DM_AUTO_THREAD": {
         "description": "Auto-create threads for DM messages in Matrix (default: false)",
@@ -3122,6 +3140,8 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
         "advanced": True,
+        "type": "bool",
+        "default": "false",
     },
     "MATRIX_DEVICE_ID": {
         "description": "Stable Matrix device ID for E2EE persistence across restarts (e.g. HERMES_BOT)",
@@ -3251,6 +3271,8 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
         "advanced": True,
+        "type": "bool",
+        "default": "false",
     },
     "API_SERVER_ENABLED": {
         "description": "Enable the OpenAI-compatible API server (true/false). Allows frontends like Open WebUI, LobeChat, etc. to connect.",
@@ -3259,6 +3281,8 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
         "advanced": True,
+        "type": "bool",
+        "default": "false",
     },
     "API_SERVER_KEY": {
         "description": "Bearer token for API server authentication. Required whenever the API server is enabled; server refuses to start without it.",
@@ -3275,6 +3299,10 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
         "advanced": True,
+        "type": "int",
+        "default": 8642,
+        "min": 1024,
+        "max": 65535,
     },
     "API_SERVER_HOST": {
         "description": "Host/bind address for the API server (default: 127.0.0.1). API_SERVER_KEY is still required even on loopback binds.",
@@ -5337,6 +5365,81 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
     return sanitized
 
 
+def validate_env_value(key: str, value: str) -> List[str]:
+    """Validate an environment variable value against its schema.
+
+    Checks type, enum membership, numeric range, and pattern constraints
+    defined in OPTIONAL_ENV_VARS[key].
+
+    Returns a list of validation error messages (empty = valid).
+    """
+    errors: List[str] = []
+    schema = OPTIONAL_ENV_VARS.get(key)
+
+    if not schema:
+        return errors
+
+    env_type = schema.get("type", "string")
+
+    if env_type == "int":
+        try:
+            int_val = int(value)
+        except ValueError:
+            errors.append(f"{key} must be an integer, got {value!r}")
+            return errors
+
+        if "min" in schema and int_val < schema["min"]:
+            errors.append(f"{key} must be >= {schema['min']}, got {int_val}")
+        if "max" in schema and int_val > schema["max"]:
+            errors.append(f"{key} must be <= {schema['max']}, got {int_val}")
+
+    elif env_type == "float":
+        try:
+            float_val = float(value)
+        except ValueError:
+            errors.append(f"{key} must be a number, got {value!r}")
+            return errors
+
+        if "min" in schema and float_val < schema["min"]:
+            errors.append(f"{key} must be >= {schema['min']}, got {float_val}")
+        if "max" in schema and float_val > schema["max"]:
+            errors.append(f"{key} must be <= {schema['max']}, got {float_val}")
+
+    elif env_type == "bool":
+        if value.lower() not in ("true", "1", "yes", "false", "0", "no"):
+            errors.append(f"{key} must be a boolean (true/false/1/0/yes/no), got {value!r}")
+
+    elif env_type == "enum":
+        allowed = schema.get("enum_values", [])
+        if allowed and value not in allowed:
+            errors.append(f"{key} must be one of {allowed}, got {value!r}")
+
+    elif env_type == "url":
+        if value and not value.startswith(("http://", "https://")):
+            errors.append(f"{key} must be a URL starting with http:// or https://, got {value!r}")
+
+    return errors
+
+
+def validate_all_env_vars() -> List[Tuple[str, str]]:
+    """Validate all currently set environment variables against their schemas.
+
+    Returns a list of (key, error_message) tuples for invalid values.
+    """
+    errors: List[Tuple[str, str]] = []
+
+    for key, schema in OPTIONAL_ENV_VARS.items():
+        value = os.environ.get(key)
+        if not value:
+            continue
+
+        validation_errors = validate_env_value(key, value)
+        for err in validation_errors:
+            errors.append((key, err))
+
+    return errors
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if is_managed():
@@ -5348,6 +5451,12 @@ def save_env_value(key: str, value: str):
     value = value.replace("\n", "").replace("\r", "")
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
+
+    # Validate value against schema if defined
+    validation_errors = validate_env_value(key, value)
+    if validation_errors:
+        raise ValueError(f"Validation failed for {key}: {'; '.join(validation_errors)}")
+
     ensure_hermes_home()
     env_path = get_env_path()
 
