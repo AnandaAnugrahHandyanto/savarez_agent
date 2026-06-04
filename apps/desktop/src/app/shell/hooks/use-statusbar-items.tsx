@@ -4,10 +4,21 @@ import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
-import { Activity, AlertCircle, ChevronDown, Clock, Command, Hash, Loader2, Sparkles, Zap, ZapFilled } from '@/lib/icons'
+import {
+  Activity,
+  AlertCircle,
+  ChevronDown,
+  Clock,
+  Command,
+  Hash,
+  Loader2,
+  Sparkles,
+  Zap,
+  ZapFilled
+} from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
+import { contextBarLabel, contextCapacityClassName, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
 import { setDesktopYoloMode } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
@@ -87,6 +98,10 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+  const contextCapacityClass = useMemo(
+    () => contextCapacityClassName(currentUsage.context_percent),
+    [currentUsage.context_percent]
+  )
 
   // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
   // new-chat draft (no runtime session yet) we arm locally; the session-create
@@ -289,7 +304,7 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        detail: contextBar || undefined,
+        detail: contextBar ? <span className={contextCapacityClass}>{contextBar}</span> : undefined,
         hidden: !contextUsage,
         id: 'context-usage',
         label: contextUsage,
@@ -307,7 +322,11 @@ export function useStatusbarItems({
       {
         className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
         hidden: !showYoloToggle,
-        icon: yoloActive ? <ZapFilled className="size-3.5 shrink-0" /> : <Zap className="size-3.5 shrink-0 opacity-70" />,
+        icon: yoloActive ? (
+          <ZapFilled className="size-3.5 shrink-0" />
+        ) : (
+          <Zap className="size-3.5 shrink-0 opacity-70" />
+        ),
         id: 'yolo',
         onSelect: () => void toggleYolo(),
         title: yoloActive
