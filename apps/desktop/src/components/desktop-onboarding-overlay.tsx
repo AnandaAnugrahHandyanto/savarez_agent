@@ -376,17 +376,17 @@ export function FeaturedProviderRow({
 
   return (
     <button
-      className={cn(
-        'group flex w-full items-center justify-between gap-4 rounded-2xl border-2 border-primary/50 bg-primary/5 p-4 text-left transition hover:border-primary hover:bg-primary/10',
-        loggedIn && 'border-primary'
-      )}
+      className="group relative flex w-full items-center justify-between gap-4 rounded-[8px] bg-primary/[0.06] px-3 py-2.5 text-left transition-colors hover:bg-primary/10"
       onClick={() => onSelect(provider)}
       type="button"
     >
+      <span aria-hidden className="arc-border arc-reverse arc-nous" />
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <img alt="" className="size-5 shrink-0 rounded" src={assetPath('apple-touch-icon.png')} />
-          <span className="text-base font-semibold">{providerTitle(provider)}</span>
+          <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
+            {providerTitle(provider)}
+          </span>
           {loggedIn ? (
             <ConnectedTag />
           ) : (
@@ -398,7 +398,7 @@ export function FeaturedProviderRow({
         </div>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{FEATURED_PITCH}</p>
       </div>
-      <ChevronRight className="size-5 shrink-0 text-primary transition group-hover:translate-x-0.5" />
+      <ChevronRight className="size-4 shrink-0 text-primary transition group-hover:translate-x-0.5" />
     </button>
   )
 }
@@ -415,12 +415,12 @@ function ConnectedTag() {
 export function KeyProviderRow({ onClick }: { onClick: () => void }) {
   return (
     <button
-      className="group flex w-full items-center justify-between gap-3 rounded-2xl border border-border bg-background/60 p-3 text-left transition hover:border-primary/40 hover:bg-accent/40"
+      className="group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
       onClick={onClick}
       type="button"
     >
       <div className="min-w-0">
-        <span className="text-sm font-semibold">OpenRouter</span>
+        <span className="text-[length:var(--conversation-text-font-size)] font-semibold">OpenRouter</span>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">One key, hundreds of models — a solid default</p>
       </div>
       <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
@@ -440,16 +440,15 @@ export function ProviderRow({
 
   return (
     <button
-      className={cn(
-        'group flex w-full items-center justify-between gap-3 rounded-2xl border border-border bg-background/60 p-3 text-left transition hover:border-primary/40 hover:bg-accent/40',
-        loggedIn && 'border-primary/30'
-      )}
+      className="group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
       onClick={() => onSelect(provider)}
       type="button"
     >
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold">{providerTitle(provider)}</span>
+          <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
+            {providerTitle(provider)}
+          </span>
           {loggedIn ? <ConnectedTag /> : null}
         </div>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{FLOW_SUBTITLES[provider.flow]}</p>

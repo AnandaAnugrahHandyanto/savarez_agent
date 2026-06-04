@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { type ChangeEvent, type KeyboardEvent, useEffect, useMemo, useState } from 'react'
 
 import {
   FEATURED_ID,
@@ -11,13 +11,13 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { listOAuthProviders } from '@/hermes'
-import { ChevronDown, ExternalLink, KeyRound, Loader2, Save, Trash2 } from '@/lib/icons'
+import { ChevronDown, ExternalLink, KeyRound, Loader2, Save } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
-import { providerGroup, providerMeta, providerPriority } from './helpers'
+import { providerGroup, providerMeta, providerPriority, withoutKey } from './helpers'
 import { LoadingState, SettingsContent } from './primitives'
 import type { EnvRowProps } from './types'
 
@@ -30,6 +30,12 @@ const isKeyVar = (key: string, info: EnvVarInfo) => info.is_password || /(?:_API
 
 const friendlyFieldLabel = (key: string, info: EnvVarInfo) =>
   info.description?.trim() || key.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())
+
+// Advanced (non-primary) fields are mostly base-URL / endpoint overrides, not
+// keys — so don't reuse the "Paste key" placeholder that makes them read as a
+// duplicate key input. URL-ish vars get a URL hint; everything else stays optional.
+const advancedPlaceholder = (key: string, info: EnvVarInfo): string =>
+  isKeyVar(key, info) ? 'Paste key' : /URL$/i.test(key) ? 'https://…' : 'Optional'
 
 // Group the env catalog by provider so the keys view can render one collapsible
 // row per vendor: a primary key field inline, with any secondary / advanced vars
@@ -89,52 +95,161 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
 // as "•••• / 1234…wxyz" without an extra reveal click. Save appears once typed;
 // otherwise a set key offers Remove.
 function KeyField({
+  compact = false,
   info,
   label,
+  naked = false,
   placeholder,
   rowProps,
   varKey
 }: {
+  compact?: boolean
   info: EnvVarInfo
   label?: string
+  // Non-key override fields render as a boxless, content-sized text input (like
+  // the search field) — no background/border, grows with what you type.
+  naked?: boolean
   placeholder?: string
   rowProps: KeyRowProps
   varKey: string
 }) {
   const { edits, onClear, onSave, saving, setEdits } = rowProps
+  const editing = edits[varKey] !== undefined
   const draft = edits[varKey] ?? ''
   const dirty = draft.trim().length > 0
   const busy = saving === varKey
+  const masked = info.redacted_value ?? '••••••••'
+  const startEdit = () => setEdits(c => ({ ...c, [varKey]: '' }))
+  const cancel = () => setEdits(c => withoutKey(c, varKey))
+  const update = (e: ChangeEvent<HTMLInputElement>) => setEdits(c => ({ ...c, [varKey]: e.target.value }))
+
+  // Enter saves; Esc cancels in place without bubbling to the overlay's window
+  // Escape listener (which would otherwise close the whole settings panel).
+  const keydown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && dirty) {
+      void onSave(varKey)
+    } else if (e.key === 'Escape' && editing) {
+      e.preventDefault()
+      e.stopPropagation()
+      cancel()
+    }
+  }
+
+  // Advanced overrides render smaller + quieter than the primary key field so the
+  // key stays the visual anchor and the overrides read as the secondary knobs.
+  // Padding-driven sizing via the shared control variants — no fixed heights.
+  const inputSize = compact ? 'xs' : 'sm'
+
+  // Boxless input chrome for `naked` override fields: transparent, no border,
+  // content-sized via `field-sizing`, right-anchored so it hugs the key column.
+  const nakedClass =
+    'max-w-full rounded-[2.5px] border border-(--ui-stroke-tertiary) bg-transparent px-1.5 py-0.5 text-right font-mono text-[0.6875rem] text-foreground [field-sizing:content] transition-colors placeholder:text-muted-foreground focus:border-(--ui-stroke-secondary) focus:outline-none'
+
+  const editType = info.is_password ? 'password' : 'text'
+
+  // A set value reads as a single filled, read-only field (showing the redacted
+  // value). Clicking it drops into edit mode in place — no Replace/Cancel chrome.
+  const control =
+    info.is_set && !editing ? (
+      naked ? (
+        <input
+          className={cn(nakedClass, 'cursor-pointer text-muted-foreground')}
+          onFocus={startEdit}
+          readOnly
+          value={masked}
+        />
+      ) : (
+        <Input
+          className="cursor-pointer font-mono text-muted-foreground"
+          onFocus={startEdit}
+          readOnly
+          size={inputSize}
+          value={masked}
+        />
+      )
+    ) : (
+      <div className={cn('grid gap-1', naked && 'justify-items-end')}>
+        <div className={cn('flex items-center gap-2', naked && 'justify-end')}>
+          {naked ? (
+            <input
+              autoFocus={editing}
+              className={nakedClass}
+              onChange={update}
+              onKeyDown={keydown}
+              placeholder={placeholder ?? 'Paste key'}
+              type={editType}
+              value={draft}
+            />
+          ) : (
+            <Input
+              autoFocus={editing}
+              className="min-w-0 flex-1 font-mono"
+              onChange={update}
+              onKeyDown={keydown}
+              placeholder={placeholder ?? 'Paste key'}
+              size={inputSize}
+              type={editType}
+              value={draft}
+            />
+          )}
+          {dirty && (
+            <Button disabled={busy} onClick={() => void onSave(varKey)} size="sm">
+              {busy ? <Loader2 className="size-4 animate-spin" /> : <Save />}
+              {busy ? 'Saving' : 'Save'}
+            </Button>
+          )}
+        </div>
+        {editing && (
+          <div
+            className={cn(
+              'flex items-center gap-1 text-[0.6875rem]',
+              naked ? 'justify-self-end' : 'justify-self-start'
+            )}
+          >
+            {info.is_set && (
+              <>
+                <Button
+                  className="h-auto px-0 py-0 text-[0.6875rem] text-destructive hover:text-destructive"
+                  disabled={busy}
+                  onClick={() => void onClear(varKey)}
+                  type="button"
+                  variant="text"
+                >
+                  Remove
+                </Button>
+                <span className="text-muted-foreground">or</span>
+              </>
+            )}
+            <span className="text-muted-foreground">esc to cancel</span>
+          </div>
+        )}
+      </div>
+    )
+
+  // Compact (advanced) fields mirror the header's label-left / input-right
+  // columns so they line up under the primary key field. Key overrides keep the
+  // full-width boxed input; non-key overrides render boxless + right-anchored.
+  if (compact) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        {label && (
+          <label className="min-w-44 flex-1 text-[length:var(--conversation-caption-font-size)] leading-snug text-(--ui-text-tertiary)">
+            {label}
+          </label>
+        )}
+        <div className={cn('sm:w-80 sm:shrink-0', naked ? 'flex min-w-0 justify-end' : 'w-full')}>{control}</div>
+      </div>
+    )
+  }
 
   return (
     <div className="grid gap-1">
       {label && (
-        <label className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{label}</label>
+        <label className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+          {label}
+        </label>
       )}
-      <div className="flex items-center gap-2">
-        <Input
-          className="h-8 min-w-0 flex-1 font-mono text-[0.75rem]"
-          onChange={e => setEdits(c => ({ ...c, [varKey]: e.target.value }))}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && dirty) {
-              void onSave(varKey)
-            }
-          }}
-          placeholder={info.is_set ? (info.redacted_value ?? '••••••••') : (placeholder ?? 'Paste key')}
-          type={info.is_password ? 'password' : 'text'}
-          value={draft}
-        />
-        {dirty ? (
-          <Button disabled={busy} onClick={() => void onSave(varKey)} size="sm">
-            {busy ? <Loader2 className="size-4 animate-spin" /> : <Save />}
-            {busy ? 'Saving' : 'Save'}
-          </Button>
-        ) : info.is_set ? (
-          <Button disabled={busy} onClick={() => void onClear(varKey)} size="icon-xs" title="Remove key" variant="ghost">
-            <Trash2 />
-          </Button>
-        ) : null}
-      </div>
+      {control}
     </div>
   )
 }
@@ -142,60 +257,66 @@ function KeyField({
 function ProviderKeyCard({
   expanded,
   group,
+  onExpand,
   onToggle,
   rowProps
 }: {
   expanded: boolean
   group: ProviderKeyGroup
+  onExpand: () => void
   onToggle: () => void
   rowProps: KeyRowProps
 }) {
-  const hasOptions = group.advanced.length > 0
+  // Expandable when there's anything to reveal — advanced overrides and/or a
+  // "Get a key" docs link (which lives at the bottom of the expanded panel).
+  const expandable = group.advanced.length > 0 || Boolean(group.docsUrl)
 
   return (
-    <div className="rounded-[6px] px-2 py-2 transition-colors hover:bg-(--ui-control-hover-background)">
+    <div
+      className={cn(
+        'group/card rounded-[6px] px-2 py-2 transition-colors',
+        expandable && 'cursor-pointer',
+        expandable && !expanded && 'hover:bg-(--ui-row-hover-background)',
+        expanded && 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)'
+      )}
+      onClick={expandable ? onToggle : undefined}
+      onKeyDown={
+        expandable
+          ? e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onToggle()
+              }
+            }
+          : undefined
+      }
+      role={expandable ? 'button' : undefined}
+      tabIndex={expandable ? 0 : undefined}
+    >
       <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
-        <div className="flex min-w-44 flex-1 flex-col gap-0.5">
-          <button
-            className={cn('flex items-center gap-2 text-left', hasOptions ? 'cursor-pointer' : 'cursor-default')}
-            disabled={!hasOptions}
-            onClick={onToggle}
-            type="button"
-          >
-            <span
+        <div className="flex min-w-44 flex-1 items-center gap-2 py-1">
+          <span
+            className={cn('size-2 shrink-0 rounded-full', group.hasAnySet ? 'bg-primary' : 'bg-(--ui-stroke-secondary)')}
+          />
+          <span className="truncate text-[length:var(--conversation-text-font-size)] font-medium">{group.name}</span>
+          {expandable && (
+            <ChevronDown
               className={cn(
-                'size-2 shrink-0 rounded-full',
-                group.hasAnySet ? 'bg-primary' : 'bg-(--ui-stroke-secondary)'
+                'size-3.5 shrink-0 text-muted-foreground transition',
+                expanded ? 'rotate-180 opacity-100' : 'opacity-0 group-hover/card:opacity-100'
               )}
             />
-            <span className="truncate text-[length:var(--conversation-text-font-size)] font-medium">{group.name}</span>
-            {hasOptions && (
-              <ChevronDown
-                className={cn('size-3.5 shrink-0 text-muted-foreground transition', expanded && 'rotate-180')}
-              />
-            )}
-          </button>
-          {(group.description || group.docsUrl) && (
-            <span className="pl-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-              {group.description}
-              {group.docsUrl && (
-                <>
-                  {group.description ? ' · ' : ''}
-                  <a
-                    className="inline-flex items-center gap-0.5 transition hover:text-foreground"
-                    href={group.docsUrl}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    Get a key
-                    <ExternalLink className="size-3" />
-                  </a>
-                </>
-              )}
-            </span>
           )}
         </div>
-        <div className="w-full sm:w-80 sm:shrink-0">
+        <div
+          className="w-full sm:w-80 sm:shrink-0"
+          onClick={e => e.stopPropagation()}
+          onFocus={() => {
+            if (expandable && !expanded) {
+              onExpand()
+            }
+          }}
+        >
           <KeyField
             info={group.primary[1]}
             placeholder={`Paste ${group.name} key`}
@@ -204,17 +325,32 @@ function ProviderKeyCard({
           />
         </div>
       </div>
-      {hasOptions && expanded && (
-        <div className="mt-2 grid gap-2 pl-4">
+      {expandable && expanded && (
+        <div className="mt-3 grid gap-2.5 pl-4" onClick={e => e.stopPropagation()}>
           {group.advanced.map(([key, info]) => (
             <KeyField
+              compact
               info={info}
               key={key}
               label={isKeyVar(key, info) ? key : friendlyFieldLabel(key, info)}
+              naked={!isKeyVar(key, info)}
+              placeholder={advancedPlaceholder(key, info)}
               rowProps={rowProps}
               varKey={key}
             />
           ))}
+          {group.docsUrl && (
+            <a
+              className="inline-flex w-fit items-center gap-1 justify-self-end text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) underline-offset-4 transition-colors hover:text-foreground hover:underline"
+              href={group.docsUrl}
+              onClick={e => e.stopPropagation()}
+              rel="noreferrer"
+              target="_blank"
+            >
+              Get a key
+              <ExternalLink className="size-3" />
+            </a>
+          )}
         </div>
       )}
     </div>
@@ -361,6 +497,7 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
                 expanded={openProvider === group.name}
                 group={group}
                 key={group.name}
+                onExpand={() => setOpenProvider(group.name)}
                 onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
                 rowProps={rowProps}
               />

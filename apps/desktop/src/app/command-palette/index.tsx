@@ -36,7 +36,8 @@ import {
   Settings,
   Sun,
   Users,
-  Wrench
+  Wrench,
+  Zap
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
@@ -98,8 +99,20 @@ const toSessionEntry = (session: SessionRow): SessionEntry => ({
 })
 
 const NON_CONFIG_SETTINGS: ReadonlyArray<{ icon: IconComponent; keywords?: string[]; label: string; tab: string }> = [
+  {
+    icon: Zap,
+    keywords: ['accounts', 'sign in', 'oauth', 'login', 'subscription', 'models', 'anthropic', 'openai'],
+    label: 'Providers',
+    tab: 'providers&pview=accounts'
+  },
+  {
+    icon: KeyRound,
+    keywords: ['providers', 'api key', 'keys', 'secrets', 'tokens'],
+    label: 'Provider API keys',
+    tab: 'providers&pview=keys'
+  },
   { icon: Globe, keywords: ['connection', 'messaging'], label: 'Gateway', tab: 'gateway' },
-  { icon: KeyRound, keywords: ['api', 'secrets', 'tokens', 'credentials'], label: 'API Keys', tab: 'keys' },
+  { icon: KeyRound, keywords: ['api', 'secrets', 'tokens', 'credentials'], label: 'Tools & Keys', tab: 'keys' },
   { icon: Wrench, keywords: ['servers', 'tools'], label: 'MCP', tab: 'mcp' },
   { icon: Archive, keywords: ['history', 'archived'], label: 'Archived Chats', tab: 'sessions' },
   { icon: Info, keywords: ['version', 'about'], label: 'About', tab: 'about' }

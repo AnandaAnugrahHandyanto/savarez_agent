@@ -562,6 +562,19 @@
   animation: arc-border var(--arc-duration) linear infinite;
 }
 
+/* Flip the arc's travel direction (e.g. the Nous Portal hero row). */
+.arc-border.arc-reverse::before {
+  animation-direction: reverse;
+}
+
+/* Nous Portal hero: slower, blue → purple arc. */
+.arc-border.arc-nous,
+:root.dark .arc-border.arc-nous {
+  --arc-c1: #4f8cff;
+  --arc-c2: #b06bff;
+  --arc-duration: 3.27s;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .arc-border::before {
     animation: none;
