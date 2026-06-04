@@ -820,10 +820,69 @@ install_node() {
     fi
 
     log_info "Extracting to ~/.savarez/node/..."
+
+    # ── .tar.xz handling ──────────────────────────────────────────────
+    # Node.js publishes .tar.xz archives by default.  Minimal Ubuntu/Debian
+    # images don't ship xz-utils, so tar(1) cannot unpack them on its own.
+    # We check for xz(1) first — if missing, try installing it or fall
+    # back to .tar.gz download.
+    local extracted_ok=false
+
     if [[ "$tarball_name" == *.tar.xz ]]; then
-        tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+        if command -v xz &>/dev/null; then
+            if tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir" 2>/dev/null; then
+                extracted_ok=true
+            fi
+        else
+            log_warn "xz (xz-utils) not found — can't unpack .tar.xz"
+            # Attempt to install xz-utils via system package manager
+            if command -v apt-get &>/dev/null; then
+                log_info "Installing xz-utils via apt-get..."
+                apt-get update -qq && apt-get install -y -qq xz-utils
+                if command -v xz &>/dev/null; then
+                    if tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir" 2>/dev/null; then
+                        extracted_ok=true
+                    fi
+                fi
+            elif command -v yum &>/dev/null; then
+                log_info "Installing xz via yum..."
+                yum install -y xz 2>/dev/null
+                if command -v xz &>/dev/null; then
+                    if tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir" 2>/dev/null; then
+                        extracted_ok=true
+                    fi
+                fi
+            elif command -v apk &>/dev/null; then
+                log_info "Installing xz via apk..."
+                apk add --no-cache xz 2>/dev/null
+                if command -v xz &>/dev/null; then
+                    if tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir" 2>/dev/null; then
+                        extracted_ok=true
+                    fi
+                fi
+            fi
+        fi
+
+        # Fallback: redownload as .tar.gz
+        if ! $extracted_ok; then
+            log_warn "xz extraction failed — falling back to .tar.gz download"
+            local gz_tarball_name
+            gz_tarball_name=$(curl -fsSL "$index_url" \
+                | grep -oE "node-v${NODE_VERSION}\\.[0-9]+\\.[0-9]+-${node_os}-${node_arch}\\.tar\\.gz" \
+                | head -1)
+            if [ -n "$gz_tarball_name" ]; then
+                curl -fsSL "${index_url}${gz_tarball_name}" -o "$tmp_dir/$gz_tarball_name"
+                if tar xzf "$tmp_dir/$gz_tarball_name" -C "$tmp_dir" 2>/dev/null; then
+                    tarball_name="$gz_tarball_name"
+                    extracted_ok=true
+                fi
+            fi
+        fi
     else
-        tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+        # .tar.gz — straightforward
+        if tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"; then
+            extracted_ok=true
+        fi
     fi
 
     local extracted_dir
