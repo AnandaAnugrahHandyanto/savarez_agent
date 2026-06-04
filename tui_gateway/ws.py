@@ -266,11 +266,10 @@ async def handle_ws(ws: Any) -> None:
             transport.close()
 
             # Detach the transport from any sessions it owned so later emits
-            # fall back to stdio instead of crashing into a closed socket.
-            for _, sess in list(server._sessions.items()):
-                if sess.get("transport") is transport:
-                    sess["transport"] = server._stdio_transport
-                    detached_sessions += 1
+            # fall back to stdio instead of crashing into a closed socket, and
+            # tear down each session's slash worker so the subprocess is freed
+            # rather than orphaned until the whole dashboard exits.
+            detached_sessions = server._detach_transport(transport)
         try:
             await ws.close()
         except Exception as exc:

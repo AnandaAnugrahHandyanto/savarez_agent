@@ -221,6 +221,14 @@ class _SlashWorker:
             except json.JSONDecodeError:
                 continue
         self.stdout_queue.put(None)
+        # stdout EOF means the child closed its pipe (i.e. exited). Reap it so a
+        # worker that dies on its own is never left as a <defunct> zombie, even
+        # if nobody ever calls close(). Popen.wait() is thread-safe, so this
+        # composes with close()'s own terminate()+wait().
+        try:
+            self.proc.wait()
+        except Exception:
+            pass
 
     def _drain_stderr(self):
         for line in self.proc.stderr or []:
@@ -284,11 +292,27 @@ def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
         pass
 
 
+def _close_slash_worker(session: dict) -> None:
+    """Idempotently tear down a session's slash worker subprocess."""
+    worker = session.get("slash_worker")
+    if worker is None:
+        return
+    try:
+        worker.close()
+    except Exception:
+        pass
+    session["slash_worker"] = None
+
+
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
     """Best-effort finalize hook + memory commit for a session."""
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    # Terminal teardown — close the slash worker here so every finalize path
+    # (session.close RPC, atexit shutdown) frees the subprocess. The _finalized
+    # guard above makes this run exactly once per session.
+    _close_slash_worker(session)
     stop_event = session.get("_notif_stop")
     if stop_event is not None:
         stop_event.set()
@@ -326,15 +350,26 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 def _shutdown_sessions() -> None:
     for session in list(_sessions.values()):
         _finalize_session(session, end_reason="tui_shutdown")
-        try:
-            worker = session.get("slash_worker")
-            if worker:
-                worker.close()
-        except Exception:
-            pass
 
 
 atexit.register(_shutdown_sessions)
+
+
+def _detach_transport(transport) -> int:
+    """A client transport went away. For every session it owned, re-point the
+    transport to stdio so late event emits fall back to a harmless sink instead
+    of crashing into a closed socket, and close its slash worker so the ~45 MB
+    subprocess is freed (and reaped) immediately rather than orphaned until the
+    whole dashboard exits. The session itself stays warm: history/agent survive
+    for in-place resume and ``slash.exec`` re-spawns the worker on demand.
+    Returns the number of sessions detached."""
+    detached = 0
+    for sess in list(_sessions.values()):
+        if sess.get("transport") is transport:
+            sess["transport"] = _stdio_transport
+            _close_slash_worker(sess)
+            detached += 1
+    return detached
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────
@@ -3561,7 +3596,7 @@ def _(rid, params: dict) -> dict:
     session = _sessions.pop(sid, None)
     if not session:
         return _ok(rid, {"closed": False})
-    _finalize_session(session)
+    _finalize_session(session)  # also closes the slash worker
     try:
         from tools.approval import unregister_gateway_notify
 
@@ -3572,12 +3607,6 @@ def _(rid, params: dict) -> dict:
         agent = session.get("agent")
         if agent and hasattr(agent, "close"):
             agent.close()
-    except Exception:
-        pass
-    try:
-        worker = session.get("slash_worker")
-        if worker:
-            worker.close()
     except Exception:
         pass
     return _ok(rid, {"closed": True})
