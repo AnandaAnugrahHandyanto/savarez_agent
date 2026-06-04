@@ -941,8 +941,8 @@ def _load_global_auth_store() -> Dict[str, Any]:
         return {}
 
 
-def _auth_lock_path() -> Path:
-    return _auth_file_path().with_suffix(".lock")
+def _auth_lock_path(auth_file: Optional[Path] = None) -> Path:
+    return (auth_file or _auth_file_path()).with_suffix(".lock")
 
 
 _auth_lock_holder = threading.local()
@@ -1021,7 +1021,10 @@ def _file_lock(
 
 
 @contextmanager
-def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+def _auth_store_lock(
+    auth_file: Optional[Path] = None,
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+):
     """Cross-process advisory lock for auth.json reads+writes.  Reentrant.
 
     Lock ordering invariant: when this lock is held together with
@@ -1029,9 +1032,12 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     (outer) and the shared Nous lock SECOND (inner). All runtime
     refresh paths follow this order; violating it risks deadlock
     against a concurrent import on the shared store.
+
+    ``auth_file`` lets shared provider pools (currently OpenAI Codex) lock the
+    root/default auth store instead of a profile-local lock path.
     """
     with _file_lock(
-        _auth_lock_path(),
+        _auth_lock_path(auth_file),
         _auth_lock_holder,
         timeout_seconds,
         "Timed out waiting for auth store lock",
@@ -1079,8 +1085,22 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
-def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
-    auth_file = _auth_file_path()
+def _save_auth_store(auth_store: Dict[str, Any], auth_file: Optional[Path] = None) -> Path:
+    auth_file = auth_file or _auth_file_path()
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_env = os.environ.get("HOME", "")
+        if real_home_env:
+            real_auth = (Path(real_home_env) / ".hermes" / "auth.json").resolve(strict=False)
+            try:
+                if auth_file.resolve(strict=False) == real_auth:
+                    raise RuntimeError(
+                        f"Refusing to touch real user auth store during test run: {auth_file}. "
+                        "Set HERMES_HOME/Path.home() to a tmp_path in your test fixture."
+                    )
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
@@ -1194,21 +1214,42 @@ def get_auth_provider_display_name(provider_id: str) -> str:
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
+# Providers whose pooled OAuth credentials are shared operational state across
+# profiles.  Most providers keep per-profile shadowing semantics, but Codex
+# OAuth refresh/exhaustion state must be rooted at the default/global auth
+# store so specialist profiles do not fork stale token pools.
+_SHARED_CREDENTIAL_POOL_PROVIDERS = {"openai-codex"}
+
+
+def _is_shared_credential_pool_provider(provider_id: Optional[str]) -> bool:
+    return (provider_id or "").strip().lower() in _SHARED_CREDENTIAL_POOL_PROVIDERS
+
+
+def _shared_credential_pool_auth_file_path(provider_id: Optional[str]) -> Optional[Path]:
+    if not _is_shared_credential_pool_provider(provider_id):
+        return None
+    return _global_auth_file_path()
+
+
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
-    In profile mode, the profile's credential pool is authoritative. If a
-    provider has no entries in the profile, entries from the global-root
-    ``auth.json`` are used as a read-only fallback — so workers spawned in a
-    profile can see providers that were only authenticated at global scope.
+    In profile mode, the profile's credential pool is authoritative for most
+    providers. If a provider has no entries in the profile, entries from the
+    global-root ``auth.json`` are used as a read-only fallback — so workers
+    spawned in a profile can see providers that were only authenticated at
+    global scope.
 
-    Profile entries always win: the global fallback only applies per-provider
-    when the profile has zero entries for that provider. Once the user runs
-    ``hermes auth add <provider>`` inside the profile, profile entries
-    fully shadow global for that provider on the next read.
+    Profile entries normally win: the global fallback only applies
+    per-provider when the profile has zero entries for that provider.
 
-    Writes always go to the profile (``write_credential_pool`` is unchanged).
-    See issue #18594 follow-up.
+    Exception: providers in ``_SHARED_CREDENTIAL_POOL_PROVIDERS`` (currently
+    ``openai-codex``) prefer the root/default pool whenever it has entries.
+    Codex OAuth refresh/exhaustion state is shared operational state across
+    specialist profiles; allowing stale profile-local entries to shadow root
+    makes workers continue using dead tokens after root has been refreshed.
+
+    See issue #18594 follow-up and the Codex shared-root pool regression.
     """
     auth_store = _load_auth_store()
     pool = auth_store.get("credential_pool")
@@ -1226,12 +1267,22 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
         for gp_key, gp_entries in global_pool.items():
             if not isinstance(gp_entries, list) or not gp_entries:
                 continue
+            # Shared-pool providers use root/default as source of truth in
+            # profile mode.  This intentionally overrides stale local slices.
+            if _is_shared_credential_pool_provider(gp_key):
+                merged[gp_key] = list(gp_entries)
+                continue
             # Per-provider shadowing: profile wins whenever it has ANY entries.
             existing = merged.get(gp_key)
             if isinstance(existing, list) and existing:
                 continue
             merged[gp_key] = list(gp_entries)
         return merged
+
+    if _is_shared_credential_pool_provider(provider_id):
+        global_entries = global_pool.get(provider_id)
+        if isinstance(global_entries, list) and global_entries:
+            return list(global_entries)
 
     provider_entries = pool.get(provider_id)
     if isinstance(provider_entries, list) and provider_entries:
@@ -1247,9 +1298,14 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
     This is the final disk-boundary guard for borrowed/reference-only
     credentials. Callers may pass raw dictionaries, so sanitize here even when
     ``PooledCredential.to_dict()`` already did the same work upstream.
+
+    Shared-pool providers (currently ``openai-codex``) write to the root/default
+    auth store in profile mode so runtime refresh/exhaustion updates do not
+    silently fork profile-local OAuth state.
     """
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+    target_auth_file = _shared_credential_pool_auth_file_path(provider_id)
+    with _auth_store_lock(target_auth_file):
+        auth_store = _load_auth_store(target_auth_file) if target_auth_file else _load_auth_store()
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
             pool = {}
@@ -1259,7 +1315,7 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
             if isinstance(entry, dict) else entry
             for entry in entries
         ]
-        return _save_auth_store(auth_store)
+        return _save_auth_store(auth_store, target_auth_file)
 
 
 def suppress_credential_source(provider_id: str, source: str) -> None:
