@@ -712,7 +712,14 @@ export class GatewayClient extends EventEmitter {
       return this.requestOverWebSocket<T>(method, params)
     }
 
-    if (!this.proc?.stdin || this.proc.killed || this.proc.exitCode !== null) {
+    const _hasProc = !!this.proc
+    const _hasStdin = !!this.proc?.stdin
+    const _killed = this.proc?.killed ?? false
+    const _exitCode = this.proc?.exitCode
+    const _guardFires = !_hasStdin || _killed || _exitCode !== null
+
+    if (_guardFires) {
+      this.lifecycle(`[debug] request() guard FIRED method=${method} hasProc=${_hasProc} hasStdin=${_hasStdin} killed=${_killed} exitCode=${_exitCode ?? 'null'}`)
       this.start()
     }
 
@@ -726,7 +733,6 @@ export class GatewayClient extends EventEmitter {
       const timeout = setTimeout(this.onTimeout, REQUEST_TIMEOUT_MS, id)
 
       timeout.unref?.()
-
       this.pending.set(id, {
         id,
         method,
@@ -736,8 +742,12 @@ export class GatewayClient extends EventEmitter {
       })
 
       try {
-        this.proc!.stdin!.write(JSON.stringify({ id, jsonrpc: '2.0', method, params }) + '\n')
+        const _writeResult = this.proc!.stdin!.write(JSON.stringify({ id, jsonrpc: '2.0', method, params }) + '\n')
+        if (!_writeResult) {
+          this.lifecycle(`[debug] request() write returned false (backpressure) method=${method} id=${id}`)
+        }
       } catch (e) {
+        this.lifecycle(`[debug] request() write THREW method=${method} id=${id} error=${e instanceof Error ? e.message : String(e)}`)
         const pending = this.pending.get(id)
 
         if (pending) {
