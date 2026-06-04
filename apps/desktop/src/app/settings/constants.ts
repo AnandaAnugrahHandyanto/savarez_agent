@@ -149,7 +149,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = {
   model_context_length: "Leave at 0 to use the selected model's detected context window.",
   fallback_providers: 'Backup provider:model entries to try if the default model fails.',
   'display.personality': 'Default assistant style for new sessions.',
-  timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
+  timezone: 'Used when Hermes needs local time context. "System default" uses the device timezone.',
   'display.show_reasoning': 'Show reasoning sections when the backend provides them.',
   'agent.image_input_mode': 'Controls how image attachments are sent to the model.',
   'terminal.cwd': 'Default project folder for tool and terminal work.',

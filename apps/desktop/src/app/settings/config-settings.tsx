@@ -1,6 +1,7 @@
 import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { TimezoneCombobox } from '@/components/timezone-combobox'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -58,6 +59,10 @@ function ConfigField({
         <Switch checked={Boolean(value)} onCheckedChange={onChange} />
       </div>
     )
+  }
+
+  if (schemaKey === 'timezone') {
+    return row(<TimezoneCombobox onChange={onChange} value={String(value ?? '')} />)
   }
 
   const selectOptions = enumOptions ?? (schema.type === 'select' ? (schema.options ?? []).map(String) : undefined)
