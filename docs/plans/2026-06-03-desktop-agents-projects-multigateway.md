@@ -10,8 +10,11 @@
 
 ## Current status — 2026-06-04
 
-The implementation chain has passed all planned Kanban gates. Keep this section as the handoff anchor until the project gets a dedicated Telegram topic.
+The implementation chain has passed all planned Kanban gates and now has a dedicated visible closeout/control topic.
 
+- **Telegram topic target:** `telegram:-1003828321118:16301`
+- **Visible topic name:** `▸ Hermes Desktop – Control Surface`
+- **First topic anchor:** message `16302` in `Dolly Main Projects`
 - `t_bcac4710` — **done**: connection registry v0, commit `f01bfcd82`.
 - `t_d30feb01` — **done**: QA review of connection registry; approved continuation.
 - `t_4b93caf4` — **done**: Dashboard entity APIs `/api/agents`, `/api/conversations`, `/api/projects`, commit `fe620aae2`.
@@ -22,8 +25,6 @@ The implementation chain has passed all planned Kanban gates. Keep this section 
 - `t_fcb03af9` — **done**: final QA; completed `2026-06-04 00:11`.
 
 Current repo branch is `feat/desktop-control-surface-multigateway`. Desktop implementation evidence is on that branch up through `53ffcae9c`; later commits on the same branch may include unrelated runtime/ops hotfixes.
-
-Topic handoff requested: create a dedicated Telegram project topic in `Dolly Main Projects` named `▸ Hermes Desktop – Control Surface`, then write the resulting `telegram:<chat_id>:<thread_id>` target back to this plan, the knowledge page `projects/hermes-desktop-control-surface.md`, and any remaining follow-up/closeout task metadata.
 
 ---
 
