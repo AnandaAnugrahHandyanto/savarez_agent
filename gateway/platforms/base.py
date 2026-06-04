@@ -1562,6 +1562,11 @@ class BasePlatformAdapter(ABC):
     """
     
     def __init__(self, config: PlatformConfig, platform: Platform):
+        if isinstance(config, list):
+            import traceback
+            logger.error("[BasePlatformAdapter] CRITICAL: config is a list, not PlatformConfig!")
+            logger.error("[BasePlatformAdapter] Stack trace:\n%s", "".join(traceback.format_stack()))
+            raise TypeError(f"config must be PlatformConfig, got list with {len(config)} items")
         self.config = config
         self.platform = platform
         # Unique identifier for this adapter instance within its platform.
