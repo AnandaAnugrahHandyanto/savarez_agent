@@ -19211,13 +19211,19 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
 
+    def _log_ticker_exception(context: str, exc: BaseException) -> None:
+        """Keep the ticker alive on non-fatal BaseException subclasses."""
+        if isinstance(exc, (GeneratorExit, KeyboardInterrupt, SystemExit)):
+            raise exc
+        logger.error("%s: %s", context, exc, exc_info=True)
+
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
     while not stop_event.is_set():
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop)
-        except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+        except BaseException as e:
+            _log_ticker_exception("Cron tick error", e)
 
         tick_count += 1
 
@@ -19236,22 +19242,22 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                     )
                     if fut is not None:
                         fut.result(timeout=30)
-            except Exception as e:
-                logger.debug("Channel directory refresh error: %s", e)
+            except BaseException as e:
+                _log_ticker_exception("Channel directory refresh error", e)
 
         if tick_count % IMAGE_CACHE_EVERY == 0:
             try:
                 removed = cleanup_image_cache(max_age_hours=24)
                 if removed:
                     logger.info("Image cache cleanup: removed %d stale file(s)", removed)
-            except Exception as e:
-                logger.debug("Image cache cleanup error: %s", e)
+            except BaseException as e:
+                _log_ticker_exception("Image cache cleanup error", e)
             try:
                 removed = cleanup_document_cache(max_age_hours=24)
                 if removed:
                     logger.info("Document cache cleanup: removed %d stale file(s)", removed)
-            except Exception as e:
-                logger.debug("Document cache cleanup error: %s", e)
+            except BaseException as e:
+                _log_ticker_exception("Document cache cleanup error", e)
 
         if tick_count % PASTE_SWEEP_EVERY == 0:
             try:
@@ -19261,8 +19267,8 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                         "Paste sweep: deleted %d expired paste(s), %d pending",
                         deleted, remaining,
                     )
-            except Exception as e:
-                logger.debug("Paste sweep error: %s", e)
+            except BaseException as e:
+                _log_ticker_exception("Paste sweep error", e)
 
         # Curator — piggy-back on the existing cron ticker so long-running
         # gateways get weekly skill maintenance without needing restarts.
@@ -19276,8 +19282,8 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                     idle_for_seconds=float("inf"),
                     on_summary=lambda msg: logger.info("curator: %s", msg),
                 )
-            except Exception as e:
-                logger.debug("Curator tick error: %s", e)
+            except BaseException as e:
+                _log_ticker_exception("Curator tick error", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")
