@@ -139,6 +139,26 @@ export IMAGE_TOOLS_DEBUG=true
 
 Debug logs go to `./logs/image_tools_debug_<session_id>.json` with per-call details (model, parameters, timing, errors).
 
+## Troubleshooting
+
+If image generation fails or routes to a lower-quality backend, check these common issues:
+
+### GPT Image SKUs
+
+Some OpenAI backends require the **GPT Image** and **GPT Image Edit** SKUs to be enabled on your account:
+
+1. **GPT Image SKU** — required for gpt-image-1.5 and gpt-image-2 model access via OpenAI's direct API
+2. **GPT Image Edit SKU** — required for image editing capabilities
+
+Verify these are enabled in your OpenAI account under your subscription/rate limits page. If they are missing:
+- New gpt-image-2 check: On the [OpenAI API rate limits page](https://platform.openai.com/account/rate-limits), both `gpt-image-1.5` and `gpt-image-2` should appear under "Approved models"
+- If they don't appear, submit a quota request from the OpenAI dashboard
+- Once approved, prefer these SKUs before falling back to non-OpenAI backends or local workaround generation
+
+Without these SKUs, image generation calls to OpenAI-based models may silently fall back to lower-quality backends or return errors.
+
+This is especially relevant for PT-BR and other non-English marketing assets that need native text rendering — GPT Image models excel at text rendering in multiple scripts.
+
 ## Platform Delivery
 
 | Platform | Delivery |
