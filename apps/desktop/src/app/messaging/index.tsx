@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
+import { Badge, type BadgeProps } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
@@ -18,6 +19,7 @@ import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -30,7 +32,7 @@ interface MessagingViewProps extends React.ComponentProps<'section'> {
 
 type EditMap = Record<string, Record<string, string>>
 
-const STATE_LABEL_KEYS: Record<string, string> = {
+const STATE_LABELS: Record<string, string> = {
   connected: 'messaging.state.connected',
   connecting: 'messaging.state.connecting',
   disabled: 'messaging.state.disabled',
@@ -42,20 +44,20 @@ const STATE_LABEL_KEYS: Record<string, string> = {
   startup_failed: 'messaging.state.startupFailed'
 }
 
-const PILL_TONE: Record<StatusTone, string> = {
-  good: 'bg-primary/10 text-primary',
-  muted: 'bg-muted text-muted-foreground',
-  warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
-  bad: 'bg-destructive/10 text-destructive'
+const TONE_VARIANT: Record<StatusTone, BadgeProps['variant']> = {
+  good: 'default',
+  muted: 'muted',
+  warn: 'warn',
+  bad: 'destructive'
 }
 
-const HINT_BY_STATE_KEYS: Record<string, string> = {
+const HINT_BY_STATE: Record<string, string> = {
   pending_restart: 'messaging.hints.pendingRestart',
   gateway_stopped: 'messaging.hints.gatewayStopped'
 }
 
-const stateLabel = (t: Translate, state?: null | string) =>
-  state ? (STATE_LABEL_KEYS[state] ? t(STATE_LABEL_KEYS[state]) : state.replace(/_/g, ' ')) : t('messaging.state.unknown')
+const stateLabel = (state: null | string | undefined, t: Translate) =>
+  state ? t(STATE_LABELS[state] || state.replace(/_/g, ' ')) : t('messaging.state.unknown')
 
 function stateTone({ enabled, state }: MessagingPlatformInfo): StatusTone {
   if (!enabled) {
@@ -197,24 +199,29 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
 
-  const refreshPlatforms = useCallback(async (silent = false) => {
-    if (!silent) {
-      setRefreshing(true)
-    }
+  const refreshPlatforms = useCallback(
+    async (silent = false) => {
+      if (!silent) {
+        setRefreshing(true)
+      }
 
-    try {
-      const result = await getMessagingPlatforms()
-      setPlatforms(result.platforms)
-    } catch (err) {
-      if (!silent) {
-        notifyError(err, t('messaging.loadError'))
+      try {
+        const result = await getMessagingPlatforms()
+        setPlatforms(result.platforms)
+      } catch (err) {
+        if (!silent) {
+          notifyError(err, t('messaging.loadError'))
+        }
+      } finally {
+        if (!silent) {
+          setRefreshing(false)
+        }
       }
-    } finally {
-      if (!silent) {
-        setRefreshing(false)
-      }
-    }
-  }, [t])
+    },
+    [t]
+  )
+
+  useRefreshHotkey(() => void refreshPlatforms())
 
   useEffect(() => {
     void refreshPlatforms()
@@ -286,7 +293,9 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       )
       notify({
         kind: 'success',
-        title: enabled ? t('messaging.notifications.enabled', { platform: platform.name }) : t('messaging.notifications.disabled', { platform: platform.name }),
+        title: enabled
+          ? t('messaging.notifications.enabled', { platform: platform.name })
+          : t('messaging.notifications.disabled', { platform: platform.name }),
         message: t('messaging.notifications.restartGateway')
       })
     } catch (err) {
@@ -334,7 +343,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      notify({ kind: 'success', title: t('messaging.notifications.cleared', { key }), message: t('messaging.notifications.setupUpdated', { platform: platform.name }) })
+      notify({
+        kind: 'success',
+        title: t('messaging.notifications.cleared', { key }),
+        message: t('messaging.notifications.setupUpdated', { platform: platform.name })
+      })
     } catch (err) {
       notifyError(err, t('messaging.notifications.clearFailed', { key }))
     } finally {
@@ -346,15 +359,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     <PageSearchShell
       {...props}
       onSearchChange={setQuery}
+      searchHidden={(platforms?.length ?? 0) === 0}
       searchPlaceholder={t('messaging.search')}
-      searchTrailingAction={null}
       searchValue={query}
     >
       {!platforms ? (
         <PageLoader label={t('messaging.loading')} />
       ) : (
         <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          <aside className="min-h-0 overflow-y-auto border-b border-(--ui-stroke-tertiary) p-2 lg:border-b-0 lg:border-r">
+          <aside className="min-h-0 overflow-y-auto p-2">
             <ul className="space-y-1">
               {visiblePlatforms.map(platform => (
                 <li key={platform.id}>
@@ -410,8 +423,8 @@ function PlatformRow({
       className={cn(
         'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
         active
-          ? 'bg-(--ui-bg-tertiary) text-foreground'
-          : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+          ? 'bg-(--ui-row-active-background) text-foreground'
+          : 'text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background) hover:text-foreground'
       )}
       onClick={onSelect}
       type="button"
@@ -465,13 +478,15 @@ function PlatformDetail({
                 {platform.description}
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <StatePill tone={stateTone(platform)}>{stateLabel(t, platform.state)}</StatePill>
+                <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, t)}</StatePill>
                 <SetupPill active={platform.configured}>
                   {platform.configured ? t('messaging.credentialsSet') : t('messaging.state.notConfigured')}
                 </SetupPill>
-                {!platform.gateway_running && <SetupPill active={false}>{t('messaging.state.gatewayStopped')}</SetupPill>}
+                {!platform.gateway_running && (
+                  <SetupPill active={false}>{t('messaging.state.gatewayStopped')}</SetupPill>
+                )}
               </div>
-              <PlatformHint platform={platform} t={t} />
+              <PlatformHint platform={platform} />
             </div>
           </header>
 
@@ -488,7 +503,7 @@ function PlatformDetail({
               {introCopy(platform, t)}
             </p>
             <div className="mt-3">
-              <Button asChild size="sm" variant="outline">
+              <Button asChild size="sm" variant="textStrong">
                 <a href={platform.docs_url} rel="noreferrer" target="_blank">
                   {t('messaging.openSetupGuide')}
                   <ExternalLink className="size-3.5" />
@@ -569,23 +584,19 @@ function PlatformDetail({
         </div>
       </div>
 
-      <footer className="border-t border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-5 py-2.5">
+      <footer className="bg-(--ui-chat-surface-background) px-5 py-2.5">
         <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
-          <label className="flex shrink-0 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2.5 py-1.5 text-[length:var(--conversation-text-font-size)]">
-            <Switch
-              aria-label={
-                platform.enabled
-                  ? t('messaging.disablePlatform', { platform: platform.name })
-                  : t('messaging.enablePlatform', { platform: platform.name })
-              }
-              checked={platform.enabled}
-              disabled={saving === `enabled:${platform.id}`}
-              onCheckedChange={onToggle}
-            />
-            <span className="text-xs font-medium text-muted-foreground">
-              {platform.enabled ? t('messaging.enabled') : t('messaging.disabled')}
-            </span>
-          </label>
+          <Switch
+            aria-label={
+              platform.enabled
+                ? t('messaging.disablePlatform', { platform: platform.name })
+                : t('messaging.enablePlatform', { platform: platform.name })
+            }
+            checked={platform.enabled}
+            disabled={saving === `enabled:${platform.id}`}
+            onCheckedChange={onToggle}
+            size="xs"
+          />
 
           <div className="ml-auto flex items-center gap-2">
             {hasEdits && <span className="text-xs text-muted-foreground">{t('messaging.unsavedChanges')}</span>}
@@ -601,25 +612,25 @@ function PlatformDetail({
 }
 
 const PLATFORM_INTRO_KEYS: Record<string, string> = {
-  telegram: 'messaging.intro.telegram',
+  api_server: 'messaging.intro.apiServer',
+  bluebubbles: 'messaging.intro.bluebubbles',
+  dingtalk: 'messaging.intro.dingtalk',
   discord: 'messaging.intro.discord',
-  slack: 'messaging.intro.slack',
+  email: 'messaging.intro.email',
+  feishu: 'messaging.intro.feishu',
+  homeassistant: 'messaging.intro.homeassistant',
   mattermost: 'messaging.intro.mattermost',
   matrix: 'messaging.intro.matrix',
+  qqbot: 'messaging.intro.qqbot',
   signal: 'messaging.intro.signal',
-  whatsapp: 'messaging.intro.whatsapp',
-  bluebubbles: 'messaging.intro.bluebubbles',
-  homeassistant: 'messaging.intro.homeassistant',
-  email: 'messaging.intro.email',
+  slack: 'messaging.intro.slack',
   sms: 'messaging.intro.sms',
-  dingtalk: 'messaging.intro.dingtalk',
-  feishu: 'messaging.intro.feishu',
+  telegram: 'messaging.intro.telegram',
+  webhook: 'messaging.intro.webhook',
   wecom: 'messaging.intro.wecom',
   wecom_callback: 'messaging.intro.wecomCallback',
   weixin: 'messaging.intro.weixin',
-  qqbot: 'messaging.intro.qqbot',
-  api_server: 'messaging.intro.apiServer',
-  webhook: 'messaging.intro.webhook'
+  whatsapp: 'messaging.intro.whatsapp'
 }
 
 const introCopy = (platform: MessagingPlatformInfo, t: Translate) =>
@@ -652,7 +663,7 @@ function MessagingField({
       </div>
       <div className="flex items-center gap-2">
         <Input
-          className="h-9 rounded-lg font-mono text-sm"
+          className="font-mono"
           id={`messaging-field-${field.key}`}
           onChange={event => onEdit(field.key, event.target.value)}
           placeholder={field.is_set ? field.redacted_value || t('messaging.replaceCurrentValue') : copy.placeholder}
@@ -687,40 +698,25 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{children}</h4>
 }
 
-function PlatformHint({ platform, t }: { platform: MessagingPlatformInfo; t: Translate }) {
+function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
   if (!platform.enabled || platform.state === 'connected') {
     return null
   }
 
-  const hintKey =
-    HINT_BY_STATE_KEYS[platform.state || ''] || (platform.gateway_running ? null : HINT_BY_STATE_KEYS.gateway_stopped)
+  const hint = HINT_BY_STATE[platform.state || ''] || (platform.gateway_running ? null : HINT_BY_STATE.gateway_stopped)
 
-  return hintKey ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{t(hintKey)}</p> : null
+  return hint ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p> : null
 }
 
 function StatePill({ children, tone }: { children: string; tone: StatusTone }) {
   return (
-    <span
-      className={cn(
-        'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
-        PILL_TONE[tone]
-      )}
-    >
+    <Badge variant={TONE_VARIANT[tone]}>
       <StatusDot tone={tone} />
       {children}
-    </span>
+    </Badge>
   )
 }
 
 function SetupPill({ active, children }: { active: boolean; children: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
-        PILL_TONE[active ? 'good' : 'muted']
-      )}
-    >
-      {children}
-    </span>
-  )
+  return <Badge variant={active ? 'default' : 'muted'}>{children}</Badge>
 }

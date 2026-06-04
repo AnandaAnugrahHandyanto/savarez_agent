@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { type Translate, useTranslation } from '@/i18n'
-import { CheckCircle2, ExternalLink, Loader2, RefreshCw, Sparkles } from '@/lib/icons'
+import { Loader2, RefreshCw, Sparkles } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $desktopVersion,
@@ -115,29 +115,22 @@ export function AboutSettings() {
             statusTone === 'idle' && 'border-border/70 bg-muted/20 text-foreground'
           )}
         >
-          <div className="flex items-start gap-2">
-            {statusTone === 'available' ? (
-              <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" />
-            ) : statusTone === 'error' ? null : (
-              <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-            )}
-            <div className="min-w-0">
-              <p className="font-medium">{statusLine}</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t('settings.about.lastChecked', { time: relativeTime(status?.fetchedAt, t) })}
-                {justChecked && !checking ? ` · ${t('settings.about.time.justNow')}` : ''}
-              </p>
-            </div>
+          <div className="min-w-0">
+            <p className="font-medium">{statusLine}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t('settings.about.lastChecked', { time: relativeTime(status?.fetchedAt, t) })}
+              {justChecked && !checking ? ` · ${t('settings.about.time.justNow')}` : ''}
+            </p>
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-2">
+          <div className="mt-3 flex flex-wrap items-center gap-4">
             <Button
               disabled={checking || applying || !supported}
               onClick={() => void handleCheck()}
               size="sm"
-              variant="outline"
+              variant="textStrong"
             >
-              {checking ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+              {checking && <Loader2 className="size-3 animate-spin" />}
               {checking ? t('settings.about.checking') : t('settings.about.checkNow')}
             </Button>
 
@@ -147,12 +140,7 @@ export function AboutSettings() {
               </Button>
             )}
 
-            <Button
-              asChild
-              className="ml-auto text-xs text-muted-foreground hover:text-foreground"
-              size="sm"
-              variant="ghost"
-            >
+            <Button asChild className="ml-auto" size="sm" variant="text">
               <a
                 href={RELEASE_NOTES_URL}
                 onClick={event => {
@@ -162,7 +150,6 @@ export function AboutSettings() {
                 rel="noreferrer"
                 target="_blank"
               >
-                <ExternalLink className="size-3" />
                 {t('settings.about.releaseNotes')}
               </a>
             </Button>

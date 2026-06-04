@@ -22,7 +22,7 @@ interface ProviderPrefix {
 }
 
 export const EMPTY_SELECT_VALUE = '__hermes_empty__'
-export const CONTROL_TEXT = 'text-[0.8125rem]'
+export const CONTROL_TEXT = 'text-xs'
 
 export const PROVIDER_GROUPS: ProviderPrefix[] = [
   { prefix: 'NOUS_', name: 'Nous Portal', priority: 0 },
@@ -289,36 +289,11 @@ export const SECTIONS: DesktopConfigSection[] = [
 export interface ModeOption {
   id: ThemeMode
   labelKey: string
-  descriptionKey: string
   icon: IconComponent
 }
 
 export const MODE_OPTIONS: ModeOption[] = [
-  {
-    id: 'light',
-    labelKey: 'settings.appearance.mode.light',
-    descriptionKey: 'settings.appearance.mode.lightDescription',
-    icon: Sun
-  },
-  {
-    id: 'dark',
-    labelKey: 'settings.appearance.mode.dark',
-    descriptionKey: 'settings.appearance.mode.darkDescription',
-    icon: Moon
-  },
-  {
-    id: 'system',
-    labelKey: 'settings.appearance.mode.system',
-    descriptionKey: 'settings.appearance.mode.systemDescription',
-    icon: Monitor
-  }
+  { id: 'light', labelKey: 'settings.appearance.mode.light', icon: Sun },
+  { id: 'dark', labelKey: 'settings.appearance.mode.dark', icon: Moon },
+  { id: 'system', labelKey: 'settings.appearance.mode.system', icon: Monitor }
 ]
-
-export const SEARCH_PLACEHOLDER_KEYS: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string> = {
-  about: 'settings.search.about',
-  config: 'settings.search.config',
-  gateway: 'settings.search.gateway',
-  keys: 'settings.search.keys',
-  mcp: 'settings.search.mcp',
-  sessions: 'settings.search.sessions'
-}

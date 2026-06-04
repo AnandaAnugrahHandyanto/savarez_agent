@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getToolsetConfig, revealEnvVar, selectToolsetProvider, setEnvVar } from '@/hermes'
@@ -52,7 +53,11 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       setEditing(false)
       setValue('')
       onSaved(envVar.key)
-      notify({ kind: 'success', title: t('settings.keys.notifications.saved'), message: t('settings.keys.notifications.updated', { key: envVar.key }) })
+      notify({
+        kind: 'success',
+        title: t('settings.keys.notifications.saved'),
+        message: t('settings.keys.notifications.updated', { key: envVar.key })
+      })
     } catch (err) {
       notifyError(err, t('settings.keys.notifications.saveFailed', { key: envVar.key }))
     } finally {
@@ -71,7 +76,11 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       await deleteEnvVar(envVar.key)
       setRevealed(null)
       onCleared(envVar.key)
-      notify({ kind: 'success', title: t('settings.keys.notifications.removed'), message: t('settings.keys.notifications.removedMessage', { key: envVar.key }) })
+      notify({
+        kind: 'success',
+        title: t('settings.keys.notifications.removed'),
+        message: t('settings.keys.notifications.removedMessage', { key: envVar.key })
+      })
     } catch (err) {
       notifyError(err, t('settings.keys.notifications.removeFailed', { key: envVar.key }))
     } finally {
@@ -119,15 +128,26 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             </Button>
           )}
           {isSet && (
-            <Button onClick={() => void handleReveal()} size="icon-xs" title={t('settings.keys.actions.revealValue')} variant="ghost">
+            <Button
+              onClick={() => void handleReveal()}
+              size="icon-xs"
+              title={t('settings.keys.actions.revealValue')}
+              variant="ghost"
+            >
               {revealed !== null ? <EyeOff /> : <Eye />}
             </Button>
           )}
-          <Button onClick={() => setEditing(e => !e)} size="xs" variant="outline">
+          <Button onClick={() => setEditing(e => !e)} size="xs" variant="textStrong">
             {isSet ? t('settings.keys.actions.replace') : t('settings.keys.actions.set')}
           </Button>
           {isSet && (
-            <Button disabled={busy} onClick={() => void handleClear()} size="icon-xs" title={t('settings.keys.actions.clearValue')} variant="ghost">
+            <Button
+              disabled={busy}
+              onClick={() => void handleClear()}
+              size="icon-xs"
+              title={t('settings.keys.actions.clearValue')}
+              variant="ghost"
+            >
               <Trash2 />
             </Button>
           )}
@@ -135,7 +155,9 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       </div>
 
       {isSet && revealed !== null && (
-        <div className="rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">{revealed || '---'}</div>
+        <div className="rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">
+          {revealed || '---'}
+        </div>
       )}
 
       {editing && (
@@ -152,7 +174,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
             {t('common.save')}
           </Button>
-          <Button onClick={() => setEditing(false)} size="sm" variant="outline">
+          <Button onClick={() => setEditing(false)} size="sm" variant="text">
             {t('common.cancel')}
           </Button>
         </div>
@@ -190,7 +212,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     } finally {
       setLoading(false)
     }
-  }, [toolset, t])
+  }, [t, toolset])
 
   useEffect(() => {
     void refresh()
@@ -223,7 +245,11 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
 
     try {
       await selectToolsetProvider(toolset, provider.name)
-      notify({ kind: 'success', title: t('settings.toolsets.providerSelected'), message: t('settings.toolsets.providerActive', { provider: provider.name }) })
+      notify({
+        kind: 'success',
+        title: t('settings.toolsets.providerSelected'),
+        message: t('settings.toolsets.providerActive', { provider: provider.name })
+      })
       onConfiguredChange?.()
     } catch (err) {
       notifyError(err, t('settings.toolsets.selectFailed', { provider: provider.name }))
@@ -254,12 +280,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   }, [cfg, loading, providers.length, t])
 
   if (loading) {
-    return (
-      <div className="flex items-center gap-2 px-1 py-3 text-xs text-muted-foreground">
-        <Loader2 className="size-3.5 animate-spin" />
-        {t('settings.toolsets.loading')}
-      </div>
-    )
+    return <PageLoader className="min-h-32" label={t('settings.toolsets.loading')} />
   }
 
   if (emptyMessage) {

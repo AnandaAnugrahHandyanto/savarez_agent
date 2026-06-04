@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
+import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
@@ -25,7 +26,13 @@ interface ModelVisibilityDialogProps {
   sessionId?: string | null
 }
 
-export function ModelVisibilityDialog({ gw, onOpenChange, onOpenProviders, open, sessionId }: ModelVisibilityDialogProps) {
+export function ModelVisibilityDialog({
+  gw,
+  onOpenChange,
+  onOpenProviders,
+  open,
+  sessionId
+}: ModelVisibilityDialogProps) {
   const t = useTranslation()
   const [search, setSearch] = useState('')
   const stored = useStore($visibleModels)
@@ -88,13 +95,11 @@ export function ModelVisibilityDialog({ gw, onOpenChange, onOpenProviders, open,
         <div className="max-h-[55vh] overflow-y-auto pb-1">
           {providers.length === 0 ? (
             <div className="px-3 py-5 text-center text-xs text-muted-foreground">
-              {modelOptions.isPending ? t('common.loading') : t('models.picker.noProviders')}
+              {modelOptions.isPending ? <BrailleSpinner className="mx-auto text-sm" /> : t('models.picker.noProviders')}
             </div>
           ) : (
             providers.map(provider => {
-              const models = collapseModelFamilies(provider.models ?? []).filter(family =>
-                matches(provider, family.id)
-              )
+              const models = collapseModelFamilies(provider.models ?? []).filter(family => matches(provider, family.id))
 
               if (models.length === 0) {
                 return null
@@ -118,11 +123,7 @@ export function ModelVisibilityDialog({ gw, onOpenChange, onOpenProviders, open,
                           {name}
                           {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
                         </span>
-                        <Switch
-                          checked={visible.has(key)}
-                          className="cursor-pointer"
-                          onCheckedChange={() => toggle(provider, family.id)}
-                        />
+                        <Switch checked={visible.has(key)} onCheckedChange={() => toggle(provider, family.id)} />
                       </label>
                     )
                   })}
@@ -141,7 +142,7 @@ export function ModelVisibilityDialog({ gw, onOpenChange, onOpenProviders, open,
             }}
             type="button"
           >
-            {t('models.picker.addProviderEllipsis')}
+            Add provider…
           </button>
         </div>
       </DialogContent>

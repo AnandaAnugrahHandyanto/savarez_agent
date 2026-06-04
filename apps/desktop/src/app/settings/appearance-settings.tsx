@@ -1,8 +1,10 @@
 import { useStore } from '@nanostores/react'
+import type { ReactNode } from 'react'
 
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { DESKTOP_LANGUAGES, useI18n, useTranslation } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Palette } from '@/lib/icons'
+import { Check } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
@@ -10,7 +12,7 @@ import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
 
 import { MODE_OPTIONS } from './constants'
-import { Pill, SectionHeading, SettingsContent } from './primitives'
+import { SettingsContent } from './primitives'
 
 const themeDescriptionKey = (name: string) => `settings.appearance.theme.${name}.description`
 
@@ -54,14 +56,34 @@ function ThemePreview({ name }: { name: string }) {
   )
 }
 
+function SectionHead({ title, description, control }: { title: string; description: string; control?: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+      <div className="min-w-0">
+        <div className="text-[length:var(--conversation-text-font-size)] font-medium">{title}</div>
+        <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {description}
+        </div>
+      </div>
+      {control && <div className="shrink-0">{control}</div>}
+    </div>
+  )
+}
+
 export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const { isSavingLanguage, language, setLanguage } = useI18n()
   const t = useTranslation()
   const toolViewMode = useStore($toolViewMode)
-  const activeTheme = availableThemes.find(t => t.name === themeName)
-  const activeLanguage = DESKTOP_LANGUAGES.find(item => item.id === language)
-  const activeMode = MODE_OPTIONS.find(option => option.id === mode)
+  const languageOptions = DESKTOP_LANGUAGES.map(option => ({
+    id: option.id,
+    label: t(option.translationKey)
+  }))
+  const modeOptions = MODE_OPTIONS.map(option => ({
+    id: option.id,
+    icon: option.icon,
+    label: t(option.labelKey)
+  }))
 
   const selectLanguage = async (nextLanguage: typeof language) => {
     if (nextLanguage === language || isSavingLanguage) {
@@ -80,197 +102,83 @@ export function AppearanceSettings() {
 
   return (
     <SettingsContent>
-      <div className="space-y-5">
-        <div>
-          <SectionHeading icon={Palette} title={t('settings.appearance.title')} />
-          <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {t('settings.appearance.description')}
-          </p>
-        </div>
+      <div className="grid gap-8">
+        <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {t('settings.appearance.description')}
+        </p>
 
-        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">{t('settings.appearance.language.title')}</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                {t('settings.appearance.language.description')}
+        <section>
+          <SectionHead
+            control={
+              <div className="grid justify-items-end gap-1.5">
+                <SegmentedControl
+                  onChange={next => void selectLanguage(next)}
+                  options={languageOptions}
+                  value={language}
+                />
+                {isSavingLanguage && (
+                  <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    {t('settings.appearance.language.saving')}
+                  </span>
+                )}
               </div>
-            </div>
-            {activeLanguage && <Pill>{t(activeLanguage.translationKey)}</Pill>}
-          </div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {DESKTOP_LANGUAGES.map(option => {
-              const active = language === option.id
-
-              return (
-                <button
-                  className={cn(
-                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover) disabled:cursor-not-allowed disabled:opacity-60',
-                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                  )}
-                  disabled={isSavingLanguage}
-                  key={option.id}
-                  onClick={() => void selectLanguage(option.id)}
-                  type="button"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-[length:var(--conversation-text-font-size)] font-medium">
-                        {t(option.translationKey)}
-                      </div>
-                      <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                        {option.nativeLabel}
-                      </div>
-                    </div>
-                    {active && (
-                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
-                        <Check className="size-3.5" />
-                      </span>
-                    )}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-          {isSavingLanguage && (
-            <div className="mt-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-              {t('settings.appearance.language.saving')}
-            </div>
-          )}
+            }
+            description={t('settings.appearance.language.description')}
+            title={t('settings.appearance.language.title')}
+          />
         </section>
 
-        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">{t('settings.appearance.mode.title')}</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                {t('settings.appearance.mode.description')}
-              </div>
-            </div>
-            {activeMode && <Pill>{t(activeMode.labelKey)}</Pill>}
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {MODE_OPTIONS.map(({ id, labelKey, descriptionKey, icon: Icon }) => {
-              const active = mode === id
-
-              return (
-                <button
-                  className={cn(
-                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover)',
-                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                  )}
-                  key={id}
-                  onClick={() => {
-                    triggerHaptic('crisp')
-                    setMode(id)
-                  }}
-                  type="button"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <span className="flex size-9 items-center justify-center rounded-lg bg-muted text-foreground transition group-hover:bg-background">
-                      <Icon className="size-4" />
-                    </span>
-                    {active && (
-                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
-                        <Check className="size-3.5" />
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-2 text-[length:var(--conversation-text-font-size)] font-medium">
-                    {t(labelKey)}
-                  </div>
-                  <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                    {t(descriptionKey)}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
+        <section>
+          <SectionHead
+            control={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('crisp')
+                  setMode(id)
+                }}
+                options={modeOptions}
+                value={mode}
+              />
+            }
+            description={t('settings.appearance.mode.description')}
+            title={t('settings.appearance.mode.title')}
+          />
         </section>
 
-        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">{t('settings.appearance.toolDisplay.title')}</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                {t('settings.appearance.toolDisplay.description')}
-              </div>
-            </div>
-            <Pill>
-              {toolViewMode === 'technical'
-                ? t('settings.appearance.toolDisplay.technical')
-                : t('settings.appearance.toolDisplay.product')}
-            </Pill>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {(
-              [
-                {
-                  id: 'product',
-                  labelKey: 'settings.appearance.toolDisplay.product',
-                  descriptionKey: 'settings.appearance.toolDisplay.productDescription'
-                },
-                {
-                  id: 'technical',
-                  labelKey: 'settings.appearance.toolDisplay.technical',
-                  descriptionKey: 'settings.appearance.toolDisplay.technicalDescription'
+        <section>
+          <SectionHead
+            control={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setToolViewMode(id)
+                }}
+                options={
+                  [
+                    { id: 'product', label: t('settings.appearance.toolDisplay.product') },
+                    { id: 'technical', label: t('settings.appearance.toolDisplay.technical') }
+                  ] as const
                 }
-              ] as const
-            ).map(option => {
-              const active = toolViewMode === option.id
-
-              return (
-                <button
-                  className={cn(
-                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover)',
-                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                  )}
-                  key={option.id}
-                  onClick={() => {
-                    triggerHaptic('selection')
-                    setToolViewMode(option.id)
-                  }}
-                  type="button"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="text-[length:var(--conversation-text-font-size)] font-medium">
-                      {t(option.labelKey)}
-                    </div>
-                    {active && (
-                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
-                        <Check className="size-3.5" />
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                    {t(option.descriptionKey)}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
+                value={toolViewMode}
+              />
+            }
+            description={t('settings.appearance.toolDisplay.description')}
+            title={t('settings.appearance.toolDisplay.title')}
+          />
         </section>
 
-        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">{t('settings.appearance.theme.title')}</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                {t('settings.appearance.theme.description')}
-              </div>
-            </div>
-            {activeTheme && <Pill>{activeTheme.label}</Pill>}
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <section className="grid gap-3">
+          <SectionHead
+            description={t('settings.appearance.theme.description')}
+            title={t('settings.appearance.theme.title')}
+          />
+          <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2 xl:grid-cols-3">
             {availableThemes.map(theme => {
               const active = themeName === theme.name
 
               return (
                 <button
-                  className={cn(
-                    'rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2 text-left transition hover:bg-(--chrome-action-hover)',
-                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                  )}
+                  className="group text-left"
                   key={theme.name}
                   onClick={() => {
                     triggerHaptic('crisp')
@@ -278,8 +186,17 @@ export function AppearanceSettings() {
                   }}
                   type="button"
                 >
-                  <ThemePreview name={theme.name} />
-                  <div className="mt-3 flex items-start justify-between gap-3 px-1">
+                  <div
+                    className={cn(
+                      'rounded-xl transition',
+                      active
+                        ? 'ring-2 ring-primary ring-offset-2 ring-offset-background'
+                        : 'opacity-90 group-hover:opacity-100'
+                    )}
+                  >
+                    <ThemePreview name={theme.name} />
+                  </div>
+                  <div className="mt-2.5 flex items-start justify-between gap-2 px-0.5">
                     <div className="min-w-0">
                       <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
                         {theme.label}
@@ -288,11 +205,7 @@ export function AppearanceSettings() {
                         {t(themeDescriptionKey(theme.name))}
                       </div>
                     </div>
-                    {active && (
-                      <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground">
-                        <Check className="size-3.5" />
-                      </span>
-                    )}
+                    {active && <Check className="mt-0.5 size-4 shrink-0 text-primary" />}
                   </div>
                 </button>
               )

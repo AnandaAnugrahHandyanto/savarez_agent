@@ -11,6 +11,7 @@ import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { PageLoader } from '@/components/page-loader'
 import { type Translate, useTranslation } from '@/i18n'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
@@ -329,7 +330,17 @@ function startLineDrag(event: ReactDragEvent<HTMLElement>, filePath: string, { e
   event.dataTransfer.effectAllowed = 'copy'
 }
 
-function SourceView({ filePath, language, t, text }: { filePath: string; language: string; t: Translate; text: string }) {
+function SourceView({
+  filePath,
+  language,
+  t,
+  text
+}: {
+  filePath: string
+  language: string
+  t: Translate
+  text: string
+}) {
   const lineCount = useMemo(() => Math.max(1, text.split('\n').length), [text])
   const [selection, setSelection] = useState<LineSelection | null>(null)
   const inSelection = (line: number) => selection != null && line >= selection.start && line <= selection.end
@@ -483,7 +494,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.language])
 
   if (state.loading) {
-    return <div className="grid h-full place-items-center text-xs text-muted-foreground">{t('preview.file.loading')}</div>
+    return <PageLoader label={t('preview.file.loading')} />
   }
 
   if (state.error) {
@@ -536,7 +547,9 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
             {t('preview.file.showingFirst512')}
           </div>
         )}
-        {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} t={t} />}
+        {isMarkdown && (
+          <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} t={t} />
+        )}
         {showRendered ? (
           <MarkdownPreview text={state.text} />
         ) : (

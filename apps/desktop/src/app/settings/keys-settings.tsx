@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { useTranslation } from '@/i18n'
@@ -11,17 +10,10 @@ import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
 
 import { CONTROL_TEXT } from './constants'
-import {
-  asText,
-  includesQuery,
-  prettyName,
-  providerGroup,
-  providerPriority,
-  redactedValue,
-  withoutKey
-} from './helpers'
+import { asText, prettyName, providerGroup, providerPriority, redactedValue, withoutKey } from './helpers'
 import { LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
-import type { EnvPatch, EnvRowProps, ProviderGroup, SearchProps } from './types'
+import type { EnvPatch, EnvRowProps, ProviderGroup } from './types'
+import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 interface EnvActionsProps {
   varKey: string
@@ -65,7 +57,7 @@ function EnvActions({
           {isRevealed ? <EyeOff /> : <Eye />}
         </Button>
       )}
-      <Button onClick={onEdit} size="xs" variant="outline">
+      <Button onClick={onEdit} size="xs" variant="textStrong">
         {info.is_set ? t('settings.keys.actions.replace') : t('settings.keys.actions.set')}
       </Button>
       {info.is_set && (
@@ -163,7 +155,9 @@ function EnvVarRow({
             autoFocus
             className={cn('min-w-56 flex-1 font-mono', CONTROL_TEXT)}
             onChange={e => setEdits(c => ({ ...c, [varKey]: e.target.value }))}
-            placeholder={info.is_set ? t('settings.keys.placeholders.replaceValue') : t('settings.keys.placeholders.enterValue')}
+            placeholder={
+              info.is_set ? t('settings.keys.placeholders.replaceValue') : t('settings.keys.placeholders.enterValue')
+            }
             type={info.is_password ? 'password' : 'text'}
             value={edits[varKey]}
           />
@@ -171,8 +165,7 @@ function EnvVarRow({
             <Save />
             {saving === varKey ? t('settings.keys.actions.saving') : t('common.save')}
           </Button>
-          <Button onClick={() => setEdits(c => withoutKey(c, varKey))} size="sm" variant="outline">
-            <Codicon name="close" />
+          <Button onClick={() => setEdits(c => withoutKey(c, varKey))} size="sm" variant="text">
             {t('common.cancel')}
           </Button>
         </div>
@@ -183,17 +176,25 @@ function EnvVarRow({
 
 function EnvProviderGroup({
   group,
-  rowProps
+  rowProps,
+  forceExpand = false
 }: {
   group: ProviderGroup
   rowProps: Omit<EnvRowProps, 'varKey' | 'info'>
+  forceExpand?: boolean
 }) {
   const t = useTranslation()
   const setCount = group.entries.filter(([, info]) => info.is_set).length
   // Default-expand providers that already have at least one key set; the
   // user is much more likely to be coming back to edit those than to start
   // configuring a fresh provider from scratch.
-  const [expanded, setExpanded] = useState(setCount > 0)
+  const [expanded, setExpanded] = useState(setCount > 0 || forceExpand)
+
+  useEffect(() => {
+    if (forceExpand) {
+      setExpanded(true)
+    }
+  }, [forceExpand])
 
   return (
     <div className="overflow-hidden rounded-xl bg-background/60">
@@ -209,12 +210,16 @@ function EnvProviderGroup({
           </span>
           {setCount > 0 && <Pill tone="primary">{t('settings.keys.countSet', { count: setCount })}</Pill>}
         </span>
-        <span className="text-xs text-muted-foreground">{t('settings.keys.countKeys', { count: group.entries.length })}</span>
+        <span className="text-xs text-muted-foreground">
+          {t('settings.keys.countKeys', { count: group.entries.length })}
+        </span>
       </button>
       {expanded && (
         <div className="grid gap-2 bg-muted/20 p-3">
           {group.entries.map(([key, info]) => (
-            <EnvVarRow compact={!info.is_set} info={info} key={key} varKey={key} {...rowProps} />
+            <div className="scroll-mt-6 rounded-md" id={`env-var-${key}`} key={key}>
+              <EnvVarRow compact={!info.is_set} info={info} varKey={key} {...rowProps} />
+            </div>
           ))}
         </div>
       )}
@@ -222,12 +227,20 @@ function EnvProviderGroup({
   )
 }
 
-export function KeysSettings({ query }: SearchProps) {
+export function KeysSettings() {
   const t = useTranslation()
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<string | null>(null)
+
+  // Deep-link from the command palette (?key=<ENV_VAR>): force-expand the
+  // matching provider group, scroll the row in, and flash it.
+  const highlightKey = useDeepLinkHighlight({
+    elementId: key => `env-var-${key}`,
+    param: 'key',
+    ready: key => Boolean(vars?.[key])
+  })
 
   // We used to hide ~80% of rows behind a global "Show advanced" toggle, but
   // everything in this view is configuration-level — "advanced" was a poor
@@ -259,32 +272,12 @@ export function KeysSettings({ query }: SearchProps) {
     return () => void (cancelled = true)
   }, [t])
 
-  const filterEnv = useCallback((info: EnvVarInfo, key: string, q: string, cat: string, extra?: string) => {
-    if (asText(info.category) !== cat) {
-      return false
-    }
-
-    if (!q) {
-      return true
-    }
-
-    return (
-      key.toLowerCase().includes(q) ||
-      includesQuery(info.description, q) ||
-      Boolean(extra && extra.toLowerCase().includes(q))
-    )
-  }, [])
-
   const providerGroups = useMemo<ProviderGroup[]>(() => {
     if (!vars) {
       return []
     }
 
-    const q = query.trim().toLowerCase()
-
-    const entries = Object.entries(vars).filter(([key, info]) =>
-      filterEnv(info, key, q, 'provider', providerGroup(key))
-    )
+    const entries = Object.entries(vars).filter(([, info]) => asText(info.category) === 'provider')
 
     const groups = new Map<string, [string, EnvVarInfo][]>()
 
@@ -299,14 +292,12 @@ export function KeysSettings({ query }: SearchProps) {
       entries: entries.sort(([a], [b]) => a.localeCompare(b)),
       hasAnySet: entries.some(([, info]) => info.is_set)
     })).sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name))
-  }, [filterEnv, query, vars])
+  }, [vars])
 
   const otherGroups = useMemo(() => {
     if (!vars) {
       return []
     }
-
-    const q = query.trim().toLowerCase()
 
     const labels: Record<string, string> = {
       tool: t('settings.keys.categories.tools'),
@@ -316,12 +307,12 @@ export function KeysSettings({ query }: SearchProps) {
 
     return ['tool', 'messaging', 'setting'].flatMap(cat => {
       const entries = Object.entries(vars)
-        .filter(([key, info]) => filterEnv(info, key, q, cat))
+        .filter(([, info]) => asText(info.category) === cat)
         .sort(([a], [b]) => a.localeCompare(b))
 
       return entries.length === 0 ? [] : [{ category: cat, label: labels[cat] ?? prettyName(cat), entries }]
     })
-  }, [filterEnv, query, t, vars])
+  }, [t, vars])
 
   function patchVar(key: string, patch: EnvPatch) {
     setVars(c => (c ? { ...c, [key]: { ...c[key], ...patch } } : c))
@@ -345,7 +336,11 @@ export function KeysSettings({ query }: SearchProps) {
       await setEnvVar(key, value)
       patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
       clearLocalState(key)
-      notify({ kind: 'success', title: t('settings.keys.notifications.saved'), message: t('settings.keys.notifications.updated', { key }) })
+      notify({
+        kind: 'success',
+        title: t('settings.keys.notifications.saved'),
+        message: t('settings.keys.notifications.updated', { key })
+      })
     } catch (err) {
       notifyError(err, t('settings.keys.notifications.saveFailed', { key }))
     } finally {
@@ -364,7 +359,11 @@ export function KeysSettings({ query }: SearchProps) {
       await deleteEnvVar(key)
       patchVar(key, { is_set: false, redacted_value: null })
       clearLocalState(key)
-      notify({ kind: 'success', title: t('settings.keys.notifications.removed'), message: t('settings.keys.notifications.removedMessage', { key }) })
+      notify({
+        kind: 'success',
+        title: t('settings.keys.notifications.removed'),
+        message: t('settings.keys.notifications.removedMessage', { key })
+      })
     } catch (err) {
       notifyError(err, t('settings.keys.notifications.removeFailed', { key }))
     } finally {
@@ -413,7 +412,12 @@ export function KeysSettings({ query }: SearchProps) {
         />
         <div className="grid gap-2">
           {providerGroups.map(group => (
-            <EnvProviderGroup group={group} key={group.name} rowProps={rowProps} />
+            <EnvProviderGroup
+              forceExpand={Boolean(highlightKey) && group.entries.some(([key]) => key === highlightKey)}
+              group={group}
+              key={group.name}
+              rowProps={rowProps}
+            />
           ))}
         </div>
       </div>
@@ -430,7 +434,9 @@ export function KeysSettings({ query }: SearchProps) {
           />
           <div className="grid gap-2">
             {group.entries.map(([key, info]) => (
-              <EnvVarRow info={info} key={key} varKey={key} {...rowProps} />
+              <div className="scroll-mt-6 rounded-md" id={`env-var-${key}`} key={key}>
+                <EnvVarRow info={info} varKey={key} {...rowProps} />
+              </div>
             ))}
           </div>
         </div>

@@ -4,9 +4,9 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { ErrorState } from '@/components/ui/error-state'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
-import { useTranslation } from '@/i18n'
-import type { Translate } from '@/i18n'
+import { type Translate, useTranslation } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, CheckCircle2, Copy, Loader2, Sparkles, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -22,7 +22,7 @@ import {
   type UpdateApplyState
 } from '@/store/updates'
 
-const STAGE_LABEL_KEYS: Record<DesktopUpdateStage, string> = {
+const STAGE_LABELS: Record<DesktopUpdateStage, string> = {
   idle: 'updates.stages.gettingReady',
   prepare: 'updates.stages.gettingReady',
   fetch: 'updates.stages.downloading',
@@ -140,7 +140,7 @@ function IdleView({
       <CenteredStatus
         action={
           <Button onClick={onRetryCheck} size="sm">
-            {t('common.retry')}
+            {t('common.tryAgain')}
           </Button>
         }
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
@@ -152,11 +152,6 @@ function IdleView({
   if (!status.supported) {
     return (
       <CenteredStatus
-        action={
-          <Button onClick={onLater} size="sm" variant="outline">
-            {t('common.close')}
-          </Button>
-        }
         body={status.message ?? t('updates.unsupportedBody')}
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
         title={t('updates.notAvailable')}
@@ -169,7 +164,7 @@ function IdleView({
       <CenteredStatus
         action={
           <Button disabled={checking} onClick={onRetryCheck} size="sm">
-            {t('common.retry')}
+            {t('common.tryAgain')}
           </Button>
         }
         body={t('updates.checkConnection')}
@@ -182,11 +177,6 @@ function IdleView({
   if (behind === 0) {
     return (
       <CenteredStatus
-        action={
-          <Button onClick={onLater} size="sm" variant="outline">
-            {t('common.close')}
-          </Button>
-        }
         body={t('updates.latestBody')}
         icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
         title={t('updates.allSet')}
@@ -206,19 +196,17 @@ function IdleView({
         </span>
 
         <DialogTitle className="text-center text-xl">{t('updates.availableTitle')}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {t('updates.availableDescription')}
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{t('updates.availableDescription')}</DialogDescription>
       </div>
 
       <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
         {groups.map(group => (
           <div key={group.id}>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
-            <ul className="mt-1.5 grid gap-1.5 text-sm text-foreground">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
+            <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
               {group.items.map(item => (
                 <li className="flex items-start gap-2" key={item}>
-                  <span aria-hidden className="mt-2 inline-block size-1.5 shrink-0 rounded-full bg-primary" />
+                  <span aria-hidden className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-primary" />
                   <span className="leading-snug">{item}</span>
                 </li>
               ))}
@@ -228,7 +216,7 @@ function IdleView({
       </div>
 
       <div className="grid gap-2">
-        <Button className="h-10 text-sm font-semibold" onClick={onInstall} size="default">
+        <Button className="font-semibold" onClick={onInstall} size="lg">
           {t('updates.updateNow')}
         </Button>
         <button
@@ -241,9 +229,7 @@ function IdleView({
       </div>
 
       {remaining > 0 && (
-        <p className="text-center text-xs text-muted-foreground">
-          {t('updates.moreChanges', { count: remaining })}
-        </p>
+        <p className="text-center text-xs text-muted-foreground">{t('updates.moreChanges', { count: remaining })}</p>
       )}
     </div>
   )
@@ -267,9 +253,7 @@ function ManualView({ command, onDone, t }: { command: string; onDone: () => voi
         </span>
 
         <DialogTitle className="text-center text-xl">{t('updates.manual.title')}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {t('updates.manual.description')}
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{t('updates.manual.description')}</DialogDescription>
       </div>
 
       <button
@@ -296,11 +280,9 @@ function ManualView({ command, onDone, t }: { command: string; onDone: () => voi
         </span>
       </button>
 
-      <p className="text-center text-xs text-muted-foreground">
-        {t('updates.manual.nextLaunch')}
-      </p>
+      <p className="text-center text-xs text-muted-foreground">{t('updates.manual.nextLaunch')}</p>
 
-      <Button className="h-10 text-sm font-semibold" onClick={onDone} variant="outline">
+      <Button className="font-semibold" onClick={onDone} size="lg" variant="outline">
         {t('updates.done')}
       </Button>
     </div>
@@ -308,7 +290,7 @@ function ManualView({ command, onDone, t }: { command: string; onDone: () => voi
 }
 
 function ApplyingView({ apply, t }: { apply: UpdateApplyState; t: Translate }) {
-  const label = STAGE_LABEL_KEYS[apply.stage] ? t(STAGE_LABEL_KEYS[apply.stage]) : t('updates.stages.updating')
+  const label = t(STAGE_LABELS[apply.stage] ?? 'updates.stages.updating')
 
   const percent =
     typeof apply.percent === 'number' && Number.isFinite(apply.percent)
@@ -323,9 +305,7 @@ function ApplyingView({ apply, t }: { apply: UpdateApplyState; t: Translate }) {
         </span>
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {t('updates.applying.description')}
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{t('updates.applying.description')}</DialogDescription>
       </div>
 
       <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -343,33 +323,38 @@ function ApplyingView({ apply, t }: { apply: UpdateApplyState; t: Translate }) {
   )
 }
 
-function ErrorView({ message, onDismiss, onRetry, t }: { message: string; onDismiss: () => void; onRetry: () => void; t: Translate }) {
+function ErrorView({
+  message,
+  onDismiss,
+  onRetry,
+  t
+}: {
+  message: string
+  onDismiss: () => void
+  onRetry: () => void
+  t: Translate
+}) {
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
-      <div className="flex flex-col items-center gap-3 text-center">
-        <span className="flex size-14 items-center justify-center rounded-2xl bg-destructive/10 text-destructive">
-          <AlertCircle className="size-7" />
-        </span>
-
-        <DialogTitle className="text-center text-xl">{t('updates.error.title')}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
+    <ErrorState
+      className="px-6 pb-6 pt-7 pr-8"
+      description={
+        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
           {message || t('updates.error.description')}
         </DialogDescription>
-      </div>
-
-      <div className="grid gap-2">
-        <Button className="h-10 text-sm font-semibold" onClick={onRetry}>
-          {t('common.retry')}
-        </Button>
-        <button
-          className="text-center text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-          onClick={onDismiss}
-          type="button"
-        >
-          {t('updates.notNow')}
-        </button>
-      </div>
-    </div>
+      }
+      title={
+        <DialogTitle className="text-center text-xl font-semibold tracking-tight">
+          {t('updates.error.title')}
+        </DialogTitle>
+      }
+    >
+      <Button className="font-semibold" onClick={onRetry} size="lg">
+        {t('common.tryAgain')}
+      </Button>
+      <Button onClick={onDismiss} variant="text">
+        {t('updates.notNow')}
+      </Button>
+    </ErrorState>
   )
 }
 

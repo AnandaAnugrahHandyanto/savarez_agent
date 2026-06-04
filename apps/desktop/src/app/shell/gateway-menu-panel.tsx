@@ -80,7 +80,7 @@ export function GatewayMenuPanel({
         <div className="flex items-center">
           <Button
             aria-label={t('shell.gateway.openSystemPanel')}
-            className="size-7 text-muted-foreground hover:text-foreground"
+            className="text-muted-foreground hover:text-foreground"
             onClick={onOpenSystem}
             size="icon-sm"
             title={t('shell.gateway.openSystemPanel')}

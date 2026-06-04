@@ -117,10 +117,20 @@ function statusGlyph(status: ToolStatus, t: Translate): ReactNode {
   }
 
   if (status === 'warning') {
-    return <AlertCircle aria-label={t('assistant.tools.recovered')} className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+    return (
+      <AlertCircle
+        aria-label={t('assistant.tools.recovered')}
+        className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+      />
+    )
   }
 
-  return <CheckCircle2 aria-label={t('agents.status.done')} className="size-3.5 shrink-0 text-emerald-600/85 dark:text-emerald-400/85" />
+  return (
+    <CheckCircle2
+      aria-label={t('agents.status.done')}
+      className="size-3.5 shrink-0 text-emerald-600/85 dark:text-emerald-400/85"
+    />
+  )
 }
 
 // Leading glyph for any tool-row header. Status (running/error/warning)
@@ -320,7 +330,11 @@ function ToolEntry({ part }: ToolEntryProps) {
           )}
           {view.imageUrl && (
             <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
-              <ZoomableImage alt={t('assistant.tools.outputImage')} className="h-auto w-full object-cover" src={view.imageUrl} />
+              <ZoomableImage
+                alt={t('assistant.tools.outputImage')}
+                className="h-auto w-full object-cover"
+                src={view.imageUrl}
+              />
             </div>
           )}
           {hasSearchHits && view.searchHits && (
@@ -391,7 +405,7 @@ function ToolEntry({ part }: ToolEntryProps) {
             ))}
           {showRawSearchDrilldown && (
             <details className="max-w-full">
-              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'cursor-pointer mb-0')}>{t('assistant.tools.rawResponse')}</summary>
+              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>{t('assistant.tools.rawResponse')}</summary>
               <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
                 {view.rawResult}
               </pre>
@@ -493,7 +507,12 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
             open={open}
             trailing={
               !isRunning && groupCopyText ? (
-                <CopyButton appearance="tool-row" label={t('assistant.tools.copyActivity')} stopPropagation text={groupCopyText} />
+                <CopyButton
+                  appearance="tool-row"
+                  label={t('assistant.tools.copyActivity')}
+                  stopPropagation
+                  text={groupCopyText}
+                />
               ) : undefined
             }
           >

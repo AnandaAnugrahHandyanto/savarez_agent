@@ -84,7 +84,7 @@ function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected, t }: Cons
     >
       <button
         className={cn(
-          'mt-0.5 cursor-pointer text-left uppercase opacity-70 transition-colors hover:opacity-100',
+          'mt-0.5 text-left uppercase opacity-70 transition-colors hover:opacity-100',
           consoleLevelClass[log.level] ?? consoleLevelClass[0]
         )}
         onClick={onToggleSelect}

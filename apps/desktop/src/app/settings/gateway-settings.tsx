@@ -173,7 +173,6 @@ export function GatewaySettings() {
       const message = t('settings.gateway.test.connected', {
         target: `${result.baseUrl}${result.version ? ` · Hermes ${result.version}` : ''}`
       })
-
       setLastTest(message)
       notify({ kind: 'success', title: t('settings.gateway.test.successTitle'), message })
     } catch (err) {
@@ -215,9 +214,9 @@ export function GatewaySettings() {
           <div>
             <div className="font-medium">{t('settings.gateway.envWarning.title')}</div>
             <div className="mt-1 leading-5">
-              {t('settings.gateway.envWarning.before')}{' '}
-              <code>HERMES_DESKTOP_REMOTE_URL</code> {t('settings.gateway.envWarning.and')}{' '}
-              <code>HERMES_DESKTOP_REMOTE_TOKEN</code> {t('settings.gateway.envWarning.after')}
+              {t('settings.gateway.envWarning.before')} <code>HERMES_DESKTOP_REMOTE_URL</code>{' '}
+              {t('settings.gateway.envWarning.and')} <code>HERMES_DESKTOP_REMOTE_TOKEN</code>{' '}
+              {t('settings.gateway.envWarning.after')}
             </div>
           </div>
         </div>
@@ -242,7 +241,7 @@ export function GatewaySettings() {
         />
       </div>
 
-      <div className="mt-5 divide-y divide-border/40">
+      <div className="mt-5 grid gap-1">
         <ListRow
           action={
             <Input
@@ -281,28 +280,30 @@ export function GatewaySettings() {
 
       {lastTest ? <div className="mt-4 text-xs text-primary">{lastTest}</div> : null}
 
-      <div className="mt-6 flex flex-wrap justify-end gap-3">
+      <div className="mt-6 flex flex-wrap items-center justify-end gap-4">
         <Button
+          className="mr-auto"
           disabled={state.envOverride || testing || !canUseRemote}
           onClick={() => void testRemote()}
-          variant="outline"
+          size="sm"
+          variant="text"
         >
           {testing ? <Loader2 className="size-4 animate-spin" /> : null}
           {t('settings.gateway.actions.testRemote')}
         </Button>
-        <Button disabled={state.envOverride || saving} onClick={() => void save(false)} variant="outline">
+        <Button disabled={state.envOverride || saving} onClick={() => void save(false)} size="sm" variant="textStrong">
           {t('settings.gateway.actions.saveForRestart')}
         </Button>
-        <Button disabled={state.envOverride || saving} onClick={() => void save(true)}>
+        <Button disabled={state.envOverride || saving} onClick={() => void save(true)} size="sm">
           {saving ? <Loader2 className="size-4 animate-spin" /> : null}
           {t('settings.gateway.actions.saveAndReconnect')}
         </Button>
       </div>
 
-      <div className="mt-6 divide-y divide-border/40">
+      <div className="mt-6 grid gap-1">
         <ListRow
           action={
-            <Button onClick={() => void window.hermesDesktop?.revealLogs()} variant="outline">
+            <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
               <FileText className="size-4" />
               {t('boot.failure.openLogs')}
             </Button>

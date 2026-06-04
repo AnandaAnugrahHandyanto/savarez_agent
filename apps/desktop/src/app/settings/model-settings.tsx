@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from '@/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getAuxiliaryModels, getGlobalModelInfo, getGlobalModelOptions, setModelAssignment } from '@/hermes'
 import type { AuxiliaryModelsResponse, ModelOptionProvider } from '@/hermes'
 import { useTranslation } from '@/i18n'
@@ -21,13 +15,17 @@ import { ListRow, LoadingState, Pill, SectionHeading } from './primitives'
 // hints make the assignments readable; raw task keys (vision, mcp, …) are
 // opaque to most users.
 interface AuxTaskMeta {
-  key: string
   hintKey: string
+  key: string
   labelKey: string
 }
 
 const AUX_TASKS: readonly AuxTaskMeta[] = [
-  { key: 'vision', labelKey: 'settings.model.auxiliary.tasks.vision', hintKey: 'settings.model.auxiliary.hints.vision' },
+  {
+    key: 'vision',
+    labelKey: 'settings.model.auxiliary.tasks.vision',
+    hintKey: 'settings.model.auxiliary.hints.vision'
+  },
   {
     key: 'web_extract',
     labelKey: 'settings.model.auxiliary.tasks.webExtract',
@@ -59,7 +57,11 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
     labelKey: 'settings.model.auxiliary.tasks.titleGeneration',
     hintKey: 'settings.model.auxiliary.hints.titleGeneration'
   },
-  { key: 'curator', labelKey: 'settings.model.auxiliary.tasks.curator', hintKey: 'settings.model.auxiliary.hints.curator' }
+  {
+    key: 'curator',
+    labelKey: 'settings.model.auxiliary.tasks.curator',
+    hintKey: 'settings.model.auxiliary.hints.curator'
+  }
 ]
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
@@ -235,9 +237,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           meta={mainModel ? `${mainModel.provider} / ${mainModel.model}` : undefined}
           title={t('settings.model.main.title')}
         />
-        <p className="mb-3 text-xs text-muted-foreground">
-          {t('settings.model.main.description')}
-        </p>
+        <p className="mb-3 text-xs text-muted-foreground">{t('settings.model.main.description')}</p>
         <div className="flex flex-wrap items-center gap-2">
           <Select onValueChange={setSelectedProvider} value={selectedProvider}>
             <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
@@ -263,8 +263,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               ))}
             </SelectContent>
           </Select>
-          <Button disabled={!selectedProvider || !selectedModel || applying} onClick={() => void applyMainModel()} size="sm">
-            {applying ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+          <Button
+            disabled={!selectedProvider || !selectedModel || applying}
+            onClick={() => void applyMainModel()}
+            size="sm"
+          >
+            {applying && <Loader2 className="size-3.5 animate-spin" />}
             {applying ? t('settings.model.applying') : t('settings.model.apply')}
           </Button>
         </div>
@@ -278,15 +282,13 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             disabled={!mainModel || applying}
             onClick={() => void resetAuxiliaryModels()}
             size="sm"
-            variant="outline"
+            variant="textStrong"
           >
             {t('settings.model.auxiliary.resetAll')}
           </Button>
         </div>
-        <p className="mb-2 text-xs text-muted-foreground">
-          {t('settings.model.auxiliary.description')}
-        </p>
-        <div className="divide-y divide-border/40">
+        <p className="mb-2 text-xs text-muted-foreground">{t('settings.model.auxiliary.description')}</p>
+        <div className="grid gap-1">
           {AUX_TASKS.map(meta => {
             const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
             const isAuto = !current || !current.provider || current.provider === 'auto'
@@ -301,7 +303,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         disabled={!mainModel || applying}
                         onClick={() => void setAuxiliaryToMain(meta.key)}
                         size="sm"
-                        variant="ghost"
+                        variant="text"
                       >
                         {t('settings.model.auxiliary.setToMain')}
                       </Button>
@@ -309,7 +311,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         disabled={!providers.length || applying}
                         onClick={() => beginAuxiliaryEdit(meta.key)}
                         size="sm"
-                        variant="outline"
+                        variant="textStrong"
                       >
                         {t('settings.model.auxiliary.change')}
                       </Button>
@@ -318,7 +320,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 }
                 below={
                   isEditing && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border/40 pt-2">
+                    <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
                       <Select
                         onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
                         value={auxDraft.provider}

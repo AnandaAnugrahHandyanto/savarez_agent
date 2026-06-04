@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
 import type { ComponentProps, ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
   DropdownMenu,
@@ -13,12 +14,18 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useTranslation } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
-import { $fileBrowserOpen, $sidebarOpen, toggleFileBrowserOpen, toggleSidebarOpen } from '@/store/layout'
+import {
+  $fileBrowserOpen,
+  $panesFlipped,
+  $sidebarOpen,
+  toggleFileBrowserOpen,
+  togglePanesFlipped,
+  toggleSidebarOpen
+} from '@/store/layout'
 
-import { PROFILES_ROUTE } from '../routes'
+import { appViewForPath, isOverlayView, PROFILES_ROUTE } from '../routes'
 
 import { titlebarButtonClass } from './titlebar'
 
@@ -42,23 +49,17 @@ export type SetTitlebarToolGroup = (id: string, tools: readonly TitlebarTool[], 
 interface TitlebarControlsProps extends ComponentProps<'div'> {
   leftTools?: readonly TitlebarTool[]
   tools?: readonly TitlebarTool[]
-  commandCenterOpen?: boolean
   onOpenSettings: () => void
-  onOpenSearch: () => void
 }
 
-export function TitlebarControls({
-  leftTools = [],
-  tools = [],
-  commandCenterOpen = false,
-  onOpenSettings,
-  onOpenSearch
-}: TitlebarControlsProps) {
+export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
   const navigate = useNavigate()
+  const location = useLocation()
   const t = useTranslation()
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
+  const panesFlipped = useStore($panesFlipped)
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -72,38 +73,45 @@ export function TitlebarControls({
     }
   }
 
+  // Each titlebar button controls the pane physically on its side, so a flip
+  // swaps which pane each one toggles. Default: sessions left, file browser
+  // right. Flipped: file browser left, sessions right. Sidebar toggles never
+  // carry an active highlight — they're plain show/hide affordances.
+  const fileBrowserEdge = { open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
+  const sessionsEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
+  const leftEdge = panesFlipped ? fileBrowserEdge : sessionsEdge
+  const rightEdge = panesFlipped ? sessionsEdge : fileBrowserEdge
+
   const leftToolbarTools: TitlebarTool[] = [
     {
       icon: <Codicon name="layout-sidebar-left" />,
       id: 'sidebar',
-      label: sidebarOpen ? t('shell.titlebar.hideSidebar') : t('shell.titlebar.showSidebar'),
+      label: leftEdge.open ? t('shell.titlebar.hideSidebar') : t('shell.titlebar.showSidebar'),
       onSelect: () => {
         triggerHaptic('tap')
-        toggleSidebarOpen()
+        leftEdge.toggle()
       }
     },
     {
-      active: commandCenterOpen,
-      icon: <Codicon name="search" />,
-      id: 'search',
-      label: t('shell.titlebar.search'),
+      icon: <Codicon name="arrow-swap" />,
+      id: 'flip-panes',
+      label: t('shell.titlebar.swapSidebarSides'),
       onSelect: () => {
-        triggerHaptic('open')
-        onOpenSearch()
+        triggerHaptic('tap')
+        togglePanesFlipped()
       },
-      title: t('shell.titlebar.searchTitle')
+      title: t('shell.titlebar.swapSidebarSidesTitle')
     },
     ...leftTools
   ]
 
   const rightSidebarTool: TitlebarTool = {
-    active: fileBrowserOpen,
     icon: <Codicon name="layout-sidebar-right" />,
     id: 'right-sidebar',
-    label: fileBrowserOpen ? t('shell.titlebar.hideRightSidebar') : t('shell.titlebar.showRightSidebar'),
+    label: rightEdge.open ? t('shell.titlebar.hideRightSidebar') : t('shell.titlebar.showRightSidebar'),
     onSelect: () => {
       triggerHaptic('tap')
-      toggleFileBrowserOpen()
+      rightEdge.toggle()
     }
   }
 
@@ -111,7 +119,7 @@ export function TitlebarControls({
   const systemTools: TitlebarTool[] = [
     {
       active: hapticsMuted,
-      icon: hapticsMuted ? <VolumeX /> : <Volume2 />,
+      icon: <Codicon name={hapticsMuted ? 'mute' : 'unmute'} />,
       id: 'haptics',
       label: hapticsMuted ? t('shell.titlebar.unmuteHaptics') : t('shell.titlebar.muteHaptics'),
       onSelect: toggleHaptics
@@ -126,6 +134,14 @@ export function TitlebarControls({
       }
     }
   ]
+
+  // While a full-screen overlay (settings, command center, …) is open it should
+  // visually own the window. These control clusters are `fixed` at a higher
+  // z-index than the overlay card, so they'd otherwise bleed over it — hide them
+  // and let the overlay's own chrome (close button, drag region) take over.
+  if (isOverlayView(appViewForPath(location.pathname))) {
+    return null
+  }
 
   const visibleSystemTools = systemTools.filter(tool => !tool.hidden)
   const settingsTool = visibleSystemTools.find(tool => tool.id === 'settings')
@@ -185,15 +201,20 @@ function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavig
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button
+        <Button
           aria-label={t('shell.titlebar.profiles')}
-          className={cn(titlebarButtonClass, 'grid place-items-center bg-transparent select-none [&_svg]:size-4')}
+          className={cn(titlebarButtonClass, 'bg-transparent select-none')}
           onPointerDown={event => event.stopPropagation()}
+          size="icon-titlebar"
           title={t('shell.titlebar.profiles')}
           type="button"
+          variant="ghost"
         >
-          <Codicon name="account" />
-        </button>
+          {/* Optical bump: the `account` glyph has more internal padding than
+              `search`/`settings-gear`, so at the shared 0.875rem it reads small.
+              Nudge just this glyph to visually match its neighbours. */}
+          <Codicon name="account" size="1rem" />
+        </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64" sideOffset={8}>
         <DropdownMenuLabel>
@@ -218,31 +239,30 @@ function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavig
 }
 
 function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof useNavigate>; tool: TitlebarTool }) {
-  const className = cn(
-    titlebarButtonClass,
-    'grid place-items-center bg-transparent select-none [&_svg]:size-4',
-    tool.active && 'bg-(--ui-control-active-background)! text-foreground!',
-    tool.className
-  )
+  // Titlebar actions never show an active background — state reads from the
+  // icon itself (e.g. the mute/unmute glyph). aria-pressed still carries it
+  // for a11y.
+  const className = cn(titlebarButtonClass, 'bg-transparent select-none', tool.className)
 
   if (tool.href) {
     return (
-      <a
-        aria-label={tool.label}
-        className={className}
-        href={tool.href}
-        onPointerDown={event => event.stopPropagation()}
-        rel="noreferrer"
-        target="_blank"
-        title={tool.title ?? tool.label}
-      >
-        {tool.icon}
-      </a>
+      <Button asChild className={className} size="icon-titlebar" variant="ghost">
+        <a
+          aria-label={tool.label}
+          href={tool.href}
+          onPointerDown={event => event.stopPropagation()}
+          rel="noreferrer"
+          target="_blank"
+          title={tool.title ?? tool.label}
+        >
+          {tool.icon}
+        </a>
+      </Button>
     )
   }
 
   return (
-    <button
+    <Button
       aria-label={tool.label}
       aria-pressed={tool.active ?? undefined}
       className={className}
@@ -255,10 +275,12 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
         tool.onSelect?.()
       }}
       onPointerDown={event => event.stopPropagation()}
+      size="icon-titlebar"
       title={tool.title ?? tool.label}
       type="button"
+      variant="ghost"
     >
       {tool.icon}
-    </button>
+    </Button>
   )
 }

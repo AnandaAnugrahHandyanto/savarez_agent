@@ -4,9 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { getGlobalModelOptions } from '@/hermes'
-import { useTranslation } from '@/i18n'
+import { type Translate, useTranslation } from '@/i18n'
 import {
   Check,
   ChevronDown,
@@ -54,7 +55,6 @@ interface ApiKeyOption {
   id: string
   name: string
   placeholder?: string
-  placeholderKey?: string
   shortKey?: string
 }
 
@@ -170,20 +170,20 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
 
   return (
     <div className="fixed inset-0 z-1300 flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
-      <div className="w-full max-w-[45rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-sm">
+      <div className="relative w-full max-w-[45rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-sm">
         <Header />
+        {onboarding.manual ? (
+          <Button
+            aria-label={t('common.close')}
+            className="absolute right-3 top-3 z-10 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+            onClick={() => closeManualOnboarding()}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <Codicon name="close" size="1rem" />
+          </Button>
+        ) : null}
         <div className="grid gap-3 p-5">
-          {onboarding.manual ? (
-            <div className="flex justify-end">
-              <button
-                className="text-xs font-medium text-muted-foreground transition hover:text-foreground"
-                onClick={() => closeManualOnboarding()}
-                type="button"
-              >
-                {t('common.close')}
-              </button>
-            </div>
-          ) : null}
           {reason ? <ReasonNotice reason={reason} /> : null}
           {ready ? showPicker ? <Picker ctx={ctx} /> : <FlowPanel ctx={ctx} flow={flow} /> : <Preparing boot={boot} />}
         </div>
@@ -209,9 +209,7 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
   return (
     <div className="grid gap-3" role="status">
       <p className="text-sm text-muted-foreground">
-        {installing
-          ? t('onboarding.preparing.installing')
-          : t('onboarding.preparing.starting')}
+        {installing ? t('onboarding.preparing.installing') : t('onboarding.preparing.starting')}
       </p>
       <div className="h-2 overflow-hidden rounded-full bg-muted">
         <div
@@ -252,7 +250,6 @@ function Header() {
 }
 
 const FEATURED_ID = 'nous'
-const FEATURED_PITCH_KEY = 'onboarding.featured.pitch'
 const SHOW_ALL_KEY = 'hermes-onboarding-show-all-v1'
 
 const readShowAll = () => {
@@ -298,11 +295,11 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
 
   return (
     <div className="grid gap-2">
-      {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
+      {featured ? <FeaturedProviderRow onSelect={select} provider={featured} t={t} /> : null}
       {showRest ? (
         <>
           {rest.map(p => (
-            <ProviderRow key={p.id} onSelect={select} provider={p} />
+            <ProviderRow key={p.id} onSelect={select} provider={p} t={t} />
           ))}
           <KeyProviderRow onClick={() => setOnboardingMode('apikey')} />
         </>
@@ -332,12 +329,13 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
 
 function FeaturedProviderRow({
   onSelect,
-  provider
+  provider,
+  t
 }: {
   onSelect: (provider: OAuthProvider) => void
   provider: OAuthProvider
+  t: Translate
 }) {
-  const t = useTranslation()
   const loggedIn = provider.status?.logged_in
 
   return (
@@ -362,7 +360,7 @@ function FeaturedProviderRow({
             </span>
           )}
         </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t(FEATURED_PITCH_KEY)}</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t('onboarding.featured.pitch')}</p>
       </div>
       <ChevronRight className="size-5 shrink-0 text-primary transition group-hover:translate-x-0.5" />
     </button>
@@ -398,8 +396,15 @@ function KeyProviderRow({ onClick }: { onClick: () => void }) {
   )
 }
 
-function ProviderRow({ onSelect, provider }: { onSelect: (provider: OAuthProvider) => void; provider: OAuthProvider }) {
-  const t = useTranslation()
+function ProviderRow({
+  onSelect,
+  provider,
+  t
+}: {
+  onSelect: (provider: OAuthProvider) => void
+  provider: OAuthProvider
+  t: Translate
+}) {
   const loggedIn = provider.status?.logged_in
   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
 
@@ -587,9 +592,7 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
   if (flow.status === 'awaiting_browser') {
     return (
       <Step title={t('onboarding.flow.signInWith', { provider: title })}>
-        <p className="text-sm text-muted-foreground">
-          {t('onboarding.flow.browserAutoConnect', { provider: title })}
-        </p>
+        <p className="text-sm text-muted-foreground">{t('onboarding.flow.browserAutoConnect', { provider: title })}</p>
         <FlowFooter left={<DocsLink href={flow.start.auth_url}>{t('onboarding.flow.reopenSignIn')}</DocsLink>}>
           <span className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="size-3 animate-spin" />
@@ -604,9 +607,7 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
   if (flow.status === 'external_pending') {
     return (
       <Step title={t('onboarding.flow.signInWith', { provider: title })}>
-        <p className="text-sm text-muted-foreground">
-          {t('onboarding.flow.externalInstruction', { provider: title })}
-        </p>
+        <p className="text-sm text-muted-foreground">{t('onboarding.flow.externalInstruction', { provider: title })}</p>
         <CodeBlock copied={flow.copied} onCopy={() => void copyExternalCommand()} text={flow.provider.cli_command} />
         <FlowFooter
           left={flow.provider.docs_url ? <DocsLink href={flow.provider.docs_url}>{title} docs</DocsLink> : null}
@@ -629,7 +630,9 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
     <Step title={t('onboarding.flow.signInWith', { provider: title })}>
       <p className="text-sm text-muted-foreground">{t('onboarding.flow.enterCode', { provider: title })}</p>
       <CodeBlock copied={flow.copied} large onCopy={() => void copyDeviceCode()} text={flow.start.user_code} />
-      <FlowFooter left={<DocsLink href={flow.start.verification_url}>{t('onboarding.flow.reopenVerification')}</DocsLink>}>
+      <FlowFooter
+        left={<DocsLink href={flow.start.verification_url}>{t('onboarding.flow.reopenVerification')}</DocsLink>}
+      >
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="size-3 animate-spin" />
           {t('onboarding.flow.waitingAuthorization')}
@@ -699,6 +702,7 @@ function ConfirmingModelPanel({
   flow: Extract<OnboardingFlow, { status: 'confirming_model' }>
 }) {
   const t = useTranslation()
+
   // Local state controls whether the model picker dialog is open.
   // We reuse the existing ModelPickerDialog component (the same picker
   // available from the chat shell) rather than building an inline

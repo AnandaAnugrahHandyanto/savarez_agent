@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { KbdGroup } from '@/components/ui/kbd'
+import { SearchField } from '@/components/ui/search-field'
 import {
   Sidebar,
   SidebarContent,
@@ -37,6 +38,7 @@ import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/he
 import { useTranslation } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
+  $panesFlipped,
   $pinnedSessionIds,
   $sidebarAgentsGrouped,
   $sidebarOpen,
@@ -226,6 +228,7 @@ export function ChatSidebar({
 }: ChatSidebarProps) {
   const t = useTranslation()
   const sidebarOpen = useStore($sidebarOpen)
+  const panesFlipped = useStore($panesFlipped)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
@@ -239,7 +242,27 @@ export function ChatSidebar({
   const [workspaceOrderIds, setWorkspaceOrderIds] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
+  const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
   const trimmedQuery = searchQuery.trim()
+
+  // Flash the ⌘N hint full-opacity (no transition) for the press, so hitting
+  // the shortcut visibly pings its affordance in the sidebar.
+  useEffect(() => {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+
+    const onShortcut = () => {
+      setNewSessionKbdFlash(true)
+      clearTimeout(timeout)
+      timeout = setTimeout(() => setNewSessionKbdFlash(false), 140)
+    }
+
+    window.addEventListener('hermes:new-session-shortcut', onShortcut)
+
+    return () => {
+      window.removeEventListener('hermes:new-session-shortcut', onShortcut)
+      clearTimeout(timeout)
+    }
+  }, [])
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
 
@@ -361,11 +384,6 @@ export function ChatSidebar({
   const hasMoreSessions = knownSessionTotal > sortedSessions.length
   const remainingSessionCount = Math.max(0, knownSessionTotal - sortedSessions.length)
 
-  const sidebarNav = useMemo<SidebarNavItem[]>(
-    () => SIDEBAR_NAV.map(item => ({ ...item, label: t(item.labelKey) })),
-    [t]
-  )
-
   const handlePinnedDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id) {
       return
@@ -423,7 +441,8 @@ export function ChatSidebar({
   return (
     <Sidebar
       className={cn(
-        'relative h-full min-w-0 overflow-hidden border-r border-t-0 border-b-0 border-l-0 text-foreground transition-none',
+        'relative h-full min-w-0 overflow-hidden border-t-0 border-b-0 text-foreground transition-none',
+        panesFlipped ? 'border-l border-r-0' : 'border-r border-l-0',
         sidebarOpen
           ? 'border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) opacity-100'
           : 'pointer-events-none border-transparent bg-transparent opacity-0'
@@ -434,7 +453,7 @@ export function ChatSidebar({
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
-              {sidebarNav.map(item => {
+              {SIDEBAR_NAV.map(item => {
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =
@@ -447,22 +466,25 @@ export function ChatSidebar({
                     <SidebarMenuButton
                       aria-disabled={!isInteractive}
                       className={cn(
-                        'flex h-7 w-full cursor-pointer justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
+                        'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
                         active &&
                           'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!',
                         !isInteractive &&
                           'cursor-default hover:border-transparent hover:bg-transparent hover:text-inherit'
                       )}
-                      onClick={() => onNavigate(item)}
-                      tooltip={item.label}
+                      onClick={() => onNavigate({ ...item, label: t(item.labelKey) })}
+                      tooltip={t(item.labelKey)}
                       type="button"
                     >
                       <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
                       {sidebarOpen && (
                         <>
-                          <span className="min-w-0 flex-1 truncate max-[46.25rem]:hidden">{item.label}</span>
+                          <span className="min-w-0 flex-1 truncate max-[46.25rem]:hidden">{t(item.labelKey)}</span>
                           {item.id === 'new-session' && (
-                            <KbdGroup className="ml-auto max-[46.25rem]:hidden" keys={[...NEW_SESSION_KBD]} />
+                            <KbdGroup
+                              className={cn('ml-auto max-[46.25rem]:hidden', newSessionKbdFlash && 'opacity-100!')}
+                              keys={[...NEW_SESSION_KBD]}
+                            />
                           )}
                         </>
                       )}
@@ -475,28 +497,13 @@ export function ChatSidebar({
         </SidebarGroup>
 
         {sidebarOpen && showSessionSections && (
-          <div className="shrink-0 pb-1 pt-1">
-            <div className="flex items-center gap-1.5 rounded-md border border-transparent bg-transparent px-2 transition-colors focus-within:border-(--ui-stroke-tertiary)">
-              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="search" size="0.75rem" />
-              <input
-                aria-label={t('chat.sidebar.searchSessions')}
-                className="h-6 min-w-0 flex-1 bg-transparent text-[0.8125rem] text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-none"
-                onChange={event => setSearchQuery(event.target.value)}
-                placeholder={t('chat.sidebar.searchSessionsPlaceholder')}
-                type="text"
-                value={searchQuery}
-              />
-              {searchQuery && (
-                <button
-                  aria-label={t('chat.sidebar.clearSearch')}
-                  className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground"
-                  onClick={() => setSearchQuery('')}
-                  type="button"
-                >
-                  <Codicon name="close" size="0.75rem" />
-                </button>
-              )}
-            </div>
+          <div className="shrink-0 px-2 pb-1 pt-1">
+            <SearchField
+              aria-label={t('chat.sidebar.searchSessions')}
+              onChange={setSearchQuery}
+              placeholder={t('chat.sidebar.searchSessionsPlaceholder')}
+              value={searchQuery}
+            />
           </div>
         )}
 
@@ -569,11 +576,9 @@ export function ChatSidebar({
               // a phantom click target.
               agentSessions.length > 0 ? (
                 <Button
-                  aria-label={
-                    agentsGrouped ? t('chat.sidebar.showSingleList') : t('chat.sidebar.groupByWorkspace')
-                  }
+                  aria-label={agentsGrouped ? t('chat.sidebar.showSingleList') : t('chat.sidebar.groupByWorkspace')}
                   className={cn(
-                    'cursor-pointer text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                    'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
                     agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
                   )}
                   onClick={event => {
@@ -623,7 +628,7 @@ function SidebarSectionHeader({ label, open, onToggle, action, meta }: SidebarSe
   return (
     <div className="group/section flex shrink-0 items-center justify-between pb-1 pt-1.5">
       <button
-        className="group/section-label flex w-fit cursor-pointer items-center gap-1 bg-transparent text-left leading-none"
+        className="group/section-label flex w-fit items-center gap-1 bg-transparent text-left leading-none"
         onClick={onToggle}
         type="button"
       >
@@ -652,9 +657,15 @@ function SidebarSessionSkeletons() {
   )
 }
 
-const SidebarAllPinnedState = () => (
-  <SidebarTranslatedEmptyState translationKey="chat.sidebar.allPinned" />
-)
+function SidebarAllPinnedState() {
+  const t = useTranslation()
+
+  return (
+    <div className="grid min-h-24 place-items-center rounded-lg text-center text-xs text-(--ui-text-tertiary)">
+      {t('chat.sidebar.allPinned')}
+    </div>
+  )
+}
 
 function SidebarPinnedEmptyState() {
   const t = useTranslation()
@@ -665,16 +676,6 @@ function SidebarPinnedEmptyState() {
         <Codicon name="pin" size="0.75rem" />
       </span>
       <span>{t('chat.sidebar.pinnedHint')}</span>
-    </div>
-  )
-}
-
-function SidebarTranslatedEmptyState({ translationKey }: { translationKey: string }) {
-  const t = useTranslation()
-
-  return (
-    <div className="grid min-h-24 place-items-center rounded-lg text-center text-xs text-(--ui-text-tertiary)">
-      {t(translationKey)}
     </div>
   )
 }
@@ -878,7 +879,7 @@ function SidebarWorkspaceGroup({
     <div className={cn('grid gap-px', dragging && 'z-10 opacity-60', className)} ref={ref} style={style} {...rest}>
       <div className="group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">
         <button
-          className="flex min-w-0 cursor-pointer items-center gap-1 bg-transparent text-left hover:text-(--ui-text-secondary)"
+          className="flex min-w-0 items-center gap-1 bg-transparent text-left hover:text-(--ui-text-secondary)"
           onClick={() => setOpen(value => !value)}
           title={group.path ?? undefined}
           type="button"
@@ -892,10 +893,14 @@ function SidebarWorkspaceGroup({
         </button>
         {onNewSession && (
           <button
-            aria-label={t('chat.sidebar.newSessionInWorkspace', { workspace: group.label || t('chat.sidebar.noWorkspace') })}
-            className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
+            aria-label={t('chat.sidebar.newSessionInWorkspace', {
+              workspace: group.label || t('chat.sidebar.noWorkspace')
+            })}
+            className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
             onClick={() => onNewSession(group.path)}
-            title={t('chat.sidebar.newSessionInWorkspace', { workspace: group.label || t('chat.sidebar.noWorkspace') })}
+            title={t('chat.sidebar.newSessionInWorkspace', {
+              workspace: group.label || t('chat.sidebar.noWorkspace')
+            })}
             type="button"
           >
             <Codicon name="add" size="0.75rem" />
@@ -904,7 +909,9 @@ function SidebarWorkspaceGroup({
         {reorderable && (
           <span
             {...dragHandleProps}
-            aria-label={t('chat.sidebar.reorderWorkspace', { workspace: group.label || t('chat.sidebar.noWorkspace') })}
+            aria-label={t('chat.sidebar.reorderWorkspace', {
+              workspace: group.label || t('chat.sidebar.noWorkspace')
+            })}
             className="ml-auto -my-0.5 grid w-4 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing"
             onClick={event => event.stopPropagation()}
           >
@@ -928,7 +935,7 @@ function SidebarWorkspaceGroup({
                 count: nextCount,
                 workspace: group.label || t('chat.sidebar.noWorkspace')
               })}
-              className="ml-auto grid size-5 cursor-pointer place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
+              className="ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
               onClick={() => setVisibleCount(count => count + WORKSPACE_PAGE)}
               title={t('chat.sidebar.showMoreInWorkspace', {
                 count: nextCount,
@@ -982,11 +989,15 @@ interface SidebarLoadMoreRowProps {
 
 function SidebarLoadMoreRow({ loading, onClick, step }: SidebarLoadMoreRowProps) {
   const t = useTranslation()
-  const label = loading ? t('common.loading') : step > 0 ? t('chat.sidebar.loadMoreCount', { count: step }) : t('chat.sidebar.loadMore')
+  const label = loading
+    ? t('common.loading')
+    : step > 0
+      ? t('chat.sidebar.loadMoreCount', { count: step })
+      : t('chat.sidebar.loadMore')
 
   return (
     <button
-      className="flex min-h-5 cursor-pointer items-center gap-1 self-start bg-transparent pl-2 text-left text-[0.6875rem] text-(--ui-text-tertiary) transition-colors duration-100 ease-out hover:text-foreground hover:transition-none disabled:cursor-default disabled:opacity-60 disabled:hover:text-(--ui-text-tertiary)"
+      className="flex min-h-5 items-center gap-1 self-start bg-transparent pl-2 text-left text-[0.6875rem] text-(--ui-text-tertiary) transition-colors duration-100 ease-out hover:text-foreground hover:transition-none disabled:cursor-default disabled:opacity-60 disabled:hover:text-(--ui-text-tertiary)"
       disabled={loading}
       onClick={onClick}
       type="button"

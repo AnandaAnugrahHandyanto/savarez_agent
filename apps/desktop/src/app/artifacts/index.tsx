@@ -5,7 +5,6 @@ import { useNavigate } from 'react-router-dom'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import {
   Pagination,
@@ -26,7 +25,9 @@ import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { PAGE_INSET_NEG_X, PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
 import { sessionRoute } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -306,8 +307,8 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
   return Array.from(found.values())
 }
 
-function formatArtifactTime(timestamp: number, t: Translate): string {
-  return t('artifacts.timestamp', { time: ARTIFACT_TIME_FMT.format(new Date(timestamp)) })
+function formatArtifactTime(timestamp: number): string {
+  return ARTIFACT_TIME_FMT.format(new Date(timestamp))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, t: Translate): string {
@@ -353,9 +354,9 @@ type CellCtx = {
 }
 
 interface ArtifactColumn {
-  Cell: (props: { artifact: ArtifactRecord; ctx: CellCtx; t: Translate }) => React.ReactElement
+  Cell: (props: { artifact: ArtifactRecord; ctx: CellCtx }) => React.ReactElement
   bodyClassName: string
-  header: (filter: ArtifactFilter, t: Translate) => string
+  header: (filter: ArtifactFilter) => string
   id: 'location' | 'primary' | 'session'
   width: (filter: ArtifactFilter) => string
 }
@@ -375,14 +376,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
 
-  const [refreshing, setRefreshing] = useState(false)
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(() => new Set())
   const [imagePage, setImagePage] = useState(1)
   const [filePage, setFilePage] = useState(1)
 
   const refreshArtifacts = useCallback(async () => {
-    setRefreshing(true)
-
     try {
       const sessions = (await listSessions(30, 1)).sessions
       const results = await Promise.allSettled(sessions.map(session => getSessionMessages(session.id)))
@@ -401,10 +399,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     } catch (err) {
       notifyError(err, t('artifacts.loadError'))
       setArtifacts([])
-    } finally {
-      setRefreshing(false)
     }
   }, [t])
+
+  useRefreshHotkey(refreshArtifacts)
 
   useEffect(() => {
     void refreshArtifacts()
@@ -475,17 +473,20 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [artifacts])
 
-  const openArtifact = useCallback(async (href: string) => {
-    try {
-      if (window.hermesDesktop?.openExternal) {
-        await window.hermesDesktop.openExternal(href)
-      } else {
-        window.open(href, '_blank', 'noopener,noreferrer')
+  const openArtifact = useCallback(
+    async (href: string) => {
+      try {
+        if (window.hermesDesktop?.openExternal) {
+          await window.hermesDesktop.openExternal(href)
+        } else {
+          window.open(href, '_blank', 'noopener,noreferrer')
+        }
+      } catch (err) {
+        notifyError(err, t('artifacts.openFailed'))
       }
-    } catch (err) {
-      notifyError(err, t('artifacts.openFailed'))
-    }
-  }, [t])
+    },
+    [t]
+  )
 
   const markImageFailed = useCallback((id: string) => {
     setFailedImageIds(current => {
@@ -505,7 +506,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   return (
     <PageSearchShell
       {...props}
-      filters={
+      onSearchChange={setQuery}
+      searchHidden={counts.all === 0}
+      searchPlaceholder={t('artifacts.search')}
+      searchValue={query}
+      tabs={
         <>
           <TextTab active={kindFilter === 'all'} onClick={() => setKindFilter('all')}>
             {t('common.all')} <TextTabMeta>({counts.all})</TextTabMeta>
@@ -521,23 +526,6 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           </TextTab>
         </>
       }
-      onSearchChange={setQuery}
-      searchPlaceholder={t('artifacts.search')}
-      searchTrailingAction={
-        <Button
-          aria-label={refreshing ? t('artifacts.refreshing') : t('artifacts.refresh')}
-          className="text-(--ui-text-tertiary) hover:bg-transparent hover:text-foreground"
-          disabled={refreshing}
-          onClick={() => void refreshArtifacts()}
-          size="icon-xs"
-          title={refreshing ? t('artifacts.refreshing') : t('artifacts.refresh')}
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.875rem" spinning={refreshing} />
-        </Button>
-      }
-      searchValue={query}
     >
       {!artifacts ? (
         <PageLoader label={t('artifacts.loading')} />
@@ -550,17 +538,22 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         </div>
       ) : (
         <div className="h-full overflow-y-auto">
-          <div className="flex flex-col gap-3 px-2 pb-2">
+          <div className={cn('flex flex-col gap-3 pb-2', PAGE_INSET_X)}>
             {visibleImageArtifacts.length > 0 && (
               <section className="flex flex-col">
-                <div className="sticky top-0 z-10 -mx-2 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
+                <div
+                  className={cn(
+                    'sticky top-0 z-10 flex h-7 items-center gap-3 overflow-x-auto bg-background',
+                    PAGE_INSET_NEG_X,
+                    PAGE_INSET_X
+                  )}
+                >
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
                     itemLabel={t('artifacts.items.images')}
                     onPageChange={setImagePage}
                     page={currentImagePage}
                     pageSize={24}
-                    t={t}
                     total={visibleImageArtifacts.length}
                   />
                 </div>
@@ -581,18 +574,23 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
             {visibleFileArtifacts.length > 0 && (
               <section className="flex flex-col">
-                <div className="sticky top-0 z-10 -mx-2 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
+                <div
+                  className={cn(
+                    'sticky top-0 z-10 flex h-7 items-center gap-3 overflow-x-auto bg-background',
+                    PAGE_INSET_NEG_X,
+                    PAGE_INSET_X
+                  )}
+                >
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
                     itemLabel={itemsLabel(kindFilter, t)}
                     onPageChange={setFilePage}
                     page={currentFilePage}
                     pageSize={100}
-                    t={t}
                     total={visibleFileArtifacts.length}
                   />
                 </div>
-                <div className="overflow-x-auto rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) shadow-sm">
+                <div className="overflow-x-auto rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
                   <ArtifactTable artifacts={pagedFileArtifacts} ctx={cellCtx} filter={kindFilter} t={t} />
                 </div>
               </section>
@@ -610,11 +608,11 @@ interface ArtifactsPaginationProps {
   onPageChange: (page: number) => void
   page: number
   pageSize: number
-  t: Translate
   total: number
 }
 
-function ArtifactsPagination({ className, itemLabel, onPageChange, page, pageSize, t, total }: ArtifactsPaginationProps) {
+function ArtifactsPagination({ className, itemLabel, onPageChange, page, pageSize, total }: ArtifactsPaginationProps) {
+  const t = useTranslation()
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
 
   return (
@@ -666,11 +664,7 @@ interface ArtifactImageCardProps {
 
 function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat, t }: ArtifactImageCardProps) {
   return (
-    <article
-      className={cn(
-        'group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) shadow-sm'
-      )}
-    >
+    <article className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
       <div
         className={cn(
           'relative flex h-40 w-full items-center justify-center overflow-hidden border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-1.5',
@@ -680,7 +674,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat, t 
         {!failedImage && (
           <ZoomableImage
             alt={artifact.label}
-            className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain shadow-sm"
+            className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain"
             containerClassName="max-h-full"
             decoding="async"
             loading="lazy"
@@ -704,11 +698,11 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat, t 
         </div>
 
         <div className="truncate text-[0.625rem] text-(--ui-text-tertiary)">
-          {artifact.sessionTitle} · {formatArtifactTime(artifact.timestamp, t)}
+          {artifact.sessionTitle} · {formatArtifactTime(artifact.timestamp)}
         </div>
 
         <div className="flex flex-wrap gap-1.5">
-          <Button onClick={() => onOpenChat(artifact.sessionId)} size="xs" type="button" variant="outline">
+          <Button onClick={() => onOpenChat(artifact.sessionId)} size="xs" type="button" variant="textStrong">
             <FolderOpen className="size-3" />
             {t('artifacts.chat')}
           </Button>
@@ -747,10 +741,7 @@ function ArtifactCellAction({
 
   return (
     <button
-      className={cn(
-        'flex h-full w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) font-normal text-(--ui-text-secondary) no-underline underline-offset-4 decoration-current/20 transition-colors hover:text-foreground hover:underline',
-        'cursor-pointer'
-      )}
+      className="flex h-full w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) font-normal text-(--ui-text-secondary) no-underline underline-offset-4 decoration-current/20 transition-colors hover:text-foreground hover:underline"
       onClick={onClick}
       title={title}
       type="button"
@@ -760,7 +751,7 @@ function ArtifactCellAction({
   )
 }
 
-function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx; t: Translate }) {
+function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   const isLink = artifact.kind === 'link'
   const Icon = isLink ? Link2 : FileText
   const fetchedTitle = useLinkTitle(isLink ? artifact.href : null)
@@ -783,9 +774,10 @@ function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx
   )
 }
 
-function LocationCell({ artifact, t }: { artifact: ArtifactRecord; ctx: CellCtx; t: Translate }) {
+function LocationCell({ artifact }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   const isLink = artifact.kind === 'link'
   const value = isLink ? hostPathLabel(artifact.value) : artifact.value
+  const t = useTranslation()
   const copyLabel = isLink ? t('artifacts.copyUrl') : t('artifacts.copyPath')
 
   return (
@@ -812,13 +804,13 @@ function LocationCell({ artifact, t }: { artifact: ArtifactRecord; ctx: CellCtx;
   )
 }
 
-function SessionCell({ artifact, ctx, t }: { artifact: ArtifactRecord; ctx: CellCtx; t: Translate }) {
+function SessionCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   return (
     <ArtifactCellAction onClick={() => ctx.onOpenChat(artifact.sessionId)} title={artifact.sessionTitle}>
       <span className="flex min-w-0 flex-col">
         <span className="truncate">{artifact.sessionTitle}</span>
         <span className="truncate text-[0.6875rem] font-normal text-(--ui-text-tertiary)">
-          {formatArtifactTime(artifact.timestamp, t)}
+          {formatArtifactTime(artifact.timestamp)}
         </span>
       </span>
     </ArtifactCellAction>
@@ -829,27 +821,31 @@ const ARTIFACT_COLUMNS: readonly ArtifactColumn[] = [
   {
     Cell: PrimaryCell,
     bodyClassName: 'p-0',
-    header: (filter, t) =>
+    header: filter =>
       filter === 'link'
-        ? t('artifacts.headers.linkTitle')
+        ? 'artifacts.headers.linkTitle'
         : filter === 'file'
-          ? t('artifacts.headers.name')
-          : t('artifacts.headers.titleName'),
+          ? 'artifacts.headers.name'
+          : 'artifacts.headers.titleName',
     id: 'primary',
     width: filter => (filter === 'link' ? 'w-[50%]' : 'w-[35%]')
   },
   {
     Cell: LocationCell,
     bodyClassName: 'px-2.5 py-1.5',
-    header: (filter, t) =>
-      filter === 'link' ? 'URL' : filter === 'file' ? t('artifacts.headers.path') : t('artifacts.headers.location'),
+    header: filter =>
+      filter === 'link'
+        ? 'artifacts.headers.url'
+        : filter === 'file'
+          ? 'artifacts.headers.path'
+          : 'artifacts.headers.location',
     id: 'location',
     width: filter => (filter === 'link' ? 'w-[30%]' : 'w-[41%]')
   },
   {
     Cell: SessionCell,
     bodyClassName: 'p-0',
-    header: (_filter, t) => t('artifacts.headers.session'),
+    header: () => 'artifacts.headers.session',
     id: 'session',
     width: filter => (filter === 'link' ? 'w-[20%]' : 'w-[24%]')
   }
@@ -872,12 +868,12 @@ function ArtifactTable({
         <tr>
           {ARTIFACT_COLUMNS.map(col => (
             <th className={cn(col.width(filter), 'px-2.5 py-1.5 font-medium')} key={col.id}>
-              {col.header(filter, t)}
+              {t(col.header(filter))}
             </th>
           ))}
         </tr>
       </thead>
-      <tbody className="divide-y divide-(--ui-stroke-quaternary)">
+      <tbody>
         {artifacts.map(artifact => (
           <tr className="group/artifact" key={artifact.id}>
             {ARTIFACT_COLUMNS.map(col => {
@@ -885,7 +881,7 @@ function ArtifactTable({
 
               return (
                 <td className={cn('align-middle', col.bodyClassName)} key={col.id}>
-                  <Cell artifact={artifact} ctx={ctx} t={t} />
+                  <Cell artifact={artifact} ctx={ctx} />
                 </td>
               )
             })}
