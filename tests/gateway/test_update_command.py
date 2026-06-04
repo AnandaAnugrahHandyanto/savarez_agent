@@ -86,10 +86,8 @@ class TestHandleUpdateCommand:
         runner = _make_runner()
         event = _make_event()
 
-        # Create project dir WITH .git
         fake_root = tmp_path / "project"
         fake_root.mkdir()
-        (fake_root / ".git").mkdir()
         (fake_root / "gateway").mkdir()
         (fake_root / "gateway" / "run.py").touch()
         fake_file = str(fake_root / "gateway" / "run.py")
@@ -111,7 +109,6 @@ class TestHandleUpdateCommand:
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
-        (fake_root / ".git").mkdir()
         (fake_root / "gateway").mkdir()
         (fake_root / "gateway" / "run.py").touch()
         fake_file = str(fake_root / "gateway" / "run.py")
@@ -177,7 +174,6 @@ class TestHandleUpdateCommand:
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
-        (fake_root / ".git").mkdir()
         (fake_root / "gateway").mkdir()
         (fake_root / "gateway" / "run.py").touch()
         fake_file = str(fake_root / "gateway" / "run.py")
@@ -213,7 +209,6 @@ class TestHandleUpdateCommand:
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
-        (fake_root / ".git").mkdir()
         (fake_root / "gateway").mkdir()
         (fake_root / "gateway" / "run.py").touch()
         fake_file = str(fake_root / "gateway" / "run.py")
@@ -238,7 +233,6 @@ class TestHandleUpdateCommand:
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
-        (fake_root / ".git").mkdir()
         (fake_root / "gateway").mkdir()
         (fake_root / "gateway" / "run.py").touch()
         fake_file = str(fake_root / "gateway" / "run.py")
@@ -267,7 +261,6 @@ class TestHandleUpdateCommand:
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
-        (fake_root / ".git").mkdir()
         (fake_root / "gateway").mkdir()
         (fake_root / "gateway" / "run.py").touch()
         fake_file = str(fake_root / "gateway" / "run.py")
@@ -307,7 +300,6 @@ class TestHandleUpdateCommand:
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
-        (fake_root / ".git").mkdir()
         (fake_root / "gateway").mkdir()
         (fake_root / "gateway" / "run.py").touch()
         fake_file = str(fake_root / "gateway" / "run.py")
@@ -333,7 +325,6 @@ class TestHandleUpdateCommand:
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
-        (fake_root / ".git").mkdir()
         (fake_root / "gateway").mkdir()
         (fake_root / "gateway" / "run.py").touch()
         fake_file = str(fake_root / "gateway" / "run.py")
