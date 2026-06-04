@@ -3,6 +3,59 @@ import pytest
 from hermes_cli import runtime_provider as rp
 
 
+def test_copilot_explicit_api_key_uses_target_model_for_api_mode(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "copilot",
+            "default": "gpt-4.1",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="copilot",
+        explicit_api_key="copilot-token",
+        target_model="gpt-5.5",
+    )
+
+    assert resolved["provider"] == "copilot"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://api.githubcopilot.com"
+
+
+def test_copilot_api_key_provider_uses_target_model_for_api_mode(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "copilot",
+            "default": "gpt-4.1",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": provider,
+            "api_key": "copilot-token",
+            "base_url": "https://api.githubcopilot.com",
+            "source": "env:COPILOT_GITHUB_TOKEN",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="copilot",
+        target_model="gpt-5.5",
+    )
+
+    assert resolved["provider"] == "copilot"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://api.githubcopilot.com"
+
+
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     class _Entry:
         access_token = "pool-token"
