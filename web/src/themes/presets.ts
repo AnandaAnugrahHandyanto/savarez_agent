@@ -15,9 +15,8 @@ import type { DashboardTheme, ThemeTypography, ThemeLayout } from "./types";
 // Shared typography / layout presets
 // ---------------------------------------------------------------------------
 
-/** Default system stack — neutral, safe fallback for every platform. */
-const SYSTEM_SANS =
-  'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+/** Simple, broadly available stack for the default dashboard theme. */
+const SYSTEM_SANS = 'Arial, "Helvetica Neue", Helvetica, sans-serif';
 const SYSTEM_MONO =
   'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace';
 
@@ -40,14 +39,14 @@ const DEFAULT_LAYOUT: ThemeLayout = {
 
 export const defaultTheme: DashboardTheme = {
   name: "default",
-  label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  label: "Simple",
+  description: "Plain light dashboard with Arial and dark text",
   palette: {
-    background: { hex: "#041c1c", alpha: 1 },
-    midground: { hex: "#ffe6cb", alpha: 1 },
+    background: { hex: "#f7f7f7", alpha: 1 },
+    midground: { hex: "#1f2937", alpha: 1 },
     foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(255, 189, 56, 0.35)",
-    noiseOpacity: 1,
+    warmGlow: "transparent",
+    noiseOpacity: 0,
   },
   typography: DEFAULT_TYPOGRAPHY,
   layout: DEFAULT_LAYOUT,
@@ -190,8 +189,8 @@ export const roseTheme: DashboardTheme = {
  */
 export const defaultLargeTheme: DashboardTheme = {
   name: "default-large",
-  label: "Hermes Teal (Large)",
-  description: "Hermes Teal with bigger fonts and roomier spacing",
+  label: "Simple (Large)",
+  description: "Simple light dashboard with bigger fonts and roomier spacing",
   palette: defaultTheme.palette,
   typography: {
     ...DEFAULT_TYPOGRAPHY,

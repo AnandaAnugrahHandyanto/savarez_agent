@@ -450,7 +450,7 @@ export default function App() {
   return (
     <div
       data-layout-variant={layoutVariant}
-      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased"
+      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
     >
       <SelectionSwitcher />
       <Backdrop />
@@ -483,7 +483,6 @@ export default function App() {
 
         <Typography
           className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
-          style={{ mixBlendMode: "plus-lighter" }}
         >
           {t.app.brand}
         </Typography>
@@ -541,7 +540,6 @@ export default function App() {
 
                 <Typography
                   className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
-                  style={{ mixBlendMode: "plus-lighter" }}
                 >
                   Hermes
                   <br />
@@ -818,7 +816,6 @@ function SidebarNavLink({
               <span
                 aria-hidden
                 className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                style={{ mixBlendMode: "plus-lighter" }}
               />
             )}
           </>
@@ -979,7 +976,6 @@ function SystemActionButton({
           <span
             aria-hidden
             className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-            style={{ mixBlendMode: "plus-lighter" }}
           />
         )}
       </button>

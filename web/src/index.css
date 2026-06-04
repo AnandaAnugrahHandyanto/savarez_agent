@@ -43,34 +43,31 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* Hermes Agent — Nous DS with the LENS_0 (Hermes teal) lens applied   */
-/* statically. Mirrors nousnet-web/(hermes-agent)/layout.tsx so the    */
-/* canonical Hermes palette is the default — teal canvas + cream      */
-/* accent — without relying on leva/gsap at runtime.                  */
+/* Hermes Agent — simple light dashboard defaults. The ThemeProvider   */
+/* can still repaint these values, but a first load should be plain:   */
+/* no image backdrop, Arial, and dark text on a light canvas.          */
 /* ------------------------------------------------------------------ */
 
 :root {
-  /* LENS_0 — from design-language/src/ui/components/overlays/index.tsx.
-     These are the defaults for the `default` (Hermes Teal) dashboard theme;
+  /* Defaults for the built-in `default` (Simple) dashboard theme;
      ThemeProvider rewrites them as inline styles when a user switches themes. */
   --foreground: color-mix(in srgb, #ffffff 0%, transparent);
   --foreground-base: #ffffff;
   --foreground-alpha: 0;
-  --midground: color-mix(in srgb, #ffe6cb 100%, transparent);
-  --midground-base: #ffe6cb;
+  --midground: color-mix(in srgb, #1f2937 100%, transparent);
+  --midground-base: #1f2937;
   --midground-alpha: 1;
-  --background: color-mix(in srgb, #041c1c 100%, transparent);
-  --background-base: #041c1c;
+  --background: color-mix(in srgb, #f7f7f7 100%, transparent);
+  --background-base: #f7f7f7;
   --background-alpha: 1;
 
   /* Consumed by <Backdrop />; also theme-switchable. */
-  --warm-glow: rgba(255, 189, 56, 0.35);
-  --noise-opacity-mul: 1;
+  --warm-glow: transparent;
+  --noise-opacity-mul: 0;
 
   /* Typography tokens — rewritten by ThemeProvider. Defaults match the
      system stack so themes that don't override look native. */
-  --theme-font-sans: system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  --theme-font-sans: Arial, "Helvetica Neue", Helvetica, sans-serif;
   --theme-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
     Consolas, monospace;
   --theme-font-display: var(--theme-font-sans);
@@ -88,7 +85,7 @@
 /* Theme tokens cascade into the document root so every descendant inherits
    the font stack, base size, and letter spacing without explicit calls. */
 html {
-  font-family: var(--theme-font-sans);
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
   font-size: var(--theme-base-size);
   line-height: var(--theme-line-height);
   letter-spacing: var(--theme-letter-spacing);
@@ -98,7 +95,7 @@ html {
 }
 
 body {
-  font-family: var(--theme-font-sans);
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
   min-height: 0;
   height: 100%;
   margin: 0;
@@ -151,34 +148,50 @@ code { font-size: 0.875rem; }
      stay visible — in LENS_0, `--foreground` itself has alpha 0. */
   --color-foreground: var(--midground);
 
-  --color-card: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
+  /* Simple readable text scale: dark primary copy with softer secondary
+     states. These names are used by existing `text-text-*` utility classes. */
+  --color-text-primary: var(--midground);
+  --color-text-secondary: color-mix(in srgb, var(--midground-base) 82%, transparent);
+  --color-text-tertiary: color-mix(in srgb, var(--midground-base) 64%, transparent);
+  --color-text-disabled: color-mix(in srgb, var(--midground-base) 42%, transparent);
+
+  --color-card: color-mix(in srgb, var(--midground-base) 3%, var(--background-base));
   --color-card-foreground: var(--midground);
   --color-primary: var(--midground);
   --color-primary-foreground: var(--background-base);
-  --color-secondary: color-mix(in srgb, var(--midground-base) 6%, var(--background-base));
+  --color-secondary: color-mix(in srgb, var(--midground-base) 5%, var(--background-base));
   --color-secondary-foreground: var(--midground);
-  --color-muted: color-mix(in srgb, var(--midground-base) 8%, var(--background-base));
+  --color-muted: color-mix(in srgb, var(--midground-base) 7%, var(--background-base));
   /* Routes the shadcn `muted-foreground` slot through the DS semantic
      text-secondary token (defaults to midground 80%) so legacy call
      sites that use `text-muted-foreground` get a readable color
      instead of the old 55%-transparent default. */
   --color-muted-foreground: var(--color-text-secondary);
-  --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
+  --color-accent: color-mix(in srgb, var(--midground-base) 9%, var(--background-base));
   --color-accent-foreground: var(--midground);
   --color-destructive: #fb2c36;
   --color-destructive-foreground: #ffffff;
   --color-success: #4ade80;
   --color-warning: #ffbd38;
-  --color-border: color-mix(in srgb, var(--midground-base) 15%, transparent);
-  --color-input: color-mix(in srgb, var(--midground-base) 15%, transparent);
+  --color-border: color-mix(in srgb, var(--midground-base) 18%, transparent);
+  --color-input: color-mix(in srgb, var(--midground-base) 18%, transparent);
   --color-ring: var(--midground);
-  --color-popover: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
+  --color-popover: color-mix(in srgb, var(--midground-base) 3%, var(--background-base));
   --color-popover-foreground: var(--midground);
 
   --radius-sm: calc(var(--theme-radius) - 4px);
   --radius-md: calc(var(--theme-radius) - 2px);
   --radius-lg: var(--theme-radius);
   --radius-xl: calc(var(--theme-radius) + 4px);
+}
+
+
+/* Force the dashboard chrome onto the simple sans stack. The Nous design
+   system provides stylized display utility classes; for this installation the
+   user wants plain Arial-style typography throughout the web UI. */
+.font-mondwest,
+.text-display {
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif !important;
 }
 
 
