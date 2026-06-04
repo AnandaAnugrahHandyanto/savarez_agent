@@ -198,7 +198,8 @@ def _assert_writable(name: str, skill_dir: Path) -> Optional[str]:
         return (
             f"skill '{name}' lives in a read-only external skills dir "
             f"({ext_resolved}); external_dirs are read-only "
-            f"(skills.external_dirs_readonly)"
+            f"(skills.external_dirs_readonly); do not duplicate it locally "
+            f"— propose the change for an operator to apply, or do nothing"
         )
     return None
 
