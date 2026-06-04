@@ -1532,7 +1532,9 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
         result = subprocess.run(
-            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
+            # --workspace ui-tui avoids resolving apps/desktop. See #38772.
+            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false",
+             "--workspace", "ui-tui"],
             cwd=str(_workspace_root(tui_dir)),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -7020,7 +7022,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         )
         _relay(r1)
         if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
+            _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
     # First attempt — stream output via idle-timeout helper (issue #33788).
     # capture_output=True on a long Vite build looks identical to a hang;
@@ -7062,7 +7064,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         )
         _relay(r2)
         if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
+            _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
     _say("  ✓ Web UI built")
     return True
