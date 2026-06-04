@@ -231,24 +231,24 @@ export function AppearanceSettings() {
             </div>
             <Pill>{LANGUAGE_LABELS[locale]}</Pill>
           </div>
-          <div className="grid gap-2 sm:grid-cols-4">
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5">
             {availableLocales.map(code => (
               <button
                 key={code}
                 onClick={() => {
-                  triggerHaptic('crisp')
+                  triggerHaptic('selection')
                   setLocale(code)
                 }}
                 className={cn(
-                  'flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors',
+                  'flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs transition-colors',
                   code === locale
-                    ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) text-(--ui-text-primary)'
-                    : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover)'
+                    ? 'bg-primary/10 text-primary font-medium'
+                    : 'text-(--ui-text-tertiary) hover:text-(--ui-text-primary) hover:bg-(--chrome-action-hover)'
                 )}
                 type="button"
               >
-                {code === locale && <Check className="size-3.5" />}
-                {LANGUAGE_LABELS[code]}
+                {code === locale && <Check className="size-3" />}
+                {LANGUAGE_LABELS[code] ?? code}
               </button>
             ))}
           </div>
