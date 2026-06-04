@@ -6925,29 +6925,67 @@ class GatewayRunner:
 
         return None
 
-    def _adapter_enforces_own_access_policy(self, platform: Optional[Platform]) -> bool:
-        """Whether the adapter for *platform* gates access at intake itself.
+    def _adapter_enforces_configured_allowlist(self, source: SessionSource) -> bool:
+        """Whether the adapter already enforced a configured caller allowlist.
 
-        Mirrors ``BasePlatformAdapter.enforces_own_access_policy``. Adapters
-        such as WeCom, Weixin, Yuanbao, QQBot, and WhatsApp evaluate their
-        documented ``dm_policy`` / ``group_policy`` / ``allow_from`` config before a
-        message is dispatched to the gateway, so a message that reaches
-        ``_is_user_authorized`` has already been authorized by the adapter.
-        Defaults to ``False`` when the adapter is unknown or doesn't expose
-        the flag.
+        Some adapters evaluate ``dm_policy`` / ``group_policy`` plus
+        ``allow_from`` / ``group_allow_from`` before a message reaches the
+        gateway. That adapter-local decision is only a security authorization
+        when it is backed by an actual allowlist for the current message shape;
+        a default ``open`` policy is not enough.
         """
+        platform = source.platform
         if not platform:
             return False
-        # Some test helpers build a bare GatewayRunner via object.__new__ and
-        # never set ``adapters``; treat a missing/empty map as "no adapter"
-        # rather than raising (see pitfalls.md #17).
         adapters = getattr(self, "adapters", None)
         if not adapters:
             return False
         adapter = adapters.get(platform)
         if adapter is None:
             return False
-        return bool(getattr(adapter, "enforces_own_access_policy", False))
+        if not bool(getattr(adapter, "enforces_own_access_policy", False)):
+            return False
+
+        config = getattr(self, "config", None)
+        platform_cfg = config.platforms.get(platform) if config and hasattr(config, "platforms") else None
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+        if not isinstance(extra, dict):
+            extra = {}
+
+        def configured_values(*names: str) -> set[str]:
+            values: set[str] = set()
+            for name in names:
+                raw = extra.get(name)
+                if raw is None:
+                    continue
+                if isinstance(raw, str):
+                    values.update(part.strip() for part in raw.split(",") if part.strip())
+                elif isinstance(raw, (list, tuple, set)):
+                    values.update(str(part).strip() for part in raw if str(part).strip())
+            return values
+
+        def configured_policy(name: str, default: str = "open") -> str:
+            return str(extra.get(name) or default).strip().lower()
+
+        if source.chat_type in {"group", "forum", "channel"}:
+            group_policy = configured_policy("group_policy")
+            group_allow = configured_values("group_allow_from", "groupAllowFrom")
+            groups = extra.get("groups")
+            if isinstance(groups, dict) and source.chat_id in groups and isinstance(groups[source.chat_id], dict):
+                raw_group_allow = (
+                    groups[source.chat_id].get("allow_from")
+                    or groups[source.chat_id].get("allowFrom")
+                    or []
+                )
+                if isinstance(raw_group_allow, str):
+                    group_allow.update(part.strip() for part in raw_group_allow.split(",") if part.strip())
+                else:
+                    group_allow.update(str(part).strip() for part in raw_group_allow if str(part).strip())
+            return group_policy == "allowlist" and bool(group_allow)
+
+        dm_policy = configured_policy("dm_policy")
+        dm_allow = configured_values("allow_from", "allowFrom", "dm_allow_from", "dmAllowFrom")
+        return dm_policy == "allowlist" and bool(dm_allow)
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
@@ -7088,14 +7126,10 @@ class GatewayRunner:
         global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
 
         if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
-            # No env allowlists configured. Adapters that own their own
-            # config-driven access policy (dm_policy / group_policy /
-            # allow_from / group_allow_from) already gated this message at
-            # intake — it would not have reached the gateway otherwise — so
-            # honor that decision instead of falling through to the
-            # env-only default-deny below, which would silently break
-            # `dm_policy: open` and config-only allowlists. (#34515)
-            if self._adapter_enforces_own_access_policy(source.platform):
+            # Adapter-local policy can satisfy the network-surface allowlist
+            # requirement only when it is backed by a configured allowlist for
+            # this message. Default-open adapter policy must still fail closed.
+            if self._adapter_enforces_configured_allowlist(source):
                 return True
             # No allowlists configured -- check global allow-all flag
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}

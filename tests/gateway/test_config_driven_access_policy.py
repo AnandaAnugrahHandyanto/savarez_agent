@@ -1,23 +1,12 @@
 """Tests for config-driven platform access policies at the gateway layer.
 
-Background (#34515): WeCom, Weixin, Yuanbao, QQBot, and WhatsApp expose a
-documented config-driven access surface (``dm_policy`` / ``group_policy`` /
-``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra``) and enforce
-it at intake —
-a message is dropped inside the adapter and never reaches the gateway unless it
-already passed that policy.
-
-The gateway's env-based allowlist check (``_is_user_authorized``) runs *after*
-the adapter. Before the fix it fell through to an env-only default-deny when no
-``PLATFORM_ALLOWED_USERS`` env var was set, silently rejecting ``dm_policy:
-open`` and config-only allowlists even though the adapter had already
-authorized the sender.
-
-The fix is a single drift-proof contract: adapters that own their access policy
-declare ``enforces_own_access_policy`` (a ``BasePlatformAdapter`` property,
-default ``False``). The gateway trusts that flag and skips the env-only
-default-deny for those platforms, rather than re-implementing each adapter's
-policy logic a second time.
+WeCom, Weixin, Yuanbao, QQBot, and WhatsApp expose a config-driven access
+surface (``dm_policy`` / ``group_policy`` / ``allow_from`` /
+``group_allow_from``) and enforce it before dispatching to the gateway. Hermes'
+security policy requires an operator-configured allowlist for enabled
+network-exposed adapters, so the gateway may trust adapter-local authorization
+only when that adapter-local policy is backed by a configured allowlist.
+Default-open adapter policy must still fail closed.
 """
 
 from types import SimpleNamespace
@@ -128,15 +117,40 @@ def test_own_policy_adapters_declare_the_flag(module_path, class_name):
 
 
 @pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
-def test_own_policy_platform_authorized_without_env_allowlist(monkeypatch, platform):
-    """A message reaching the gateway from an own-policy adapter is trusted.
-
-    With no env allowlist set, the gateway must NOT default-deny — the adapter
-    already authorized the sender at intake (e.g. ``dm_policy: open``).
-    """
+def test_own_policy_platform_default_open_denies_without_allowlist(monkeypatch, platform):
+    """Default-open adapter policy is not an authorization boundary."""
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
         platforms={platform: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(platform)) is False
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_own_policy_platform_default_open_group_denies_without_allowlist(monkeypatch, platform):
+    """Default-open group policy also fails closed."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={platform: PlatformConfig(enabled=True, extra={"group_policy": "open"})}
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(platform, chat_type="group")) is False
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_own_policy_platform_config_allowlist_authorizes_without_env(monkeypatch, platform):
+    """Adapter-local allowlists remain valid authorization evidence."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            platform: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "allowlist", "allow_from": ["some-user"]},
+            )
+        }
     )
     runner, _adapter = _make_runner(platform, config, enforces=True)
 
@@ -144,11 +158,16 @@ def test_own_policy_platform_authorized_without_env_allowlist(monkeypatch, platf
 
 
 @pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
-def test_own_policy_platform_authorized_for_group_chat(monkeypatch, platform):
-    """Group traffic from an own-policy adapter is trusted the same way."""
+def test_own_policy_platform_config_group_allowlist_authorizes_without_env(monkeypatch, platform):
+    """Adapter-local group allowlists are trusted for group messages."""
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
-        platforms={platform: PlatformConfig(enabled=True, extra={"group_policy": "open"})}
+        platforms={
+            platform: PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["some-chat"]},
+            )
+        }
     )
     runner, _adapter = _make_runner(platform, config, enforces=True)
 
@@ -199,7 +218,7 @@ def test_unknown_adapter_does_not_crash_trust_check(monkeypatch):
     runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
     runner.adapters = {}  # nothing registered
 
-    assert runner._adapter_enforces_own_access_policy(Platform.WECOM) is False
+    assert runner._adapter_enforces_configured_allowlist(_source(Platform.WECOM)) is False
     assert runner._is_user_authorized(_source(Platform.WECOM)) is False
 
 
