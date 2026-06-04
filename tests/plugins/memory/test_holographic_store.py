@@ -331,3 +331,58 @@ class TestSupersedeAction:
             )
         )
         assert "error" in out
+
+    def test_trace_action_returns_chain(self, tmp_path):
+        import json
+
+        provider, store = self._provider(tmp_path)
+        f1 = store.add_fact("Deploy runs on Mondays")
+        f2 = store.supersede(f1, "Deploy runs on Wednesdays")
+        f3 = store.supersede(f2, "Deploy runs on Fridays")
+        out = json.loads(
+            provider._handle_fact_store({"action": "trace", "fact_id": f3})
+        )
+        ids = [c["fact_id"] for c in out["chain"]]
+        assert ids == [f3, f2, f1]
+        assert out["count"] == 3
+
+
+class TestTrace:
+    """trace() walks fact_supersedes backward from a fact, returning the full
+    version chain including retired versions, bounded by depth."""
+
+    def _chain(self, tmp_path):
+        store = MemoryStore(db_path=str(tmp_path / "m.db"))
+        f1 = store.add_fact("Deploy runs on Mondays", category="project")
+        f2 = store.supersede(f1, "Deploy runs on Wednesdays")
+        f3 = store.supersede(f2, "Deploy runs on Fridays")
+        return FactRetriever(store), f1, f2, f3
+
+    def test_walks_back_to_original(self, tmp_path):
+        retriever, f1, f2, f3 = self._chain(tmp_path)
+        chain = retriever.trace(f3)
+        assert [c["fact_id"] for c in chain] == [f3, f2, f1]
+        assert [c["depth"] for c in chain] == [0, 1, 2]
+
+    def test_includes_superseded_content(self, tmp_path):
+        retriever, f1, f2, f3 = self._chain(tmp_path)
+        contents = [c["content"] for c in retriever.trace(f3)]
+        # The retired wordings, invisible to search, are recoverable here.
+        assert "Deploy runs on Mondays" in contents
+        assert "Deploy runs on Wednesdays" in contents
+
+    def test_single_fact_chain(self, tmp_path):
+        store = MemoryStore(db_path=str(tmp_path / "m.db"))
+        fid = store.add_fact("Standalone fact")
+        chain = FactRetriever(store).trace(fid)
+        assert [c["fact_id"] for c in chain] == [fid]
+
+    def test_depth_bound_truncates(self, tmp_path):
+        retriever, f1, f2, f3 = self._chain(tmp_path)
+        # depth=1 -> entry node plus one predecessor only.
+        chain = retriever.trace(f3, depth=1)
+        assert [c["fact_id"] for c in chain] == [f3, f2]
+
+    def test_missing_fact_returns_empty(self, tmp_path):
+        store = MemoryStore(db_path=str(tmp_path / "m.db"))
+        assert FactRetriever(store).trace(9999) == []
