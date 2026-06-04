@@ -13,6 +13,7 @@ import pytest
 
 from gateway.stream_consumer import (
     GatewayStreamConsumer,
+    StreamConsumerConfig,
 )
 
 
@@ -134,6 +135,33 @@ class TestOverflowFirstMessage:
         assert call_kwargs["reply_to"] == "om_user_msg_789", (
             "Overflow first chunk should use initial_reply_to_id"
         )
+
+
+class TestOverflowExistingMessage:
+    """Verify abandoned overflow chunks are finalized without ending the turn."""
+
+    @pytest.mark.asyncio
+    async def test_existing_message_overflow_finalizes_completed_chunk(self):
+        adapter = _make_adapter(max_length=620)
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""),
+        )
+        consumer._message_id = "preview_msg"
+        consumer._already_sent = True
+        consumer._send_or_edit = AsyncMock(return_value=True)
+
+        consumer.on_delta("**bold** " + ("A" * 700))
+        consumer.finish()
+        await consumer.run()
+
+        assert consumer._send_or_edit.await_count >= 2
+        first_call = consumer._send_or_edit.await_args_list[0]
+        assert first_call.kwargs == {
+            "finalize": True,
+            "is_turn_final": False,
+        }
 
 
 class TestFeishuFallbackThreadRouting:

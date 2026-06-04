@@ -530,7 +530,17 @@ class GatewayStreamConsumer:
                         if split_at < _safe_limit // 2:
                             split_at = _safe_limit
                         chunk = self._accumulated[:split_at]
-                        ok = await self._send_or_edit(chunk)
+                        # This chunk is complete and will be abandoned when
+                        # _message_id is reset below, so platforms such as
+                        # Telegram that apply rich text on finalize must see a
+                        # final edit now. The assistant turn is still streaming
+                        # the overflow remainder, though, so do not mark the
+                        # whole turn final yet.
+                        ok = await self._send_or_edit(
+                            chunk,
+                            finalize=True,
+                            is_turn_final=False,
+                        )
                         if self._fallback_final_send or not ok:
                             # Edit failed (or backed off due to flood control)
                             # while attempting to split an oversized message.
