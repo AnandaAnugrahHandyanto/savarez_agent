@@ -28,6 +28,10 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const {
+  getWindowButtonPosition: computeWindowButtonPosition,
+  getWindowState: computeWindowState
+} = require('./window-state.cjs')
+const {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
@@ -2660,8 +2664,10 @@ async function waitForHermes(baseUrl, token) {
 }
 
 function getWindowButtonPosition() {
-  if (!IS_MAC) return null
-  return mainWindow?.getWindowButtonPosition?.() || WINDOW_BUTTON_POSITION
+  return computeWindowButtonPosition(mainWindow, {
+    isMac: IS_MAC,
+    fallbackButtonPosition: WINDOW_BUTTON_POSITION
+  })
 }
 
 function getNativeOverlayWidth() {
@@ -2672,12 +2678,17 @@ function getNativeOverlayWidth() {
   return IS_MAC ? 0 : NATIVE_OVERLAY_BUTTON_WIDTH
 }
 
+// Reads geometry without ever throwing when mainWindow has been destroyed.
+// startHermes() spreads this into its result AFTER the backend is ready; if the
+// window was torn down mid-boot (updater relaunch / reconnect), a naive call
+// here would throw "Object has been destroyed" and fail the whole boot. See
+// window-state.cjs and #38468.
 function getWindowState() {
-  return {
-    isFullscreen: Boolean(mainWindow?.isFullScreen?.()),
+  return computeWindowState(mainWindow, {
+    isMac: IS_MAC,
     nativeOverlayWidth: getNativeOverlayWidth(),
-    windowButtonPosition: getWindowButtonPosition()
-  }
+    fallbackButtonPosition: WINDOW_BUTTON_POSITION
+  })
 }
 
 function sendBackendExit(payload) {
