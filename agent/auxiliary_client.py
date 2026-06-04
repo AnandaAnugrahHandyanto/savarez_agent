@@ -3224,6 +3224,16 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
     }
+
+    # Propagate httpx-level configuration from the sync client so the
+    # async client uses the same connection parameters (query params,
+    # custom headers) as the sync client.  Without this, custom endpoints
+    # with query-param auth or custom headers silently lose their
+    # configuration during sync→async conversion (#38679).
+    _sync_default_query = getattr(sync_client, "default_query", None)
+    if _sync_default_query:
+        async_kwargs["default_query"] = _sync_default_query
+
     sync_base_url = str(sync_client.base_url)
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         async_kwargs["default_headers"] = build_or_headers()
@@ -3251,6 +3261,15 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                     async_kwargs["default_headers"] = dict(_ph_async.default_headers)
         except Exception:
             pass
+
+    # Merge any default_headers from the sync client (set during OpenAI
+    # construction) on top of the provider-inferred headers. The sync
+    # client's explicit headers take precedence.
+    _sync_default_headers = getattr(sync_client, "default_headers", None)
+    if _sync_default_headers:
+        _existing = async_kwargs.get("default_headers", {}) or {}
+        _merged = {**_existing, **_sync_default_headers}
+        async_kwargs["default_headers"] = _merged
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -4085,6 +4104,7 @@ def resolve_vision_provider_client(
             explicit_base_url=resolved_base_url,
             explicit_api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            is_vision=True,
         )
         if client is None:
             return provider_for_base_override, None, None
