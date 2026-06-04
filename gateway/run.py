@@ -1208,6 +1208,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "requested_provider": runtime.get("requested_provider"),
     }
 
 
@@ -1255,6 +1256,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "requested_provider": runtime.get("requested_provider"),
                     "model": entry.get("model"),
                 }
             except Exception as fb_exc:
@@ -2693,6 +2695,7 @@ class GatewayRunner:
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
+            "requested_provider": runtime_kwargs.get("requested_provider"),
         }
         route = {
             "model": model,
