@@ -133,6 +133,7 @@ def _sensitive_host_files() -> list[Path]:
     home = get_hermes_home()
     candidates = [
         home / "config.yaml",
+        home / "config.yml",
         home / ".env",
     ]
     resolved = []
