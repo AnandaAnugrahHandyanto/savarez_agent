@@ -219,3 +219,89 @@ def test_handle_delegation_command_error_is_caught(hermes_cli, monkeypatch, caps
     out = capsys.readouterr().out
     assert "(._.) delegation:" in out
     assert "kaboom" in out
+
+
+# ---------------------------------------------------------------------------
+# slash dispatch  (HermesCLI.process_command + commands.py registry)
+# ---------------------------------------------------------------------------
+#
+# Task 3 wires `/delegation` into the central slash dispatcher. Two pieces:
+#   1. hermes_cli/commands.py registers a CommandDef named "delegation" so
+#      `resolve_command("delegation")` resolves it to the canonical name.
+#   2. cli.py's process_command() switch has an
+#      `elif canonical == "delegation": self._handle_delegation_command(...)`
+#      case so typing `/delegation ...` in the REPL actually fires the handler.
+#
+# These are integration-style tests: they go through the real process_command
+# entry point (the same code path the interactive REPL uses), not the handler
+# directly.
+
+
+def test_commands_registry_knows_delegation():
+    """The CommandDef must exist so process_command resolves the canonical name."""
+    from hermes_cli.commands import resolve_command
+
+    cd = resolve_command("delegation")
+    assert cd is not None, "delegation not registered in hermes_cli/commands.py"
+    assert cd.name == "delegation"
+    # The M3 module exposes exactly these three subcommands.
+    for sub in ("status", "verify", "report"):
+        assert sub in cd.subcommands, f"missing subcommand {sub!r}"
+
+
+def test_process_command_dispatches_delegation(hermes_cli, monkeypatch):
+    """`/delegation status` must route to _handle_delegation_command."""
+    calls = []
+    monkeypatch.setattr(
+        type(hermes_cli),
+        "_handle_delegation_command",
+        lambda self, cmd: calls.append(cmd),
+    )
+    hermes_cli.process_command("/delegation status")
+    assert calls == ["/delegation status"], "handler not invoked via dispatch"
+
+
+def test_process_command_delegation_integration(hermes_cli, daemon_up, capsys):
+    """Full path: /delegation status through the dispatcher emits status output."""
+    hermes_cli.process_command("/delegation status")
+    out = capsys.readouterr().out
+    assert "daemon" in out
+
+
+def test_process_command_delegation_defaults_to_status(hermes_cli, daemon_up, capsys):
+    """Bare /delegation (no subcommand) defaults to status via the dispatcher."""
+    hermes_cli.process_command("/delegation")
+    out = capsys.readouterr().out
+    assert "daemon" in out
+
+
+def test_process_command_delegation_help_does_not_crash(hermes_cli, capsys):
+    """/delegation --help must not propagate SystemExit out of the dispatcher."""
+    # Returns truthy (continue REPL); no SystemExit escapes.
+    hermes_cli.process_command("/delegation --help")
+    out = capsys.readouterr().out
+    assert "usage" in out.lower()
+
+
+def test_process_command_curator_still_dispatches(hermes_cli, monkeypatch):
+    """Regression: adding the delegation case must not break /curator."""
+    calls = []
+    monkeypatch.setattr(
+        type(hermes_cli),
+        "_handle_curator_command",
+        lambda self, cmd: calls.append(cmd),
+    )
+    hermes_cli.process_command("/curator status")
+    assert calls == ["/curator status"]
+
+
+def test_process_command_kanban_still_dispatches(hermes_cli, monkeypatch):
+    """Regression: adding the delegation case must not break /kanban."""
+    calls = []
+    monkeypatch.setattr(
+        type(hermes_cli),
+        "_handle_kanban_command",
+        lambda self, cmd: calls.append(cmd),
+    )
+    hermes_cli.process_command("/kanban")
+    assert calls == ["/kanban"]
