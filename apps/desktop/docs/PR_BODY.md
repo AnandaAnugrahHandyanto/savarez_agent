@@ -29,7 +29,7 @@ Adds full internationalization (i18n) support to the Hermes Desktop (Electron) a
 
 ### Architecture
 
-- **Auto-discovery**: uses Vite `import.meta.glob` — drop a new `{code}.json` file in `src/locales/` and it's automatically available. **No code changes needed** to add a 9th language.
+- **Auto-discovery**: uses Vite `import.meta.glob` to load locale catalogs from `src/locales/`. Adding another language requires a new `{code}.json` catalog plus a display label in `LANGUAGE_LABELS`.
 - **React Context**: `I18nProvider` wraps the app root, `useTranslation()` hook for components
 - **Standalone `t()` function**: for non-React code (statusbar, gateway boot, overlays)
 - **`useLocaleSync()`**: forces re-render of components using standalone `t()` when locale changes
@@ -39,7 +39,7 @@ Adds full internationalization (i18n) support to the Hermes Desktop (Electron) a
 
 ### Translation Guide
 
-See `src/locales/TRANSLATING.md` for how to add a new language. The source of truth is `en.json` with 857 keys across 41 sections.
+See `src/locales/TRANSLATING.md` for how to add a new language. The source of truth is `en.json`; locale key parity is enforced by the Desktop locale catalog tests.
 
 ### Files Changed
 
