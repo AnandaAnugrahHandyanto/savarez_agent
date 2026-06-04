@@ -15,7 +15,7 @@ import { $secretRequest, $sudoRequest, clearSecretRequest, clearSudoRequest } fr
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
 // password and skill secret capture. (Dangerous-command / execute_code approval
 // is rendered INLINE on the pending tool row instead — see
-// components/assistant-ui/tool-approval.tsx — so it reads like Cursor's "Run"
+// components/assistant-ui/tool-approval.tsx — so it reads like an inline "Run"
 // affordance rather than a blocking modal.) Each Python-side caller blocks the
 // agent thread until the matching `*.respond` RPC lands; without a renderer the
 // agent stalls until its timeout and the tool is BLOCKED (the bug this fixes —
