@@ -253,6 +253,14 @@ TOOL_CATEGORIES = {
                 "tts_provider": "openai",
             },
             {
+                "name": "OpenRouter TTS",
+                "tag": "One OpenRouter key, many TTS voices — uses OPENROUTER_API_KEY",
+                "env_vars": [
+                    {"key": "OPENROUTER_API_KEY", "prompt": "OpenRouter API key", "url": "https://openrouter.ai/keys"},
+                ],
+                "tts_provider": "openrouter",
+            },
+            {
                 "name": "xAI TTS",
                 "tag": "Grok voices — uses xAI Grok OAuth or XAI_API_KEY",
                 "env_vars": [],

@@ -734,8 +734,8 @@ class PluginContext:
 
         1. ``provider.name`` is NOT a built-in STT provider name
            (``local``, ``local_command``, ``groq``, ``openai``,
-           ``mistral``, ``xai``). Built-ins always win — the registry
-           rejects shadowing names with a warning.
+           ``openrouter``, ``mistral``, ``xai``). Built-ins always win — the
+           registry rejects shadowing names with a warning.
         2. There is NO ``stt.providers.<name>: type: command`` entry
            with the same name. Command-providers win on name
            collision because config is more local than plugin install
