@@ -164,9 +164,20 @@ The tool exposes one schema across every backend. Providers ignore parameters th
 
 The provider's `capabilities()` advertises which of these are honored. The agent sees the active backend's capabilities in the tool description, dynamically rebuilt when the user changes backend via `hermes tools`.
 
-## The OpenRouter pattern (chat-completions audio output)
+## The OpenRouter pattern (streamed chat-completions audio output)
 
-OpenRouter has **no** dedicated `/audio/generate` endpoint. Its music/sound models (Lyria 3, GPT-Audio) are ordinary chat-completions models that declare `audio` in their output modalities. The bundled `plugins/audio_gen/openrouter/` backend calls `POST /chat/completions` with `modalities: ["audio"]` and `audio: {"format": "mp3"}`, then reads the base64 audio out of `choices[0].message.audio.data` and writes it with `save_b64_audio()`. It reuses the agent's `OPENROUTER_API_KEY` via the shared `resolve_openrouter_credentials()` helper, so it auto-works when Hermes runs on OpenRouter. Use it as your reference implementation.
+OpenRouter has **no** dedicated `/audio/generate` endpoint. Its music models (Lyria 3) are ordinary chat-completions models that declare `audio` in their output modalities. Verified against the live API, the call has two non-obvious requirements:
+
+- `modalities` must be `["text", "audio"]` — audio-only is rejected.
+- `stream: true` is **required** — a non-streaming request returns HTTP 400 (`"Audio output requires stream: true"`).
+
+The base64 audio then arrives across streamed `delta.audio.data` chunks, which the backend concatenates before decoding with `save_b64_audio()`. The bundled `plugins/audio_gen/openrouter/` backend does exactly this and reuses the agent's `OPENROUTER_API_KEY` via the shared `resolve_openrouter_credentials()` helper, so it auto-works when Hermes runs on OpenRouter.
+
+:::note
+OpenAI's `gpt-audio` models also advertise audio output, but they additionally require an `audio.voice` parameter and behave like speech synthesis — so they belong to the [`text_to_speech`](/user-guide/features/tts) tool (OpenRouter is a built-in TTS provider), not audio generation. The OpenRouter audio-gen backend deliberately scopes its catalog to the Lyria music family.
+:::
+
+Use it as your reference implementation.
 
 ## Response shape
 

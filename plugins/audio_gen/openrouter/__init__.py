@@ -1,31 +1,40 @@
 """OpenRouter audio generation backend.
 
-Surface: text-to-audio (music, soundscapes) through OpenRouter's
-audio-output chat models. One ``OPENROUTER_API_KEY`` routes to Google's
-Lyria 3 (music with optional vocals/lyrics) and OpenAI's GPT-Audio — the
-same key the agent already uses for its main model, so no extra setup is
-needed when Hermes runs on OpenRouter.
+Surface: text-to-music through OpenRouter's audio-output chat models. One
+``OPENROUTER_API_KEY`` routes to Google's Lyria 3 (music, 48kHz stereo,
+optional vocals/lyrics) — the same key the agent already uses for its main
+model, so no extra setup is needed when Hermes runs on OpenRouter.
 
 Why chat/completions: OpenRouter has **no** dedicated ``/audio/generate``
-endpoint. Music / sound models are ordinary chat-completions models that
-declare ``audio`` in their output modalities. We call
-``POST /chat/completions`` with ``modalities: ["audio"]`` and read the
-base64 audio out of ``choices[0].message.audio.data``.
+endpoint. Music models are ordinary chat-completions models that declare
+``audio`` in their output modalities. Verified live against OpenRouter's
+API, the call requires BOTH ``modalities: ["text", "audio"]`` (audio-only
+is rejected) and ``stream: true`` (non-streaming returns HTTP 400). The
+base64 audio arrives across streamed ``delta.audio.data`` chunks, which we
+concatenate.
+
+Scope: this backend targets the **Lyria** music family. OpenAI's
+``gpt-audio`` models also advertise audio output but additionally require
+``audio.voice`` and behave like speech synthesis — that belongs to the
+``text_to_speech`` tool (OpenRouter TTS built-in), not audio generation, so
+they are excluded from this catalog.
 
 Flow:
-  1. ``POST {base}/chat/completions`` with the prompt as the user message,
-     ``modalities: ["audio"]`` and ``audio: {format}``.
-  2. Decode ``message.audio.data`` (base64) and write it to the audio-gen
-     cache; return the absolute path. The gateway delivers the file.
+  1. ``POST {base}/chat/completions`` (streamed) with the prompt as the user
+     message, ``modalities: ["text", "audio"]`` and ``audio: {format}``.
+  2. Concatenate the base64 from each ``delta.audio.data`` chunk, decode,
+     and write it to the audio-gen cache; return the absolute path. The
+     gateway delivers the file.
 
 Model discovery: the audio-output catalog is fetched live from
 ``GET {base}/models`` filtered on ``architecture.output_modalities``
-containing ``"audio"``, cached for the process, with a small static
-fallback when the network call fails.
+containing ``"audio"`` AND the Lyria family, cached for the process, with a
+small static fallback when the network call fails.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -57,6 +66,12 @@ MODELS_CACHE_TTL_SECONDS = 3600
 # chat-audio path accepts.
 _SUPPORTED_FORMATS = ("mp3", "wav")
 
+# Audio-generation models this backend serves. OpenRouter exposes more
+# audio-OUTPUT models (openai/gpt-audio*) but those are speech models that
+# require ``audio.voice`` — they belong to text_to_speech, not audio gen.
+# We keep this backend scoped to the Lyria music family.
+_AUDIO_GEN_MODEL_PREFIXES = ("google/lyria",)
+
 # Static fallback catalog — used only when the live /models call fails
 # (offline, transient error). The live fetch is the source of truth.
 # NOT asserted by any test (catalog data changes upstream).
@@ -74,20 +89,6 @@ _FALLBACK_MODELS: List[Dict[str, Any]] = [
         "strengths": "Short music clips with vocals",
         "kinds": ["music"],
         "supports_lyrics": True,
-    },
-    {
-        "id": "openai/gpt-audio",
-        "display": "GPT-Audio",
-        "strengths": "General audio output",
-        "kinds": ["music", "sfx"],
-        "supports_lyrics": False,
-    },
-    {
-        "id": "openai/gpt-audio-mini",
-        "display": "GPT-Audio Mini",
-        "strengths": "Fast, lower-cost audio output",
-        "kinds": ["music", "sfx"],
-        "supports_lyrics": False,
     },
 ]
 
@@ -125,8 +126,10 @@ def _fetch_models() -> List[Dict[str, Any]]:
     """Fetch the live audio-output model catalog, cached for the process.
 
     Filters ``GET /models`` on ``architecture.output_modalities`` containing
-    ``"audio"``. On any failure returns the static fallback so the picker /
-    capabilities never crash on a network blip.
+    ``"audio"`` AND a known audio-generation (Lyria) model prefix — the
+    gpt-audio speech models are deliberately excluded (they belong to TTS).
+    On any failure returns the static fallback so the picker / capabilities
+    never crash on a network blip.
     """
     global _models_cache
     now = time.time()
@@ -153,13 +156,14 @@ def _fetch_models() -> List[Dict[str, Any]]:
             mid = entry.get("id")
             if not mid:
                 continue
+            if not any(mid.lower().startswith(p) for p in _AUDIO_GEN_MODEL_PREFIXES):
+                continue
             out.append({
                 "id": mid,
                 "display": entry.get("name", mid),
                 "strengths": (entry.get("description") or "")[:120],
                 "kinds": ["music"],
-                # Heuristic: Lyria models do vocals/lyrics.
-                "supports_lyrics": "lyria" in mid.lower(),
+                "supports_lyrics": True,  # Lyria family does vocals/lyrics
             })
         if out:
             _models_cache = (now, out)
@@ -226,15 +230,12 @@ class OpenRouterAudioGenProvider(AudioGenProvider):
         }
 
     def capabilities(self) -> Dict[str, Any]:
-        supports_lyrics = any(
-            entry.get("supports_lyrics") for entry in _fetch_models()
-        )
         return {
-            "kinds": ["music", "sfx"],
+            "kinds": ["music"],
             "formats": list(_SUPPORTED_FORMATS),
             "max_duration": 60,
             "min_duration": 1,
-            "supports_lyrics": supports_lyrics,
+            "supports_lyrics": True,
             "supports_negative_prompt": False,
         }
 
@@ -283,34 +284,64 @@ class OpenRouterAudioGenProvider(AudioGenProvider):
             except (TypeError, ValueError):
                 pass
 
+        # OpenRouter audio-output models (Lyria 3, etc.) require BOTH:
+        #   * modalities == ["text", "audio"]  (NOT ["audio"] — rejected)
+        #   * stream: true                     (non-streaming returns 400)
+        # The audio is delivered as base64 across streamed ``delta.audio.data``
+        # chunks that we concatenate. Verified live against
+        # google/lyria-3-clip-preview (see PR notes).
         payload: Dict[str, Any] = {
             "model": resolved_model,
-            "modalities": ["audio"],
+            "modalities": ["text", "audio"],
             "audio": {"format": fmt},
+            "stream": True,
             "messages": [{"role": "user", "content": user_content}],
         }
         if seed is not None:
             payload["seed"] = seed
 
+        audio_parts: List[str] = []
+        transcript_parts: List[str] = []
+        usage: Optional[Dict[str, Any]] = None
         try:
-            resp = httpx.post(
+            with httpx.stream(
+                "POST",
                 f"{base_url}/chat/completions",
                 headers=_headers(api_key),
                 json=payload,
                 timeout=DEFAULT_TIMEOUT_SECONDS,
-            )
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            detail = ""
-            try:
-                detail = exc.response.text[:500]
-            except Exception:
-                pass
-            return error_response(
-                error=f"OpenRouter audio request failed ({exc.response.status_code}): {detail or exc}",
-                error_type="api_error",
-                provider="openrouter", model=resolved_model, prompt=prompt,
-            )
+            ) as resp:
+                if resp.status_code >= 400:
+                    detail = ""
+                    try:
+                        detail = resp.read().decode("utf-8", "replace")[:500]
+                    except Exception:
+                        pass
+                    return error_response(
+                        error=f"OpenRouter audio request failed ({resp.status_code}): {detail}",
+                        error_type="api_error",
+                        provider="openrouter", model=resolved_model, prompt=prompt,
+                    )
+                for line in resp.iter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except (ValueError, TypeError):
+                        continue
+                    choices = chunk.get("choices") or []
+                    delta = choices[0].get("delta") if choices else None
+                    aud = delta.get("audio") if isinstance(delta, dict) else None
+                    if isinstance(aud, dict):
+                        if aud.get("data"):
+                            audio_parts.append(aud["data"])
+                        if aud.get("transcript"):
+                            transcript_parts.append(aud["transcript"])
+                    if isinstance(chunk.get("usage"), dict):
+                        usage = chunk["usage"]
         except Exception as exc:  # noqa: BLE001
             logger.warning("OpenRouter audio gen unexpected failure: %s", exc, exc_info=True)
             return error_response(
@@ -319,26 +350,13 @@ class OpenRouterAudioGenProvider(AudioGenProvider):
                 provider="openrouter", model=resolved_model, prompt=prompt,
             )
 
-        try:
-            body = resp.json()
-            choices = body.get("choices") or []
-            message = choices[0].get("message") if choices else None
-            audio_obj = (message or {}).get("audio") if isinstance(message, dict) else None
-            b64 = (audio_obj or {}).get("data") if isinstance(audio_obj, dict) else None
-        except Exception as exc:  # noqa: BLE001
-            return error_response(
-                error=f"OpenRouter audio response could not be parsed: {exc}",
-                error_type="empty_response",
-                provider="openrouter", model=resolved_model, prompt=prompt,
-            )
-
+        b64 = "".join(audio_parts)
         if not b64:
             return error_response(
                 error=(
                     "OpenRouter audio response did not include audio data. "
-                    "The selected model may not support audio output — pick "
-                    "a Lyria or GPT-Audio model via `hermes tools` → Audio "
-                    "Generation."
+                    "The selected model may not support music/audio output — "
+                    "pick a Lyria model via `hermes tools` → Audio Generation."
                 ),
                 error_type="empty_response",
                 provider="openrouter", model=resolved_model, prompt=prompt,
@@ -354,9 +372,9 @@ class OpenRouterAudioGenProvider(AudioGenProvider):
             )
 
         extra: Dict[str, Any] = {}
-        if isinstance(body.get("usage"), dict):
-            extra["usage"] = body["usage"]
-        transcript = (audio_obj or {}).get("transcript") if isinstance(audio_obj, dict) else None
+        if usage:
+            extra["usage"] = usage
+        transcript = "".join(transcript_parts)
         if transcript:
             extra["transcript"] = transcript
 

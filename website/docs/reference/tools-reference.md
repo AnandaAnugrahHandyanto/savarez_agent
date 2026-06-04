@@ -212,7 +212,7 @@ Opt-in toolset (not loaded in the default `hermes-cli` set). Add via `--toolsets
 
 Backends ship as plugins under `plugins/audio_gen/<name>/`:
 
-- **OpenRouter** — music + audio via Google Lyria 3 and GPT-Audio, through the chat-completions `modalities:["audio"]` path (reuses `OPENROUTER_API_KEY`).
+- **OpenRouter** — music via Google Lyria 3, through the chat-completions audio-output path (streamed, reuses `OPENROUTER_API_KEY`).
 
 `audio_generate` composes new audio (music, soundscapes, sound effects) from a creative prompt. It is **not** text-to-speech — use `text_to_speech` to read a fixed string aloud. The tool's description is rebuilt at session start to reflect the active backend's capabilities (kinds, formats, duration range, lyric/negative-prompt support). See [Audio Generation Provider Plugins](/developer-guide/audio-gen-provider-plugin) for backend authoring.
 
