@@ -160,6 +160,8 @@ def _artifact_integrity(artifact_paths: dict[str, str]) -> dict:
     """Compute byte sizes and SHA-256 hashes for each artifact."""
     integrity: dict = {}
     for name, path in artifact_paths.items():
+        if name == "manifest.json":
+            continue
         try:
             stat = os.stat(path)
             h = hashlib.sha256()
@@ -654,6 +656,116 @@ class RunUA:
             f.write("\n")
         return path
 
+    def _reserve_artifact_path(self, filename: str) -> str:
+        """Register a final artifact path before the file is rewritten."""
+        path = os.path.join(self.out_dir, filename)
+        self.artifact_paths[filename] = path
+        return path
+
+    def _write_manifest_file(self, manifest: dict) -> str:
+        """Write manifest.json after its final path has been registered."""
+        path = self._reserve_artifact_path("manifest.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+            f.write("\n")
+        return path
+
+    def _assert_final_bundle_consistency(
+        self,
+        manifest: dict,
+        *,
+        include_context: bool,
+    ) -> None:
+        """Fail before success if final manifest/context artifact facts disagree."""
+        artifact_paths = manifest.get("artifact_paths", {})
+        if not isinstance(artifact_paths, dict):
+            raise RuntimeError("manifest artifact_paths is not a dict")
+
+        present_artifacts: set[str] = set()
+        for artifact, raw_path in artifact_paths.items():
+            if not isinstance(raw_path, str) or not raw_path:
+                raise RuntimeError(f"manifest has invalid artifact path for {artifact}")
+            path = raw_path if os.path.isabs(raw_path) else os.path.join(self.out_dir, raw_path)
+            if not os.path.isfile(path):
+                raise RuntimeError(f"manifest-listed artifact is absent: {artifact}")
+            present_artifacts.add(artifact)
+
+        for item in manifest.get("artifacts_missing", []) or []:
+            artifact = item.get("artifact") if isinstance(item, dict) else item
+            if artifact in present_artifacts:
+                raise RuntimeError(
+                    f"manifest marks present artifact as missing: {artifact}"
+                )
+
+        for artifact, entry in (manifest.get("artifact_integrity", {}) or {}).items():
+            raw_path = artifact_paths.get(artifact)
+            if not raw_path:
+                raise RuntimeError(
+                    f"artifact_integrity references unknown artifact: {artifact}"
+                )
+            path = raw_path if os.path.isabs(raw_path) else os.path.join(self.out_dir, raw_path)
+            expected = _artifact_integrity({artifact: path}).get(artifact)
+            if entry != expected:
+                raise RuntimeError(f"artifact_integrity mismatch for {artifact}")
+
+        if not include_context:
+            return
+
+        context_path = artifact_paths.get("subagent-context.json")
+        if not context_path:
+            raise RuntimeError("manifest omits subagent-context.json")
+        if not os.path.isabs(context_path):
+            context_path = os.path.join(self.out_dir, context_path)
+        try:
+            with open(context_path, "r", encoding="utf-8") as f:
+                context = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            raise RuntimeError(f"subagent-context.json is unreadable: {exc}") from exc
+
+        context_missing = {
+            item.get("artifact")
+            for item in context.get("artifacts_missing", []) or []
+            if isinstance(item, dict)
+        }
+        contradictory = sorted(context_missing & present_artifacts)
+        if contradictory:
+            raise RuntimeError(
+                "subagent context marks present artifacts as missing: "
+                + ", ".join(contradictory)
+            )
+
+        trust = (
+            context.get("critic_packs", {})
+            .get("reviewer_critic", {})
+            .get("trust_anchor_summary", "")
+        )
+        if "absent or unreadable" in str(trust):
+            raise RuntimeError("reviewer critic pack says manifest is absent")
+
+    def _finalize_bundle(self, run_id: str, *, include_context: bool) -> dict:
+        """Write final context/manifest artifacts in dependency order."""
+        if include_context:
+            if _HAS_CONTEXT:
+                self._write_json("subagent-context.json", {"status": "provisional"})
+            else:
+                self._record_missing("subagent-context.json")
+
+        self._reserve_artifact_path("manifest.json")
+        manifest = self._build_manifest(run_id)
+        self._write_manifest_file(manifest)
+
+        if include_context and _HAS_CONTEXT:
+            self.context_data = self._build_context()
+            self._write_json("subagent-context.json", self.context_data)
+            manifest = self._build_manifest(run_id)
+            self._write_manifest_file(manifest)
+
+        self._assert_final_bundle_consistency(
+            manifest,
+            include_context=include_context and _HAS_CONTEXT,
+        )
+        return manifest
+
     # ── artifact writers ──────────────────────────────────────
 
     def _write_json(self, filename: str, data: dict) -> str:
@@ -797,6 +909,13 @@ class RunUA:
             )
             self._build_manifest_into_existing(manifest)
 
+        self._assert_final_bundle_consistency(
+            manifest,
+            include_context=(
+                self.mode in ("review", "preflight", "security-review", "full")
+                and _HAS_CONTEXT
+            ),
+        )
         return manifest
 
     def _mode_inventory(self, run_id: str) -> dict:
@@ -811,11 +930,7 @@ class RunUA:
         self.summary_data = self._build_summary()
         self._write_json("summary.json", self.summary_data)
 
-        # Manifest (always present)
-        manifest = self._build_manifest(run_id)
-        self._write_json("manifest.json", manifest)
-
-        return manifest
+        return self._finalize_bundle(run_id, include_context=False)
 
     def _mode_structure(self, run_id: str) -> dict:
         """structure: scan + imports + graph + validation."""
@@ -837,10 +952,7 @@ class RunUA:
         self.summary_data = self._build_summary()
         self._write_json("summary.json", self.summary_data)
 
-        manifest = self._build_manifest(run_id)
-        self._write_json("manifest.json", manifest)
-
-        return manifest
+        return self._finalize_bundle(run_id, include_context=False)
 
     def _mode_review(self, run_id: str) -> dict:
         """review: structure + analytics + context envelope + report."""
@@ -864,13 +976,6 @@ class RunUA:
         else:
             self._record_missing("analytics.json")
 
-        # Context envelope (UA-004) — optional enricher
-        if _HAS_CONTEXT:
-            self.context_data = self._build_context()
-            self._write_json("subagent-context.json", self.context_data)
-        else:
-            self._record_missing("subagent-context.json")
-
         # Report
         self._write_text("REPORT.md", self._build_report_raw())
 
@@ -880,10 +985,7 @@ class RunUA:
         self.summary_data = self._build_summary()
         self._write_json("summary.json", self.summary_data)
 
-        manifest = self._build_manifest(run_id)
-        self._write_json("manifest.json", manifest)
-
-        return manifest
+        return self._finalize_bundle(run_id, include_context=True)
 
     def _mode_delta(self, run_id: str) -> dict:
         """delta: incremental scan + delta summary against prior manifest."""
@@ -897,10 +999,7 @@ class RunUA:
         # Build delta summary
         self.delta_data = self._build_delta_summary()
 
-        manifest = self._build_manifest(run_id)
-        self._write_json("manifest.json", manifest)
-
-        return manifest
+        return self._finalize_bundle(run_id, include_context=False)
 
     def _mode_preflight(self, run_id: str) -> dict:
         """preflight: structure + entrypoints/hubs + subagent context."""
@@ -917,23 +1016,13 @@ class RunUA:
         self._write_json("graph.json", self.graph_data)
         self._write_json("validation.json", self.validation_data)
 
-        # Subagent context (UA-004) — optional enricher
-        if _HAS_CONTEXT:
-            self.context_data = self._build_context()
-            self._write_json("subagent-context.json", self.context_data)
-        else:
-            self._record_missing("subagent-context.json")
-
         # Runtime readiness (UA-P1-003)
         self._run_runtime_readiness()
 
         self.summary_data = self._build_summary()
         self._write_json("summary.json", self.summary_data)
 
-        manifest = self._build_manifest(run_id)
-        self._write_json("manifest.json", manifest)
-
-        return manifest
+        return self._finalize_bundle(run_id, include_context=True)
 
     def _mode_security_review(self, run_id: str) -> dict:
         """security-review: planning/preflight evidence gaps; no target gates."""
@@ -948,12 +1037,6 @@ class RunUA:
         self._write_json("graph.json", self.graph_data)
         self._write_json("validation.json", self.validation_data)
 
-        if _HAS_CONTEXT:
-            self.context_data = self._build_context()
-            self._write_json("subagent-context.json", self.context_data)
-        else:
-            self._record_missing("subagent-context.json")
-
         self._run_runtime_readiness()
 
         security_report_data = self._build_security_report_data()
@@ -964,10 +1047,14 @@ class RunUA:
         self.summary_data = self._build_summary()
         self._write_json("summary.json", self.summary_data)
 
-        manifest = self._build_manifest(run_id)
-        self._write_json("manifest.json", manifest)
+        self._finalize_bundle(run_id, include_context=True)
 
-        return manifest
+        security_report_data = self._build_security_report_data()
+        self._write_json("security-report-data.json", security_report_data)
+        report_md = render_report_data(security_report_data)  # type: ignore[misc]
+        self._write_text("REPORT.md", report_md)
+
+        return self._finalize_bundle(run_id, include_context=True)
 
     def _mode_full(self, run_id: str) -> dict:
         """full: all available deterministic enrichers."""
@@ -991,13 +1078,6 @@ class RunUA:
         else:
             self._record_missing("analytics.json")
 
-        # Context envelope (UA-004) — optional enricher
-        if _HAS_CONTEXT:
-            self.context_data = self._build_context()
-            self._write_json("subagent-context.json", self.context_data)
-        else:
-            self._record_missing("subagent-context.json")
-
         # Report
         self._write_text("REPORT.md", self._build_report_raw())
 
@@ -1007,10 +1087,7 @@ class RunUA:
         self.summary_data = self._build_summary()
         self._write_json("summary.json", self.summary_data)
 
-        manifest = self._build_manifest(run_id)
-        self._write_json("manifest.json", manifest)
-
-        return manifest
+        return self._finalize_bundle(run_id, include_context=True)
 
     # ── cleanliness helpers (UA-P1-002) ────────────────────────────
 

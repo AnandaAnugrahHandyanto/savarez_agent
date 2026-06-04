@@ -44,6 +44,80 @@ def _load_manifest(bundle_dir: str) -> dict:
     return json.loads(manifest_path.read_text())
 
 
+def _make_tiny_rust_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "tiny_rust_repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "README.md").write_text("# Tiny Rust fixture\n", encoding="utf-8")
+    (repo / "Cargo.toml").write_text(
+        '[package]\nname = "tiny_fixture"\nversion = "0.1.0"\nedition = "2021"\n',
+        encoding="utf-8",
+    )
+    (repo / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "ua-test@example.com"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "UA Test"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    return repo
+
+
+def _assert_final_bundle_consistent(bundle_dir: Path) -> None:
+    manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+    ctx = json.loads((bundle_dir / "subagent-context.json").read_text(encoding="utf-8"))
+
+    assert manifest["status"] == "complete"
+    assert manifest["artifacts_missing"] == []
+
+    artifact_paths = manifest.get("artifact_paths", {})
+    for artifact, raw_path in artifact_paths.items():
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = bundle_dir / path
+        assert path.exists(), f"manifest-listed artifact is absent: {artifact}"
+
+    for artifact, entry in manifest.get("artifact_integrity", {}).items():
+        path = Path(artifact_paths[artifact])
+        if not path.is_absolute():
+            path = bundle_dir / path
+        assert entry["bytes"] == path.stat().st_size
+        assert entry["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+    missing = {
+        item.get("artifact")
+        for item in ctx.get("artifacts_missing", [])
+        if isinstance(item, dict)
+    }
+    present_manifest_artifacts = {
+        artifact
+        for artifact, raw_path in artifact_paths.items()
+        if (Path(raw_path) if Path(raw_path).is_absolute() else bundle_dir / raw_path).exists()
+    }
+    assert missing.isdisjoint(present_manifest_artifacts)
+    assert not {
+        "manifest.json",
+        "summary.json",
+        "REPORT.md",
+        "runtime-readiness.json",
+        "runtime-readiness.md",
+    } & missing
+    assert ctx["target"] == manifest["target_path"]
+
+    trust = (
+        ctx.get("critic_packs", {})
+        .get("reviewer_critic", {})
+        .get("trust_anchor_summary", "")
+    )
+    assert "absent or unreadable" not in trust
+
+
 # ── RED: mode flag fails before implementation ───────────────────────────
 
 class TestModeUnsupportedBeforeImplementation:
@@ -87,6 +161,35 @@ class TestModeMetadata:
         assert rc == 0, f"mode={mode} failed: {stderr}"
         manifest = _load_manifest(out)
         assert manifest["mode"] == mode
+
+
+class TestFinalBundleConsistency:
+    """Final manifest, context, and critic packs must not contradict."""
+
+    @pytest.mark.parametrize("mode", [
+        "review",
+        "preflight",
+        "full",
+        "security-review",
+    ])
+    def test_final_context_uses_final_manifest_artifact_truth(
+        self,
+        tmp_path: Path,
+        mode: str,
+    ):
+        target = _make_tiny_rust_repo(tmp_path)
+        out = tmp_path / f"bundle-{mode}"
+        cache = tmp_path / f"cache-{mode}"
+
+        rc, _, stderr = run_ua(
+            str(target),
+            str(out),
+            mode=mode,
+            extra_args=["--read-only-target", "--external-cache-dir", str(cache)],
+        )
+        assert rc == 0, f"{mode} failed: {stderr}"
+
+        _assert_final_bundle_consistent(out)
 
 
 # ── GREEN: artifact sets per mode ───────────────────────────────────────
