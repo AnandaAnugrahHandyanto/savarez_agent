@@ -103,23 +103,26 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
 
   return (
     <div className="mt-1 flex items-center gap-1 ps-5" data-slot="tool-approval-inline">
-      <div className="flex items-stretch">
+      <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-(--ui-stroke-secondary) bg-background">
         <Button
-          className="h-6 gap-1 rounded-md rounded-r-none px-2 text-xs font-medium"
+          className="h-full gap-1 rounded-none px-2 text-xs font-normal"
           disabled={busy}
           onClick={() => void respond('once')}
-          size="sm"
+          variant="ghost"
         >
           {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : 'Run'}
-          {submitting !== 'once' && <span className="text-[0.625rem] opacity-70">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
+          {submitting !== 'once' && (
+            <span className="text-[0.625rem] text-(--ui-text-tertiary)">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>
+          )}
         </Button>
+        <span aria-hidden className="w-px self-stretch bg-(--ui-stroke-secondary)" />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               aria-label="More approval options"
-              className="h-6 rounded-md rounded-l-none border-l border-primary-foreground/25 px-1"
+              className="h-full rounded-none px-1"
               disabled={busy}
-              size="sm"
+              variant="ghost"
             >
               <ChevronDown className="size-3" />
             </Button>
@@ -135,10 +138,9 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
       </div>
 
       <Button
-        className="h-6 gap-1 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground"
+        className="h-6 gap-1 rounded-md px-2 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
         disabled={busy}
         onClick={() => void respond('deny')}
-        size="sm"
         variant="ghost"
       >
         {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : 'Reject'}
