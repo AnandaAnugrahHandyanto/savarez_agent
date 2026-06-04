@@ -4960,7 +4960,10 @@ def _respond(rid, params, key):
     entry = _pending.get(r)
     if not entry:
         return _err(rid, 4009, f"no pending {key} request")
-    _, ev = entry
+    pending_sid, ev = entry
+    session_id = params.get("session_id", "")
+    if pending_sid != session_id:
+        return _err(rid, 4009, "session mismatch")
     _answers[r] = params.get(key, "")
     ev.set()
     return _ok(rid, {"status": "ok"})
