@@ -196,3 +196,138 @@ class TestSupersededRecallFilter:
         ).fetchone()
         # Only the live fact contributes to the bundle.
         assert row["fact_count"] == 1
+
+
+class TestSupersede:
+    """supersede() inserts a corrected fact, retires the old one, and records
+    lineage, without destroying the old wording."""
+
+    def _store(self, tmp_path):
+        return MemoryStore(db_path=str(tmp_path / "m.db"))
+
+    def test_returns_new_live_fact(self, tmp_path):
+        store = self._store(tmp_path)
+        old_id = store.add_fact("Deploy runs on Mondays", category="project")
+        new_id = store.supersede(old_id, "Deploy runs on Fridays")
+        assert new_id != old_id
+        # New fact is live, old fact is retired.
+        new_row = store._conn.execute(
+            "SELECT superseded_at FROM facts WHERE fact_id = ?", (new_id,)
+        ).fetchone()
+        old_row = store._conn.execute(
+            "SELECT superseded_at FROM facts WHERE fact_id = ?", (old_id,)
+        ).fetchone()
+        assert new_row["superseded_at"] is None
+        assert old_row["superseded_at"] is not None
+
+    def test_records_lineage(self, tmp_path):
+        store = self._store(tmp_path)
+        old_id = store.add_fact("Deploy runs on Mondays")
+        new_id = store.supersede(old_id, "Deploy runs on Fridays")
+        row = store._conn.execute(
+            "SELECT new_id, old_id FROM fact_supersedes WHERE new_id = ? AND old_id = ?",
+            (new_id, old_id),
+        ).fetchone()
+        assert row is not None
+
+    def test_old_content_preserved(self, tmp_path):
+        store = self._store(tmp_path)
+        old_id = store.add_fact("Deploy runs on Mondays")
+        store.supersede(old_id, "Deploy runs on Fridays")
+        # Original wording survives in the row, just retired.
+        row = store._conn.execute(
+            "SELECT content FROM facts WHERE fact_id = ?", (old_id,)
+        ).fetchone()
+        assert row["content"] == "Deploy runs on Mondays"
+
+    def test_old_vanishes_from_search_new_surfaces(self, tmp_path):
+        store = self._store(tmp_path)
+        old_id = store.add_fact("Deploy runs on Mondays")
+        new_id = store.supersede(old_id, "Deploy runs on Fridays")
+        ids = [f["fact_id"] for f in store.search_facts("Deploy runs")]
+        assert old_id not in ids
+        assert new_id in ids
+
+    def test_inherits_old_category_by_default(self, tmp_path):
+        store = self._store(tmp_path)
+        old_id = store.add_fact("Deploy runs on Mondays", category="project")
+        new_id = store.supersede(old_id, "Deploy runs on Fridays")
+        row = store._conn.execute(
+            "SELECT category FROM facts WHERE fact_id = ?", (new_id,)
+        ).fetchone()
+        assert row["category"] == "project"
+
+    def test_category_override(self, tmp_path):
+        store = self._store(tmp_path)
+        old_id = store.add_fact("Deploy runs on Mondays", category="project")
+        new_id = store.supersede(old_id, "Deploy runs on Fridays", category="tool")
+        row = store._conn.execute(
+            "SELECT category FROM facts WHERE fact_id = ?", (new_id,)
+        ).fetchone()
+        assert row["category"] == "tool"
+
+    def test_rejects_identical_content(self, tmp_path):
+        store = self._store(tmp_path)
+        old_id = store.add_fact("Deploy runs on Mondays")
+        with pytest.raises(ValueError):
+            store.supersede(old_id, "Deploy runs on Mondays")
+
+    def test_rejects_identical_content_after_strip(self, tmp_path):
+        store = self._store(tmp_path)
+        old_id = store.add_fact("Deploy runs on Mondays")
+        with pytest.raises(ValueError):
+            store.supersede(old_id, "  Deploy runs on Mondays  ")
+
+    def test_rejects_empty_content(self, tmp_path):
+        store = self._store(tmp_path)
+        old_id = store.add_fact("Deploy runs on Mondays")
+        with pytest.raises(ValueError):
+            store.supersede(old_id, "   ")
+
+    def test_missing_old_raises(self, tmp_path):
+        store = self._store(tmp_path)
+        with pytest.raises(KeyError):
+            store.supersede(9999, "Deploy runs on Fridays")
+
+
+class TestSupersedeAction:
+    """The fact_store tool exposes supersede via the 'supersede' action."""
+
+    def _provider(self, tmp_path):
+        from plugins.memory.holographic import HolographicMemoryProvider
+
+        provider = HolographicMemoryProvider(config={})
+        store = MemoryStore(db_path=str(tmp_path / "m.db"))
+        provider._store = store
+        provider._retriever = FactRetriever(store)
+        return provider, store
+
+    def test_supersede_action_records_lineage(self, tmp_path):
+        import json
+
+        provider, store = self._provider(tmp_path)
+        old_id = store.add_fact("Deploy runs on Mondays")
+        out = json.loads(
+            provider._handle_fact_store(
+                {"action": "supersede", "fact_id": old_id, "content": "Deploy runs on Fridays"}
+            )
+        )
+        new_id = out["fact_id"]
+        assert new_id != old_id
+        row = store._conn.execute(
+            "SELECT 1 FROM fact_supersedes WHERE new_id = ? AND old_id = ?",
+            (new_id, old_id),
+        ).fetchone()
+        assert row is not None
+
+    def test_supersede_action_rejects_identical(self, tmp_path):
+        import json
+
+        provider, store = self._provider(tmp_path)
+        old_id = store.add_fact("Deploy runs on Mondays")
+        out = json.loads(
+            provider._handle_fact_store(
+                {"action": "supersede", "fact_id": old_id, "content": "Deploy runs on Mondays"}
+            )
+        )
+        assert "error" in out
