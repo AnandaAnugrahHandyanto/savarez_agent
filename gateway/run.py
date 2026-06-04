@@ -14959,7 +14959,14 @@ class GatewayRunner:
         git_dir = project_root / '.git'
 
         if not git_dir.exists():
-            return t("gateway.update.not_git_repo")
+            from hermes_cli.config import detect_install_method
+            if detect_install_method(project_root) == "pip":
+                # PyPI install — the CLI handles pip updates via
+                # ``hermes update`` (uv/pip upgrade).  Let the
+                # subprocess handle it rather than blocking here.
+                pass
+            else:
+                return t("gateway.update.not_git_repo")
 
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
