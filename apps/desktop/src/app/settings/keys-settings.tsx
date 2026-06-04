@@ -10,6 +10,7 @@ import { Check, Eye, EyeOff, Save, Settings2, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
+import { t as providerT } from '@/store/i18n'
 
 import { CONTROL_TEXT } from './constants'
 import {
@@ -33,6 +34,54 @@ interface EnvActionsProps {
   onReveal: (key: string) => void
   isRevealed: boolean
   showReveal?: boolean
+}
+
+
+// Maps backend provider descriptions to i18n keys for translation
+const PROVIDER_DESC_MAP: Record<string, string> = {
+  'AI Gateway API key (Vercel AI Gateway)': 'provider.desc.aiGateway',
+  'Anthropic API key': 'provider.desc.anthropic',
+  'Arcee AI base URL override': 'provider.desc.arcee',
+  'AWS named profile for Bedrock authentication (from ~/.aws/credentials)': 'provider.desc.awsbedrock',
+  'BROWSERBASE_API_KEY': 'provider.desc.browserbase',
+  'Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)': 'provider.desc.dashscope',
+  'Custom DeepSeek API base URL (advanced)': 'provider.desc.deepseek',
+  'ElevenLabs API key': 'provider.desc.elevenLabs',
+  'Exa API key for AI-native web search and contents': 'provider.desc.exa',
+  'FAL_KEY': 'provider.desc.fal',
+  'Firecrawl API URL for self-hosted instances (optional)': 'provider.desc.firecrawl',
+  'GCP project ID for paid Gemini tiers (free tier auto-provisions)': 'provider.desc.gemini',
+  'GLM API key (Z.AI)': 'provider.desc.glm',
+  'GMI Cloud base URL override': 'provider.desc.gmi',
+  'Google AI Studio API key (also recognized as GEMINI_API_KEY)': 'provider.desc.google',
+  'Groq API key (for STT)': 'provider.desc.groq',
+  'Hugging Face Inference Providers base URL override': 'provider.desc.huggingface',
+  'Kilo Code API key': 'provider.desc.kiloCode',
+  'Kimi / Moonshot China API key': 'provider.desc.kimi',
+  'Z.AI / GLM base URL override': 'provider.desc.lmstudio',
+  'MiniMax (China) base URL override': 'provider.desc.minimax',
+  'MiniMax China API key': 'provider.desc.minimaxCn',
+  'Mistral API key (for STT/TTS)': 'provider.desc.mistral',
+  'Nous Portal base URL override': 'provider.desc.nous',
+  'NVIDIA NIM base URL override (e.g. http://localhost:8000/v1 for local NIM)': 'provider.desc.nvidia',
+  'Ollama Cloud base URL override (default: https://ollama.com/v1)': 'provider.desc.ollamacloud',
+  'OpenRouter API key (for vision, web scraping helpers, and MoA)': 'provider.desc.openRouter',
+  'OpenAI API key (for voice processing via proxy)': 'provider.desc.openai',
+  'OpenCode Go API key': 'provider.desc.opencodeGo',
+  'OpenCode Zen API key': 'provider.desc.opencodeZen',
+  'OpenCode Go base URL override': 'provider.desc.opencodego',
+  'Parallel API key for AI-native web search and extract': 'provider.desc.parallel',
+  'Qwen Portal base URL override (default: https://portal.qwen.ai/v1)': 'provider.desc.qwenportal',
+  'StepFun Step Plan base URL override': 'provider.desc.stepfun',
+  'TAVILY_API_KEY': 'provider.desc.tavily',
+  'xAI base URL override': 'provider.desc.xai',
+  'Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)': 'provider.desc.xiaomi',
+  'Azure Foundry base URL (set via \'hermes model\' for endpoint-specific config)': 'provider.desc.zai',
+}
+
+function providerDesc(desc: string): string {
+  const key = PROVIDER_DESC_MAP[desc]
+  return key ? providerT(key) : desc
 }
 
 function EnvActions({
