@@ -36,6 +36,45 @@ def test_set_language_changes_current_language():
         reset_language_cache()
 
 
+def test_get_system_locale_handles_exception():
+    """Test that get_system_locale handles exceptions gracefully."""
+    from agent.i18n import get_system_locale
+
+    with patch('agent.i18n.locale.getlocale', side_effect=Exception("locale broken")):
+        assert get_system_locale() == 'en'
+
+
+def test_language_aliases():
+    """Test that language aliases are correctly resolved."""
+    from agent.i18n import _normalize_lang
+
+    # Original aliases
+    assert _normalize_lang('zh') == 'zh'
+    assert _normalize_lang('ja') == 'ja'
+    assert _normalize_lang('de') == 'de'
+    assert _normalize_lang('es') == 'es'
+    assert _normalize_lang('uk') == 'uk'
+    assert _normalize_lang('tr') == 'tr'
+
+    # New aliases
+    assert _normalize_lang('zh-hant') == 'zh-hant'
+    assert _normalize_lang('ko') == 'ko'
+    assert _normalize_lang('it') == 'it'
+    assert _normalize_lang('ga') == 'ga'
+    assert _normalize_lang('pt') == 'pt'
+    assert _normalize_lang('ru') == 'ru'
+    assert _normalize_lang('hu') == 'hu'
+
+    # Test case-insensitive and regional variants
+    assert _normalize_lang('Korean') == 'ko'
+    assert _normalize_lang('Italian') == 'it'
+    assert _normalize_lang('Irish') == 'ga'
+    assert _normalize_lang('Portuguese') == 'pt'
+    assert _normalize_lang('Russian') == 'ru'
+    assert _normalize_lang('Hungarian') == 'hu'
+    assert _normalize_lang('Traditional-Chinese') == 'zh-hant'
+
+
 def test_get_language_priority_order():
     """Test language priority: command > env > config > system > default."""
     import agent.i18n as i18n_mod
@@ -75,7 +114,7 @@ def test_get_language_priority_order():
                     with patch('agent.i18n.get_system_locale', return_value='fr'):
                         assert get_language() == 'fr'
 
-        # Test default fallback: when nothing set, should return 'en'
+        # Test default fallback: when system returns default, should return 'en'
         with patch.object(i18n_mod, '_current_language', None):
             reset_language_cache()
             with patch.dict('os.environ', {}, clear=True):
