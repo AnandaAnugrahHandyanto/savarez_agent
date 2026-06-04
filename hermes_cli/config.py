@@ -4015,7 +4015,10 @@ def _normalize_custom_provider_entry(
             )
             entry[snake] = entry[camel]
     unknown = set(entry.keys()) - _KNOWN_KEYS - set(_CAMEL_ALIASES.keys())
-    if unknown:
+    # Non-HTTP blocks (e.g. providers.acp launcher settings) may omit base_url;
+    # they are consumed outside custom-provider normalization — do not warn.
+    has_url_candidate = any(entry.get(k) for k in ("base_url", "url", "api"))
+    if unknown and has_url_candidate:
         logger.warning(
             "providers.%s: unknown config keys ignored: %s",
             provider_key or "?", ", ".join(sorted(unknown)),

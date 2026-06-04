@@ -139,6 +139,19 @@ class TestNormalizeCustomProviderEntry:
         result = _normalize_custom_provider_entry(entry, provider_key="test")
         assert result is None
 
+    def test_non_http_acp_launcher_keys_not_flagged_unknown(self, caplog):
+        """ACP launcher blocks under providers.acp omit base_url; keys are not HTTP provider fields."""
+        entry = {
+            "args": "acp",
+            "command": "/usr/local/bin/cursor-agent",
+            "env": '{"CURSOR_MODEL": "auto"}',
+            "stale_timeout_seconds": 900,
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="acp")
+        assert result is None
+        assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
+
     def test_no_name_returns_none(self):
         """Entry with no name and no provider_key should return None."""
         entry = {
