@@ -153,7 +153,7 @@ Full automation templates gallery: [savarez-agent.nousresearch.com/docs/guides/a
 
 Documentation: [savarez-agent.nousresearch.com](https://savarez-agent.nousresearch.com)
 
-GitHub: [github.com/NousResearch/savarez-agent](https://github.com/NousResearch/savarez-agent)
+GitHub: [github.com/AnandaAnugrahHandyanto/savarez-agent](https://github.com/AnandaAnugrahHandyanto/savarez_agent)
 
 ---
 

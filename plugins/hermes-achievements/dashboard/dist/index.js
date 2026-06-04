@@ -339,7 +339,7 @@
         tier_part: tierPart,
         name: achievement.name,
       });
-      return tmpl + "\n\n@NousResearch · https://savarez-agent.nousresearch.com";
+      return tmpl + "\n\n@AnandaAnugrahHandyanto · https://savarez-agent.nousresearch.com";
     }
 
     function shareOnX() {

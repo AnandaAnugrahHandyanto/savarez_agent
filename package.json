@@ -14,13 +14,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NousResearch/Savarez-Agent.git"
+    "url": "git+https://github.com/AnandaAnugrahHandyanto/Savarez-Agent.git"
   },
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/NousResearch/Savarez-Agent/issues"
+    "url": "https://github.com/AnandaAnugrahHandyanto/Savarez-Agent/issues"
   },
-  "homepage": "https://github.com/NousResearch/Savarez-Agent#readme",
+  "homepage": "https://github.com/AnandaAnugrahHandyanto/Savarez-Agent#readme",
   "dependencies": {
     "@streamdown/math": "^1.0.2",
     "agent-browser": "^0.26.0"

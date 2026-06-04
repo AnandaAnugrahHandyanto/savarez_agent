@@ -653,7 +653,7 @@ def test_cmd_update_managed_clone_cleans_instead_of_stashing(monkeypatch, tmp_pa
     # Official origin → not a fork.
     monkeypatch.setattr(
         hermes_main, "_get_origin_url",
-        lambda *a, **kw: "https://github.com/NousResearch/savarez-agent.git",
+        lambda *a, **kw: "https://github.com/AnandaAnugrahHandyanto/savarez_agent.git",
     )
     clean_calls = []
     monkeypatch.setattr(

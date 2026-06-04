@@ -63,7 +63,7 @@ _HERMES_MODEL_WARNING = (
 # happen to carry "savarez" in their tag but are fully tool-capable.
 #
 # Positive examples the regex must match:
-#   NousResearch/Savarez-3-Llama-3.1-70B, savarez-4-405b, openrouter/hermes3:70b
+#   AnandaAnugrahHandyanto/Savarez-3-Llama-3.1-70B, savarez-4-405b, openrouter/hermes3:70b
 # Negative examples it must NOT match:
 #   savarez-brain:qwen3-14b-ctx16k, qwen3:14b, claude-opus-4-6
 _NOUS_HERMES_NON_AGENTIC_RE = re.compile(

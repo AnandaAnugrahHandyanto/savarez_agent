@@ -81,7 +81,7 @@ python $SAVAREZ_HOME/skills/devops/watchers/scripts/watch_rss.py \
 
 ```bash
 python $SAVAREZ_HOME/skills/devops/watchers/scripts/watch_github.py \
-  --name savarez-issues --repo NousResearch/savarez-agent --scope issues
+  --name savarez-issues --repo AnandaAnugrahHandyanto/savarez-agent --scope issues
 ```
 
 轮询任意 JSON API：

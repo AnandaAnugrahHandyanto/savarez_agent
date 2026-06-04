@@ -66,7 +66,7 @@ Watch a GitHub repo (set `GITHUB_TOKEN` in `~/.savarez/.env` to avoid the 60 req
 
 ```bash
 python $SAVAREZ_HOME/skills/devops/watchers/scripts/watch_github.py \
-  --name savarez-issues --repo NousResearch/savarez-agent --scope issues
+  --name savarez-issues --repo AnandaAnugrahHandyanto/savarez-agent --scope issues
 ```
 
 Poll an arbitrary JSON API:

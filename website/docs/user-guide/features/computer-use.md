@@ -191,6 +191,6 @@ reconsider.
 
 ## See also
 
-- [Universal skill: `macos-computer-use`](https://github.com/NousResearch/savarez-agent/blob/main/skills/apple/macos-computer-use/SKILL.md)
+- [Universal skill: `macos-computer-use`](https://github.com/AnandaAnugrahHandyanto/savarez_agent/blob/main/skills/apple/macos-computer-use/SKILL.md)
 - [cua-driver source (trycua/cua)](https://github.com/trycua/cua)
 - [Browser automation](./browser.md) for cross-platform web tasks.

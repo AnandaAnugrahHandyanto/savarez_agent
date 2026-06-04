@@ -14,7 +14,7 @@ Get Savarez AI Agent up and running in under two minutes with the one-line insta
 
 Prefer a native installer?
 
-- **Desktop downloads:** [GitHub Releases](https://github.com/NousResearch/savarez-agent/releases/latest)
+- **Desktop downloads:** [GitHub Releases](https://github.com/AnandaAnugrahHandyanto/savarez_agent/releases/latest)
 
 Desktop builds ship signed/notarized macOS artifacts and Windows installers with checksum files.
 
@@ -23,17 +23,17 @@ Desktop builds ship signed/notarized macOS artifacts and Windows installers with
 For a git-based install that tracks `main` and gives you the latest changes immediately:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash
 ```
 
 ### Windows (native, PowerShell)
 
-Native Windows runs Savarez without WSL — the CLI, gateway, TUI, and tools all work natively. (Both native and WSL2 installs coexist cleanly; see the feature note below for the one WSL2-only feature.) Found a bug? Please [file issues](https://github.com/NousResearch/savarez-agent/issues).
+Native Windows runs Savarez without WSL — the CLI, gateway, TUI, and tools all work natively. (Both native and WSL2 installs coexist cleanly; see the feature note below for the one WSL2-only feature.) Found a bug? Please [file issues](https://github.com/AnandaAnugrahHandyanto/savarez_agent/issues).
 
 Open PowerShell and run:
 
 ```powershell
-iex (irm https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.ps1)
+iex (irm https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.ps1)
 ```
 
 The installer handles **everything**: `uv`, Python 3.11, Node.js 22, `ripgrep`, `ffmpeg`, **and a portable Git Bash** (PortableGit — a self-contained Git-for-Windows distribution that ships `bash.exe` and the full POSIX toolchain Savarez uses for shell commands; on 32-bit Windows the installer falls back to MinGit, which lacks bash and disables terminal-tool / agent-browser features).  It clones the repo under `%LOCALAPPDATA%\savarez\savarez-agent`, creates a virtualenv, and adds `savarez` to your **User PATH**.  Restart your terminal (or open a new PowerShell window) after the install so PATH picks up.
@@ -55,7 +55,7 @@ If you prefer WSL2, the Linux installer above works inside it; both native and W
 Savarez now ships a Termux-aware installer path too:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash
 ```
 
 The installer detects Termux automatically and switches to a tested Android flow:
@@ -169,12 +169,12 @@ Running Savarez as a dedicated unprivileged user (e.g. a `savarez` systemd servi
 
 2. **As the unprivileged service user**, run the regular installer. It will detect the missing sudo, skip `--with-deps`, and install Chromium into the user's local Playwright cache:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash
    ```
 
    If you want to skip the Playwright step entirely — for example because you're running headless and don't need browser automation — pass `--skip-browser`:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash -s -- --skip-browser
+   curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash -s -- --skip-browser
    ```
 
 3. **Make `savarez` available to the service user's shells.** The installer writes the launcher to `~/.local/bin/savarez`. System service accounts often have a minimal PATH that doesn't include `~/.local/bin`. Either add it to the user's environment, or symlink the launcher into a system location:

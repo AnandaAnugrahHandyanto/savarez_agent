@@ -130,7 +130,7 @@
   },
   "build": {
     "electronVersion": "40.9.3",
-    "appId": "com.nousresearch.savarez",
+    "appId": "com.AnandaAnugrahHandyanto.savarez",
     "productName": "Savarez",
     "executableName": "Savarez",
     "artifactName": "Savarez-${version}-${os}-${arch}.${ext}",

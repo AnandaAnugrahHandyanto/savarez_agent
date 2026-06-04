@@ -13,7 +13,7 @@ required_credential_files:
 metadata:
   savarez:
     tags: [Google, Gmail, Calendar, Drive, Sheets, Docs, Contacts, Email, OAuth]
-    homepage: https://github.com/NousResearch/savarez-agent
+    homepage: https://github.com/AnandaAnugrahHandyanto/savarez_agent
     related_skills: [himalaya]
 ---
 

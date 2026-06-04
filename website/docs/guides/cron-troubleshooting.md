@@ -214,7 +214,7 @@ If you've worked through this guide and the issue persists:
 
 1. Run the job with `savarez cron run <job_id>` (fires on next gateway tick) and watch for errors in the chat output
 2. Check `~/.savarez/logs/agent.log` for scheduler messages and `~/.savarez/logs/errors.log` for warnings
-3. Open an issue at [github.com/NousResearch/savarez-agent](https://github.com/NousResearch/savarez-agent) with:
+3. Open an issue at [github.com/AnandaAnugrahHandyanto/savarez-agent](https://github.com/AnandaAnugrahHandyanto/savarez_agent) with:
    - The job ID and schedule
    - The delivery target
    - What you expected vs. what happened

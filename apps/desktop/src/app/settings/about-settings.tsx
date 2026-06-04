@@ -16,7 +16,7 @@ import {
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
 
-const RELEASE_NOTES_URL = 'https://github.com/NousResearch/savarez-agent/releases'
+const RELEASE_NOTES_URL = 'https://github.com/AnandaAnugrahHandyanto/savarez_agent/releases'
 
 function relativeTime(ms: number | undefined) {
   if (!ms) {

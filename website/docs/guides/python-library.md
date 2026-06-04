@@ -15,19 +15,19 @@ Savarez isn't just a CLI tool. You can import `AIAgent` directly and use it prog
 Install Savarez directly from the repository:
 
 ```bash
-pip install git+https://github.com/NousResearch/savarez-agent.git
+pip install git+https://github.com/AnandaAnugrahHandyanto/savarez_agent.git
 ```
 
 Or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv pip install git+https://github.com/NousResearch/savarez-agent.git
+uv pip install git+https://github.com/AnandaAnugrahHandyanto/savarez_agent.git
 ```
 
 You can also pin it in your `requirements.txt`:
 
 ```text
-savarez-agent @ git+https://github.com/NousResearch/savarez-agent.git
+savarez-agent @ git+https://github.com/AnandaAnugrahHandyanto/savarez_agent.git
 ```
 
 :::tip

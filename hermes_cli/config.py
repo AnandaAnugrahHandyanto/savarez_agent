@@ -359,7 +359,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     container detection here:
       - the curl installer (scripts/install.sh, the README/website install
         command) git-clones the repo and stamps ``git``;
-      - the published ``nousresearch/savarez-agent`` image stamps ``docker``
+      - the published ``AnandaAnugrahHandyanto/savarez-agent`` image stamps ``docker``
         at boot via ``docker/stage2-hook.sh``.
     An unsupported manual install dropped into a container (no stamp) was
     wrongly classified as the published image by bare container detection,
@@ -429,7 +429,7 @@ def recommended_update_command_for_method(method: str) -> str:
     if method == "homebrew":
         return "brew upgrade savarez-agent"
     if method == "docker":
-        return "docker pull nousresearch/savarez-agent:latest"
+        return "docker pull AnandaAnugrahHandyanto/savarez-agent:latest"
     if method == "pip":
         if is_uv_tool_install():
             return "uv tool upgrade savarez-agent"
@@ -467,23 +467,23 @@ def recommended_update_command() -> str:
 _DOCKER_UPDATE_MESSAGE = """\
 ✗ ``savarez update`` doesn't apply inside the Docker container.
 
-Savarez AI Agent runs as a published image (nousresearch/savarez-agent), not a
+Savarez AI Agent runs as a published image (AnandaAnugrahHandyanto/savarez-agent), not a
 git checkout — the container has no working tree to pull into.  Update by
 pulling a fresh image and restarting your container instead:
 
-  docker pull nousresearch/savarez-agent:latest
+  docker pull AnandaAnugrahHandyanto/savarez-agent:latest
   # then restart whatever started the container, e.g.:
   docker compose up -d --force-recreate savarez-agent
   # or, for ad-hoc runs, exit the current container and `docker run` again
 
 Verify the new version after restart:
-  docker run --rm nousresearch/savarez-agent:latest --version
+  docker run --rm AnandaAnugrahHandyanto/savarez-agent:latest --version
 
 Notes:
   • If you pinned a specific tag (e.g. ``:v0.14.0``) the ``:latest`` tag
     won't move your container — pull the newer tag you actually want, or
     switch to ``:latest`` / ``:main`` for rolling updates.  See available
-    tags at https://hub.docker.com/r/nousresearch/savarez-agent/tags
+    tags at https://hub.docker.com/r/AnandaAnugrahHandyanto/savarez-agent/tags
   • Your config and session history live under ``$SAVAREZ_HOME`` (``/opt/data``
     in the container, typically bind-mounted from the host) and persist
     across image upgrades — re-pulling doesn't lose any state.

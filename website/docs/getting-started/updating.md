@@ -152,7 +152,7 @@ You no longer need to wrap `savarez update` in `screen` or `tmux` to survive a t
 savarez version
 ```
 
-Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/savarez-agent/releases).
+Compare against the latest release at the [GitHub releases page](https://github.com/AnandaAnugrahHandyanto/savarez_agent/releases).
 
 ### Updating from Messaging Platforms
 

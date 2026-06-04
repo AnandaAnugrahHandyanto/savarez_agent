@@ -35,11 +35,11 @@ Savarez AI Agent 提供了一个 Nix flake，支持三个层级的集成：
 
 ```bash
 # 直接运行（首次使用时构建，之后使用缓存）
-nix run github:NousResearch/savarez-agent -- setup
-nix run github:NousResearch/savarez-agent -- chat
+nix run github:AnandaAnugrahHandyanto/savarez-agent -- setup
+nix run github:AnandaAnugrahHandyanto/savarez-agent -- chat
 
 # 或持久化安装
-nix profile install github:NousResearch/savarez-agent
+nix profile install github:AnandaAnugrahHandyanto/savarez-agent
 savarez setup
 savarez chat
 ```
@@ -50,7 +50,7 @@ savarez chat
 <summary><strong>从本地克隆构建</strong></summary>
 
 ```bash
-git clone https://github.com/NousResearch/savarez-agent.git
+git clone https://github.com/AnandaAnugrahHandyanto/savarez_agent.git
 cd savarez-agent
 nix build
 ./result/bin/savarez setup
@@ -75,7 +75,7 @@ nix build
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    savarez-agent.url = "github:NousResearch/savarez-agent";
+    savarez-agent.url = "github:AnandaAnugrahHandyanto/savarez-agent";
   };
 
   outputs = { nixpkgs, savarez-agent, ... }: {
@@ -685,7 +685,7 @@ services.savarez-agent = {
 
 ```nix
 {
-  inputs.savarez-agent.url = "github:NousResearch/savarez-agent";
+  inputs.savarez-agent.url = "github:AnandaAnugrahHandyanto/savarez-agent";
   outputs = { savarez-agent, nixpkgs, ... }: {
     nixpkgs.overlays = [ savarez-agent.overlays.default ];
     # 然后：

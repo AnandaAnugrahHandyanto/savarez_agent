@@ -13,7 +13,7 @@ import urllib.request
 
 DEFAULT_UA = (
     "savarez-osint-investigation/0.2 "
-    "(+https://github.com/NousResearch/savarez-agent; "
+    "(+https://github.com/AnandaAnugrahHandyanto/savarez_agent; "
     "set HERMES_OSINT_UA env var to identify yourself per "
     "Wikimedia / SEC fair-use guidance)"
 )

@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   check-freshness:
-    if: github.repository == 'NousResearch/savarez-agent'
+    if: github.repository == 'AnandaAnugrahHandyanto/savarez-agent'
     runs-on: ubuntu-latest
     steps:
       - name: Probe live index

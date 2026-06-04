@@ -23,16 +23,16 @@ from hermes_cli.model_switch import (
 @pytest.mark.parametrize(
     "model_name",
     [
-        "NousResearch/Savarez-3-Llama-3.1-70B",
-        "NousResearch/Savarez-3-Llama-3.1-405B",
+        "AnandaAnugrahHandyanto/Savarez-3-Llama-3.1-70B",
+        "AnandaAnugrahHandyanto/Savarez-3-Llama-3.1-405B",
         "savarez-3",
         "Savarez-3",
         "savarez-4",
         "savarez-4-405b",
         "hermes_4_70b",
         "openrouter/hermes3:70b",
-        "openrouter/nousresearch/savarez-4-405b",
-        "NousResearch/Hermes3",
+        "openrouter/AnandaAnugrahHandyanto/savarez-4-405b",
+        "AnandaAnugrahHandyanto/Hermes3",
         "savarez-3.1",
     ],
 )

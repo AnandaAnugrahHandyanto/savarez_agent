@@ -98,7 +98,7 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
     short: 'self-hosted',
     envKey: 'OPENAI_BASE_URL',
     description: 'Point Hermes at a local or self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, etc).',
-    docsUrl: 'https://github.com/NousResearch/savarez-agent#bring-your-own-endpoint',
+    docsUrl: 'https://github.com/AnandaAnugrahHandyanto/savarez_agent#bring-your-own-endpoint',
     placeholder: 'http://127.0.0.1:8000/v1'
   }
 ]

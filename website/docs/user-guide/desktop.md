@@ -31,7 +31,7 @@ Pick whichever fits the moment. They share state, so you can start a session in 
 Add `--include-desktop` to the regular install script.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash -s -- --include-desktop
+curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash -s -- --include-desktop
 ```
 
 ### With an existing Savarez installation
@@ -180,7 +180,7 @@ rm "$HOME/.savarez/savarez-agent/.savarez-bootstrap-complete"
 rm -rf "$HOME/.savarez/savarez-agent/venv"
 
 # Reset a stuck macOS microphone prompt
-tccutil reset Microphone com.nousresearch.savarez
+tccutil reset Microphone com.AnandaAnugrahHandyanto.savarez
 ```
 
 ## Building from source

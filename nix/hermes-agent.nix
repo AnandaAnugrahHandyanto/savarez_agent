@@ -242,7 +242,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   meta = with lib; {
     description = "AI agent with advanced tool-calling capabilities";
-    homepage = "https://github.com/NousResearch/savarez-agent";
+    homepage = "https://github.com/AnandaAnugrahHandyanto/savarez_agent";
     mainProgram = "hermes";
     license = licenses.mit;
     platforms = platforms.unix;

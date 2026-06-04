@@ -34,7 +34,7 @@ jobs:
         run: curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
 
   deploy-docs:
-    if: github.repository == 'NousResearch/savarez-agent'
+    if: github.repository == 'AnandaAnugrahHandyanto/savarez-agent'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

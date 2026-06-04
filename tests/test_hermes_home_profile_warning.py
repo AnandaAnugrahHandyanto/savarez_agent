@@ -1,6 +1,6 @@
 """Tests for get_hermes_home() profile-mode fallback warning.
 
-Regression test for https://github.com/NousResearch/savarez-agent/issues/18594.
+Regression test for https://github.com/AnandaAnugrahHandyanto/savarez_agent/issues/18594.
 
 When SAVAREZ_HOME is unset but an active_profile file indicates a non-default
 profile is active, get_hermes_home() should:

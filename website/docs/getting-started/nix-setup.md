@@ -35,11 +35,11 @@ No clone needed. Nix fetches, builds, and runs everything:
 
 ```bash
 # Run directly (builds on first use, cached after)
-nix run github:NousResearch/savarez-agent -- setup
-nix run github:NousResearch/savarez-agent -- chat
+nix run github:AnandaAnugrahHandyanto/savarez-agent -- setup
+nix run github:AnandaAnugrahHandyanto/savarez-agent -- chat
 
 # Or install persistently
-nix profile install github:NousResearch/savarez-agent
+nix profile install github:AnandaAnugrahHandyanto/savarez-agent
 savarez setup
 savarez chat
 ```
@@ -50,13 +50,13 @@ After `nix profile install`, `savarez`, `savarez-agent`, and `savarez-acp` are o
 The default package doesn't include messaging platform libraries — they were moved to on-demand installation, which can't work in Nix's read-only environment. If you plan to connect the agent to Discord, Telegram, or Slack, install the `messaging` variant:
 
 ```bash
-nix profile install github:NousResearch/savarez-agent#messaging
+nix profile install github:AnandaAnugrahHandyanto/savarez-agent#messaging
 ```
 
 For all optional extras (voice, all providers, all platforms):
 
 ```bash
-nix profile install github:NousResearch/savarez-agent#full
+nix profile install github:AnandaAnugrahHandyanto/savarez-agent#full
 ```
 
 The `full` variant adds ~700 MB to the closure. If you only need messaging platforms, `#messaging` adds just ~33 MB.
@@ -66,7 +66,7 @@ The `full` variant adds ~700 MB to the closure. If you only need messaging platf
 <summary><strong>Building from a local clone</strong></summary>
 
 ```bash
-git clone https://github.com/NousResearch/savarez-agent.git
+git clone https://github.com/AnandaAnugrahHandyanto/savarez_agent.git
 cd savarez-agent
 nix build
 ./result/bin/savarez setup
@@ -91,7 +91,7 @@ This module requires NixOS. For non-NixOS systems (macOS, other Linux distros), 
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    savarez-agent.url = "github:NousResearch/savarez-agent";
+    savarez-agent.url = "github:AnandaAnugrahHandyanto/savarez-agent";
   };
 
   outputs = { nixpkgs, savarez-agent, ... }: {
@@ -730,7 +730,7 @@ External flakes can override the package directly:
 
 ```nix
 {
-  inputs.savarez-agent.url = "github:NousResearch/savarez-agent";
+  inputs.savarez-agent.url = "github:AnandaAnugrahHandyanto/savarez-agent";
   outputs = { savarez-agent, nixpkgs, ... }: {
     nixpkgs.overlays = [ savarez-agent.overlays.default ];
     # Then:

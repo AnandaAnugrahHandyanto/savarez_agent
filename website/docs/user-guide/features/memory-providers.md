@@ -68,7 +68,7 @@ savarez memory setup        # select "honcho" — runs the Honcho-specific post-
 
 The legacy `savarez honcho setup` command still works (it now redirects to `savarez memory setup`), but is only registered after Honcho is selected as the active memory provider.
 
-**Config:** `$SAVAREZ_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$SAVAREZ_HOME/honcho.json` > `~/.savarez/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/NousResearch/savarez-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/savarez).
+**Config:** `$SAVAREZ_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$SAVAREZ_HOME/honcho.json` > `~/.savarez/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/AnandaAnugrahHandyanto/savarez_agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/savarez).
 
 <details>
 <summary>Full config reference</summary>
@@ -255,7 +255,7 @@ See the [Honcho page](./honcho.md#observation-directional-vs-unified) for the fu
 
 </details>
 
-See the [config reference](https://github.com/NousResearch/savarez-agent/blob/main/plugins/memory/honcho/README.md) and [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/savarez).
+See the [config reference](https://github.com/AnandaAnugrahHandyanto/savarez_agent/blob/main/plugins/memory/honcho/README.md) and [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/savarez).
 
 
 ---
@@ -366,7 +366,7 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
 
-See [plugin README](https://github.com/NousResearch/savarez-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
+See [plugin README](https://github.com/AnandaAnugrahHandyanto/savarez_agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
 
 ---
 

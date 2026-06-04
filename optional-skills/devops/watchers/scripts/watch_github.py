@@ -6,7 +6,7 @@ Usage (via cron with --no-agent):
     savarez cron create savarez-issues \\
       --schedule "*/5 * * * *" --no-agent \\
       --script "$SAVAREZ_HOME/skills/devops/watchers/scripts/watch_github.py" \\
-      --script-args "--name savarez-issues --repo NousResearch/savarez-agent --scope issues"
+      --script-args "--name savarez-issues --repo AnandaAnugrahHandyanto/savarez-agent --scope issues"
 
 Set GITHUB_TOKEN (or GH_TOKEN) in ~/.savarez/.env to avoid the 60 req/hr
 anonymous rate limit.

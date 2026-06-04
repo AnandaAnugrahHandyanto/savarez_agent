@@ -15,19 +15,19 @@ Savarez 不仅仅是一个 CLI 工具。你可以直接导入 `AIAgent`，在自
 直接从仓库安装 Savarez：
 
 ```bash
-pip install git+https://github.com/NousResearch/savarez-agent.git
+pip install git+https://github.com/AnandaAnugrahHandyanto/savarez_agent.git
 ```
 
 或使用 [uv](https://docs.astral.sh/uv/)：
 
 ```bash
-uv pip install git+https://github.com/NousResearch/savarez-agent.git
+uv pip install git+https://github.com/AnandaAnugrahHandyanto/savarez_agent.git
 ```
 
 也可以在 `requirements.txt` 中固定版本：
 
 ```text
-savarez-agent @ git+https://github.com/NousResearch/savarez-agent.git
+savarez-agent @ git+https://github.com/AnandaAnugrahHandyanto/savarez_agent.git
 ```
 
 :::tip

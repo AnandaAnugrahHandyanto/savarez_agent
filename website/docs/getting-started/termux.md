@@ -46,7 +46,7 @@ That does not stop Savarez from working well as a phone-native CLI agent — it 
 Savarez now ships a Termux-aware installer path:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash
 ```
 
 On Termux, the installer automatically:
@@ -80,7 +80,7 @@ Why these packages?
 ### 2. Clone Savarez
 
 ```bash
-git clone https://github.com/NousResearch/savarez-agent.git
+git clone https://github.com/AnandaAnugrahHandyanto/savarez_agent.git
 cd savarez-agent
 ```
 

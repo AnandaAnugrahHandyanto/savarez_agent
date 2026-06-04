@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   savarez:
     tags: [savarez, setup, configuration, multi-agent, spawning, cli, gateway, development]
-    homepage: https://github.com/NousResearch/savarez-agent
+    homepage: https://github.com/AnandaAnugrahHandyanto/savarez_agent
     related_skills: [claude-code, codex, opencode]
 ---
 
@@ -35,7 +35,7 @@ People use Savarez for software development, research, system administration, da
 
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash
 
 # Interactive chat (default)
 savarez

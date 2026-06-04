@@ -7820,7 +7820,7 @@ def _update_via_zip(args):
         )
         sys.exit(1)
     zip_url = (
-        f"https://github.com/NousResearch/savarez-agent/archive/refs/heads/{branch}.zip"
+        f"https://github.com/AnandaAnugrahHandyanto/savarez_agent/archive/refs/heads/{branch}.zip"
     )
 
     print("→ Downloading latest version...")
@@ -8224,12 +8224,12 @@ def _restore_stashed_changes(
 # =========================================================================
 
 OFFICIAL_REPO_URLS = {
-    "https://github.com/NousResearch/savarez-agent.git",
-    "git@github.com:NousResearch/savarez-agent.git",
-    "https://github.com/NousResearch/savarez-agent",
-    "git@github.com:NousResearch/savarez-agent",
+    "https://github.com/AnandaAnugrahHandyanto/savarez_agent.git",
+    "git@github.com:AnandaAnugrahHandyanto/savarez_agent.git",
+    "https://github.com/AnandaAnugrahHandyanto/savarez_agent",
+    "git@github.com:AnandaAnugrahHandyanto/savarez_agent",
 }
-OFFICIAL_REPO_URL = "https://github.com/NousResearch/savarez-agent.git"
+OFFICIAL_REPO_URL = "https://github.com/AnandaAnugrahHandyanto/savarez_agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
 
@@ -8363,7 +8363,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         # Ask user if they want to add upstream
         print()
         print("ℹ Your fork is not tracking the official Savarez repository.")
-        print("  This means you may miss updates from NousResearch/savarez-agent.")
+        print("  This means you may miss updates from AnandaAnugrahHandyanto/savarez-agent.")
         print()
         try:
             response = (
@@ -8377,7 +8377,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             print("→ Adding upstream remote...")
             if _add_upstream_remote(git_cmd, cwd):
                 print(
-                    "  ✓ Added upstream: https://github.com/NousResearch/savarez-agent.git"
+                    "  ✓ Added upstream: https://github.com/AnandaAnugrahHandyanto/savarez_agent.git"
                 )
                 has_upstream = True
             else:
@@ -8385,7 +8385,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
                 return
         else:
             print(
-                "  Skipped. Run 'git remote add upstream https://github.com/NousResearch/savarez-agent.git' to add later."
+                "  Skipped. Run 'git remote add upstream https://github.com/AnandaAnugrahHandyanto/savarez_agent.git' to add later."
             )
             _mark_skip_upstream_prompt()
             return
@@ -10097,7 +10097,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 return
             print("✗ Not a git repository. Please reinstall:")
             print(
-                "  curl -fsSL https://raw.githubusercontent.com/NousResearch/savarez-agent/main/scripts/install.sh | bash"
+                "  curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash"
             )
             sys.exit(1)
 

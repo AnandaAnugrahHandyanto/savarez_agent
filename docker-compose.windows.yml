@@ -11,7 +11,7 @@
 #
 services:
   gateway:
-    image: nousresearch/savarez-agent:latest
+    image: AnandaAnugrahHandyanto/savarez-agent:latest
     container_name: savarez
     restart: unless-stopped
     volumes:
@@ -22,7 +22,7 @@ services:
     command: ["gateway", "run"]
 
   dashboard:
-    image: nousresearch/savarez-agent:latest
+    image: AnandaAnugrahHandyanto/savarez-agent:latest
     container_name: savarez-dashboard
     restart: unless-stopped
     depends_on:

@@ -5,7 +5,7 @@ class HermesAgent < Formula
   homepage "https://savarez-agent.nousresearch.com"
   # Stable source should point at the semver-named sdist asset attached by
   # scripts/release.py, not the CalVer tag tarball.
-  url "https://github.com/NousResearch/savarez-agent/releases/download/v2026.3.30/hermes_agent-0.6.0.tar.gz"
+  url "https://github.com/AnandaAnugrahHandyanto/savarez_agent/releases/download/v2026.3.30/hermes_agent-0.6.0.tar.gz"
   sha256 "<replace-with-release-asset-sha256>"
   license "MIT"
 

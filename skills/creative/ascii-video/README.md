@@ -2,7 +2,7 @@
 
 Renders any content as colored ASCII character video. Audio, video, images, text, or pure math in, MP4/GIF/PNG sequence out. Full RGB color per character cell, 1080p 24fps default. No GPU.
 
-Built for [Savarez AI Agent](https://github.com/NousResearch/savarez-agent). Usable in any coding agent. Canonical source lives here; synced to [`NousResearch/savarez-agent/skills/creative/ascii-video`](https://github.com/NousResearch/savarez-agent/tree/main/skills/creative/ascii-video) via PR.
+Built for [Savarez AI Agent](https://github.com/AnandaAnugrahHandyanto/savarez_agent). Usable in any coding agent. Canonical source lives here; synced to [`AnandaAnugrahHandyanto/savarez-agent/skills/creative/ascii-video`](https://github.com/AnandaAnugrahHandyanto/savarez_agent/tree/main/skills/creative/ascii-video) via PR.
 
 ## What this is
 

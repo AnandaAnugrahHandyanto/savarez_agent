@@ -10,7 +10,7 @@ const config: Config = {
   url: 'https://savarez-agent.nousresearch.com',
   baseUrl: '/docs/',
 
-  organizationName: 'NousResearch',
+  organizationName: 'AnandaAnugrahHandyanto',
   projectName: 'savarez-agent',
 
   onBrokenLinks: 'warn',
@@ -73,7 +73,7 @@ const config: Config = {
         docs: {
           routeBasePath: '/',  // Docs at the root of /docs/
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/NousResearch/savarez-agent/edit/main/website/',
+          editUrl: 'https://github.com/AnandaAnugrahHandyanto/savarez_agent/edit/main/website/',
         },
         blog: false,
         theme: {
@@ -114,7 +114,7 @@ const config: Config = {
           position: 'left',
         },
         {
-          href: 'https://github.com/NousResearch/savarez-agent/releases/latest',
+          href: 'https://github.com/AnandaAnugrahHandyanto/savarez_agent/releases/latest',
           label: 'Download',
           position: 'left',
         },
@@ -128,12 +128,12 @@ const config: Config = {
           position: 'right',
         },
         {
-          href: 'https://github.com/NousResearch/savarez-agent',
+          href: 'https://github.com/AnandaAnugrahHandyanto/savarez_agent',
           label: 'GitHub',
           position: 'right',
         },
         {
-          href: 'https://discord.gg/NousResearch',
+          href: 'https://discord.gg/AnandaAnugrahHandyanto',
           label: 'Discord',
           position: 'right',
         },
@@ -154,16 +154,16 @@ const config: Config = {
         {
           title: 'Community',
           items: [
-            { label: 'Discord', href: 'https://discord.gg/NousResearch' },
-            { label: 'GitHub Discussions', href: 'https://github.com/NousResearch/savarez-agent/discussions' },
+            { label: 'Discord', href: 'https://discord.gg/AnandaAnugrahHandyanto' },
+            { label: 'GitHub Discussions', href: 'https://github.com/AnandaAnugrahHandyanto/savarez_agent/discussions' },
             { label: 'Skills Hub', href: 'https://agentskills.io' },
           ],
         },
         {
           title: 'More',
           items: [
-            { label: 'Desktop Download', href: 'https://github.com/NousResearch/savarez-agent/releases/latest' },
-            { label: 'GitHub', href: 'https://github.com/NousResearch/savarez-agent' },
+            { label: 'Desktop Download', href: 'https://github.com/AnandaAnugrahHandyanto/savarez_agent/releases/latest' },
+            { label: 'GitHub', href: 'https://github.com/AnandaAnugrahHandyanto/savarez_agent' },
             { label: 'Nous Research', href: 'https://nousresearch.com' },
           ],
         },

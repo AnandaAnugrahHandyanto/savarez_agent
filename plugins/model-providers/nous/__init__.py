@@ -38,7 +38,7 @@ class NousProfile(ProviderProfile):
 
 nous = NousProfile(
     name="nous",
-    aliases=("nous-portal", "nousresearch"),
+    aliases=("nous-portal", "AnandaAnugrahHandyanto"),
     env_vars=("NOUS_API_KEY",),
     display_name="Nous Research",
     description="Nous Research — Savarez model family",
