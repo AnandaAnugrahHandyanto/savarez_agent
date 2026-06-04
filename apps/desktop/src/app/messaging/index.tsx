@@ -108,6 +108,47 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
     help: 'first, all, or off.',
     advanced: true
   },
+  DISCORD_ALLOW_ALL_USERS: {
+    label: 'Allow all Discord users',
+    help: 'Development only. When true, anyone can DM the bot without an allowlist.',
+    advanced: true
+  },
+  DISCORD_HOME_CHANNEL: {
+    label: 'Home channel ID',
+    help: 'Channel where the bot sends proactive messages (cron output, reminders).',
+    advanced: true
+  },
+  DISCORD_HOME_CHANNEL_NAME: {
+    label: 'Home channel name',
+    help: 'Display name for the home channel in logs and status output.',
+    advanced: true
+  },
+  BLUEBUBBLES_ALLOW_ALL_USERS: {
+    label: 'Allow all iMessage users',
+    help: 'When true, skip the BlueBubbles allowlist.',
+    advanced: true
+  },
+  MATTERMOST_ALLOW_ALL_USERS: {
+    label: 'Allow all Mattermost users',
+    advanced: true
+  },
+  MATTERMOST_HOME_CHANNEL: {
+    label: 'Home channel',
+    advanced: true
+  },
+  QQ_ALLOW_ALL_USERS: {
+    label: 'Allow all QQ users',
+    advanced: true
+  },
+  QQBOT_HOME_CHANNEL: {
+    label: 'QQ home channel',
+    help: 'Default channel or group for cron delivery.',
+    advanced: true
+  },
+  QQBOT_HOME_CHANNEL_NAME: {
+    label: 'QQ home channel name',
+    advanced: true
+  },
   SLACK_BOT_TOKEN: {
     label: 'Slack bot token',
     help: 'Starts with xoxb-. Found under OAuth & Permissions after installing your Slack app.',
