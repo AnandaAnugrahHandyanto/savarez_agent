@@ -6,6 +6,7 @@ type LocaleCode = string
 export const LANGUAGE_LABELS: Record<string, string> = {
   'en': 'English',
   'zh-CN': '中文（简体）',
+  'zh-Hant': '中文（繁體）',
   'ja': '日本語',
   'ko': '한국어',
   'de': 'Deutsch',

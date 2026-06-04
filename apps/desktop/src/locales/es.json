@@ -296,8 +296,8 @@
   "tool.output": "Salida de la herramienta",
   "tool.searchResults": "Resultados de búsqueda",
   "tool.rawResponse": "Respuesta sin procesar",
-  "tool.stdout": "stdout",
-  "tool.stderr": "stderr",
+  "tool.stdout": "salida estándar",
+  "tool.stderr": "error estándar",
   "tool.copyActivity": "Copiar actividad",
   "composer.startingHermes": "Iniciando Hermes...",
   "composer.sendFollowUp": "Enviar seguimiento",
@@ -856,7 +856,7 @@
   "provider.desc.awsbedrock": "Perfil nombrado de AWS para autenticación Bedrock (de ~/.aws/credentials)",
   "provider.desc.exa": "Clave API de Exa para búsqueda web y contenidos con IA nativa",
   "provider.desc.parallel": "Clave API de Parallel para búsqueda web y extracción con IA nativa",
-  "titlebar.language": "Language",
-  "titlebar.languageDesc": "Choose a display language for the interface.",
-  "language.zh-TW": "中文（繁體）"
+  "titlebar.language": "Idioma",
+  "titlebar.languageDesc": "Elige un idioma para la interfaz.",
+  "language.zh-Hant": "中文（繁體）"
 }

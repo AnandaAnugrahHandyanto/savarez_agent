@@ -858,5 +858,5 @@
   "provider.desc.parallel": "Parallel API key for AI-native web search and extract",
   "titlebar.language": "Language",
   "titlebar.languageDesc": "Choose a display language for the interface.",
-  "language.zh-TW": "中文（繁體）"
+  "language.zh-Hant": "中文（繁體）"
 }
