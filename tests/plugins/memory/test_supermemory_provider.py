@@ -181,6 +181,23 @@ def test_on_session_end_ingests_clean_messages(provider):
     assert provider._session_turns == []
 
 
+def test_merge_metadata_stamps_sm_source():
+    # sm_source routes Hermes writes into the "Hermes" Space in the Supermemory
+    # app (functional routing, not telemetry) — must always be present.
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    merged = client._merge_metadata({"type": "explicit_memory"})
+    assert merged["sm_source"] == "hermes"
+    assert merged["type"] == "explicit_memory"
+
+    # Legacy "source" is migrated into "type" when type is absent.
+    merged2 = client._merge_metadata({"source": "conversation_turn"})
+    assert merged2["sm_source"] == "hermes"
+    assert merged2["type"] == "conversation_turn"
+    assert "source" not in merged2
+
+
 def test_on_memory_write_tracks_thread(provider):
     provider.on_memory_write("add", "memory", "Jordan likes concise docs")
     assert provider._write_thread is not None
