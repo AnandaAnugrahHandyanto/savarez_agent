@@ -424,6 +424,64 @@ class TestWebServerEndpoints:
         ).json()["sessions"]
         assert any(s["id"] == "old-archive" for s in archived)
 
+    def test_bulk_archive_endpoint_preserves_ids_and_recent_live_sessions(self):
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        def _seed(db, sid: str, last_active: float, *, ended: bool = True):
+            db.create_session(session_id=sid, source="cli")
+            db.append_message(session_id=sid, role="user", content=f"hello {sid}")
+            if ended:
+                db.end_session(sid, end_reason="done")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (last_active - 10, last_active if ended else None, sid),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+                (last_active, sid),
+            )
+
+        now = _time.time()
+        db = SessionDB()
+        try:
+            _seed(db, "pinned", now - 500)
+            _seed(db, "current", now - 400)
+            _seed(db, "recent-live", now, ended=False)
+            _seed(db, "old-a", now - 300)
+            _seed(db, "old-b", now - 200)
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.post(
+            "/api/sessions/bulk-archive",
+            json={
+                "preserve_ids": ["pinned", "current"],
+                "min_messages": 1,
+                "active_grace_seconds": 300,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "archived": 2}
+
+        listed = self.client.get("/api/sessions?limit=10").json()["sessions"]
+        listed_ids = {s["id"] for s in listed}
+        assert {"pinned", "current", "recent-live"}.issubset(listed_ids)
+        assert "old-a" not in listed_ids
+        assert "old-b" not in listed_ids
+
+        archived = self.client.get(
+            "/api/sessions?archived=only&limit=10"
+        ).json()["sessions"]
+        archived_ids = {s["id"] for s in archived}
+        assert {"old-a", "old-b"}.issubset(archived_ids)
+        assert "pinned" not in archived_ids
+        assert "current" not in archived_ids
+        assert "recent-live" not in archived_ids
+
     def test_patch_session_without_fields_is_400(self):
         """An existing session + empty body is a bad request, not a 404."""
         from hermes_state import SessionDB
