@@ -17,7 +17,7 @@ Model families (each with t2v + i2v endpoints):
     veo3.1        fal-ai/veo3.1                                  /  fal-ai/veo3.1/image-to-video
     seedance-2.0  bytedance/seedance-2.0/text-to-video           /  bytedance/seedance-2.0/image-to-video
     kling-v3-4k   fal-ai/kling-video/v3/4k/text-to-video         /  fal-ai/kling-video/v3/4k/image-to-video
-    happy-horse   fal-ai/happy-horse/text-to-video               /  fal-ai/happy-horse/image-to-video
+    happy-horse   alibaba/happy-horse/text-to-video              /  alibaba/happy-horse/image-to-video
 
 Selection precedence for the active family:
     1. ``model=`` arg from the tool call
@@ -26,8 +26,8 @@ Selection precedence for the active family:
     4. ``video_gen.model`` in ``config.yaml`` (when it's one of our family IDs)
     5. ``DEFAULT_MODEL``
 
-Authentication via ``FAL_KEY``. Output is an HTTPS URL from FAL's CDN; the
-gateway downloads and delivers it.
+Authentication via ``FAL_KEY`` or the managed Nous gateway. Output is an
+HTTPS URL from FAL's CDN; the gateway downloads and delivers it.
 """
 
 from __future__ import annotations
@@ -35,6 +35,8 @@ from __future__ import annotations
 import logging
 import os
 import struct
+import threading
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
@@ -112,7 +114,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "aspect_ratios": ("16:9", "9:16"),
         "resolutions": ("720p", "1080p", "4k"),
         "durations": (4, 6, 8),
-        "duration_suffix": "s",
+        "duration_suffix": "s",  # FAL veo3.1 wants "4s" not "4"
         "audio": True,
         "negative": True,
     },
@@ -415,27 +417,110 @@ def _build_payload(
 
 
 # ---------------------------------------------------------------------------
-# fal_client lazy import (same pattern as image_generation_tool)
+# fal_client lazy import (shared with image_generation_tool via fal_common)
 # ---------------------------------------------------------------------------
 
 _fal_client: Any = None
 
 
 def _load_fal_client() -> Any:
+    """Lazy-load the ``fal_client`` SDK and cache it on this module.
+
+    Delegates the actual import to :func:`tools.fal_common.import_fal_client`
+    so the ``lazy_deps`` ensure-install handling stays in one place.
+    """
     global _fal_client
     if _fal_client is not None:
         return _fal_client
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("video.fal", prompt=False)
-    except ImportError:
-        pass
-    except Exception as exc:
-        raise ImportError(str(exc))
-    import fal_client  # type: ignore
+    from tools.fal_common import import_fal_client
+    _fal_client = import_fal_client()
+    return _fal_client
 
-    _fal_client = fal_client
-    return fal_client
+
+# ---------------------------------------------------------------------------
+# Managed FAL gateway (Nous Subscription)
+# ---------------------------------------------------------------------------
+
+_managed_fal_video_client: Any = None
+_managed_fal_video_client_config: Any = None
+_managed_fal_video_client_lock = threading.Lock()
+
+
+def _resolve_managed_fal_video_gateway():
+    """Return managed fal-queue gateway config when the user prefers the gateway
+    or direct FAL credentials are absent."""
+    from tools.tool_backend_helpers import fal_key_is_configured, prefers_gateway
+
+    if fal_key_is_configured() and not prefers_gateway("video_gen"):
+        return None
+    from tools.managed_tool_gateway import resolve_managed_tool_gateway
+
+    return resolve_managed_tool_gateway("fal-queue")
+
+
+def _get_managed_fal_video_client(managed_gateway):
+    """Reuse the managed FAL client so its internal httpx.Client is not leaked per call."""
+    global _managed_fal_video_client, _managed_fal_video_client_config
+    from tools.fal_common import _ManagedFalSyncClient
+
+    client_config = (
+        managed_gateway.gateway_origin.rstrip("/"),
+        managed_gateway.nous_user_token,
+    )
+    with _managed_fal_video_client_lock:
+        if _managed_fal_video_client is not None and _managed_fal_video_client_config == client_config:
+            return _managed_fal_video_client
+
+        _load_fal_client()
+        _managed_fal_video_client = _ManagedFalSyncClient(
+            _fal_client,
+            key=managed_gateway.nous_user_token,
+            queue_run_origin=managed_gateway.gateway_origin,
+        )
+        _managed_fal_video_client_config = client_config
+        return _managed_fal_video_client
+
+
+def _submit_fal_video_request(endpoint: str, arguments: Dict[str, Any]):
+    """Submit a FAL video request using direct credentials or the managed queue gateway.
+
+    Returns a request handle whose ``.get()`` blocks until the result is ready.
+    """
+    _load_fal_client()
+    request_headers = {"x-idempotency-key": str(uuid.uuid4())}
+    managed_gateway = _resolve_managed_fal_video_gateway()
+    if managed_gateway is None:
+        return _fal_client.submit(endpoint, arguments=arguments, headers=request_headers)
+
+    managed_client = _get_managed_fal_video_client(managed_gateway)
+    try:
+        return managed_client.submit(
+            endpoint,
+            arguments=arguments,
+            headers=request_headers,
+        )
+    except Exception as exc:
+        from tools.fal_common import _extract_http_status
+
+        status = _extract_http_status(exc)
+        if status is not None and 400 <= status < 500:
+            raise ValueError(
+                f"Nous Subscription gateway rejected endpoint '{endpoint}' "
+                f"(HTTP {status}). This model may not yet be enabled on "
+                f"the Nous Portal's FAL proxy. Either:\n"
+                f"  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
+                f"  • Pick a different model via `hermes tools` → Video Generation."
+            ) from exc
+        raise
+
+
+def _check_fal_video_available() -> bool:
+    """True if the FAL.ai video backend is reachable (direct key or managed gateway)."""
+    from tools.tool_backend_helpers import fal_key_is_configured
+
+    if fal_key_is_configured():
+        return True
+    return _resolve_managed_fal_video_gateway() is not None
 
 
 def _is_http_source(value: str) -> bool:
@@ -619,13 +704,10 @@ class FALVideoGenProvider(VideoGenProvider):
         return "FAL"
 
     def is_available(self) -> bool:
-        if not os.environ.get("FAL_KEY", "").strip():
-            return False
         try:
-            _load_fal_client()
-        except ImportError:
+            return _check_fal_video_available()
+        except Exception:  # noqa: BLE001 — never break the picker
             return False
-        return True
 
     def list_models(self) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
@@ -698,11 +780,12 @@ class FALVideoGenProvider(VideoGenProvider):
         reference_image_urls: Optional[List[str]] = None,
         seed: Optional[int] = None,
     ) -> Dict[str, Any]:
-        if not os.environ.get("FAL_KEY", "").strip():
+        if not _check_fal_video_available():
             return error_response(
                 error=(
-                    "FAL_KEY not set. Run `hermes tools` → Video Generation "
-                    "→ FAL to configure."
+                    "No FAL backend available. Either set FAL_KEY "
+                    "(run `hermes tools` → Video Generation → FAL to configure) "
+                    "or sign in to Nous (`hermes setup`) for managed gateway access."
                 ),
                 error_type="auth_required",
                 provider="fal",
@@ -785,11 +868,8 @@ class FALVideoGenProvider(VideoGenProvider):
                     payload["duration"] = clamped
 
         try:
-            result = fal_client.subscribe(
-                endpoint,
-                arguments=payload,
-                with_logs=False,
-            )
+            handle = _submit_fal_video_request(endpoint, payload)
+            result = handle.get()
         except Exception as exc:
             logger.warning(
                 "FAL video %s failed (family=%s, endpoint=%s): %s",
@@ -892,11 +972,12 @@ class FALVideoGenProvider(VideoGenProvider):
         seed: Optional[int] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        if not os.environ.get("FAL_KEY", "").strip():
+        if not _check_fal_video_available():
             return error_response(
                 error=(
-                    "FAL_KEY not set. Run `hermes tools` → Video Generation "
-                    "→ FAL to configure."
+                    "No FAL backend available. Either set FAL_KEY "
+                    "(run `hermes tools` → Video Generation → FAL to configure) "
+                    "or sign in to Nous (`hermes setup`) for managed gateway access."
                 ),
                 error_type="auth_required",
                 provider="fal",
@@ -996,11 +1077,8 @@ class FALVideoGenProvider(VideoGenProvider):
         )
 
         try:
-            result = fal_client.subscribe(
-                endpoint,
-                arguments=payload,
-                with_logs=False,
-            )
+            handle = _submit_fal_video_request(endpoint, payload)
+            result = handle.get()
         except Exception as exc:
             logger.warning(
                 "FAL video gen failed (family=%s, endpoint=%s): %s",
