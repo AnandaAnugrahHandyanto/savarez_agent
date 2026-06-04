@@ -1157,6 +1157,7 @@ def anthropic_prompt_cache_policy(
     base_url: Optional[str] = None,
     api_mode: Optional[str] = None,
     model: Optional[str] = None,
+    force_enabled: Optional[bool] = None,
 ) -> tuple[bool, bool]:
     """Decide whether to apply Anthropic prompt caching and which layout to use.
 
@@ -1191,6 +1192,29 @@ def anthropic_prompt_cache_policy(
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
+
+    # Config-level force-enable: ``prompt_caching.enabled: true`` in
+    # config.yaml overrides URL-based detection.  Useful when routing
+    # through a local proxy (localhost) that forwards to a caching-capable
+    # gateway, or for any custom provider known to honour cache_control.
+    # Uses OpenAI-wire envelope layout (native_anthropic=False) since
+    # the target is a LiteLLM-style proxy, not the native Anthropic API.
+    if force_enabled is None:
+        try:
+            from hermes_cli.config import load_config as _load_pc_cfg
+            _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
+            _cfg_enabled = _pc_cfg.get("enabled")
+            if _cfg_enabled is True and is_claude:
+                return True, False
+            if _cfg_enabled is False:
+                return False, False
+        except Exception:
+            pass
+    elif force_enabled is True and is_claude:
+        return True, False
+    elif force_enabled is False:
+        return False, False
+
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
     # Nous Portal proxies to OpenRouter behind the scenes — identical
     # OpenAI-wire envelope cache_control semantics. Treat it as an

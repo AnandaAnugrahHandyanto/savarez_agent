@@ -1178,10 +1178,11 @@ class AIAgent:
         base_url: Optional[str] = None,
         api_mode: Optional[str] = None,
         model: Optional[str] = None,
+        force_enabled: Optional[bool] = None,
     ) -> tuple[bool, bool]:
         """Forwarder — see ``agent.agent_runtime_helpers.anthropic_prompt_cache_policy``."""
         from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
-        return anthropic_prompt_cache_policy(self, provider=provider, base_url=base_url, api_mode=api_mode, model=model)
+        return anthropic_prompt_cache_policy(self, provider=provider, base_url=base_url, api_mode=api_mode, model=model, force_enabled=force_enabled)
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:

@@ -326,6 +326,97 @@ class TestExplicitOverrides:
         assert (should, native) == (True, False)
 
 
+class TestForceEnabled:
+    """``force_enabled`` kwarg bypasses URL detection for proxy/localhost scenarios."""
+
+    def test_force_enabled_true_enables_caching_on_localhost(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="http://localhost:8765",
+            api_mode="chat_completions",
+            model="anthropic.claude-sonnet-4-6",
+        )
+        # Without override, localhost URL → no caching
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+        # With force_enabled=True, caching is on with envelope layout
+        assert agent._anthropic_prompt_cache_policy(force_enabled=True) == (True, False)
+
+    def test_force_enabled_false_disables_caching_on_openrouter(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4.6",
+        )
+        # Default: caching on
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+        # force_enabled=False overrides it off
+        assert agent._anthropic_prompt_cache_policy(force_enabled=False) == (False, False)
+
+    def test_force_enabled_true_non_claude_no_cache(self):
+        # force_enabled=True only activates for Claude models
+        agent = _make_agent(
+            provider="custom",
+            base_url="http://localhost:8765",
+            api_mode="chat_completions",
+            model="moonshotai.kimi-k2.5",
+        )
+        assert agent._anthropic_prompt_cache_policy(force_enabled=True) == (False, False)
+
+
+class TestConfigEnabled:
+    """``prompt_caching.enabled`` in config.yaml overrides URL-based detection."""
+
+    def test_config_enabled_true_activates_on_localhost(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="http://localhost:8765",
+            api_mode="chat_completions",
+            model="anthropic.claude-sonnet-4-6",
+        )
+        import hermes_cli.config as _cfg_mod
+        original_load = _cfg_mod.load_config
+        try:
+            _cfg_mod.load_config = lambda: {"prompt_caching": {"enabled": True, "cache_ttl": "5m"}}
+            result = agent._anthropic_prompt_cache_policy()
+            assert result == (True, False), f"Expected (True, False), got {result}"
+        finally:
+            _cfg_mod.load_config = original_load
+
+    def test_config_enabled_false_suppresses_openrouter(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4.6",
+        )
+        import hermes_cli.config as _cfg_mod
+        original_load = _cfg_mod.load_config
+        try:
+            _cfg_mod.load_config = lambda: {"prompt_caching": {"enabled": False}}
+            result = agent._anthropic_prompt_cache_policy()
+            assert result == (False, False), f"Expected (False, False), got {result}"
+        finally:
+            _cfg_mod.load_config = original_load
+
+    def test_config_enabled_missing_falls_through_to_url_detection(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4.6",
+        )
+        import hermes_cli.config as _cfg_mod
+        original_load = _cfg_mod.load_config
+        try:
+            # No "enabled" key — should fall through to URL detection (True, False for OpenRouter)
+            _cfg_mod.load_config = lambda: {"prompt_caching": {"cache_ttl": "5m"}}
+            result = agent._anthropic_prompt_cache_policy()
+            assert result == (True, False), f"Expected (True, False), got {result}"
+        finally:
+            _cfg_mod.load_config = original_load
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Long-lived prefix cache policy (cross-session 1h tier)
 # ─────────────────────────────────────────────────────────────────────
