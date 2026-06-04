@@ -1258,6 +1258,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
         }
 
     response = requests.post(base_url, json=payload, headers=headers, timeout=60)
+    response.raise_for_status()
 
     if is_t2a_v2:
         # t2a_v2 returns JSON with hex-encoded audio
