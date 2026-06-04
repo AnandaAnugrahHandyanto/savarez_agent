@@ -47,9 +47,9 @@ describe('PendingToolApproval', () => {
     setRequest('chmod -R 777 /tmp/x')
     render(<PendingToolApproval part={part('terminal')} />)
 
-    expect(screen.queryByText('Approval required')).not.toBeNull()
     expect(screen.queryByText(/chmod -R 777/)).not.toBeNull()
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
   it('sends approval.respond {choice: "once"} and clears the request on Run', async () => {
