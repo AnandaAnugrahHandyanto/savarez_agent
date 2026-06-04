@@ -108,6 +108,27 @@ class TestEnsureUv:
 # ---------------------------------------------------------------------------
 
 class TestRebuildVenv:
+    def test_venv_backup_dir_is_gitignored(self):
+        """The moved-aside backup (``venv.old``) must be gitignored.
+
+        ``hermes update`` runs ``git stash push --include-untracked`` before
+        pulling. ``rebuild_venv`` moves the live venv aside to ``venv.old``
+        (it is not deleted in place), so if that directory is untracked the
+        autostash sweeps a whole moved-aside venv every update. The existing
+        ``/venv/`` entry is anchored and does not cover ``venv.old``, so the
+        backup needs its own ignore entry.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        patterns = {
+            line.strip().strip("/")
+            for line in (repo_root / ".gitignore").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        assert "venv.old" in patterns, (
+            "venv.old must be in .gitignore so `hermes update`'s "
+            "`git stash --include-untracked` does not sweep the moved-aside venv"
+        )
+
     def test_removes_old_venv_and_creates_new(self, tmp_path):
         venv_dir = tmp_path / "venv"
         venv_dir.mkdir()
