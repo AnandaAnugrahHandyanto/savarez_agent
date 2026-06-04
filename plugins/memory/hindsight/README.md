@@ -144,4 +144,6 @@ Available in `hybrid` and `tools` memory modes:
 
 ## Client Version
 
-Requires `hindsight-client >= 0.4.22`. The plugin auto-upgrades on session start if an older version is detected.
+Requires `hindsight-client >= 0.4.22` (cloud / local external modes). The plugin auto-upgrades on session start if an older version is detected.
+
+For `local_embedded` mode, the `hindsight-all` package is required (provides the embedded daemon, PostgreSQL, and local embedding pipeline). The setup wizard (`hermes memory setup hindsight`) installs it automatically. If the package is missing (e.g. after a `hermes update`), the plugin will attempt to auto-install it on session start.

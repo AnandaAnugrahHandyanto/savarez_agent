@@ -99,6 +99,61 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return False, str(exc)
 
 
+def _ensure_hindsight_installed() -> bool:
+    """Auto-install hindsight-all for local_embedded mode if missing.
+
+    Called when ``_check_local_runtime()`` fails.  Uses ``uv pip install``
+    (the same mechanism the setup wizard uses in ``post_setup()``) to
+    install ``hindsight-all`` into the active venv.  Returns True if
+    the install succeeded (or the package was already present).
+    """
+    import shutil
+    import subprocess
+    import sys
+
+    # Quick check — already importable?
+    try:
+        importlib.import_module("hindsight")
+        return True
+    except Exception as exc:
+        # ImportError = package missing (auto-install may help)
+        # RuntimeError/other = incompatible hardware or other issue
+        # — auto-install won't help, return False immediately
+        if not isinstance(exc, ImportError):
+            return False
+
+    uv_path = shutil.which("uv")
+    if not uv_path:
+        logger.warning(
+            "hindsight-all not installed and uv not found. "
+            "Install manually: pip install hindsight-all"
+        )
+        return False
+
+    logger.info("Auto-installing hindsight-all for local_embedded mode...")
+    try:
+        subprocess.run(
+            [uv_path, "pip", "install", "--python", sys.executable,
+             "--quiet", "hindsight-all"],
+            check=True, timeout=180, capture_output=True,
+        )
+        logger.info("hindsight-all installed successfully")
+        return True
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or b"").decode(errors="replace").strip()
+        logger.warning(
+            "Auto-install of hindsight-all failed. "
+            "Run: hermes memory setup hindsight\n"
+            "Or manually: uv pip install --python %s hindsight-all\n"
+            "Error: %s",
+            sys.executable, stderr[-500:] if stderr else exc,
+        )
+        return False
+    except Exception as exc:
+        logger.warning("Auto-install of hindsight-all failed: %s", exc)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Hindsight API capability probe — mirrors hindsight-integrations/openclaw.
 # ---------------------------------------------------------------------------
@@ -1133,11 +1188,22 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._mode == "local":
             self._mode = "local_embedded"
         if self._mode == "local_embedded":
+            # Auto-install hindsight-all if missing (e.g. after hermes update
+            # removed it from the venv).  Only fires for local_embedded mode
+            # so cloud/self-hosted users are never affected.
             available, reason = _check_local_runtime()
             if not available:
+                installed = _ensure_hindsight_installed()
+                if installed:
+                    available, reason = _check_local_runtime()
+            if not available:
+                import sys
                 logger.warning(
-                    "Hindsight local mode disabled because its runtime could not be imported: %s",
-                    reason,
+                    "Hindsight local_embedded mode requires the 'hindsight-all' "
+                    "package. Run: hermes memory setup hindsight\n"
+                    "Or manually: uv pip install --python %s hindsight-all\n"
+                    "Error: %s",
+                    sys.executable, reason,
                 )
                 self._mode = "disabled"
                 return
