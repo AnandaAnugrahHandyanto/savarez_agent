@@ -14932,7 +14932,11 @@ class GatewayRunner:
         import shutil
         import subprocess
         from datetime import datetime
-        from hermes_cli.config import is_managed, format_managed_message
+        from hermes_cli.config import (
+            detect_install_method,
+            is_managed,
+            format_managed_message,
+        )
 
         # Block non-messaging platforms (API server, webhooks, ACP)
         platform = event.source.platform
@@ -14951,9 +14955,14 @@ class GatewayRunner:
             return f"✗ {format_managed_message('update Hermes Agent')}"
 
         project_root = Path(__file__).parent.parent.resolve()
-        git_dir = project_root / '.git'
-
-        if not git_dir.exists():
+        # Mirror `hermes update`'s install-method resolution
+        # (detect_install_method precedence: .install_method stamp > managed
+        # system > .git dir > pip).  The spawned `hermes update --gateway`
+        # below already handles pip/docker/managed installs correctly, so only
+        # a *git* install whose `.git` directory is genuinely missing (a
+        # corrupted checkout) should be short-circuited here.  Previously a
+        # raw `.git`-presence check wrongly blocked every PyPI (pip) install.
+        if detect_install_method(project_root) == "git" and not (project_root / ".git").is_dir():
             return t("gateway.update.not_git_repo")
 
         hermes_cmd = _resolve_hermes_bin()

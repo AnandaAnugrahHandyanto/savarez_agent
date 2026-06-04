@@ -240,6 +240,77 @@ class TestUpdateCommandGatewayFlag:
         assert "status=$?" not in cmd_string
         assert "stream progress" in result
 
+    @pytest.mark.asyncio
+    async def test_pip_install_reaches_spawn_not_git_repo(self, tmp_path):
+        """A pip install (no .git dir) must NOT be blocked as 'not a git repo'.
+
+        The spawned `hermes update --gateway` already handles pip installs;
+        the handler must fall through to it instead of short-circuiting on a
+        bare `.git`-presence check. Mirrors the CLI's detect_install_method
+        resolution. Regression for #39104.
+        """
+        from gateway.run import t
+
+        runner = _make_runner()
+        event = _make_event()
+
+        # Project root WITHOUT a .git dir — a PyPI/pip install.
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("hermes_cli.config.detect_install_method", return_value="pip"), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        # Must NOT be blocked; must reach the spawn path.
+        assert result != t("gateway.update.not_git_repo")
+        assert "stream progress" in result
+        assert mock_popen.called
+
+    @pytest.mark.asyncio
+    async def test_broken_git_checkout_still_blocked(self, tmp_path):
+        """A genuine git install with a missing .git dir is still rejected.
+
+        Only a corrupted git checkout (method == 'git' AND `.git` absent)
+        should short-circuit with 'not a git repository'. Regression for
+        #39104 — the fix must not silently update a broken git checkout.
+        """
+        from gateway.run import t
+
+        runner = _make_runner()
+        event = _make_event()
+
+        # method resolves to 'git' but the .git dir is genuinely missing.
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("hermes_cli.config.detect_install_method", return_value="git"), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert result == t("gateway.update.not_git_repo")
+        assert not mock_popen.called
+
 
 # ---------------------------------------------------------------------------
 # _watch_update_progress — output streaming
