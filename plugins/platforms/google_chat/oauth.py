@@ -50,8 +50,11 @@ Token storage layout
     ``${SAVAREZ_HOME}/google_chat_user_oauth_pending/<sanitized_email>.json``
 - Legacy pending state:
     ``${SAVAREZ_HOME}/google_chat_user_oauth_pending.json``
-- Shared OAuth client (one per host):
-    ``${SAVAREZ_HOME}/google_chat_user_client_secret.json``
+- Shared OAuth client (one per host, anchored at the default Savarez root so
+  every profile sees it; a profile-local copy under ``${SAVAREZ_HOME}`` wins
+  when present):
+    ``<default-root>/google_chat_user_client_secret.json`` (default ``~/.savarez``)
+
 """
 
 from __future__ import annotations
@@ -67,6 +70,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
+from utils import atomic_replace
 
 # Pin the legacy logger name so operator-side log filters keep matching
 # after the in-tree → plugin migration. See adapter.py for context.
@@ -75,7 +79,11 @@ logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
 # Use the project's SAVAREZ_HOME helper so the token follows the user's
 # profile (e.g. tests can override via SAVAREZ_HOME=/tmp/...).
 try:
-    from hermes_constants import display_hermes_home, get_hermes_home
+    from hermes_constants import (
+        display_hermes_home,
+        get_default_hermes_root,
+        get_hermes_home,
+    )
 except (ModuleNotFoundError, ImportError):
     # Fallback for environments where hermes_constants isn't importable
     # (mirrors the same fallback used by the google-workspace skill's
@@ -84,14 +92,30 @@ except (ModuleNotFoundError, ImportError):
         val = os.environ.get("SAVAREZ_HOME", "").strip()
         return Path(val) if val else Path.home() / ".savarez"
 
+    def get_default_hermes_root() -> Path:
+        # Mirror hermes_constants.get_default_hermes_root(): resolve the
+        # profile root so host-wide files (the shared client secret) are
+        # found regardless of which profile is active.
+        native_home = Path.home() / ".hermes"
+        env_home = os.environ.get("HERMES_HOME", "").strip()
+        if not env_home:
+            return native_home
+        env_path = Path(env_home)
+        try:
+            env_path.resolve().relative_to(native_home.resolve())
+            return native_home
+        except ValueError:
+            pass
+        if env_path.parent.name == "profiles":
+            return env_path.parent.parent
+        return env_path
+
     def display_hermes_home() -> str:
         home = get_hermes_home()
         try:
             return "~/" + str(home.relative_to(Path.home()))
         except ValueError:
             return str(home)
-
-from utils import atomic_replace
 
 
 def _hermes_home() -> Path:
@@ -100,7 +124,8 @@ def _hermes_home() -> Path:
     Tests and ``SAVAREZ_HOME=...`` env overrides need this to be late-
     binding. If we cached the path at import time, switching profiles
     or tweaking env vars in tests would silently keep using the old
-    path."""
+    path.
+    """
     return get_hermes_home()
 
 
@@ -140,7 +165,24 @@ def _token_path(email: Optional[str] = None) -> Path:
 
 
 def _client_secret_path() -> Path:
-    return _hermes_home() / "google_chat_user_client_secret.json"
+    """Path to the shared OAuth client secret (one per host).
+
+    The client secret identifies the OAuth *app*, not a user or a profile,
+    so it is anchored at the default Savarez root (``~/.savarez`` — or the
+    Docker root) rather than the active profile's ``SAVAREZ_HOME``. That way
+    the one-time ``--client-secret`` host setup is visible to gateways
+    running under any named profile, exactly as the docs describe ("one
+    file per host is enough no matter how many users authorize later\").
+
+    A profile-local secret (``$SAVAREZ_HOME/google_chat_user_client_secret.json``)
+    still takes precedence when present, for installs that seeded one under
+    the previous profile-scoped behavior or that deliberately run a separate
+    OAuth app per profile.
+    """
+    profile_local = _hermes_home() / "google_chat_user_client_secret.json"
+    if profile_local.exists():
+        return profile_local
+    return get_default_hermes_root() / "google_chat_user_client_secret.json"
 
 
 def _pending_auth_path(email: Optional[str] = None) -> Path:
@@ -221,16 +263,14 @@ def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
     if creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
+            _persist_credentials(creds, token_path)
+            return creds
         except Exception as exc:
             logger.warning(
                 "[google_chat_user_oauth] token refresh failed (user "
                 "should re-run /setup-files): %s", exc,
             )
             return None
-        # Persist refreshed token so next start picks up the new access
-        # token without an unnecessary refresh round-trip.
-        _persist_credentials(creds, token_path)
-        return creds
 
     # Token exists but is unusable (e.g. revoked, no refresh token).
     return None
@@ -451,217 +491,3 @@ def _save_pending_auth(*, state: str, code_verifier: str,
             "email": email or "",
         },
     )
-
-
-def _load_pending_auth(email: Optional[str] = None) -> dict:
-    pending = _pending_auth_path(email)
-    if not pending.exists():
-        print("ERROR: No pending OAuth session found. Run --auth-url first.")
-        sys.exit(1)
-    try:
-        data = json.loads(pending.read_text())
-    except Exception as exc:
-        print(f"ERROR: Could not read pending OAuth session: {exc}")
-        print("Run --auth-url again to start a fresh session.")
-        sys.exit(1)
-    if not data.get("state") or not data.get("code_verifier"):
-        print("ERROR: Pending OAuth session is missing PKCE data.")
-        print("Run --auth-url again.")
-        sys.exit(1)
-    return data
-
-
-def _extract_code_and_state(code_or_url: str) -> Tuple[str, Optional[str]]:
-    """Accept a raw auth code OR the full failed-redirect URL the user pastes."""
-    if not code_or_url.startswith("http"):
-        return code_or_url, None
-
-    from urllib.parse import parse_qs, urlparse
-
-    parsed = urlparse(code_or_url)
-    params = parse_qs(parsed.query)
-    if "code" not in params:
-        print("ERROR: No 'code' parameter found in URL.")
-        sys.exit(1)
-    state = params.get("state", [None])[0]
-    return params["code"][0], state
-
-
-def get_auth_url(email: Optional[str] = None) -> None:
-    """Print the OAuth URL for the user to visit. Persists PKCE state.
-
-    ``email`` namespaces the pending state so two users can be mid-flow
-    in parallel without trampling each other's PKCE verifier.
-    """
-    if not _client_secret_path().exists():
-        print("ERROR: No client secret stored. Run --client-secret first.")
-        sys.exit(1)
-
-    _ensure_deps()
-    from google_auth_oauthlib.flow import Flow
-
-    flow = Flow.from_client_secrets_file(
-        str(_client_secret_path()),
-        scopes=SCOPES,
-        redirect_uri=_REDIRECT_URI,
-        autogenerate_code_verifier=True,
-    )
-    auth_url, state = flow.authorization_url(
-        access_type="offline",
-        prompt="consent",
-    )
-    _save_pending_auth(state=state, code_verifier=flow.code_verifier, email=email)
-    print(auth_url)
-
-
-def exchange_auth_code(code: str, email: Optional[str] = None) -> None:
-    """Exchange an auth code (or pasted redirect URL) for a refresh token.
-
-    ``email`` selects the destination token path. ``None`` writes to the
-    legacy single-user path (kept for the existing CLI entrypoint and for
-    pre-multi-user installs).
-    """
-    if not _client_secret_path().exists():
-        print("ERROR: No client secret stored. Run --client-secret first.")
-        sys.exit(1)
-
-    pending_auth = _load_pending_auth(email)
-    raw_callback = code
-    code, returned_state = _extract_code_and_state(code)
-    if returned_state and returned_state != pending_auth["state"]:
-        print(
-            "ERROR: OAuth state mismatch. Run --auth-url again to start a "
-            "fresh session."
-        )
-        sys.exit(1)
-
-    _ensure_deps()
-    from google_auth_oauthlib.flow import Flow
-    from urllib.parse import parse_qs, urlparse
-
-    granted_scopes = list(SCOPES)
-    if isinstance(raw_callback, str) and raw_callback.startswith("http"):
-        params = parse_qs(urlparse(raw_callback).query)
-        scope_val = (params.get("scope") or [""])[0].strip()
-        if scope_val:
-            granted_scopes = scope_val.split()
-
-    flow = Flow.from_client_secrets_file(
-        str(_client_secret_path()),
-        scopes=granted_scopes,
-        redirect_uri=pending_auth.get("redirect_uri", _REDIRECT_URI),
-        state=pending_auth["state"],
-        code_verifier=pending_auth["code_verifier"],
-    )
-
-    try:
-        # Accept partial scopes — user may deselect items in the consent screen.
-        os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
-        flow.fetch_token(code=code)
-    except Exception as exc:
-        print(f"ERROR: Token exchange failed: {exc}")
-        print("The code may have expired. Run --auth-url to get a fresh URL.")
-        sys.exit(1)
-
-    creds = flow.credentials
-    token_payload = _normalize_authorized_user_payload(json.loads(creds.to_json()))
-
-    actually_granted = (
-        list(creds.granted_scopes or [])
-        if hasattr(creds, "granted_scopes") and creds.granted_scopes
-        else []
-    )
-    if actually_granted:
-        token_payload["scopes"] = actually_granted
-    elif granted_scopes != SCOPES:
-        token_payload["scopes"] = granted_scopes
-
-    token_path = _token_path(email)
-    _write_private_json(token_path, token_payload)
-    _pending_auth_path(email).unlink(missing_ok=True)
-
-    print(f"OK: Authenticated. Token saved to {token_path}")
-    rel_label = (
-        f"{display_hermes_home()}/google_chat_user_tokens/{_sanitize_email(email)}.json"
-        if email
-        else f"{display_hermes_home()}/google_chat_user_token.json"
-    )
-    print(f"Profile path: {rel_label}")
-
-
-def revoke(email: Optional[str] = None) -> None:
-    """Revoke the stored token with Google and delete it locally.
-
-    Per-user when ``email`` given, legacy single-user when omitted.
-    """
-    token_path = _token_path(email)
-    if not token_path.exists():
-        print("No token to revoke.")
-        return
-
-    _ensure_deps()
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
-
-    try:
-        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-
-        import urllib.request
-        urllib.request.urlopen(
-            urllib.request.Request(
-                f"https://oauth2.googleapis.com/revoke?token={creds.token}",
-                method="POST",
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            ),
-            timeout=15,
-        )
-        print("Token revoked with Google.")
-    except Exception as exc:
-        print(f"Remote revocation failed (token may already be invalid): {exc}")
-
-    token_path.unlink(missing_ok=True)
-    _pending_auth_path(email).unlink(missing_ok=True)
-    print(f"Deleted {token_path}")
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Google Chat user-OAuth setup for Savarez (native attachment delivery)"
-    )
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--check", action="store_true",
-                       help="Check if auth is valid (exit 0=yes, 1=no)")
-    group.add_argument("--client-secret", metavar="PATH",
-                       help="Store OAuth client_secret.json")
-    group.add_argument("--auth-url", action="store_true",
-                       help="Print OAuth URL for user to visit")
-    group.add_argument("--auth-code", metavar="CODE",
-                       help="Exchange auth code for token")
-    group.add_argument("--revoke", action="store_true",
-                       help="Revoke and delete stored token")
-    group.add_argument("--install-deps", action="store_true",
-                       help="Install Python dependencies")
-    parser.add_argument("--email", metavar="EMAIL", default=None,
-                       help="Scope operation to a specific user's token "
-                            "(default: legacy single-user path)")
-    args = parser.parse_args()
-
-    email = args.email or None
-    if args.check:
-        sys.exit(0 if check_auth(email) else 1)
-    elif args.client_secret:
-        store_client_secret(args.client_secret)
-    elif args.auth_url:
-        get_auth_url(email)
-    elif args.auth_code:
-        exchange_auth_code(args.auth_code, email)
-    elif args.revoke:
-        revoke(email)
-    elif args.install_deps:
-        sys.exit(0 if install_deps() else 1)
-
-
-if __name__ == "__main__":
-    main()
