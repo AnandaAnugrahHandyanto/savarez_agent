@@ -830,3 +830,53 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+class TestCmdUpdateTermuxExtras:
+    """Regression for #39106.
+
+    On Termux/Android the ``.[all]`` extras have no prebuilt aarch64 wheels and
+    trigger a full Rust/C source compile (cargo build of uv, jemalloc/openssl/
+    zstd) that can exhaust swap and freeze the device. ``cmd_setup`` already
+    selected the curated ``termux-all`` profile on Termux, but ``cmd_update``
+    did not â€” so updating reintroduced the heavy install. These drive
+    ``cmd_update`` end-to-end (git/uv/npm/subprocess mocked) and assert the
+    extras group that reaches the dependency installer, for both the uv branch
+    and the pip-fallback branch.
+    """
+
+    def _run_update(self, mock_args, *, uv_available, termux):
+        from hermes_cli import main as hm
+        import subprocess as _subprocess
+
+        which_map = {"npm": "/usr/bin/npm"}
+        if uv_available:
+            which_map["uv"] = "/usr/bin/uv"
+        build_ok = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with patch("shutil.which", side_effect=which_map.get), \
+             patch("subprocess.run", side_effect=_make_run_side_effect(
+                 branch="main", verify_ok=True, commit_count="1")), \
+             patch.object(hm, "_is_termux_env", return_value=termux), \
+             patch.object(hm, "_is_android_python", return_value=False), \
+             patch.object(hm, "_ensure_uv_for_termux", return_value=None), \
+             patch.object(hm, "_install_psutil_android_compat"), \
+             patch.object(hm, "_run_with_idle_timeout", return_value=build_ok), \
+             patch.object(hm, "_install_python_dependencies_with_optional_fallback") as mock_install:
+            cmd_update(mock_args)
+
+        mock_install.assert_called_once()
+        return mock_install.call_args.kwargs.get("group")
+
+    def test_uv_branch_uses_termux_all_on_termux(self, mock_args):
+        assert self._run_update(mock_args, uv_available=True, termux=True) == "termux-all"
+
+    def test_uv_branch_uses_all_off_termux(self, mock_args):
+        assert self._run_update(mock_args, uv_available=True, termux=False) == "all"
+
+    def test_pip_fallback_uses_termux_all_on_termux(self, mock_args):
+        # uv unavailable -> the pip-fallback branch (the second buggy call site)
+        assert self._run_update(mock_args, uv_available=False, termux=True) == "termux-all"
+
+    def test_pip_fallback_uses_all_off_termux(self, mock_args):
+        assert self._run_update(mock_args, uv_available=False, termux=False) == "all"
