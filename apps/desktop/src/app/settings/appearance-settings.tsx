@@ -6,21 +6,10 @@ import { cn } from '@/lib/utils'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
-import { useTranslation } from '@/hooks/use-translation'
-import { SUPPORTED_LOCALES, type Locale } from '@/store/i18n'
+import { useTranslation, LANGUAGE_LABELS } from '@/hooks/use-translation'
 
 import { MODE_OPTIONS } from './constants'
 import { Pill, SectionHeading, SettingsContent } from './primitives'
-
-const LANGUAGE_LABELS: Record<Locale, string> = {
-  'en': 'English',
-  'zh-CN': '中文（简体）',
-  'ja': '日本語',
-  'ko': '한국어',
-  'de': 'Deutsch',
-  'es': 'Español',
-  'fr': 'Français',
-}
 
 function ThemePreview({ name }: { name: string }) {
   const t = BUILTIN_THEMES[name]
@@ -66,7 +55,7 @@ export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const activeTheme = availableThemes.find(t => t.name === themeName)
-  const { t: translate, locale, setLocale } = useTranslation()
+  const { t: translate, locale, setLocale, availableLocales } = useTranslation()
 
   return (
     <SettingsContent>
@@ -243,7 +232,7 @@ export function AppearanceSettings() {
             <Pill>{LANGUAGE_LABELS[locale]}</Pill>
           </div>
           <div className="grid gap-2 sm:grid-cols-4">
-            {SUPPORTED_LOCALES.map(code => (
+            {availableLocales.map(code => (
               <button
                 key={code}
                 onClick={() => {

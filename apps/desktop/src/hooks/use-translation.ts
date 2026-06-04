@@ -1,1 +1,1 @@
-export { I18nProvider, useTranslation, t, SUPPORTED_LOCALES, type Locale } from '@/store/i18n'
+export { I18nProvider, useTranslation, t, LANGUAGE_LABELS } from '@/store/i18n'
