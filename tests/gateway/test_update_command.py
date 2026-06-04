@@ -58,41 +58,26 @@ class TestHandleUpdateCommand:
 
     @pytest.mark.asyncio
     async def test_no_git_directory(self, tmp_path):
-        """Returns an error when .git does not exist."""
+        """Returns an error for a git install whose .git dir is missing (corrupt checkout).
+
+        The short-circuit only fires when the install method resolves to ``git``
+        AND ``.git`` is absent. A pip install with no ``.git`` must NOT be blocked,
+        so we force ``detect_install_method`` to ``"git"`` to exercise the
+        corrupted-git-checkout guard while ``.git`` stays absent.
+        """
         runner = _make_runner()
         event = _make_event()
-        # Point _hermes_home to tmp_path and project_root to a dir without .git
+
+        # Project root with a gateway/run.py but NO .git directory.
         fake_root = tmp_path / "project"
-        fake_root.mkdir()
+        (fake_root / "gateway").mkdir(parents=True)
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+
         with patch("gateway.run._hermes_home", tmp_path), \
-             patch("gateway.run.Path") as MockPath:
-            # Path(__file__).parent.parent.resolve() -> fake_root
-            MockPath.return_value = MagicMock()
-            MockPath.__truediv__ = Path.__truediv__
-            # Easier: just patch the __file__ resolution in the method
-            pass
-
-        # Simpler approach — mock at method level using a wrapper
-        runner = _make_runner()
-
-        with patch("gateway.run._hermes_home", tmp_path):
-            # The handler does Path(__file__).parent.parent.resolve()
-            # We need to make project_root / '.git' not exist.
-            # Since Path(__file__) resolves to the real gateway/run.py,
-            # project_root will be the real hermes-agent dir (which HAS .git).
-            # Patch Path to control this.
-            original_path = Path
-
-            class FakePath(type(Path())):
-                pass
-
-            # Actually, simplest: just patch the specific file attr
-            fake_file = str(fake_root / "gateway" / "run.py")
-            (fake_root / "gateway").mkdir(parents=True)
-            (fake_root / "gateway" / "run.py").touch()
-
-            with patch("gateway.run.__file__", fake_file):
-                result = await runner._handle_update_command(event)
+             patch("gateway.run.__file__", fake_file), \
+             patch("hermes_cli.config.detect_install_method", return_value="git"):
+            result = await runner._handle_update_command(event)
 
         assert "Not a git repository" in result
 
