@@ -1,6 +1,6 @@
 # Project State: UA Flywheel Integration
 
-> **Last updated:** 2026-06-01T03:05:36Z (Phase 4 approved for autonomous execution on `feat/ua-phase4-structural-semantic`; D1 active)
+> **Last updated:** 2026-06-04 (UA Phase 6 complete locally checkpointed at commit 86313ec46 on `feat/ua-phase6-trustworthy-handoff-security-review`; docs/state sync only; push/merge/deploy/production mutation and remote updates remain unapproved)
 > **Full state:** `.plans/project-state-ua-flywheel.md`
 > **Strategy:** `.plans/ua-incorporation-strategy.md`
 > **Phase 2 plan:** `.plans/phase-2-flywheel-ua-integration.md`
@@ -647,16 +647,15 @@ No merge, deploy, production mutation, origin push, main push, dependency change
   - `/tmp/ua-p6-wave2-prep/diffs/ua-p6-wave2-combined-final.diff` — 891 lines / 39642 bytes.
 - No commit, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or PRL/Muster source copying performed for Wave 2.
 
-### UA Phase 6 Serial Closeout integrated locally — 2026-06-04T03:56:17Z
-- Base checkpoint: `ae2f44a1f` (`feat(ua): add phase 6 wave 2 handoff gates`).
-- Serial branch/worktree: `swarm/p6-007-009-serial` at `/home/jarrad/work/hermes-agent-ua-p6-serial-worktree`.
-- P6-007 Security-review mode and evidence gaps: accepted after Hermes verification PASS and reviewer PASS; diff artifact `/tmp/ua-p6-serial-prep/diffs/ua-p6-007.diff` — 599 lines / 26551 bytes.
-- P6-008 PRL-like golden E2E regression: accepted after Hermes verification PASS and reviewer PASS; delta artifact `/tmp/ua-p6-serial-prep/diffs/ua-p6-008.diff` — 280 lines / 13385 bytes.
-- P6-009 Docs/skill/ledger closeout: integrated locally in repo docs/ledger/skills; active-profile skills outside this repo were not edited.
-- Serial verification evidence so far:
-  - P6-007 focused: 230 passed; full `python -m pytest tests/code_scan -q`: 1037 passed; py_compile/diff-check/secret scan PASS.
-  - P6-008 focused E2E: 66 passed; full `python -m pytest tests/code_scan -q`: 1042 passed; diff-check/secret scan PASS.
+### UA Phase 6 completion checkpoint synced — 2026-06-04T04:48:00Z
+- Local completion checkpoint: `86313ec46` (`feat(ua): add phase 6 serial security review closeout`) on branch `feat/ua-phase6-trustworthy-handoff-security-review`.
+- Base checkpoints preserved:
+  - `147c76eef` — Wave 1 handoff safeguards for P6-002/P6-003/P6-004.
+  - `ae2f44a1f` — Wave 2 handoff gates for P6-005/P6-006.
+  - `86313ec46` — serial closeout for P6-007/P6-008/P6-009.
+- Phase 6 status: P6-000 through P6-009 are complete locally and checkpointed. P6-007 security-review mode/evidence gaps, P6-008 PRL-like golden E2E regression, and P6-009 docs/skills/ledger closeout are included in `86313ec46`.
+- Latest Hermes verification: `python -m pytest tests/code_scan -q` — PASS, `1042 passed in 141.02s`.
 - Boundary: UA validation does not prove security, deployment readiness, RLS correctness, runtime correctness, CI success, or production behavior. Runtime readiness lists tool availability and suggested/external gate status without executing project gates. Reviewer/researcher outputs are targeted critic evidence; Hermes owns final synthesis and final assessment.
 - Follow-up beads: no unresolved blocking findings from P6-007/P6-008 reviewer gates; future work should only claim `executed_external_gate` when a separately approved external runner actually executes a target gate and records evidence.
-- Guardrails preserved: no commit, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, PRL/Muster source copying, or active-profile skill edits outside the repo.
-- Approval gate: serial changes are uncommitted; separate JC approval is required for checkpoint commit, push, merge, deploy, or production mutation.
+- Current docs/state sync approval: JC authorized a narrow local docs/state checkpoint for `PLAN.md`, `.hermes/PROJECT_STATE.md`, and `.hermes/swarm-runs/2026-06-03-ua-phase6.md` only, to remove stale uncommitted/checkpoint-pending/final-review-pending wording and preserve still-closed remote gates.
+- Guardrails preserved: no implementation/source/test/skill changes, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, PRL/Muster source copying, active-profile skill edits outside the repo, or remote updates are approved by this sync. Push/merge/deploy/production mutation remain unapproved.

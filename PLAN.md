@@ -2,7 +2,7 @@
 
 > **Purpose:** Canonical entry point for the Understand-Anything → Hermes Flywheel integration.
 > All details live in `.plans/` and `.beads/`. This file is a navigation pointer.
-> **Last updated:** 2026-06-02 (Phase 4 structural/semantic understanding approved for execution; D1 active)
+> **Last updated:** 2026-06-04 (Phase 6 trustworthy handoff/security-review complete locally checkpointed at 86313ec46; docs/state sync only)
 
 ## Key Documents
 
@@ -80,21 +80,17 @@ Beads under `.beads/` are the authoritative execution units. Each bead contains:
 - Evaluation evidence: `/tmp/phase2-d1-d3-eval-corrected-latest.log`
 - Test bed repos: `cass_memory_system/`, `mission-control/`, hermes-agent itself
 
-## Phase 6 (Trustworthy Handoff and Security-Review Readiness) — ✅ INTEGRATED LOCALLY / CHECKPOINT PENDING
+## Phase 6 (Trustworthy Handoff and Security-Review Readiness) — ✅ COMPLETE LOCALLY / CHECKPOINTED AT 86313ec46
 
-Phase 6 is integrated on the local branch `feat/ua-phase6-trustworthy-handoff-security-review` through serial closeout work. Local checkpoint commits exist for Wave 1 and Wave 2; P6-007 through P6-009 are currently uncommitted pending separate JC checkpoint approval.
+Phase 6 complete: P6-000 through P6-009 executed and Hermes-verified locally on branch `feat/ua-phase6-trustworthy-handoff-security-review` (latest full tests `python -m pytest tests/code_scan -q` 1042 passed; branch ahead of jc-fork by 3 commits at checkpoint commit `86313ec46 feat(ua): add phase 6 serial security review closeout`).
 
-| Bead | Status |
-|---|---|
-| P6-000 baseline scope guard | Complete |
-| P6-001 manifest reconciliation/self-validation | Complete |
-| P6-002 recommended-file relevance ranking | Complete |
-| P6-003 orphan report summarization | Complete |
-| P6-004 graph issue classification | Complete |
-| P6-005 must-read map artifact | Complete |
-| P6-006 runtime gate inventory | Complete |
-| P6-007 security-review mode and evidence gaps | Integrated locally; reviewer PASS |
-| P6-008 PRL-like golden E2E regression | Integrated locally; reviewer PASS |
-| P6-009 docs/skills/ledger closeout | Integrated locally; final verifier/reviewer pending in serial closeout |
+- Wave 1 (P6-002/003/004), Wave 2 (P6-005/006), and serial closeout (P6-007 security-review mode/evidence gaps + P6-008 PRL-like golden E2E regression + P6-009 docs/skills/ledger closeout) completed.
+- All beads: ✅ Complete (via isolated worktrees, integration, focused+full verification, reviewer PASS where applicable).
+- Hermes verification: full code_scan 1042 passed (latest); py_compile, diff hygiene, secret scan, scope/guardrail all PASS per bead logs.
+- Reviewer: PASS for relevant beads (P6-002-008; P6-009 direct docs).
 
-Boundary: UA validation does not prove security, deployment readiness, RLS correctness, runtime correctness, CI success, or production behavior. Runtime readiness lists tool availability and suggested/external gate status without executing project gates. Reviewer/researcher outputs are targeted critic evidence; Hermes owns final synthesis and final assessment. Future `executed_external_gate` claims require separately approved external gate execution evidence.
+No implementation changes, push, merge, deploy, production mutation, or remote updates are performed or approved by this docs/state sync. This checkpoint may be committed locally under JC's narrow docs/state approval; push/merge/deploy remain unapproved.
+
+UA validation boundary (preserved): UA validation does not prove security, deployment readiness, RLS correctness, runtime correctness, CI success, or production behavior. Runtime readiness lists tool availability and suggested/external gate status without executing project gates. Reviewer/researcher outputs are targeted critic evidence; Hermes owns final synthesis and final assessment. Future `executed_external_gate` claims require separately approved external gate execution evidence.
+
+See `.hermes/swarm-runs/2026-06-03-ua-phase6.md` for full execution ledger (baseline through serial closeout). All prior phases (1-5) unchanged/historical below.
