@@ -32,11 +32,13 @@ def check_mark(ok: bool) -> str:
 def redact_key(key: str) -> str:
     """Redact an API key for display.
 
-    Thin wrapper over :func:`agent.redact.mask_secret`. Preserves the
-    "(not set)" placeholder in dim color to match ``hermes config``'s
-    output (previously this variant was missing the DIM color —
-    consolidated via PR that also introduced ``mask_secret``).
+    By default this preserves the existing short-prefix/suffix display used by
+    local CLI status. Set ``HERMES_STATUS_STRICT_REDACTION=true`` when status is
+    being surfaced through agent/gateway reports; then configured secrets are
+    shown only as ``[configured]`` with no key fragments.
     """
+    if key and os.getenv("HERMES_STATUS_STRICT_REDACTION", "").lower() in {"1", "true", "yes", "on"}:
+        return color("[configured]", Colors.GREEN)
     from agent.redact import mask_secret
     return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
