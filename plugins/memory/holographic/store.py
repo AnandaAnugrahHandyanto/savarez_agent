@@ -233,6 +233,7 @@ class MemoryStore:
                 JOIN facts_fts fts ON fts.rowid = f.fact_id
                 WHERE facts_fts MATCH ?
                   AND f.trust_score >= ?
+                  AND f.superseded_at IS NULL
                   {category_clause}
                 ORDER BY fts.rank, f.trust_score DESC
                 LIMIT ?
@@ -362,6 +363,7 @@ class MemoryStore:
                        retrieval_count, helpful_count, created_at, updated_at
                 FROM facts
                 WHERE trust_score >= ?
+                  AND superseded_at IS NULL
                   {category_clause}
                 ORDER BY trust_score DESC
                 LIMIT ?
@@ -522,7 +524,8 @@ class MemoryStore:
 
             bank_name = f"cat:{category}"
             rows = self._conn.execute(
-                "SELECT hrr_vector FROM facts WHERE category = ? AND hrr_vector IS NOT NULL",
+                "SELECT hrr_vector FROM facts WHERE category = ? AND hrr_vector IS NOT NULL"
+                " AND superseded_at IS NULL",
                 (category,),
             ).fetchall()
 

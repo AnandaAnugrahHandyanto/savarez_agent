@@ -7,6 +7,7 @@ import sqlite3
 
 import pytest
 
+from plugins.memory.holographic.retrieval import FactRetriever
 from plugins.memory.holographic.store import MemoryStore
 
 
@@ -114,3 +115,84 @@ class TestRemoveFactLineageCleanup:
             (old_id, old_id),
         ).fetchone()[0]
         assert dangling == 0
+
+
+class TestSupersededRecallFilter:
+    """A fact marked superseded must vanish from every default recall path
+    and from its category HRR bank, while live versions still surface."""
+
+    def _two_versions(self, tmp_path):
+        store = MemoryStore(db_path=str(tmp_path / "m.db"))
+        old_id = store.add_fact("Project Hermes runs on the old server alpha")
+        new_id = store.add_fact("Project Hermes runs on the new server beta")
+        return store, old_id, new_id
+
+    def _mark_superseded(self, store, fact_id):
+        store._conn.execute(
+            "UPDATE facts SET superseded_at = CURRENT_TIMESTAMP WHERE fact_id = ?",
+            (fact_id,),
+        )
+        store._conn.commit()
+        cat = store._conn.execute(
+            "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
+        ).fetchone()["category"]
+        store._rebuild_bank(cat)
+
+    def test_search_facts_excludes_superseded(self, tmp_path):
+        store, old_id, new_id = self._two_versions(tmp_path)
+        self._mark_superseded(store, old_id)
+        ids = [f["fact_id"] for f in store.search_facts("Project Hermes server")]
+        assert old_id not in ids
+        assert new_id in ids
+
+    def test_list_facts_excludes_superseded(self, tmp_path):
+        store, old_id, new_id = self._two_versions(tmp_path)
+        self._mark_superseded(store, old_id)
+        ids = [f["fact_id"] for f in store.list_facts()]
+        assert old_id not in ids
+        assert new_id in ids
+
+    def test_retriever_search_excludes_superseded(self, tmp_path):
+        store, old_id, new_id = self._two_versions(tmp_path)
+        self._mark_superseded(store, old_id)
+        ids = [f["fact_id"] for f in FactRetriever(store).search("Project Hermes server")]
+        assert old_id not in ids
+        assert new_id in ids
+
+    def test_probe_direct_excludes_superseded(self, tmp_path):
+        store, old_id, new_id = self._two_versions(tmp_path)
+        self._mark_superseded(store, old_id)
+        # No category -> hits the direct-SQL path in probe.
+        ids = [f["fact_id"] for f in FactRetriever(store).probe("Project Hermes")]
+        assert old_id not in ids
+
+    def test_probe_bank_excludes_superseded(self, tmp_path):
+        store, old_id, new_id = self._two_versions(tmp_path)
+        self._mark_superseded(store, old_id)
+        # Category -> hits the bank path through _score_facts_by_vector.
+        ids = [f["fact_id"]
+               for f in FactRetriever(store).probe("Project Hermes", category="general")]
+        assert old_id not in ids
+
+    def test_related_excludes_superseded(self, tmp_path):
+        store, old_id, new_id = self._two_versions(tmp_path)
+        self._mark_superseded(store, old_id)
+        ids = [f["fact_id"] for f in FactRetriever(store).related("Hermes")]
+        assert old_id not in ids
+
+    def test_reason_excludes_superseded(self, tmp_path):
+        store, old_id, new_id = self._two_versions(tmp_path)
+        self._mark_superseded(store, old_id)
+        ids = [f["fact_id"] for f in FactRetriever(store).reason(["Hermes"])]
+        assert old_id not in ids
+
+    def test_rebuild_bank_excludes_superseded(self, tmp_path):
+        # Banks only exist when numpy/HRR is available; skip otherwise.
+        pytest.importorskip("numpy")
+        store, old_id, new_id = self._two_versions(tmp_path)
+        self._mark_superseded(store, old_id)
+        row = store._conn.execute(
+            "SELECT fact_count FROM memory_banks WHERE bank_name = ?", ("cat:general",)
+        ).fetchone()
+        # Only the live fact contributes to the bundle.
+        assert row["fact_count"] == 1
