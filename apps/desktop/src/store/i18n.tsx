@@ -12,6 +12,7 @@ export const LANGUAGE_LABELS: Record<string, string> = {
   'de': 'Deutsch',
   'es': 'Español',
   'fr': 'Français',
+  'pt-BR': 'Português (Brasil)',
 }
 
 const STORAGE_KEY = 'hermes-desktop-locale'
@@ -43,6 +44,7 @@ function normalizeLocale(raw: string): string {
   if (lc.startsWith('de')) return 'de'
   if (lc.startsWith('es')) return 'es'
   if (lc.startsWith('fr')) return 'fr'
+  if (lc.startsWith('pt')) return 'pt-BR'
   return 'en'
 }
 
