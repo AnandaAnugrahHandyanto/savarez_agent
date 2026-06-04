@@ -157,8 +157,10 @@ def _task_dict(
     task: kanban_db.Task,
     *,
     latest_summary: Optional[str] = None,
+    canonical_status: Optional[str] = None,
 ) -> dict[str, Any]:
     d = asdict(task)
+    d["canonical_status"] = canonical_status or kanban_db.canonical_live_status(task.status)
     # Add derived age metrics so the UI can colour stale cards without
     # computing deltas client-side.
     try:
@@ -463,7 +465,11 @@ def get_board(
             preview = (
                 full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
             )
-            d = _task_dict(t, latest_summary=preview)
+            d = _task_dict(
+                t,
+                latest_summary=preview,
+                canonical_status=kanban_db.canonical_live_status_for_task(conn, t),
+            )
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -554,7 +560,11 @@ def get_task(
         # operators can read the complete worker handoff without making
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
-        task_d = _task_dict(task, latest_summary=full_summary)
+        task_d = _task_dict(
+            task,
+            latest_summary=full_summary,
+            canonical_status=kanban_db.canonical_live_status_for_task(conn, task),
+        )
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])

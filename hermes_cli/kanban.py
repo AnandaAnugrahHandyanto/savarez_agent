@@ -65,6 +65,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "assignee": t.assignee,
         "status": t.status,
         "live_status": kb.live_status_for(t.status),
+        "canonical_status": kb.canonical_live_status(t.status),
         "priority": t.priority,
         "tenant": t.tenant,
         "workspace_kind": t.workspace_kind,
@@ -1481,10 +1482,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
         # ``result=``. Surfacing the latest summary here keeps ``show`` from
         # looking like a no-op when the worker actually did real work.
         latest_summary = kb.latest_summary(conn, args.task_id)
+        canonical_status = kb.canonical_live_status_for_task(conn, task)
 
     if getattr(args, "json", False):
+        task_payload = _task_to_dict(task)
+        task_payload["canonical_status"] = canonical_status
         payload = {
-            "task": _task_to_dict(task),
+            "task": task_payload,
             "latest_summary": latest_summary,
             "parents": parents,
             "children": children,
@@ -1522,7 +1526,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
         return 0
 
     print(f"Task {task.id}: {task.title}")
-    print(f"  status:    {task.status}")
+    print(f"  status:    {canonical_status}")
+    if task.status != canonical_status:
+        print(f"  storage:   {task.status} (legacy compatibility)")
     print(f"  assignee:  {task.assignee or '-'}")
     if task.tenant:
         print(f"  tenant:    {task.tenant}")

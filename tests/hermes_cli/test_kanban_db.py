@@ -230,8 +230,29 @@ def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
         p = kb.create_task(conn, title="parent")
         c = kb.create_task(conn, title="child", parents=[p])
         assert kb.get_task(conn, c).status == "todo"
+        assert kb.canonical_live_status_for_task(conn, c) == "waiting"
         kb.complete_task(conn, p, result="ok")
         assert kb.get_task(conn, c).status == "ready"
+        assert kb.canonical_live_status_for_task(conn, c) == "working"
+
+
+def test_canonical_live_status_for_parent_gated_child_is_waiting(kanban_home):
+    """Downstream canonical backend adapter reports waiting, not todo.
+
+    The legacy storage row still uses ``todo`` in this non-invasive slice so
+    old dispatchers stay compatible, but user/API callers should consume the
+    canonical projection and see a parent-gated child as ``waiting``.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="blocked parent", assignee="alice")
+        child = kb.create_task(conn, title="gated child", assignee="bob", parents=[parent])
+
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.canonical_live_status_for_task(conn, child) == "waiting"
+
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (child,))
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.canonical_live_status_for_task(conn, child) == "waiting"
 
 
 def test_create_task_unknown_parent_errors(kanban_home):

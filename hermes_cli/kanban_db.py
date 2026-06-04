@@ -97,6 +97,21 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+CANONICAL_LIVE_STATUSES = {"working", "waiting", "blocked", "dormant", "done"}
+CANONICAL_STATUS_FOR_STORAGE_STATUS = {
+    # Downstream Hermes Maintenance canonical status projection.  The legacy
+    # storage/workflow statuses remain accepted for dispatcher compatibility in
+    # this first non-invasive slice, but user-facing surfaces should prefer this
+    # projection and treat the legacy value as compatibility-only metadata.
+    "ready": "working",
+    "running": "working",
+    "review": "working",
+    "todo": "waiting",
+    "scheduled": "waiting",
+    "blocked": "blocked",
+    "triage": "dormant",
+    "done": "done",
+}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
@@ -129,6 +144,42 @@ def live_status_for(status: str) -> str:
 
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+
+
+def canonical_live_status(status: str) -> str:
+    """Return the downstream canonical live/user status for a task status.
+
+    This is the explicit compatibility adapter boundary for the first
+    downstream-only Kanban redesign slice: legacy storage/workflow aliases stay
+    readable by the existing dispatcher, while CLI/API/dashboard/user-facing
+    code can consistently render ``working``, ``waiting``, ``blocked``,
+    ``dormant``, or ``done``. ``archived`` is retention history rather than a
+    live state, so it is returned unchanged for archive-only views.
+    """
+    status = str(status or "").strip().lower()
+    return CANONICAL_STATUS_FOR_STORAGE_STATUS.get(status, status or "dormant")
+
+
+def canonical_live_status_for_task(conn: sqlite3.Connection, task_or_id: "Task | str") -> str:
+    """Return canonical live/user status for a task row or id.
+
+    Parent-gated descendants are canonical ``waiting`` even when a legacy row
+    has been incorrectly written as ``ready``. This catches the observed
+    regression without mutating the DB and gives migration dry-runs/dashboard
+    renderers a deterministic adapter before schema backfill lands.
+    """
+    task = get_task(conn, task_or_id) if isinstance(task_or_id, str) else task_or_id
+    if task is None:
+        raise ValueError(f"unknown task: {task_or_id}")
+    parents_open = conn.execute(
+        "SELECT 1 FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+        (task.id,),
+    ).fetchone()
+    if parents_open and task.status not in {"blocked", "done", "archived"}:
+        return "waiting"
+    return canonical_live_status(task.status)
 
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
