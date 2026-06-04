@@ -749,11 +749,27 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Email: native attachment support via SMTP multipart ---
+    if platform == Platform.EMAIL and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_email_with_media(
+                pconfig.extra,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and email; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -761,7 +777,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and email"
         )
 
     last_result = None
@@ -1312,6 +1328,68 @@ async def _send_email(extra, chat_id, message):
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         return _error(f"Email send failed: {e}")
+
+
+async def _send_email_with_media(extra, chat_id, message, media_files=None):
+    """Send via SMTP with file attachments (multipart MIME).
+
+    ``media_files`` is a list of ``(path, is_voice)`` tuples produced by
+    ``BasePlatformAdapter.extract_media`` / ``filter_media_delivery_paths``.
+    Non-existent paths are silently skipped with a warning.
+    """
+    import smtplib
+    from email.mime.base import MIMEBase
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email import encoders
+
+    address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
+    password = os.getenv("EMAIL_PASSWORD", "")
+    smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+    try:
+        smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+    except (ValueError, TypeError):
+        smtp_port = 587
+
+    if not all([address, password, smtp_host]):
+        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+
+    # Validate media files
+    valid_paths = []
+    for media_path, _is_voice in (media_files or []):
+        if os.path.exists(media_path):
+            valid_paths.append(media_path)
+        else:
+            logger.warning("Email media file not found, skipping: %s", media_path)
+
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = address
+        msg["To"] = chat_id
+        msg["Subject"] = "Hermes Agent"
+        msg["Date"] = formatdate(localtime=True)
+
+        if message:
+            msg.attach(MIMEText(message, "plain", "utf-8"))
+
+        for file_path in valid_paths:
+            fname = os.path.basename(file_path)
+            with open(file_path, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", f"attachment; filename={fname}")
+                msg.attach(part)
+
+        server = smtplib.SMTP(smtp_host, smtp_port)
+        server.starttls(context=ssl.create_default_context())
+        server.login(address, password)
+        server.send_message(msg)
+        server.quit()
+        return {"success": True, "platform": "email", "chat_id": chat_id,
+                "attachments": len(valid_paths)}
+    except Exception as e:
+        return _error(f"Email send with attachments failed: {e}")
 
 
 async def _send_sms(auth_token, chat_id, message):
