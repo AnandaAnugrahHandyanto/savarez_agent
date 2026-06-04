@@ -11,6 +11,8 @@ import type {
   CronJob,
   CronJobCreatePayload,
   CronJobUpdates,
+  CustomProviderRequest,
+  CustomProviderResponse,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
   HermesConfig,
@@ -60,6 +62,8 @@ export type {
   CronJobCreatePayload,
   CronJobSchedule,
   CronJobUpdates,
+  CustomProviderRequest,
+  CustomProviderResponse,
   ElevenLabsVoice,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
@@ -260,6 +264,14 @@ export function validateProviderCredential(
     path: '/api/providers/validate',
     method: 'POST',
     body: { key, value }
+  })
+}
+
+export function createCustomProvider(body: CustomProviderRequest): Promise<CustomProviderResponse> {
+  return window.hermesDesktop.api<CustomProviderResponse>({
+    path: '/api/providers/custom',
+    method: 'POST',
+    body
   })
 }
 

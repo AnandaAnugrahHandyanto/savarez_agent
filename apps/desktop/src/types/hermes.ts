@@ -604,3 +604,24 @@ export interface ModelAssignmentResponse {
   scope?: string
   tasks?: string[]
 }
+
+export interface CustomProviderRequest {
+  api_key?: string
+  base_url: string
+  key_env?: string
+  make_active?: boolean
+  model?: string
+  name?: string
+}
+
+export interface CustomProviderResponse {
+  active?: boolean
+  base_url?: string
+  key_env?: string
+  model?: string
+  models?: string[]
+  name?: string
+  ok: boolean
+  provider: string
+  slug: string
+}

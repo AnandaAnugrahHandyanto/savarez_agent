@@ -19,6 +19,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
 import stat
 import subprocess
@@ -620,6 +621,17 @@ class ModelAssignment(BaseModel):
     base_url: str = ""
 
 
+class CustomProviderCreate(BaseModel):
+    """Payload for POST /api/providers/custom — create a named user provider."""
+
+    name: str = ""
+    base_url: str
+    api_key: str = ""
+    model: str = ""
+    key_env: str = ""
+    make_active: bool = False
+
+
 def _apply_main_model_assignment(
     model_cfg: "Any", provider: str, model: str, base_url: str = ""
 ) -> dict:
@@ -645,6 +657,24 @@ def _apply_main_model_assignment(
         model_cfg["base_url"] = ""
     model_cfg.pop("context_length", None)
     return model_cfg
+
+
+def _slugify_custom_provider_name(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    if not slug:
+        raise HTTPException(status_code=400, detail="provider name is required")
+    return slug
+
+
+def _custom_provider_key_env(slug: str) -> str:
+    env_slug = slug.replace("-", "_").upper()
+    return f"CUSTOM_PROVIDER_{env_slug}_API_KEY"
+
+
+def _custom_provider_name_from_base_url(base_url: str) -> str:
+    parsed = urllib.parse.urlparse(base_url)
+    host = (parsed.hostname or "").strip()
+    return host or "Custom provider"
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -2139,6 +2169,87 @@ async def set_model_assignment(body: ModelAssignment):
         raise HTTPException(status_code=500, detail="Failed to save model assignment")
 
 
+@app.post("/api/providers/custom")
+async def create_custom_provider(body: CustomProviderCreate):
+    """Create/update a named OpenAI-compatible custom provider.
+
+    The provider entry lives in config.yaml under ``providers`` while the
+    credential is stored in ``.env`` and referenced by ``key_env``. This keeps
+    arbitrary custom hosts away from the global OPENAI_API_KEY path.
+    """
+    base_url = (body.base_url or "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=400, detail="base_url is required")
+
+    name = (body.name or "").strip() or _custom_provider_name_from_base_url(base_url)
+    model = (body.model or "").strip()
+    api_key = (body.api_key or "").strip()
+    slug = _slugify_custom_provider_name(name)
+    key_env = (body.key_env or "").strip() or _custom_provider_key_env(slug)
+
+    try:
+        if api_key:
+            save_env_value(key_env, api_key)
+
+        discovered_models: List[str] = []
+        try:
+            from hermes_cli.models import fetch_api_models
+
+            discovered_models = fetch_api_models(api_key or None, base_url, timeout=8.0) or []
+        except Exception:
+            discovered_models = []
+
+        if not model and discovered_models:
+            model = discovered_models[0]
+        if bool(body.make_active) and not model:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not discover models from {base_url.rstrip('/')}/models",
+            )
+
+        cfg = load_config()
+        providers = cfg.get("providers")
+        if not isinstance(providers, dict):
+            providers = {}
+
+        entry = {
+            "name": name,
+            "api": base_url,
+            "key_env": key_env,
+        }
+        if model:
+            entry["default_model"] = model
+        if discovered_models:
+            models = [model, *discovered_models] if model else discovered_models
+            entry["models"] = list(dict.fromkeys(m for m in models if m))
+        providers[slug] = entry
+        cfg["providers"] = providers
+
+        provider_id = slug
+        if body.make_active and model:
+            cfg["model"] = _apply_main_model_assignment(
+                cfg.get("model", {}), provider_id, model
+            )
+
+        save_config(cfg)
+        return {
+            "ok": True,
+            "slug": slug,
+            "provider": provider_id,
+            "name": name,
+            "base_url": base_url,
+            "key_env": key_env,
+            "model": model,
+            "models": discovered_models,
+            "active": bool(body.make_active and model),
+        }
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        _log.exception("POST /api/providers/custom failed")
+        raise HTTPException(status_code=500, detail="Failed to save custom provider")
 
 
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:

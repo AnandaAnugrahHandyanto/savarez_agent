@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import {
   cancelOAuthSession,
+  createCustomProvider,
   getGlobalModelOptions,
   getRecommendedDefaultModel,
   listOAuthProviders,
@@ -70,6 +71,11 @@ export interface DesktopOnboardingState {
 export interface OnboardingContext {
   onCompleted?: () => void
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+}
+
+export interface CustomProviderSetup {
+  apiKey?: string
+  baseUrl: string
 }
 
 const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
@@ -743,6 +749,44 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: Onboardi
     return { ok: true }
   } catch (error) {
     notifyError(error, 'Could not save local endpoint')
+
+    return { ok: false, message: errMessage(error) }
+  }
+}
+
+export async function saveOnboardingCustomProvider(input: CustomProviderSetup, ctx: OnboardingContext) {
+  const baseUrl = input.baseUrl.trim()
+  const apiKey = input.apiKey?.trim() ?? ''
+
+  if (!baseUrl) {
+    return { ok: false, message: 'Enter the endpoint URL first.' }
+  }
+
+  try {
+    const result = await createCustomProvider({
+      base_url: baseUrl,
+      api_key: apiKey,
+      make_active: true
+    })
+
+    await ctx.requestGateway('reload.env').catch(() => undefined)
+
+    const runtime = await checkRuntime(ctx)
+
+    if (!runtime.ready) {
+      const detail = (runtime.reason ?? '').trim()
+      const providerLabel = result.name || result.provider || 'custom provider'
+
+      return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${providerLabel}.` }
+    }
+
+    notifyReady(result.name || result.provider || 'Custom provider')
+    completeDesktopOnboarding()
+    ctx.onCompleted?.()
+
+    return { ok: true }
+  } catch (error) {
+    notifyError(error, 'Could not save custom provider')
 
     return { ok: false, message: errMessage(error) }
   }

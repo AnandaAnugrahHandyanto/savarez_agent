@@ -29,12 +29,14 @@ import {
   confirmOnboardingModel,
   copyDeviceCode,
   copyExternalCommand,
+  type CustomProviderSetup,
   type OnboardingContext,
   type OnboardingFlow,
   peekPendingProviderOAuth,
   recheckExternalSignin,
   refreshOnboarding,
   saveOnboardingApiKey,
+  saveOnboardingCustomProvider,
   setOnboardingCode,
   setOnboardingMode,
   setOnboardingModel,
@@ -315,6 +317,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
         canGoBack={hasOauth}
         onBack={() => setOnboardingMode('oauth')}
         onSave={(envKey, value, name) => saveOnboardingApiKey(envKey, value, name, ctx)}
+        onSaveCustomProvider={input => saveOnboardingCustomProvider(input, ctx)}
       />
     )
   }
@@ -469,6 +472,7 @@ export function ApiKeyForm({
   onBack,
   onClear,
   onSave,
+  onSaveCustomProvider,
   options = API_KEY_OPTIONS,
   redactedValue
 }: {
@@ -477,11 +481,14 @@ export function ApiKeyForm({
   onBack: () => void
   onClear?: (envKey: string) => void
   onSave: (envKey: string, value: string, name: string) => Promise<{ message?: string; ok: boolean }>
+  onSaveCustomProvider?: (input: CustomProviderSetup) => Promise<{ message?: string; ok: boolean }>
   options?: ApiKeyOption[]
   redactedValue?: (envKey: string) => null | string | undefined
 }) {
   const [option, setOption] = useState<ApiKeyOption>(options[0])
   const [value, setValue] = useState('')
+  const [customApiKey, setCustomApiKey] = useState('')
+  const [customBaseUrl, setCustomBaseUrl] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
   // `options` can change at runtime when callers filter the catalog (e.g. the
@@ -510,13 +517,15 @@ export function ApiKeyForm({
   }
 
   const isLocal = option.envKey === 'OPENAI_BASE_URL'
+  const customProviderMode = Boolean(isLocal && onSaveCustomProvider)
   const alreadySet = isSet?.(option.envKey) ?? false
   // When set, surface the backend's redacted value (e.g. "sk-12…wxyz") as the
   // placeholder so users can eyeball that the right key is in place.
   const currentRedacted = alreadySet ? (redactedValue?.(option.envKey) ?? null) : null
+
   // Only require a non-empty value — no length/format validation, so a short
   // or unusual key can't block the user from continuing.
-  const canSave = value.trim().length >= 1
+  const canSave = customProviderMode ? customBaseUrl.trim().length >= 1 : value.trim().length >= 1
 
   const submit = async () => {
     if (!canSave || saving) {
@@ -525,10 +534,19 @@ export function ApiKeyForm({
 
     setSaving(true)
     setError(null)
-    const result = await onSave(option.envKey, value, option.name)
+
+    const result =
+      customProviderMode && onSaveCustomProvider
+        ? await onSaveCustomProvider({
+            apiKey: customApiKey,
+            baseUrl: customBaseUrl
+          })
+        : await onSave(option.envKey, value, option.name)
 
     if (result.ok) {
       setValue('')
+      setCustomApiKey('')
+      setCustomBaseUrl('')
     } else {
       setError(result.message ?? 'Could not save credential.')
     }
@@ -576,18 +594,48 @@ export function ApiKeyForm({
       <div className="grid scroll-mt-4 gap-2" ref={entryRef}>
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm leading-6 text-muted-foreground">{option.description}</p>
-          {option.docsUrl ? <DocsLink href={option.docsUrl}>Get a key</DocsLink> : null}
+          {option.docsUrl ? <DocsLink href={option.docsUrl}>{isLocal ? 'Docs' : 'Get a key'}</DocsLink> : null}
         </div>
-        <Input
-          autoComplete="off"
-          autoFocus
-          className="font-mono"
-          onChange={e => setValue(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submit()}
-          placeholder={currentRedacted ?? (alreadySet ? 'Replace current value' : option.placeholder || 'Paste API key')}
-          type={isLocal ? 'text' : 'password'}
-          value={value}
-        />
+        {customProviderMode ? (
+          <div className="grid gap-3">
+            <label className="grid gap-1.5 text-xs font-medium">
+              Base URL
+              <Input
+                autoComplete="off"
+                autoFocus
+                className="font-mono"
+                onChange={e => setCustomBaseUrl(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && void submit()}
+                placeholder={option.placeholder || 'https://example.com/v1'}
+                type="url"
+                value={customBaseUrl}
+              />
+            </label>
+            <label className="grid gap-1.5 text-xs font-medium">
+              API key
+              <Input
+                autoComplete="off"
+                className="font-mono"
+                onChange={e => setCustomApiKey(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && void submit()}
+                placeholder="Optional for local endpoints"
+                type="password"
+                value={customApiKey}
+              />
+            </label>
+          </div>
+        ) : (
+          <Input
+            autoComplete="off"
+            autoFocus
+            className="font-mono"
+            onChange={e => setValue(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && void submit()}
+            placeholder={currentRedacted ?? (alreadySet ? 'Replace current value' : option.placeholder || 'Paste API key')}
+            type={isLocal ? 'text' : 'password'}
+            value={value}
+          />
+        )}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>
 
