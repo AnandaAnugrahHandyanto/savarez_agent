@@ -34,6 +34,94 @@ def test_snapshot_reports_zero_when_no_background_tasks():
     assert snap["active_background_tasks"] == 0
 
 
+def _patch_active_subagents(monkeypatch, records):
+    import tools.delegate_tool as delegate_mod
+
+    monkeypatch.setattr(delegate_mod, "list_active_subagents", lambda: records)
+
+
+def test_snapshot_counts_live_subagents(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_active_subagents(
+        monkeypatch,
+        [
+            {"subagent_id": "subagent-0", "status": "running"},
+            {"subagent_id": "subagent-1", "status": "completed"},
+            {"subagent_id": "subagent-2", "status": "running"},
+        ],
+    )
+    snap = cli_obj._get_status_bar_snapshot()
+    assert snap["active_subagents"] == 2
+
+
+def test_plain_text_status_shows_subagent_indicator(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_active_subagents(
+        monkeypatch,
+        [
+            {"subagent_id": "subagent-0", "status": "running"},
+            {"subagent_id": "subagent-1", "status": "running"},
+        ],
+    )
+    text = cli_obj._build_status_bar_text(width=80)
+    assert "🤖 2" in text
+
+
+def test_fragments_include_subagent_segment_when_active(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_active_subagents(monkeypatch, [{"subagent_id": "subagent-0", "status": "running"}])
+    cli_obj._status_bar_visible = True
+    cli_obj._get_tui_terminal_width = lambda: 120  # type: ignore[method-assign]
+    frags = cli_obj._get_status_bar_fragments()
+    rendered = "".join(text for _style, text in frags)
+    assert "🤖 1" in rendered
+
+
+def test_narrow_width_omits_subagent_indicator(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_active_subagents(monkeypatch, [{"subagent_id": "subagent-0", "status": "running"}])
+    text = cli_obj._build_status_bar_text(width=40)
+    assert "🤖" not in text
+
+
+def test_agents_command_prints_active_subagent_count(monkeypatch):
+    import cli as cli_mod
+    import tools.process_registry as pr_mod
+
+    cli_obj = _make_cli()
+    cli_obj._agent_running = True
+    printed = []
+    _patch_active_subagents(
+        monkeypatch,
+        [
+            {
+                "subagent_id": "subagent-0",
+                "status": "running",
+                "started_at": 0,
+                "goal": "Review authentication flow",
+                "tool_count": 2,
+            }
+        ],
+    )
+
+    class _EmptyProcessRegistry:
+        def list_sessions(self):
+            return []
+
+    monkeypatch.setattr(pr_mod, "process_registry", _EmptyProcessRegistry())
+    monkeypatch.setattr(cli_mod, "_cprint", lambda text: printed.append(text))
+
+    cli_obj._handle_agents_command()
+
+    rendered = "\n".join(printed)
+    assert "Running subagents: 1" in rendered
+    assert "subagent-0" in rendered
+    assert "tools:2" in rendered
+    assert "Review authentication flow" in rendered
+    assert "Running processes: 0" in rendered
+    assert "Agent: running" in rendered
+
+
 def test_snapshot_counts_live_background_tasks():
     cli_obj = _make_cli()
     cli_obj._background_tasks = {"bg_a": _stub_thread(), "bg_b": _stub_thread()}
