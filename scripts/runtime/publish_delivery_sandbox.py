@@ -73,7 +73,8 @@ NGINX_CONF = r'''server {
 DOCKERFILE = r"""FROM python:3.12-alpine
 WORKDIR /app
 COPY server.py /app/server.py
-RUN chmod 0644 /app/server.py
+COPY delivery_document_actions.py /app/delivery_document_actions.py
+RUN chmod 0644 /app/server.py /app/delivery_document_actions.py
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 CMD ["python", "/app/server.py"]
@@ -105,6 +106,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
+
+from delivery_document_actions import (
+    OTP_REQUIRED_DOCUMENT_EVENT_TYPES,
+    build_document_event,
+    document_action_allows_direct_post,
+    document_action_requires_otp,
+    normalize_document_action,
+)
 
 EVENT_DIR = Path(os.environ.get("EVENT_DIR", "/data/events"))
 PUBLIC_DIR = Path(os.environ.get("PUBLIC_DIR", "/data/public"))
@@ -330,21 +339,44 @@ def _valid_request_origin(handler: BaseHTTPRequestHandler) -> bool:
     return True
 
 
-def _workspace_matches_token(token: str, deliverable_id: str, metadata: dict[str, Any]) -> bool:
-    """Bind each event to its opaque workspace token and deliverable id."""
+def _workspace_manifest(token: str) -> dict[str, Any] | None:
     if not TOKEN_RE.fullmatch(token):
-        return False
+        return None
     workspace = PUBLIC_DIR / "w" / token
     if not workspace.is_dir():
-        return False
+        return None
     manifest = workspace / "workspace.json"
-    if manifest.exists():
+    if not manifest.exists():
+        return {}
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _recipient_manifest(token: str) -> dict[str, Any] | None:
+    if not TOKEN_RE.fullmatch(token):
+        return None
+    private_manifest = USER_DATA_DIR / "workspace-recipients" / f"{token}.json"
+    if private_manifest.exists():
         try:
-            data = json.loads(manifest.read_text(encoding="utf-8"))
+            data = json.loads(private_manifest.read_text(encoding="utf-8"))
         except Exception:
-            return False
-        expected = str(data.get("deliverable_id") or data.get("receipt_id") or data.get("source_id") or "")
-        if expected != deliverable_id:
+            return None
+        return data if isinstance(data, dict) else None
+    return _workspace_manifest(token)
+
+
+def _workspace_matches_token(token: str, deliverable_id: str, metadata: dict[str, Any]) -> bool:
+    """Bind each event to its opaque workspace token and deliverable id."""
+    manifest_data = _workspace_manifest(token)
+    if manifest_data is None:
+        return False
+    workspace = PUBLIC_DIR / "w" / token
+    if manifest_data:
+        expected = str(manifest_data.get("deliverable_id") or manifest_data.get("receipt_id") or manifest_data.get("source_id") or "")
+        if expected and expected != deliverable_id:
             return False
     else:
         index = workspace / "index.html"
@@ -360,6 +392,19 @@ def _workspace_matches_token(token: str, deliverable_id: str, metadata: dict[str
         if value and str(value) != deliverable_id:
             return False
     return True
+
+
+def _document_action_recipient(token: str) -> dict[str, str] | None:
+    manifest = _recipient_manifest(token)
+    if not isinstance(manifest, dict):
+        return None
+    recipient = manifest.get("recipient") if isinstance(manifest.get("recipient"), dict) else {}
+    channel_id = recipient.get("channel_id") or manifest.get("recipient_channel_id") or manifest.get("channel_id")
+    target = recipient.get("target") or manifest.get("recipient_target") or manifest.get("customer_phone") or manifest.get("customer_email")
+    label = recipient.get("label") or manifest.get("recipient_label") or channel_id
+    if not channel_id or not target:
+        return None
+    return {"channel_id": str(channel_id), "target": str(target), "label": str(label or channel_id)}
 
 
 def _parse_cookies(header: str | None) -> dict[str, str]:
@@ -437,8 +482,11 @@ def _queue_otp(challenge: dict[str, Any], otp: str) -> None:
         "user_id": challenge["user_id"],
         "channel_id": challenge["channel_id"],
         "target": challenge["target"],
-        "message": f"Tu código {AGENT_NAME} para entrar al dashboard es: {otp}. Expira en 10 minutos.",
+        "message": challenge.get("message") or f"Tu código {AGENT_NAME} para entrar al dashboard es: {otp}. Expira en 10 minutos.",
     }
+    for key in ("purpose", "event_type", "deliverable_id", "token_ref"):
+        if challenge.get(key):
+            payload[key] = challenge[key]
     with _outbox_path().open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
@@ -456,13 +504,13 @@ def _layout(title: str, body: str) -> str:
 function setupOtp(){{
   const form=document.querySelector('[data-otp-form]'); if(!form) return;
   const hidden=form.querySelector('input[name="otp"]'); const boxes=[...form.querySelectorAll('.otp-digit')];
-  const sync=()=>{{hidden.value=boxes.map(b=>b.value.replace(/\D/g,'').slice(0,1)).join('');}};
+  const sync=()=>{{hidden.value=boxes.map(b=>b.value.replace(/\\D/g,'').slice(0,1)).join('');}};
   boxes.forEach((box,i)=>{{
-    box.addEventListener('input',()=>{{box.value=box.value.replace(/\D/g,'').slice(0,1); sync(); if(box.value && boxes[i+1]) boxes[i+1].focus();}});
+    box.addEventListener('input',()=>{{box.value=box.value.replace(/\\D/g,'').slice(0,1); sync(); if(box.value && boxes[i+1]) boxes[i+1].focus();}});
     box.addEventListener('keydown',(e)=>{{if(e.key==='Backspace'&&!box.value&&boxes[i-1]) boxes[i-1].focus();}});
-    box.addEventListener('paste',(e)=>{{const text=(e.clipboardData||window.clipboardData).getData('text').replace(/\D/g,'').slice(0,6); if(text){{e.preventDefault(); boxes.forEach((b,j)=>b.value=text[j]||''); sync(); (boxes[Math.min(text.length,6)-1]||box).focus();}}}});
+    box.addEventListener('paste',(e)=>{{const text=(e.clipboardData||window.clipboardData).getData('text').replace(/\\D/g,'').slice(0,6); if(text){{e.preventDefault(); boxes.forEach((b,j)=>b.value=text[j]||''); sync(); (boxes[Math.min(text.length,6)-1]||box).focus();}}}});
   }});
-  form.addEventListener('submit',(e)=>{{sync(); if(!/^\d{{6}}$/.test(hidden.value)){{e.preventDefault(); boxes.find(b=>!b.value)?.focus();}}}});
+  form.addEventListener('submit',(e)=>{{sync(); if(!/^\\d{{6}}$/.test(hidden.value)){{e.preventDefault(); boxes.find(b=>!b.value)?.focus();}}}});
 }}
 document.addEventListener('DOMContentLoaded', setupOtp);
 </script></head><body><main class="shell"><div class="top"><a class="brand" href="/user/">{_e(AGENT_NAME)} <span>User</span></a><span class="pill">🔐 Sesión temporal + OTP</span></div>{body}</main></body></html>"""
@@ -620,6 +668,165 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("invalid_json_object")
     return payload
+
+
+def _document_event_token_ref(token: str) -> str:
+    return token[:10] + "..." if len(token) > 10 else token
+
+
+def _validate_document_action_payload(payload: dict[str, Any]) -> tuple[str, str, str, dict[str, Any]] | None:
+    event_type = normalize_document_action(payload.get("event_type") or payload.get("action"))
+    deliverable_id = str(payload.get("deliverable_id", "")).strip()
+    token = str(payload.get("token", "")).strip()
+    metadata = payload.get("metadata") or {}
+    if not event_type:
+        return None
+    if not deliverable_id or not token or not isinstance(metadata, dict):
+        return None
+    if not _workspace_matches_token(token, deliverable_id, metadata):
+        return None
+    return event_type, deliverable_id, token, metadata
+
+
+def _create_document_action_challenge(payload: dict[str, Any], recipient: dict[str, str]) -> str:
+    event_type = normalize_document_action(payload.get("event_type") or payload.get("action"))
+    deliverable_id = str(payload.get("deliverable_id") or "").strip()
+    token = str(payload.get("token") or "").strip()
+    otp = f"{secrets.randbelow(1000000):06d}"
+    challenge_id = secrets.token_urlsafe(18)
+    now = _now()
+    challenge = {
+        "challenge_id": challenge_id,
+        "purpose": "document_action",
+        "user_id": recipient["target"],
+        "channel_id": recipient["channel_id"],
+        "target": recipient["target"],
+        "event_type": event_type,
+        "deliverable_id": deliverable_id,
+        "token_ref": _document_event_token_ref(token),
+        "pending_payload": payload,
+        "otp_hash": _hash(f"{challenge_id}:{otp}"),
+        "created_at": now,
+        "expires_at": now + OTP_TTL_SECONDS,
+        "attempts": 0,
+        "message": f"Tu código {AGENT_NAME} para confirmar {event_type} en {deliverable_id} es: {otp}. Expira en 10 minutos.",
+    }
+    state = _cleanup_state(_load_state())
+    state.setdefault("challenges", {})[challenge_id] = challenge
+    _save_state(state)
+    _queue_otp(challenge, otp)
+    return challenge_id
+
+
+def _handle_document_action_request_otp(handler: BaseHTTPRequestHandler) -> None:
+    if not _valid_request_origin(handler):
+        _json_response(handler, 403, {"ok": False, "error": "invalid_origin"})
+        return
+    payload = _read_json_body(handler)
+    validation = _validate_document_action_payload(payload)
+    if not validation:
+        _json_response(handler, 422, {"ok": False, "error": "invalid_document_action"})
+        return
+    event_type, deliverable_id, token, _metadata = validation
+    if not document_action_requires_otp(event_type):
+        _json_response(handler, 422, {"ok": False, "error": "otp_not_required"})
+        return
+    recipient = _document_action_recipient(token)
+    if not recipient:
+        _json_response(handler, 422, {"ok": False, "error": "missing_recipient_channel"})
+        return
+    state = _cleanup_state(_load_state())
+    now = _now()
+    recent = [
+        c for c in state.get("challenges", {}).values()
+        if c.get("purpose") == "document_action"
+        and c.get("target") == recipient["target"]
+        and c.get("event_type") == event_type
+        and c.get("deliverable_id") == deliverable_id
+        and now - int(c.get("created_at", 0)) < OTP_RATE_LIMIT_SECONDS
+    ]
+    if recent:
+        current = sorted(recent, key=lambda c: int(c.get("created_at", 0)), reverse=True)[0]
+        _json_response(handler, 429, {"ok": False, "error": "otp_recently_requested", "challenge_id": current.get("challenge_id")})
+        return
+    challenge_id = _create_document_action_challenge(payload, recipient)
+    _audit({
+        "event_type": "document_action_otp_requested",
+        "deliverable_id": deliverable_id,
+        "actor_type": "customer",
+        "actor_ref": recipient["channel_id"],
+        "metadata": {"document_event_type": event_type, "token_ref": _document_event_token_ref(token)},
+        "status": "pending_otp_dispatch",
+    })
+    _json_response(handler, 202, {"ok": True, "challenge_id": challenge_id, "status": "otp_sent"})
+
+
+def _handle_document_action_verify_otp(handler: BaseHTTPRequestHandler) -> None:
+    if not _valid_request_origin(handler):
+        _json_response(handler, 403, {"ok": False, "error": "invalid_origin"})
+        return
+    form = _read_form(handler)
+    challenge_id = form.get("challenge_id", "").strip()
+    otp = form.get("otp", "").strip()
+    state = _cleanup_state(_load_state())
+    challenge = state.get("challenges", {}).get(challenge_id)
+    if not challenge or challenge.get("purpose") != "document_action" or not OTP_RE.fullmatch(otp):
+        _json_response(handler, 401, {"ok": False, "error": "invalid_or_expired_otp"})
+        return
+    challenge["attempts"] = int(challenge.get("attempts", 0)) + 1
+    if not hmac.compare_digest(challenge.get("otp_hash", ""), _hash(f"{challenge_id}:{otp}")):
+        state["challenges"][challenge_id] = challenge
+        _save_state(state)
+        _json_response(handler, 401, {"ok": False, "error": "incorrect_otp"})
+        return
+    pending_payload = challenge.get("pending_payload") if isinstance(challenge.get("pending_payload"), dict) else {}
+    validation = _validate_document_action_payload(pending_payload)
+    if not validation:
+        _json_response(handler, 422, {"ok": False, "error": "invalid_document_action"})
+        return
+    event_type, _deliverable_id, token, _metadata = validation
+    event = build_document_event(
+        pending_payload,
+        token_ref=_document_event_token_ref(token),
+        ip_address=handler.client_address[0] if handler.client_address else None,
+        user_agent=handler.headers.get("User-Agent"),
+    )
+    event["metadata"].update({
+        "otp_verified": True,
+        "otp_challenge_id": challenge_id,
+        "otp_channel_id": challenge.get("channel_id"),
+        "otp_target_hash": _hash(str(challenge.get("target") or "")),
+    })
+    state.get("challenges", {}).pop(challenge_id, None)
+    _save_state(state)
+    _audit(event)
+    _json_response(handler, 202, {"ok": True, "event_id": "queued", "status": event["status"], "event_type": event_type})
+
+
+def _handle_document_action(handler: BaseHTTPRequestHandler) -> None:
+    if not _valid_request_origin(handler):
+        _json_response(handler, 403, {"ok": False, "error": "invalid_origin"})
+        return
+    payload = _read_json_body(handler)
+    validation = _validate_document_action_payload(payload)
+    if not validation:
+        _json_response(handler, 422, {"ok": False, "error": "invalid_document_action"})
+        return
+    event_type, _deliverable_id, token, _metadata = validation
+    if document_action_requires_otp(event_type):
+        _json_response(handler, 401, {"ok": False, "error": "otp_required", "request_otp": "/api/document-actions/request-otp", "verify_otp": "/api/document-actions/verify-otp"})
+        return
+    if not document_action_allows_direct_post(event_type):
+        _json_response(handler, 422, {"ok": False, "error": "unsupported_document_action"})
+        return
+    event = build_document_event(
+        payload,
+        token_ref=_document_event_token_ref(token),
+        ip_address=handler.client_address[0] if handler.client_address else None,
+        user_agent=handler.headers.get("User-Agent"),
+    )
+    _audit(event)
+    _json_response(handler, 202, {"ok": True, "event_id": "queued", "status": event["status"], "event_type": event_type})
 
 
 def _vapi_message(payload: dict[str, Any]) -> dict[str, Any]:
@@ -821,6 +1028,30 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 _json_response(self, 500, {"ok": False, "error": "vapi_webhook_failed"})
             return
+        if path in {"/api/document-actions/request-otp", "/document-actions/request-otp"}:
+            try:
+                _handle_document_action_request_otp(self)
+            except ValueError as exc:
+                _json_response(self, 413, {"ok": False, "error": str(exc)})
+            except Exception:
+                _json_response(self, 500, {"ok": False, "error": "document_action_otp_request_failed"})
+            return
+        if path in {"/api/document-actions/verify-otp", "/document-actions/verify-otp"}:
+            try:
+                _handle_document_action_verify_otp(self)
+            except ValueError as exc:
+                _json_response(self, 413, {"ok": False, "error": str(exc)})
+            except Exception:
+                _json_response(self, 500, {"ok": False, "error": "document_action_otp_verify_failed"})
+            return
+        if path in {"/api/document-actions", "/document-actions"}:
+            try:
+                _handle_document_action(self)
+            except ValueError as exc:
+                _json_response(self, 413, {"ok": False, "error": str(exc)})
+            except Exception:
+                _json_response(self, 500, {"ok": False, "error": "document_action_failed"})
+            return
         if path in {"/user/request-otp", "/api/user/request-otp"}:
             try:
                 _handle_request_otp(self)
@@ -876,6 +1107,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not _workspace_matches_token(token, deliverable_id, metadata):
             _json_response(self, 403, {"ok": False, "error": "invalid_token_scope"})
+            return
+        if event_type in OTP_REQUIRED_DOCUMENT_EVENT_TYPES:
+            _json_response(self, 401, {"ok": False, "error": "otp_required", "request_otp": "/api/document-actions/request-otp", "verify_otp": "/api/document-actions/verify-otp"})
             return
 
         event = {
@@ -991,6 +1225,7 @@ def main() -> int:
     write(target / "public/index.html", public_index(agent_name))
     write(target / "event-server/Dockerfile", DOCKERFILE)
     write(target / "event-server/server.py", SERVER_PY)
+    write(target / "event-server/delivery_document_actions.py", Path(__file__).with_name("delivery_document_actions.py").read_text(encoding="utf-8"))
     (target / "events").mkdir(parents=True, exist_ok=True)
     (target / "user-data").mkdir(parents=True, exist_ok=True)
     if not (target / "vapi-public.env").exists():
