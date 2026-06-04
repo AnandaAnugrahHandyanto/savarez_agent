@@ -730,10 +730,13 @@ class APIServerAdapter(BasePlatformAdapter):
         store = getattr(self, "_response_store", None)
         if store is None:
             return
+        self._response_store = None
         try:
             store.close()
-        finally:
-            self._response_store = None
+        except Exception:
+            logger.debug(
+                "Failed to close response store for %s", self.name, exc_info=True,
+            )
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -4226,13 +4229,7 @@ class APIServerAdapter(BasePlatformAdapter):
         (OSError: [Errno 24] Too many open files, #37011).
         """
         self._mark_disconnected()
-        if self._response_store is not None:
-            try:
-                self._response_store.close()
-            except Exception:
-                logger.debug(
-                    "Failed to close response store for %s", self.name, exc_info=True,
-                )
+        self._close_response_store()
         if self._site:
             await self._site.stop()
             self._site = None
@@ -4240,7 +4237,6 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
-        self._close_response_store()
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

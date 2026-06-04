@@ -100,6 +100,9 @@ edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
+# Optional NeMo Relay observability plugin runtime. Keep this opt-in and
+# out of [all] so base installs do not pull the native wheels.
+nemo-relay = ["nemo-relay==0.3"]
 dev = [
     "debugpy==1.8.20",
     "pytest==9.0.3",
