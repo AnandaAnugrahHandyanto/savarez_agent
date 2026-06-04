@@ -3415,6 +3415,13 @@ def run_conversation(
                         agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
+                    # Refund the optimistic api_call_count bump made at the top
+                    # of this iteration: this API call never succeeded, so it
+                    # must not inflate the successful-call total that is
+                    # logged/returned/persisted below.  Mirrors the refund the
+                    # Ollama-context abort path already performs.
+                    api_call_count -= 1
+                    agent._api_call_count = api_call_count
                     agent._persist_session(messages, conversation_history)
                     if classified.reason == FailoverReason.billing:
                         _final_response = f"Billing or credits exhausted: {_final_summary}"
