@@ -324,6 +324,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 
 
 def _shutdown_sessions() -> None:
+    _reaper_stop.set()
     for session in list(_sessions.values()):
         _finalize_session(session, end_reason="tui_shutdown")
         try:
@@ -335,6 +336,171 @@ def _shutdown_sessions() -> None:
 
 
 atexit.register(_shutdown_sessions)
+
+
+# ── Detached-session reaper ───────────────────────────────────────────────
+#
+# A TUI/dashboard session whose client socket drops is kept warm briefly so a
+# reconnect can re-attach (prompt.submit / session.activate rebind the transport
+# and clear ``detached_at``). If no client comes back, the reaper finalizes the
+# session — freeing the AIAgent, the slash-command worker, and the
+# notification-poller thread it held — and drops it from ``_sessions``. The
+# transcript is already persisted, so the session stays resumable from disk.
+#
+# Before this, ws disconnects only rebound the transport to stdio and never
+# removed the entry, so every dashboard tab / PTY / reconnect leaked a permanent
+# "active" session: the footer "N sessions" climbed without bound and only reset
+# when the gateway process restarted.
+
+
+# Detached sessions still count as live in active_list for this long, so a quick
+# reconnect/refresh doesn't flicker the footer to a lower number.
+_SESSION_LIVE_GRACE_S = 12.0
+# After a client disconnects, an idle session is kept warm in memory this long
+# (so a reconnect can re-attach without a disk reload) before the reaper
+# finalizes it. Must be >= the live-grace window above.
+_SESSION_REAP_AFTER_S = 300.0
+# How often the reaper sweeps for idle, detached sessions.
+_SESSION_REAP_INTERVAL_S = 60.0
+
+_reaper_stop = threading.Event()
+_reaper_started = False
+_reaper_lock = threading.Lock()
+
+
+def _teardown_session(session: dict, end_reason: str = "tui_close") -> None:
+    """Fully release a finished session and every OS resource it held.
+
+    Runs the same teardown as the ``session.close`` RPC, in the same order:
+    finalize (commit memory + mark the DB row ended), unregister the
+    gateway-notify callback (a process-global closure), close the ``AIAgent``
+    (background processes, terminal sandbox VMs, browser daemon sessions, child
+    agents, httpx client), then close the slash-command worker. ``session.close``
+    and the idle reaper both call this so the two teardown paths can never drift.
+    Idempotent and individually guarded — safe to call from the reaper thread.
+    """
+    _finalize_session(session, end_reason=end_reason)
+    try:
+        from tools.approval import unregister_gateway_notify
+
+        key = session.get("session_key")
+        if key:
+            unregister_gateway_notify(key)
+    except Exception:
+        logger.debug("teardown: unregister_gateway_notify failed", exc_info=True)
+    try:
+        agent = session.get("agent")
+        if agent is not None and hasattr(agent, "close"):
+            agent.close()
+    except Exception:
+        logger.debug("teardown: agent.close failed", exc_info=True)
+    try:
+        worker = session.get("slash_worker")
+        if worker:
+            worker.close()
+    except Exception:
+        logger.debug("teardown: slash_worker close failed", exc_info=True)
+
+
+def _reap_detached_sessions(now: float | None = None) -> int:
+    """Finalize and drop sessions whose client disconnected and went idle.
+
+    A session is reaped only when it is (a) not running, (b) detached
+    (``detached_at`` set) for at least ``_SESSION_REAP_AFTER_S``, AND (c) has had
+    no turn activity (``last_active``) for the same window. The ``last_active``
+    guard matters because the notification poller and the /goal continuation loop
+    run autonomous turns on a *detached* session without a client re-attach;
+    those keep ``last_active`` fresh, so such a session is never reaped mid-loop.
+
+    The final "still reapable?" check, the busy-tombstone, and the ``_sessions``
+    removal are done under the session's ``history_lock`` — the same lock every
+    worker path takes to flip ``running`` between turns — so the reaper cannot
+    interleave with a turn starting. Setting ``running = True`` before removal
+    means any worker blocked on the lock (poller / goal / drain) sees the session
+    as busy and won't start a turn on what we're about to finalize. Finalize and
+    ``AIAgent.close`` run after the lock is released (``_finalize_session`` takes
+    that lock itself; ``close`` may block on subprocess/network teardown).
+
+    Unlike ``session.active_list`` (which always keeps the focused session
+    listed), the reaper has no focused-session exception on purpose: a session
+    detached + idle this long has a dead socket regardless of focus, reattach
+    clears ``detached_at`` first, and the transcript persists for
+    ``session.resume``.
+
+    Safe to call from any thread; returns the number of sessions reaped.
+    """
+    if now is None:
+        now = time.time()
+    reaped = 0
+    for sid, session in list(_sessions.items()):
+        detached_at = session.get("detached_at")
+        if detached_at is None or (now - detached_at) < _SESSION_REAP_AFTER_S:
+            continue
+        if session.get("running"):
+            continue
+        last_active = session.get("last_active") or session.get("created_at") or 0.0
+        if (now - last_active) < _SESSION_REAP_AFTER_S:
+            continue
+        live = _sessions.get(sid)
+        if live is not session:
+            continue
+        lock = live.get("history_lock")
+        if lock is not None and not lock.acquire(blocking=False):
+            continue  # a turn is actively holding the lock → not idle
+        try:
+            last_active = live.get("last_active") or live.get("created_at") or 0.0
+            if (
+                live.get("running")
+                or live.get("detached_at") is None
+                or (now - last_active) < _SESSION_REAP_AFTER_S
+            ):
+                # Re-check failed under the lock (a worker started a turn, a
+                # client re-attached, or fresh activity landed) → not reapable.
+                # The ``finally`` releases the lock and the loop moves on.
+                continue
+            # Tombstone as busy (under the lock) so any worker path blocked on
+            # this lock won't fire a fresh turn on a session we're finalizing,
+            # then remove it from the registry. Never cleared — the pop below
+            # drops the entry in this same locked section.
+            live["running"] = True
+            _sessions.pop(sid, None)
+        finally:
+            if lock is not None:
+                lock.release()
+        _teardown_session(session, end_reason="idle_reap")
+        reaped += 1
+        logger.info(
+            "session reaper: finalized idle detached session sid=%s (idle %.0fs)",
+            sid,
+            now - detached_at,
+        )
+    return reaped
+
+
+def _reaper_loop() -> None:
+    while not _reaper_stop.wait(_SESSION_REAP_INTERVAL_S):
+        try:
+            _reap_detached_sessions()
+        except Exception:
+            logger.exception("session reaper sweep failed")
+
+
+def _ensure_reaper_started() -> None:
+    """Start the reaper thread once, lazily, on first session creation.
+
+    Lazy start keeps the thread out of unit tests that never create a session
+    and guarantees it only runs inside a live gateway process.
+    """
+    global _reaper_started
+    if _reaper_started:
+        return
+    with _reaper_lock:
+        if _reaper_started:
+            return
+        threading.Thread(
+            target=_reaper_loop, name="tui-session-reaper", daemon=True
+        ).start()
+        _reaper_started = True
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────
@@ -2409,6 +2575,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "history_version": 0,
         "inflight_turn": None,
         "created_at": now,
+        "detached_at": None,
         "last_active": now,
         "running": False,
         "attached_images": [],
@@ -2424,6 +2591,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
         "transport": current_transport() or _stdio_transport,
     }
+    _ensure_reaper_started()
     db = _get_db()
     if db is not None:
         row = db.get_session(key)
@@ -2824,6 +2992,7 @@ def _(rid, params: dict) -> dict:
         "attached_images": [],
         "cols": cols,
         "created_at": now,
+        "detached_at": None,
         "edit_snapshots": {},
         "explicit_cwd": explicit_cwd,
         "history": history,
@@ -2843,6 +3012,7 @@ def _(rid, params: dict) -> dict:
         "transport": current_transport() or _stdio_transport,
     }
     _register_session_cwd(_sessions[sid])
+    _ensure_reaper_started()
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
     # launch (and every "New agent" / draft) opens a session here just to paint
     # the composer, so eagerly creating a row left an "Untitled" empty session
@@ -3062,6 +3232,27 @@ def _session_live_status(sid: str, session: dict) -> str:
     return "idle"
 
 
+def _session_is_live(session: dict, now: float | None = None) -> bool:
+    """Whether a session should count as a live, switchable TUI session.
+
+    Running sessions and sessions with a client attached are live. When the
+    client socket drops, ``ws.py`` stamps ``detached_at``; the session then
+    stays "live" only for the short ``_SESSION_LIVE_GRACE_S`` window (so a quick
+    reconnect/refresh doesn't flicker the count) before it becomes resumable
+    history. This is what keeps ``session.active_list`` — and the TUI footer's
+    "N sessions" — honest instead of counting every session ever opened against
+    this gateway process.
+    """
+    if session.get("running"):
+        return True
+    detached_at = session.get("detached_at")
+    if detached_at is None:
+        return True
+    if now is None:
+        now = time.time()
+    return (now - detached_at) <= _SESSION_LIVE_GRACE_S
+
+
 def _message_preview(history: list) -> str:
     for msg in reversed(history or []):
         text = _content_display_text(msg.get("content", msg.get("text", ""))).strip()
@@ -3136,7 +3327,18 @@ def _(rid, params: dict) -> dict:
     # Keep the natural creation/insertion order from ``_sessions``.  The
     # frontend marks the focused session with ``current``; it should not jump to
     # the top just because the user switched to it.
-    rows = [_session_live_item(sid, session, current) for sid, session in snapshot]
+    # Drop sessions whose client disconnected and didn't re-attach within the
+    # grace window — they're resumable history, not live sessions — but always
+    # keep the currently focused session so the user never sees their own
+    # session vanish. Together with the reaper this is the fix for the footer
+    # "N sessions" count that only ever climbed because disconnects never
+    # removed their _sessions entry.
+    now = time.time()
+    rows = [
+        _session_live_item(sid, session, current)
+        for sid, session in snapshot
+        if sid == current or _session_is_live(session, now)
+    ]
     return _ok(rid, {"sessions": rows})
 
 
@@ -3154,6 +3356,8 @@ def _(rid, params: dict) -> dict:
 
     with session["history_lock"]:
         session["last_active"] = time.time()
+        # The frontend just attached to this session — clear any detach mark.
+        session["detached_at"] = None
         history = list(session.get("display_history") or session.get("history") or [])
         inflight = _inflight_snapshot(session)
         running = bool(session.get("running"))
@@ -3561,25 +3765,7 @@ def _(rid, params: dict) -> dict:
     session = _sessions.pop(sid, None)
     if not session:
         return _ok(rid, {"closed": False})
-    _finalize_session(session)
-    try:
-        from tools.approval import unregister_gateway_notify
-
-        unregister_gateway_notify(session["session_key"])
-    except Exception:
-        pass
-    try:
-        agent = session.get("agent")
-        if agent and hasattr(agent, "close"):
-            agent.close()
-    except Exception:
-        pass
-    try:
-        worker = session.get("slash_worker")
-        if worker:
-            worker.close()
-    except Exception:
-        pass
+    _teardown_session(session)
     return _ok(rid, {"closed": True})
 
 
@@ -3934,6 +4120,9 @@ def _(rid, params: dict) -> dict:
     # or fallback moved the session transport to stdio.
     if (t := current_transport()) is not None:
         session["transport"] = t
+        # A live client just (re)bound to this session — clear any detach mark
+        # so the liveness filter/reaper don't treat it as abandoned.
+        session["detached_at"] = None
     with session["history_lock"]:
         if session.get("running"):
             return _err(rid, 4009, "session busy")

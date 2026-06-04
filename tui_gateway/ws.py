@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from tui_gateway import server
@@ -267,9 +268,16 @@ async def handle_ws(ws: Any) -> None:
 
             # Detach the transport from any sessions it owned so later emits
             # fall back to stdio instead of crashing into a closed socket.
+            detach_ts = time.time()
             for _, sess in list(server._sessions.items()):
                 if sess.get("transport") is transport:
                     sess["transport"] = server._stdio_transport
+                    # Stamp the disconnect time so session.active_list stops
+                    # counting this session after a short grace, and the reaper
+                    # can finalize it if no client re-attaches. Without this,
+                    # every dashboard tab / PTY / reconnect leaked a permanent
+                    # "active" session (the footer "N sessions" inflation bug).
+                    sess["detached_at"] = detach_ts
                     detached_sessions += 1
         try:
             await ws.close()
