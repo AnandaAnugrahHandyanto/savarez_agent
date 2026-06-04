@@ -160,8 +160,14 @@ def provision_all(hermes_home: Path) -> list[ProvisionResult]:
 
     Mirrors ``container_boot``'s model: the HERMES_HOME root is the implicit
     default profile, and named profiles live under ``{HERMES_HOME}/profiles/<name>/``.
+
+    The root's basename is uninformative in production (``/opt/data`` → "data"),
+    so the git identity for the default profile comes from ``HERMES_AGENT_NAME``
+    when set — commits are authored as the agent, not "data". A named profile is
+    its own agent and is identified by its profile directory name.
     """
-    results = [provision_git_credentials(hermes_home)]
+    root_name = os.environ.get("HERMES_AGENT_NAME") or None
+    results = [provision_git_credentials(hermes_home, name=root_name)]
     profiles_dir = hermes_home / "profiles"
     if profiles_dir.is_dir():
         for profile in sorted(p for p in profiles_dir.iterdir() if p.is_dir()):

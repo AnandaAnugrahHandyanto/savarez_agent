@@ -214,3 +214,30 @@ def test_provision_all_handles_no_profiles_dir(tmp_path):
     _write_env(tmp_path, "GITHUB_PAT=root_tok\n")
     results = provision_all(tmp_path)
     assert any(r.provisioned and r.home == tmp_path for r in results)
+
+
+def test_provision_all_uses_hermes_agent_name_for_root_identity(tmp_path, monkeypatch):
+    # The default profile (HERMES_HOME root) basename is "data" in production
+    # (/opt/data); HERMES_AGENT_NAME carries the real agent name, so commits
+    # are authored as the agent, not "data". (HSM parity.)
+    monkeypatch.setenv("HERMES_AGENT_NAME", "cryptids")
+    _write_env(tmp_path, "GITHUB_PAT=root_tok\n")
+
+    provision_all(tmp_path)
+
+    cfg = _cfg_path(tmp_path).read_text()
+    assert "name = cryptids" in cfg
+    assert "email = cryptids@users.noreply.github.com" in cfg
+
+
+def test_provision_all_profile_identity_uses_profile_name_not_env(tmp_path, monkeypatch):
+    # A named profile is its own agent — its identity is the profile name,
+    # never the container-level HERMES_AGENT_NAME.
+    monkeypatch.setenv("HERMES_AGENT_NAME", "rootname")
+    _write_env(tmp_path / "profiles" / "osint", "GITHUB_PAT=tok\n")
+
+    provision_all(tmp_path)
+
+    cfg = _cfg_path(tmp_path / "profiles" / "osint").read_text()
+    assert "name = osint" in cfg
+    assert "name = rootname" not in cfg
