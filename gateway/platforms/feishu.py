@@ -4222,13 +4222,12 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
+        # Try post for any content with markdown hints OR a markdown table.
+        # Earlier versions forced text for tables (Feishu's 'md' element did
+        # not render them), but lark-cli proves the full post format does
+        # render tables, and the Feishu API itself returns a clean error
+        # that we fall back from below (see _feishu_send_with_retry handlers).
+        if _MARKDOWN_HINT_RE.search(content) or _MARKDOWN_TABLE_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
