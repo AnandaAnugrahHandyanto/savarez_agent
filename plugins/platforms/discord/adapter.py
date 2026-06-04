@@ -5030,18 +5030,6 @@ def _component_check_auth(
     return False
 
 
-def _define_discord_view_classes() -> None:
-    """Register Discord UI view classes as module globals.
-    Called at module load (when discord.py is pre-installed) and also from
-    check_discord_requirements() after a lazy install, so view classes are
-    always defined whenever DISCORD_AVAILABLE is True.  Without this,
-    ExecApprovalView and siblings are only defined at import time; a later
-    lazy install sets DISCORD_AVAILABLE=True but leaves the classes
-    undefined, causing NameError on the first button interaction.
-    """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
-    
-
 class ExecApprovalView(discord.ui.View):
         """Interactive button view for exec approval of dangerous commands."""
         def __init__(
@@ -5057,11 +5045,10 @@ class ExecApprovalView(discord.ui.View):
             self.resolved = False
 
         async def on_timeout(self):
-            """Disable buttons on timeout to prevent stale interactions."""
+            """Disable buttons on timeout."""
             self.resolved = True
             for child in self.children:
                 child.disabled = True
-            # Mesajı güncellemek için güvenli bir şekilde deniyoruz
             if self.message:
                 try:
                     await self.message.edit(view=self)
@@ -5087,23 +5074,19 @@ class ExecApprovalView(discord.ui.View):
 
             self.resolved = True
 
-            # Embed'i güvenli al
             embed = interaction.message.embeds[0] if (interaction.message and interaction.message.embeds) else None
             if embed:
                 embed.color = color
                 embed.set_footer(text=f"{label} by {interaction.user.display_name}")
 
-            # Butonları kilitle
             for child in self.children:
                 child.disabled = True
 
-            # Mesajı güncelle (interaction.response kullanıyoruz)
             try:
                 await interaction.response.edit_message(embed=embed, view=self)
             except Exception:
                 pass
 
-            # Gateway'i unblock et
             try:
                 from tools.approval import resolve_gateway_approval
                 resolve_gateway_approval(self.session_key, choice)
