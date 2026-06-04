@@ -18801,8 +18801,10 @@ class GatewayRunner:
                 # that observe turn starts (SessionStart-style integrations,
                 # activity loggers, visualizers) silently missed follow-ups.
                 # Mirror the main-path payload, built from this turn's source
-                # and the final (already-transcribed) next_message.
-                await self.hooks.emit("agent:start", {
+                # and the final (already-transcribed) next_message.  Build it
+                # once and reuse it for the paired agent:end below — exactly as
+                # the main path reuses `hook_ctx` for both start and end.
+                followup_hook_ctx = {
                     "platform": next_source.platform.value if next_source.platform else "",
                     "user_id": next_source.user_id,
                     "chat_id": next_source.chat_id or "",
@@ -18810,7 +18812,8 @@ class GatewayRunner:
                     "message": next_message[:500],
                     "trigger": "interrupt",
                     "interrupt_depth": _interrupt_depth + 1,
-                })
+                }
+                await self.hooks.emit("agent:start", followup_hook_ctx)
 
                 followup_result = await self._run_agent(
                     message=next_message,
@@ -18824,6 +18827,22 @@ class GatewayRunner:
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                 )
+
+                # Pair the drained follow-up's agent:start with an agent:end so
+                # start/end-pairing hooks stay balanced on interrupted turns.
+                # The main dispatch only emits its agent:end (9428) for the
+                # outermost turn; the recursive follow-up re-enters _run_agent,
+                # not _handle_message_with_agent, so its end must be emitted
+                # here.  Mirror the main-path end: {**hook_ctx, "response": …}.
+                _followup_response = (
+                    followup_result.get("final_response", "")
+                    if isinstance(followup_result, dict)
+                    else ""
+                )
+                await self.hooks.emit("agent:end", {
+                    **followup_hook_ctx,
+                    "response": (_followup_response or "")[:500],
+                })
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task
