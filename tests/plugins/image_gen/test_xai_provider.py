@@ -320,6 +320,94 @@ class TestGenerate:
 
 
 # ---------------------------------------------------------------------------
+# Reference-image (image-to-image) tests
+# ---------------------------------------------------------------------------
+
+
+class TestXAIImageEdits:
+    def _ok_resp(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"url": "https://xai.image/edited.png"}]}
+        return mock_resp
+
+    def test_text_to_image_uses_generations_endpoint(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_resp()) as mock_post:
+            XAIImageGenProvider().generate(prompt="a fox")
+
+        url = mock_post.call_args.args[0] if mock_post.call_args.args else mock_post.call_args[0][0]
+        assert url.endswith("/images/generations")
+
+    def test_single_reference_routes_to_edits_with_image_field(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_resp()) as mock_post:
+            result = XAIImageGenProvider().generate(
+                prompt="make it watercolor",
+                image_url="https://example.com/photo.png",
+            )
+
+        url = mock_post.call_args.args[0] if mock_post.call_args.args else mock_post.call_args[0][0]
+        payload = mock_post.call_args.kwargs.get("json")
+        assert url.endswith("/images/edits")
+        assert payload["image"] == {"url": "https://example.com/photo.png"}
+        assert "images" not in payload
+        assert result["success"] is True
+        assert result["edited"] is True
+        assert result["input_images"] == 1
+
+    def test_multiple_references_use_images_array(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_resp()) as mock_post:
+            XAIImageGenProvider().generate(
+                prompt="blend these",
+                image_url="https://example.com/a.png",
+                reference_image_urls=["https://example.com/b.png"],
+            )
+
+        payload = mock_post.call_args.kwargs.get("json")
+        assert "image" not in payload
+        assert payload["images"] == [
+            {"url": "https://example.com/a.png"},
+            {"url": "https://example.com/b.png"},
+        ]
+
+    def test_local_file_inlined_as_base64_data_uri(self, tmp_path):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        img = tmp_path / "ref.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nFAKEPNGDATA")
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_resp()) as mock_post:
+            XAIImageGenProvider().generate(prompt="restyle", image_url=str(img))
+
+        payload = mock_post.call_args.kwargs.get("json")
+        assert payload["image"]["url"].startswith("data:image/png;base64,")
+
+    def test_missing_local_reference_returns_error(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        result = XAIImageGenProvider().generate(
+            prompt="restyle", image_url="/no/such/file.png",
+        )
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_input"
+
+    def test_unsupported_extension_rejected(self, tmp_path):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        bad = tmp_path / "ref.tiff"
+        bad.write_bytes(b"II*\x00")
+        result = XAIImageGenProvider().generate(prompt="restyle", image_url=str(bad))
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_input"
+
+
+# ---------------------------------------------------------------------------
 # Registration test
 # ---------------------------------------------------------------------------
 

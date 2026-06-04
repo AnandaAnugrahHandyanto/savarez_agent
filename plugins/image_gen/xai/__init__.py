@@ -17,6 +17,7 @@ Selection precedence (first hit wins):
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
@@ -70,6 +71,69 @@ _XAI_ASPECT_RATIOS = {
 _XAI_RESOLUTIONS = {"1k", "2k"}
 
 DEFAULT_RESOLUTION = "1k"
+
+# Local-file extensions xAI's edits endpoint accepts, mapped to the MIME type
+# used when inlining the file as a base64 data URI.
+_IMAGE_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+
+# ---------------------------------------------------------------------------
+# Reference-image helpers (image-to-image via /v1/images/edits)
+# ---------------------------------------------------------------------------
+
+
+def _to_edit_image_entry(ref: str) -> Dict[str, str]:
+    """Turn a user-supplied image reference into an xAI edits image entry.
+
+    Remote URLs (``http(s)://``) and ``data:`` URIs pass through untouched.
+    A local file path is read and inlined as a base64 ``data:`` URI — xAI's
+    edits endpoint accepts data URIs directly, which avoids having to host
+    the file on a public URL first (and sidesteps the NAS-returns-HTML
+    gotcha that the video path has to work around).
+    """
+    value = (ref or "").strip()
+    if not value:
+        raise ValueError("empty image reference")
+    if value.startswith(("http://", "https://", "data:")):
+        return {"url": value}
+    if not os.path.isfile(value):
+        raise ValueError(f"reference image not found: {value}")
+    ext = os.path.splitext(value)[1].lower()
+    mime = _IMAGE_MIME.get(ext)
+    if mime is None:
+        raise ValueError(
+            f"unsupported image type '{ext or '?'}' (use png, jpg, or webp)"
+        )
+    with open(value, "rb") as fh:
+        encoded = base64.b64encode(fh.read()).decode("ascii")
+    return {"url": f"data:{mime};base64,{encoded}"}
+
+
+def _collect_input_images(
+    image_url: Any,
+    reference_image_urls: Any,
+) -> List[str]:
+    """Merge ``image_url`` and ``reference_image_urls`` into one ordered list.
+
+    The primary ``image_url`` comes first, then any reference images. Empty
+    / non-string entries are dropped. Mirrors the video tool's surface,
+    which exposes both a primary drive image and a list of refs.
+    """
+    out: List[str] = []
+    if isinstance(image_url, str) and image_url.strip():
+        out.append(image_url.strip())
+    if isinstance(reference_image_urls, str):
+        reference_image_urls = [reference_image_urls]
+    if isinstance(reference_image_urls, (list, tuple)):
+        for item in reference_image_urls:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -162,9 +226,21 @@ class XAIImageGenProvider(ImageGenProvider):
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        *,
+        image_url: Optional[str] = None,
+        reference_image_urls: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Generate an image using xAI's grok-imagine-image."""
+        """Generate an image using xAI's grok-imagine-image.
+
+        Text-to-image by default. When ``image_url`` and/or
+        ``reference_image_urls`` are supplied, the call routes to xAI's
+        ``/images/edits`` endpoint instead — using the input image(s) as a
+        reference for image-to-image / character / style transfer. Inputs
+        may be public URLs, ``data:`` URIs, or local file paths (inlined as
+        base64). Single input uses the ``image`` field; multiple use the
+        ``images`` array.
+        """
         creds = resolve_xai_http_credentials()
         api_key = str(creds.get("api_key") or "").strip()
         provider_name = str(creds.get("provider") or "xai").strip() or "xai"
@@ -189,6 +265,28 @@ class XAIImageGenProvider(ImageGenProvider):
             "resolution": xai_res,
         }
 
+        # Reference-image (image-to-image) path: route to /images/edits and
+        # attach the input image(s). Text-to-image stays on /images/generations.
+        input_refs = _collect_input_images(image_url, reference_image_urls)
+        endpoint = "images/generations"
+        if input_refs:
+            try:
+                entries = [_to_edit_image_entry(ref) for ref in input_refs]
+            except Exception as exc:
+                return error_response(
+                    error=f"Invalid reference image: {exc}",
+                    error_type="invalid_input",
+                    provider=provider_name,
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+            endpoint = "images/edits"
+            if len(entries) == 1:
+                payload["image"] = entries[0]
+            else:
+                payload["images"] = entries
+
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -199,10 +297,10 @@ class XAIImageGenProvider(ImageGenProvider):
 
         try:
             response = requests.post(
-                f"{base_url}/images/generations",
+                f"{base_url}/{endpoint}",
                 headers=headers,
                 json=payload,
-                timeout=120,
+                timeout=180 if input_refs else 120,
             )
             response.raise_for_status()
         except requests.HTTPError as exc:
@@ -313,6 +411,9 @@ class XAIImageGenProvider(ImageGenProvider):
         extra: Dict[str, Any] = {
             "resolution": xai_res,
         }
+        if input_refs:
+            extra["edited"] = True
+            extra["input_images"] = len(input_refs)
 
         return success_response(
             image=image_ref,
