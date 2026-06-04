@@ -13,6 +13,17 @@ declare global {
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      connections: {
+        get: () => Promise<DesktopConnectionConfig>
+        add: (payload: { url: string; token?: string; label?: string }) => Promise<DesktopConnectionConfig>
+        remove: (id: string) => Promise<DesktopConnectionConfig>
+        activate: (id: string) => Promise<DesktopConnectionConfig>
+        activateLocal: () => Promise<DesktopConnectionConfig>
+        test: (payload: { url?: string; token?: string; id?: string }) => Promise<DesktopConnectionTestResult>
+        probe: (url: string) => Promise<DesktopConnectionProbeResult>
+        oauthLogin: (url: string) => Promise<DesktopOauthLoginResult>
+        oauthLogout: (url?: string) => Promise<DesktopOauthLogoutResult>
+      }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
@@ -165,9 +176,23 @@ export interface HermesWindowState {
   windowButtonPosition: { x: number; y: number } | null
 }
 
+export interface DesktopRemoteConnection {
+  id: string
+  label: string
+  profile: string | null
+  url: string
+  authMode: 'oauth' | 'token'
+  tokenPreview: string | null
+  tokenSet: boolean
+  oauthConnected?: boolean
+}
+
 export interface DesktopConnectionConfig {
   envOverride: boolean
   mode: 'local' | 'remote'
+  activeRemoteId: string | null
+  remotes: DesktopRemoteConnection[]
+  // Legacy mirror of the active remote, kept for older callers.
   remoteAuthMode: 'oauth' | 'token'
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
@@ -186,6 +211,8 @@ export interface DesktopConnectionTestResult {
   baseUrl: string
   ok: boolean
   version: string | null
+  profile?: string | null
+  authMode?: 'oauth' | 'token'
 }
 
 export interface DesktopAuthProvider {

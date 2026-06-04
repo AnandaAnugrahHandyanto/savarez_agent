@@ -7,6 +7,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
+import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
 
 const HERMES_REF_TYPES = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal'] as const
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
@@ -324,9 +325,16 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
     }
 
     let alive = true
-    void window.hermesDesktop
-      ?.readFileDataUrl(id)
-      .then(url => alive && setSrc(url))
+
+    // Remote gateway: fetch the image over the API (it's on the gateway's disk,
+    // not ours). Local: read it straight off disk.
+    const load =
+      window.hermesDesktop && isRemoteGateway()
+        ? gatewayMediaDataUrl(id)
+        : window.hermesDesktop?.readFileDataUrl(id)
+
+    void Promise.resolve(load)
+      .then(url => alive && url && setSrc(url))
       .catch(() => alive && setFailed(true))
 
     return () => {

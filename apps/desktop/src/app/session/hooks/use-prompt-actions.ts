@@ -31,6 +31,7 @@ import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import {
   $busy,
+  $connection,
   $messages,
   $yoloActive,
   setAwaitingResponse,
@@ -67,6 +68,27 @@ function inlineErrorMessage(error: unknown, fallback: string): string {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
 
   return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw).replace(/^Error:\s*/, '').trim()
+}
+
+function base64FromDataUrl(dataUrl: string): string {
+  const comma = dataUrl.indexOf(',')
+
+  return comma >= 0 ? dataUrl.slice(comma + 1) : ''
+}
+
+function imageExtFromPath(filePath: string): string {
+  const match = /\.([a-z0-9]+)$/i.exec(filePath)
+
+  return match ? `.${match[1].toLowerCase()}` : '.png'
+}
+
+// Remote gateway: the local composer-images file does not exist on the gateway
+// machine, so read the bytes here and upload them via image.attach_bytes.
+async function readImageForRemoteAttach(filePath: string): Promise<{ data: string; ext: string } | null> {
+  const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
+  const data = dataUrl ? base64FromDataUrl(dataUrl) : ''
+
+  return data ? { data, ext: imageExtFromPath(filePath) } : null
 }
 
 interface PromptActionsOptions {
@@ -181,16 +203,34 @@ export function usePromptActions({
     ) => {
       const updateComposerAttachments = options.updateComposerAttachments ?? true
       const images = attachments.filter(attachment => attachment.kind === 'image' && attachment.path)
+      const remote = $connection.get()?.mode === 'remote'
 
       for (const attachment of images) {
         if (attachment.attachedSessionId === sessionId) {
           continue
         }
 
-        const result = await requestGateway<ImageAttachResponse>('image.attach', {
-          session_id: sessionId,
-          path: attachment.path
-        })
+        let result: ImageAttachResponse
+
+        if (remote) {
+          const payload = attachment.path ? await readImageForRemoteAttach(attachment.path) : null
+
+          if (!payload) {
+            const label = attachment.label || (attachment.path ? pathLabel(attachment.path) : 'image')
+            throw new Error(`Could not read ${label}`)
+          }
+
+          result = await requestGateway<ImageAttachResponse>('image.attach_bytes', {
+            session_id: sessionId,
+            data: payload.data,
+            ext: payload.ext
+          })
+        } else {
+          result = await requestGateway<ImageAttachResponse>('image.attach', {
+            session_id: sessionId,
+            path: attachment.path
+          })
+        }
 
         if (!result.attached) {
           const label = attachment.label || (attachment.path ? pathLabel(attachment.path) : 'image')

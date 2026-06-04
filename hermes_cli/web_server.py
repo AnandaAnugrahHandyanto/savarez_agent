@@ -703,6 +703,50 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
+# Image MIME types this endpoint will serve. Extension-allowlisted so an
+# authenticated caller can't bulk-exfiltrate source/secrets through it.
+_MEDIA_CONTENT_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".bmp": "image/bmp",
+    ".ico": "image/x-icon",
+}
+_MEDIA_MAX_BYTES = 25 * 1024 * 1024
+
+
+@app.get("/api/media")
+async def get_media(path: str):
+    """Return a local image file as a base64 data URL.
+
+    Lets remote clients (the desktop app connected over the network, or the
+    web dashboard in a browser) display images the agent wrote to *this*
+    machine's filesystem — they can't read the gateway's local disk directly.
+
+    Auth-gated by the session token like every other /api route. Restricted to
+    an image-extension allowlist and a size cap so it can't be used to read
+    arbitrary source files or secrets in bulk.
+    """
+    try:
+        target = Path(path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    suffix = target.suffix.lower()
+    if suffix not in _MEDIA_CONTENT_TYPES:
+        raise HTTPException(status_code=415, detail="Unsupported media type")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    if target.stat().st_size > _MEDIA_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+    return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[suffix]};base64,{encoded}"}
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()

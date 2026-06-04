@@ -11,6 +11,17 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   probeConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl),
   oauthLoginConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-login', remoteUrl),
   oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-logout', remoteUrl),
+  connections: {
+    get: () => ipcRenderer.invoke('hermes:connections:get'),
+    add: payload => ipcRenderer.invoke('hermes:connections:add', payload),
+    remove: id => ipcRenderer.invoke('hermes:connections:remove', id),
+    activate: id => ipcRenderer.invoke('hermes:connections:activate', id),
+    activateLocal: () => ipcRenderer.invoke('hermes:connections:activateLocal'),
+    test: payload => ipcRenderer.invoke('hermes:connections:test', payload),
+    probe: url => ipcRenderer.invoke('hermes:connection-config:probe', url),
+    oauthLogin: url => ipcRenderer.invoke('hermes:connection-config:oauth-login', url),
+    oauthLogout: url => ipcRenderer.invoke('hermes:connection-config:oauth-logout', url)
+  },
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),

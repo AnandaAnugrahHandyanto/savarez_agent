@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { ComponentProps, ReactNode } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -12,7 +13,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import type { DesktopConnectionConfig } from '@/global'
 import { triggerHaptic } from '@/lib/haptics'
+import { Check, Globe, Monitor } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import {
@@ -194,8 +197,37 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 }
 
 function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavigate> }) {
+  const [config, setConfig] = useState<DesktopConnectionConfig | null>(null)
+
+  const refresh = useCallback(() => {
+    void window.hermesDesktop?.connections
+      ?.get()
+      .then(setConfig)
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  const localActive = config?.mode === 'local'
+
+  const switchLocal = () => {
+    if (localActive) {
+      return
+    }
+
+    triggerHaptic('open')
+    void window.hermesDesktop?.connections?.activateLocal().catch(() => undefined)
+  }
+
+  const switchRemote = (id: string) => {
+    triggerHaptic('open')
+    void window.hermesDesktop?.connections?.activate(id).catch(() => undefined)
+  }
+
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={open => open && refresh()}>
       <DropdownMenuTrigger asChild>
         <Button
           aria-label="Profiles"
@@ -216,9 +248,26 @@ function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavig
         <DropdownMenuLabel>
           <div className="text-sm font-medium text-foreground">Profiles</div>
           <div className="mt-1 text-xs font-normal leading-4 text-muted-foreground">
-            Advanced Hermes environments for separate personas, config, skills, and SOUL.md.
+            Switch the active Hermes profile, or manage personas, config, skills, and SOUL.md.
           </div>
         </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => switchLocal()}>
+          <Monitor className="size-4" />
+          <span>Local gateway</span>
+          {localActive ? <Check className="ml-auto size-4 text-primary" /> : null}
+        </DropdownMenuItem>
+        {config?.remotes.map(remote => {
+          const active = config.mode === 'remote' && config.activeRemoteId === remote.id
+
+          return (
+            <DropdownMenuItem disabled={!remote.tokenSet} key={remote.id} onSelect={() => switchRemote(remote.id)}>
+              <Globe className="size-4" />
+              <span className="truncate">{remote.label || remote.profile || remote.url}</span>
+              {active ? <Check className="ml-auto size-4 text-primary" /> : null}
+            </DropdownMenuItem>
+          )
+        })}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           onSelect={() => {

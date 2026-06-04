@@ -4630,6 +4630,73 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5027, str(e))
 
 
+@method("image.attach_bytes")
+def _(rid, params: dict) -> dict:
+    # Remote-client image attach. A desktop app (or web dashboard) running on a
+    # DIFFERENT machine than the gateway can't hand us a local path — that file
+    # only exists on the client's disk. So it uploads the raw image bytes
+    # (base64) and we write them into the gateway's own images dir. The response
+    # shape mirrors ``image.attach`` so the client treats both identically.
+    session, err = _sess(params, rid)
+    if err:
+        return err
+
+    import base64
+
+    data = str(params.get("data", "") or "")
+    if not data:
+        return _err(rid, 4015, "data required")
+    # Strip a data-URL prefix if the client sent one (data:image/png;base64,…).
+    if data.startswith("data:"):
+        comma = data.find(",")
+        if comma != -1:
+            data = data[comma + 1 :]
+    try:
+        raw_bytes = base64.b64decode(data, validate=True)
+    except Exception:
+        return _err(rid, 4016, "data is not valid base64")
+    if not raw_bytes:
+        return _err(rid, 4016, "image is empty")
+    if len(raw_bytes) > 25 * 1024 * 1024:
+        return _err(rid, 4016, "image too large (max 25 MB)")
+
+    try:
+        from cli import _IMAGE_EXTENSIONS
+    except Exception:
+        _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+    ext = str(params.get("ext", "") or "").strip().lower()
+    if ext and not ext.startswith("."):
+        ext = "." + ext
+    if ext not in _IMAGE_EXTENSIONS:
+        ext = ".png"
+
+    session["image_counter"] = session.get("image_counter", 0) + 1
+    img_dir = _hermes_home / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    img_path = (
+        img_dir
+        / f"attach_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}{ext}"
+    )
+    try:
+        img_path.write_bytes(raw_bytes)
+    except Exception as e:
+        session["image_counter"] = max(0, session["image_counter"] - 1)
+        return _err(rid, 5027, str(e))
+
+    session.setdefault("attached_images", []).append(str(img_path))
+    return _ok(
+        rid,
+        {
+            "attached": True,
+            "path": str(img_path),
+            "count": len(session["attached_images"]),
+            "text": f"[User attached image: {img_path.name}]",
+            **_image_meta(img_path),
+        },
+    )
+
+
 @method("image.detach")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)

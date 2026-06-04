@@ -13,6 +13,12 @@ export interface ImageAttachResponse {
   path?: string
   text?: string
   message?: string
+  // Returned by the byte-upload variant (image.attach_bytes) used in remote mode.
+  count?: number
+  name?: string
+  width?: number
+  height?: number
+  token_estimate?: number
 }
 
 export interface ImageDetachResponse {

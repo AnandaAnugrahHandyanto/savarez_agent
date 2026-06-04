@@ -3393,6 +3393,52 @@ function decryptDesktopSecret(secret) {
   return value
 }
 
+function genConnectionId() {
+  return crypto.randomBytes(6).toString('hex')
+}
+
+// Normalize parsed connection.json into the multi-remote schema. Migrates the
+// legacy single-`remote` shape ({ mode, remote: { url, token, authMode } })
+// into a one-entry `remotes` list so older configs keep working transparently.
+// Each entry carries its own authMode ('oauth' cookie + ws-ticket, or 'token'
+// static session token); defaults to 'token' for backward compatibility.
+function normalizeConnectionConfig(parsed) {
+  const mode = parsed?.mode === 'remote' ? 'remote' : 'local'
+
+  const coerceEntry = r => ({
+    id: typeof r.id === 'string' && r.id ? r.id : genConnectionId(),
+    label: typeof r.label === 'string' ? r.label : '',
+    profile: typeof r.profile === 'string' && r.profile ? r.profile : null,
+    url: String(r.url || ''),
+    authMode: r.authMode === 'oauth' ? 'oauth' : 'token',
+    token: r.token && typeof r.token === 'object' ? r.token : undefined
+  })
+
+  let remotes = []
+
+  if (Array.isArray(parsed?.remotes)) {
+    remotes = parsed.remotes.filter(r => r && typeof r === 'object' && typeof r.url === 'string').map(coerceEntry)
+  } else if (parsed?.remote && typeof parsed.remote === 'object' && (parsed.remote.url || parsed.remote.token)) {
+    remotes = [
+      coerceEntry({
+        id: genConnectionId(),
+        label: 'Remote',
+        profile: null,
+        url: parsed.remote.url,
+        authMode: parsed.remote.authMode,
+        token: parsed.remote.token
+      })
+    ]
+  }
+
+  const activeRemoteId =
+    typeof parsed?.activeRemoteId === 'string' && remotes.some(r => r.id === parsed.activeRemoteId)
+      ? parsed.activeRemoteId
+      : (remotes[0]?.id ?? null)
+
+  return { mode, remotes, activeRemoteId }
+}
+
 function readDesktopConnectionConfig() {
   // Check if file changed on disk since last read (e.g. modified by another
   // process or an external tool).  Our own writes update the cache inline
@@ -3408,22 +3454,14 @@ function readDesktopConnectionConfig() {
     return connectionConfigCache
   }
 
-  let config = { mode: 'local', remote: {} }
+  let config = { mode: 'local', remotes: [], activeRemoteId: null }
 
   try {
     const raw = fs.readFileSync(DESKTOP_CONNECTION_CONFIG_PATH, 'utf8')
     const parsed = JSON.parse(raw)
 
     if (parsed && typeof parsed === 'object') {
-      const remote = parsed.remote && typeof parsed.remote === 'object' ? parsed.remote : {}
-      // authMode lives on the remote sub-object: 'oauth' (cookie + ws-ticket)
-      // or 'token' (legacy static session token). Default to 'token' for
-      // backward compatibility with configs written before OAuth support.
-      remote.authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
-      config = {
-        mode: parsed.mode === 'remote' ? 'remote' : 'local',
-        remote
-      }
+      config = normalizeConnectionConfig(parsed)
     }
   } catch {
     // Missing or malformed connection settings should fall back to local.
@@ -3435,6 +3473,16 @@ function readDesktopConnectionConfig() {
   return config
 }
 
+// The remote connection a remote-mode session will use: the entry matching
+// activeRemoteId, falling back to the first one.
+function getActiveRemote(config = readDesktopConnectionConfig()) {
+  if (!config.remotes.length) {
+    return null
+  }
+
+  return config.remotes.find(r => r.id === config.activeRemoteId) ?? config.remotes[0]
+}
+
 function writeDesktopConnectionConfig(config) {
   fs.mkdirSync(path.dirname(DESKTOP_CONNECTION_CONFIG_PATH), { recursive: true })
   writeFileAtomic(DESKTOP_CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2))
@@ -3442,63 +3490,98 @@ function writeDesktopConnectionConfig(config) {
   connectionConfigCacheMtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
 }
 
-async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig()) {
-  const remoteToken = decryptDesktopSecret(config.remote?.token)
-  const authMode = config.remote?.authMode === 'oauth' ? 'oauth' : 'token'
-  const remoteUrl = String(config.remote?.url || '')
+async function sanitizeRemoteEntry(remote) {
+  const token = decryptDesktopSecret(remote.token)
+  const authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
+  const url = String(remote.url || '')
 
-  let remoteOauthConnected = false
-  if (authMode === 'oauth' && remoteUrl) {
+  let oauthConnected = false
+  if (authMode === 'oauth' && url) {
     try {
-      remoteOauthConnected = await hasOauthSessionCookie(remoteUrl)
+      oauthConnected = await hasOauthSessionCookie(url)
     } catch {
-      remoteOauthConnected = false
+      oauthConnected = false
     }
   }
 
   return {
+    id: remote.id,
+    label: remote.label || '',
+    profile: remote.profile || null,
+    url,
+    authMode,
+    tokenPreview: tokenPreview(token),
+    tokenSet: Boolean(token),
+    oauthConnected
+  }
+}
+
+async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig()) {
+  const active = getActiveRemote(config)
+  const remotes = []
+  for (const remote of config.remotes) {
+    remotes.push(await sanitizeRemoteEntry(remote))
+  }
+
+  const activeSanitized = active ? remotes.find(r => r.id === active.id) : null
+
+  return {
     mode: config.mode === 'remote' ? 'remote' : 'local',
-    remoteAuthMode: authMode,
-    remoteOauthConnected,
-    remoteUrl,
-    remoteTokenPreview: tokenPreview(remoteToken),
-    remoteTokenSet: Boolean(remoteToken),
-    envOverride: Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+    activeRemoteId: config.activeRemoteId,
+    remotes,
+    envOverride: Boolean(process.env.HERMES_DESKTOP_REMOTE_URL),
+    // Legacy mirror of the active remote, kept so older callers (the existing
+    // single-connection gateway UI) keep working against the active remote.
+    remoteUrl: activeSanitized ? activeSanitized.url : '',
+    remoteAuthMode: activeSanitized ? activeSanitized.authMode : 'token',
+    remoteOauthConnected: activeSanitized ? activeSanitized.oauthConnected : false,
+    remoteTokenPreview: activeSanitized ? activeSanitized.tokenPreview : null,
+    remoteTokenSet: activeSanitized ? activeSanitized.tokenSet : false
   }
 }
 
 function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnectionConfig(), options = {}) {
   const persistToken = options.persistToken !== false
   const mode = input.mode === 'remote' ? 'remote' : 'local'
-  const remoteUrl = String(input.remoteUrl ?? existing.remote?.url ?? '').trim()
-  // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
-  const authMode = resolveAuthMode(input.remoteAuthMode, existing.remote?.authMode)
+  const existingActive = getActiveRemote(existing)
+  const remoteUrl = String(input.remoteUrl ?? existingActive?.url ?? '').trim()
+  // authMode: explicit input wins; otherwise inherit the active remote's saved
+  // value, default 'token'.
+  const authMode = resolveAuthMode(input.remoteAuthMode, existingActive?.authMode)
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
-  const existingToken = existing.remote?.token
-  const nextRemote = {
-    url: remoteUrl,
-    authMode,
-    token: incomingToken
-      ? persistToken
-        ? encryptDesktopSecret(incomingToken)
-        : { encoding: 'plain', value: incomingToken }
-      : existingToken
+
+  const remotes = existing.remotes.map(r => ({ ...r }))
+  let activeRemoteId = existing.activeRemoteId
+
+  // Update (or create) the active remote from the legacy single-remote payload.
+  let active = remotes.find(r => r.id === activeRemoteId) ?? remotes[0]
+
+  if (!active) {
+    active = { id: genConnectionId(), label: 'Remote', profile: null, url: '', authMode, token: undefined }
+    remotes.push(active)
+    activeRemoteId = active.id
+  }
+
+  active.authMode = authMode
+
+  if (incomingToken) {
+    active.token = persistToken ? encryptDesktopSecret(incomingToken) : { encoding: 'plain', value: incomingToken }
+  }
+
+  if (remoteUrl) {
+    active.url = normalizeRemoteBaseUrl(remoteUrl)
   }
 
   if (mode === 'remote') {
-    nextRemote.url = normalizeRemoteBaseUrl(remoteUrl)
-
     // OAuth gateways authenticate via the session cookie established by the
     // login window, NOT a static token — so no token is required here. The
     // cookie presence is verified at connect time (resolveRemoteBackend).
-    if (authMode !== 'oauth' && !decryptDesktopSecret(nextRemote.token)) {
+    if (authMode !== 'oauth' && !decryptDesktopSecret(active.token)) {
       throw new Error('Remote gateway session token is required.')
     }
-  } else if (remoteUrl) {
-    nextRemote.url = normalizeRemoteBaseUrl(remoteUrl)
   }
 
-  return { mode, remote: nextRemote }
+  return { mode, remotes, activeRemoteId }
 }
 
 async function resolveRemoteBackend() {
@@ -3531,8 +3614,17 @@ async function resolveRemoteBackend() {
     return null
   }
 
-  const baseUrl = normalizeRemoteBaseUrl(config.remote?.url)
-  const authMode = config.remote?.authMode === 'oauth' ? 'oauth' : 'token'
+  const active = getActiveRemote(config)
+
+  if (!active) {
+    throw new Error(
+      'Remote Hermes gateway is selected, but no connection is configured. ' +
+        'Open Settings → Gateway and add one, or switch back to Local.'
+    )
+  }
+
+  const baseUrl = normalizeRemoteBaseUrl(active.url)
+  const authMode = active.authMode === 'oauth' ? 'oauth' : 'token'
 
   if (authMode === 'oauth') {
     // OAuth gateway: auth comes from the session cookie in the OAuth partition.
@@ -3572,11 +3664,11 @@ async function resolveRemoteBackend() {
     }
   }
 
-  const token = decryptDesktopSecret(config.remote?.token)
+  const token = decryptDesktopSecret(active.token)
 
   if (!token) {
     throw new Error(
-      'Remote Hermes gateway is selected, but no session token is saved. ' +
+      'Remote Hermes gateway is selected, but no session token is saved for the active connection. ' +
         'Open Settings → Gateway and save a token, or switch back to Local.'
     )
   }
@@ -3650,6 +3742,22 @@ async function probeRemoteAuthMode(rawUrl) {
   }
 }
 
+// Derive the profile name a gateway is serving from its HERMES_HOME path:
+// ``…/profiles/<name>`` → ``<name>``; the bare hermes root → ``default``.
+function profileFromHermesHome(hermesHome) {
+  const home = String(hermesHome || '').replace(/[/\\]+$/, '')
+
+  if (!home) {
+    return null
+  }
+
+  const parts = home.split(/[/\\]/)
+  const base = parts[parts.length - 1]
+  const parent = parts[parts.length - 2]
+
+  return parent === 'profiles' && base ? base : 'default'
+}
+
 async function testDesktopConnectionConfig(input = {}) {
   const config = coerceDesktopConnectionConfig(input, readDesktopConnectionConfig(), { persistToken: false })
   // ``/api/status`` is public on every gateway (no creds needed), so a
@@ -3659,9 +3767,10 @@ async function testDesktopConnectionConfig(input = {}) {
   let baseUrl
   let token = null
   if (config.mode === 'remote') {
-    baseUrl = normalizeRemoteBaseUrl(config.remote.url)
-    if ((config.remote.authMode || 'token') !== 'oauth') {
-      token = decryptDesktopSecret(config.remote.token)
+    const active = getActiveRemote(config)
+    baseUrl = normalizeRemoteBaseUrl(active?.url)
+    if ((active?.authMode || 'token') !== 'oauth') {
+      token = decryptDesktopSecret(active?.token)
     }
   } else {
     const remote = (await resolveRemoteBackend()) || (await startHermes())
@@ -4068,6 +4177,140 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   setTimeout(() => mainWindow?.reload(), 150)
 
   return sanitizeDesktopConnectionConfig(config)
+})
+
+// --- Multi-connection (per-profile remote) management ---------------------
+// Each remote connection points at one gateway, which is bound to one Hermes
+// profile. Switching profiles = activating a different connection and
+// reconnecting. The profile is auto-detected from the gateway's /api/status,
+// and each entry carries its own authMode (token vs OAuth).
+
+function reconnectToActiveBackend() {
+  resetHermesConnection()
+  setTimeout(() => mainWindow?.reload(), 150)
+}
+
+// Best-effort: ask a token-authed gateway which profile it is bound to. OAuth
+// gateways may not have credentials at add-time, so callers pass null there.
+async function detectRemoteProfile(baseUrl, token) {
+  try {
+    const status = await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })
+
+    return profileFromHermesHome(status?.hermes_home)
+  } catch {
+    return null
+  }
+}
+
+ipcMain.handle('hermes:connections:get', async () => sanitizeDesktopConnectionConfig())
+
+ipcMain.handle('hermes:connections:add', async (_event, payload = {}) => {
+  const url = normalizeRemoteBaseUrl(String(payload.url || '').trim())
+
+  if (!url) {
+    throw new Error('A remote URL is required.')
+  }
+
+  const rawToken = typeof payload.token === 'string' ? payload.token.trim() : ''
+  // Probe how this gateway authenticates so the entry records the right mode.
+  const probe = await probeRemoteAuthMode(url)
+  const authMode = probe.authMode === 'oauth' ? 'oauth' : 'token'
+
+  if (authMode === 'token' && !rawToken) {
+    throw new Error('This gateway uses a session token — provide one to add it.')
+  }
+
+  // Token gateways can report their bound profile right away; OAuth gateways
+  // typically have no creds yet at add-time, so leave the profile null until a
+  // sign-in + reconnect detects it.
+  const profile = authMode === 'token' && rawToken ? await detectRemoteProfile(url, rawToken) : null
+
+  const config = readDesktopConnectionConfig()
+  const entry = {
+    id: genConnectionId(),
+    label: String(payload.label || '').trim() || profile || 'Remote',
+    profile,
+    url,
+    authMode,
+    token: rawToken ? encryptDesktopSecret(rawToken) : undefined
+  }
+  const next = {
+    mode: config.mode,
+    remotes: [...config.remotes, entry],
+    activeRemoteId: config.activeRemoteId ?? entry.id
+  }
+  writeDesktopConnectionConfig(next)
+
+  return sanitizeDesktopConnectionConfig(next)
+})
+
+ipcMain.handle('hermes:connections:remove', async (_event, id) => {
+  const config = readDesktopConnectionConfig()
+  const remotes = config.remotes.filter(r => r.id !== id)
+  const activeRemoteId = config.activeRemoteId === id ? (remotes[0]?.id ?? null) : config.activeRemoteId
+  const next = {
+    mode: remotes.length === 0 ? 'local' : config.mode,
+    remotes,
+    activeRemoteId
+  }
+  writeDesktopConnectionConfig(next)
+
+  return sanitizeDesktopConnectionConfig(next)
+})
+
+ipcMain.handle('hermes:connections:activate', async (_event, id) => {
+  const config = readDesktopConnectionConfig()
+  const target = config.remotes.find(r => r.id === id)
+
+  if (!target) {
+    throw new Error('Connection not found.')
+  }
+
+  const next = { mode: 'remote', remotes: config.remotes, activeRemoteId: id }
+  writeDesktopConnectionConfig(next)
+  reconnectToActiveBackend()
+
+  return sanitizeDesktopConnectionConfig(next)
+})
+
+// NOTE: not named `useLocal` — eslint treats `use*` as a React hook.
+ipcMain.handle('hermes:connections:activateLocal', async () => {
+  const config = readDesktopConnectionConfig()
+  const next = { mode: 'local', remotes: config.remotes, activeRemoteId: config.activeRemoteId }
+  writeDesktopConnectionConfig(next)
+  reconnectToActiveBackend()
+
+  return sanitizeDesktopConnectionConfig(next)
+})
+
+ipcMain.handle('hermes:connections:test', async (_event, payload = {}) => {
+  const rawUrl = String(payload.url || '').trim()
+  const saved = payload.id ? readDesktopConnectionConfig().remotes.find(r => r.id === payload.id) : null
+  const url = normalizeRemoteBaseUrl(rawUrl || saved?.url || '')
+
+  if (!url) {
+    throw new Error('A remote URL is required to test.')
+  }
+
+  const authMode = saved?.authMode === 'oauth' ? 'oauth' : 'token'
+  const rawToken = typeof payload.token === 'string' && payload.token.trim() ? payload.token.trim() : ''
+  // OAuth gateways are cookie-authed and need no token for the public status
+  // probe; token gateways use the supplied or saved token.
+  const token = authMode === 'oauth' ? '' : rawToken || decryptDesktopSecret(saved?.token)
+
+  // ``/api/status`` is public on every gateway, so when we have no token (OAuth
+  // entries, or a brand-new URL) we probe it credential-free.
+  const status = token
+    ? await fetchJson(`${url}/api/status`, token, { timeoutMs: 8_000 })
+    : await fetchPublicJson(`${url}/api/status`, { timeoutMs: 8_000 })
+
+  return {
+    ok: true,
+    baseUrl: url,
+    version: status?.version || null,
+    profile: profileFromHermesHome(status?.hermes_home),
+    authMode
+  }
 })
 
 ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
