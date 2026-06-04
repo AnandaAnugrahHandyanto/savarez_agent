@@ -2941,6 +2941,24 @@
       });
     };
 
+    // One-step resolver creation for blocked cards.  This deliberately uses
+    // POST /tasks/:id/resolver instead of the generic create+link endpoints so
+    // the backend records blocked_by + auto_unblock_when_blockers_done atomically.
+    const createResolver = function (payload) {
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/resolver`, boardSlug),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        }
+      ).then(function (res) {
+        load();
+        props.onRefresh();
+        return res;
+      });
+    };
+
     const addLink = function (parentId) {
       return SDK.fetchJSON(withBoard(`${API}/links`, boardSlug), {
         method: "POST",
@@ -3033,6 +3051,7 @@
           onPatch: doPatch,
           onSpecify: doSpecify,
           onDecompose: doDecompose,
+          onCreateResolver: createResolver,
           onAddParent: addLink,
           onRemoveParent: removeLink,
           onAddChild: addChild,
@@ -3225,6 +3244,11 @@
         onPatch: props.onPatch,
         onSpecify: props.onSpecify,
         onDecompose: props.onDecompose,
+      }),
+      h(ResolverDependencySection, {
+        task: t,
+        resolverDependency: props.data.resolver_dependency || {},
+        onCreateResolver: props.onCreateResolver,
       }),
       h(DiagnosticsSection, {
         task: t,
@@ -3595,6 +3619,139 @@
           ? h(MarkdownBlock, { source: props.task.body, enabled: props.renderMarkdown })
           : h("div", { className: "text-xs text-muted-foreground italic" },
               tx(t, "noDescription", "— no description —")),
+    );
+  }
+
+  function ResolverDependencySection(props) {
+    const { t } = useI18n();
+    const task = props.task || {};
+    const dep = props.resolverDependency || {};
+    const resolvers = dep.resolvers || [];
+    const shouldShow = task.status === "blocked" || resolvers.length > 0;
+    const [expanded, setExpanded] = useState(resolvers.length === 0);
+    const [title, setTitle] = useState(`Resolve blocker for ${task.id || "task"}`);
+    const [assignee, setAssignee] = useState(task.assignee || "dev");
+    const [body, setBody] = useState("");
+    const [idempotencyKey, setIdempotencyKey] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null);
+
+    useEffect(function () {
+      setTitle(`Resolve blocker for ${task.id || "task"}`);
+      setAssignee(task.assignee || "dev");
+      setExpanded(resolvers.length === 0);
+      setMsg(null);
+    }, [task.id, task.assignee, resolvers.length]);
+
+    if (!shouldShow) return null;
+
+    const autoEnabled = !!dep.auto_unblock_when_blockers_done;
+    const allDone = !!dep.all_resolvers_done;
+    const statusText = autoEnabled
+      ? (allDone
+          ? "All resolver tasks are done/archived; this blocked card should promote to Ready on refresh."
+          : "Auto-unblock is enabled: this card will return to Ready when every resolver is done or archived.")
+      : (resolvers.length > 0
+          ? "These parent blockers are visible, but auto-unblock was not recorded. Use Create resolver task for new blockers so the link and unblock rule are atomic."
+          : "No resolver is attached yet. Create one here and the dashboard will link it as the blocker that unblocks this card automatically.");
+
+    const submit = function () {
+      const trimmed = title.trim();
+      if (!trimmed || !props.onCreateResolver || busy) return;
+      setBusy(true);
+      setMsg(null);
+      const payload = {
+        title: trimmed,
+        assignee: assignee.trim() || task.assignee || null,
+        reason: `Dashboard resolver for ${task.id}`,
+      };
+      const bodyTrim = body.trim();
+      if (bodyTrim) payload.body = bodyTrim;
+      const keyTrim = idempotencyKey.trim();
+      if (keyTrim) payload.idempotency_key = keyTrim;
+      props.onCreateResolver(payload).then(function (res) {
+        const rid = res && res.resolver_task && res.resolver_task.id;
+        setMsg({ ok: true, text: rid ? `Resolver ${rid} attached; auto-unblock is enabled.` : "Resolver attached; auto-unblock is enabled." });
+        setExpanded(false);
+        setBody("");
+      }).catch(function (e) {
+        setMsg({ ok: false, text: parseApiErrorMessage(e) });
+      }).then(function () {
+        setBusy(false);
+      });
+    };
+
+    return h("div", { className: "hermes-kanban-section hermes-kanban-resolvers" },
+      h("div", { className: "hermes-kanban-section-head-row" },
+        h("span", { className: "hermes-kanban-section-head" }, "Resolver tasks"),
+        task.status === "blocked" ? h("button", {
+          type: "button",
+          className: "hermes-kanban-edit-link",
+          onClick: function () { setExpanded(!expanded); },
+          title: "Create a resolver task and atomically attach it as this blocked card's auto-unblock dependency.",
+        }, expanded ? "hide form" : "+ create resolver") : null,
+      ),
+      h("div", { className: autoEnabled ? "hermes-kanban-resolver-note hermes-kanban-resolver-note--auto" : "hermes-kanban-resolver-note" },
+        statusText,
+      ),
+      resolvers.length > 0 ? h("div", { className: "hermes-kanban-resolver-list" },
+        resolvers.map(function (r) {
+          const status = r.status || "unknown";
+          return h("div", { key: r.id, className: "hermes-kanban-resolver-row" },
+            h("div", { className: "hermes-kanban-resolver-main" },
+              h("code", { className: "hermes-kanban-resolver-id" }, r.id),
+              h("span", { className: "hermes-kanban-resolver-title" }, r.title || "(missing task)"),
+            ),
+            h("div", { className: "hermes-kanban-resolver-meta" },
+              h("span", { className: `hermes-kanban-resolver-status hermes-kanban-resolver-status--${status}` }, status),
+              r.assignee ? h("span", null, `@${r.assignee}`) : null,
+              h("span", null, r.auto_unblock_enabled ? "auto-unblock" : "manual"),
+            ),
+          );
+        })
+      ) : null,
+      expanded && task.status === "blocked" ? h("div", { className: "hermes-kanban-resolver-form" },
+        h(Input, {
+          value: title,
+          onChange: function (e) { setTitle(e.target.value); },
+          placeholder: "Resolver task title",
+          className: "h-8 text-xs",
+        }),
+        h(Input, {
+          value: assignee,
+          onChange: function (e) { setAssignee(e.target.value); },
+          placeholder: "assignee profile",
+          className: "h-8 text-xs",
+          style: { textTransform: "none" },
+          autoCapitalize: "none",
+          autoCorrect: "off",
+          spellCheck: false,
+        }),
+        h("textarea", {
+          value: body,
+          onChange: function (e) { setBody(e.target.value); },
+          placeholder: "Optional body for the resolver worker: what must be fixed before this blocked card should retry…",
+          className: "hermes-kanban-textarea hermes-kanban-resolver-body",
+          rows: 4,
+        }),
+        h(Input, {
+          value: idempotencyKey,
+          onChange: function (e) { setIdempotencyKey(e.target.value); },
+          placeholder: "dedupe key (optional)",
+          className: "h-8 text-xs",
+          title: "Optional idempotency key. Reusing the same key for this blocked card returns the same resolver task instead of creating a duplicate.",
+        }),
+        h("div", { className: "hermes-kanban-resolver-actions" },
+          h(Button, {
+            size: "sm",
+            disabled: busy || !title.trim(),
+            onClick: submit,
+          }, busy ? "Creating…" : "Create resolver task"),
+        ),
+      ) : null,
+      msg ? h("div", {
+        className: msg.ok ? "hermes-kanban-msg-ok" : "hermes-kanban-msg-err",
+      }, msg.text) : null,
     );
   }
 

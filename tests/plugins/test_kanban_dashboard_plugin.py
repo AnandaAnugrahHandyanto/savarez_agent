@@ -211,6 +211,26 @@ def test_dashboard_select_filters_use_sdk_value_change_handler():
     assert "selectChangeHandler(props.setAssigneeFilter)" in js
 
 
+def test_dashboard_bundle_contains_atomic_resolver_task_drawer_ux():
+    """Blocked-card drawer must use the one-step resolver API, not manual create+link."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    css = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    js = bundle.read_text()
+    style = css.read_text()
+
+    assert "function ResolverDependencySection(props)" in js
+    assert "resolverDependency: props.data.resolver_dependency || {}" in js
+    assert "onCreateResolver: createResolver" in js
+    assert "/resolver`" in js
+    assert "POST /tasks/:id/resolver instead of the generic create+link endpoints" in js
+    assert "auto-unblock is enabled" in js
+    assert "Create resolver task" in js
+    assert ".hermes-kanban-resolvers" in style
+    assert ".hermes-kanban-resolver-row" in style
+
+
 def test_dashboard_client_side_filtering_includes_tenant_filter():
     """The rendered board must also filter by tenant.
 

@@ -5225,7 +5225,12 @@ class GatewayRunner:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
 
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "promoted")
+        # `promoted` is included only for resolver-driven unblocks: normal
+        # todo→ready promotions still carry no payload and are claimed +
+        # skipped below so they do not spam subscribers. The cursor advances
+        # past those no-op promotions, preserving dedup without delivering
+        # noise.
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -5438,6 +5443,28 @@ class GatewayRunner:
                             msg = (
                                 f"⏱ {tag}Kanban {sub['task_id']} timed out "
                                 f"(max_runtime={limit}s); will retry"
+                            )
+                        elif kind == "promoted":
+                            payload = ev.payload if isinstance(ev.payload, dict) else {}
+                            if not payload.get("unblocked"):
+                                # Normal todo→ready promotions are bookkeeping,
+                                # not user-facing state changes.
+                                continue
+                            raw_resolvers = payload.get("resolved_by") or payload.get("blocked_by") or []
+                            if isinstance(raw_resolvers, str):
+                                raw_resolvers = [raw_resolvers]
+                            resolvers = [
+                                str(r).strip() for r in raw_resolvers
+                                if str(r).strip()
+                            ]
+                            resolver_text = ""
+                            if resolvers:
+                                resolver_text = " after resolver " + ", ".join(resolvers[:5])
+                                if len(resolvers) > 5:
+                                    resolver_text += f" (+{len(resolvers) - 5} more)"
+                            msg = (
+                                f"▶ {tag}Kanban {sub['task_id']} unblocked"
+                                f"{resolver_text}; ready again — {title}"
                             )
                         else:
                             continue

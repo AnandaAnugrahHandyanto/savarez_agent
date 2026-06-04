@@ -653,3 +653,197 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     # Only the real file was uploaded.
     assert len(documents_uploaded) == 1
     assert "real.pdf" in documents_uploaded[0]
+
+
+@pytest.mark.asyncio
+async def test_notifier_delivers_resolver_promoted_unblock_and_keeps_subscription(kanban_home):
+    """Resolver-driven blocked→ready promotion should close the notification loop."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        blocked = kb.create_task(conn, title="blocked card", assignee="worker1")
+        resolver = kb.create_task(conn, title="fix prerequisite", assignee="fixer")
+        kb.block_task(conn, blocked, reason="needs resolver", blocker_task_ids=[resolver])
+        kb.add_notify_sub(conn, task_id=blocked, platform="telegram", chat_id="chat1")
+        # Simulate a subscription that already saw the original block event;
+        # this regression is specifically about the later resolver completion.
+        last_seen = conn.execute(
+            "SELECT MAX(id) FROM task_events WHERE task_id = ?",
+            (blocked,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? WHERE task_id = ?",
+            (last_seen, blocked),
+        )
+        assert kb.claim_task(conn, resolver)
+        assert kb.complete_task(conn, resolver, result="resolver done")
+        promoted = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (blocked,),
+        ).fetchone()
+        assert promoted["kind"] == "promoted"
+        assert '"unblocked": true' in promoted["payload"]
+        assert resolver in promoted["payload"]
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    sent: list[str] = []
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        sent.append(msg)
+        runner._running = False
+
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    assert len(sent) == 1
+    assert "unblocked" in sent[0]
+    assert "ready again" in sent[0]
+    assert blocked in sent[0]
+    assert resolver in sent[0]
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, blocked)
+    finally:
+        conn.close()
+    assert len(subs) == 1, "promotion to ready is not final; subscription must survive"
+    assert int(subs[0]["last_event_id"]) >= last_seen + 1
+
+
+@pytest.mark.asyncio
+async def test_notifier_claims_but_skips_normal_todo_ready_promotions(kanban_home):
+    """Normal dependency promotion is bookkeeping, not a subscriber ping."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="worker1")
+        child = kb.create_task(conn, title="normal child", assignee="worker1", parents=[parent])
+        assert kb.get_task(conn, child).status == "todo"
+        kb.add_notify_sub(conn, task_id=child, platform="telegram", chat_id="chat1")
+        before = conn.execute(
+            "SELECT MAX(id) FROM task_events WHERE task_id = ?",
+            (child,),
+        ).fetchone()[0] or 0
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? WHERE task_id = ?",
+            (before, child),
+        )
+        assert kb.claim_task(conn, parent)
+        assert kb.complete_task(conn, parent, result="parent done")
+        assert kb.get_task(conn, child).status == "ready"
+        promoted = conn.execute(
+            "SELECT id, kind, payload FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (child,),
+        ).fetchone()
+        assert promoted["kind"] == "promoted"
+        assert promoted["payload"] is None
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+    tick_count = 0
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_not_called()
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert int(subs[0]["last_event_id"]) >= promoted["id"]
+
+
+@pytest.mark.asyncio
+async def test_human_only_blocked_task_does_not_auto_notify_ready(kanban_home):
+    """Human-only sticky blocks must not become resolver-style ready pings."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        task = kb.create_task(conn, title="needs human", assignee="worker1")
+        kb.block_task(conn, task, reason="need credentials")
+        kb.add_notify_sub(conn, task_id=task, platform="telegram", chat_id="chat1")
+        last_seen = conn.execute(
+            "SELECT MAX(id) FROM task_events WHERE task_id = ?",
+            (task,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? WHERE task_id = ?",
+            (last_seen, task),
+        )
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, task).status == "blocked"
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+    tick_count = 0
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_not_called()

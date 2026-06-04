@@ -363,6 +363,36 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
+    # --- resolver ---
+    p_resolver = sub.add_parser(
+        "resolver",
+        help="Create a resolver task for a blocked card and auto-unblock when it completes",
+    )
+    p_resolver.add_argument("blocked_task_id", help="Blocked task that needs a resolver")
+    p_resolver.add_argument("title", help="Resolver task title")
+    p_resolver.add_argument("--body", default=None, help="Optional resolver opening post")
+    p_resolver.add_argument("--assignee", default=None, help="Profile name to assign")
+    p_resolver.add_argument("--workspace", default="scratch",
+                            help="scratch | worktree | worktree:<path> | dir:<path> (default: scratch)")
+    p_resolver.add_argument("--branch", default=None,
+                            help="Branch name for worktree resolver tasks")
+    p_resolver.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_resolver.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_resolver.add_argument("--idempotency-key", default=None,
+                            help="Dedup key scoped under resolver:<blocked_task_id>:")
+    p_resolver.add_argument("--max-runtime", default=None,
+                            help="Per-task runtime cap (seconds or 90s/30m/2h/1d)")
+    p_resolver.add_argument("--created-by", default="user",
+                            help="Author name recorded on the resolver task")
+    p_resolver.add_argument("--skill", action="append", default=[], dest="skills",
+                            help="Skill to force-load into the resolver worker (repeatable)")
+    p_resolver.add_argument("--max-retries", type=int, default=None, metavar="N")
+    p_resolver.add_argument("--goal", action="store_true", dest="goal_mode")
+    p_resolver.add_argument("--goal-max-turns", type=int, default=None, metavar="N", dest="goal_max_turns")
+    p_resolver.add_argument("--reason", default=None,
+                            help="Override blocked event reason; defaults to the existing block reason")
+    p_resolver.add_argument("--json", action="store_true", help="Emit JSON output")
+
     # --- swarm ---
     p_swarm = sub.add_parser(
         "swarm",
@@ -933,6 +963,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         handlers = {
             "init":     _cmd_init,
             "create":   _cmd_create,
+            "resolver": _cmd_resolver,
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
             "ls":       _cmd_list,
@@ -1371,6 +1402,72 @@ def _cmd_create(args: argparse.Namespace) -> int:
         # response itself carries enough info for them to decide if
         # they want to check dispatcher presence separately).
         if task.status == "ready" and task.assignee:
+            running, message = _check_dispatcher_presence()
+            if not running and message:
+                print(f"\n⚠  {message}", file=sys.stderr)
+    return 0
+
+
+def _cmd_resolver(args: argparse.Namespace) -> int:
+    try:
+        ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+        branch_name = _parse_branch_flag(getattr(args, "branch", None))
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban resolver: {exc}", file=sys.stderr)
+        return 2
+    if branch_name and ws_kind != "worktree":
+        print("kanban resolver: --branch is only valid with --workspace worktree", file=sys.stderr)
+        return 2
+    try:
+        max_runtime = _parse_duration(getattr(args, "max_runtime", None))
+    except ValueError as exc:
+        print(f"kanban resolver: --max-runtime: {exc}", file=sys.stderr)
+        return 2
+    max_retries = getattr(args, "max_retries", None)
+    if max_retries is not None and max_retries < 1:
+        print("kanban resolver: --max-retries must be >= 1", file=sys.stderr)
+        return 2
+
+    author = args.created_by or _profile_author()
+    try:
+        with kb.connect_closing() as conn:
+            resolver_id = kb.create_resolver_task(
+                conn,
+                args.blocked_task_id,
+                title=args.title,
+                body=args.body,
+                assignee=args.assignee,
+                created_by=author,
+                workspace_kind=ws_kind,
+                workspace_path=ws_path,
+                branch_name=branch_name,
+                tenant=args.tenant,
+                priority=args.priority,
+                idempotency_key=getattr(args, "idempotency_key", None),
+                max_runtime_seconds=max_runtime,
+                skills=getattr(args, "skills", None) or None,
+                max_retries=max_retries,
+                goal_mode=bool(getattr(args, "goal_mode", False)),
+                goal_max_turns=getattr(args, "goal_max_turns", None),
+                reason=getattr(args, "reason", None),
+                actor=author,
+            )
+            resolver = kb.get_task(conn, resolver_id)
+            blocked = kb.get_task(conn, args.blocked_task_id)
+    except ValueError as exc:
+        print(f"kanban resolver: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "blocked_task": _task_to_dict(blocked),
+            "resolver_task": _task_to_dict(resolver),
+            "blocked_by": [resolver_id],
+            "auto_unblock_when_blockers_done": True,
+        }, indent=2, ensure_ascii=False))
+    else:
+        print(f"Created resolver {resolver_id} for {args.blocked_task_id}")
+        if resolver and resolver.status == "ready" and resolver.assignee:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)

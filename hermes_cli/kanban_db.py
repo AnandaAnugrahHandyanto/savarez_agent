@@ -2431,6 +2431,136 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         return True
 
 
+def _resolver_task_idempotency_key(
+    blocked_task_id: str,
+    *,
+    title: str,
+    body: Optional[str],
+    assignee: Optional[str],
+    tenant: Optional[str],
+    priority: int,
+    workspace_kind: str,
+    workspace_path: Optional[str],
+    branch_name: Optional[str],
+    skills: Optional[Iterable[str]],
+    max_runtime_seconds: Optional[int],
+    max_retries: Optional[int],
+    goal_mode: bool,
+    goal_max_turns: Optional[int],
+    idempotency_key: Optional[str],
+) -> str:
+    if idempotency_key:
+        return f"resolver:{blocked_task_id}:{idempotency_key.strip()}"
+    fingerprint = json.dumps(
+        {
+            "title": title.strip(),
+            "body": body,
+            "assignee": _canonical_assignee(assignee),
+            "tenant": tenant,
+            "priority": int(priority),
+            "workspace_kind": workspace_kind,
+            "workspace_path": workspace_path,
+            "branch_name": branch_name,
+            "skills": list(skills) if skills is not None else None,
+            "max_runtime_seconds": max_runtime_seconds,
+            "max_retries": max_retries,
+            "goal_mode": bool(goal_mode),
+            "goal_max_turns": goal_max_turns,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:16]
+    return f"resolver:{blocked_task_id}:{digest}"
+
+
+def create_resolver_task(
+    conn: sqlite3.Connection,
+    blocked_task_id: str,
+    *,
+    title: str,
+    body: Optional[str] = None,
+    assignee: Optional[str] = None,
+    created_by: Optional[str] = None,
+    workspace_kind: str = "scratch",
+    workspace_path: Optional[str] = None,
+    branch_name: Optional[str] = None,
+    tenant: Optional[str] = None,
+    priority: int = 0,
+    idempotency_key: Optional[str] = None,
+    max_runtime_seconds: Optional[int] = None,
+    skills: Optional[Iterable[str]] = None,
+    max_retries: Optional[int] = None,
+    goal_mode: bool = False,
+    goal_max_turns: Optional[int] = None,
+    reason: Optional[str] = None,
+    actor: Optional[str] = None,
+    board: Optional[str] = None,
+) -> str:
+    """Create a resolver card and attach it to an existing blocked task.
+
+    The resolver task becomes a parent dependency of ``blocked_task_id`` and
+    the blocked event stream is updated with ``blocked_by`` plus
+    ``auto_unblock_when_blockers_done`` so ``recompute_ready`` will promote the
+    blocked task after all resolver parents are done/archived. Human-only
+    blocks stay sticky unless this explicit resolver operation is used.
+
+    Idempotency is scoped to the blocked task. Supplying ``idempotency_key`` is
+    best for callers; without it, a stable hash of the resolver spec is used so
+    retrying the exact same request does not duplicate resolver cards.
+    """
+    blocked = get_task(conn, blocked_task_id)
+    if blocked is None:
+        raise ValueError(f"task {blocked_task_id} not found")
+    if blocked.status != "blocked":
+        raise ValueError(f"task {blocked_task_id} is {blocked.status!r}; expected 'blocked'")
+
+    resolver_key = _resolver_task_idempotency_key(
+        blocked_task_id,
+        title=title,
+        body=body,
+        assignee=assignee,
+        tenant=tenant,
+        priority=priority,
+        workspace_kind=workspace_kind,
+        workspace_path=workspace_path,
+        branch_name=branch_name,
+        skills=skills,
+        max_runtime_seconds=max_runtime_seconds,
+        max_retries=max_retries,
+        goal_mode=goal_mode,
+        goal_max_turns=goal_max_turns,
+        idempotency_key=idempotency_key,
+    )
+    resolver_id = create_task(
+        conn,
+        title=title,
+        body=body,
+        assignee=assignee,
+        created_by=created_by,
+        workspace_kind=workspace_kind,
+        workspace_path=workspace_path,
+        branch_name=branch_name,
+        tenant=tenant,
+        priority=priority,
+        idempotency_key=resolver_key,
+        max_runtime_seconds=max_runtime_seconds,
+        skills=skills,
+        max_retries=max_retries,
+        goal_mode=goal_mode,
+        goal_max_turns=goal_max_turns,
+        board=board,
+    )
+    add_blocker_dependency(
+        conn,
+        blocked_task_id,
+        [resolver_id],
+        reason=reason,
+        actor=actor,
+    )
+    return resolver_id
+
+
 # ---------------------------------------------------------------------------
 # Links
 # ---------------------------------------------------------------------------
@@ -2865,6 +2995,19 @@ def _synthesize_ended_run(
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
+def _dedupe_task_ids(raw_ids: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in raw_ids or ():
+        if not isinstance(raw, str):
+            raise ValueError("task ids must be strings")
+        tid = raw.strip()
+        if tid and tid not in seen:
+            seen.add(tid)
+            out.append(tid)
+    return out
+
+
 def _blocker_ids_from_payload(payload: Optional[str]) -> list[str]:
     if not payload:
         return []
@@ -2877,13 +3020,7 @@ def _blocker_ids_from_payload(payload: Optional[str]) -> list[str]:
         raw = [raw]
     if not isinstance(raw, list):
         return []
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in raw:
-        if isinstance(item, str) and item.strip() and item.strip() not in seen:
-            seen.add(item.strip())
-            out.append(item.strip())
-    return out
+    return _dedupe_task_ids([item for item in raw if isinstance(item, str)])
 
 
 def _all_blockers_terminal(conn: sqlite3.Connection, blocker_ids: list[str]) -> bool:
@@ -2910,6 +3047,24 @@ def _latest_blocked_summary(conn: sqlite3.Connection, task_id: str) -> Optional[
         (task_id,),
     ).fetchone()
     return row["summary"] if row else None
+
+
+def _latest_blocked_payload(conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT payload FROM task_events
+         WHERE task_id = ? AND kind = 'blocked'
+         ORDER BY id DESC LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return {}
+    try:
+        data = json.loads(row["payload"])
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _append_blocker_links_unlocked(
@@ -2947,15 +3102,28 @@ def _append_blocker_links_unlocked(
             raise ValueError(
                 f"linking blocker {blocker_id} -> {task_id} would create a cycle"
             )
-        conn.execute(
+        cur = conn.execute(
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (blocker_id, task_id),
         )
-        _append_event(
-            conn, task_id, "linked",
-            {"parent": blocker_id, "child": task_id, "auto_unblock": True},
-        )
+        if cur.rowcount:
+            _append_event(
+                conn, task_id, "linked",
+                {"parent": blocker_id, "child": task_id, "auto_unblock": True},
+            )
     return blocker_ids
+
+
+def _latest_active_blocker_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    row = conn.execute(
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row or row["kind"] != "blocked":
+        return []
+    return _blocker_ids_from_payload(row["payload"])
 
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -2990,18 +3158,16 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     DB manipulation) — preserves the pre-#28712 auto-recover semantics
     for that path.
     """
+    blocker_ids = _latest_active_blocker_ids(conn, task_id)
+    if blocker_ids and _all_blockers_terminal(conn, blocker_ids):
+        return False
     row = conn.execute(
-        "SELECT kind, payload FROM task_events "
+        "SELECT kind FROM task_events "
         "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if not row or row["kind"] != "blocked":
-        return False
-    blocker_ids = _blocker_ids_from_payload(row["payload"])
-    if blocker_ids and _all_blockers_terminal(conn, blocker_ids):
-        return False
-    return True
+    return bool(row and row["kind"] == "blocked")
 
 
 def recompute_ready(
@@ -3063,7 +3229,16 @@ def recompute_ready(
                 (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
+                promoted_payload = None
                 if cur_status == "blocked":
+                    blocker_ids = _latest_active_blocker_ids(conn, task_id)
+                    if blocker_ids and _all_blockers_terminal(conn, blocker_ids):
+                        promoted_payload = {
+                            "unblocked": True,
+                            "reason": "blocked_by_resolvers_done",
+                            "blocked_by": blocker_ids,
+                            "resolved_by": blocker_ids,
+                        }
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
                     # guard, a task that repeatedly exhausts its
@@ -3090,7 +3265,7 @@ def recompute_ready(
                         "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
                         (task_id,),
                     )
-                _append_event(conn, task_id, "promoted", None)
+                _append_event(conn, task_id, "promoted", promoted_payload)
                 promoted += 1
     return promoted
 
@@ -4265,10 +4440,15 @@ def add_blocker_dependency(
         blocker_ids = _append_blocker_links_unlocked(conn, task_id, blocker_task_ids)
         if not blocker_ids:
             raise ValueError("at least one blocked_by task id is required")
-        summary = reason or _latest_blocked_summary(conn, task_id)
+        latest_payload = _latest_blocked_payload(conn, task_id)
+        combined_blocker_ids = _dedupe_task_ids([
+            *_blocker_ids_from_payload(json.dumps(latest_payload)),
+            *blocker_ids,
+        ])
+        summary = reason or latest_payload.get("reason") or _latest_blocked_summary(conn, task_id)
         payload = {
             "reason": summary,
-            "blocked_by": blocker_ids,
+            "blocked_by": combined_blocker_ids,
             "auto_unblock_when_blockers_done": True,
         }
         _append_event(conn, task_id, "blocked", payload)

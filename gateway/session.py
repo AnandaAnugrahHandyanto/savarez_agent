@@ -949,6 +949,20 @@ class SessionStore:
         if self._db and db_create_kwargs:
             try:
                 self._db.create_session(**db_create_kwargs)
+                if source.platform == Platform.DISCORD and source.chat_type == "thread" and source.chat_name:
+                    # Discord threads already have the user's chosen title. Seed
+                    # the Hermes session title from that name exactly once at
+                    # session creation so later auto-title generation sees an
+                    # existing title and does not replace it with a summary of
+                    # whichever message happened to arrive first.
+                    title = source.chat_name
+                    try:
+                        self._db.set_session_title(session_id, title)
+                    except ValueError:
+                        self._db.set_session_title(
+                            session_id,
+                            self._db.get_next_title_in_lineage(title),
+                        )
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 

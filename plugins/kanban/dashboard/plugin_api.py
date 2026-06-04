@@ -371,6 +371,80 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
     return {"parents": parents, "children": children}
 
 
+def _resolver_dependency_status(
+    conn: sqlite3.Connection,
+    task: kanban_db.Task,
+    links: dict[str, list[str]],
+) -> dict[str, Any]:
+    """Return drawer-friendly resolver/parent blocker status for a task.
+
+    Explicit resolver tasks are stored as the latest blocked event's
+    ``blocked_by`` list and as parent links.  For blocked tasks that only have
+    regular parents, surface those parents too, but mark auto-unblock disabled
+    so the UI can tell the operator manual unblock/relinking is still needed.
+    """
+    parent_ids = links.get("parents") or []
+    try:
+        active_ids = kanban_db._latest_active_blocker_ids(conn, task.id)
+    except Exception:
+        active_ids = []
+    try:
+        latest_block_payload = kanban_db._latest_blocked_payload(conn, task.id)
+        raw_historical_ids = latest_block_payload.get("blocked_by") or []
+        historical_ids = [
+            bid for bid in raw_historical_ids if isinstance(bid, str) and bid.strip()
+        ]
+        if not latest_block_payload.get("auto_unblock_when_blockers_done"):
+            historical_ids = []
+    except Exception:
+        historical_ids = []
+
+    # Active blocked cards show their explicit resolver ids.  Once the resolver
+    # finishes and recompute_ready promotes the card, keep showing the same
+    # resolver relationship from the last auto-unblock blocked event so the
+    # drawer explains why the card is Ready again.  Plain parent-only blockers
+    # are shown only while the card is still blocked and are marked manual.
+    ids = active_ids or historical_ids or (parent_ids if task.status == "blocked" else [])
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return {
+            "blocked_by": [],
+            "resolvers": [],
+            "auto_unblock_when_blockers_done": False,
+            "all_resolvers_done": False,
+        }
+
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT id, title, status, assignee FROM tasks WHERE id IN ({placeholders})",
+        tuple(ids),
+    ).fetchall()
+    by_id = {row["id"]: row for row in rows}
+    active_set = set(active_ids or historical_ids)
+    resolvers: list[dict[str, Any]] = []
+    for rid in ids:
+        row = by_id.get(rid)
+        status = row["status"] if row else "missing"
+        auto_enabled = rid in active_set
+        resolvers.append({
+            "id": rid,
+            "title": row["title"] if row else None,
+            "status": status,
+            "assignee": row["assignee"] if row else None,
+            "auto_unblock_enabled": auto_enabled,
+            "terminal": status in ("done", "archived"),
+        })
+
+    auto_enabled = bool(active_ids or historical_ids)
+    all_done = bool(resolvers) and all(r["terminal"] for r in resolvers)
+    return {
+        "blocked_by": active_ids or historical_ids,
+        "resolvers": resolvers,
+        "auto_unblock_when_blockers_done": auto_enabled,
+        "all_resolvers_done": all_done,
+    }
+
+
 # ---------------------------------------------------------------------------
 # GET /board
 # ---------------------------------------------------------------------------
@@ -553,12 +627,14 @@ def get_task(
         if diag_list:
             task_d["diagnostics"] = diag_list
             task_d["warnings"] = _warnings_summary_from_diagnostics(diag_list)
+        links = _links_for(conn, task_id)
         return {
             "task": task_d,
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
             "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],
-            "links": _links_for(conn, task_id),
+            "links": links,
+            "resolver_dependency": _resolver_dependency_status(conn, task, links),
             "runs": [
                 _run_dict(r)
                 for r in kanban_db.list_runs(
@@ -592,6 +668,78 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+
+
+class ResolverTaskBody(BaseModel):
+    title: str
+    body: Optional[str] = None
+    assignee: Optional[str] = None
+    tenant: Optional[str] = None
+    priority: int = 0
+    workspace_kind: str = "scratch"
+    workspace_path: Optional[str] = None
+    branch_name: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    max_runtime_seconds: Optional[int] = None
+    skills: Optional[list[str]] = None
+    max_retries: Optional[int] = None
+    goal_mode: bool = False
+    goal_max_turns: Optional[int] = None
+    reason: Optional[str] = None
+    created_by: Optional[str] = None
+
+
+@router.post("/tasks/{task_id}/resolver")
+def create_task_resolver(
+    task_id: str,
+    payload: ResolverTaskBody,
+    board: Optional[str] = Query(None),
+):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        resolver_id = kanban_db.create_resolver_task(
+            conn,
+            task_id,
+            title=payload.title,
+            body=payload.body,
+            assignee=payload.assignee,
+            created_by=payload.created_by or "dashboard",
+            workspace_kind=payload.workspace_kind,
+            workspace_path=payload.workspace_path,
+            branch_name=payload.branch_name,
+            tenant=payload.tenant,
+            priority=payload.priority,
+            idempotency_key=payload.idempotency_key,
+            max_runtime_seconds=payload.max_runtime_seconds,
+            skills=payload.skills,
+            max_retries=payload.max_retries,
+            goal_mode=payload.goal_mode,
+            goal_max_turns=payload.goal_max_turns,
+            reason=payload.reason,
+            actor=payload.created_by or "dashboard",
+            board=board,
+        )
+        resolver = kanban_db.get_task(conn, resolver_id)
+        blocked = kanban_db.get_task(conn, task_id)
+        links = _links_for(conn, task_id)
+        return {
+            "blocked_task": _task_dict(blocked) if blocked else None,
+            "resolver_task": _task_dict(resolver) if resolver else None,
+            "blocked_by": [resolver_id],
+            "auto_unblock_when_blockers_done": True,
+            "links": links,
+            "resolver_dependency": _resolver_dependency_status(conn, blocked, links) if blocked else None,
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
 
 
 @router.post("/tasks")

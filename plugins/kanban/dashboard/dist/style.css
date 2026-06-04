@@ -696,6 +696,97 @@
 }
 .hermes-kanban-dep-chip-x:hover { color: var(--color-destructive, #d14a4a); }
 
+/* ---- Resolver task status ------------------------------------------ */
+
+.hermes-kanban-resolvers {
+  border-color: color-mix(in srgb, var(--color-ring) 38%, var(--color-border));
+  background: color-mix(in srgb, var(--color-ring) 6%, transparent);
+}
+.hermes-kanban-resolver-note {
+  margin-top: 0.35rem;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-resolver-note--auto {
+  color: color-mix(in srgb, var(--color-foreground) 85%, var(--color-ring));
+}
+.hermes-kanban-resolver-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+.hermes-kanban-resolver-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+  background: color-mix(in srgb, var(--color-card) 86%, transparent);
+}
+.hermes-kanban-resolver-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.hermes-kanban-resolver-id {
+  width: max-content;
+  font-size: 0.68rem;
+  color: var(--color-muted-foreground);
+  background: transparent;
+  padding: 0;
+}
+.hermes-kanban-resolver-title {
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--color-foreground);
+}
+.hermes-kanban-resolver-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  font-size: 0.68rem;
+  color: var(--color-muted-foreground);
+  text-align: right;
+}
+.hermes-kanban-resolver-status {
+  padding: 0.05rem 0.3rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  color: var(--color-foreground);
+}
+.hermes-kanban-resolver-status--done,
+.hermes-kanban-resolver-status--archived {
+  border-color: color-mix(in srgb, #22c55e 48%, var(--color-border));
+  color: #22c55e;
+}
+.hermes-kanban-resolver-status--blocked,
+.hermes-kanban-resolver-status--crashed,
+.hermes-kanban-resolver-status--timed_out {
+  border-color: color-mix(in srgb, var(--color-destructive, #d14a4a) 50%, var(--color-border));
+  color: var(--color-destructive, #d14a4a);
+}
+.hermes-kanban-resolver-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-top: 0.65rem;
+}
+.hermes-kanban-resolver-body {
+  min-height: 5.25rem;
+  font-size: 0.75rem;
+}
+.hermes-kanban-resolver-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 /* ---- Inline edit affordances --------------------------------------- */
 
 .hermes-kanban-editable {

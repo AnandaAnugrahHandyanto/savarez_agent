@@ -572,6 +572,62 @@ class TestLoadTranscriptDBOnly:
         assert result[1]["content"] == "db-a"
 
 
+class TestSessionStoreDiscordThreadTitles:
+    def test_discord_thread_name_seeds_session_title_once(self, tmp_path):
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        store._db = SessionDB(db_path=tmp_path / "state.db")
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_name="daily priority",
+            chat_type="thread",
+            thread_id="thread-1",
+            user_id="user-1",
+        )
+
+        entry = store.get_or_create_session(source)
+
+        assert store._db.get_session_title(entry.session_id) == "daily priority"
+
+    def test_existing_discord_thread_session_keeps_original_title(self, tmp_path):
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        store._db = SessionDB(db_path=tmp_path / "state.db")
+        store._loaded = True
+
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_name="daily priority",
+            chat_type="thread",
+            thread_id="thread-1",
+            user_id="user-1",
+        )
+        entry = store.get_or_create_session(first)
+        store._db.set_session_title(entry.session_id, "manually chosen")
+
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_name="new message summary should not win",
+            chat_type="thread",
+            thread_id="thread-1",
+            user_id="user-1",
+        )
+        same_entry = store.get_or_create_session(second)
+
+        assert same_entry.session_id == entry.session_id
+        assert store._db.get_session_title(entry.session_id) == "manually chosen"
+
 class TestSessionStoreSwitchSession:
     """Regression coverage for gateway /resume session switching semantics."""
 
