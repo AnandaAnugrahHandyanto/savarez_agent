@@ -175,11 +175,14 @@ class TestDDGSProviderSearch:
         # the next ``with DDGS()`` picks up the slow version.
         fake.DDGS.text = _slow_text
 
-        from plugins.web.ddgs import provider as ddgs_provider
         from plugins.web.ddgs.provider import DDGSWebSearchProvider
 
         # Use a short timeout so the test doesn't actually wait 30 s.
-        monkeypatch.setattr(ddgs_provider, "_DDGS_SEARCH_TIMEOUT", 2)
+        # String-path form is required for module-level constants consumed
+        # inside class methods — object-level setattr may not reach the
+        # function's __globals__ when the module was imported via submodule
+        # path (plugins.web.ddgs vs plugins.web.ddgs.provider).
+        monkeypatch.setattr("plugins.web.ddgs.provider._DDGS_SEARCH_TIMEOUT", 2)
 
         result = DDGSWebSearchProvider().search("test-timeout", limit=5)
         assert result["success"] is False
