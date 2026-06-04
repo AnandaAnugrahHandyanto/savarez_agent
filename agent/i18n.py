@@ -250,7 +250,7 @@ def get_system_locale() -> str:
     检测到的语言代码，或默认语言 'en'
     """
     try:
-        lang, _ = locale.getdefaultlocale()
+        lang, _ = locale.getlocale()
         if lang:
             # 将下划线分隔的 locale 格式转换为连字符格式
             # 例如 'zh_CN' -> 'zh-cn'，然后进行规范化
@@ -282,7 +282,7 @@ def set_language(lang: str) -> None:
 
 
 def get_language() -> str:
-    """解析活跃语言（优先级：命令 > 配置 > 系统 > 默认）"""
+    """解析活跃语言（优先级：命令 > 环境变量 > 配置 > 系统 > 默认）"""
     # 1. 运行时切换的语言（最高优先级）
     if _current_language:
         return _current_language

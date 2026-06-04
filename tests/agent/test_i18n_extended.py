@@ -8,7 +8,7 @@ def test_get_system_locale_returns_detected_language():
     """Test that get_system_locale returns the detected system language."""
     from agent.i18n import get_system_locale
 
-    with patch('agent.i18n.locale.getdefaultlocale', return_value=('zh_CN', 'UTF-8')):
+    with patch('agent.i18n.locale.getlocale', return_value=('zh_CN', 'UTF-8')):
         result = get_system_locale()
         assert result == 'zh'
 
@@ -17,7 +17,7 @@ def test_get_system_locale_fallback_to_default():
     """Test that get_system_locale falls back to default when detection fails."""
     from agent.i18n import get_system_locale
 
-    with patch('agent.i18n.locale.getdefaultlocale', return_value=(None, None)):
+    with patch('agent.i18n.locale.getlocale', return_value=(None, None)):
         result = get_system_locale()
         assert result == 'en'
 
@@ -27,29 +27,62 @@ def test_set_language_changes_current_language():
     from agent.i18n import set_language, get_language, reset_language_cache
 
     reset_language_cache()
-    set_language('zh')
-    assert get_language() == 'zh'
-
-    # Reset for other tests
-    set_language('en')
-    reset_language_cache()
+    try:
+        set_language('zh')
+        assert get_language() == 'zh'
+    finally:
+        # Reset for other tests
+        set_language('en')
+        reset_language_cache()
 
 
 def test_get_language_priority_order():
     """Test language priority: command > env > config > system > default."""
+    import agent.i18n as i18n_mod
     from agent.i18n import get_language, set_language, reset_language_cache
 
     reset_language_cache()
 
-    # Test command priority (highest)
-    set_language('zh')
-    assert get_language() == 'zh'
-
-    # Test env priority
-    with patch.dict('os.environ', {'HERMES_LANGUAGE': 'ja'}):
-        # Command should still take priority
+    try:
+        # Test command priority (highest)
+        set_language('zh')
         assert get_language() == 'zh'
 
-    # Reset
-    set_language('en')
-    reset_language_cache()
+        # Test env priority - command should still take priority
+        with patch.dict('os.environ', {'HERMES_LANGUAGE': 'ja'}):
+            assert get_language() == 'zh'
+
+        # Test env > config: when no command set, env should override config
+        with patch.object(i18n_mod, '_current_language', None):
+            reset_language_cache()
+            with patch.dict('os.environ', {'HERMES_LANGUAGE': 'ja'}):
+                with patch('agent.i18n._config_language_cached', return_value='de'):
+                    assert get_language() == 'ja'
+
+        # Test config > system: when no env, config should override system
+        with patch.object(i18n_mod, '_current_language', None):
+            reset_language_cache()
+            with patch.dict('os.environ', {}, clear=True):
+                with patch('agent.i18n._config_language_cached', return_value='de'):
+                    with patch('agent.i18n.get_system_locale', return_value='fr'):
+                        assert get_language() == 'de'
+
+        # Test system > default: when no config, system should override default
+        with patch.object(i18n_mod, '_current_language', None):
+            reset_language_cache()
+            with patch.dict('os.environ', {}, clear=True):
+                with patch('agent.i18n._config_language_cached', return_value=None):
+                    with patch('agent.i18n.get_system_locale', return_value='fr'):
+                        assert get_language() == 'fr'
+
+        # Test default fallback: when nothing set, should return 'en'
+        with patch.object(i18n_mod, '_current_language', None):
+            reset_language_cache()
+            with patch.dict('os.environ', {}, clear=True):
+                with patch('agent.i18n._config_language_cached', return_value=None):
+                    with patch('agent.i18n.get_system_locale', return_value='en'):
+                        assert get_language() == 'en'
+
+    finally:
+        i18n_mod._current_language = None
+        reset_language_cache()
