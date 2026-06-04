@@ -208,8 +208,8 @@ class TestMattermostSend:
         mock_get_resp.__aenter__ = AsyncMock(return_value=mock_get_resp)
         mock_get_resp.__aexit__ = AsyncMock(return_value=False)
 
-        self.adapter._session.post = MagicMock(return_value=mock_resp)
-        self.adapter._session.get = MagicMock(return_value=mock_get_resp)
+        self.adapter._session.post = AsyncMock(return_value=mock_resp)
+        self.adapter._session.get = AsyncMock(return_value=mock_get_resp)
 
         result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
 
