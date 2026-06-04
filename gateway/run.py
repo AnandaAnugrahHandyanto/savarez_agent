@@ -14712,11 +14712,11 @@ class GatewayRunner:
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
-            
+
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
-            
+
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
                 if args:
@@ -14733,9 +14733,9 @@ class GatewayRunner:
                     msg = f"{emoji} {tool_name}: \"{preview}\""
                 else:
                     msg = f"{emoji} {tool_name}..."
-                progress_queue.put(msg)
+                progress_queue.put(("__tool__", tool_name or "", dict(args or {}), preview or "", msg))
                 return
-            
+
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
@@ -14743,12 +14743,13 @@ class GatewayRunner:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                _preview_for_msg = preview
+                if len(_preview_for_msg) > _cap:
+                    _preview_for_msg = _preview_for_msg[:_cap - 3] + "..."
+                msg = f"{emoji} {tool_name}: \"{_preview_for_msg}\""
             else:
                 msg = f"{emoji} {tool_name}..."
-            
+
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
             # code (same boilerplate imports → identical previews).
@@ -14760,8 +14761,11 @@ class GatewayRunner:
                 return
             last_progress_msg[0] = msg
             repeat_count[0] = 0
-            
-            progress_queue.put(msg)
+
+            # Queue payload: ("__tool__", tool_name, args_dict, preview, msg).
+            # The Slack thinking-card path uses tool_name+args directly; the
+            # legacy progress-message path uses `msg` only.
+            progress_queue.put(("__tool__", tool_name or "", dict(args or {}), preview or "", msg))
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
@@ -14788,6 +14792,146 @@ class GatewayRunner:
             else None
         )
 
+        async def _drive_thinking_card(adapter, source, thread_ts, progress_queue):
+            """Drain progress_queue into the Slack plan-mode thinking card.
+
+            Each tool-started event triggers `record_tool_call`, which
+            re-renders the running tool history into the `tools` row's
+            `details` field. No new rows are added; the card has the
+            three fixed rows opened by start_thinking_card.
+
+            The card is opened by the caller; we own the lifecycle of
+            updates here and leave finalize to SlackAdapter.send() (it
+            absorbs the final answer into the same card).
+            """
+            CARD_EDIT_INTERVAL = 1.0
+            last_emit_ts = 0.0
+
+            async def _emit(tool_name: str, args: dict):
+                nonlocal last_emit_ts
+                now = time.monotonic()
+                wait = CARD_EDIT_INTERVAL - (now - last_emit_ts)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                ok = await adapter.record_tool_call(
+                    chat_id=source.chat_id,
+                    thread_ts=thread_ts,
+                    tool_name=tool_name,
+                    args=args,
+                )
+                last_emit_ts = time.monotonic()
+                return ok
+
+            try:
+                while True:
+                    try:
+                        raw = progress_queue.get_nowait()
+
+                        # __dedup__ entries from progress_callback bump the
+                        # count of the most-recent identical entry already
+                        # recorded; the card collapses identical consecutive
+                        # entries internally, so all we need is to re-emit
+                        # the last (tool_name, args) so its count increments.
+                        if (
+                            isinstance(raw, tuple)
+                            and len(raw) >= 1
+                            and raw[0] == "__dedup__"
+                        ):
+                            # Slack-card path: dedup is a count bump, but
+                            # we don't have the structured args here. The
+                            # card already collapses consecutive identical
+                            # __tool__ entries, so on first dedup we need
+                            # to re-emit the SAME tool to bump the counter.
+                            # Use the empty-args form — collapsing keys on
+                            # (name, target) so re-emit must match.
+                            # We just skip dedup markers in the card path;
+                            # the next __tool__ event will appear naturally.
+                            continue
+
+                        if (
+                            isinstance(raw, tuple)
+                            and len(raw) >= 5
+                            and raw[0] == "__tool__"
+                        ):
+                            _, tool_name, args, preview, _msg = raw
+                        else:
+                            # Unknown payload — best-effort: parse the
+                            # leading emoji+name out of a string.
+                            tool_name = ""
+                            args = {}
+                            preview = ""
+                            if isinstance(raw, str):
+                                # "<emoji> <tool_name>: \"preview\""
+                                rest = raw.split(" ", 1)[1] if " " in raw else raw
+                                if ":" in rest:
+                                    tool_name, _, prev = rest.partition(":")
+                                    tool_name = tool_name.strip()
+                                    preview = prev.strip().strip('"')
+                                else:
+                                    tool_name = rest.split("...")[0].strip()
+
+                        if not tool_name:
+                            continue
+
+                        # Fall back to {"target": preview} so _tool_target()
+                        # has something to render when the agent didn't pass
+                        # us a structured args dict.
+                        if not args and preview:
+                            args = {"target": preview}
+
+                        ok = await _emit(tool_name, args)
+                        if not ok:
+                            # Card died — drain queue silently and bail.
+                            while not progress_queue.empty():
+                                try:
+                                    progress_queue.get_nowait()
+                                except Exception:
+                                    break
+                            await adapter.abort_thinking_card(source.chat_id, thread_ts)
+                            return
+
+                        await asyncio.sleep(0.2)
+                        await adapter.send_typing(
+                            source.chat_id,
+                            metadata={"thread_id": thread_ts},
+                        )
+
+                    except queue.Empty:
+                        await asyncio.sleep(0.3)
+                    except Exception as e:  # pragma: no cover - defensive
+                        logger.error("Progress card update error: %s", e)
+                        await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                # Drain remaining queue into the card so the final tool
+                # history reflects everything the agent actually called.
+                while not progress_queue.empty():
+                    try:
+                        raw = progress_queue.get_nowait()
+                    except Exception:
+                        break
+                    if (
+                        isinstance(raw, tuple)
+                        and len(raw) >= 5
+                        and raw[0] == "__tool__"
+                    ):
+                        _, tool_name, args, preview, _msg = raw
+                        if not args and preview:
+                            args = {"target": preview}
+                        try:
+                            await adapter.record_tool_call(
+                                chat_id=source.chat_id,
+                                thread_ts=thread_ts,
+                                tool_name=tool_name,
+                                args=args,
+                            )
+                        except Exception:
+                            break
+                # Do NOT finalize the card here. Leave the card state alive
+                # so SlackAdapter.send() (called next with the final
+                # assistant response) finalizes it with the answer absorbed
+                # into the same card.
+                raise
+
         async def send_progress_messages():
             if not progress_queue:
                 return
@@ -14806,6 +14950,44 @@ class GatewayRunner:
                     except Exception:
                         break
                 return
+
+            # ─── Slack thinking-steps card path ─────────────────────────
+            # Replace the per-tool wall of edited messages with one
+            # self-updating card via chat.startStream/appendStream/stopStream.
+            # Falls back to the legacy path below on any failure (old SDK,
+            # missing recipient identity in a public channel, etc.).
+            _try_card = (
+                source.platform == Platform.SLACK
+                and _progress_thread_id
+                and getattr(adapter, "thinking_card_enabled", lambda: False)()
+            )
+            logger.info(
+                "[ThinkingCard] decision: platform=%s thread_id=%s enabled=%s try=%s",
+                getattr(source, "platform", None),
+                _progress_thread_id,
+                getattr(adapter, "thinking_card_enabled", lambda: False)(),
+                _try_card,
+            )
+            if _try_card:
+                card_state = None
+                try:
+                    card_state = await adapter.start_thinking_card(
+                        chat_id=source.chat_id,
+                        thread_ts=_progress_thread_id,
+                    )
+                except Exception as _card_err:
+                    logger.warning("[ThinkingCard] start_thinking_card raised: %s", _card_err)
+                    card_state = None
+
+                logger.info(
+                    "[ThinkingCard] start_thinking_card → %s",
+                    "OK" if card_state else "None (falling back to legacy)",
+                )
+                if card_state is not None:
+                    await _drive_thinking_card(
+                        adapter, source, _progress_thread_id, progress_queue,
+                    )
+                    return
 
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
@@ -14847,6 +15029,11 @@ class GatewayRunner:
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
+                    elif isinstance(raw, tuple) and len(raw) >= 5 and raw[0] == "__tool__":
+                        # Structured tool payload: legacy path renders the
+                        # pre-formatted message; the card path reads tool_name+args.
+                        msg = raw[4]
+                        progress_lines.append(msg)
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                         # Content bubble just landed on the platform — close off
                         # the current tool-progress bubble so the next tool
@@ -14953,6 +15140,8 @@ class GatewayRunner:
                                 _, base_msg, count = raw
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                            elif isinstance(raw, tuple) and len(raw) >= 5 and raw[0] == "__tool__":
+                                progress_lines.append(raw[4])
                             elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                                 # Content-bubble marker during drain: close off
                                 # the current progress bubble and start a fresh
@@ -15042,8 +15231,62 @@ class GatewayRunner:
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
 
+        def _slack_card_active() -> bool:
+            """True if a Slack thinking-steps card is currently open for this turn."""
+            if source.platform != Platform.SLACK or not _progress_thread_id:
+                return False
+            adapter = _status_adapter
+            if adapter is None:
+                return False
+            enabled = getattr(adapter, "thinking_card_enabled", None)
+            getter = getattr(adapter, "get_thinking_card", None)
+            if enabled is None or getter is None:
+                return False
+            try:
+                if not enabled():
+                    return False
+                return getter(_status_chat_id, _progress_thread_id) is not None
+            except Exception:
+                return False
+
+        async def _send_into_card_or_fallback(text: str, *, quote: bool = False) -> None:
+            """Deliver `text` as a status/commentary message.
+
+            Plan-mode card behavior: when a Slack thinking-card is open,
+            we no-op — the card body must stay empty for status warnings
+            and interim commentary so the user only sees the final answer.
+            Outside card mode, fall back to the normal adapter.send().
+
+            `quote=True` prefixes each line with `> ` so warnings render
+            as a Slack blockquote (only meaningful in the fallback path).
+            """
+            payload = str(text or "")
+            if not payload.strip():
+                return
+            if _slack_card_active():
+                # Card is active: drop status/commentary on the floor —
+                # the card stays clean until finalize.
+                return
+            adapter = _status_adapter
+            if quote:
+                payload = "\n".join(
+                    f"> {line}" if line else ">" for line in payload.splitlines()
+                )
+            try:
+                await adapter.send(
+                    _status_chat_id,
+                    payload if quote else text,
+                    metadata=_status_thread_metadata,
+                )
+            except Exception as _e:
+                logger.debug("fallback adapter.send error: %s", _e)
+
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
+                return
+            # Card-active path: status warnings must not leak into the
+            # plan-mode card body.
+            if _slack_card_active():
                 return
             _fut = safe_schedule_threadsafe(
                 _status_adapter.send(
@@ -15211,6 +15454,11 @@ class GatewayRunner:
 
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
+                    return
+                # Plan-mode card: do NOT leak interim commentary into the
+                # card body. The card stays clean until finalize emits the
+                # final answer (or the stream consumer pushed it on done).
+                if _slack_card_active():
                     return
                 if _stream_consumer is not None:
                     if already_streamed:
@@ -15892,6 +16140,34 @@ class GatewayRunner:
                 "response_previewed": result.get("response_previewed", False),
             }
         
+        # Eager Slack thinking-card open: if both progress and streaming
+        # tasks are about to fire, the card MUST exist before either of
+        # them flushes — otherwise the stream consumer's first edit goes
+        # through the legacy chat.postMessage path and the user ends up
+        # with two Slack bubbles (a legacy message + the card). Opening
+        # the card here closes that race.
+        if (
+            source.platform == Platform.SLACK
+            and _progress_thread_id
+        ):
+            _slack_adapter = self.adapters.get(source.platform)
+            if (
+                _slack_adapter is not None
+                and getattr(_slack_adapter, "thinking_card_enabled", lambda: False)()
+            ):
+                try:
+                    _eager_card = await _slack_adapter.start_thinking_card(
+                        chat_id=source.chat_id,
+                        thread_ts=_progress_thread_id,
+                    )
+                    if _eager_card is not None:
+                        logger.info(
+                            "[ThinkingCard] eagerly opened ts=%s before stream/progress tasks",
+                            _eager_card.card_ts,
+                        )
+                except Exception as _e:
+                    logger.warning("[ThinkingCard] eager open raised: %s", _e)
+
         # Start progress message sender if enabled
         progress_task = None
         if tool_progress_enabled:
