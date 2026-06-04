@@ -12,9 +12,10 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { triggerHaptic } from '@/lib/haptics'
-import { Volume2, VolumeX, Language } from '@/lib/icons'
+import { Volume2, VolumeX, Globe, Language } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { t } from '@/store/i18n'
+import { useLocaleSync } from '@/store/use-locale-sync'
 import { useTranslation, LANGUAGE_LABELS } from '@/store/i18n'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { $fileBrowserOpen, $sidebarOpen, toggleFileBrowserOpen, toggleSidebarOpen } from '@/store/layout'
@@ -55,6 +56,7 @@ export function TitlebarControls({
   onOpenSettings,
   onOpenSearch
 }: TitlebarControlsProps) {
+  useLocaleSync()
   const navigate = useNavigate()
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
@@ -225,11 +227,12 @@ function LanguageMenuButton() {
       <DropdownMenuTrigger asChild>
         <button
           aria-label={t('titlebar.language')}
-          className={cn(titlebarButtonClass, 'grid place-items-center bg-transparent select-none [&_svg]:size-4')}
+          className={cn(titlebarButtonClass, 'flex items-center gap-1 bg-transparent select-none [&_svg]:size-4 px-2 w-auto')}
           onPointerDown={event => event.stopPropagation()}
           title={currentLabel}
           type="button"
         >
+          <Globe />
           <Language />
         </button>
       </DropdownMenuTrigger>

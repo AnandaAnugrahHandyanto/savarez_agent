@@ -71,6 +71,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     if (!SUPPORTED_LOCALES.includes(newLocale)) return
     _currentLocale = newLocale
     setLocaleState(newLocale)
+    notifyListeners()
     try { localStorage.setItem(STORAGE_KEY, newLocale) } catch {}
   }, [])
 
@@ -89,7 +90,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   return (
     <I18nContext.Provider value={{ locale, t, setLocale, availableLocales: SUPPORTED_LOCALES }}>
-      <div key={locale}>{children}</div>
+      {children}
     </I18nContext.Provider>
   )
 }
@@ -99,6 +100,22 @@ export function useTranslation(): I18nContextValue {
   if (!ctx) throw new Error('useTranslation must be used within I18nProvider')
   return ctx
 }
+
+// --- Locale change listeners (for components using standalone t()) ---
+let _listeners: Set<() => void> = new Set()
+
+export function onLocaleChange(fn: () => void): () => void {
+  _listeners.add(fn)
+  return () => { _listeners.delete(fn) }
+}
+
+function notifyListeners() {
+  _listeners.forEach(fn => fn())
+}
+
+// Hook: forces re-render when locale changes
+// Use in components that import t() directly instead of useTranslation()
+export { useLocaleSync } from './use-locale-sync'
 
 // --- Standalone t() for non-React code ---
 export function t(key: string, params?: Record<string, unknown>): string {
