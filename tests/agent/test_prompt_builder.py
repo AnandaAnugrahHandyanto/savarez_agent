@@ -265,6 +265,25 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_skill_prompt_includes_repeat_guard_marker_and_invariants(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "skill-repeat-guard-v0" in result
+        assert "First relevant skill load remains mandatory" in result
+        assert "do not reload the exact same skill/file" in result
+        assert "Ambiguous replay remains protective" in result
+        assert "TASK_PACKs and handoffs are orientation only" in result
+        assert "not authority" in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

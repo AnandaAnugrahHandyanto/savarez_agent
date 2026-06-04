@@ -1103,6 +1103,16 @@ Do the legacy thing.
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
 
+    def test_skill_view_schema_mentions_repeat_guard(self):
+        from tools.skills_tool import SKILL_VIEW_SCHEMA
+
+        description = SKILL_VIEW_SCHEMA["description"]
+        assert "skill-repeat-guard-v0" in description
+        assert "Do not call again for the exact same skill/file" in description
+        assert "compression/resume" in description
+        assert "different file_path" in description
+        assert "authority or safety uncertainty" in description
+
 
 class TestSkillViewCollisionDetection:
     """Regression tests for skill_view name collision handling.

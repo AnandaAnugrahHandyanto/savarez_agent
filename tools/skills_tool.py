@@ -1483,7 +1483,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter. skill-repeat-guard-v0: Do not call again for the exact same skill/file in the same active visible context unless compression/resume may have removed prior content, a different file_path is needed, the skill may have changed, the user asked for refresh, the task entered a new phase/hard gate, or authority or safety uncertainty requires current source instructions.",
     "parameters": {
         "type": "object",
         "properties": {
