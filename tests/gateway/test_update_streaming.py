@@ -240,9 +240,37 @@ class TestUpdateCommandGatewayFlag:
         assert "status=$?" not in cmd_string
         assert "stream progress" in result
 
+    @staticmethod
+    def _make_install_layout(tmp_path):
+        """Build a fake install tree and return (fake_root, fake_file, hermes_home).
+
+        Shared by the install-method detection tests so each only has to add
+        the `.git` shape it cares about (dir / file / absent).
+        """
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        return fake_root, fake_file, hermes_home
+
+    async def _run_update(self, fake_file, hermes_home, install_method, mock_popen):
+        """Invoke _handle_update_command with detect_install_method stubbed."""
+        runner = _make_runner()
+        event = _make_event()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("hermes_cli.config.detect_install_method", return_value=install_method), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch("subprocess.Popen", mock_popen):
+            return await runner._handle_update_command(event)
+
     @pytest.mark.asyncio
     async def test_pip_install_reaches_spawn_not_git_repo(self, tmp_path):
-        """A pip install (no .git dir) must NOT be blocked as 'not a git repo'.
+        """A pip install (no .git) must NOT be blocked as 'not a git repo'.
 
         The spawned `hermes update --gateway` already handles pip installs;
         the handler must fall through to it instead of short-circuiting on a
@@ -251,26 +279,9 @@ class TestUpdateCommandGatewayFlag:
         """
         from gateway.run import t
 
-        runner = _make_runner()
-        event = _make_event()
-
-        # Project root WITHOUT a .git dir — a PyPI/pip install.
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-
+        _, fake_file, hermes_home = self._make_install_layout(tmp_path)  # no .git
         mock_popen = MagicMock()
-        with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
-             patch("hermes_cli.config.detect_install_method", return_value="pip"), \
-             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
-             patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
-             patch("subprocess.Popen", mock_popen):
-            result = await runner._handle_update_command(event)
+        result = await self._run_update(fake_file, hermes_home, "pip", mock_popen)
 
         # Must NOT be blocked; must reach the spawn path.
         assert result != t("gateway.update.not_git_repo")
@@ -278,8 +289,27 @@ class TestUpdateCommandGatewayFlag:
         assert mock_popen.called
 
     @pytest.mark.asyncio
+    async def test_git_worktree_with_dotgit_file_reaches_spawn(self, tmp_path):
+        """A git worktree/submodule (`.git` is a *file*) must NOT be blocked.
+
+        In worktrees and submodules `.git` is a file holding a `gitdir:`
+        pointer, not a directory. The handler uses `.exists()` so such installs
+        fall through to the spawn path. Regression for #39104.
+        """
+        from gateway.run import t
+
+        fake_root, fake_file, hermes_home = self._make_install_layout(tmp_path)
+        (fake_root / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
+        mock_popen = MagicMock()
+        result = await self._run_update(fake_file, hermes_home, "git", mock_popen)
+
+        assert result != t("gateway.update.not_git_repo")
+        assert "stream progress" in result
+        assert mock_popen.called
+
+    @pytest.mark.asyncio
     async def test_broken_git_checkout_still_blocked(self, tmp_path):
-        """A genuine git install with a missing .git dir is still rejected.
+        """A genuine git install with a missing .git is still rejected.
 
         Only a corrupted git checkout (method == 'git' AND `.git` absent)
         should short-circuit with 'not a git repository'. Regression for
@@ -287,26 +317,9 @@ class TestUpdateCommandGatewayFlag:
         """
         from gateway.run import t
 
-        runner = _make_runner()
-        event = _make_event()
-
-        # method resolves to 'git' but the .git dir is genuinely missing.
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-
+        _, fake_file, hermes_home = self._make_install_layout(tmp_path)  # no .git
         mock_popen = MagicMock()
-        with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
-             patch("hermes_cli.config.detect_install_method", return_value="git"), \
-             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
-             patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
-             patch("subprocess.Popen", mock_popen):
-            result = await runner._handle_update_command(event)
+        result = await self._run_update(fake_file, hermes_home, "git", mock_popen)
 
         assert result == t("gateway.update.not_git_repo")
         assert not mock_popen.called

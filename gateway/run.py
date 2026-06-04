@@ -14962,7 +14962,10 @@ class GatewayRunner:
         # a *git* install whose `.git` directory is genuinely missing (a
         # corrupted checkout) should be short-circuited here.  Previously a
         # raw `.git`-presence check wrongly blocked every PyPI (pip) install.
-        if detect_install_method(project_root) == "git" and not (project_root / ".git").is_dir():
+        # Use `.exists()` (not `.is_dir()`) so git worktrees and submodules —
+        # where `.git` is a *file* holding a `gitdir:` pointer — are still
+        # treated as valid; only a genuinely-missing `.git` is rejected.
+        if detect_install_method(project_root) == "git" and not (project_root / ".git").exists():
             return t("gateway.update.not_git_repo")
 
         hermes_cmd = _resolve_hermes_bin()
