@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Google Workspace OAuth2 setup for Hermes Agent.
+"""Google Workspace OAuth2 setup for Savarez AI Agent.
 
 Fully non-interactive — designed to be driven by the agent via terminal commands.
 The agent mediates between this script and the user (works on CLI, Telegram, Discord, etc.)
@@ -37,10 +37,10 @@ if _SCRIPTS_DIR not in sys.path:
 
 from _hermes_home import display_hermes_home, get_hermes_home
 
-HERMES_HOME = get_hermes_home()
-TOKEN_PATH = HERMES_HOME / "google_token.json"
-CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
-PENDING_AUTH_PATH = HERMES_HOME / "google_oauth_pending.json"
+SAVAREZ_HOME = get_hermes_home()
+TOKEN_PATH = SAVAREZ_HOME / "google_token.json"
+CLIENT_SECRET_PATH = SAVAREZ_HOME / "google_client_secret.json"
+PENDING_AUTH_PATH = SAVAREZ_HOME / "google_oauth_pending.json"
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",

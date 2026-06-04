@@ -146,7 +146,7 @@ class TestRecommendedUpdateCommandForUvTool:
             assert cmd == "uv tool upgrade hermes-agent"
 
     def test_uv_pip_install_keeps_legacy_recommendation(self):
-        """Existing behavior: uv is on PATH but Hermes is a regular pip install."""
+        """Existing behavior: uv is on PATH but Savarez is a regular pip install."""
         from hermes_cli import config
 
         with patch("shutil.which", return_value="/usr/local/bin/uv"), \

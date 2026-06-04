@@ -23,10 +23,10 @@ from hermes_cli.config import (
 
 @pytest.fixture
 def container_env(tmp_path, monkeypatch):
-    """Set up a fake HERMES_HOME with .container-mode file."""
+    """Set up a fake SAVAREZ_HOME with .container-mode file."""
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
     monkeypatch.delenv("HERMES_DEV", raising=False)
 
     container_mode = hermes_home / ".container-mode"
@@ -64,7 +64,7 @@ def test_get_container_exec_info_none_without_file(tmp_path, monkeypatch):
     """Returns None when .container-mode doesn't exist (native mode)."""
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
     monkeypatch.delenv("HERMES_DEV", raising=False)
 
     with patch("hermes_constants.is_container", return_value=False):

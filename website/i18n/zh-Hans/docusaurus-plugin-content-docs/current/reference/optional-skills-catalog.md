@@ -1,7 +1,7 @@
 ---
 sidebar_position: 9
 title: "可选技能目录"
-description: "hermes-agent 附带的官方可选技能 — 通过 hermes skills install official/<category>/<skill> 安装"
+description: "hermes-agent 附带的官方可选技能 — 通过 savarez skills install official/<category>/<skill> 安装"
 ---
 
 # 可选技能目录
@@ -9,14 +9,14 @@ description: "hermes-agent 附带的官方可选技能 — 通过 hermes skills 
 可选技能随 hermes-agent 一起发布，位于 `optional-skills/` 目录下，但**默认未激活**。请显式安装：
 
 ```bash
-hermes skills install official/<category>/<skill>
+savarez skills install official/<category>/<skill>
 ```
 
 示例：
 
 ```bash
-hermes skills install official/blockchain/solana
-hermes skills install official/mlops/flash-attention
+savarez skills install official/blockchain/solana
+savarez skills install official/mlops/flash-attention
 ```
 
 下方每个技能均链接至专属页面，包含完整定义、配置和使用说明。
@@ -24,7 +24,7 @@ hermes skills install official/mlops/flash-attention
 卸载方式：
 
 ```bash
-hermes skills uninstall <skill-name>
+savarez skills uninstall <skill-name>
 ```
 
 ## autonomous-ai-agents
@@ -110,7 +110,7 @@ hermes skills uninstall <skill-name>
 
 | 技能 | 描述 |
 |-------|-------------|
-| [**openclaw-migration**](/user-guide/skills/optional/migration/migration-openclaw-migration) | 将用户的 OpenClaw 自定义配置迁移至 Hermes Agent。从 ~/.openclaw 导入兼容 Hermes 的记忆、SOUL.md、命令白名单、用户技能及选定的工作区资产，并报告无法迁移的内容。 |
+| [**openclaw-migration**](/user-guide/skills/optional/migration/migration-openclaw-migration) | 将用户的 OpenClaw 自定义配置迁移至 Savarez AI Agent。从 ~/.openclaw 导入兼容 Hermes 的记忆、SOUL.md、命令白名单、用户技能及选定的工作区资产，并报告无法迁移的内容。 |
 
 ## mlops
 

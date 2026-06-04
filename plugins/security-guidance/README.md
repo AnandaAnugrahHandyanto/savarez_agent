@@ -42,8 +42,8 @@ plugin is warn-by-default precisely because of that.
 Plugins are opt-in. Add it to your allow-list:
 
 ```bash
-hermes plugins enable security-guidance
-# or edit ~/.hermes/config.yaml manually:
+savarez plugins enable security-guidance
+# or edit ~/.savarez/config.yaml manually:
 plugins:
   enabled:
     - security-guidance

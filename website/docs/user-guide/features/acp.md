@@ -1,12 +1,12 @@
 ---
 sidebar_position: 11
 title: "ACP Editor Integration"
-description: "Use Hermes Agent inside ACP-compatible editors such as VS Code, Zed, and JetBrains"
+description: "Use Savarez AI Agent inside ACP-compatible editors such as VS Code, Zed, and JetBrains"
 ---
 
 # ACP Editor Integration
 
-Hermes Agent can run as an ACP server, letting ACP-compatible editors talk to Hermes over stdio and render:
+Savarez AI Agent can run as an ACP server, letting ACP-compatible editors talk to Hermes over stdio and render:
 
 - chat messages
 - tool activity
@@ -93,7 +93,7 @@ This is the standalone command. The Zed registry's terminal-auth flow (`hermes a
 
 What it does:
 
-- Installs Node.js 22 LTS into `~/.hermes/node/` if missing
+- Installs Node.js 22 LTS into `~/.savarez/node/` if missing
 - `npm install -g agent-browser @askjo/camofox-browser` into that prefix (no sudo needed — `npm`'s `--prefix` points at the user-writable Hermes-managed Node)
 - Installs Playwright Chromium, or uses a detected system Chrome/Chromium when available
 
@@ -108,7 +108,7 @@ Install the [ACP Client](https://marketplace.visualstudio.com/items?itemName=for
 To connect:
 
 1. Open the ACP Client panel from the Activity Bar.
-2. Select **Hermes Agent** from the built-in agent list.
+2. Select **Savarez AI Agent** from the built-in agent list.
 3. Connect and start chatting.
 
 If you want to define Hermes manually, add it through VS Code settings under `acp.agents`:
@@ -116,7 +116,7 @@ If you want to define Hermes manually, add it through VS Code settings under `ac
 ```json
 {
   "acp.agents": {
-    "Hermes Agent": {
+    "Savarez AI Agent": {
       "command": "hermes",
       "args": ["acp"]
     }
@@ -130,12 +130,12 @@ Zed v0.221.x and newer installs external agents through the official ACP Registr
 
 1. Open the Agent Panel.
 2. Click **Add Agent**, or run the `zed: acp registry` command.
-3. Search for **Hermes Agent**.
+3. Search for **Savarez AI Agent**.
 4. Install it and start a new Hermes external-agent thread.
 
 Prerequisites:
 
-- Configure Hermes provider credentials first with `hermes model`, or set them in `~/.hermes/.env` / `~/.hermes/config.yaml`.
+- Configure Hermes provider credentials first with `savarez model`, or set them in `~/.savarez/.env` / `~/.savarez/config.yaml`.
 - Install `uv` so the registry launcher can run `uvx --from 'hermes-agent[acp]==<version>' hermes-acp`.
 
 For local development before the registry entry is available, use a custom agent server in Zed settings:
@@ -183,10 +183,10 @@ The registry CI verifies that the pinned version exists on PyPI, so the manifest
 
 ACP mode uses the same Hermes configuration as the CLI:
 
-- `~/.hermes/.env`
-- `~/.hermes/config.yaml`
-- `~/.hermes/skills/`
-- `~/.hermes/state.db`
+- `~/.savarez/.env`
+- `~/.savarez/config.yaml`
+- `~/.savarez/skills/`
+- `~/.savarez/state.db`
 
 Provider resolution uses Hermes' normal runtime resolver, so ACP inherits the currently configured provider and credentials. Hermes also advertises a terminal auth method (`--setup`) for first-run registry clients; this opens Hermes' interactive model/provider setup.
 
@@ -239,7 +239,7 @@ The ACP bridge maps these options onto Hermes' internal approval semantics — `
 
 Check:
 
-- In Zed, open the ACP Registry with `zed: acp registry` and search for **Hermes Agent**.
+- In Zed, open the ACP Registry with `zed: acp registry` and search for **Savarez AI Agent**.
 - For manual/local development, verify the custom `agent_servers` command points to `hermes acp`.
 - Hermes is installed and on your PATH.
 - The ACP extra is installed (`pip install -e '.[acp]'`).
@@ -252,8 +252,8 @@ Try these checks:
 ```bash
 hermes acp --version
 hermes acp --check
-hermes doctor
-hermes status
+savarez doctor
+savarez status
 ```
 
 ### Missing credentials
@@ -261,14 +261,14 @@ hermes status
 ACP mode uses Hermes' existing provider setup. Configure credentials with:
 
 ```bash
-hermes model
+savarez model
 ```
 
-or by editing `~/.hermes/.env`. Registry clients can also trigger Hermes' terminal auth flow, which runs the same interactive provider/model setup.
+or by editing `~/.savarez/.env`. Registry clients can also trigger Hermes' terminal auth flow, which runs the same interactive provider/model setup.
 
 ### Zed registry launcher cannot find uv
 
-Install `uv` from the official uv installation docs, then retry the Hermes Agent thread from Zed.
+Install `uv` from the official uv installation docs, then retry the Savarez AI Agent thread from Zed.
 
 ## See also
 

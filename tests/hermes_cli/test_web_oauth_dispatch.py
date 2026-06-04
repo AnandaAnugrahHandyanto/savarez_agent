@@ -188,7 +188,7 @@ def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch)
                 "refresh_token": "codex-refresh",
             })
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
     monkeypatch.setattr(httpx, "Client", _Client)
     monkeypatch.setattr(ws.time, "sleep", lambda _: None)
 
@@ -598,7 +598,7 @@ def test_unknown_pkce_provider_rejected_cleanly():
         "id": "hypothetical-pkce-provider",
         "name": "Hypothetical PKCE Provider",
         "flow": "pkce",
-        "cli_command": "hermes auth add hypothetical-pkce-provider",
+        "cli_command": "savarez auth add hypothetical-pkce-provider",
         "docs_url": "https://example.com",
         "status_fn": None,
     }

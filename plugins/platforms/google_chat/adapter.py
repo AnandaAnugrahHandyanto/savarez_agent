@@ -49,7 +49,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Heavy google-cloud + googleapiclient imports are deferred to first
 # adapter use. Importing them eagerly here added ~110ms wall and ~33MB
 # RSS to *every* CLI invocation (the plugin loader imports this module at
-# ``model_tools`` import time, so ``hermes status``, ``hermes chat``, etc.
+# ``model_tools`` import time, so ``savarez status``, ``savarez chat``, etc.
 # all paid the cost even though they never instantiate the adapter).
 #
 # All names below are module globals that ``_load_google_modules()``
@@ -517,7 +517,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Inbound message count per (chat_id, thread_name). Drives the
         # DM main-flow vs side-thread heuristic in _build_message_event
         # and the outbound thread routing in _resolve_thread_id.
-        # Persisted to ${HERMES_HOME}/google_chat_thread_counts.json so
+        # Persisted to ${SAVAREZ_HOME}/google_chat_thread_counts.json so
         # active side-threads survive gateway restarts (the bug that
         # made the in-memory version of this heuristic flaky for
         # multi-restart sessions).
@@ -689,7 +689,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     def _bot_id_cache_path(self) -> _Path:
         """Location where the resolved bot user_id is cached across restarts."""
-        base = os.getenv("HERMES_HOME", str(_Path.home() / ".hermes"))
+        base = os.getenv("SAVAREZ_HOME", str(_Path.home() / ".hermes"))
         return _Path(base) / "google_chat_bot_id.json"
 
     def _load_cached_bot_id(self) -> Optional[str]:
@@ -1273,7 +1273,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             if text.startswith("/setup-files") and event.source is not None:
                 # The sender's email (user_id_alt) is the per-user OAuth
                 # key — the bot stores this user's token at
-                # ${HERMES_HOME}/google_chat_user_tokens/<sanitized>.json
+                # ${SAVAREZ_HOME}/google_chat_user_tokens/<sanitized>.json
                 # so when User B asks for a file later in B's DM, B's
                 # token gets used (not the first person who set up files).
                 sender_email = (
@@ -3023,12 +3023,12 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
 
 
 def interactive_setup() -> None:
-    """Walk the user through Google Chat configuration via ``hermes setup``.
+    """Walk the user through Google Chat configuration via ``savarez setup``.
 
     The setup wizard at ``hermes_cli/gateway.py`` calls this for plugin
     platforms instead of using the in-tree ``_PLATFORMS`` data block. The
     flow mirrors the in-tree built-ins: print the GCP setup instructions,
-    prompt for env vars, persist them to ``~/.hermes/.env`` so the next
+    prompt for env vars, persist them to ``~/.savarez/.env`` so the next
     gateway restart picks them up.
     """
     from hermes_cli.cli_output import (
@@ -3110,8 +3110,8 @@ def interactive_setup() -> None:
         save_env_value("GOOGLE_CHAT_HOME_CHANNEL", home.strip())
 
     print()
-    print_success("Google Chat configuration saved to ~/.hermes/.env")
-    print_info("Restart the gateway: hermes gateway restart")
+    print_success("Google Chat configuration saved to ~/.savarez/.env")
+    print_info("Restart the gateway: savarez gateway restart")
 
 
 # Strict resource-name pattern.  ``spaces/<id>`` and ``users/<id>`` must
@@ -3133,8 +3133,8 @@ async def _standalone_send(
     """POST a single Google Chat message via the REST API without the SDK.
 
     Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
-    runner is not in this process (e.g. ``hermes cron`` running as a
-    separate process from ``hermes gateway``).  Without this hook,
+    runner is not in this process (e.g. ``savarez cron`` running as a
+    separate process from ``savarez gateway``).  Without this hook,
     ``deliver=google_chat`` cron jobs fail with ``No live adapter for
     platform``.
 

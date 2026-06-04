@@ -7,22 +7,22 @@ description: "Filesystem safety nets for destructive operations using shadow git
 
 # Checkpoints and `/rollback`
 
-Hermes Agent can automatically snapshot your project before **destructive operations** and restore it with a single command. Checkpoints are **opt-in** as of v2 — most users never use `/rollback`, and the shadow-store storage is non-trivial over time, so the default is off.
+Savarez AI Agent can automatically snapshot your project before **destructive operations** and restore it with a single command. Checkpoints are **opt-in** as of v2 — most users never use `/rollback`, and the shadow-store storage is non-trivial over time, so the default is off.
 
 Enable checkpoints per-session with `--checkpoints`:
 
 ```bash
-hermes chat --checkpoints
+savarez chat --checkpoints
 ```
 
-Or enable globally in `~/.hermes/config.yaml`:
+Or enable globally in `~/.savarez/config.yaml`:
 
 ```yaml
 checkpoints:
   enabled: true
 ```
 
-This safety net is powered by an internal **Checkpoint Manager** that keeps a single shared shadow git repository under `~/.hermes/checkpoints/store/` — your real project `.git` is never touched. Every project the agent works in shares the same store, so git's content-addressable object DB deduplicates across projects and across turns.
+This safety net is powered by an internal **Checkpoint Manager** that keeps a single shared shadow git repository under `~/.savarez/checkpoints/store/` — your real project `.git` is never touched. Every project the agent works in shares the same store, so git's content-addressable object DB deduplicates across projects and across turns.
 
 ## What Triggers a Checkpoint
 
@@ -62,7 +62,7 @@ At a high level:
 - Hermes detects when tools are about to **modify files** in your working tree.
 - Once per conversation turn (per directory), it:
   - Resolves a reasonable project root for the file.
-  - Initialises or reuses the **single shared shadow store** at `~/.hermes/checkpoints/store/`.
+  - Initialises or reuses the **single shared shadow store** at `~/.savarez/checkpoints/store/`.
   - Stages into a per-project index, builds a tree, and commits to a per-project ref (`refs/hermes/<project-hash>`).
 - These per-project refs form a checkpoint history that you can inspect and restore via `/rollback`.
 
@@ -72,7 +72,7 @@ flowchart LR
   agent["AIAgent\n(run_agent.py)"]
   tools["File & terminal tools"]
   cpMgr["CheckpointManager"]
-  store["Shared shadow store\n~/.hermes/checkpoints/store/"]
+  store["Shared shadow store\n~/.savarez/checkpoints/store/"]
 
   user --> agent
   agent -->|"tool call"| tools
@@ -84,7 +84,7 @@ flowchart LR
 
 ## Configuration
 
-Configure in `~/.hermes/config.yaml`:
+Configure in `~/.savarez/config.yaml`:
 
 ```yaml
 checkpoints:
@@ -93,7 +93,7 @@ checkpoints:
   max_total_size_mb: 500      # hard cap on total store size; oldest commits dropped
   max_file_size_mb: 10        # skip any single file larger than this
 
-  # Auto-maintenance (on by default): sweep ~/.hermes/checkpoints/ at startup
+  # Auto-maintenance (on by default): sweep ~/.savarez/checkpoints/ at startup
   # and delete project entries whose working directory no longer exists
   # (orphans) or whose last_touch is older than retention_days. Runs at most
   # once per min_interval_hours, tracked via a .last_prune marker.
@@ -213,7 +213,7 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 ## Where Checkpoints Live
 
 ```text
-~/.hermes/checkpoints/
+~/.savarez/checkpoints/
   ├── store/                 # single shared bare git repo
   │   ├── HEAD, objects/     # git internals (shared across projects)
   │   ├── refs/hermes/<hash> # per-project branch tip
@@ -228,9 +228,9 @@ Each `<hash>` is derived from the absolute path of the working directory. You no
 
 ### Migration from v1
 
-Before the v2 rewrite, each working directory got its own complete shadow git repo directly under `~/.hermes/checkpoints/<hash>/`. That layout couldn't dedup objects across projects and had a documented no-op pruner — the store would grow without bound.
+Before the v2 rewrite, each working directory got its own complete shadow git repo directly under `~/.savarez/checkpoints/<hash>/`. That layout couldn't dedup objects across projects and had a documented no-op pruner — the store would grow without bound.
 
-On first v2 run, any pre-v2 shadow repos are moved into `~/.hermes/checkpoints/legacy-<timestamp>/` so the new single-store layout starts clean. Old `/rollback` history is still reachable by manually inspecting the legacy archive with `git`; once you're confident you don't need it, run:
+On first v2 run, any pre-v2 shadow repos are moved into `~/.savarez/checkpoints/legacy-<timestamp>/` so the new single-store layout starts clean. Old `/rollback` history is still reachable by manually inspecting the legacy archive with `git`; once you're confident you don't need it, run:
 
 ```bash
 hermes checkpoints clear-legacy
@@ -240,7 +240,7 @@ to reclaim the space. Legacy archives are also swept by `auto_prune` after `rete
 
 ## Best Practices
 
-- **Enable checkpoints only when you need them** — `hermes chat --checkpoints` or per-profile `enabled: true`.
+- **Enable checkpoints only when you need them** — `savarez chat --checkpoints` or per-profile `enabled: true`.
 - **Use `/rollback diff` before restoring** — preview what will change to pick the right checkpoint.
 - **Use `/rollback` instead of `git reset`** when you want to undo agent-driven changes only.
 - **Check `hermes checkpoints status` occasionally** if you use checkpoints regularly — shows which projects are active and what the store costs you.

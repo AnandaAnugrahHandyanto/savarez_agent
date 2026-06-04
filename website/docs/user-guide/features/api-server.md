@@ -11,14 +11,14 @@ The API server exposes hermes-agent as an OpenAI-compatible HTTP endpoint. Any f
 Your agent handles requests with its full toolset (terminal, file operations, web search, memory, skills) and returns the final response. When streaming, tool progress indicators appear inline so frontends can show what the agent is doing.
 
 :::tip One backend covers models + tools
-Hermes itself needs a configured provider and tool backends for the API server to be useful. A [Nous Portal](/user-guide/features/tool-gateway) subscription handles both — 300+ models plus web/image/TTS/browser via the Tool Gateway. Run `hermes setup --portal` once before starting the API server and frontends like Open WebUI or LobeChat get a fully tool-equipped backend.
+Hermes itself needs a configured provider and tool backends for the API server to be useful. A [Nous Portal](/user-guide/features/tool-gateway) subscription handles both — 300+ models plus web/image/TTS/browser via the Tool Gateway. Run `savarez setup --portal` once before starting the API server and frontends like Open WebUI or LobeChat get a fully tool-equipped backend.
 :::
 
 ## Quick Start
 
 ### 1. Enable the API server
 
-Add to `~/.hermes/.env`:
+Add to `~/.savarez/.env`:
 
 ```bash
 API_SERVER_ENABLED=true
@@ -30,7 +30,7 @@ API_SERVER_KEY=change-me-local-dev
 ### 2. Start the gateway
 
 ```bash
-hermes gateway
+savarez gateway
 ```
 
 You'll see:
@@ -282,7 +282,7 @@ List all scheduled jobs.
 
 ### POST /api/jobs
 
-Create a new scheduled job. Body accepts the same shape as `hermes cron` — prompt, schedule, skills, provider override, delivery target.
+Create a new scheduled job. Body accepts the same shape as `savarez cron` — prompt, schedule, skills, provider override, delivery target.
 
 ### GET /api/jobs/\{job_id\}
 
@@ -457,18 +457,18 @@ To give multiple users their own isolated Hermes instance (separate config, memo
 
 ```bash
 # Create a profile per user
-hermes profile create alice
-hermes profile create bob
+savarez profile create alice
+savarez profile create bob
 
 # Configure each profile's API server on a different port. API_SERVER_* are env
 # vars (not config.yaml keys), so write them to each profile's .env:
-cat >> ~/.hermes/profiles/alice/.env <<EOF
+cat >> ~/.savarez/profiles/alice/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8643
 API_SERVER_KEY=alice-secret
 EOF
 
-cat >> ~/.hermes/profiles/bob/.env <<EOF
+cat >> ~/.savarez/profiles/bob/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8644
 API_SERVER_KEY=bob-secret

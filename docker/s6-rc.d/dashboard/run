@@ -49,7 +49,7 @@ esac
 
 # Skip the drop when already non-root.
 # shellcheck disable=SC2086  # word-splitting of $insecure is intentional
-[ "$(id -u)" = 0 ] || exec hermes dashboard --host "$dash_host" --port "$dash_port" --no-open $insecure
+[ "$(id -u)" = 0 ] || exec savarez dashboard --host "$dash_host" --port "$dash_port" --no-open $insecure
 # shellcheck disable=SC2086  # word-splitting of $insecure is intentional
-exec s6-setuidgid hermes hermes dashboard \
+exec s6-setuidgid hermes savarez dashboard \
     --host "$dash_host" --port "$dash_port" --no-open $insecure

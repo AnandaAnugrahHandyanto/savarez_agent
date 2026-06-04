@@ -1,12 +1,12 @@
 ---
 sidebar_position: 15
 title: "MiniMax OAuth"
-description: "Log into MiniMax via browser OAuth and use MiniMax-M2.7 models in Hermes Agent — no API key required"
+description: "Log into MiniMax via browser OAuth and use MiniMax-M2.7 models in Savarez AI Agent — no API key required"
 ---
 
 # MiniMax OAuth
 
-Hermes Agent supports **MiniMax** through a browser-based OAuth login flow, using the same credentials as the [MiniMax portal](https://www.minimax.io). No API key or credit card is required — log in once and Hermes automatically refreshes your session.
+Savarez AI Agent supports **MiniMax** through a browser-based OAuth login flow, using the same credentials as the [MiniMax portal](https://www.minimax.io). No API key or credit card is required — log in once and Hermes automatically refreshes your session.
 
 The transport reuses the `anthropic_messages` adapter (MiniMax exposes an Anthropic Messages-compatible endpoint at `/anthropic`), so all existing tool-calling, streaming, and context features work without any adapter changes.
 
@@ -26,7 +26,7 @@ The transport reuses the `anthropic_messages` adapter (MiniMax exposes an Anthro
 ## Prerequisites
 
 - Python 3.9+
-- Hermes Agent installed
+- Savarez AI Agent installed
 - A MiniMax account at [minimax.io](https://www.minimax.io) (global) or [minimaxi.com](https://www.minimaxi.com) (China)
 - A browser available on the local machine (or use `--no-browser` for remote sessions)
 
@@ -34,7 +34,7 @@ The transport reuses the `anthropic_messages` adapter (MiniMax exposes an Anthro
 
 ```bash
 # Launch the provider and model picker
-hermes model
+savarez model
 # → Select "MiniMax (OAuth)" from the provider list
 # → Hermes opens your browser to the MiniMax authorization page
 # → Approve access in the browser
@@ -44,14 +44,14 @@ hermes model
 hermes
 ```
 
-After the first login, credentials are stored under `~/.hermes/auth.json` and are refreshed automatically before each session.
+After the first login, credentials are stored under `~/.savarez/auth.json` and are refreshed automatically before each session.
 
 ## Logging In Manually
 
 You can trigger a login without going through the model picker:
 
 ```bash
-hermes auth add minimax-oauth
+savarez auth add minimax-oauth
 ```
 
 ### China region
@@ -59,7 +59,7 @@ hermes auth add minimax-oauth
 If your account is on the China platform (`minimaxi.com`), use the API-key-based `minimax-cn` provider instead — `minimax-cn` is registered with `auth_type="api_key"` only (no OAuth flow). Configure `MINIMAX_CN_API_KEY` (and optionally `MINIMAX_CN_BASE_URL`) directly:
 
 ```bash
-echo 'MINIMAX_CN_API_KEY=your-key' >> ~/.hermes/.env
+echo 'MINIMAX_CN_API_KEY=your-key' >> ~/.savarez/.env
 ```
 
 ### Remote / headless sessions
@@ -67,7 +67,7 @@ echo 'MINIMAX_CN_API_KEY=your-key' >> ~/.hermes/.env
 On servers or containers where no browser is available:
 
 ```bash
-hermes auth add minimax-oauth --no-browser
+savarez auth add minimax-oauth --no-browser
 ```
 
 Hermes will print the verification URL and user code — open the URL on any device and enter the code when prompted.
@@ -80,14 +80,14 @@ Hermes implements a PKCE browser OAuth flow against the MiniMax OAuth endpoints:
 2. It POSTs to `{base_url}/oauth/code` with the challenge and receives a `user_code` and `verification_uri`.
 3. Your browser opens `verification_uri`. If prompted, enter the `user_code`.
 4. Hermes polls `{base_url}/oauth/token` until the token arrives (or the deadline passes).
-5. Tokens (`access_token`, `refresh_token`, expiry) are saved to `~/.hermes/auth.json` under the `minimax-oauth` key.
+5. Tokens (`access_token`, `refresh_token`, expiry) are saved to `~/.savarez/auth.json` under the `minimax-oauth` key.
 
 Token refresh (standard OAuth `refresh_token` grant) runs automatically at each session start when the access token is within 60 seconds of expiry.
 
 ## Checking Login Status
 
 ```bash
-hermes doctor
+savarez doctor
 ```
 
 The `◆ Auth Providers` section will show:
@@ -105,7 +105,7 @@ or, if not logged in:
 ## Switching Models
 
 ```bash
-hermes model
+savarez model
 # → Select "MiniMax (OAuth)"
 # → Pick from the model list
 ```
@@ -113,13 +113,13 @@ hermes model
 Or set the model directly:
 
 ```bash
-hermes config set model.default MiniMax-M2.7
-hermes config set model.provider minimax-oauth
+savarez config set model.default MiniMax-M2.7
+savarez config set model.provider minimax-oauth
 ```
 
 ## Configuration Reference
 
-After login, `~/.hermes/config.yaml` will contain entries similar to:
+After login, `~/.savarez/config.yaml` will contain entries similar to:
 
 ```yaml
 model:
@@ -155,7 +155,7 @@ The `minimax-oauth` provider does **not** use `MINIMAX_API_KEY` or `MINIMAX_BASE
 | `MINIMAX_API_KEY` | Used by `minimax` provider only — ignored for `minimax-oauth` |
 | `MINIMAX_CN_API_KEY` | Used by `minimax-cn` provider only — ignored for `minimax-oauth` |
 
-To use `minimax-oauth` as the active provider, set `model.provider: minimax-oauth` in `config.yaml` (use `hermes setup` for the guided flow), or pass `--provider minimax-oauth` for a single invocation:
+To use `minimax-oauth` as the active provider, set `model.provider: minimax-oauth` in `config.yaml` (use `savarez setup` for the guided flow), or pass `--provider minimax-oauth` for a single invocation:
 
 ```bash
 hermes --provider minimax-oauth
@@ -180,13 +180,13 @@ Hermes refreshes the token on every session start if it is within 60 seconds of 
 
 When the refresh failure is terminal (HTTP 4xx, `invalid_grant`, revoked grant, etc.), Hermes marks the refresh token as dead and quarantines it locally so it doesn't keep replaying the doomed exchange. The agent surfaces a single "re-authentication required" message and stays out of the way until you log in again.
 
-**Fix:** run `hermes auth add minimax-oauth` again to start a fresh login. The quarantine clears on the next successful exchange.
+**Fix:** run `savarez auth add minimax-oauth` again to start a fresh login. The quarantine clears on the next successful exchange.
 
 ### Authorization timed out
 
 The device-code flow has a finite expiry window. If you don't approve the login in time, Hermes raises a timeout error.
 
-**Fix:** re-run `hermes auth add minimax-oauth` (or `hermes model`). The flow starts fresh.
+**Fix:** re-run `savarez auth add minimax-oauth` (or `savarez model`). The flow starts fresh.
 
 ### State mismatch (possible CSRF)
 
@@ -196,10 +196,10 @@ Hermes detected that the `state` value returned by the authorization server does
 
 ### Logging in from a remote server
 
-If `hermes` cannot open a browser window, use `--no-browser`:
+If `savarez` cannot open a browser window, use `--no-browser`:
 
 ```bash
-hermes auth add minimax-oauth --no-browser
+savarez auth add minimax-oauth --no-browser
 ```
 
 Hermes prints the URL and code. Open the URL on any device and complete the flow there.
@@ -208,14 +208,14 @@ Hermes prints the URL and code. Open the URL on any device and complete the flow
 
 The auth store has no credentials for `minimax-oauth`. You have not logged in yet, or the credential file was deleted.
 
-**Fix:** run `hermes model` and select MiniMax (OAuth), or run `hermes auth add minimax-oauth`.
+**Fix:** run `savarez model` and select MiniMax (OAuth), or run `savarez auth add minimax-oauth`.
 
 ## Logging Out
 
 To remove stored MiniMax OAuth credentials:
 
 ```bash
-hermes auth remove minimax-oauth
+savarez auth remove minimax-oauth
 ```
 
 ## See Also
@@ -223,4 +223,4 @@ hermes auth remove minimax-oauth
 - [AI Providers reference](../integrations/providers.md)
 - [Environment Variables](../reference/environment-variables.md)
 - [Configuration](../user-guide/configuration.md)
-- [hermes doctor](../reference/cli-commands.md)
+- [savarez doctor](../reference/cli-commands.md)

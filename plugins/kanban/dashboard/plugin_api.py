@@ -26,7 +26,7 @@ For the ``/events`` WebSocket we still require the session token as a
 header on an upgrade request), matching the established pattern used by
 the in-browser PTY bridge in ``hermes_cli/web_server.py``.
 
-This means ``hermes dashboard --host 0.0.0.0`` is safe to run on a LAN:
+This means ``savarez dashboard --host 0.0.0.0`` is safe to run on a LAN:
 plugin routes are no longer an unauthenticated exception. The auth still
 isn't multi-user — anyone who can read the printed URL+token gets full
 dashboard access — but they can't ride along just because they can reach
@@ -1693,7 +1693,7 @@ def reassign_task_endpoint(
 
 @router.get("/config")
 def get_config():
-    """Return kanban dashboard preferences from ~/.hermes/config.yaml.
+    """Return kanban dashboard preferences from ~/.savarez/config.yaml.
 
     Reads the ``dashboard.kanban`` section if present; defaults otherwise.
     Used by the UI to pre-select tenant filters, toggle markdown rendering,
@@ -1898,7 +1898,7 @@ def get_stats(board: Optional[str] = Query(None)):
 def get_assignees(board: Optional[str] = Query(None)):
     """Known profiles + per-profile task counts.
 
-    Returns the union of ``~/.hermes/profiles/*`` on disk and every
+    Returns the union of ``~/.savarez/profiles/*`` on disk and every
     distinct assignee currently used on the board. The dashboard uses
     this to populate its assignee dropdown so a freshly-created profile
     appears in the picker before it's been given any task.
@@ -2186,7 +2186,7 @@ def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
     ``description_auto: true`` so the dashboard can surface a "review"
     badge.
 
-    Maps 1:1 to ``hermes profile describe <name> --auto``. Non-OK
+    Maps 1:1 to ``savarez profile describe <name> --auto``. Non-OK
     outcomes are NOT HTTP errors — the UI renders the reason inline
     (e.g. "no auxiliary client configured") so the operator can fix
     config and retry without a page reload.
@@ -2314,7 +2314,7 @@ def get_orchestration_settings():
 
 @router.put("/orchestration")
 def set_orchestration_settings(payload: OrchestrationSettingsBody):
-    """Update the kanban orchestration knobs in ~/.hermes/config.yaml.
+    """Update the kanban orchestration knobs in ~/.savarez/config.yaml.
 
     Each field is optional — only fields explicitly passed are
     written. ``orchestrator_profile`` / ``default_assignee`` accept

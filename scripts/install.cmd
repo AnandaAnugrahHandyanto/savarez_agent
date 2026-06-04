@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM Hermes Agent Installer for Windows (CMD wrapper)
+REM Savarez AI Agent Installer for Windows (CMD wrapper)
 REM ============================================================================
 REM This batch file launches the PowerShell installer for users running CMD.
 REM
@@ -12,7 +12,7 @@ REM   iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/
 REM ============================================================================
 
 echo.
-echo  Hermes Agent Installer
+echo  Savarez AI Agent Installer
 echo  Launching PowerShell installer...
 echo.
 

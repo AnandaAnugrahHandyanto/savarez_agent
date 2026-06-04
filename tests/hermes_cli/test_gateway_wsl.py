@@ -160,7 +160,7 @@ class TestGatewayCommandWSLMessages:
     """Test that WSL users see appropriate guidance."""
 
     def test_install_wsl_no_systemd(self, monkeypatch, capsys):
-        """hermes gateway install on WSL without systemd shows guidance."""
+        """savarez gateway install on WSL without systemd shows guidance."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
@@ -179,11 +179,11 @@ class TestGatewayCommandWSLMessages:
         out = capsys.readouterr().out
         assert "WSL detected" in out
         assert "systemd is not running" in out
-        assert "hermes gateway run" in out
+        assert "savarez gateway run" in out
         assert "tmux" in out
 
     def test_start_wsl_no_systemd(self, monkeypatch, capsys):
-        """hermes gateway start on WSL without systemd shows guidance."""
+        """savarez gateway start on WSL without systemd shows guidance."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
@@ -197,11 +197,11 @@ class TestGatewayCommandWSLMessages:
 
         out = capsys.readouterr().out
         assert "WSL detected" in out
-        assert "hermes gateway run" in out
+        assert "savarez gateway run" in out
         assert "wsl.conf" in out
 
     def test_status_wsl_running_manual(self, monkeypatch, capsys):
-        """hermes gateway status on WSL with manual process shows WSL note."""
+        """savarez gateway status on WSL with manual process shows WSL note."""
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway, "is_macos", lambda: False)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
@@ -226,7 +226,7 @@ class TestGatewayCommandWSLMessages:
         assert "tmux or screen" in out
 
     def test_status_wsl_not_running(self, monkeypatch, capsys):
-        """hermes gateway status on WSL with no process shows WSL start advice."""
+        """savarez gateway status on WSL with no process shows WSL start advice."""
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway, "is_macos", lambda: False)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
@@ -246,5 +246,5 @@ class TestGatewayCommandWSLMessages:
         gateway.gateway_command(args)
 
         out = capsys.readouterr().out
-        assert "hermes gateway run" in out
+        assert "savarez gateway run" in out
         assert "tmux" in out

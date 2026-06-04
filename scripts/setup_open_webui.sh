@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Bootstrap Open WebUI against Hermes Agent's OpenAI-compatible API server.
+# Bootstrap Open WebUI against Savarez AI Agent's OpenAI-compatible API server.
 #
 # Idempotent by design:
-# - ensures ~/.hermes/.env has API server settings
+# - ensures ~/.savarez/.env has API server settings
 # - installs Open WebUI into ~/.local/open-webui-venv
 # - writes a reusable launcher at ~/.local/bin/start-open-webui-hermes.sh
 # - optionally installs a user service (launchd on macOS, systemd --user on Linux)
@@ -22,23 +22,23 @@ set -euo pipefail
 #   OPEN_WEBUI_DATA_DIR=~/.local/share/open-webui/data
 #   HERMES_API_PORT=8642
 #   HERMES_API_HOST=127.0.0.1
-#   HERMES_API_MODEL_NAME='Hermes Agent'
+#   HERMES_API_MODEL_NAME='Savarez AI Agent'
 
 OPEN_WEBUI_PORT="${OPEN_WEBUI_PORT:-8080}"
 OPEN_WEBUI_HOST="${OPEN_WEBUI_HOST:-127.0.0.1}"
-OPEN_WEBUI_NAME="${OPEN_WEBUI_NAME:-Hermes Agent WebUI}"
+OPEN_WEBUI_NAME="${OPEN_WEBUI_NAME:-Savarez AI Agent WebUI}"
 OPEN_WEBUI_ENABLE_SIGNUP="${OPEN_WEBUI_ENABLE_SIGNUP:-true}"
 OPEN_WEBUI_ENABLE_SERVICE="${OPEN_WEBUI_ENABLE_SERVICE:-auto}"
 OPEN_WEBUI_VENV="${OPEN_WEBUI_VENV:-$HOME/.local/open-webui-venv}"
 OPEN_WEBUI_DATA_DIR="${OPEN_WEBUI_DATA_DIR:-$HOME/.local/share/open-webui/data}"
-HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
+HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.savarez/.env}"
 HERMES_API_PORT="${HERMES_API_PORT:-8642}"
 HERMES_API_HOST="${HERMES_API_HOST:-127.0.0.1}"
 HERMES_API_CONNECT_HOST="${HERMES_API_CONNECT_HOST:-127.0.0.1}"
-HERMES_API_MODEL_NAME="${HERMES_API_MODEL_NAME:-Hermes Agent}"
+HERMES_API_MODEL_NAME="${HERMES_API_MODEL_NAME:-Savarez AI Agent}"
 HERMES_API_BASE_URL="http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/v1"
 LAUNCHER_PATH="$HOME/.local/bin/start-open-webui-hermes.sh"
-LOG_DIR="$HOME/.hermes/logs"
+LOG_DIR="$HOME/.savarez/logs"
 
 log() {
   printf '[open-webui-bootstrap] %s\n' "$*"
@@ -258,11 +258,11 @@ EOF
 install_systemd_user_service() {
   require_cmd systemctl
   local unit_dir="$HOME/.config/systemd/user"
-  local unit="$unit_dir/openwebui-hermes.service"
+  local unit="$unit_dir/openwebui-savarez.service"
   mkdir -p "$unit_dir"
   cat > "$unit" <<EOF
 [Unit]
-Description=Open WebUI connected to Hermes Agent
+Description=Open WebUI connected to Savarez AI Agent
 After=default.target
 
 [Service]
@@ -278,7 +278,7 @@ StandardError=append:%h/.hermes/logs/openwebui.error.log
 WantedBy=default.target
 EOF
   systemctl --user daemon-reload
-  systemctl --user enable --now openwebui-hermes.service
+  systemctl --user enable --now openwebui-savarez.service
 }
 
 start_foreground_hint() {
@@ -308,11 +308,11 @@ main() {
   ensure_env_permissions
 
   log 'Restarting Hermes gateway so API server settings take effect...'
-  hermes gateway restart >/dev/null 2>&1 || true
+  savarez gateway restart >/dev/null 2>&1 || true
   sleep 4
   if ! curl -fsS "http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/health" >/dev/null; then
     log 'Hermes API server did not answer on the first check. Trying to start gateway in the background...'
-    nohup hermes gateway run >/dev/null 2>&1 &
+    nohup savarez gateway run >/dev/null 2>&1 &
     sleep 6
   fi
   curl -fsS "http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/health" >/dev/null

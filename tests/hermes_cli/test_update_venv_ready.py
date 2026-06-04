@@ -1,6 +1,6 @@
 """Tests for ``_wait_for_interpreter_venv_ready`` in ``hermes_cli/main.py``.
 
-During ``hermes update`` the managed-uv path can rebuild the project venv
+During ``savarez update`` the managed-uv path can rebuild the project venv
 (rmtree + ``uv venv``) before the desktop-rebuild and profile-skills-sync
 steps spawn ``sys.executable``. If those children fire while the venv is
 mid-rewrite, the interpreter launcher aborts with ``No pyvenv.cfg file`` and

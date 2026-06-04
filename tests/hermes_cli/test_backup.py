@@ -16,7 +16,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _make_hermes_tree(root: Path) -> None:
-    """Create a realistic ~/.hermes directory structure for testing."""
+    """Create a realistic ~/.savarez directory structure for testing."""
     (root / "config.yaml").write_text("model:\n  provider: openrouter\n")
     (root / ".env").write_text("OPENROUTER_API_KEY=sk-test-123\n")
     (root / "memory_store.db").write_bytes(b"fake-sqlite")
@@ -158,7 +158,7 @@ class TestBackup:
         hermes_home.mkdir()
         _make_hermes_tree(hermes_home)
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         # get_default_hermes_root needs this
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
@@ -192,7 +192,7 @@ class TestBackup:
         hermes_home.mkdir()
         _make_hermes_tree(hermes_home)
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         out_zip = tmp_path / "backup.zip"
@@ -212,7 +212,7 @@ class TestBackup:
         hermes_home.mkdir()
         _make_hermes_tree(hermes_home)
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         out_zip = tmp_path / "backup.zip"
@@ -232,7 +232,7 @@ class TestBackup:
         hermes_home.mkdir()
         _make_hermes_tree(hermes_home)
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         out_zip = tmp_path / "backup.zip"
@@ -252,7 +252,7 @@ class TestBackup:
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("model: test\n")
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         args = Namespace(output=None)
@@ -265,7 +265,7 @@ class TestBackup:
         assert len(zips) == 1
 
     def test_skips_symlinked_files(self, tmp_path, monkeypatch):
-        """Backup must not dereference symlinks and leak files outside HERMES_HOME."""
+        """Backup must not dereference symlinks and leak files outside SAVAREZ_HOME."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         _make_hermes_tree(hermes_home)
@@ -273,7 +273,7 @@ class TestBackup:
         outside.write_text("outside secret\n")
         _symlink_file_or_skip(hermes_home / "skills" / "outside-link.txt", outside)
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         out_zip = tmp_path / "backup.zip"
@@ -344,7 +344,7 @@ class TestImport:
         """Import extracts files into hermes home."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
@@ -369,7 +369,7 @@ class TestImport:
         """Import strips .hermes/ prefix if all entries share it."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
@@ -390,7 +390,7 @@ class TestImport:
         """Import rejects an empty zip."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "empty.zip"
@@ -407,7 +407,7 @@ class TestImport:
         """Import rejects a zip that doesn't look like a hermes backup."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "random.zip"
@@ -426,7 +426,7 @@ class TestImport:
         """Import blocks zip entries with path traversal."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "evil.zip"
@@ -452,7 +452,7 @@ class TestImport:
         hermes_home.mkdir()
         # Pre-existing config triggers the confirmation
         (hermes_home / "config.yaml").write_text("existing: true\n")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
@@ -474,7 +474,7 @@ class TestImport:
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("existing: true\n")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
@@ -493,7 +493,7 @@ class TestImport:
         """Import exits with error for nonexistent file."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
 
         args = Namespace(zipfile=str(tmp_path / "nonexistent.zip"), force=True)
 
@@ -506,7 +506,7 @@ class TestImport:
         """Secret files must end up at 0600 after restore (zipfile drops mode bits)."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
@@ -540,7 +540,7 @@ class TestRoundTrip:
         src_home.mkdir(parents=True)
         _make_hermes_tree(src_home)
 
-        monkeypatch.setenv("HERMES_HOME", str(src_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(src_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "source")
 
         # Backup
@@ -553,7 +553,7 @@ class TestRoundTrip:
         # Import into a different location
         dst_home = tmp_path / "dest" / ".hermes"
         dst_home.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(dst_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(dst_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "dest")
 
         run_import(Namespace(zipfile=str(out_zip), force=True))
@@ -689,7 +689,7 @@ class TestBackupEdgeCases:
     def test_nonexistent_hermes_home(self, tmp_path, monkeypatch):
         """Backup exits when hermes home doesn't exist."""
         fake_home = tmp_path / "nonexistent" / ".hermes"
-        monkeypatch.setenv("HERMES_HOME", str(fake_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(fake_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "nonexistent")
 
         args = Namespace(output=str(tmp_path / "out.zip"))
@@ -704,7 +704,7 @@ class TestBackupEdgeCases:
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("model: test\n")
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         out_dir = tmp_path / "backups"
@@ -724,7 +724,7 @@ class TestBackupEdgeCases:
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("model: test\n")
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         out_path = tmp_path / "mybackup.tar"
@@ -744,7 +744,7 @@ class TestBackupEdgeCases:
         (hermes_home / "__pycache__").mkdir()
         (hermes_home / "__pycache__" / "foo.pyc").write_bytes(b"\x00")
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         args = Namespace(output=str(tmp_path / "out.zip"))
@@ -766,7 +766,7 @@ class TestBackupEdgeCases:
         bad_file.write_text("data")
         bad_file.chmod(0o000)
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         out_zip = tmp_path / "out.zip"
@@ -793,7 +793,7 @@ class TestBackupEdgeCases:
         old_file.write_text("old data")
         os.utime(old_file, (0, 0))
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         out_zip = tmp_path / "out.zip"
@@ -816,7 +816,7 @@ class TestBackupEdgeCases:
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("model: test\n")
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         # Output inside hermes home
@@ -842,7 +842,7 @@ class TestImportEdgeCases:
         """Import rejects a non-zip file."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
 
         not_zip = tmp_path / "fake.zip"
         not_zip.write_text("this is not a zip")
@@ -858,7 +858,7 @@ class TestImportEdgeCases:
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("existing\n")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
@@ -876,7 +876,7 @@ class TestImportEdgeCases:
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         (hermes_home / ".env").write_text("KEY=val\n")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
@@ -893,7 +893,7 @@ class TestImportEdgeCases:
         """Import handles permission errors during extraction."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         # Create a read-only directory so extraction fails
@@ -922,7 +922,7 @@ class TestImportEdgeCases:
         """Import shows progress with 500+ files."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "big.zip"
@@ -955,7 +955,7 @@ class TestProfileRestoration:
         """Import auto-creates wrapper scripts for restored profiles."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         # Mock the wrapper dir to be inside tmp_path
@@ -991,7 +991,7 @@ class TestProfileRestoration:
         """Import doesn't create wrappers for profile dirs without config."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         wrapper_dir = tmp_path / ".local" / "bin"
@@ -1017,7 +1017,7 @@ class TestProfileRestoration:
         """Import gracefully handles missing profiles module (fresh install)."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
@@ -1096,7 +1096,7 @@ class TestSafeCopyDb:
 class TestQuickSnapshot:
     @pytest.fixture
     def hermes_home(self, tmp_path):
-        """Create a fake HERMES_HOME with critical state files."""
+        """Create a fake SAVAREZ_HOME with critical state files."""
         home = tmp_path / ".hermes"
         home.mkdir()
         (home / "config.yaml").write_text("model:\n  provider: openrouter\n")
@@ -1299,11 +1299,11 @@ class TestQuickSnapshot:
         assert snap_id is not None
 
 # ---------------------------------------------------------------------------
-# Pre-update backup (hermes update safety net)
+# Pre-update backup (savarez update safety net)
 # ---------------------------------------------------------------------------
 
 class TestPreUpdateBackup:
-    """Tests for create_pre_update_backup — the auto-backup ``hermes update``
+    """Tests for create_pre_update_backup — the auto-backup ``savarez update``
     runs before touching anything."""
 
     @pytest.fixture
@@ -1451,7 +1451,7 @@ class TestPreUpdateBackup:
         )
 
     def test_skips_symlinked_files(self, hermes_home, tmp_path):
-        """Pre-update backups must not dereference symlinks outside HERMES_HOME."""
+        """Pre-update backups must not dereference symlinks outside SAVAREZ_HOME."""
         from hermes_cli.backup import create_pre_update_backup
 
         outside = tmp_path / "outside-secret.txt"
@@ -1475,11 +1475,11 @@ class TestRunPreUpdateBackup:
         root = tmp_path / ".hermes"
         root.mkdir()
         _make_hermes_tree(root)
-        # Point HERMES_HOME at the temp dir so config + backup paths resolve here
-        monkeypatch.setenv("HERMES_HOME", str(root))
+        # Point SAVAREZ_HOME at the temp dir so config + backup paths resolve here
+        monkeypatch.setenv("SAVAREZ_HOME", str(root))
         # Make Path.home() point at tmp_path for anything that uses it
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        # Bust caches for hermes_cli.config + hermes_constants so they pick up HERMES_HOME
+        # Bust caches for hermes_cli.config + hermes_constants so they pick up SAVAREZ_HOME
         for mod in list(__import__("sys").modules.keys()):
             if mod.startswith("hermes_cli.config") or mod == "hermes_constants":
                 del __import__("sys").modules[mod]
@@ -1587,7 +1587,7 @@ class TestRunPreUpdateBackup:
 
 class TestPreMigrationBackup:
     """Tests for create_pre_migration_backup — the auto-backup
-    ``hermes claw migrate`` runs before mutating ~/.hermes/."""
+    ``hermes claw migrate`` runs before mutating ~/.savarez/."""
 
     @pytest.fixture
     def hermes_home(self, tmp_path):
@@ -1659,7 +1659,7 @@ class TestPreMigrationBackup:
         assert len(remaining) <= 3, f"expected <=3 backups retained, got {len(remaining)}"
 
     def test_missing_hermes_home_returns_none(self, tmp_path):
-        """Fresh install with no ~/.hermes yet — nothing to back up."""
+        """Fresh install with no ~/.savarez yet — nothing to back up."""
         from hermes_cli.backup import create_pre_migration_backup
         missing = tmp_path / "does-not-exist"
         out = create_pre_migration_backup(hermes_home=missing)
@@ -1686,7 +1686,7 @@ class TestPreMigrationBackup:
 # ---------------------------------------------------------------------------
 
 class TestRestoreCronJobsIfEmptied:
-    """`hermes update` config migration can leave cron/jobs.json valid-but-empty,
+    """`savarez update` config migration can leave cron/jobs.json valid-but-empty,
     silently dropping every scheduled job. `restore_cron_jobs_if_emptied` is the
     post-migration safety net that restores from the pre-update snapshot."""
 

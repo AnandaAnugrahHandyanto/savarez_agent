@@ -741,7 +741,7 @@ plugins:
 """,
             encoding="utf-8",
         )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         from hermes_cli import config as _config_mod
         _config_mod._config_cache = None  # type: ignore[attr-defined]
 
@@ -760,7 +760,7 @@ plugins:
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("plugins: {}\n", encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
         from hermes_cli import config as _config_mod
         _config_mod._config_cache = None  # type: ignore[attr-defined]
 

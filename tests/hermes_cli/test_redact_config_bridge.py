@@ -5,8 +5,8 @@ Bug: `agent/redact.py` snapshots `_REDACT_ENABLED` from the env var
 line ~174 calls `setup_logging(mode="cli")` which transitively imports
 `agent.redact` — BEFORE any config bridge ran. So if a user set
 `security.redact_secrets: false` in config.yaml (instead of as an env var
-in .env), the toggle was silently ignored in both `hermes chat` and
-`hermes gateway run`.
+in .env), the toggle was silently ignored in both `savarez chat` and
+`savarez gateway run`.
 
 Fix: bridge `security.redact_secrets` from config.yaml → `HERMES_REDACT_SECRETS`
 env var in `hermes_cli/main.py` BEFORE the `setup_logging()` call.
@@ -54,7 +54,7 @@ def test_redact_secrets_false_in_config_yaml_is_honored(tmp_path):
     ) % str(REPO_ROOT)
 
     env = dict(os.environ)
-    env["HERMES_HOME"] = str(hermes_home)
+    env["SAVAREZ_HOME"] = str(hermes_home)
     env.pop("HERMES_REDACT_SECRETS", None)
 
     result = subprocess.run(
@@ -97,7 +97,7 @@ def test_redact_secrets_default_true_when_unset(tmp_path):
     ) % str(REPO_ROOT)
 
     env = dict(os.environ)
-    env["HERMES_HOME"] = str(hermes_home)
+    env["SAVAREZ_HOME"] = str(hermes_home)
     env.pop("HERMES_REDACT_SECRETS", None)
 
     result = subprocess.run(
@@ -140,7 +140,7 @@ def test_redact_secrets_true_in_config_yaml_is_honored(tmp_path):
     ) % str(REPO_ROOT)
 
     env = dict(os.environ)
-    env["HERMES_HOME"] = str(hermes_home)
+    env["SAVAREZ_HOME"] = str(hermes_home)
     env.pop("HERMES_REDACT_SECRETS", None)
 
     result = subprocess.run(
@@ -186,7 +186,7 @@ def test_dotenv_redact_secrets_beats_config_yaml(tmp_path):
     ) % str(REPO_ROOT)
 
     env = dict(os.environ)
-    env["HERMES_HOME"] = str(hermes_home)
+    env["SAVAREZ_HOME"] = str(hermes_home)
     env.pop("HERMES_REDACT_SECRETS", None)
 
     result = subprocess.run(

@@ -14,7 +14,7 @@ Plan, set up, and monitor a multi-agent video production pipeline backed by Herm
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/kanban-video-orchestrator` |
+| Source | Optional — install with `savarez skills install official/creative/kanban-video-orchestrator` |
 | Path | `optional-skills/creative/kanban-video-orchestrator` |
 | Version | `1.0.0` |
 | Author | ['SHL0MS', 'alt-glitch'] |
@@ -111,7 +111,7 @@ Generate a setup script (`setup.sh`) and run it. The script:
 
 1. Creates the project workspace (`~/projects/video-pipeline/<slug>/`)
 2. Copies any provided assets into `taste/`, `audio/`, `assets/`
-3. Creates each Hermes profile via `hermes profile create --clone`
+3. Creates each Hermes profile via `savarez profile create --clone`
 4. Writes per-profile `SOUL.md` (personality + role definition)
 5. Configures profile YAML (toolsets, always_load skills, cwd)
 6. Writes `brief.md`, `TEAM.md`, and `taste/` content
@@ -129,7 +129,7 @@ Run `setup.sh`. Then provide the user with monitoring commands:
 ```bash
 hermes kanban watch --tenant <project-tenant>     # live events
 hermes kanban list  --tenant <project-tenant>     # board snapshot
-hermes dashboard                                   # visual board UI
+savarez dashboard                                   # visual board UI
 ```
 
 The director profile takes over from here, decomposing the work and routing
@@ -194,7 +194,7 @@ task graphs. See **[references/examples.md](https://github.com/NousResearch/herm
    right human-review gates.
 
 8. **Verify API keys BEFORE firing.** External APIs (TTS, image-gen,
-   image-to-video) need keys in `~/.hermes/.env` or the user's secret store.
+   image-to-video) need keys in `~/.savarez/.env` or the user's secret store.
    A worker that hits a missing-key error wastes a task slot. The setup
    script's `check_key` helper aborts cleanly if a required key is missing.
 

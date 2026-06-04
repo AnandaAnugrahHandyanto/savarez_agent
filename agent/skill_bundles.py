@@ -7,8 +7,8 @@ referenced skill's full content into a single user message, the same way
 
 Storage
 -------
-Bundles live in ``~/.hermes/skill-bundles/*.yaml`` (and the equivalent
-profile-aware directory under ``HERMES_HOME``). Each file looks like::
+Bundles live in ``~/.savarez/skill-bundles/*.yaml`` (and the equivalent
+profile-aware directory under ``SAVAREZ_HOME``). Each file looks like::
 
     name: backend-dev
     description: Backend feature work — code review, testing, PR workflow.
@@ -64,10 +64,10 @@ _bundles_cache_mtime: Optional[float] = None
 
 
 def _bundles_dir() -> Path:
-    """Return the canonical bundles directory under HERMES_HOME.
+    """Return the canonical bundles directory under SAVAREZ_HOME.
 
     Honors ``HERMES_BUNDLES_DIR`` for tests; falls back to
-    ``<HERMES_HOME>/skill-bundles``.
+    ``<SAVAREZ_HOME>/skill-bundles``.
     """
     override = os.environ.get("HERMES_BUNDLES_DIR")
     if override:

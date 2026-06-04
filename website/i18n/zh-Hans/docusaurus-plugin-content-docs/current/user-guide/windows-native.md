@@ -1,6 +1,6 @@
 ---
 title: "Windows（原生）指南"
-description: "在 Windows 10 / 11 上原生运行 Hermes Agent — 安装、功能矩阵、UTF-8 控制台、Git Bash、将 gateway 作为计划任务、编辑器处理、PATH、卸载及常见问题"
+description: "在 Windows 10 / 11 上原生运行 Savarez AI Agent — 安装、功能矩阵、UTF-8 控制台、Git Bash、将 gateway 作为计划任务、编辑器处理、PATH、卸载及常见问题"
 sidebar_label: "Windows（原生）"
 sidebar_position: 3
 ---
@@ -12,7 +12,7 @@ Hermes 可在 Windows 10 和 Windows 11 上原生运行——无需 WSL、Cygwin
 如果你只是想安装，[首页](/) 或[安装页面](../getting-started/installation#windows原生powershell)上的一行命令就够了。遇到意外情况时再回来查阅本页。
 
 :::tip 想用 WSL？
-如果你更倾向于真正的 POSIX 环境（用于 dashboard 内嵌终端、`fork` 语义、Linux 风格文件监视器等），请参阅 **[Windows（WSL2）指南](./windows-wsl-quickstart.md)**。两者可以干净共存：原生数据存放在 `%LOCALAPPDATA%\hermes`，WSL 数据存放在 `~/.hermes`。
+如果你更倾向于真正的 POSIX 环境（用于 dashboard 内嵌终端、`fork` 语义、Linux 风格文件监视器等），请参阅 **[Windows（WSL2）指南](./windows-wsl-quickstart.md)**。两者可以干净共存：原生数据存放在 `%LOCALAPPDATA%\hermes`，WSL 数据存放在 `~/.savarez`。
 :::
 
 ## 快速安装
@@ -23,7 +23,7 @@ Hermes 可在 Windows 10 和 Windows 11 上原生运行——无需 WSL、Cygwin
 iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
 ```
 
-无需管理员权限。安装程序会写入 `%LOCALAPPDATA%\hermes\`，并将 `hermes` 添加到你的**用户 PATH**——安装完成后打开新终端即可使用。
+无需管理员权限。安装程序会写入 `%LOCALAPPDATA%\hermes\`，并将 `savarez` 添加到你的**用户 PATH**——安装完成后打开新终端即可使用。
 
 **安装程序选项**（需要使用 scriptblock 形式传递参数）：
 
@@ -37,7 +37,7 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 | `-Commit` | 未设置 | 将安装固定到指定 commit SHA（覆盖 `-Branch`） |
 | `-Tag` | 未设置 | 将安装固定到指定 git tag（如 `v0.14.0`） |
 | `-NoVenv` | 关闭 | 跳过 venv 创建（高级用法——由你自行管理 Python） |
-| `-SkipSetup` | 关闭 | 跳过安装后的 `hermes setup` 向导 |
+| `-SkipSetup` | 关闭 | 跳过安装后的 `savarez setup` 向导 |
 | `-HermesHome` | `%LOCALAPPDATA%\hermes` | 覆盖数据目录 |
 | `-InstallDir` | `%LOCALAPPDATA%\hermes\hermes-agent` | 覆盖代码存放位置 |
 
@@ -45,7 +45,7 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 
 ### 桌面安装程序（备选方案）
 
-也提供了一个轻量 GUI 安装程序——如果你更倾向于双击 `.exe` 而非打开 PowerShell，可以使用它。下载 Hermes Desktop，运行安装程序，首次启动时 GUI 会在后台调用 `install.ps1` 来配置 Python（通过 `uv`）、Node、PortableGit 以及下文描述的其余依赖引导流程。首次运行后，桌面应用与 PowerShell 安装的 `hermes` CLI 共享同一个 `%LOCALAPPDATA%\hermes\hermes-agent` 安装目录和 `%USERPROFILE%\.hermes` 数据目录——可以在 GUI 和 CLI 之间自由切换。
+也提供了一个轻量 GUI 安装程序——如果你更倾向于双击 `.exe` 而非打开 PowerShell，可以使用它。下载 Hermes Desktop，运行安装程序，首次启动时 GUI 会在后台调用 `install.ps1` 来配置 Python（通过 `uv`）、Node、PortableGit 以及下文描述的其余依赖引导流程。首次运行后，桌面应用与 PowerShell 安装的 `savarez` CLI 共享同一个 `%LOCALAPPDATA%\hermes\hermes-agent` 安装目录和 `%USERPROFILE%\.hermes` 数据目录——可以在 GUI 和 CLI 之间自由切换。
 
 如果你想要熟悉的 Windows 安装体验，或者要将 Hermes 交给非开发者使用，请使用桌面安装程序；如果你已经在终端中，请使用 PowerShell 一行命令。
 
@@ -75,11 +75,11 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 6. **分层 `uv pip install`** — 先尝试 `.[all]`，如果 `git+https` 依赖在 GitHub 限速时失败，则逐步回退到更小的集合（`[messaging,dashboard,ext]` → `[messaging]` → `.`）。防止"单次失败导致裸安装"的故障模式。
 7. **根据 `.env` 自动安装消息 SDK** — 如果存在 `TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN` / `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` / `WHATSAPP_ENABLED`，则运行 `python -m ensurepip --upgrade` 并针对性地调用 `pip install`，确保各平台 SDK 可正常导入。
 8. **设置 `HERMES_GIT_BASH_PATH`** 为解析后的 `bash.exe` 路径，使 Hermes 在新 shell 中能确定性地找到它。
-9. **将 `%LOCALAPPDATA%\hermes\bin` 添加到用户 PATH** — 打开新终端后即可使用 `hermes` 命令。
-10. **运行 `hermes setup`** — 正常的首次运行向导（模型、提供商、工具集）。使用 `-SkipSetup` 跳过。
+9. **将 `%LOCALAPPDATA%\hermes\bin` 添加到用户 PATH** — 打开新终端后即可使用 `savarez` 命令。
+10. **运行 `savarez setup`** — 正常的首次运行向导（模型、提供商、工具集）。使用 `-SkipSetup` 跳过。
 
 :::tip 在 Windows 上跳过繁琐的提供商配置
-在 Windows 上，逐个配置工具 API key（Firecrawl、FAL、Browser Use、OpenAI TTS）是获得可用 agent 摩擦最大的部分。[Nous Portal](/user-guide/features/tool-gateway) 订阅通过一次 OAuth 登录即可覆盖模型**以及**所有这些工具。安装程序完成后，运行 `hermes setup --portal` 完成配置。
+在 Windows 上，逐个配置工具 API key（Firecrawl、FAL、Browser Use、OpenAI TTS）是获得可用 agent 摩擦最大的部分。[Nous Portal](/user-guide/features/tool-gateway) 订阅通过一次 OAuth 登录即可覆盖模型**以及**所有这些工具。安装程序完成后，运行 `savarez setup --portal` 完成配置。
 :::
 
 ## 功能矩阵
@@ -88,7 +88,7 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 
 | 功能 | 原生 Windows | WSL2 |
 |---|---|---|
-| CLI（`hermes chat`、`hermes setup`、`hermes gateway` 等） | ✓ | ✓ |
+| CLI（`savarez chat`、`savarez setup`、`savarez gateway` 等） | ✓ | ✓ |
 | 交互式 TUI（`hermes --tui`） | ✓ | ✓ |
 | 消息 gateway（Telegram、Discord、Slack、WhatsApp，15+ 平台） | ✓ | ✓ |
 | Cron 调度器 | ✓ | ✓ |
@@ -166,12 +166,12 @@ Windows Terminal 将 `Ctrl+Enter` 作为独立按键序列传递。Hermes 将其
 
 ## 在 Windows 登录时运行 gateway
 
-Windows 上的 `hermes gateway install` 使用**计划任务**，并以 Startup 文件夹作为回退——无需管理员权限。
+Windows 上的 `savarez gateway install` 使用**计划任务**，并以 Startup 文件夹作为回退——无需管理员权限。
 
 ### 安装
 
 ```powershell
-hermes gateway install
+savarez gateway install
 ```
 
 底层发生的事情：
@@ -185,14 +185,14 @@ hermes gateway install
 ### 管理
 
 ```powershell
-hermes gateway status      # 合并视图：schtasks + Startup 文件夹 + 运行中的 PID
-hermes gateway start       # 立即启动计划任务
-hermes gateway stop        # 等效于优雅的 SIGTERM（通过 psutil 调用 TerminateProcess）
-hermes gateway restart
-hermes gateway uninstall   # 移除 schtasks 条目、Startup 快捷方式、pid 文件
+savarez gateway status      # 合并视图：schtasks + Startup 文件夹 + 运行中的 PID
+savarez gateway start       # 立即启动计划任务
+savarez gateway stop        # 等效于优雅的 SIGTERM（通过 psutil 调用 TerminateProcess）
+savarez gateway restart
+savarez gateway uninstall   # 移除 schtasks 条目、Startup 快捷方式、pid 文件
 ```
 
-`hermes gateway status` 是幂等的——调用一千次也不会意外杀死 gateway。（PR #21561 之前它会静默地这样做，原因是 `os.kill(pid, 0)` 在 C 层与 `CTRL_C_EVENT` 发生碰撞——如果你想了解来龙去脉，请参阅下方"进程管理内部机制"。）
+`savarez gateway status` 是幂等的——调用一千次也不会意外杀死 gateway。（PR #21561 之前它会静默地这样做，原因是 `os.kill(pid, 0)` 在 C 层与 `CTRL_C_EVENT` 发生碰撞——如果你想了解来龙去脉，请参阅下方"进程管理内部机制"。）
 
 ### 为什么不用 Windows 服务？
 
@@ -210,7 +210,7 @@ hermes gateway uninstall   # 移除 schtasks 条目、Startup 快捷方式、pid
 
 这种分离是有意为之：`%LOCALAPPDATA%\hermes` 是可丢弃的基础设施（可以删除后用一行命令恢复）。`%USERPROFILE%\.hermes` 是你的数据——配置、记忆、技能、会话历史——其结构与 Linux 安装完全相同。在机器间同步它，你的 Hermes 就随之迁移。
 
-**覆盖 `HERMES_HOME`：** 设置该环境变量以指向不同的数据目录。与 Linux 上的用法相同。
+**覆盖 `SAVAREZ_HOME`：** 设置该环境变量以指向不同的数据目录。与 Linux 上的用法相同。
 
 ## 浏览器工具
 
@@ -218,7 +218,7 @@ hermes gateway uninstall   # 移除 schtasks 条目、Startup 快捷方式、pid
 
 - 安装程序通过 npm 将 `agent-browser` 添加到 PATH。
 - `shutil.which("agent-browser", path=...)` 会自动找到 `.cmd` 垫片——`CreateProcessW` 无法执行无扩展名的 shebang 脚本，因此 Hermes 始终解析到 `.CMD` 包装器。不要手动调用 shebang 脚本；始终通过 `.cmd` 调用。
-- Playwright Chromium 在首次运行时自动安装（`npx playwright install chromium`）。如果安装失败，`hermes doctor` 会给出修复提示。
+- Playwright Chromium 在首次运行时自动安装（`npx playwright install chromium`）。如果安装失败，`savarez doctor` 会给出修复提示。
 
 ## 在 Windows 上运行 Hermes — 实用说明
 
@@ -230,7 +230,7 @@ hermes gateway uninstall   # 移除 schtasks 条目、Startup 快捷方式、pid
 
 ```powershell
 Get-Command hermes        # 应输出 C:\Users\<you>\AppData\Local\hermes\bin\hermes.cmd
-hermes --version
+savarez --version
 ```
 
 ### 环境变量
@@ -259,7 +259,7 @@ TELEGRAM_BOT_TOKEN=...
 在 PowerShell 中执行：
 
 ```powershell
-hermes uninstall
+savarez uninstall
 ```
 
 这是干净的卸载路径——移除 schtasks 条目、Startup 文件夹快捷方式、`hermes.cmd` 垫片，删除 `%LOCALAPPDATA%\hermes\hermes-agent\`，并从用户 PATH 中移除相关条目。它会保留 `%USERPROFILE%\.hermes\`（你的配置、认证、技能、会话、日志），以防你需要重新安装。
@@ -267,12 +267,12 @@ hermes uninstall
 彻底清除所有内容：
 
 ```powershell
-hermes uninstall
+savarez uninstall
 Remove-Item -Recurse -Force "$env:USERPROFILE\.hermes"
 Remove-Item -Recurse -Force "$env:LOCALAPPDATA\hermes"
 ```
 
-`hermes uninstall` CLI 子命令还能处理 schtasks 条目以不同任务名注册的情况（旧版安装）——它通过安装路径而非硬编码任务名来搜索。
+`savarez uninstall` CLI 子命令还能处理 schtasks 条目以不同任务名注册的情况（旧版安装）——它通过安装路径而非硬编码任务名来搜索。
 
 ## 进程管理内部机制
 
@@ -296,13 +296,13 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\hermes"
 你下载的 `install.ps1` 携带了 UTF-8 BOM。`irm | iex` 形式会自动剥离 BOM；`[scriptblock]::Create((irm ...))` 不会。请改用简单的 `irm | iex` 形式，或手动下载脚本并通过 `[IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding $false))` 保存为不带 BOM 的纯 UTF-8。
 
 **重启后 gateway 无法持续运行。**
-运行 `hermes gateway status`——它会合并 schtasks 条目、Startup 文件夹快捷方式（如有）和运行中的 PID。如果 schtasks 已注册但未运行，组策略可能阻止了 `ONLOGON` 触发器。运行 `schtasks /Query /TN HermesGateway /V /FO LIST` 查看任务失败原因，或通过卸载后使用 `HERMES_GATEWAY_FORCE_STARTUP=1` 重新安装来回退到 Startup 文件夹路径。
+运行 `savarez gateway status`——它会合并 schtasks 条目、Startup 文件夹快捷方式（如有）和运行中的 PID。如果 schtasks 已注册但未运行，组策略可能阻止了 `ONLOGON` 触发器。运行 `schtasks /Query /TN HermesGateway /V /FO LIST` 查看任务失败原因，或通过卸载后使用 `HERMES_GATEWAY_FORCE_STARTUP=1` 重新安装来回退到 Startup 文件夹路径。
 
 **设置 `$env:EDITOR` 后 `/edit` 仍然无响应。**
 你只在当前进程中设置了它；请关闭并重新打开 shell，或在系统属性 → 环境变量中以用户作用域设置。在新 PowerShell 窗口中用 `echo $env:EDITOR` 验证。
 
 **浏览器工具启动了，但工具调用超时。**
-Chromium 在首次运行时自动安装。如果安装失败（GitHub 限速、Playwright CDN 故障），运行 `hermes doctor`——它会检测缺失的 Chromium 并打印修复所需的确切 `npx playwright install chromium` 命令。
+Chromium 在首次运行时自动安装。如果安装失败（GitHub 限速、Playwright CDN 故障），运行 `savarez doctor`——它会检测缺失的 Chromium 并打印修复所需的确切 `npx playwright install chromium` 命令。
 
 **`agent-browser` 报奇怪的 Node 版本错误。**
 安装程序在 `%LOCALAPPDATA%\hermes\node` 配置了 Node 22，但你的 PATH 中可能有更靠前的旧版系统 Node 18。要么将 Hermes 的 node 目录移到 PATH 前面，要么如果你不在其他地方使用 Node，删除系统安装。
@@ -320,6 +320,6 @@ UTF-8 stdio 垫片未激活。检查 `HERMES_DISABLE_WINDOWS_UTF8` 是否**未**
 
 - **[安装](../getting-started/installation.md)** — 完整安装页面，包括 Linux/macOS/WSL2/Termux。
 - **[Windows（WSL2）指南](./windows-wsl-quickstart.md)** — 如果你需要 POSIX 语义或 dashboard 终端面板。
-- **[CLI 参考](../reference/cli-commands.md)** — 所有 `hermes` 子命令。
+- **[CLI 参考](../reference/cli-commands.md)** — 所有 `savarez` 子命令。
 - **[FAQ](../reference/faq.md)** — 常见的非 Windows 专属问题。
 - **[消息 Gateway](./messaging/index.md)** — 在 Windows 上运行 Telegram/Discord/Slack。

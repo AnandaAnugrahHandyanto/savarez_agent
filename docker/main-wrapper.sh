@@ -6,13 +6,13 @@
 # stderr from the container.
 #
 # Shebang note: /init scrubs env before invoking CMD, so a plain
-# `#!/bin/sh` wrapper sees an empty environ and `ENV HERMES_HOME=/opt/data`
-# from the Dockerfile never reaches `hermes`. with-contenv repopulates
+# `#!/bin/sh` wrapper sees an empty environ and `ENV SAVAREZ_HOME=/opt/data`
+# from the Dockerfile never reaches `savarez`. with-contenv repopulates
 # the env from /run/s6/container_environment before exec'ing, which is
 # what s6-supervised services use too (see main-hermes/run).
 #
 # Routing:
-#   no args                       → exec `hermes` (the default)
+#   no args                       → exec `savarez` (the default)
 #   first arg is an executable    → exec it directly (sleep, bash, sh, …)
 #   first arg is anything else    → exec `hermes <args>` (subcommand passthrough)
 #
@@ -65,7 +65,7 @@ cd /opt/data
 . /opt/hermes/.venv/bin/activate
 
 # Restore the original working directory before handing off to
-# the user's command so `hermes chat` starts in the Docker -w
+# the user's command so `savarez chat` starts in the Docker -w
 # directory, not /opt/data.
 cd "$_hermes_orig_cwd"
 

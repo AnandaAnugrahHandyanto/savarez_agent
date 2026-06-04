@@ -46,10 +46,10 @@ def catalog_dir(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_hermes_home(tmp_path, monkeypatch):
-    """Redirect all config I/O to a temp HERMES_HOME."""
+    """Redirect all config I/O to a temp SAVAREZ_HOME."""
     hh = tmp_path / "hermes-home"
     hh.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hh))
+    monkeypatch.setenv("SAVAREZ_HOME", str(hh))
     monkeypatch.setattr(
         "hermes_cli.config.get_hermes_home", lambda: hh
     )
@@ -558,7 +558,7 @@ class TestCatalogDiagnostics:
 
     def test_picker_surfaces_future_manifest_warning(self, catalog_dir, capsys, monkeypatch):
         """The text-dump path should print a warning line for future-manifest
-        entries so users running headless or after `hermes setup` know to update."""
+        entries so users running headless or after `savarez setup` know to update."""
         body = _basic_manifest()
         body["manifest_version"] = 999
         _write_manifest(catalog_dir, "futuristic", body)

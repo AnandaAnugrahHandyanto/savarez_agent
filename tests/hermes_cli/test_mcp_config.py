@@ -1,5 +1,5 @@
 """
-Tests for hermes_cli.mcp_config — ``hermes mcp`` subcommands.
+Tests for hermes_cli.mcp_config — ``savarez mcp`` subcommands.
 
 These tests mock the MCP server connection layer so they run without
 any actual MCP servers or API keys.
@@ -18,7 +18,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_config(tmp_path, monkeypatch):
     """Redirect all config I/O to a temp directory."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
     monkeypatch.setattr(
         "hermes_cli.config.get_hermes_home", lambda: tmp_path
     )
@@ -490,7 +490,7 @@ class TestEnvVarInterpolation:
 class TestProbeEnvResolution:
     """The probe path must resolve ``${ENV}`` before connecting, so the
     discovery probe behaves like runtime tool loading. Regression for #37792
-    where `hermes mcp add --auth header` sent a literal
+    where `savarez mcp add --auth header` sent a literal
     ``Authorization: Bearer ${MCP_X_API_KEY}`` and got 401."""
 
     def test_resolve_interpolates_header(self, monkeypatch):
@@ -648,7 +648,7 @@ class TestMcpRemoveEvictsManager:
         monkeypatch.setattr(
             "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
 
         from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
         reset_manager_for_tests()

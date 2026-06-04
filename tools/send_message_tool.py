@@ -246,9 +246,9 @@ def _handle_send(args):
                     },
                 )
             else:
-                return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+                return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.savarez/config.yaml or environment variables.")
         else:
-            return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+            return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.savarez/config.yaml or environment variables.")
 
     from gateway.platforms.base import BasePlatformAdapter
 
@@ -280,7 +280,7 @@ def _handle_send(args):
             return json.dumps({
                 "error": f"No home channel set for {platform_name} to determine where to send the message. "
                 f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                f"or set a home channel via: hermes config set {home_env} <channel_id>"
+                f"or set a home channel via: savarez config set {home_env} <channel_id>"
             })
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
@@ -1301,7 +1301,7 @@ async def _send_email(extra, chat_id, message):
         msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address
         msg["To"] = chat_id
-        msg["Subject"] = "Hermes Agent"
+        msg["Subject"] = "Savarez AI Agent"
         msg["Date"] = formatdate(localtime=True)
 
         server = smtplib.SMTP(smtp_host, smtp_port)
@@ -1665,7 +1665,7 @@ def _check_send_message():
 
     Also passes for kanban workers — the dispatcher sets ``HERMES_KANBAN_TASK``
     on every spawned worker, but those workers run with the assignee profile's
-    ``HERMES_HOME`` which has no ``gateway.pid``, so the gateway-running check
+    ``SAVAREZ_HOME`` which has no ``gateway.pid``, so the gateway-running check
     would fail even though the parent gateway is alive. Honoring the env var
     lets workers call ``send_message`` to deliver rich content directly to the
     originating chat (paired with ``kanban_complete`` for the short notifier

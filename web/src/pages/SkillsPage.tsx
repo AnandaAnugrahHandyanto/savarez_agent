@@ -685,7 +685,7 @@ function HubBrowser({
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            Results come from the same sources as <span className="font-mono">hermes skills search</span>.
+            Results come from the same sources as <span className="font-mono">savarez skills search</span>.
             Installs run in the background; the log streams below.
           </p>
         </CardContent>

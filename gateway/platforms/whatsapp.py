@@ -242,7 +242,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
-    DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
+    DEFAULT_REPLY_PREFIX = "⚕ *Savarez AI Agent*\n────────────\n"
     
     # Default bridge location relative to the hermes-agent install
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
@@ -537,7 +537,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
             self._set_fatal_error(
                 "whatsapp_node_missing",
-                "Node.js is not installed — install Node.js and re-run `hermes gateway`.",
+                "Node.js is not installed — install Node.js and re-run `savarez gateway`.",
                 retryable=False,
             )
             return False

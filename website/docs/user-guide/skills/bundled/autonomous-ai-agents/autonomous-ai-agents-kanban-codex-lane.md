@@ -17,7 +17,7 @@ Use when a Hermes Kanban worker wants to run Codex CLI as an isolated implementa
 | Source | Bundled (installed by default) |
 | Path | `skills/autonomous-ai-agents/kanban-codex-lane` |
 | Version | `1.0.0` |
-| Author | Hermes Agent |
+| Author | Savarez AI Agent |
 | License | MIT |
 | Tags | `kanban`, `codex`, `worktrees`, `autonomous-agents`, `prediction-market-bot` |
 | Related skills | [`kanban-worker`](/docs/user-guide/skills/bundled/devops/devops-kanban-worker), [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
@@ -32,7 +32,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 ## Overview
 
-This skill defines the lightweight Hermes+Codex dual-lane convention for Kanban workers. Hermes is always the task owner: it calls `kanban_show`, decides whether Codex is appropriate, creates or selects an isolated workspace, starts and monitors Codex, reconciles any diff, runs verification, and writes the final `kanban_complete` or `kanban_block` handoff. Codex is an input lane only. Codex output is not a task completion signal, not a trusted reviewer, and not allowed to write durable Kanban state directly.
+This skill defines the lightweight Hermes+Codex dual-lane convention for Kanban workers. Savarez is always the task owner: it calls `kanban_show`, decides whether Codex is appropriate, creates or selects an isolated workspace, starts and monitors Codex, reconciles any diff, runs verification, and writes the final `kanban_complete` or `kanban_block` handoff. Codex is an input lane only. Codex output is not a task completion signal, not a trusted reviewer, and not allowed to write durable Kanban state directly.
 
 The convention exists so a Hermes worker can use Codex for bounded implementation help without changing the dispatcher. The dispatcher must still spawn Hermes workers. A worker may optionally spawn Codex inside its own run, then accept, partially accept, or reject the lane after independent review and tests.
 
@@ -219,7 +219,7 @@ Hermes must perform this checklist before accepting any Codex lane result:
 - [ ] No secrets, credentials, generated caches, unrelated data, or local artifacts are included.
 - [ ] PMB safety constraints were preserved: no live REST order entry, no market orders, no execution crossing, no fake passive fills/PnL, no risk-gate weakening, no secrets.
 - [ ] Codex commits are small enough to cherry-pick or squash cleanly.
-- [ ] Hermes ran the canonical tests itself, using `scripts/run_tests.sh` for Hermes Agent or the repo's documented wrapper for other repos.
+- [ ] Hermes ran the canonical tests itself, using `scripts/run_tests.sh` for Savarez AI Agent or the repo's documented wrapper for other repos.
 - [ ] Any Codex-run tests are listed separately from Hermes-run tests.
 - [ ] Accepted commits/diffs were applied to the Hermes-owned workspace/branch.
 - [ ] Rejected or partial work has a concrete reason and artifact path if useful.

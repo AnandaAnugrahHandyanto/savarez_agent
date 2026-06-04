@@ -14,11 +14,11 @@ Right now the primary consumer is the Teams meeting summary pipeline: Graph noti
 
 - Microsoft Graph application credentials — [Register a Microsoft Graph Application](/guides/microsoft-graph-app-registration)
 - A **public HTTPS URL** that Microsoft Graph can reach (Graph does not call private endpoints). A dev tunnel works for testing; production needs a real domain with a valid certificate.
-- A strong shared secret to use as the `clientState` value. Generate with `openssl rand -hex 32` and put it in `~/.hermes/.env` as `MSGRAPH_WEBHOOK_CLIENT_STATE`.
+- A strong shared secret to use as the `clientState` value. Generate with `openssl rand -hex 32` and put it in `~/.savarez/.env` as `MSGRAPH_WEBHOOK_CLIENT_STATE`.
 
 ## Quick Start
 
-Minimum `~/.hermes/config.yaml`:
+Minimum `~/.savarez/config.yaml`:
 
 ```yaml
 platforms:
@@ -32,7 +32,7 @@ platforms:
         - "communications/onlineMeetings"
 ```
 
-Or via env vars in `~/.hermes/.env` (auto-merged on startup):
+Or via env vars in `~/.savarez/.env` (auto-merged on startup):
 
 ```bash
 MSGRAPH_WEBHOOK_ENABLED=true
@@ -43,7 +43,7 @@ MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES=communications/onlineMeetings
 
 Note: the bind host is read from `extra.host` in `config.yaml` (see the example above); there is no `MSGRAPH_WEBHOOK_HOST` env-var override.
 
-Start the gateway: `hermes gateway run`. The listener exposes:
+Start the gateway: `savarez gateway run`. The listener exposes:
 
 - `POST /msgraph/webhook` — change notifications from Graph
 - `GET /msgraph/webhook?validationToken=...` — Graph subscription validation handshake

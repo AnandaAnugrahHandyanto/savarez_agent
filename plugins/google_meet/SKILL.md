@@ -43,7 +43,7 @@ Pick `realtime` only when the user actually wants the agent to speak. It costs r
 Easiest path — run the built-in installer:
 
 ```bash
-hermes plugins enable google_meet
+savarez plugins enable google_meet
 hermes meet install                 # pip deps + Chromium (transcribe only)
 hermes meet install --realtime      # + pulseaudio-utils / brew blackhole+ffmpeg
 hermes meet auth                    # optional; skips guest-lobby wait
@@ -63,14 +63,14 @@ pip install playwright websockets && python -m playwright install chromium
 #   Linux:  sudo apt install pulseaudio-utils
 #   macOS:  brew install blackhole-2ch ffmpeg
 #           → System Settings → Sound → Input → BlackHole 2ch
-#   Then set OPENAI_API_KEY or HERMES_MEET_REALTIME_KEY in ~/.hermes/.env
+#   Then set OPENAI_API_KEY or HERMES_MEET_REALTIME_KEY in ~/.savarez/.env
 ```
 
 For a remote node:
 ```bash
 # on the user's Mac (where Chrome is signed in):
 pip install playwright websockets && python -m playwright install chromium
-hermes plugins enable google_meet
+savarez plugins enable google_meet
 hermes meet node run --display-name my-mac    # persistent server
 # copy the printed token
 
@@ -84,7 +84,7 @@ Run `hermes meet setup` to preflight local prereqs.
 ## Flow
 
 1. **Join** — call `meet_join(url=..., mode=..., node=...)`. Returns immediately.
-2. **Announce yourself** — no auto-consent. Say (in whatever channel the user is watching): "A Hermes agent bot is in this call taking notes."
+2. **Announce yourself** — no auto-consent. Say (in whatever channel the user is watching): "A Savarez AI agent bot is in this call taking notes."
 3. **Poll** — `meet_status()` for liveness, `meet_transcript(last=20)` for recent captions. Don't re-read the whole transcript every turn.
 4. **Speak (realtime only)** — `meet_say(text="...")` queues text for TTS. The speech lags by ~2s. Don't spam it.
 5. **Leave** — `meet_leave()` when done, or set `duration="30m"` on `meet_join` for auto-leave.
@@ -135,7 +135,7 @@ Run `hermes meet setup` to preflight local prereqs.
 
 Local:
 ```
-$HERMES_HOME/workspace/meetings/<meeting-id>/transcript.txt
+$SAVAREZ_HOME/workspace/meetings/<meeting-id>/transcript.txt
 ```
 
 Remote node: transcript lives on the node host's disk. Use `meet_transcript(node=...)` to read it over RPC.
@@ -144,5 +144,5 @@ Remote node: transcript lives on the node host's disk. Use `meet_transcript(node
 
 - URL regex: only `https://meet.google.com/...` URLs pass.
 - No calendar scanning. No auto-dial.
-- Remote nodes use bearer-token auth; tokens are generated on the node (32 hex chars, persisted in `$HERMES_HOME/workspace/meetings/node_token.json`) and must be copied to the gateway via `hermes meet node approve`.
+- Remote nodes use bearer-token auth; tokens are generated on the node (32 hex chars, persisted in `$SAVAREZ_HOME/workspace/meetings/node_token.json`) and must be copied to the gateway via `hermes meet node approve`.
 - `meet_say` text is rate-limited by the OpenAI Realtime session; spam-protection is the bot's problem, not yours, but still — don't queue hundreds of lines.

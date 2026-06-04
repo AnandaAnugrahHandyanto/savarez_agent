@@ -90,7 +90,7 @@ agent sees a syntax-clean file with semantic problems as
 For "manual" entries, install the server through whatever toolchain
 manager makes sense for that language (rustup, ghcup, opam, brew,
 …). Hermes auto-detects the binary on PATH or in
-`<HERMES_HOME>/lsp/bin/`.
+`<SAVAREZ_HOME>/lsp/bin/`.
 
 A few servers are installed alongside a peer dependency that npm
 won't auto-pull. The current case is `typescript-language-server`,
@@ -131,7 +131,7 @@ lsp:
   wait_timeout: 5.0
 
   # How to handle missing server binaries.
-  #   auto    — install via npm/pip/go install into <HERMES_HOME>/lsp/bin
+  #   auto    — install via npm/pip/go install into <SAVAREZ_HOME>/lsp/bin
   #   manual  — only use binaries already on PATH
   install_strategy: auto
 
@@ -163,8 +163,8 @@ lsp:
 ## Installation locations
 
 When `install_strategy: auto`, Hermes installs binaries into
-`<HERMES_HOME>/lsp/bin/`. NPM packages land in
-`<HERMES_HOME>/lsp/node_modules/` with bin symlinks one level up.
+`<SAVAREZ_HOME>/lsp/bin/`. NPM packages land in
+`<SAVAREZ_HOME>/lsp/node_modules/` with bin symlinks one level up.
 Go binaries come from `go install` with `GOBIN` pointed at the
 staging dir.
 
@@ -210,7 +210,7 @@ lsp:
 
 **`hermes lsp status` shows a server as "missing"**
 
-The binary isn't on PATH and isn't in `<HERMES_HOME>/lsp/bin/`. Run
+The binary isn't on PATH and isn't in `<SAVAREZ_HOME>/lsp/bin/`. Run
 `hermes lsp install <server_id>` to attempt an auto-install, or
 install the binary manually through the language's normal toolchain.
 
@@ -230,11 +230,11 @@ scoop install shellcheck    # Windows
 ```
 
 The same warning is logged once at server spawn time in
-`~/.hermes/logs/agent.log`.
+`~/.savarez/logs/agent.log`.
 
 **Server starts but never returns diagnostics**
 
-Check `~/.hermes/logs/agent.log` for `[agent.lsp.client]` entries —
+Check `~/.savarez/logs/agent.log` for `[agent.lsp.client]` entries —
 both stderr from the language server and protocol errors land
 there. Some servers (rust-analyzer especially) need to finish a
 project-wide index before they emit per-file diagnostics; the first

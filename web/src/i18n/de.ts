@@ -50,7 +50,7 @@ export const de: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
+    brand: "Savarez AI Agent",
     brandShort: "HA",
     closeNavigation: "Navigation schließen",
     closeModelTools: "Modell und Werkzeuge schließen",
@@ -319,7 +319,7 @@ export const de: Translations = {
     enableRuntime: "Aktivieren",
     forceReinstall: "Neuinstallation erzwingen (bestehenden Ordner zuerst löschen)",
     headline:
-      "Hermes-Plugins entdecken, installieren, aktivieren und aktualisieren (entspricht `hermes plugins`).",
+      "Hermes-Plugins entdecken, installieren, aktivieren und aktualisieren (entspricht `savarez plugins`).",
     identifierLabel: "Git-URL oder owner/repo",
     inactive: "inaktiv",
     installBtn: "Installieren",
@@ -336,8 +336,8 @@ export const de: Translations = {
     providersHint:
       "Schreibt memory.provider (leer = eingebaut) und context.engine in config.yaml. Wirkt sich auf die nächste Sitzung aus.",
     refreshDashboard: "Dashboard-Erweiterungen erneut scannen",
-    removeConfirm: "Dieses Plugin aus ~/.hermes/plugins/ entfernen?",
-    removeHint: "Nur vom Benutzer installierte Plugins unter ~/.hermes/plugins können entfernt werden.",
+    removeConfirm: "Dieses Plugin aus ~/.savarez/plugins/ entfernen?",
+    removeHint: "Nur vom Benutzer installierte Plugins unter ~/.savarez/plugins können entfernt werden.",
     rescanHeading: "SPA-Plugin-Registry",
     rescanHint: "Nach dem Hinzufügen von Dateien auf dem Datenträger erneut scannen, damit die Sidebar neue Manifeste erkennt.",
     runtimeHeading: "Gateway-Laufzeit (YAML-Plugins)",
@@ -359,7 +359,7 @@ export const de: Translations = {
     all: "Alle",
     categories: "Kategorien",
     filters: "Filter",
-    noSkills: "Keine Skills gefunden. Skills werden aus ~/.hermes/skills/ geladen",
+    noSkills: "Keine Skills gefunden. Skills werden aus ~/.savarez/skills/ geladen",
     noSkillsMatch: "Keine Skills entsprechen deiner Suche oder deinem Filter.",
     skillCount: "{count} Skill{s}",
     resultCount: "{count} Ergebnis{s}",
@@ -373,7 +373,7 @@ export const de: Translations = {
   },
 
   config: {
-    configPath: "~/.hermes/config.yaml",
+    configPath: "~/.savarez/config.yaml",
     filters: "Filter",
     sections: "Bereiche",
     exportConfig: "Konfiguration als JSON exportieren",
@@ -584,7 +584,7 @@ export const de: Translations = {
         "Auf X teilen öffnet einen vorgefertigten Post in einem neuen Tab. Klicke zuerst auf Bild kopieren, wenn du das 1200×630-Abzeichen anhängen möchtest – X lässt dich es direkt in den Tweet-Editor einfügen. PNG herunterladen speichert die Datei zur Nutzung an beliebiger Stelle.",
       clipboard_unsupported:
         "Bildkopie über die Zwischenablage wird in diesem Browser nicht unterstützt – nutze stattdessen Herunterladen.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: "Just unlocked {tier_part}\"{name}\" in Savarez AI Agent ☤",
     },
   },
   kanban: {

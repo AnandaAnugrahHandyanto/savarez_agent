@@ -8,9 +8,9 @@ description: "Background maintenance for agent-created skills — usage tracking
 
 The curator is a background maintenance pass for **agent-created skills**. It tracks how often each skill is viewed, used, and patched, moves long-unused skills through `active → stale → archived` states, and periodically spawns a short auxiliary-model review that proposes consolidations or patches drift.
 
-It exists so that skills created via the [self-improvement loop](/user-guide/features/skills#agent-managed-skills-skill_manage-tool) don't pile up forever. Every time the agent solves a novel problem and saves a skill, that skill lands in `~/.hermes/skills/`. Without maintenance, you end up with dozens of narrow near-duplicates that pollute the catalog and waste tokens.
+It exists so that skills created via the [self-improvement loop](/user-guide/features/skills#agent-managed-skills-skill_manage-tool) don't pile up forever. Every time the agent solves a novel problem and saves a skill, that skill lands in `~/.savarez/skills/`. Without maintenance, you end up with dozens of narrow near-duplicates that pollute the catalog and waste tokens.
 
-The curator **never touches** bundled skills (shipped with the repo) or hub-installed skills (from [agentskills.io](https://agentskills.io)). It only reviews skills the agent itself authored. It also **never auto-deletes** — the worst outcome is archival into `~/.hermes/skills/.archive/`, which is recoverable.
+The curator **never touches** bundled skills (shipped with the repo) or hub-installed skills (from [agentskills.io](https://agentskills.io)). It only reviews skills the agent itself authored. It also **never auto-deletes** — the worst outcome is archival into `~/.savarez/skills/.archive/`, which is recoverable.
 
 Tracks [issue #7816](https://github.com/NousResearch/hermes-agent/issues/7816).
 
@@ -24,14 +24,14 @@ The curator is triggered by an inactivity check, not a cron daemon. On CLI sessi
 If both are true, it spawns a background fork of `AIAgent` — the same pattern used by the memory/skill self-improvement nudges. The fork runs in its own prompt cache and never touches the active conversation.
 
 :::info First-run behavior
-On a brand-new install (or the first time a pre-curator install ticks after `hermes update`), the curator **does not run immediately**. The first observation seeds `last_run_at` to "now" and defers the first real pass by one full `interval_hours`. This gives you a full interval to review your skill library, pin anything important, or opt out entirely before the curator ever touches it.
+On a brand-new install (or the first time a pre-curator install ticks after `savarez update`), the curator **does not run immediately**. The first observation seeds `last_run_at` to "now" and defers the first real pass by one full `interval_hours`. This gives you a full interval to review your skill library, pin anything important, or opt out entirely before the curator ever touches it.
 
 If you want to see what the curator *would* do before it runs for real, run `hermes curator run --dry-run` — it produces the same review report without mutating the library.
 :::
 
 A run has two phases:
 
-1. **Automatic transitions** (deterministic, no LLM). Skills unused for `stale_after_days` (30) become `stale`; skills unused for `archive_after_days` (90) are moved to `~/.hermes/skills/.archive/`.
+1. **Automatic transitions** (deterministic, no LLM). Skills unused for `stale_after_days` (30) become `stale`; skills unused for `archive_after_days` (90) are moved to `~/.savarez/skills/.archive/`.
 2. **LLM review** (single aux-model pass, `max_iterations=8`). The forked agent surveys the agent-created skills, can read any of them with `skill_view`, and decides per-skill whether to keep, patch (via `skill_manage`), consolidate overlapping ones, or archive via the terminal tool. Consolidation treats a skill as a full package: if a skill has `references/`, `templates/`, `scripts/`, `assets/`, or relative links to those paths, the curator must either keep it standalone, re-home the needed support files and rewrite paths, or archive the entire package unchanged — not flatten only `SKILL.md` into another skill's `references/` file.
 
 Pinned skills are off-limits to both the curator's auto-transitions and the agent's own `skill_manage` tool. See [Pinning a skill](#pinning-a-skill) below.
@@ -55,10 +55,10 @@ To disable entirely, set `curator.enabled: false`.
 
 The curator's LLM review pass is a regular auxiliary task slot — `auxiliary.curator` — alongside Vision, Compression, Session Search, etc. "Auto" means "use my main chat model"; override the slot to pin a specific provider + model for the review pass instead.
 
-**Easiest — `hermes model`:**
+**Easiest — `savarez model`:**
 
 ```bash
-hermes model                   # → "Auxiliary models — side-task routing"
+savarez model                   # → "Auxiliary models — side-task routing"
                                # → pick "Curator" → pick provider → pick model
 ```
 
@@ -77,7 +77,7 @@ auxiliary:
 Leaving `provider: auto` (the default) routes the review pass through whatever your main chat model is, matching the behavior of every other auxiliary task.
 
 :::note Legacy config
-Earlier releases used a one-off `curator.auxiliary.{provider,model}` block. That path still works but emits a deprecation log line — please migrate to `auxiliary.curator` above so the curator shares the same plumbing (`hermes model`, dashboard Models tab, `base_url`, `api_key`, `timeout`, `extra_body`) as every other aux task.
+Earlier releases used a one-off `curator.auxiliary.{provider,model}` block. That path still works but emits a deprecation log line — please migrate to `auxiliary.curator` above so the curator shares the same plumbing (`savarez model`, dashboard Models tab, `base_url`, `api_key`, `timeout`, `extra_body`) as every other aux task.
 :::
 
 ## CLI
@@ -87,7 +87,7 @@ hermes curator status         # last run, counts, pinned list, LRU top 5
 hermes curator run            # trigger a review now (blocks until the LLM pass finishes)
 hermes curator run --background  # fire-and-forget: start the LLM pass in a background thread
 hermes curator run --dry-run  # preview only — report without any mutations
-hermes curator backup         # take a manual snapshot of ~/.hermes/skills/
+hermes curator backup         # take a manual snapshot of ~/.savarez/skills/
 hermes curator rollback       # restore from the newest snapshot
 hermes curator rollback --list     # list available snapshots
 hermes curator rollback --id <ts>  # restore a specific snapshot
@@ -101,7 +101,7 @@ hermes curator restore <skill>  # move an archived skill back to active
 
 ## Backups and rollback
 
-Before every real curator pass, Hermes takes a tar.gz snapshot of `~/.hermes/skills/` at `~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz`. If a pass archives or consolidates something you didn't want touched, you can undo the whole run with one command:
+Before every real curator pass, Hermes takes a tar.gz snapshot of `~/.savarez/skills/` at `~/.savarez/skills/.curator_backups/<utc-iso>/skills.tar.gz`. If a pass archives or consolidates something you didn't want touched, you can undo the whole run with one command:
 
 ```bash
 hermes curator rollback        # restore newest snapshot (with confirmation)
@@ -131,11 +131,11 @@ The same subcommands are available as the `/curator` slash command inside a runn
 ## What "agent-created" means
 
 The curator only manages skills explicitly marked as **agent-created** in
-`~/.hermes/skills/.usage.json`. A skill qualifies when ALL of the following
+`~/.savarez/skills/.usage.json`. A skill qualifies when ALL of the following
 are true:
 
-1. Its name is **not** in `~/.hermes/skills/.bundled_manifest` (bundled skills shipped with the repo).
-2. Its name is **not** in `~/.hermes/skills/.hub/lock.json` (hub-installed skills).
+1. Its name is **not** in `~/.savarez/skills/.bundled_manifest` (bundled skills shipped with the repo).
+2. Its name is **not** in `~/.savarez/skills/.hub/lock.json` (hub-installed skills).
 3. Its `.usage.json` entry has `"created_by": "agent"` or `"agent_created": true`.
 
 Currently, only the **background self-improvement review fork** sets this marker
@@ -184,15 +184,15 @@ hermes curator pin <skill>
 hermes curator unpin <skill>
 ```
 
-The flag is stored as `"pinned": true` on the skill's entry in `~/.hermes/skills/.usage.json`, so it survives across sessions.
+The flag is stored as `"pinned": true` on the skill's entry in `~/.savarez/skills/.usage.json`, so it survives across sessions.
 
 Only **agent-created** skills can be pinned — bundled and hub-installed skills are never subject to curator mutation in the first place, and `hermes curator pin` will refuse with an explanatory message if you try.
 
-If you want a stronger guarantee than "no deletion" — for instance, freezing a skill's content entirely while the agent still reads it — edit `~/.hermes/skills/<name>/SKILL.md` directly with your editor. The pin guards tool-driven deletion, not your own filesystem access.
+If you want a stronger guarantee than "no deletion" — for instance, freezing a skill's content entirely while the agent still reads it — edit `~/.savarez/skills/<name>/SKILL.md` directly with your editor. The pin guards tool-driven deletion, not your own filesystem access.
 
 ## Usage telemetry
 
-The curator maintains a sidecar at `~/.hermes/skills/.usage.json` with one entry per skill:
+The curator maintains a sidecar at `~/.savarez/skills/.usage.json` with one entry per skill:
 
 ```json
 {
@@ -221,10 +221,10 @@ Bundled and hub-installed skills are explicitly excluded from telemetry writes.
 
 ## Per-run reports
 
-Every curator run writes a timestamped directory under `~/.hermes/logs/curator/`:
+Every curator run writes a timestamped directory under `~/.savarez/logs/curator/`:
 
 ```
-~/.hermes/logs/curator/
+~/.savarez/logs/curator/
 └── 20260429-111512/
     ├── run.json      # machine-readable: full fidelity, stats, LLM output
     └── REPORT.md     # human-readable summary
@@ -253,13 +253,13 @@ If the curator archived something you still want:
 hermes curator restore <skill-name>
 ```
 
-This moves the skill back from `~/.hermes/skills/.archive/` to the active tree and resets its state to `active`. The restore refuses if a bundled or hub-installed skill has since been installed under the same name (would shadow upstream).
+This moves the skill back from `~/.savarez/skills/.archive/` to the active tree and resets its state to `active`. The restore refuses if a bundled or hub-installed skill has since been installed under the same name (would shadow upstream).
 
 ## Disabling per environment
 
 The curator is on by default. To turn it off:
 
-- **For one profile only:** edit `~/.hermes/config.yaml` (or the active profile's config) and set `curator.enabled: false`.
+- **For one profile only:** edit `~/.savarez/config.yaml` (or the active profile's config) and set `curator.enabled: false`.
 - **For just one run:** `hermes curator pause` — the pause persists across sessions; use `resume` to re-enable.
 
 The curator also refuses to run if `min_idle_hours` hasn't elapsed, so on an active dev machine it naturally only runs during quiet stretches.

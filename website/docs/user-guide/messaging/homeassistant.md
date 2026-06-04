@@ -1,13 +1,13 @@
 ---
 title: Home Assistant
-description: Control your smart home with Hermes Agent via Home Assistant integration.
+description: Control your smart home with Savarez AI Agent via Home Assistant integration.
 sidebar_label: Home Assistant
 sidebar_position: 5
 ---
 
 # Home Assistant Integration
 
-Hermes Agent integrates with [Home Assistant](https://www.home-assistant.io/) in two ways:
+Savarez AI Agent integrates with [Home Assistant](https://www.home-assistant.io/) in two ways:
 
 1. **Gateway platform** — subscribes to real-time state changes via WebSocket and responds to events
 2. **Smart home tools** — four LLM-callable tools for querying and controlling devices via the REST API
@@ -19,13 +19,13 @@ Hermes Agent integrates with [Home Assistant](https://www.home-assistant.io/) in
 1. Open your Home Assistant instance
 2. Go to your **Profile** (click your name in the sidebar)
 3. Scroll to **Long-Lived Access Tokens**
-4. Click **Create Token**, give it a name like "Hermes Agent"
+4. Click **Create Token**, give it a name like "Savarez AI Agent"
 5. Copy the token
 
 ### 2. Configure Environment Variables
 
 ```bash
-# Add to ~/.hermes/.env
+# Add to ~/.savarez/.env
 
 # Required: your Long-Lived Access Token
 HASS_TOKEN=your-long-lived-access-token
@@ -41,14 +41,14 @@ The `homeassistant` toolset is automatically enabled when `HASS_TOKEN` is set. B
 ### 3. Start the Gateway
 
 ```bash
-hermes gateway
+savarez gateway
 ```
 
 Home Assistant will appear as a connected platform alongside any other messaging platforms (Telegram, Discord, etc.).
 
 ## Available Tools
 
-Hermes Agent registers four tools for smart home control:
+Savarez AI Agent registers four tools for smart home control:
 
 ### `ha_list_entities`
 
@@ -130,7 +130,7 @@ The Home Assistant gateway adapter connects via WebSocket and subscribes to `sta
 By default, **no events are forwarded**. You must configure at least one of `watch_domains`, `watch_entities`, or `watch_all` to receive events. Without filters, a warning is logged at startup and all state changes are silently dropped.
 :::
 
-Configure which events the agent sees in `~/.hermes/config.yaml` under the Home Assistant platform's `extra` section:
+Configure which events the agent sees in `~/.savarez/config.yaml` under the Home Assistant platform's `extra` section:
 
 ```yaml
 platforms:
@@ -178,7 +178,7 @@ State changes are formatted as human-readable messages based on domain:
 
 ### Agent Responses
 
-Outbound messages from the agent are delivered as **Home Assistant persistent notifications** (via `persistent_notification.create`). These appear in the HA notification panel with the title "Hermes Agent".
+Outbound messages from the agent are delivered as **Home Assistant persistent notifications** (via `persistent_notification.create`). These appear in the HA notification panel with the title "Savarez AI Agent".
 
 ### Connection Management
 
@@ -254,7 +254,7 @@ Agent automatically:
 ## Troubleshooting
 
 **Environment variables not picked up.**
-The adapter reads credentials from `~/.hermes/.env` (auto-merged at startup) or
+The adapter reads credentials from `~/.savarez/.env` (auto-merged at startup) or
 from `config.yaml`. Double-check the file lives under the active Hermes profile
 home and that there's no stray quoting around the URL/token. Restart the gateway
 after editing — env changes are only applied on process start.

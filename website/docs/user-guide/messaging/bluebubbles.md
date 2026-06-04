@@ -26,12 +26,12 @@ In BlueBubbles Server → **Settings → API**, note:
 Run the setup wizard:
 
 ```bash
-hermes gateway setup
+savarez gateway setup
 ```
 
 Select **BlueBubbles (iMessage)** and enter your server URL and password.
 
-Or set environment variables directly in `~/.hermes/.env`:
+Or set environment variables directly in `~/.savarez/.env`:
 
 ```bash
 BLUEBUBBLES_SERVER_URL=http://192.168.1.10:1234
@@ -50,7 +50,7 @@ platforms:
       require_mention: true
 ```
 
-With `require_mention: true`, DMs still work normally, but group-chat messages are ignored unless they match a mention pattern. If you do not configure custom patterns, Hermes uses conservative defaults for `Hermes` and `@Hermes agent` variants.
+With `require_mention: true`, DMs still work normally, but group-chat messages are ignored unless they match a mention pattern. If you do not configure custom patterns, Hermes uses conservative defaults for `Hermes` and `@Savarez AI agent` variants.
 
 For a custom agent name, set regex patterns:
 
@@ -74,12 +74,12 @@ hermes pairing approve bluebubbles <CODE>
 ```
 Use `hermes pairing list` to see pending codes and approved users.
 
-**Pre-authorize specific users** (in `~/.hermes/.env`):
+**Pre-authorize specific users** (in `~/.savarez/.env`):
 ```bash
 BLUEBUBBLES_ALLOWED_USERS=user@icloud.com,+15551234567
 ```
 
-**Open access** (in `~/.hermes/.env`):
+**Open access** (in `~/.savarez/.env`):
 ```bash
 BLUEBUBBLES_ALLOW_ALL_USERS=true
 ```
@@ -87,7 +87,7 @@ BLUEBUBBLES_ALLOW_ALL_USERS=true
 ### 5. Start the Gateway
 
 ```bash
-hermes gateway run
+savarez gateway run
 ```
 
 Hermes will connect to your BlueBubbles server, register a webhook, and start listening for iMessage messages.
@@ -118,7 +118,7 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 | `BLUEBUBBLES_REQUIRE_MENTION` | No | `false` | Require a mention pattern before responding in group chats |
 | `BLUEBUBBLES_MENTION_PATTERNS` | No | Hermes wake words | JSON array, newline-separated, or comma-separated regex patterns for group mention matching |
 
-Auto-marking messages as read is controlled by the `send_read_receipts` key under `platforms.bluebubbles.extra` in `~/.hermes/config.yaml` (default: `true`). There is no corresponding environment variable.
+Auto-marking messages as read is controlled by the `send_read_receipts` key under `platforms.bluebubbles.extra` in `~/.savarez/config.yaml` (default: `true`). There is no corresponding environment variable.
 
 ## Features
 
@@ -163,7 +163,7 @@ Without the Private API, basic text messaging and media still work.
 ### Messages not arriving
 - Check that the webhook is registered in BlueBubbles Server → Settings → API → Webhooks
 - Verify the webhook URL is reachable from the Mac
-- Check `hermes logs gateway` for webhook errors (or `hermes logs -f` to follow in real-time)
+- Check `savarez logs gateway` for webhook errors (or `savarez logs -f` to follow in real-time)
 
 ### "Private API helper not connected"
 - Install the Private API helper: [docs.bluebubbles.app](https://docs.bluebubbles.app/helper-bundle/installation)

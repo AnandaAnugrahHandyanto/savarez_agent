@@ -14,7 +14,7 @@ Knowledge comics (知识漫画): educational, biography, tutorial.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/baoyu-comic` |
+| Source | Optional — install with `savarez skills install official/creative/baoyu-comic` |
 | Path | `optional-skills/creative/baoyu-comic` |
 | Version | `1.56.1` |
 | Author | 宝玉 (JimLiu) |
@@ -30,7 +30,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Knowledge Comic Creator
 
-Adapted from [baoyu-comic](https://github.com/JimLiu/baoyu-skills) for Hermes Agent's tool ecosystem.
+Adapted from [baoyu-comic](https://github.com/JimLiu/baoyu-skills) for Savarez AI Agent's tool ecosystem.
 
 Create original knowledge comics with flexible art style × tone combinations.
 

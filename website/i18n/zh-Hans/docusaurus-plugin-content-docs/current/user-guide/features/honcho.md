@@ -39,13 +39,13 @@ hermes memory setup    # 从 provider 列表中选择 "honcho"
 或手动配置：
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.savarez/config.yaml
 memory:
   provider: honcho
 ```
 
 ```bash
-echo 'HONCHO_API_KEY=***' >> ~/.hermes/.env
+echo 'HONCHO_API_KEY=***' >> ~/.savarez/.env
 ```
 
 在 [honcho.dev](https://honcho.dev) 获取 API key。
@@ -104,7 +104,7 @@ echo 'HONCHO_API_KEY=***' >> ~/.hermes/.env
 
 ## 配置选项
 
-Honcho 在 `~/.honcho/config.json`（全局）或 `$HERMES_HOME/honcho.json`（profile 本地）中配置。设置向导会自动处理。
+Honcho 在 `~/.honcho/config.json`（全局）或 `$SAVAREZ_HOME/honcho.json`（profile 本地）中配置。设置向导会自动处理。
 
 ### 完整配置参考
 
@@ -127,7 +127,7 @@ Honcho 在 `~/.honcho/config.json`（全局）或 `$HERMES_HOME/honcho.json`（p
 | `sessionStrategy` | `'per-directory'` | `per-directory`、`per-repo`、`per-session` 或 `global` |
 
 **会话策略**控制 Honcho 会话与工作内容的映射方式：
-- `per-session` — 每次 `hermes` 运行获得一个新会话。干净启动，通过 tools 访问记忆。推荐新用户使用。
+- `per-session` — 每次 `savarez` 运行获得一个新会话。干净启动，通过 tools 访问记忆。推荐新用户使用。
 - `per-directory` — 每个工作目录对应一个 Honcho 会话，上下文跨运行积累。
 - `per-repo` — 每个 git 仓库对应一个会话。
 - `global` — 所有目录共用一个会话。

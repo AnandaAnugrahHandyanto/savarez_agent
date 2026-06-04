@@ -48,12 +48,12 @@ def test_extract_markdown_entries_promotes_heading_context():
 
 ### Active Projects
 
-- Hermes Agent
+- Savarez AI Agent
 """
     entries = mod.extract_markdown_entries(text)
     assert "Tyler Williams: Founder of VANTA Research" in entries
     assert "Tyler Williams: Timezone: America/Los_Angeles" in entries
-    assert "Tyler Williams > Active Projects: Hermes Agent" in entries
+    assert "Tyler Williams > Active Projects: Savarez AI Agent" in entries
 
 
 def test_merge_entries_respects_limit_and_reports_overflow():
@@ -823,7 +823,7 @@ def test_cron_store_is_archived_without_config_cron_section(tmp_path: Path):
     assert Path(archived_store["destination"]).joinpath("jobs.json").exists()
 
     notes_text = (output_dir / "MIGRATION_NOTES.md").read_text(encoding="utf-8")
-    assert "Run `hermes cron` to recreate scheduled tasks" in notes_text
+    assert "Run `savarez cron` to recreate scheduled tasks" in notes_text
     assert "archive/cron-config.json" not in notes_text
 
 
@@ -842,7 +842,7 @@ def test_skill_installs_cleanly_under_skills_guard():
     # python_os_environ  — reads MIGRATION_JSON_OUTPUT to enable JSON output mode
     #                      (feature flag, not an env dump)
     # hermes_config_mod  — print statements in the post-migration summary that
-    #                      tell the user to *review* ~/.hermes/config.yaml;
+    #                      tell the user to *review* ~/.savarez/config.yaml;
     #                      the script never writes to that file
     #
     # Accept "caution" or "safe" — just not "dangerous" from a *real* threat.
@@ -862,8 +862,8 @@ def test_rebrand_text_replaces_openclaw_variants():
     assert mod.rebrand_text("I told Open Claw to use dark mode") == "I told Hermes to use dark mode"
     assert mod.rebrand_text("Open-Claw config is great") == "Hermes config is great"
     assert mod.rebrand_text("OPENCLAW uses tools well") == "Hermes uses tools well"
-    # All-lowercase matches → lowercase ``hermes``; this preserves the
-    # real filesystem path ``~/.hermes`` (Hermes home) when rebranding
+    # All-lowercase matches → lowercase ``savarez``; this preserves the
+    # real filesystem path ``~/.savarez`` (Hermes home) when rebranding
     # memory entries that reference ``~/.openclaw`` or ``openclaw`` prose.
     assert mod.rebrand_text("openclaw should always respond concisely") == "hermes should always respond concisely"
 
@@ -901,12 +901,12 @@ def test_rebrand_text_preserves_filesystem_path_casing():
     """
     mod = load_module()
     assert mod.rebrand_text("config is at ~/.openclaw/config.yaml") == \
-        "config is at ~/.hermes/config.yaml"
+        "config is at ~/.savarez/config.yaml"
     assert mod.rebrand_text("use .openclaw directory") == "use .hermes directory"
     assert mod.rebrand_text("Path.home() / '.openclaw'") == "Path.home() / '.hermes'"
     # Sentence with both lowercase path and capitalized prose.
     assert mod.rebrand_text("openclaw config path: ~/.openclaw/") == \
-        "hermes config path: ~/.hermes/"
+        "savarez config path: ~/.savarez/"
 
 
 def test_migrate_memory_rebrands_entries(tmp_path):

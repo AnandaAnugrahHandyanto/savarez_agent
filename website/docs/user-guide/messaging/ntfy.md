@@ -4,7 +4,7 @@
 
 ntfy makes a great lightweight push channel for Hermes: subscribe to a topic from the [ntfy mobile app](https://ntfy.sh/docs/subscribe/phone/), send messages to the topic to talk to the agent, get the response back on your phone.
 
-> Run `hermes gateway setup` and pick **ntfy** for a guided walk-through.
+> Run `savarez gateway setup` and pick **ntfy** for a guided walk-through.
 
 ## Prerequisites
 
@@ -19,14 +19,14 @@ That's it. No SDK, no daemon, no Node.js. The adapter uses `httpx` which is alre
 ### Via setup wizard
 
 ```bash
-hermes setup gateway
+savarez setup gateway
 ```
 
 Select **ntfy** and follow the prompts.
 
 ### Via environment variables
 
-Add these to `~/.hermes/.env`:
+Add these to `~/.savarez/.env`:
 
 ```
 NTFY_TOPIC=hermes-myname-2026
@@ -48,7 +48,7 @@ NTFY_HOME_CHANNEL=hermes-myname-2026
 
 ## Identity model — read this before deploying
 
-ntfy has no native authenticated user identity. The `title` field on a published message is **publisher-controlled** and can be anything the sender wants. The Hermes adapter does NOT use `title` for authorization — it would let any publisher who knows the topic spoof an allowed user.
+ntfy has no native authenticated user identity. The `title` field on a published message is **publisher-controlled** and can be anything the sender wants. The Savarez adapter does NOT use `title` for authorization — it would let any publisher who knows the topic spoof an allowed user.
 
 Instead, **the topic name itself is the identity**. Every message published to the topic is treated as coming from the same logical user (the topic). `NTFY_ALLOWED_USERS` is therefore typically just the topic name itself — a single-entry allowlist that gates the whole channel.
 
@@ -66,9 +66,9 @@ In all cases, do not put sensitive data through ntfy unless the underlying topic
 2. On your phone: install the [ntfy app](https://ntfy.sh/docs/subscribe/phone/), tap **+**, enter `hermes-myname-2026`
 3. On the host:
    ```bash
-   echo 'NTFY_TOPIC=hermes-myname-2026' >> ~/.hermes/.env
-   echo 'NTFY_ALLOWED_USERS=hermes-myname-2026' >> ~/.hermes/.env
-   hermes gateway restart
+   echo 'NTFY_TOPIC=hermes-myname-2026' >> ~/.savarez/.env
+   echo 'NTFY_ALLOWED_USERS=hermes-myname-2026' >> ~/.savarez/.env
+   savarez gateway restart
    ```
 4. From the ntfy app, send a message to the topic. The agent's reply lands as a push notification.
 

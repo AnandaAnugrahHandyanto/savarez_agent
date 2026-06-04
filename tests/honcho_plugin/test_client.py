@@ -117,8 +117,8 @@ class TestFromGlobalConfig:
                 }
             }
         }))
-        # Isolate from real ~/.hermes/honcho.json
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "isolated"))
+        # Isolate from real ~/.savarez/honcho.json
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path / "isolated"))
 
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.api_key == "***"
@@ -347,13 +347,13 @@ class TestResolveConfigPath:
         local_cfg = hermes_home / "honcho.json"
         local_cfg.write_text('{"apiKey": "local"}')
 
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+        with patch.dict(os.environ, {"SAVAREZ_HOME": str(hermes_home)}):
             result = resolve_config_path()
         assert result == local_cfg
 
     def test_falls_back_to_default_profile_when_no_local(self, tmp_path, monkeypatch):
-        # Profile mode: HERMES_HOME points at ~/.hermes/profiles/<name>, so
-        # _get_default_hermes_home() must resolve back to ~/.hermes — that's
+        # Profile mode: SAVAREZ_HOME points at ~/.savarez/profiles/<name>, so
+        # _get_default_hermes_home() must resolve back to ~/.savarez — that's
         # the bug the HOME-anchored helper fixes (vs. blindly using Path.home()).
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
@@ -364,7 +364,7 @@ class TestResolveConfigPath:
         default_cfg.write_text('{"apiKey": "default-key"}')
 
         monkeypatch.setattr(Path, "home", lambda: fake_home)
-        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(profile_home))
 
         result = resolve_config_path()
 
@@ -377,7 +377,7 @@ class TestResolveConfigPath:
 
         with patch.dict(os.environ, {}, clear=False), \
              patch.object(Path, "home", return_value=fake_home):
-            os.environ.pop("HERMES_HOME", None)
+            os.environ.pop("SAVAREZ_HOME", None)
             result = resolve_config_path()
         assert result == fake_home / ".honcho" / "config.json"
 
@@ -387,7 +387,7 @@ class TestResolveConfigPath:
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+        with patch.dict(os.environ, {"SAVAREZ_HOME": str(hermes_home)}), \
              patch.object(Path, "home", return_value=fake_home):
             assert resolve_global_config_path() == fake_home / ".honcho" / "config.json"
             assert resolve_config_path() == fake_home / ".honcho" / "config.json"
@@ -407,7 +407,7 @@ class TestResolveConfigPath:
         }))
 
         monkeypatch.setattr(Path, "home", lambda: fake_home)
-        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("SAVAREZ_HOME", str(profile_home))
 
         config = HonchoClientConfig.from_global_config()
 
@@ -423,7 +423,7 @@ class TestResolveConfigPath:
             "workspace": "local-ws",
         }))
 
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+        with patch.dict(os.environ, {"SAVAREZ_HOME": str(hermes_home)}), \
              patch.object(Path, "home", return_value=tmp_path):
             config = HonchoClientConfig.from_global_config()
         assert config.api_key == "***"
@@ -438,7 +438,7 @@ class TestResolveActiveHost:
     def test_default_returns_hermes(self):
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("HERMES_HONCHO_HOST", None)
-            os.environ.pop("HERMES_HOME", None)
+            os.environ.pop("SAVAREZ_HOME", None)
             assert resolve_active_host() == "hermes"
 
     def test_explicit_env_var_wins(self):

@@ -1,6 +1,6 @@
 """Skill usage telemetry + provenance tracking for the Curator feature.
 
-Tracks per-skill usage metadata in a sidecar JSON file (~/.hermes/skills/.usage.json)
+Tracks per-skill usage metadata in a sidecar JSON file (~/.savarez/skills/.usage.json)
 keyed by skill name. Counters are bumped by the existing skill tools (skill_view,
 skill_manage); the curator orchestrator reads the derived activity timestamp to
 decide lifecycle transitions.
@@ -159,7 +159,7 @@ def activity_count(record: Dict[str, Any]) -> int:
 def _read_bundled_manifest_names() -> Set[str]:
     """Return the set of skill names that were seeded from the bundled repo.
 
-    Reads ~/.hermes/skills/.bundled_manifest (format: "name:hash" per line).
+    Reads ~/.savarez/skills/.bundled_manifest (format: "name:hash" per line).
     Returns empty set if the file is missing or unreadable.
     """
     manifest = _skills_dir() / ".bundled_manifest"
@@ -182,7 +182,7 @@ def _read_bundled_manifest_names() -> Set[str]:
 def _read_hub_installed_names() -> Set[str]:
     """Return the set of skill names installed via the Skills Hub.
 
-    Reads ~/.hermes/skills/.hub/lock.json (see tools/skills_hub.py :: HubLockFile).
+    Reads ~/.savarez/skills/.hub/lock.json (see tools/skills_hub.py :: HubLockFile).
     """
     lock_path = _skills_dir() / ".hub" / "lock.json"
     if not lock_path.exists():
@@ -245,8 +245,8 @@ def _suppressed_file() -> Path:
 def read_suppressed_names() -> Set[str]:
     """Built-in skills the curator pruned — the re-seeder must leave archived.
 
-    One skill name per line in ``~/.hermes/skills/.curator_suppressed``. This is
-    what makes pruning a built-in durable: without it, ``hermes update`` would
+    One skill name per line in ``~/.savarez/skills/.curator_suppressed``. This is
+    what makes pruning a built-in durable: without it, ``savarez update`` would
     re-copy the bundled skill on the next sync.
     """
     path = _suppressed_file()
@@ -353,7 +353,7 @@ def list_agent_created_skill_names() -> List[str]:
 
 
 def list_archived_skill_names() -> List[str]:
-    """Enumerate skills in ``~/.hermes/skills/.archive/``.
+    """Enumerate skills in ``~/.savarez/skills/.archive/``.
 
     Archive layout is flat (``.archive/<skill>/``) as set by ``archive_skill``,
     so the directory name is the skill name. Used by ``hermes curator
@@ -640,7 +640,7 @@ def forget(skill_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 def archive_skill(skill_name: str) -> Tuple[bool, str]:
-    """Move a curator-eligible skill directory to ~/.hermes/skills/.archive/.
+    """Move a curator-eligible skill directory to ~/.savarez/skills/.archive/.
 
     Returns (ok, message). Never archives hub-installed skills. Bundled
     built-ins are only archivable when ``curator.prune_builtins`` is enabled;
@@ -690,7 +690,7 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
 
 
 def restore_skill(skill_name: str) -> Tuple[bool, str]:
-    """Move an archived skill back to ~/.hermes/skills/. Restores to the flat
+    """Move an archived skill back to ~/.savarez/skills/. Restores to the flat
     top-level layout; original category nesting is NOT reconstructed.
 
     Refuses to restore under a name that now collides with a hub-installed
@@ -754,8 +754,8 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
 def _find_skill_dir(skill_name: str) -> Optional[Path]:
     """Locate the directory for a skill by its frontmatter `name:` field.
 
-    Handles both flat (~/.hermes/skills/<skill>/SKILL.md) and category-nested
-    (~/.hermes/skills/<category>/<skill>/SKILL.md) layouts.
+    Handles both flat (~/.savarez/skills/<skill>/SKILL.md) and category-nested
+    (~/.savarez/skills/<category>/<skill>/SKILL.md) layouts.
     """
     base = _skills_dir()
     if not base.exists():

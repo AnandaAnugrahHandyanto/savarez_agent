@@ -128,7 +128,7 @@ print(json.dumps(report, indent=2))
 
 ## Execution Mode
 
-`execute_code` has two execution modes controlled by `code_execution.mode` in `~/.hermes/config.yaml`:
+`execute_code` has two execution modes controlled by `code_execution.mode` in `~/.savarez/config.yaml`:
 
 | Mode | Working directory | Python interpreter |
 |------|-------------------|--------------------|
@@ -140,7 +140,7 @@ print(json.dumps(report, indent=2))
 **When to flip to `strict`:** you need maximum reproducibility — you want the same interpreter every session regardless of which venv the user activated, and you want scripts quarantined from the project tree (no risk of accidentally reading project files through a relative path).
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.savarez/config.yaml
 code_execution:
   mode: project   # or "strict"
 ```
@@ -167,7 +167,7 @@ Switching mode changes where scripts run and which interpreter runs them, not wh
 All limits are configurable via `config.yaml`:
 
 ```yaml
-# In ~/.hermes/config.yaml
+# In ~/.savarez/config.yaml
 code_execution:
   mode: project      # project (default) | strict
   timeout: 300       # Max seconds per script (default: 300)
@@ -224,7 +224,7 @@ See the [Security guide](/user-guide/security#environment-variable-passthrough) 
 The child process receives only a small, fixed set of operational `HERMES_*`
 variables by exact name:
 
-- `HERMES_HOME`
+- `SAVAREZ_HOME`
 - `HERMES_PROFILE`
 - `HERMES_CONFIG`
 - `HERMES_ENV`
@@ -270,8 +270,8 @@ be re-allowed this way):
 
 **Diagnosing it.** When the child drops one or more non-allowlisted `HERMES_*`
 variables, Hermes emits a one-line `debug` log naming them and pointing at the
-`env_passthrough` escape hatch. Run with debug logging (`hermes logs --level
-DEBUG`, or check `~/.hermes/logs/agent.log`) and look for
+`env_passthrough` escape hatch. Run with debug logging (`savarez logs --level
+DEBUG`, or check `~/.savarez/logs/agent.log`) and look for
 `execute_code: dropped N non-allowlisted HERMES_* var(s)` if a script behaves
 as though a `HERMES_*` variable is missing.
 

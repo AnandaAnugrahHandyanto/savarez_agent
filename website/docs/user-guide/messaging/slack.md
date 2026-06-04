@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Slack"
-description: "Set up Hermes Agent as a Slack bot using Socket Mode"
+description: "Set up Savarez AI Agent as a Slack bot using Socket Mode"
 ---
 
 # Slack Setup
 
-Connect Hermes Agent to Slack as a bot using Socket Mode. Socket Mode uses WebSockets instead of
+Connect Savarez AI Agent to Slack as a bot using Socket Mode. Socket Mode uses WebSockets instead of
 public HTTP endpoints, so your Hermes instance doesn't need to be publicly accessible — it works
 behind firewalls, on your laptop, or on a private server.
 
@@ -40,7 +40,7 @@ Mode — all at once.
    ```bash
    hermes slack manifest --write
    ```
-   This writes `~/.hermes/slack-manifest.json` and prints paste-in
+   This writes `~/.savarez/slack-manifest.json` and prints paste-in
    instructions.
 2. Go to [https://api.slack.com/apps](https://api.slack.com/apps) →
    **Create New App** → **From an app manifest**
@@ -54,7 +54,7 @@ Mode — all at once.
 1. Go to [https://api.slack.com/apps](https://api.slack.com/apps)
 2. Click **Create New App**
 3. Choose **From scratch**
-4. Enter an app name (e.g., "Hermes Agent") and select your workspace
+4. Enter an app name (e.g., "Savarez AI Agent") and select your workspace
 5. Click **Create App**
 
 You'll land on the app's **Basic Information** page. Continue with
@@ -186,7 +186,7 @@ Member IDs look like `U01ABC2DEF3`. You need your own Member ID at minimum.
 
 ## Step 8: Configure Hermes
 
-Add the following to your `~/.hermes/.env` file:
+Add the following to your `~/.savarez/.env` file:
 
 ```bash
 # Required
@@ -202,15 +202,15 @@ SLACK_HOME_CHANNEL_NAME=general              # Human-readable name for the home 
 Or run the interactive setup:
 
 ```bash
-hermes gateway setup    # Select Slack when prompted
+savarez gateway setup    # Select Slack when prompted
 ```
 
 Then start the gateway:
 
 ```bash
-hermes gateway              # Foreground
-hermes gateway install      # Install as a user service
-sudo hermes gateway install --system   # Linux only: boot-time system service
+savarez gateway              # Foreground
+savarez gateway install      # Install as a user service
+sudo savarez gateway install --system   # Linux only: boot-time system service
 ```
 
 ---
@@ -220,7 +220,7 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 After starting the gateway, you need to **invite the bot** to any channel where you want it to respond:
 
 ```
-/invite @Hermes Agent
+/invite @Savarez AI Agent
 ```
 
 The bot will **not** automatically join channels. You must invite it to each channel individually.
@@ -242,7 +242,7 @@ through the WebSocket regardless of the manifest's `url` field.
 
 ### Refreshing slash commands after updates
 
-When Hermes adds new commands (e.g. after `hermes update`), regenerate
+When Hermes adds new commands (e.g. after `savarez update`), regenerate
 the manifest and update your Slack app:
 
 ```bash
@@ -253,7 +253,7 @@ Then in Slack:
 1. Open [https://api.slack.com/apps](https://api.slack.com/apps) →
    your Hermes app
 2. **Features → App Manifest → Edit**
-3. Paste the new contents of `~/.hermes/slack-manifest.json`
+3. Paste the new contents of `~/.savarez/slack-manifest.json`
 4. **Save**. Slack will prompt to reinstall the app if scopes or slash
    commands changed.
 
@@ -301,7 +301,7 @@ Understanding how Hermes behaves in different contexts:
 | Context | Behavior |
 |---------|----------|
 | **DMs** | Bot responds to every message — no @mention needed |
-| **Channels** | Bot **only responds when @mentioned** (e.g., `@Hermes Agent what time is it?`). In channels, Hermes replies in a thread attached to that message. |
+| **Channels** | Bot **only responds when @mentioned** (e.g., `@Savarez AI Agent what time is it?`). In channels, Hermes replies in a thread attached to that message. |
 | **Threads** | If you @mention Hermes inside an existing thread, it replies in that same thread. Once the bot has an active session in a thread, **subsequent replies in that thread do not require @mention** — the bot follows the conversation naturally. |
 
 :::tip
@@ -312,7 +312,7 @@ In channels, always @mention the bot to start a conversation. Once the bot is ac
 
 ## Configuration Options
 
-Beyond the required environment variables from Step 8, you can customize Slack bot behavior through `~/.hermes/config.yaml`.
+Beyond the required environment variables from Step 8, you can customize Slack bot behavior through `~/.savarez/config.yaml`.
 
 ### Thread & Reply Behavior
 
@@ -481,7 +481,7 @@ cron job results, and other proactive notifications. To find a channel ID:
 SLACK_HOME_CHANNEL=C01234567890
 ```
 
-Make sure the bot has been **invited to the channel** (`/invite @Hermes Agent`).
+Make sure the bot has been **invited to the channel** (`/invite @Savarez AI Agent`).
 
 ---
 
@@ -501,7 +501,7 @@ SLACK_BOT_TOKEN=xoxb-workspace1-token,xoxb-workspace2-token,xoxb-workspace3-toke
 SLACK_APP_TOKEN=xapp-your-app-token
 ```
 
-Or in `~/.hermes/config.yaml`:
+Or in `~/.savarez/config.yaml`:
 
 ```yaml
 platforms:
@@ -514,7 +514,7 @@ platforms:
 In addition to tokens in the environment or config, Hermes also loads tokens from an **OAuth token file** at:
 
 ```
-~/.hermes/slack_tokens.json
+~/.savarez/slack_tokens.json
 ```
 
 This file is a JSON object mapping team IDs to token entries:
@@ -598,12 +598,12 @@ Notes:
 | Problem | Solution |
 |---------|----------|
 | Bot doesn't respond to DMs | Verify `message.im` is in your event subscriptions and the app is reinstalled |
-| Bot works in DMs but not in channels | **Most common issue.** Add `message.channels` and `message.groups` to event subscriptions, reinstall the app, and invite the bot to the channel with `/invite @Hermes Agent` |
+| Bot works in DMs but not in channels | **Most common issue.** Add `message.channels` and `message.groups` to event subscriptions, reinstall the app, and invite the bot to the channel with `/invite @Savarez AI Agent` |
 | Bot doesn't respond to @mentions in channels | 1) Check `message.channels` event is subscribed. 2) Bot must be invited to the channel. 3) Ensure `channels:history` scope is added. 4) Reinstall the app after scope/event changes |
 | Bot ignores messages in private channels | Add both the `message.groups` event subscription and `groups:history` scope, then reinstall the app and `/invite` the bot |
 | "Sending messages to this app has been turned off" in DMs | Enable the **Messages Tab** in App Home settings (see Step 5) |
 | "not_authed" or "invalid_auth" errors | Regenerate your Bot Token and App Token, update `.env` |
-| Bot responds but can't post in a channel | Invite the bot to the channel with `/invite @Hermes Agent` |
+| Bot responds but can't post in a channel | Invite the bot to the channel with `/invite @Savarez AI Agent` |
 | Bot can chat but can't read uploaded images/files | Add `files:read`, then **reinstall** the app. Hermes now surfaces attachment access diagnostics in-chat when Slack returns scope/auth/permission failures. |
 | `missing_scope` error | Add the required scope in OAuth & Permissions, then **reinstall** the app |
 | Socket disconnects frequently | Check your network; Bolt auto-reconnects but unstable connections cause lag |
@@ -619,7 +619,7 @@ If the bot isn't working in channels, verify **all** of the following:
 4. ✅ `channels:history` scope is added (for public channels)
 5. ✅ `groups:history` scope is added (for private channels)
 6. ✅ App was **reinstalled** after adding scopes/events
-7. ✅ Bot was **invited** to the channel (`/invite @Hermes Agent`)
+7. ✅ Bot was **invited** to the channel (`/invite @Savarez AI Agent`)
 8. ✅ You are **@mentioning** the bot in your message
 
 ---
@@ -632,7 +632,7 @@ the gateway will **deny all messages** by default as a safety measure. Never sha
 treat them like passwords.
 :::
 
-- Tokens should be stored in `~/.hermes/.env` (file permissions `600`)
+- Tokens should be stored in `~/.savarez/.env` (file permissions `600`)
 - Rotate tokens periodically via the Slack app settings
 - Audit who has access to your Hermes config directory
 - Socket Mode means no public endpoint is exposed — one less attack surface

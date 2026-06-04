@@ -17,7 +17,7 @@ description: "调试 Python：pdb REPL + debugpy 远程（DAP）"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/software-development/python-debugpy` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent |
+| 作者 | Savarez AI Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos |
 | 标签 | `debugging`, `python`, `pdb`, `debugpy`, `breakpoints`, `dap`, `post-mortem` |
@@ -47,7 +47,7 @@ description: "调试 Python：pdb REPL + debugpy 远程（DAP）"
 
 - 测试失败，但 traceback 无法说明某个值为何出错
 - 需要逐步执行某个函数并观察集合的变化
-- 长期运行的进程（hermes gateway、tui_gateway）出现异常且无法重启
+- 长期运行的进程（savarez gateway、tui_gateway）出现异常且无法重启
 - 事后分析（post-mortem）：异常在类生产代码中触发，需要检查崩溃现场的局部变量
 - 子进程 / 子进程（Python `_SlashWorker`、PTY bridge worker）才是实际的 bug 所在
 
@@ -297,7 +297,7 @@ nc 127.0.0.1 4444
 参见方案 3。始终添加 `-p no:xdist` 或在不使用 xdist 的情况下运行单个测试。
 
 ### `run_agent.py` / CLI — 一次性运行
-最简单：在可疑行附近添加 `breakpoint()`，然后正常运行 `hermes`。控制权将在暂停点返回到你的终端。
+最简单：在可疑行附近添加 `breakpoint()`，然后正常运行 `savarez`。控制权将在暂停点返回到你的终端。
 
 ### `tui_gateway` 子进程（由 `hermes --tui` 启动）
 gateway 作为 Node TUI 的子进程运行。可选方案：

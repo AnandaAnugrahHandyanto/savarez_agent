@@ -16,17 +16,17 @@ hermes memory setup    # select "supermemory"
 Or manually:
 
 ```bash
-hermes config set memory.provider supermemory
-echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
+savarez config set memory.provider supermemory
+echo 'SUPERMEMORY_API_KEY=***' >> ~/.savarez/.env
 ```
 
 ## Config
 
-Config file: `$HERMES_HOME/supermemory.json`
+Config file: `$SAVAREZ_HOME/supermemory.json`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `container_tag` | `hermes` | Container tag used for search and writes. Supports `{identity}` template for profile-scoped tags (e.g. `hermes-{identity}` → `hermes-coder`). |
+| `container_tag` | `savarez` | Container tag used for search and writes. Supports `{identity}` template for profile-scoped tags (e.g. `hermes-{identity}` → `hermes-coder`). |
 | `auto_recall` | `true` | Inject relevant memory context before turns |
 | `auto_capture` | `true` | Store cleaned user-assistant turns after each response |
 | `max_recall_results` | `10` | Max recalled items to format into context |

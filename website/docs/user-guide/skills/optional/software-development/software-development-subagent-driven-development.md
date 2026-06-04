@@ -14,10 +14,10 @@ Execute plans via delegate_task subagents (2-stage review).
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/software-development/subagent-driven-development` |
+| Source | Optional — install with `savarez skills install official/software-development/subagent-driven-development` |
 | Path | `optional-skills/software-development/subagent-driven-development` |
 | Version | `1.1.0` |
-| Author | Hermes Agent (adapted from obra/superpowers) |
+| Author | Savarez AI Agent (adapted from obra/superpowers) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `delegation`, `subagent`, `implementation`, `workflow`, `parallel` |

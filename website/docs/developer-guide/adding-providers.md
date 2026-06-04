@@ -1,7 +1,7 @@
 ---
 sidebar_position: 5
 title: "Adding Providers"
-description: "How to add a new inference provider to Hermes Agent — auth, runtime resolution, CLI flows, adapters, tests, and docs"
+description: "How to add a new inference provider to Savarez AI Agent — auth, runtime resolution, CLI flows, adapters, tests, and docs"
 ---
 
 # Adding Providers
@@ -10,7 +10,7 @@ Hermes can already talk to any OpenAI-compatible endpoint through the custom pro
 
 - provider-specific auth or token refresh
 - a curated model catalog
-- setup / `hermes model` menu entries
+- setup / `savarez model` menu entries
 - provider aliases for `provider:model` syntax
 - a non-OpenAI API shape that needs an adapter
 
@@ -84,7 +84,7 @@ This path includes everything from Path A plus:
 8. user-facing docs under `website/docs/`
 
 :::tip
-`hermes_cli/setup.py` does **not** need changes. The setup wizard delegates provider/model selection to `select_provider_and_model()` in `main.py` — any provider added there is automatically available in `hermes setup`.
+`hermes_cli/setup.py` does **not** need changes. The setup wizard delegates provider/model selection to `select_provider_and_model()` in `main.py` — any provider added there is automatically available in `savarez setup`.
 :::
 
 ### Additional for native / non-OpenAI providers
@@ -102,7 +102,7 @@ All you need is:
 1. A plugin directory under `plugins/model-providers/<your-provider>/` containing:
    - `__init__.py` — calls `register_provider(profile)` at module-level
    - `plugin.yaml` — manifest (name, kind: model-provider, version, description)
-2. That's it. Provider plugins auto-load the first time anything calls `get_provider_profile()` or `list_providers()` — bundled plugins (this repo) and user plugins at `$HERMES_HOME/plugins/model-providers/` both get picked up.
+2. That's it. Provider plugins auto-load the first time anything calls `get_provider_profile()` or `list_providers()` — bundled plugins (this repo) and user plugins at `$SAVAREZ_HOME/plugins/model-providers/` both get picked up.
 
 When you add a plugin and it calls `register_provider()`, the following wire up automatically:
 
@@ -112,14 +112,14 @@ When you add a plugin and it calls `register_provider()`, the following wire up 
 4. `env_vars` checked in priority order for the API key
 5. `fallback_models` list registered for the provider
 6. `--provider` CLI flag accepts the provider id
-7. `hermes model` menu includes the provider
-8. `hermes setup` wizard delegates to `main.py` automatically
+7. `savarez model` menu includes the provider
+8. `savarez setup` wizard delegates to `main.py` automatically
 9. `provider:model` alias syntax works
 10. Runtime resolver returns the correct `base_url` and `api_key`
 11. `--provider <name>` CLI flag accepts the provider id
 12. Fallback model activation can switch into the provider cleanly
 
-User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override bundled plugins of the same name (last-writer-wins in `register_provider()`) — so third parties can monkey-patch or replace any built-in profile without editing the repo.
+User plugins at `$SAVAREZ_HOME/plugins/model-providers/<name>/` override bundled plugins of the same name (last-writer-wins in `register_provider()`) — so third parties can monkey-patch or replace any built-in profile without editing the repo.
 
 See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a template, and the full [Model Provider Plugin guide](/developer-guide/model-provider-plugin) for field reference, hook idioms, and end-to-end examples.
 
@@ -131,7 +131,7 @@ Use the full checklist below when your provider needs any of the following:
 - A non-OpenAI API shape that requires a new adapter (Anthropic Messages, Codex Responses)
 - Custom endpoint detection or multi-region probing (z.ai, Kimi)
 - A curated static model catalog or live `/models` fetch
-- Provider-specific `hermes model` menu entries with bespoke auth flows
+- Provider-specific `savarez model` menu entries with bespoke auth flows
 
 ## Step 1: Pick one canonical provider id
 
@@ -230,7 +230,7 @@ Be careful with API-key precedence. Hermes already contains logic to avoid leaki
 
 ## Step 5: Wire the CLI in `hermes_cli/main.py`
 
-A provider is not discoverable until it shows up in the interactive `hermes model` flow.
+A provider is not discoverable until it shows up in the interactive `savarez model` flow.
 
 Update these in `hermes_cli/main.py`:
 
@@ -242,7 +242,7 @@ Update these in `hermes_cli/main.py`:
 - a `_model_flow_<provider>()` function, or reuse `_model_flow_api_key_provider()` if it fits
 
 :::tip
-`hermes_cli/setup.py` does not need changes — it calls `select_provider_and_model()` from `main.py`, so your new provider appears in both `hermes model` and `hermes setup` automatically.
+`hermes_cli/setup.py` does not need changes — it calls `select_provider_and_model()` from `main.py`, so your new provider appears in both `savarez model` and `savarez setup` automatically.
 :::
 
 ## Step 6: Keep auxiliary calls working
@@ -434,7 +434,7 @@ Search for `api_mode` and `self.client.`. Do not assume the obvious request path
 
 Fields like provider routing belong only on the providers that support them.
 
-### 7. Updating `hermes model` but not `hermes setup`
+### 7. Updating `savarez model` but not `savarez setup`
 
 Both flows need to know about the provider.
 

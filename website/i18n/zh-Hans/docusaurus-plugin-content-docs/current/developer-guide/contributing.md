@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "贡献指南"
-description: "如何为 Hermes Agent 做贡献 — 开发环境配置、代码风格、PR 流程"
+description: "如何为 Savarez AI Agent 做贡献 — 开发环境配置、代码风格、PR 流程"
 ---
 
 # 贡献指南
 
-感谢您为 Hermes Agent 做贡献！本指南涵盖开发环境配置、代码库结构说明以及 PR 合并流程。
+感谢您为 Savarez AI Agent 做贡献！本指南涵盖开发环境配置、代码库结构说明以及 PR 合并流程。
 
 ## 贡献优先级
 
@@ -58,12 +58,12 @@ npm install
 ### 配置开发环境
 
 ```bash
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
-cp cli-config.yaml.example ~/.hermes/config.yaml
-touch ~/.hermes/.env
+mkdir -p ~/.savarez/{cron,sessions,logs,memories,skills}
+cp cli-config.yaml.example ~/.savarez/config.yaml
+touch ~/.savarez/.env
 
 # 至少添加一个 LLM 提供商密钥：
-echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
+echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.savarez/.env
 ```
 
 ### 运行
@@ -74,8 +74,8 @@ mkdir -p ~/.local/bin
 ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 
 # 验证
-hermes doctor
-hermes chat -q "Hello"
+savarez doctor
+savarez chat -q "Hello"
 ```
 
 ### 运行测试
@@ -90,7 +90,7 @@ pytest tests/ -v
 - **注释**：仅在解释非显而易见的意图、权衡取舍或 API 特殊行为时添加
 - **错误处理**：捕获具体异常。对于意外错误，使用 `logger.warning()`/`logger.error()` 并设置 `exc_info=True`
 - **跨平台**：不得假设 Unix 环境（见下文）
-- **Profile 安全路径**：不得硬编码 `~/.hermes` — 代码路径使用 `hermes_constants` 中的 `get_hermes_home()`，面向用户的消息使用 `display_hermes_home()`。完整规则参见 [AGENTS.md](https://github.com/NousResearch/hermes-agent/blob/main/AGENTS.md#profiles-multi-instance-support)。
+- **Profile 安全路径**：不得硬编码 `~/.savarez` — 代码路径使用 `hermes_constants` 中的 `get_hermes_home()`，面向用户的消息使用 `display_hermes_home()`。完整规则参见 [AGENTS.md](https://github.com/NousResearch/hermes-agent/blob/main/AGENTS.md#profiles-multi-instance-support)。
 
 ## 跨平台兼容性
 
@@ -186,7 +186,7 @@ refactor/description   # 代码重构
 ### 提交前检查
 
 1. **运行测试**：`pytest tests/ -v`
-2. **手动测试**：运行 `hermes` 并验证您修改的代码路径
+2. **手动测试**：运行 `savarez` 并验证您修改的代码路径
 3. **检查跨平台影响**：考虑 macOS 和不同 Linux 发行版
 4. **保持 PR 聚焦**：每个 PR 只包含一个逻辑变更
 

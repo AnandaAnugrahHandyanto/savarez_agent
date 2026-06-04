@@ -215,7 +215,7 @@ gateway:
 
   restart:
     in_progress:           "⏳ Перезапуск шлюза уже выполняется..."
-    restarting:            "♻ Перезапуск шлюза. Если уведомление не придёт в течение 60 секунд, перезапустите из консоли командой `hermes gateway restart`."
+    restarting:            "♻ Перезапуск шлюза. Если уведомление не придёт в течение 60 секунд, перезапустите из консоли командой `savarez gateway restart`."
 
   resume:
     db_unavailable:        "База данных сеансов недоступна."
@@ -250,7 +250,7 @@ gateway:
     success:               "✅ Главный канал установлен на **{name}** (ID: {chat_id}).\nCron-задачи и межплатформенные сообщения будут доставляться сюда."
 
   status:
-    header:                "📊 **Состояние Hermes Gateway**"
+    header:                "📊 **Состояние Savarez Gateway**"
     session_id:            "**ID сеанса:** `{session_id}`"
     title:                 "**Название:** {title}"
     created:               "**Создано:** {timestamp}"
@@ -294,9 +294,9 @@ gateway:
     invalid_count:         "Недопустимое число «{arg}» — используйте /undo или /undo N."
 
   update:
-    platform_not_messaging:  "✗ /update доступен только на платформах обмена сообщениями. Выполните `hermes update` в терминале."
+    platform_not_messaging:  "✗ /update доступен только на платформах обмена сообщениями. Выполните `savarez update` в терминале."
     not_git_repo:            "✗ Не git-репозиторий — обновление невозможно."
-    hermes_cmd_not_found:    "✗ Не удалось найти команду `hermes`. Hermes запущен, но команда обновления не нашла исполняемый файл в PATH или через текущий интерпретатор Python. Попробуйте выполнить `hermes update` вручную в терминале."
+    hermes_cmd_not_found:    "✗ Не удалось найти команду `savarez`. Hermes запущен, но команда обновления не нашла исполняемый файл в PATH или через текущий интерпретатор Python. Попробуйте выполнить `savarez update` вручную в терминале."
     start_failed:            "✗ Не удалось запустить обновление: {error}"
     starting:                "⚕ Запуск обновления Hermes… Я буду транслировать прогресс сюда."
 

@@ -168,7 +168,7 @@ def _default_windows_editor() -> str:
        the user closes the window).  This is the "always-works" default.
 
     The prompt_toolkit buffer's ``open_in_editor`` and Hermes's
-    ``hermes config edit`` both honour ``$EDITOR``.  Users who prefer a
+    ``savarez config edit`` both honour ``$EDITOR``.  Users who prefer a
     different editor can override:
 
     - VSCode: ``$env:EDITOR = "code --wait"``  (``--wait`` is critical;
@@ -200,7 +200,7 @@ def _augment_path_with_known_tools() -> None:
     ``%LOCALAPPDATA%\\hermes\\git\\bin`` to the User PATH via
     ``SetEnvironmentVariable(..., "User")``.  That write propagates to newly
     *spawned* processes only — already-running shells (including the one the
-    user invokes ``hermes`` from right after install) retain their old PATH.
+    user invokes ``savarez`` from right after install) retain their old PATH.
 
     Any subprocess Hermes spawns — bash, ``rg``, ``grep``, ``npm`` — inherits
     that stale PATH and reports commands as missing even though they're on

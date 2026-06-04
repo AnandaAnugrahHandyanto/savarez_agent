@@ -7,7 +7,7 @@ description: "Connect Hermes to GitHub so it automatically fetches PR diffs, rev
 
 # Automated GitHub PR Comments with Webhooks
 
-This guide walks you through connecting Hermes Agent to GitHub so it automatically fetches a pull request's diff, analyzes the code changes, and posts a comment — triggered by a webhook event with no manual prompting.
+This guide walks you through connecting Savarez AI Agent to GitHub so it automatically fetches a pull request's diff, analyzes the code changes, and posts a comment — triggered by a webhook event with no manual prompting.
 
 When a PR is opened or updated, GitHub sends a webhook POST to your Hermes instance. Hermes runs the agent with a prompt that instructs it to retrieve the diff via the `gh` CLI, and the response is posted back to the PR thread.
 
@@ -27,7 +27,7 @@ Webhook payloads contain attacker-controlled data — PR titles, commit messages
 
 ## Prerequisites
 
-- Hermes Agent installed and running (`hermes gateway`)
+- Savarez AI Agent installed and running (`savarez gateway`)
 - [`gh` CLI](https://cli.github.com/) installed and authenticated on the gateway host (`gh auth login`)
 - A publicly reachable URL for your Hermes instance (see [Local testing with ngrok](#local-testing-with-ngrok) if running locally)
 - Admin access to the GitHub repository (required to manage webhooks)
@@ -36,7 +36,7 @@ Webhook payloads contain attacker-controlled data — PR titles, commit messages
 
 ## Step 1 — Enable the webhook platform
 
-Add the following to your `~/.hermes/config.yaml`:
+Add the following to your `~/.savarez/config.yaml`:
 
 ```yaml
 platforms:
@@ -96,7 +96,7 @@ The GitHub webhook payload includes PR metadata (title, description, branch name
 ## Step 2 — Start the gateway
 
 ```bash
-hermes gateway
+savarez gateway
 ```
 
 You should see:
@@ -135,7 +135,7 @@ Create a branch, push a change, and open a PR. Within 30–90 seconds (depending
 To follow the agent's progress in real time:
 
 ```bash
-tail -f "${HERMES_HOME:-$HOME/.hermes}/logs/gateway.log"
+tail -f "${SAVAREZ_HOME:-$HOME/.savarez}/logs/gateway.log"
 ```
 
 ---
@@ -171,11 +171,11 @@ curl -s -X POST http://localhost:8644/webhooks/github-pr-review \
 
 Then watch the agent run:
 ```bash
-tail -f "${HERMES_HOME:-$HOME/.hermes}/logs/gateway.log"
+tail -f "${SAVAREZ_HOME:-$HOME/.savarez}/logs/gateway.log"
 ```
 
 :::note
-`hermes webhook test <name>` only works for **dynamic subscriptions** created with `hermes webhook subscribe`. It does not read routes from `config.yaml`.
+`savarez webhook test <name>` only works for **dynamic subscriptions** created with `savarez webhook subscribe`. It does not read routes from `config.yaml`.
 :::
 
 ---

@@ -1,11 +1,11 @@
 """
 Backup and import commands for hermes CLI.
 
-`hermes backup` creates a zip archive of the entire ~/.hermes/ directory
+`hermes backup` creates a zip archive of the entire ~/.savarez/ directory
 (excluding the hermes-agent repo and transient files).
 
 `hermes import` restores from a backup zip, overlaying onto the current
-HERMES_HOME root.
+SAVAREZ_HOME root.
 """
 
 import json
@@ -91,7 +91,7 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
         return True
 
     # zipfile.write() follows file symlinks, so skip links before any archive
-    # write can copy data from outside HERMES_HOME.
+    # write can copy data from outside SAVAREZ_HOME.
     if abs_path.is_symlink():
         return True
 
@@ -455,13 +455,13 @@ def run_import(args) -> None:
                 # hermes_cli.profiles might not be available (fresh install)
                 if any(profiles_dir.iterdir()):
                     print(f"\n  Profiles detected but aliases could not be created.")
-                    print(f"  Run: hermes profile list  (after installing hermes)")
+                    print(f"  Run: savarez profile list  (after installing hermes)")
 
         # Guidance
         print()
         if not (hermes_root / "hermes-agent").is_dir():
             print("Note: The hermes-agent codebase was not included in the backup.")
-            print("  If this is a fresh install, run: hermes update")
+            print("  If this is a fresh install, run: savarez update")
 
         if restored_profiles:
             gw_profiles = [n for n, _ in restored_profiles]
@@ -476,14 +476,14 @@ def run_import(args) -> None:
 # Quick state snapshots (used by /snapshot slash command and hermes backup --quick)
 # ---------------------------------------------------------------------------
 
-# Critical state files to include in quick snapshots (relative to HERMES_HOME).
+# Critical state files to include in quick snapshots (relative to SAVAREZ_HOME).
 # Everything else is either regeneratable (logs, cache) or managed separately
 # (skills, repo, sessions/).
 #
 # Entries may be individual files OR directories.  Directories are captured
 # recursively; missing entries are silently skipped.  Pairing data lives in
 # platform-specific JSON blobs outside state.db, so it's listed here explicitly
-# — `hermes update` snapshots this set before pulling so approved-user lists
+# — `savarez update` snapshots this set before pulling so approved-user lists
 # are recoverable if anything goes wrong (issue #15733).
 _QUICK_STATE_FILES = (
     "state.db",
@@ -670,7 +670,7 @@ def restore_quick_snapshot(
     return restored > 0
 
 
-# Relative path of the cron job database inside HERMES_HOME. Kept in sync with
+# Relative path of the cron job database inside SAVAREZ_HOME. Kept in sync with
 # the entry in ``_QUICK_STATE_FILES`` and with ``cron/jobs.py``'s ``JOBS_FILE``.
 _CRON_JOBS_REL = "cron/jobs.json"
 
@@ -706,7 +706,7 @@ def restore_cron_jobs_if_emptied(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Safety net for silent cron-job loss across ``hermes update``.
+    """Safety net for silent cron-job loss across ``savarez update``.
 
     Config-version migrations have been observed to leave ``cron/jobs.json``
     valid-but-empty after an update, silently dropping every scheduled job
@@ -932,15 +932,15 @@ def create_pre_update_backup(
     hermes_home: Optional[Path] = None,
     keep: int = _PRE_UPDATE_DEFAULT_KEEP,
 ) -> Optional[Path]:
-    """Create a full zip backup of HERMES_HOME under ``backups/``.
+    """Create a full zip backup of SAVAREZ_HOME under ``backups/``.
 
     Mirrors :func:`run_backup` (same exclusion rules, same SQLite safe-copy)
-    but writes to ``<HERMES_HOME>/backups/pre-update-<timestamp>.zip`` and
+    but writes to ``<SAVAREZ_HOME>/backups/pre-update-<timestamp>.zip`` and
     auto-prunes old pre-update backups.
 
     Returns the path to the created zip, or ``None`` if no files were
     found or the backup could not be created.  Never raises — the caller
-    (``hermes update``) should continue even if the backup fails.
+    (``savarez update``) should continue even if the backup fails.
     """
     hermes_root = hermes_home or get_default_hermes_root()
     if not hermes_root.is_dir():
@@ -1004,13 +1004,13 @@ def create_pre_migration_backup(
     hermes_home: Optional[Path] = None,
     keep: int = _PRE_MIGRATION_DEFAULT_KEEP,
 ) -> Optional[Path]:
-    """Create a full zip backup of HERMES_HOME under ``backups/`` before a
+    """Create a full zip backup of SAVAREZ_HOME under ``backups/`` before a
     ``hermes claw migrate`` apply.
 
     Shares implementation with :func:`create_pre_update_backup` via
     ``_write_full_zip_backup`` — same exclusions, same SQLite safe-copy,
     restorable with ``hermes import <archive>``.  Writes to
-    ``<HERMES_HOME>/backups/pre-migration-<timestamp>.zip`` and auto-prunes
+    ``<SAVAREZ_HOME>/backups/pre-migration-<timestamp>.zip`` and auto-prunes
     old pre-migration backups.
 
     Returns the path to the created zip, or ``None`` if nothing was found

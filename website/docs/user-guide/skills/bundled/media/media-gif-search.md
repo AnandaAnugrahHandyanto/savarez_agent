@@ -17,7 +17,7 @@ Search/download GIFs from Tenor via curl + jq.
 | Source | Bundled (installed by default) |
 | Path | `skills/media/gif-search` |
 | Version | `1.1.0` |
-| Author | Hermes Agent |
+| Author | Savarez AI Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `GIF`, `Media`, `Search`, `Tenor`, `API` |
@@ -38,7 +38,7 @@ Useful for finding reaction GIFs, creating visual content, and sending GIFs in c
 
 ## Setup
 
-Set your Tenor API key in your environment (add to `~/.hermes/.env`):
+Set your Tenor API key in your environment (add to `~/.savarez/.env`):
 
 ```bash
 TENOR_API_KEY=your_key_here

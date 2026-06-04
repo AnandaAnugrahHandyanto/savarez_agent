@@ -17,7 +17,7 @@ description: "通过 curl + jq 搜索/下载 Tenor GIF"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/media/gif-search` |
 | 版本 | `1.1.0` |
-| 作者 | Hermes Agent |
+| 作者 | Savarez AI Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `GIF`, `Media`, `Search`, `Tenor`, `API` |
@@ -38,7 +38,7 @@ description: "通过 curl + jq 搜索/下载 Tenor GIF"
 
 ## 配置
 
-在环境中设置 Tenor API 密钥（添加到 `~/.hermes/.env`）：
+在环境中设置 Tenor API 密钥（添加到 `~/.savarez/.env`）：
 
 ```bash
 TENOR_API_KEY=your_key_here

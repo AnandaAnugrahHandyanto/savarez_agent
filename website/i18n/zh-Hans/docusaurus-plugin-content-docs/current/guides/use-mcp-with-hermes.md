@@ -1,12 +1,12 @@
 ---
 sidebar_position: 6
 title: "在 Hermes 中使用 MCP"
-description: "将 MCP 服务器连接到 Hermes Agent、过滤其工具并在实际工作流中安全使用的实践指南"
+description: "将 MCP 服务器连接到 Savarez AI Agent、过滤其工具并在实际工作流中安全使用的实践指南"
 ---
 
 # 在 Hermes 中使用 MCP
 
-本指南介绍如何在日常工作流中实际使用 Hermes Agent 的 MCP 功能。
+本指南介绍如何在日常工作流中实际使用 Savarez AI Agent 的 MCP 功能。
 
 如果功能页面解释的是 MCP 是什么，本指南则关注如何快速、安全地从中获取价值。
 
@@ -42,7 +42,7 @@ description: "将 MCP 服务器连接到 Hermes Agent、过滤其工具并在实
 如果你在没有附加组件的情况下安装，需要单独添加 MCP：
 
 ```bash
-cd ~/.hermes/hermes-agent
+cd ~/.savarez/hermes-agent
 uv pip install -e ".[mcp]"
 ```
 
@@ -66,7 +66,7 @@ mcp_servers:
 然后启动 Hermes：
 
 ```bash
-hermes chat
+savarez chat
 ```
 
 现在提出一个具体问题：
@@ -143,13 +143,13 @@ Hermes (WSL) -> MCP stdio bridge -> Windows Chrome
 如果你的 Windows Chrome 已通过 `chrome://inspect/#remote-debugging` 启用了实时远程调试，在 WSL 中按如下方式添加：
 
 ```bash
-hermes mcp add chrome-devtools-win --command cmd.exe --args /c npx -y chrome-devtools-mcp@latest --autoConnect --no-usage-statistics
+savarez mcp add chrome-devtools-win --command cmd.exe --args /c npx -y chrome-devtools-mcp@latest --autoConnect --no-usage-statistics
 ```
 
 保存服务器后：
 
 ```bash
-hermes mcp test chrome-devtools-win
+savarez mcp test chrome-devtools-win
 ```
 
 然后启动一个新的 Hermes 会话或运行：

@@ -98,7 +98,7 @@ def _resolve_home_dir() -> str:
         pass
 
     # Last resort: /tmp (writable on any POSIX system). Avoids crashing the
-    # subprocess with no HOME; callers can set HERMES_HOME explicitly if they
+    # subprocess with no HOME; callers can set SAVAREZ_HOME explicitly if they
     # need a different writable dir.
     return "/tmp"
 
@@ -540,7 +540,7 @@ class CopilotACPClient:
                         "point Hermes at it explicitly:\n"
                         "  export HERMES_COPILOT_ACP_COMMAND=/path/to/new/copilot\n\n"
                         "Alternative: use the `copilot` provider (no ACP, hits the Copilot API\n"
-                        "directly with a Copilot subscription token) via `hermes setup`.\n\n"
+                        "directly with a Copilot subscription token) via `savarez setup`.\n\n"
                         f"Original error:\n{stderr_text}"
                     )
                 raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
@@ -559,7 +559,7 @@ class CopilotACPClient:
                     },
                     "clientInfo": {
                         "name": "hermes-agent",
-                        "title": "Hermes Agent",
+                        "title": "Savarez AI Agent",
                         "version": "0.0.0",
                     },
                 },

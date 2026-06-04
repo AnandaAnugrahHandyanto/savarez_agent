@@ -39,7 +39,7 @@ def test_prompt_reasoning_effort_falls_back_on_menu_runtime_error(monkeypatch):
 def test_remove_custom_provider_falls_back_on_menu_runtime_error(tmp_path, monkeypatch):
     from hermes_cli.main import _remove_custom_provider
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
     monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
 
     cfg = load_config()
@@ -63,7 +63,7 @@ def test_remove_custom_provider_falls_back_on_menu_runtime_error(tmp_path, monke
 def test_named_custom_provider_model_picker_falls_back_on_menu_runtime_error(tmp_path, monkeypatch):
     from hermes_cli.main import _model_flow_named_custom
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
     monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *args, **kwargs: ["model-a", "model-b"])
     monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)

@@ -364,17 +364,17 @@ class TestTeePattern:
         assert key is not None
 
     def test_tee_hermes_env(self):
-        dangerous, key, desc = detect_dangerous_command("echo x | tee ~/.hermes/.env")
+        dangerous, key, desc = detect_dangerous_command("echo x | tee ~/.savarez/.env")
         assert dangerous is True
         assert key is not None
 
     def test_tee_custom_hermes_home_env(self):
-        dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/.env")
+        dangerous, key, desc = detect_dangerous_command("echo x | tee $SAVAREZ_HOME/.env")
         assert dangerous is True
         assert key is not None
 
     def test_tee_quoted_custom_hermes_home_env(self):
-        dangerous, key, desc = detect_dangerous_command('echo x | tee "$HERMES_HOME/.env"')
+        dangerous, key, desc = detect_dangerous_command('echo x | tee "$SAVAREZ_HOME/.env"')
         assert dangerous is True
         assert key is not None
 
@@ -391,61 +391,61 @@ class TestTeePattern:
 
 class TestHermesConfigWriteProtection:
     """Terminal-side pairing for the file_tools write_file/patch deny on
-    ~/.hermes/config.yaml (#14639). config.yaml IS the security policy
+    ~/.savarez/config.yaml (#14639). config.yaml IS the security policy
     (approvals.mode/yolo live there, mtime-keyed cache reloads mid-session),
     so a write_file deny without terminal-side coverage is unpaired theater.
     These pin every terminal write idiom against the config file."""
 
     def test_redirect_overwrite(self):
-        dangerous, key, desc = detect_dangerous_command("echo 'approvals:' > ~/.hermes/config.yaml")
+        dangerous, key, desc = detect_dangerous_command("echo 'approvals:' > ~/.savarez/config.yaml")
         assert dangerous is True
         assert key is not None
 
     def test_append(self):
-        dangerous, key, desc = detect_dangerous_command("echo '  mode: off' >> ~/.hermes/config.yaml")
+        dangerous, key, desc = detect_dangerous_command("echo '  mode: off' >> ~/.savarez/config.yaml")
         assert dangerous is True
 
     def test_tee(self):
-        dangerous, key, desc = detect_dangerous_command("echo x | tee ~/.hermes/config.yaml")
+        dangerous, key, desc = detect_dangerous_command("echo x | tee ~/.savarez/config.yaml")
         assert dangerous is True
 
     def test_cp_over_config(self):
-        dangerous, key, desc = detect_dangerous_command("cp /tmp/evil.yaml ~/.hermes/config.yaml")
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/evil.yaml ~/.savarez/config.yaml")
         assert dangerous is True
 
     def test_sed_in_place(self):
         # The gap the pairing closes: sed -i mutates the file directly,
         # bypassing the redirection/tee patterns.
-        dangerous, key, desc = detect_dangerous_command("sed -i 's/manual/off/' ~/.hermes/config.yaml")
+        dangerous, key, desc = detect_dangerous_command("sed -i 's/manual/off/' ~/.savarez/config.yaml")
         assert dangerous is True
-        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+        assert "savarez config" in desc.lower() or "in-place" in desc.lower()
 
     def test_sed_in_place_long_flag(self):
-        dangerous, key, desc = detect_dangerous_command("sed --in-place 's/manual/off/' ~/.hermes/config.yaml")
+        dangerous, key, desc = detect_dangerous_command("sed --in-place 's/manual/off/' ~/.savarez/config.yaml")
         assert dangerous is True
 
     def test_custom_hermes_home(self):
-        dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/config.yaml")
+        dangerous, key, desc = detect_dangerous_command("echo x | tee $SAVAREZ_HOME/config.yaml")
         assert dangerous is True
 
     def test_perl_in_place_config(self):
         # perl -i performs the same in-place mutation as sed -i but was not
         # caught by the -e/-c pattern (which targets code evaluation).
         dangerous, key, desc = detect_dangerous_command(
-            "perl -i -pe 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+            "perl -i -pe 's/approvals.mode: on/approvals.mode: off/' ~/.savarez/config.yaml"
         )
         assert dangerous is True
         assert "in-place" in desc.lower() or "perl" in desc.lower()
 
     def test_ruby_in_place_config(self):
         dangerous, key, desc = detect_dangerous_command(
-            "ruby -i -pe 'gsub(/manual/, \"off\")' ~/.hermes/config.yaml"
+            "ruby -i -pe 'gsub(/manual/, \"off\")' ~/.savarez/config.yaml"
         )
         assert dangerous is True
 
     def test_perl_in_place_env(self):
         dangerous, key, desc = detect_dangerous_command(
-            "perl -i -pe 's/SECRET=old/SECRET=new/' ~/.hermes/.env"
+            "perl -i -pe 's/SECRET=old/SECRET=new/' ~/.savarez/.env"
         )
         assert dangerous is True
 
@@ -454,14 +454,14 @@ class TestHermesConfigWriteProtection:
         # splits the in-place flag out as its own token after -p; the pattern
         # must catch it the same as `perl -i -pe`.
         dangerous, key, desc = detect_dangerous_command(
-            "perl -p -i -e 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+            "perl -p -i -e 's/approvals.mode: on/approvals.mode: off/' ~/.savarez/config.yaml"
         )
         assert dangerous is True
 
     def test_perl_in_place_backup_suffix(self):
         # `perl -i.bak` keeps a backup but still mutates the file in place.
         dangerous, key, desc = detect_dangerous_command(
-            "perl -i.bak -pe 's/x/y/' ~/.hermes/config.yaml"
+            "perl -i.bak -pe 's/x/y/' ~/.savarez/config.yaml"
         )
         assert dangerous is True
 
@@ -469,13 +469,13 @@ class TestHermesConfigWriteProtection:
         # `perl -e` with no -i flag is code evaluation, not file mutation —
         # the perl/ruby -i pattern must not fire on it.
         dangerous, key, desc = detect_dangerous_command(
-            "perl -wne 'print' ~/.hermes/config.yaml"
+            "perl -wne 'print' ~/.savarez/config.yaml"
         )
         assert dangerous is False
 
     def test_read_is_safe(self):
         # Reading config is not a write — must not trip.
-        dangerous, key, desc = detect_dangerous_command("cat ~/.hermes/config.yaml")
+        dangerous, key, desc = detect_dangerous_command("cat ~/.savarez/config.yaml")
         assert dangerous is False
 
     def test_normal_yaml_write_safe(self):
@@ -513,7 +513,7 @@ class TestSensitiveRedirectPattern:
     """Detect shell redirection writes to sensitive user-managed paths."""
 
     def test_redirect_to_custom_hermes_home_env(self):
-        dangerous, key, desc = detect_dangerous_command("echo x > $HERMES_HOME/.env")
+        dangerous, key, desc = detect_dangerous_command("echo x > $SAVAREZ_HOME/.env")
         assert dangerous is True
         assert key is not None
 
@@ -709,7 +709,7 @@ class TestGatewayProtection:
     """Prevent agents from starting the gateway outside systemd management."""
 
     def test_gateway_run_with_disown_detected(self):
-        cmd = "kill 1605 && cd ~/.hermes/hermes-agent && source venv/bin/activate && python -m hermes_cli.main gateway run --replace &disown; echo done"
+        cmd = "kill 1605 && cd ~/.savarez/hermes-agent && source venv/bin/activate && python -m hermes_cli.main gateway run --replace &disown; echo done"
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True
         assert "systemctl" in desc

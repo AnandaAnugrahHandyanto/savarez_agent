@@ -13,7 +13,7 @@ These tests verify:
    hermes user before the real binary runs.
 2. ``docker exec --user hermes <c> hermes …`` (already non-root) short-
    circuits and doesn't try to drop again.
-3. Files written under $HERMES_HOME from a ``docker exec`` session land
+3. Files written under $SAVAREZ_HOME from a ``docker exec`` session land
    as hermes:hermes — the actual user-visible invariant.
 4. The HERMES_DOCKER_EXEC_AS_ROOT opt-out lets diagnostic sessions keep
    running as root deliberately.
@@ -74,16 +74,16 @@ def sleep_container(built_image: str, container_name: str) -> Iterator[str]:
 def test_shim_drops_root_to_hermes_uid(sleep_container: str) -> None:
     """docker exec defaults to root; the shim should drop to uid 10000.
 
-    We invoke `hermes` with a Python-style `-c` shim equivalent — there's no
+    We invoke `savarez` with a Python-style `-c` shim equivalent — there's no
     pure-hermes "print my uid" command, so we use the venv's python directly
     via the shim's PATH lookup: `python -c 'print(os.getuid())'` is resolved
     through the venv. But that bypasses the shim. Instead, we exploit the
-    fact that the venv's `hermes` is a console_scripts entry — under the
+    fact that the venv's `savarez` is a console_scripts entry — under the
     hood it's a tiny Python wrapper. We can't easily inject "print my uid"
-    into it without forking subcommands. Simplest approach: have `hermes`
+    into it without forking subcommands. Simplest approach: have `savarez`
     do anything that writes to disk, then check the file's owner.
 
-    Use `hermes config set` which writes config.yaml under HERMES_HOME.
+    Use `savarez config set` which writes config.yaml under SAVAREZ_HOME.
     The resulting file ownership tells us what UID the shim ended up at.
     """
     # Wipe any prior state.
@@ -220,7 +220,7 @@ def test_main_cmd_path_unaffected(built_image: str) -> None:
     """The CMD path (docker run <image> <args>) must still work.
 
     The shim sits at /opt/hermes/bin earliest on PATH; main-wrapper.sh
-    invokes `s6-setuidgid hermes hermes <args>` which resolves `hermes`
+    invokes `s6-setuidgid hermes hermes <args>` which resolves `savarez`
     through PATH. With the shim in the way, this could regress if the
     shim recurses or interferes with TTY/exit-code propagation.
 
@@ -250,21 +250,21 @@ def test_e2e_login_then_supervised_gateway_can_read_auth(
     "Hermes is not logged into Nous Portal" on every message.
 
     We can't do a real OAuth login in a unit test, but we can stand in
-    for it by writing the same file shape via `hermes config set`-style
+    for it by writing the same file shape via `savarez config set`-style
     writes — what matters is the *file ownership invariant* downstream
     of `_save_auth_store`. If the shim works, every file the
     `docker exec` path produces is hermes-readable.
 
     Specifically: pretend the operator ran `hermes login` (writes
     auth.json) and verify (a) the file exists and (b) it's readable by
-    the hermes UID. We use `hermes auth list` since that touches the
+    the hermes UID. We use `savarez auth list` since that touches the
     auth store on the read side and would fail with the same
     'not logged in' shape if the file was unreadable to uid 10000.
     """
     # Have the shim-protected `docker exec` write the auth store.
-    # `hermes auth list` is read-only but still exercises _load_auth_store
-    # under the shim's UID. We invoke `hermes config set` first to
-    # provoke a write into HERMES_HOME so we have something concrete to
+    # `savarez auth list` is read-only but still exercises _load_auth_store
+    # under the shim's UID. We invoke `savarez config set` first to
+    # provoke a write into SAVAREZ_HOME so we have something concrete to
     # owner-check.
     r = subprocess.run(
         ["docker", "exec", sleep_container,
@@ -274,7 +274,7 @@ def test_e2e_login_then_supervised_gateway_can_read_auth(
     assert r.returncode == 0, f"config set failed: {r.stderr}"
 
     # The supervised UID (10000) must be able to read everything under
-    # HERMES_HOME that docker exec just wrote.
+    # SAVAREZ_HOME that docker exec just wrote.
     r = subprocess.run(
         ["docker", "exec", "--user", "hermes", sleep_container,
          "find", "/opt/data", "-maxdepth", "2", "-type", "f",

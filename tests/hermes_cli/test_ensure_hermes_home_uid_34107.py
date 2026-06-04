@@ -1,7 +1,7 @@
 """Regression tests for #34107 — Docker UID/GID handling in ensure_hermes_home.
 
 When Hermes runs in Docker with ``HERMES_UID=1000`` / ``HERMES_GID=911``,
-the entrypoint chowns the top-level ``HERMES_HOME`` once at startup. But
+the entrypoint chowns the top-level ``SAVAREZ_HOME`` once at startup. But
 subdirectories created at runtime by ``ensure_hermes_home()`` — especially
 for profile namespaces under ``profiles/<name>/`` spawned by kanban
 workers — were landing as ``root:root`` and blocking subsequent

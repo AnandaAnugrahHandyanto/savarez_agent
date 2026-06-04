@@ -95,7 +95,7 @@ _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
 # runtime location) that repo-root modules a sandbox script imports may read at
 # import time.  None match _SECRET_SUBSTRINGS.
 _HERMES_CHILD_ALLOWED = frozenset({
-    "HERMES_HOME",
+    "SAVAREZ_HOME",
     "HERMES_PROFILE",
     "HERMES_CONFIG",
     "HERMES_ENV",
@@ -1262,7 +1262,7 @@ def execute_code(
         child_env.pop("HERMES_TIMEZONE", None)
 
         # Per-profile HOME isolation: redirect system tool configs into
-        # {HERMES_HOME}/home/ when that directory exists.
+        # {SAVAREZ_HOME}/home/ when that directory exists.
         from hermes_constants import get_subprocess_home
         _profile_home = get_subprocess_home()
         if _profile_home:
@@ -1423,7 +1423,7 @@ def execute_code(
 
         # Redact secrets (API keys, tokens, etc.) from sandbox output.
         # The sandbox env-var filter (lines 434-454) blocks os.environ access,
-        # but scripts can still read secrets from disk (e.g. open('~/.hermes/.env')).
+        # but scripts can still read secrets from disk (e.g. open('~/.savarez/.env')).
         # This ensures leaked secrets never enter the model context.
         from agent.redact import redact_sensitive_text
         stdout_text = redact_sensitive_text(stdout_text)
@@ -1724,7 +1724,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
                               mode: str = None) -> dict:
     """Build the execute_code schema with description listing only enabled tools.
 
-    When tools are disabled via ``hermes tools`` (e.g. web is turned off),
+    When tools are disabled via ``savarez tools`` (e.g. web is turned off),
     the schema description should NOT mention web_search / web_extract —
     otherwise the model thinks they are available and keeps trying to use them.
 
@@ -1759,7 +1759,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     if mode == "strict":
         cwd_note = (
             "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
-            "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files."
+            "(os.path.expanduser('~/.savarez/.env')) or terminal()/read_file() for user files."
         )
     else:
         cwd_note = (

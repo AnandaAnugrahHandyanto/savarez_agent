@@ -24,7 +24,7 @@ Before fanning out, you must ground the decomposition in the profiles that actua
 
 Use one of these:
 
-- `hermes profile list` — prints the table of profiles configured on this machine. Run it through your terminal tool if you have one; otherwise ask the user.
+- `savarez profile list` — prints the table of profiles configured on this machine. Run it through your terminal tool if you have one; otherwise ask the user.
 - `kanban_list(assignee="<some-name>")` — sanity-check a single name. Returns an empty list (rather than an error) for an unknown assignee, so this only confirms a name you're already considering.
 - **Just ask the user.** "What profiles do you have set up?" is a fine first turn when the goal needs more than one specialist.
 

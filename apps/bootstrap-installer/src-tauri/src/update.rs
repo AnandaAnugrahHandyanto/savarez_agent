@@ -4,8 +4,8 @@
 //! `AppMode` in lib.rs). The desktop app hands off to us — it exits, then we:
 //!
 //!   1. wait for the old Hermes desktop process to fully exit (so the venv
-//!      shim is free; otherwise `hermes update` aborts with exit code 2),
-//!   2. run `hermes update --yes --gateway` (Python/repo update; this does NOT
+//!      shim is free; otherwise `savarez update` aborts with exit code 2),
+//!   2. run `savarez update --yes --gateway` (Python/repo update; this does NOT
 //!      rebuild apps/desktop by design — see cmd_update in hermes_cli/main.py),
 //!   3. run `hermes desktop --build-only` (the rebuild step update skips),
 //!   4. launch the freshly-built desktop (reuses bootstrap::launch logic).
@@ -14,7 +14,7 @@
 //! emitting a synthetic two-stage manifest ("update", "rebuild"). To the
 //! frontend an update looks like a short bootstrap.
 //!
-//! Cross-platform note: `hermes update` already handles macOS/Linux (git/pip).
+//! Cross-platform note: `savarez update` already handles macOS/Linux (git/pip).
 //! The only OS-specific bits here are the venv shim path (resolve_hermes) and
 //! the no-window creation flag — both already cfg-gated. Keep new logic
 //! OS-agnostic so the mac/linux port stays "fill in the paths".
@@ -33,13 +33,13 @@ use tokio::process::Command;
 
 use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
 
-/// `hermes update` exit code meaning "another hermes process is holding the
+/// `savarez update` exit code meaning "another hermes process is holding the
 /// venv shim open / dirty precondition" — see _cmd_update_impl in
 /// hermes_cli/main.py (sys.exit(2)). We surface a targeted message for this.
 const UPDATE_EXIT_CONCURRENT: i32 = 2;
 
 /// How long to wait for the old desktop process to release the venv shim
-/// before giving up and letting `hermes update`'s own guard decide.
+/// before giving up and letting `savarez update`'s own guard decide.
 const DESKTOP_EXIT_WAIT: Duration = Duration::from_secs(20);
 const DESKTOP_EXIT_POLL: Duration = Duration::from_millis(500);
 
@@ -149,15 +149,15 @@ async fn run_update(app: AppHandle) -> Result<()> {
 
     // ---- pre-step: wait for the old desktop to die -----------------------
     // The desktop exec'd us then called app.exit(), but process teardown is
-    // async on Windows. If it still holds the venv shim, `hermes update`
+    // async on Windows. If it still holds the venv shim, `savarez update`
     // aborts with exit 2. Give it a bounded window to clear.
     wait_for_venv_free(&install_root, &app).await;
 
-    // ---- stage 1: hermes update -----------------------------------------
-    // Pass --branch so `hermes update` targets the branch this installer was
+    // ---- stage 1: savarez update -----------------------------------------
+    // Pass --branch so `savarez update` targets the branch this installer was
     // built/pinned against (BUILD_PIN_BRANCH), NOT its built-in default of
     // `main`. The install was a detached-HEAD checkout of a specific commit;
-    // without --branch, `hermes update` switches the checkout to `main` (a
+    // without --branch, `savarez update` switches the checkout to `main` (a
     // divergent branch that may not even have the desktop CLI command), then
     // reports "already up to date" against the wrong branch. The desktop
     // detected the update against this same branch, so we must update against
@@ -213,7 +213,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         }
         other => {
             let msg = format!(
-                "hermes update failed (exit {:?}). See {} for details.",
+                "savarez update failed (exit {:?}). See {} for details.",
                 other,
                 crate::paths::hermes_home()
                     .join("logs")
@@ -239,7 +239,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     }
 
     // ---- stage 2: hermes desktop --build-only ----------------------------
-    // `hermes update` deliberately does NOT build apps/desktop (it installs
+    // `savarez update` deliberately does NOT build apps/desktop (it installs
     // repo-root deps with --workspaces=false). This is the rebuild it skips.
     emit_stage(&app, "rebuild", StageState::Running, None, None);
     let started = Instant::now();
@@ -471,7 +471,7 @@ fn venv_hermes(install_root: &Path) -> PathBuf {
 }
 
 /// Resolve the hermes CLI to drive. Prefer the venv shim in the install we
-/// just updated; fall back to `hermes` on PATH.
+/// just updated; fall back to `savarez` on PATH.
 fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
     let shim = venv_hermes(install_root);
     if shim.exists() {
@@ -494,7 +494,7 @@ fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
 fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
     let hermes_home = crate::paths::hermes_home();
     let mut envs = vec![(
-        "HERMES_HOME".to_string(),
+        "SAVAREZ_HOME".to_string(),
         hermes_home.as_os_str().to_os_string(),
     )];
     if let Some(path) = path_with_prepended_entries(&[

@@ -15,8 +15,8 @@ hermes memory setup    # select "retaindb"
 
 Or manually:
 ```bash
-hermes config set memory.provider retaindb
-echo "RETAINDB_API_KEY=your-key" >> ~/.hermes/.env
+savarez config set memory.provider retaindb
+echo "RETAINDB_API_KEY=your-key" >> ~/.savarez/.env
 ```
 
 ## Config

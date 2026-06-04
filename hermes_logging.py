@@ -1,8 +1,8 @@
-"""Centralized logging setup for Hermes Agent.
+"""Centralized logging setup for Savarez AI Agent.
 
 Provides a single ``setup_logging()`` entry point that both the CLI and
 gateway call early in their startup path.  All log files live under
-``~/.hermes/logs/`` (profile-aware via ``get_hermes_home()``).
+``~/.savarez/logs/`` (profile-aware via ``get_hermes_home()``).
 
 Log files produced:
     agent.log   — INFO+, all agent/tool/session activity (the main log)
@@ -143,7 +143,7 @@ class _ComponentFilter(logging.Filter):
 
 
 # Logger name prefixes that belong to each component.
-# Used by _ComponentFilter and exposed for ``hermes logs --component``.
+# Used by _ComponentFilter and exposed for ``savarez logs --component``.
 COMPONENT_PREFIXES = {
     "gateway": ("gateway", "hermes_plugins"),
     "agent": ("agent", "run_agent", "model_tools", "batch_runner"),

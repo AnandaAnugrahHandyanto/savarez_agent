@@ -14,7 +14,7 @@ description: "通过 AgentMail 为 Agent 提供专属电子邮件收件箱"
 
 | | |
 |---|---|
-| 来源 | 可选 — 使用 `hermes skills install official/email/agentmail` 安装 |
+| 来源 | 可选 — 使用 `savarez skills install official/email/agentmail` 安装 |
 | 路径 | `optional-skills/email/agentmail` |
 | 版本 | `1.0.0` |
 | 平台 | linux, macos, windows |
@@ -52,7 +52,7 @@ AgentMail 为 Agent 提供独立的身份和收件箱。
 - 创建账户并生成 API 密钥（以 `am_` 开头）
 
 ### 2. 配置 MCP 服务器
-添加至 `~/.hermes/config.yaml`（粘贴实际密钥 — MCP 环境变量不会从 .env 展开）：
+添加至 `~/.savarez/config.yaml`（粘贴实际密钥 — MCP 环境变量不会从 .env 展开）：
 ```yaml
 mcp_servers:
   agentmail:

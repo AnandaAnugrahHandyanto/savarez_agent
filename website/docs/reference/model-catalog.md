@@ -55,13 +55,13 @@ Field notes:
 
 | When | What happens |
 |---|---|
-| `/model` or `hermes model` | Fetches if disk cache is stale, else uses cache |
+| `/model` or `savarez model` | Fetches if disk cache is stale, else uses cache |
 | Disk cache fresh (< TTL) | No network hit |
 | Network failure with cache | Silent fallback to cache, one log line |
 | Network failure, no cache | Silent fallback to in-repo snapshot |
 | Manifest fails schema validation | Treated as unreachable |
 
-Cache location: `~/.hermes/cache/model_catalog.json`.
+Cache location: `~/.savarez/cache/model_catalog.json`.
 
 ## Config
 

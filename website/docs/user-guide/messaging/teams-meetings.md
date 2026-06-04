@@ -10,7 +10,7 @@ Use the Teams meeting pipeline when you want Hermes to ingest Microsoft Graph me
 
 Prerequisites: see [Microsoft Teams](./teams.md) for the underlying bot/credential setup.
 
-> Run `hermes gateway setup` and pick **Teams Meetings** for a guided walk-through.
+> Run `savarez gateway setup` and pick **Teams Meetings** for a guided walk-through.
 
 This page focuses on setup and enablement:
 - Graph credentials
@@ -29,7 +29,7 @@ The pipeline:
 4. stores durable job state and sink records locally
 5. can write summaries to Notion, Linear, and Microsoft Teams
 
-Operator actions stay in the CLI (the `teams-pipeline` subcommand is registered by the `teams_pipeline` plugin — enable it via `hermes plugins enable teams_pipeline` or set `plugins.enabled: [teams_pipeline]` in `config.yaml`):
+Operator actions stay in the CLI (the `teams-pipeline` subcommand is registered by the `teams_pipeline` plugin — enable it via `savarez plugins enable teams_pipeline` or set `plugins.enabled: [teams_pipeline]` in `config.yaml`):
 
 ```bash
 hermes teams-pipeline validate
@@ -49,7 +49,7 @@ Before enabling the meetings pipeline, make sure you have:
 
 ## Step 1: Add Microsoft Graph Credentials
 
-Add Graph app-only credentials to `~/.hermes/.env`:
+Add Graph app-only credentials to `~/.savarez/.env`:
 
 ```bash
 MSGRAPH_TENANT_ID=<tenant-id>
@@ -89,7 +89,7 @@ https://ops.example.com/msgraph/webhook
 
 The meeting pipeline reads its runtime config from the existing `teams` platform entry. Pipeline-specific knobs live under `teams.extra.meeting_pipeline`. Teams outbound delivery stays on the normal Teams platform config surface.
 
-Example `~/.hermes/config.yaml`:
+Example `~/.savarez/config.yaml`:
 
 ```yaml
 platforms:
@@ -173,7 +173,7 @@ platforms:
 Start Hermes normally after updating config:
 
 ```bash
-hermes gateway run
+savarez gateway run
 ```
 
 Or, if you run Hermes in Docker, start the gateway the same way you already do for your deployment.

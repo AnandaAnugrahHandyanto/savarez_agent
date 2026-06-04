@@ -1,12 +1,12 @@
 ---
 sidebar_position: 3
 title: "创建 Skill"
-description: "如何为 Hermes Agent 创建 skill——SKILL.md 格式、规范与发布"
+description: "如何为 Savarez AI Agent 创建 skill——SKILL.md 格式、规范与发布"
 ---
 
 # 创建 Skill
 
-Skill 是为 Hermes Agent 添加新能力的首选方式。与 tool 相比，skill 更易于创建，无需修改 agent 代码，且可与社区共享。
+Skill 是为 Savarez AI Agent 添加新能力的首选方式。与 tool 相比，skill 更易于创建，无需修改 agent 代码，且可与社区共享。
 
 ## 应该创建 Skill 还是 Tool？
 
@@ -200,7 +200,7 @@ metadata:
 - `key`（必需）——配置项的点路径（例如 `myplugin.path`）
 - `description`（必需）——说明该配置项的作用
 - `default`（可选）——用户未配置时的默认值
-- `prompt`（可选）——`hermes config migrate` 时显示的提示文本；若未设置则回退到 `description`
+- `prompt`（可选）——`savarez config migrate` 时显示的提示文本；若未设置则回退到 `description`
 
 **工作原理：**
 
@@ -212,11 +212,11 @@ metadata:
          path: ~/my-data
    ```
 
-2. **发现：** `hermes config migrate` 扫描所有已启用的 skill，找出未配置的项并提示用户。配置项也会在 `hermes config show` 的"Skill Settings"部分显示。
+2. **发现：** `savarez config migrate` 扫描所有已启用的 skill，找出未配置的项并提示用户。配置项也会在 `savarez config show` 的"Skill Settings"部分显示。
 
 3. **运行时注入：** Skill 加载时，其 config 值会被解析并追加到 skill 消息中：
    ```
-   [Skill config (from ~/.hermes/config.yaml):
+   [Skill config (from ~/.savarez/config.yaml):
      myplugin.path = /home/user/my-data
    ]
    ```
@@ -224,11 +224,11 @@ metadata:
 
 4. **手动配置：** 用户也可直接设置值：
    ```bash
-   hermes config set skills.config.myplugin.path ~/my-data
+   savarez config set skills.config.myplugin.path ~/my-data
    ```
 
 :::tip 如何选择
-对 API key、token 及其他**密钥**使用 `required_environment_variables`（存储在 `~/.hermes/.env`，不向模型展示）。对**路径、偏好设置及非敏感配置**使用 `config`（存储在 `config.yaml`，在 config show 中可见）。
+对 API key、token 及其他**密钥**使用 `required_environment_variables`（存储在 `~/.savarez/.env`，不向模型展示）。对**路径、偏好设置及非敏感配置**使用 `config`（存储在 `config.yaml`，在 config show 中可见）。
 :::
 
 ### 凭证文件要求（OAuth token 等）
@@ -244,7 +244,7 @@ required_credential_files:
 ```
 
 每个条目支持：
-- `path`（必需）——相对于 `~/.hermes/` 的文件路径
+- `path`（必需）——相对于 `~/.savarez/` 的文件路径
 - `description`（可选）——说明该文件的用途及创建方式
 
 加载时，Hermes 会检查这些文件是否存在。缺少文件会触发 `setup_needed`。已存在的文件会自动：
@@ -253,7 +253,7 @@ required_credential_files:
 - 在**本地**后端无需任何特殊处理即可使用
 
 :::tip 如何选择
-对简单的 API key 和 token（存储在 `~/.hermes/.env` 中的字符串）使用 `required_environment_variables`。对 OAuth token 文件、客户端密钥、服务账号 JSON、证书或任何以磁盘文件形式存在的凭证使用 `required_credential_files`。
+对简单的 API key 和 token（存储在 `~/.savarez/.env` 中的字符串）使用 `required_environment_variables`。对 OAuth token 文件、客户端密钥、服务账号 JSON、证书或任何以磁盘文件形式存在的凭证使用 `required_credential_files`。
 :::
 
 完整示例请参见 `skills/productivity/google-workspace/SKILL.md`，其中同时使用了两者。
@@ -320,7 +320,7 @@ skills:
 运行 skill 并验证 agent 是否正确遵循指令：
 
 ```bash
-hermes chat --toolsets skills -q "Use the X skill to do Y"
+savarez chat --toolsets skills -q "Use the X skill to do Y"
 ```
 
 ## Skill 应放在哪里？
@@ -330,16 +330,16 @@ hermes chat --toolsets skills -q "Use the X skill to do Y"
 - 文档处理、网页研究、常见开发工作流、系统管理
 - 被广泛人群定期使用
 
-如果你的 skill 是官方的且有用，但并非所有人都需要（例如付费服务集成、重量级依赖），请放入 **`optional-skills/`**——它随仓库一起发布，可通过 `hermes skills browse` 发现（标记为"official"），并以内置信任级别安装。
+如果你的 skill 是官方的且有用，但并非所有人都需要（例如付费服务集成、重量级依赖），请放入 **`optional-skills/`**——它随仓库一起发布，可通过 `savarez skills browse` 发现（标记为"official"），并以内置信任级别安装。
 
-如果你的 skill 是专业化的、社区贡献的或小众的，更适合放在 **Skills Hub**——将其上传到注册表并通过 `hermes skills install` 分享。
+如果你的 skill 是专业化的、社区贡献的或小众的，更适合放在 **Skills Hub**——将其上传到注册表并通过 `savarez skills install` 分享。
 
 ## 发布 Skill
 
 ### 发布到 Skills Hub
 
 ```bash
-hermes skills publish skills/my-skill --to github --repo owner/repo
+savarez skills publish skills/my-skill --to github --repo owner/repo
 ```
 
 ### 发布到自定义仓库
@@ -347,7 +347,7 @@ hermes skills publish skills/my-skill --to github --repo owner/repo
 将你的仓库添加为 tap：
 
 ```bash
-hermes skills tap add owner/repo
+savarez skills tap add owner/repo
 ```
 
 用户随后可从你的仓库搜索并安装。

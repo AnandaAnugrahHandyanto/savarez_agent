@@ -177,7 +177,7 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
         "conflicts (Telegram, Discord, and Slack only allow one active "
         "session per token)."
     )
-    print_info("Recommendation: stop the gateway first with 'hermes gateway stop'.")
+    print_info("Recommendation: stop the gateway first with 'savarez gateway stop'.")
     print()
     if not auto_yes and not prompt_yes_no("Continue anyway?", default=False):
         print_info("Migration cancelled. Stop the gateway and try again.")
@@ -480,7 +480,7 @@ def _cmd_migrate(args):
             f"Plan has {preview_conflicts} conflict(s). Refusing to apply."
         )
         print_info(
-            "Each conflict is an item whose target already exists in ~/.hermes/. "
+            "Each conflict is an item whose target already exists in ~/.savarez/. "
             "Re-run with --overwrite to replace conflicting targets (item-level "
             "backups are written to the migration report directory)."
         )
@@ -806,4 +806,4 @@ def _print_migration_report(report: dict, dry_run: bool):
             print_info("  hermes claw migrate --migrate-secrets")
             print()
             print_info("Or add your key manually:")
-            print_info("  hermes config set OPENROUTER_API_KEY sk-or-v1-...")
+            print_info("  savarez config set OPENROUTER_API_KEY sk-or-v1-...")

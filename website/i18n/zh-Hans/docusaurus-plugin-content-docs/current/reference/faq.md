@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3
 title: "常见问题与故障排查"
-description: "Hermes Agent 常见问题解答及常见问题解决方案"
+description: "Savarez AI Agent 常见问题解答及常见问题解决方案"
 ---
 
 # 常见问题与故障排查
@@ -14,23 +14,23 @@ description: "Hermes Agent 常见问题解答及常见问题解决方案"
 
 ### Hermes 支持哪些 LLM 提供商？
 
-Hermes Agent 可与任何兼容 OpenAI 的 API 配合使用。支持的提供商包括：
+Savarez AI Agent 可与任何兼容 OpenAI 的 API 配合使用。支持的提供商包括：
 
 - **[OpenRouter](https://openrouter.ai/)** — 通过一个 API key 访问数百个模型（推荐，灵活性强）
 - **Nous Portal** — Nous Research 自有推理端点
 - **OpenAI** — GPT-5.4、GPT-5-codex、GPT-4.1、GPT-4o 等
-- **Anthropic** — Claude 模型（直接 API、通过 `hermes auth add anthropic` 进行 OAuth、OpenRouter 或任何兼容代理）
+- **Anthropic** — Claude 模型（直接 API、通过 `savarez auth add anthropic` 进行 OAuth、OpenRouter 或任何兼容代理）
 - **Google** — Gemini 模型（通过 `gemini` 提供商直接调用 API、`google-gemini-cli` OAuth 提供商、OpenRouter 或兼容代理）
 - **z.ai / ZhipuAI** — GLM 模型
 - **Kimi / Moonshot AI** — Kimi 模型
 - **MiniMax** — 全球及中国区端点
 - **本地模型** — 通过 [Ollama](https://ollama.com/)、[vLLM](https://docs.vllm.ai/)、[llama.cpp](https://github.com/ggerganov/llama.cpp)、[SGLang](https://github.com/sgl-project/sglang) 或任何兼容 OpenAI 的服务器
 
-使用 `hermes model` 设置提供商，或直接编辑 `~/.hermes/.env`。所有提供商 key 请参阅[环境变量](./environment-variables.md)参考文档。
+使用 `savarez model` 设置提供商，或直接编辑 `~/.savarez/.env`。所有提供商 key 请参阅[环境变量](./environment-variables.md)参考文档。
 
 ### 支持 Windows 吗？
 
-**原生不支持。** Hermes Agent 需要类 Unix 环境。在 Windows 上，请安装 [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) 并在其中运行 Hermes。标准安装命令在 WSL2 中可完美运行：
+**原生不支持。** Savarez AI Agent 需要类 Unix 环境。在 Windows 上，请安装 [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) 并在其中运行 Hermes。标准安装命令在 WSL2 中可完美运行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
@@ -70,14 +70,14 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 ### 我的数据会被发送到哪里？
 
-API 调用**仅发送至您配置的 LLM 提供商**（例如 OpenRouter、您本地的 Ollama 实例）。Hermes Agent 不收集遥测数据、使用数据或分析数据。您的对话、记忆和技能均存储在本地 `~/.hermes/` 目录中。
+API 调用**仅发送至您配置的 LLM 提供商**（例如 OpenRouter、您本地的 Ollama 实例）。Savarez AI Agent 不收集遥测数据、使用数据或分析数据。您的对话、记忆和技能均存储在本地 `~/.savarez/` 目录中。
 
 ### 可以离线使用 / 使用本地模型吗？
 
-可以。运行 `hermes model`，选择**自定义端点**，然后输入您服务器的 URL：
+可以。运行 `savarez model`，选择**自定义端点**，然后输入您服务器的 URL：
 
 ```bash
-hermes model
+savarez model
 # 选择：Custom endpoint（手动输入 URL）
 # API base URL: http://localhost:11434/v1
 # API key: ollama
@@ -108,11 +108,11 @@ Hermes 会自动检测本地端点并放宽流式传输超时（读取超时从 
 
 ### 费用是多少？
 
-Hermes Agent 本身**免费且开源**（MIT 许可证）。您只需为所选提供商的 LLM API 用量付费。本地模型完全免费运行。
+Savarez AI Agent 本身**免费且开源**（MIT 许可证）。您只需为所选提供商的 LLM API 用量付费。本地模型完全免费运行。
 
 ### 多人可以使用同一个实例吗？
 
-可以。[消息网关](../user-guide/messaging/index.md)允许多个用户通过 Telegram、Discord、Slack、WhatsApp 或 Home Assistant 与同一个 Hermes Agent 实例交互。访问权限通过白名单（特定用户 ID）和私信配对（第一个发消息的用户获得访问权）来控制。
+可以。[消息网关](../user-guide/messaging/index.md)允许多个用户通过 Telegram、Discord、Slack、WhatsApp 或 Home Assistant 与同一个 Savarez AI Agent 实例交互。访问权限通过白名单（特定用户 ID）和私信配对（第一个发消息的用户获得访问权）来控制。
 
 ### 记忆（memory）和技能（skills）有什么区别？
 
@@ -182,7 +182,7 @@ brew install python@3.12      # macOS
 
 **原因：** Hermes 在启动时通过运行一次 `bash -l` 构建每个会话的环境快照。bash 登录 shell 会读取 `/etc/profile`、`~/.bash_profile` 和 `~/.profile`，但**不会 source `~/.bashrc`** — 因此在 `~/.bashrc` 中安装自身的工具（`nvm`、`asdf`、`pyenv`、`cargo`、自定义 `PATH` 导出）对快照不可见。当 Hermes 在 systemd 下运行或在未预加载交互式 shell 配置的最小 shell 中运行时，此问题最为常见。
 
-**解决方案：** Hermes 默认自动 source `~/.bashrc`。如果这还不够 — 例如您是 zsh 用户，PATH 在 `~/.zshrc` 中，或者您从独立文件初始化 `nvm` — 请在 `~/.hermes/config.yaml` 中列出需要额外 source 的文件：
+**解决方案：** Hermes 默认自动 source `~/.bashrc`。如果这还不够 — 例如您是 zsh 用户，PATH 在 `~/.zshrc` 中，或者您从独立文件初始化 `nvm` — 请在 `~/.savarez/config.yaml` 中列出需要额外 source 的文件：
 
 ```yaml
 terminal:
@@ -236,24 +236,24 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 **原因：** 会话内的 `/model` 只能在您**已配置**的提供商之间切换。如果您只设置了 OpenRouter，`/model` 就只会显示 OpenRouter。
 
-**解决方案：** 退出当前会话，在终端中使用 `hermes model` 添加新提供商：
+**解决方案：** 退出当前会话，在终端中使用 `savarez model` 添加新提供商：
 
 ```bash
 # 先退出 Hermes 聊天会话（Ctrl+C 或 /quit）
 
 # 运行完整的提供商设置向导
-hermes model
+savarez model
 
 # 此命令可以：添加提供商、运行 OAuth、输入 API key、配置端点
 ```
 
-通过 `hermes model` 添加新提供商后，启动新的聊天会话 — `/model` 将显示所有已配置的提供商。
+通过 `savarez model` 添加新提供商后，启动新的聊天会话 — `/model` 将显示所有已配置的提供商。
 
 :::tip 快速参考
 | 目标 | 使用方式 |
 |-----------|-----|
-| 添加新提供商 | `hermes model`（从终端） |
-| 输入/更改 API key | `hermes model`（从终端） |
+| 添加新提供商 | `savarez model`（从终端） |
+| 输入/更改 API key | `savarez model`（从终端） |
 | 会话中途切换模型 | `/model <name>`（会话内） |
 | 切换到其他已配置的提供商 | `/model provider:model`（会话内） |
 :::
@@ -265,17 +265,17 @@ hermes model
 **解决方案：**
 ```bash
 # 检查您的配置
-hermes config show
+savarez config show
 
 # 重新配置您的提供商
-hermes model
+savarez model
 
 # 或直接设置
-hermes config set OPENROUTER_API_KEY sk-or-v1-xxxxxxxxxxxx
+savarez config set OPENROUTER_API_KEY sk-or-v1-xxxxxxxxxxxx
 ```
 
 :::warning
-请确保 key 与提供商匹配。OpenAI 的 key 无法用于 OpenRouter，反之亦然。检查 `~/.hermes/.env` 中是否有冲突条目。
+请确保 key 与提供商匹配。OpenAI 的 key 无法用于 OpenRouter，反之亦然。检查 `~/.savarez/.env` 中是否有冲突条目。
 :::
 
 #### 模型不可用 / 找不到模型
@@ -285,13 +285,13 @@ hermes config set OPENROUTER_API_KEY sk-or-v1-xxxxxxxxxxxx
 **解决方案：**
 ```bash
 # 列出您的提供商可用的模型
-hermes model
+savarez model
 
 # 设置有效的模型
-hermes config set HERMES_MODEL anthropic/claude-opus-4.7
+savarez config set HERMES_MODEL anthropic/claude-opus-4.7
 
 # 或按会话指定
-hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
+savarez chat --model openrouter/meta-llama/llama-3.1-70b-instruct
 ```
 
 #### 速率限制（429 错误）
@@ -301,7 +301,7 @@ hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
 **解决方案：** 稍等片刻后重试。对于持续使用，请考虑：
 - 升级您的提供商套餐
 - 切换到其他模型或提供商
-- 使用 `hermes chat --provider <alternative>` 路由到其他后端
+- 使用 `savarez chat --provider <alternative>` 路由到其他后端
 
 #### 上下文长度超限
 
@@ -313,10 +313,10 @@ hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
 /compress
 
 # 或开始新会话
-hermes chat
+savarez chat
 
 # 使用上下文窗口更大的模型
-hermes chat --model openrouter/google/gemini-3-flash-preview
+savarez chat --model openrouter/google/gemini-3-flash-preview
 ```
 
 如果在第一次长对话时就出现此问题，Hermes 可能检测到了错误的模型上下文长度。检查检测结果：
@@ -326,7 +326,7 @@ hermes chat --model openrouter/google/gemini-3-flash-preview
 如需修正上下文检测，请显式设置：
 
 ```yaml
-# 在 ~/.hermes/config.yaml 中
+# 在 ~/.savarez/config.yaml 中
 model:
   default: your-model-name
   context_length: 131072  # 您模型的实际上下文窗口
@@ -368,7 +368,7 @@ custom_providers:
 **解决方案：**
 - 在消息中避免使用 `sudo` — 请智能体寻找替代方案
 - 如果必须使用 `sudo`，在 `/etc/sudoers` 中为特定命令配置免密 sudo
-- 或切换到终端界面执行管理任务：`hermes chat`
+- 或切换到终端界面执行管理任务：`savarez chat`
 
 #### Docker 后端无法连接
 
@@ -398,13 +398,13 @@ docker run hello-world
 **解决方案：**
 ```bash
 # 检查网关是否在运行
-hermes gateway status
+savarez gateway status
 
 # 启动网关
-hermes gateway start
+savarez gateway start
 
 # 查看错误日志
-cat ~/.hermes/logs/gateway.log | tail -50
+cat ~/.savarez/logs/gateway.log | tail -50
 ```
 
 #### 消息未送达
@@ -412,8 +412,8 @@ cat ~/.hermes/logs/gateway.log | tail -50
 **原因：** 网络问题、bot token 已过期，或平台 webhook 配置错误。
 
 **解决方案：**
-- 使用 `hermes gateway setup` 验证您的 bot token 是否有效
-- 检查网关日志：`cat ~/.hermes/logs/gateway.log | tail -50`
+- 使用 `savarez gateway setup` 验证您的 bot token 是否有效
+- 检查网关日志：`cat ~/.savarez/logs/gateway.log | tail -50`
 - 对于基于 webhook 的平台（Slack、WhatsApp），确保您的服务器可公开访问
 
 #### 白名单混淆 — 谁可以与 bot 交互？
@@ -428,7 +428,7 @@ cat ~/.hermes/logs/gateway.log | tail -50
 | **私信配对** | 第一个在私信中发消息的用户获得独占访问权 |
 | **开放** | 任何人都可以交互（不建议用于生产环境） |
 
-在 `~/.hermes/config.yaml` 中您的网关设置下进行配置。请参阅[消息文档](../user-guide/messaging/index.md)。
+在 `~/.savarez/config.yaml` 中您的网关设置下进行配置。请参阅[消息文档](../user-guide/messaging/index.md)。
 
 #### 网关无法启动
 
@@ -443,10 +443,10 @@ pip install "hermes-agent[messaging]"  # Telegram、Discord、Slack 及共享网
 lsof -i :8080
 
 # 验证配置
-hermes config show
+savarez config show
 ```
 
-#### WSL：网关持续断开连接或 `hermes gateway start` 失败
+#### WSL：网关持续断开连接或 `savarez gateway start` 失败
 
 **原因：** WSL 的 systemd 支持不稳定。许多 WSL2 安装未启用 systemd，即使启用，服务也可能在 WSL 重启或 Windows 空闲关机后无法存活。
 
@@ -454,14 +454,14 @@ hermes config show
 
 ```bash
 # 方案一：直接前台运行（最简单）
-hermes gateway run
+savarez gateway run
 
 # 方案二：通过 tmux 持久运行（关闭终端后仍存活）
-tmux new -s hermes 'hermes gateway run'
+tmux new -s hermes 'savarez gateway run'
 # 稍后重新连接：tmux attach -t hermes
 
 # 方案三：通过 nohup 后台运行
-nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &
+nohup savarez gateway run > ~/.savarez/logs/gateway.log 2>&1 &
 ```
 
 如果仍想尝试 systemd，请确保已启用：
@@ -478,7 +478,7 @@ nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &
 
 :::tip Windows 开机自启
 如需可靠的自启动，使用 Windows 任务计划程序在登录时启动 WSL + 网关：
-1. 创建一个任务，运行 `wsl -d Ubuntu -- bash -lc 'hermes gateway run'`
+1. 创建一个任务，运行 `wsl -d Ubuntu -- bash -lc 'savarez gateway run'`
 2. 设置在用户登录时触发
 :::
 
@@ -486,11 +486,11 @@ nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &
 
 **原因：** launchd 服务继承的是最小 PATH（`/usr/bin:/bin:/usr/sbin:/sbin`），不包含 Homebrew、nvm、cargo 或其他用户安装的工具目录。这通常会导致 WhatsApp bridge（`node not found`）或语音转录（`ffmpeg not found`）失败。
 
-**解决方案：** 网关在您运行 `hermes gateway install` 时会捕获您的 shell PATH。如果您在设置网关后安装了新工具，请重新运行 install 以捕获更新后的 PATH：
+**解决方案：** 网关在您运行 `savarez gateway install` 时会捕获您的 shell PATH。如果您在设置网关后安装了新工具，请重新运行 install 以捕获更新后的 PATH：
 
 ```bash
-hermes gateway install    # 重新快照当前 PATH
-hermes gateway start      # 检测到更新的 plist 并重新加载
+savarez gateway install    # 重新快照当前 PATH
+savarez gateway start      # 检测到更新的 plist 并重新加载
 ```
 
 您可以验证 plist 中的 PATH 是否正确：
@@ -508,8 +508,8 @@ hermes gateway start      # 检测到更新的 plist 并重新加载
 **原因：** 模型较大、API 服务器距离较远，或系统 prompt（提示词）包含过多工具。
 
 **解决方案：**
-- 尝试更快/更小的模型：`hermes chat --model openrouter/meta-llama/llama-3.1-8b-instruct`
-- 减少激活的工具集：`hermes chat -t "terminal"`
+- 尝试更快/更小的模型：`savarez chat --model openrouter/meta-llama/llama-3.1-8b-instruct`
+- 减少激活的工具集：`savarez chat -t "terminal"`
 - 检查到提供商的网络延迟
 - 对于本地模型，确保有足够的 GPU VRAM
 
@@ -540,10 +540,10 @@ hermes gateway start      # 检测到更新的 plist 并重新加载
 /compress
 
 # 开始新会话并引用旧会话
-hermes chat
+savarez chat
 
 # 如需稍后继续特定会话
-hermes chat --continue
+savarez chat --continue
 ```
 
 ---
@@ -557,7 +557,7 @@ hermes chat --continue
 **解决方案：**
 ```bash
 # 确保 MCP 依赖项已安装（标准安装中已包含）
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd ~/.savarez/hermes-agent && uv pip install -e ".[mcp]"
 
 # 对于基于 npm 的服务器，确保 Node.js 可用
 node --version
@@ -567,7 +567,7 @@ npx --version
 npx -y @modelcontextprotocol/server-filesystem /tmp
 ```
 
-验证您的 `~/.hermes/config.yaml` 中的 MCP 配置：
+验证您的 `~/.savarez/config.yaml` 中的 MCP 配置：
 ```yaml
 mcp_servers:
   filesystem:
@@ -588,10 +588,10 @@ mcp_servers:
 
 ```bash
 # 验证 MCP 服务器已配置
-hermes config show | grep -A 12 mcp_servers
+savarez config show | grep -A 12 mcp_servers
 
 # 更改配置后重启 Hermes 或重新加载 MCP
-hermes chat
+savarez chat
 ```
 
 另请参阅：
@@ -616,9 +616,9 @@ hermes chat
 
 ## Profiles（配置文件）
 
-### Profiles 与直接设置 HERMES_HOME 有何不同？
+### Profiles 与直接设置 SAVAREZ_HOME 有何不同？
 
-Profiles 是构建在 `HERMES_HOME` 之上的托管层。您*可以*在每次命令前手动设置 `HERMES_HOME=/some/path`，但 profiles 会为您处理所有底层工作：创建目录结构、生成 shell 别名（`hermes-work`）、在 `~/.hermes/active_profile` 中跟踪活动 profile，以及自动跨所有 profiles 同步技能更新。它们还与 tab 补全集成，让您无需记忆路径。
+Profiles 是构建在 `SAVAREZ_HOME` 之上的托管层。您*可以*在每次命令前手动设置 `SAVAREZ_HOME=/some/path`，但 profiles 会为您处理所有底层工作：创建目录结构、生成 shell 别名（`hermes-work`）、在 `~/.savarez/active_profile` 中跟踪活动 profile，以及自动跨所有 profiles 同步技能更新。它们还与 tab 补全集成，让您无需记忆路径。
 
 ### 两个 profiles 可以共享同一个 bot token 吗？
 
@@ -626,15 +626,15 @@ Profiles 是构建在 `HERMES_HOME` 之上的托管层。您*可以*在每次命
 
 ### Profiles 共享记忆或会话吗？
 
-不共享。每个 profile 都有自己独立的记忆存储、会话数据库和技能目录，完全隔离。如果您想用现有的记忆和会话创建新 profile，请使用 `hermes profile create newname --clone-all` 从当前 profile 复制所有内容。
+不共享。每个 profile 都有自己独立的记忆存储、会话数据库和技能目录，完全隔离。如果您想用现有的记忆和会话创建新 profile，请使用 `savarez profile create newname --clone-all` 从当前 profile 复制所有内容。
 
-### 运行 `hermes update` 时会发生什么？
+### 运行 `savarez update` 时会发生什么？
 
-`hermes update` 拉取最新代码并重新安装依赖项**一次**（不是每个 profile 各一次）。然后自动将更新的技能同步到所有 profiles。您只需运行一次 `hermes update` — 它覆盖机器上的每个 profile。
+`savarez update` 拉取最新代码并重新安装依赖项**一次**（不是每个 profile 各一次）。然后自动将更新的技能同步到所有 profiles。您只需运行一次 `savarez update` — 它覆盖机器上的每个 profile。
 
 ### 可以运行多少个 profiles？
 
-没有硬性限制。每个 profile 只是 `~/.hermes/profiles/` 下的一个目录。实际限制取决于您的磁盘空间以及系统能处理多少个并发网关（每个网关是一个轻量级 Python 进程）。运行数十个 profiles 完全没问题；每个空闲的 profile 不占用任何资源。
+没有硬性限制。每个 profile 只是 `~/.savarez/profiles/` 下的一个目录。实际限制取决于您的磁盘空间以及系统能处理多少个并发网关（每个网关是一个轻量级 Python 进程）。运行数十个 profiles 完全没问题；每个空闲的 profile 不占用任何资源。
 
 ---
 
@@ -644,7 +644,7 @@ Profiles 是构建在 `HERMES_HOME` 之上的托管层。您*可以*在每次命
 
 **场景：** 您日常使用 GPT-5.4，但 Gemini 或 Grok 写社交媒体内容更好。每次手动切换模型很繁琐。
 
-**解决方案：委托配置。** Hermes 可以自动将子智能体路由到不同的模型。在 `~/.hermes/config.yaml` 中设置：
+**解决方案：委托配置。** Hermes 可以自动将子智能体路由到不同的模型。在 `~/.savarez/config.yaml` 中设置：
 
 ```yaml
 delegation:
@@ -711,9 +711,9 @@ display:
 
 ### 在 Telegram 上管理技能（slash 命令限制）
 
-**场景：** Telegram 有 100 个 slash 命令的限制，您的技能数量已超过此限制。您想禁用 Telegram 上不需要的技能，但 `hermes skills config` 设置似乎没有生效。
+**场景：** Telegram 有 100 个 slash 命令的限制，您的技能数量已超过此限制。您想禁用 Telegram 上不需要的技能，但 `savarez skills config` 设置似乎没有生效。
 
-**解决方案：** 使用 `hermes skills config` 按平台禁用技能。这会写入 `config.yaml`：
+**解决方案：** 使用 `savarez skills config` 按平台禁用技能。这会写入 `config.yaml`：
 
 ```yaml
 skills:
@@ -722,7 +722,7 @@ skills:
     telegram: [skill-a, skill-b]  # 仅在 telegram 上禁用
 ```
 
-更改后，**重启网关**（`hermes gateway restart` 或终止并重新启动）。Telegram bot 命令菜单在启动时重建。
+更改后，**重启网关**（`savarez gateway restart` 或终止并重新启动）。Telegram bot 命令菜单在启动时重建。
 
 :::tip
 描述过长的技能在 Telegram 菜单中会被截断为 40 个字符，以符合 payload 大小限制。如果技能未出现，可能是总 payload 大小问题而非 100 个命令数量限制 — 禁用未使用的技能对两者都有帮助。
@@ -748,7 +748,7 @@ skills:
 
 **解决方案：**
 
-1. 在新机器上安装 Hermes Agent：
+1. 在新机器上安装 Savarez AI Agent：
    ```bash
    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
    ```
@@ -757,7 +757,7 @@ skills:
    ```bash
    hermes backup
    ```
-   这会将您整个 `~/.hermes/` 目录（配置、API key、记忆、技能、会话和 profiles）打包为 zip 文件，保存到主目录 `~/hermes-backup-<timestamp>.zip`。
+   这会将您整个 `~/.savarez/` 目录（配置、API key、记忆、技能、会话和 profiles）打包为 zip 文件，保存到主目录 `~/hermes-backup-<timestamp>.zip`。
 
 3. 将 zip 文件复制到新机器并导入：
    ```bash
@@ -768,7 +768,7 @@ skills:
    hermes import ~/hermes-backup-<timestamp>.zip
    ```
 
-4. 在新机器上运行 `hermes setup` 以验证 API key 和提供商配置是否正常工作。
+4. 在新机器上运行 `savarez setup` 以验证 API key 和提供商配置是否正常工作。
 
 ### 将单个 profile 迁移到另一台机器
 
@@ -776,27 +776,27 @@ skills:
 
 ```bash
 # 在源机器上
-hermes profile export work ./work-backup.tar.gz
+savarez profile export work ./work-backup.tar.gz
 
 # 将文件复制到目标机器，然后：
-hermes profile import ./work-backup.tar.gz work
+savarez profile import ./work-backup.tar.gz work
 ```
 
 导入的 profile 将包含导出时的所有配置、记忆、会话和技能。如果新机器的设置不同，您可能需要更新路径或重新向提供商进行身份验证。
 
-### `hermes backup` 与 `hermes profile export` 的对比
+### `hermes backup` 与 `savarez profile export` 的对比
 
-| 功能 | `hermes backup` | `hermes profile export` |
+| 功能 | `hermes backup` | `savarez profile export` |
 | :--- | :--- | :--- |
 | **使用场景** | **整机迁移** | **移植/共享特定 profile** |
-| **范围** | 全局（整个 `~/.hermes` 目录） | 局部（单个 profile 目录） |
+| **范围** | 全局（整个 `~/.savarez` 目录） | 局部（单个 profile 目录） |
 | **包含内容** | 所有 profiles、全局配置、API key、会话 | 单个 profile：SOUL.md、记忆、会话、技能 |
 | **凭据** | **包含**（`.env` 和 `auth.json`） | **排除**（为安全共享而剥离） |
 | **格式** | `.zip` | `.tar.gz` |
 
 **手动备选方案（rsync）：** 如果您倾向于直接复制文件，请排除代码仓库：
 ```bash
-rsync -av --exclude='hermes-agent' ~/.hermes/ newmachine:~/.hermes/
+rsync -av --exclude='hermes-agent' ~/.savarez/ newmachine:~/.savarez/
 ```
 
 :::tip
@@ -837,13 +837,13 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 **解决方案：**
 ```bash
 # 检查已配置的模型和提供商
-hermes config show | head -20
+savarez config show | head -20
 
 # 重新运行模型选择
-hermes model
+savarez model
 
 # 或使用已知可用的模型测试
-hermes chat -q "hello" --model anthropic/claude-opus-4.7
+savarez chat -q "hello" --model anthropic/claude-opus-4.7
 ```
 
 如果使用 OpenRouter，请确保您的 API key 有余额。OpenRouter 返回 400 通常意味着该模型需要付费套餐，或模型 ID 有拼写错误。
@@ -856,4 +856,4 @@ hermes chat -q "hello" --model anthropic/claude-opus-4.7
 
 1. **搜索现有 issue：** [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
 2. **向社区提问：** [Nous Research Discord](https://discord.gg/nousresearch)
-3. **提交 bug 报告：** 请包含您的操作系统、Python 版本（`python3 --version`）、Hermes 版本（`hermes --version`）以及完整的错误信息
+3. **提交 bug 报告：** 请包含您的操作系统、Python 版本（`python3 --version`）、Hermes 版本（`savarez --version`）以及完整的错误信息

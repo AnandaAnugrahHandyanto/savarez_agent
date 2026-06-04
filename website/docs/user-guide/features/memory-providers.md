@@ -6,7 +6,7 @@ description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hin
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Savarez AI Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -16,9 +16,9 @@ hermes memory status     # check what's active
 hermes memory off        # disable external provider
 ```
 
-You can also select the active memory provider via `hermes plugins` → Provider Plugins → Memory Provider.
+You can also select the active memory provider via `savarez plugins` → Provider Plugins → Memory Provider.
 
-Or set manually in `~/.hermes/config.yaml`:
+Or set manually in `~/.savarez/config.yaml`:
 
 ```yaml
 memory:
@@ -68,7 +68,7 @@ hermes memory setup        # select "honcho" — runs the Honcho-specific post-s
 
 The legacy `hermes honcho setup` command still works (it now redirects to `hermes memory setup`), but is only registered after Honcho is selected as the active memory provider.
 
-**Config:** `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$HERMES_HOME/honcho.json` > `~/.hermes/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
+**Config:** `$SAVAREZ_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$SAVAREZ_HOME/honcho.json` > `~/.savarez/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 
 <details>
 <summary>Full config reference</summary>
@@ -150,13 +150,13 @@ The mapping:
 |---------|-----------|
 | **Workspace** | Shared environment. All Hermes profiles under one workspace see the same user identity. |
 | **User peer** (`peerName`) | The human. Shared across profiles in the workspace. |
-| **AI peer** (`aiPeer`) | One per Hermes profile. Host key `hermes` → default; `hermes.<profile>` for others. |
+| **AI peer** (`aiPeer`) | One per Hermes profile. Host key `savarez` → default; `hermes.<profile>` for others. |
 | **Observation** | Per-peer toggles controlling what Honcho models from whose messages. `directional` (default, all four on) or `unified` (single-observer pool). |
 
 ### New profile, fresh Honcho peer
 
 ```bash
-hermes profile create coder --clone
+savarez profile create coder --clone
 ```
 
 `--clone` creates a `hermes.coder` host block in `honcho.json` with `aiPeer: "coder"`, shared `workspace`, inherited `peerName`, `recallMode`, `writeFrequency`, `observation`, etc. The AI peer is eagerly created in Honcho so it exists before the first message.
@@ -167,7 +167,7 @@ hermes profile create coder --clone
 hermes honcho sync
 ```
 
-Scans every Hermes profile, creates host blocks for any profile without one, inherits settings from the default `hermes` block, and creates the new AI peers eagerly. Idempotent — skips profiles that already have a host block.
+Scans every Hermes profile, creates host blocks for any profile without one, inherits settings from the default `savarez` block, and creates the new AI peers eagerly. Idempotent — skips profiles that already have a host block.
 
 ### Per-profile observation
 
@@ -282,8 +282,8 @@ openviking-server
 # Then configure Hermes
 hermes memory setup    # select "openviking"
 # Or manually:
-hermes config set memory.provider openviking
-echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
+savarez config set memory.provider openviking
+echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.savarez/.env
 ```
 
 **Key features:**
@@ -310,16 +310,16 @@ Server-side LLM fact extraction with semantic search, reranking, and automatic d
 ```bash
 hermes memory setup    # select "mem0"
 # Or manually:
-hermes config set memory.provider mem0
-echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
+savarez config set memory.provider mem0
+echo "MEM0_API_KEY=your-key" >> ~/.savarez/.env
 ```
 
-**Config:** `$HERMES_HOME/mem0.json`
+**Config:** `$SAVAREZ_HOME/mem0.json`
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `user_id` | `hermes-user` | User identifier |
-| `agent_id` | `hermes` | Agent identifier |
+| `agent_id` | `savarez` | Agent identifier |
 
 ---
 
@@ -340,26 +340,26 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 ```bash
 hermes memory setup    # select "hindsight"
 # Or manually:
-hermes config set memory.provider hindsight
-echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
+savarez config set memory.provider hindsight
+echo "HINDSIGHT_API_KEY=your-key" >> ~/.savarez/.env
 ```
 
 The setup wizard installs dependencies automatically and only installs what's needed for the selected mode (`hindsight-client` for cloud, `hindsight-all` for local). Requires `hindsight-client >= 0.4.22` (auto-upgraded on session start if outdated).
 
 **Local mode UI:** `hindsight-embed -p hermes ui start`
 
-**Config:** `$HERMES_HOME/hindsight/config.json`
+**Config:** `$SAVAREZ_HOME/hindsight/config.json`
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `mode` | `cloud` | `cloud` or `local` |
-| `bank_id` | `hermes` | Memory bank identifier |
+| `bank_id` | `savarez` | Memory bank identifier |
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
 | `memory_mode` | `hybrid` | `hybrid` (context + tools), `context` (auto-inject only), `tools` (tools only) |
 | `auto_retain` | `true` | Automatically retain conversation turns |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 | `retain_async` | `true` | Process retain asynchronously on the server |
-| `retain_context` | `conversation between Hermes Agent and the User` | Context label for retained memories |
+| `retain_context` | `conversation between Savarez AI Agent and the User` | Context label for retained memories |
 | `retain_tags` | — | Default tags applied to retained memories; merged with per-call tool tags |
 | `retain_source` | — | Optional `metadata.source` attached to retained memories |
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
@@ -387,14 +387,14 @@ Local SQLite fact store with FTS5 full-text search, trust scoring, and HRR (Holo
 ```bash
 hermes memory setup    # select "holographic"
 # Or manually:
-hermes config set memory.provider holographic
+savarez config set memory.provider holographic
 ```
 
 **Config:** `config.yaml` under `plugins.hermes-memory-store`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `db_path` | `$HERMES_HOME/memory_store.db` | SQLite database path |
+| `db_path` | `$SAVAREZ_HOME/memory_store.db` | SQLite database path |
 | `auto_extract` | `false` | Auto-extract facts at session end |
 | `default_trust` | `0.5` | Default trust score (0.0–1.0) |
 
@@ -423,8 +423,8 @@ Cloud memory API with hybrid search (Vector + BM25 + Reranking), 7 memory types,
 ```bash
 hermes memory setup    # select "retaindb"
 # Or manually:
-hermes config set memory.provider retaindb
-echo "RETAINDB_API_KEY=your-key" >> ~/.hermes/.env
+savarez config set memory.provider retaindb
+echo "RETAINDB_API_KEY=your-key" >> ~/.savarez/.env
 ```
 
 ---
@@ -450,12 +450,12 @@ curl -fsSL https://byterover.dev/install.sh | sh
 # Then configure Hermes
 hermes memory setup    # select "byterover"
 # Or manually:
-hermes config set memory.provider byterover
+savarez config set memory.provider byterover
 ```
 
 **Key features:**
 - Automatic pre-compression extraction (saves insights before context compression discards them)
-- Knowledge tree stored at `$HERMES_HOME/byterover/` (profile-scoped)
+- Knowledge tree stored at `$SAVAREZ_HOME/byterover/` (profile-scoped)
 - SOC2 Type II certified cloud sync (optional)
 
 ---
@@ -477,15 +477,15 @@ Semantic long-term memory with profile recall, semantic search, explicit memory 
 ```bash
 hermes memory setup    # select "supermemory"
 # Or manually:
-hermes config set memory.provider supermemory
-echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
+savarez config set memory.provider supermemory
+echo 'SUPERMEMORY_API_KEY=***' >> ~/.savarez/.env
 ```
 
-**Config:** `$HERMES_HOME/supermemory.json`
+**Config:** `$SAVAREZ_HOME/supermemory.json`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `container_tag` | `hermes` | Container tag used for search and writes. Supports `{identity}` template for profile-scoped tags. |
+| `container_tag` | `savarez` | Container tag used for search and writes. Supports `{identity}` template for profile-scoped tags. |
 | `auto_recall` | `true` | Inject relevant memory context before turns |
 | `auto_capture` | `true` | Store cleaned user-assistant turns after each response |
 | `max_recall_results` | `10` | Max recalled items to format into context |
@@ -537,7 +537,7 @@ Structured long-term memory using Memori Cloud, with background completed-turn c
 ```bash
 pip install hermes-memori
 hermes-memori install
-hermes config set memory.provider memori
+savarez config set memory.provider memori
 hermes memory setup
 ```
 
@@ -561,8 +561,8 @@ hermes memory setup
 
 Each provider's data is isolated per [profile](/user-guide/profiles):
 
-- **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
-- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
+- **Local storage providers** (Holographic, ByteRover) use `$SAVAREZ_HOME/` paths which differ per profile
+- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$SAVAREZ_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 

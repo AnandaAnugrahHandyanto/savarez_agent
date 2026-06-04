@@ -1,12 +1,12 @@
 ---
 sidebar_position: 11
 title: "ACP 编辑器集成"
-description: "在 VS Code、Zed 和 JetBrains 等兼容 ACP 的编辑器中使用 Hermes Agent"
+description: "在 VS Code、Zed 和 JetBrains 等兼容 ACP 的编辑器中使用 Savarez AI Agent"
 ---
 
 # ACP 编辑器集成
 
-Hermes Agent 可作为 ACP 服务器运行，让兼容 ACP 的编辑器通过 stdio 与 Hermes 通信并渲染：
+Savarez AI Agent 可作为 ACP 服务器运行，让兼容 ACP 的编辑器通过 stdio 与 Hermes 通信并渲染：
 
 - 聊天消息
 - 工具活动
@@ -91,7 +91,7 @@ hermes acp --setup-browser --yes     # 非交互式接受下载
 
 具体操作：
 
-- 若缺少 Node.js 22 LTS，将其安装到 `~/.hermes/node/`
+- 若缺少 Node.js 22 LTS，将其安装到 `~/.savarez/node/`
 - 将 `npm install -g agent-browser @askjo/camofox-browser` 安装到该前缀（无需 sudo — `npm` 的 `--prefix` 指向用户可写的 Hermes 管理 Node）
 - 安装 Playwright Chromium，或在检测到系统 Chrome/Chromium 时使用已有版本
 
@@ -106,7 +106,7 @@ hermes acp --setup-browser --yes     # 非交互式接受下载
 连接步骤：
 
 1. 从活动栏打开 ACP Client 面板。
-2. 从内置 agent 列表中选择 **Hermes Agent**。
+2. 从内置 agent 列表中选择 **Savarez AI Agent**。
 3. 连接并开始聊天。
 
 如需手动定义 Hermes，通过 VS Code 设置在 `acp.agents` 下添加：
@@ -114,7 +114,7 @@ hermes acp --setup-browser --yes     # 非交互式接受下载
 ```json
 {
   "acp.agents": {
-    "Hermes Agent": {
+    "Savarez AI Agent": {
       "command": "hermes",
       "args": ["acp"]
     }
@@ -128,12 +128,12 @@ Zed v0.221.x 及更新版本通过官方 ACP Registry 安装外部 agent。
 
 1. 打开 Agent 面板。
 2. 点击 **Add Agent**，或运行 `zed: acp registry` 命令。
-3. 搜索 **Hermes Agent**。
+3. 搜索 **Savarez AI Agent**。
 4. 安装后启动新的 Hermes 外部 agent 线程。
 
 前提条件：
 
-- 先通过 `hermes model` 配置 Hermes provider 凭据，或在 `~/.hermes/.env` / `~/.hermes/config.yaml` 中设置。
+- 先通过 `savarez model` 配置 Hermes provider 凭据，或在 `~/.savarez/.env` / `~/.savarez/config.yaml` 中设置。
 - 安装 `uv`，以便 registry 启动器可以运行 `uvx --from 'hermes-agent[acp]==<version>' hermes-acp`。
 
 在 registry 条目可用之前进行本地开发时，在 Zed 设置中使用自定义 agent 服务器：
@@ -181,10 +181,10 @@ Registry CI 会验证固定版本是否存在于 PyPI，因此清单的 `version
 
 ACP 模式使用与 CLI 相同的 Hermes 配置：
 
-- `~/.hermes/.env`
-- `~/.hermes/config.yaml`
-- `~/.hermes/skills/`
-- `~/.hermes/state.db`
+- `~/.savarez/.env`
+- `~/.savarez/config.yaml`
+- `~/.savarez/skills/`
+- `~/.savarez/state.db`
 
 Provider 解析使用 Hermes 的正常运行时解析器，因此 ACP 继承当前配置的 provider 和凭据。Hermes 还为首次运行的 registry 客户端提供终端认证方法（`--setup`）；这将打开 Hermes 的交互式模型/provider 设置。
 
@@ -237,7 +237,7 @@ ACP 桥接将这些选项映射到 Hermes 的内部审批语义——`allow_alwa
 
 检查：
 
-- 在 Zed 中，使用 `zed: acp registry` 打开 ACP Registry 并搜索 **Hermes Agent**。
+- 在 Zed 中，使用 `zed: acp registry` 打开 ACP Registry 并搜索 **Savarez AI Agent**。
 - 对于手动/本地开发，验证自定义 `agent_servers` 命令是否指向 `hermes acp`。
 - Hermes 已安装且在 PATH 中。
 - ACP 扩展已安装（`pip install -e '.[acp]'`）。
@@ -250,8 +250,8 @@ ACP 桥接将这些选项映射到 Hermes 的内部审批语义——`allow_alwa
 ```bash
 hermes acp --version
 hermes acp --check
-hermes doctor
-hermes status
+savarez doctor
+savarez status
 ```
 
 ### 缺少凭据
@@ -259,14 +259,14 @@ hermes status
 ACP 模式使用 Hermes 现有的 provider 设置。通过以下方式配置凭据：
 
 ```bash
-hermes model
+savarez model
 ```
 
-或编辑 `~/.hermes/.env`。Registry 客户端也可以触发 Hermes 的终端认证流程，该流程运行相同的交互式 provider/模型设置。
+或编辑 `~/.savarez/.env`。Registry 客户端也可以触发 Hermes 的终端认证流程，该流程运行相同的交互式 provider/模型设置。
 
 ### Zed registry 启动器找不到 uv
 
-从官方 uv 安装文档安装 `uv`，然后从 Zed 重试 Hermes Agent 线程。
+从官方 uv 安装文档安装 `uv`，然后从 Zed 重试 Savarez AI Agent 线程。
 
 ## 另请参阅
 

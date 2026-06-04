@@ -8,12 +8,12 @@ from typing import Optional
 
 
 def _hermes_home_path() -> Path:
-    """Resolve the active HERMES_HOME (profile-aware) without circular imports."""
+    """Resolve the active SAVAREZ_HOME (profile-aware) without circular imports."""
     try:
         from hermes_constants import get_hermes_home  # local import to avoid cycles
         return get_hermes_home()
     except Exception:
-        return Path(os.path.expanduser("~/.hermes"))
+        return Path(os.path.expanduser("~/.savarez"))
 
 
 def _hermes_root_path() -> Path:
@@ -22,7 +22,7 @@ def _hermes_root_path() -> Path:
         from hermes_constants import get_default_hermes_root  # local import to avoid cycles
         return get_default_hermes_root()
     except Exception:
-        return Path(os.path.expanduser("~/.hermes"))
+        return Path(os.path.expanduser("~/.savarez"))
 
 
 def build_write_denied_paths(home: str) -> set[str]:
@@ -167,10 +167,10 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     Three categories are blocked:
 
-      * Internal Hermes cache files under ``HERMES_HOME/skills/.hub`` —
+      * Internal Hermes cache files under ``SAVAREZ_HOME/skills/.hub`` —
         readable metadata that an attacker could use as a prompt-injection
         carrier.
-      * Credential / secret stores under HERMES_HOME and the global Hermes
+      * Credential / secret stores under SAVAREZ_HOME and the global Hermes
         root: ``auth.json``, ``auth.lock``, ``.anthropic_oauth.json``,
         ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
         and anything under ``mcp-tokens/``. These hold plaintext provider keys,
@@ -187,7 +187,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     **This is NOT a security boundary.** The terminal tool runs as the
     same OS user with shell access; the agent can still ``cat auth.json``
-    or ``cat ~/.hermes/.env`` and exfiltrate the file. The read-deny exists
+    or ``cat ~/.savarez/.env`` and exfiltrate the file. The read-deny exists
     as defense-in-depth that:
 
       * Returns a clear error to models that respect tool denials, which
@@ -209,9 +209,9 @@ def get_read_block_error(path: str) -> Optional[str]:
     """
     resolved = Path(path).expanduser().resolve()
 
-    # Resolve BOTH the active HERMES_HOME (profile-aware) AND the global
+    # Resolve BOTH the active SAVAREZ_HOME (profile-aware) AND the global
     # Hermes root so credential stores at <root>/auth.json etc. are also
-    # blocked when running under a profile (HERMES_HOME points at
+    # blocked when running under a profile (SAVAREZ_HOME points at
     # <root>/profiles/<name> in profile mode). Same shape as the write
     # deny widening (#15981, #14157).
     hermes_dirs: list[Path] = []
@@ -241,7 +241,7 @@ def get_read_block_error(path: str) -> Optional[str]:
             )
 
     # Credential / secret stores. Exact-file matches under either
-    # HERMES_HOME or <root>.
+    # SAVAREZ_HOME or <root>.
     credential_file_names = (
         "auth.json",
         "auth.lock",
@@ -311,7 +311,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Cross-profile write guard (#TBD)
 #
-# Hermes profiles are separate HERMES_HOME dirs under
+# Hermes profiles are separate SAVAREZ_HOME dirs under
 # ``<root>/profiles/<name>/``. Each profile has its own skills/, plugins/,
 # cron/, memories/. When an agent runs under one profile, writing into
 # ANOTHER profile's directories is almost always wrong — those skills /
@@ -325,22 +325,22 @@ def get_read_block_error(path: str) -> Optional[str]:
 # exists, and explicit user direction is required to cross it.
 #
 # Reference: May 2026 incident where a hermes-security profile session
-# edited skills under both ``~/.hermes/profiles/hermes-security/skills/``
-# AND ``~/.hermes/skills/`` (the default profile's skills) without realizing
+# edited skills under both ``~/.savarez/profiles/hermes-security/skills/``
+# AND ``~/.savarez/skills/`` (the default profile's skills) without realizing
 # the second path belonged to a different profile.
 # ---------------------------------------------------------------------------
 
-# Profile-scoped directories under HERMES_HOME / <root> / <root>/profiles/<X>/
+# Profile-scoped directories under SAVAREZ_HOME / <root> / <root>/profiles/<X>/
 # that should be guarded. Adding a new area here extends the guard with no
 # other code change.
 PROFILE_SCOPED_AREAS = ("skills", "plugins", "cron", "memories")
 
 
 def _resolve_active_profile_name() -> str:
-    """Return the active profile name derived from HERMES_HOME.
+    """Return the active profile name derived from SAVAREZ_HOME.
 
-    ``~/.hermes``              -> ``"default"``
-    ``~/.hermes/profiles/X``  -> ``"X"``
+    ``~/.savarez``              -> ``"default"``
+    ``~/.savarez/profiles/X``  -> ``"X"``
 
     Falls back to ``"default"`` on any resolution failure so the guard
     never raises into the tool path.
@@ -459,7 +459,7 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
 # Non-local terminal backends (Docker, Daytona, etc.) bind a sandbox-local
 # directory to the container's ``$HOME``. The on-disk layout looks like
 #
-#   <HERMES_HOME>/profiles/<name>/sandboxes/<backend>/<task>/home/.hermes/...
+#   <SAVAREZ_HOME>/profiles/<name>/sandboxes/<backend>/<task>/home/.hermes/...
 #
 # When the agent (running host-side) speculates that authoritative profile
 # state lives at one of those sandbox-mirror paths, the write lands on the
@@ -509,7 +509,7 @@ def classify_sandbox_mirror_target(path: str) -> Optional[dict]:
 
     Detection is path-shape-only — does not require any Hermes resolver to
     succeed, so it works correctly even when called from contexts where
-    HERMES_HOME resolution would be ambiguous.
+    SAVAREZ_HOME resolution would be ambiguous.
     """
     try:
         target = Path(os.path.expanduser(str(path))).resolve()
@@ -554,7 +554,7 @@ def get_sandbox_mirror_warning(path: str) -> Optional[str]:
         f"created by a non-local terminal backend (docker/daytona/etc.). "
         f"Writes here land on a copy that the host Hermes process never "
         f"reads — the authoritative file is likely {info['inner_path']!r} "
-        f"under the real HERMES_HOME. Use the host-side tool for "
+        f"under the real SAVAREZ_HOME. Use the host-side tool for "
         f"authoritative state (e.g. ``memory`` for memories), or address "
         f"the host path directly. To bypass this guard after explicit "
         f"user direction, retry the call with ``cross_profile=True``. "
@@ -593,7 +593,7 @@ def classify_container_mirror_target(
       * ``target_path``: resolved path string
       * ``mirror_root``: the declared container mirror prefix
       * ``inner_path``: portion under the mirror root (what the agent
-        likely meant to address in the host HERMES_HOME)
+        likely meant to address in the host SAVAREZ_HOME)
     """
     if not mirror_prefix:
         return None
@@ -631,7 +631,7 @@ def get_container_mirror_warning(
         f"sits under {info['mirror_root']!r}, which is the container's "
         f"bind-mounted home — a per-task mirror that the host Hermes "
         f"process never reads. The authoritative file is "
-        f"{info['inner_path']!r} under the real HERMES_HOME. Use the "
+        f"{info['inner_path']!r} under the real SAVAREZ_HOME. Use the "
         f"host-side tool for authoritative state (e.g. ``memory`` for "
         f"memories), or address the host path directly. To bypass after "
         f"explicit user direction, retry with ``cross_profile=True``. "

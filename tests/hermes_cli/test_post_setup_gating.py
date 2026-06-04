@@ -5,7 +5,7 @@ Regression coverage for the cua-driver silent-no-op bug (issue #22737).
 When a no-key provider's only install side-effect is a `post_setup` hook
 (cua-driver, etc.), the gate function used to fall through to the
 `_toolset_has_keys` catch-all, which returned True for any provider with
-empty `env_vars` — causing `hermes tools` to write the toolset to config
+empty `env_vars` — causing `savarez tools` to write the toolset to config
 and exit `✓ Saved` without ever invoking the post_setup install. These
 tests pin the new predicate-aware behaviour so the regression doesn't
 sneak back in.
@@ -20,7 +20,7 @@ class TestPostSetupGate:
         provider-setup flow runs and triggers `_run_post_setup`."""
         from hermes_cli import tools_config
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         monkeypatch.setattr(tools_config.shutil, "which", lambda name: None)
 
         assert tools_config._toolset_needs_configuration_prompt(
@@ -29,10 +29,10 @@ class TestPostSetupGate:
 
     def test_cua_driver_installed_skips_setup(self, monkeypatch, tmp_path):
         """When cua-driver is already on PATH, the gate must return False
-        so a re-save through `hermes tools` doesn't re-prompt the user."""
+        so a re-save through `savarez tools` doesn't re-prompt the user."""
         from hermes_cli import tools_config
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         monkeypatch.setattr(
             tools_config.shutil,
             "which",

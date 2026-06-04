@@ -238,7 +238,7 @@ def test_env_scrub_hermes_allowlist_and_secret_blocks():
 
     env = {
         # operational allowlist → kept
-        "HERMES_HOME": "/h", "HERMES_PROFILE": "p",
+        "SAVAREZ_HOME": "/h", "HERMES_PROFILE": "p",
         "HERMES_CONFIG": "/c.yaml", "HERMES_ENV": "/e",
         # other HERMES_* → dropped (broad prefix removed)
         "HERMES_BASE_URL": "https://x", "HERMES_INTERACTIVE": "1",
@@ -251,7 +251,7 @@ def test_env_scrub_hermes_allowlist_and_secret_blocks():
     }
     out = _scrub_child_env(env, is_passthrough=lambda _: False, is_windows=False)
 
-    for kept in ("HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV", "PATH"):
+    for kept in ("SAVAREZ_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV", "PATH"):
         assert kept in out, f"{kept} should be kept"
     for dropped in (
         "HERMES_BASE_URL", "HERMES_INTERACTIVE", "HERMES_KANBAN_DB",
@@ -315,7 +315,7 @@ def test_env_scrub_logs_dropped_hermes_vars(caplog):
     from tools.code_execution_tool import _scrub_child_env
 
     env = {
-        "HERMES_HOME": "/h",          # allowlisted → kept, not logged
+        "SAVAREZ_HOME": "/h",          # allowlisted → kept, not logged
         "HERMES_BASE_URL": "https://x",   # dropped → logged
         "HERMES_KANBAN_DB": "postgres://u:p@h/db",  # dropped → logged
         "HERMES_API_KEY": "sk",       # secret → dropped silently (not logged)
@@ -324,7 +324,7 @@ def test_env_scrub_logs_dropped_hermes_vars(caplog):
     with caplog.at_level(logging.DEBUG, logger="tools.code_execution_tool"):
         out = _scrub_child_env(env, is_passthrough=lambda _: False, is_windows=False)
 
-    assert "HERMES_HOME" in out and "PATH" in out
+    assert "SAVAREZ_HOME" in out and "PATH" in out
     assert "HERMES_BASE_URL" not in out and "HERMES_KANBAN_DB" not in out
 
     msgs = "\n".join(r.getMessage() for r in caplog.records)
@@ -342,7 +342,7 @@ def test_env_scrub_no_log_when_nothing_dropped(caplog):
 
     with caplog.at_level(logging.DEBUG, logger="tools.code_execution_tool"):
         _scrub_child_env(
-            {"HERMES_HOME": "/h", "PATH": "/usr/bin"},
+            {"SAVAREZ_HOME": "/h", "PATH": "/usr/bin"},
             is_passthrough=lambda _: False,
             is_windows=False,
         )

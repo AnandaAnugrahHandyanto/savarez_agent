@@ -1,4 +1,4 @@
-# nix/hermes-agent.nix — Overridable Hermes Agent package
+# nix/hermes-agent.nix — Overridable Savarez AI Agent package
 #
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
 # Users override via:
@@ -214,7 +214,7 @@ stdenv.mkDerivation (finalAttrs: {
     # derivation, after all overrides are applied) so the desktop wrapper
     # can prepend its `/bin` to PATH.  The desktop's resolver step 4
     # ("existing hermes on PATH") then picks up the fully wrapped
-    # `hermes` binary — venv with all deps, bundled skills/plugins,
+    # `savarez` binary — venv with all deps, bundled skills/plugins,
     # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
     # of the agent resolution in the desktop wrapper.
     hermesDesktop = callPackage ./desktop.nix {

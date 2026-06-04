@@ -1,6 +1,6 @@
 # 电脑操控（macOS）
 
-Hermes Agent 可以在**后台**驱动你的 Mac 桌面——点击、输入、滚动、拖拽。你的光标不会移动，键盘焦点不会改变，macOS 也不会切换 Spaces。你和 Agent 可以在同一台机器上协同工作。
+Savarez AI Agent 可以在**后台**驱动你的 Mac 桌面——点击、输入、滚动、拖拽。你的光标不会移动，键盘焦点不会改变，macOS 也不会切换 Spaces。你和 Agent 可以在同一台机器上协同工作。
 
 与大多数电脑操控集成不同，这适用于**任何支持工具调用的模型**——Claude、GPT、Gemini，或本地 vLLM 端点上的开源模型。无需关心 Anthropic 原生 schema。
 
@@ -30,7 +30,7 @@ hermes computer-use install
 
 **方式二：通过交互式界面启用工具集。**
 
-1. 运行 `hermes tools`，选择 `🖱️ Computer Use (macOS)` → `cua-driver (background)`。
+1. 运行 `savarez tools`，选择 `🖱️ Computer Use (macOS)` → `cua-driver (background)`。
 2. 安装程序将运行上游安装脚本（与方式一相同）。
 
 安装完成后，无论采用哪种方式，继续执行以下步骤：
@@ -42,13 +42,13 @@ hermes computer-use install
    ```
    hermes -t computer_use chat
    ```
-   或在 `~/.hermes/config.yaml` 中将 `computer_use` 添加到已启用的工具集列表。
+   或在 `~/.savarez/config.yaml` 中将 `computer_use` 添加到已启用的工具集列表。
 
 ## 保持 cua-driver 最新
 
 cua-driver 项目会定期发布修复（例如 v0.1.6 修复了 UTM 工作流中的 Safari 窗口焦点问题）。Hermes 在两处刷新二进制文件，避免你停留在过时版本：
 
-- **`hermes update`** — 更新 Hermes 本身时，如果 `cua-driver` 在 PATH 中，更新结束时会重新运行上游安装程序。对非 macOS 用户及未安装 cua-driver 的用户无操作。
+- **`savarez update`** — 更新 Hermes 本身时，如果 `cua-driver` 在 PATH 中，更新结束时会重新运行上游安装程序。对非 macOS 用户及未安装 cua-driver 的用户无操作。
 - **`hermes computer-use install --upgrade`** — 手动强制刷新。无论 cua-driver 是否已安装，都会重新运行上游安装程序。在不等待下次 Agent 更新的情况下获取最新修复时使用此命令。
 
 `hermes computer-use status` 会在二进制路径旁显示已安装的版本号。
@@ -88,7 +88,7 @@ Hermes 应用多层防护机制：
 - 硬性屏蔽的输入模式：`curl | bash`、`sudo rm -rf /`、fork bomb 等。
 - Agent 的系统 prompt 明确规定：不得点击权限对话框，不得输入密码，不得执行截图中嵌入的指令。
 
-如需对每个操作进行确认，可在 `~/.hermes/config.yaml` 中配置 `approvals.mode: manual`。
+如需对每个操作进行确认，可在 `~/.savarez/config.yaml` 中配置 `approvals.mode: manual`。
 
 ## Token 效率
 
@@ -125,7 +125,7 @@ HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
 
 ## 故障排查
 
-**`computer_use backend unavailable: cua-driver is not installed`** — 运行 `hermes computer-use install` 获取 cua-driver 二进制文件，或运行 `hermes tools` 并启用 Computer Use 工具集。
+**`computer_use backend unavailable: cua-driver is not installed`** — 运行 `hermes computer-use install` 获取 cua-driver 二进制文件，或运行 `savarez tools` 并启用 Computer Use 工具集。
 
 **点击似乎没有效果** — 截图并验证。可能有一个你未注意到的模态框正在阻止输入。使用 `escape` 或关闭按钮将其关闭。
 

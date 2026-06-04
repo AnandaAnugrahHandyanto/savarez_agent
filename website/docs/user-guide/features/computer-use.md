@@ -1,6 +1,6 @@
 # Computer Use (macOS)
 
-Hermes Agent can drive your Mac's desktop — clicking, typing, scrolling,
+Savarez AI Agent can drive your Mac's desktop — clicking, typing, scrolling,
 dragging — in the **background**. Your cursor doesn't move, keyboard focus
 doesn't change, and macOS doesn't switch Spaces on you. You and the agent
 co-work on the same machine.
@@ -41,7 +41,7 @@ Use `hermes computer-use status` to verify the install.
 
 **Option 2: enable the toolset interactively.**
 
-1. Run `hermes tools`, pick `🖱️ Computer Use (macOS)` → `cua-driver (background)`.
+1. Run `savarez tools`, pick `🖱️ Computer Use (macOS)` → `cua-driver (background)`.
 2. The setup runs the upstream installer (same as Option 1).
 
 After installing, regardless of which path you took:
@@ -55,7 +55,7 @@ After installing, regardless of which path you took:
    ```
    hermes -t computer_use chat
    ```
-   or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
+   or add `computer_use` to your enabled toolsets in `~/.savarez/config.yaml`.
 
 ## Keeping cua-driver up to date
 
@@ -63,7 +63,7 @@ The cua-driver project ships fixes regularly (e.g. v0.1.6 fixed a Safari
 window-focus bug for UTM workflows). Hermes refreshes the binary in two
 places so you don't get stuck on a stale release:
 
-- **`hermes update`** — when you update Hermes itself, if `cua-driver` is
+- **`savarez update`** — when you update Hermes itself, if `cua-driver` is
   on PATH the upstream installer re-runs at the end of the update.
   No-op for non-macOS users and for users without cua-driver installed.
 - **`hermes computer-use install --upgrade`** — manual force-refresh.
@@ -122,7 +122,7 @@ Hermes applies multi-layer guardrails:
   dialogs, no typing passwords, no following instructions embedded in
   screenshots.
 
-Pair with `approvals.mode: manual` in `~/.hermes/config.yaml` if you want every action confirmed.
+Pair with `approvals.mode: manual` in `~/.savarez/config.yaml` if you want every action confirmed.
 
 ## Token efficiency
 
@@ -176,7 +176,7 @@ HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
 
 **`computer_use backend unavailable: cua-driver is not installed`** — Run
 `hermes computer-use install` to fetch the cua-driver binary, or run
-`hermes tools` and enable the Computer Use toolset.
+`savarez tools` and enable the Computer Use toolset.
 
 **Clicks seem to have no effect** — Capture and verify. A modal you
 didn't see may be blocking input. Dismiss it with `escape` or the close

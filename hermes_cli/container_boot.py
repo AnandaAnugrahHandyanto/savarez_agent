@@ -2,7 +2,7 @@
 
 Service directories under /run/service/ live on **tmpfs** and are wiped
 on every container restart. Profile directories under
-``$HERMES_HOME/profiles/<name>/`` live on the persistent VOLUME, and
+``$SAVAREZ_HOME/profiles/<name>/`` live on the persistent VOLUME, and
 each one records its gateway's last state in ``gateway_state.json``.
 This module bridges the two: on every container boot, walk the
 persistent profiles, recreate the s6 service slots, and auto-start
@@ -10,7 +10,7 @@ only those whose last recorded state was ``running``.
 
 Wired into the image as /etc/cont-init.d/02-reconcile-profiles by the
 Dockerfile (Phase 4 Task 4.0). Runs as root after 01-hermes-setup
-(the stage2 hook) has chowned the volume and seeded $HERMES_HOME, but
+(the stage2 hook) has chowned the volume and seeded $SAVAREZ_HOME, but
 before s6-rc starts user services.
 
 Without this module, every ``docker restart`` would silently wipe
@@ -62,21 +62,21 @@ def reconcile_profile_gateways(
     """Recreate s6 service registrations for every persistent profile.
 
     Always registers a ``gateway-default`` slot for the root profile
-    (the implicit profile that lives at the top of ``$HERMES_HOME``,
+    (the implicit profile that lives at the top of ``$SAVAREZ_HOME``,
     not under ``profiles/``). The dispatcher in ``hermes_cli.gateway``
     maps an empty profile suffix to ``gateway-default``, so this slot
-    is what ``hermes gateway start`` (no ``-p``) targets. Without it,
-    bare ``hermes gateway start`` inside the container would land on
+    is what ``savarez gateway start`` (no ``-p``) targets. Without it,
+    bare ``savarez gateway start`` inside the container would land on
     ``s6-svc -u /run/service/gateway-default`` → uncaught
     ``CalledProcessError`` → traceback to the user (PR #30136 review).
 
     The default slot's prior state is read from
-    ``$HERMES_HOME/gateway_state.json`` (sibling to the profile root,
+    ``$SAVAREZ_HOME/gateway_state.json`` (sibling to the profile root,
     not under ``profiles/``); stale runtime files there are swept the
     same way as for named profiles.
 
     Args:
-        hermes_home: The container's HERMES_HOME (typically /opt/data).
+        hermes_home: The container's SAVAREZ_HOME (typically /opt/data).
             Profiles live under ``<hermes_home>/profiles/<name>/``;
             the default profile lives at ``<hermes_home>`` itself.
         scandir: The s6 dynamic scandir (typically /run/service). Service
@@ -94,7 +94,7 @@ def reconcile_profile_gateways(
 
     # Default profile — always register, even if nothing has ever
     # populated the root profile dir. The slot exists so
-    # ``hermes gateway start`` (no ``-p``) has somewhere to land;
+    # ``savarez gateway start`` (no ``-p``) has somewhere to land;
     # auto-up only when the prior state was "running" (same rule as
     # named profiles). If the container was launched with the legacy
     # `gateway run` command and no state exists yet, seed that intent
@@ -120,8 +120,8 @@ def reconcile_profile_gateways(
         for entry in sorted(profiles_root.iterdir()):
             if not entry.is_dir():
                 continue
-            # SOUL.md is always seeded by `hermes profile create` (config.yaml
-            # is not — that comes later via `hermes setup`). Use it as the
+            # SOUL.md is always seeded by `savarez profile create` (config.yaml
+            # is not — that comes later via `savarez setup`). Use it as the
             # "real profile" marker so stray dirs (backups, manual mkdir)
             # aren't picked up.
             if not (entry / "SOUL.md").exists():
@@ -329,7 +329,7 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
 def _write_reconcile_log(
     hermes_home: Path, actions: list[ReconcileAction],
 ) -> None:
-    """Append one line per profile to $HERMES_HOME/logs/container-boot.log.
+    """Append one line per profile to $SAVAREZ_HOME/logs/container-boot.log.
 
     Operators inspect this to debug "why didn't my profile come back
     up". Keeping a separate log file (vs. mixing into agent.log) lets
@@ -378,7 +378,7 @@ _LOG_ROTATE_BYTES = 256 * 1024
 
 def main() -> int:
     """Entry point invoked from /etc/cont-init.d/02-reconcile-profiles."""
-    hermes_home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
+    hermes_home = Path(os.environ.get("SAVAREZ_HOME", "/opt/data"))
     scandir = Path(os.environ.get("S6_PROFILE_GATEWAY_SCANDIR", "/run/service"))
     actions = reconcile_profile_gateways(
         hermes_home=hermes_home, scandir=scandir,

@@ -215,7 +215,7 @@ gateway:
 
   restart:
     in_progress:           "⏳ O reinício do gateway já está em curso..."
-    restarting:            "♻ A reiniciar o gateway. Se não fores notificado em 60 segundos, reinicia a partir da consola com `hermes gateway restart`."
+    restarting:            "♻ A reiniciar o gateway. Se não fores notificado em 60 segundos, reinicia a partir da consola com `savarez gateway restart`."
 
   resume:
     db_unavailable:        "Base de dados de sessões indisponível."
@@ -250,7 +250,7 @@ gateway:
     success:               "✅ Canal principal definido como **{name}** (ID: {chat_id}).\nAs tarefas cron e mensagens entre plataformas serão entregues aqui."
 
   status:
-    header:                "📊 **Estado do Hermes Gateway**"
+    header:                "📊 **Estado do Savarez Gateway**"
     session_id:            "**ID da sessão:** `{session_id}`"
     title:                 "**Título:** {title}"
     created:               "**Criada:** {timestamp}"
@@ -294,9 +294,9 @@ gateway:
     invalid_count:         "Contagem inválida \"{arg}\" — usa /undo ou /undo N."
 
   update:
-    platform_not_messaging:  "✗ /update só está disponível em plataformas de mensagens. Executa `hermes update` a partir do terminal."
+    platform_not_messaging:  "✗ /update só está disponível em plataformas de mensagens. Executa `savarez update` a partir do terminal."
     not_git_repo:            "✗ Não é um repositório git — não é possível atualizar."
-    hermes_cmd_not_found:    "✗ Não foi possível localizar o comando `hermes`. O Hermes está em execução, mas o comando de atualização não conseguiu encontrar o executável no PATH nem através do interpretador Python atual. Tenta executar `hermes update` manualmente no teu terminal."
+    hermes_cmd_not_found:    "✗ Não foi possível localizar o comando `savarez`. O Hermes está em execução, mas o comando de atualização não conseguiu encontrar o executável no PATH nem através do interpretador Python atual. Tenta executar `savarez update` manualmente no teu terminal."
     start_failed:            "✗ Falha ao iniciar a atualização: {error}"
     starting:                "⚕ A iniciar a atualização do Hermes… Vou transmitir o progresso aqui."
 

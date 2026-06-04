@@ -4,7 +4,7 @@ There are two ways to add a platform to the Hermes gateway:
 
 ## Plugin Path (Recommended for Community/Third-Party)
 
-Create a plugin directory in `~/.hermes/plugins/` (or under `plugins/platforms/`
+Create a plugin directory in `~/.savarez/plugins/` (or under `plugins/platforms/`
 for bundled plugins) with a `plugin.yaml` and `adapter.py`.  The adapter
 inherits from `BasePlatformAdapter` and registers via
 `ctx.register_platform()` in the `register(ctx)` entry point.  This requires
@@ -19,7 +19,7 @@ status display, gateway setup, and more.
 - `env_enablement_fn: () -> Optional[dict]` — seeds `PlatformConfig.extra`
   (and an optional `home_channel` dict) from env vars BEFORE the adapter is
   constructed.  Without this, env-only setups don't surface in
-  `hermes gateway status` or `get_connected_platforms()` until the SDK
+  `savarez gateway status` or `get_connected_platforms()` until the SDK
   instantiates.
 - `apply_yaml_config_fn: (yaml_cfg, platform_cfg) -> Optional[dict]` —
   translate this platform's `config.yaml` keys into env vars and/or seed

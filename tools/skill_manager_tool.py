@@ -4,7 +4,7 @@ Skill Manager Tool -- Agent-Managed Skill Creation & Editing
 
 Allows the agent to create, update, and delete skills, turning successful
 approaches into reusable procedural knowledge. New skills are created in
-~/.hermes/skills/. Existing skills (bundled, hub-installed, or user-created)
+~/.savarez/skills/. Existing skills (bundled, hub-installed, or user-created)
 can be modified or deleted wherever they live.
 
 Skills are the agent's procedural memory: they capture *how to do a specific
@@ -20,7 +20,7 @@ Actions:
   remove_file-- Remove a supporting file from a user skill
 
 Directory layout for user skills:
-    ~/.hermes/skills/
+    ~/.savarez/skills/
     ├── my-skill/
     │   ├── SKILL.md
     │   ├── references/
@@ -62,7 +62,7 @@ def _guard_agent_created_enabled() -> bool:
     Off by default because the agent can already execute the same code
     paths via terminal() with no gate, so the scan adds friction without
     meaningful security.  Users who want belt-and-suspenders can turn it
-    on via `hermes config set skills.guard_agent_created true`.
+    on via `savarez config set skills.guard_agent_created true`.
     """
     try:
         from hermes_cli.config import load_config
@@ -104,9 +104,9 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
 import yaml
 
 
-# All skills live in ~/.hermes/skills/ (single source of truth)
-HERMES_HOME = get_hermes_home()
-SKILLS_DIR = HERMES_HOME / "skills"
+# All skills live in ~/.savarez/skills/ (single source of truth)
+SAVAREZ_HOME = get_hermes_home()
+SKILLS_DIR = SAVAREZ_HOME / "skills"
 
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
@@ -279,7 +279,7 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     """
     Find a skill by name across all skill directories.
 
-    Searches the local skills dir (~/.hermes/skills/) first, then any
+    Searches the local skills dir (~/.savarez/skills/) first, then any
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
     """
@@ -321,7 +321,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
     active_dir = SKILLS_DIR.resolve() if SKILLS_DIR.exists() else SKILLS_DIR
     candidates: List[Tuple[str, Path]] = []
 
-    # Default profile (~/.hermes/skills) — only consider when active is non-default.
+    # Default profile (~/.savarez/skills) — only consider when active is non-default.
     default_skills = root / "skills"
     try:
         if default_skills.resolve() != active_dir:
@@ -329,7 +329,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
     except (OSError, RuntimeError):
         pass
 
-    # All named profiles (~/.hermes/profiles/*/skills)
+    # All named profiles (~/.savarez/profiles/*/skills)
     profiles_root = root / "profiles"
     if profiles_root.is_dir():
         try:

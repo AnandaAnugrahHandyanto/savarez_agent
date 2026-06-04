@@ -44,7 +44,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
         },
         "display_information": {
             "name": bot_name[:35],
-            "description": (bot_description or "Your Hermes agent on Slack")[:140],
+            "description": (bot_description or "Your Savarez AI agent on Slack")[:140],
             "background_color": "#1a1a2e",
         },
         "features": {
@@ -108,14 +108,14 @@ def slack_manifest_command(args) -> int:
 
     Flags (all parsed in ``hermes_cli/main.py``):
       --write [PATH]  Write to file instead of stdout (default path:
-                      ``$HERMES_HOME/slack-manifest.json``)
+                      ``$SAVAREZ_HOME/slack-manifest.json``)
       --name NAME     Override the bot display name (default: "Hermes")
       --description DESC  Override the bot description
       --slashes-only  Emit only the ``features.slash_commands`` array (for
                       merging into an existing manifest manually)
     """
     name = getattr(args, "name", None) or "Hermes"
-    description = getattr(args, "description", None) or "Your Hermes agent on Slack"
+    description = getattr(args, "description", None) or "Your Savarez AI agent on Slack"
 
     if getattr(args, "slashes_only", False):
         from hermes_cli.commands import slack_app_manifest
@@ -135,7 +135,7 @@ def slack_manifest_command(args) -> int:
 
                 target = Path(get_hermes_home()) / "slack-manifest.json"
             except Exception:
-                target = Path(os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")) / "slack-manifest.json"
+                target = Path(os.environ.get("SAVAREZ_HOME") or str(Path.home() / ".hermes")) / "slack-manifest.json"
         else:
             target = Path(write_target).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -151,7 +151,7 @@ def slack_manifest_command(args) -> int:
             "     slash commands changed.\n"
             "  4. Make sure Socket Mode is enabled and you have a bot token\n"
             "     (xoxb-...) and app token (xapp-...) configured via\n"
-            "     `hermes setup`.\n",
+            "     `savarez setup`.\n",
             file=sys.stderr,
         )
     else:

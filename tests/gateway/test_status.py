@@ -10,7 +10,7 @@ from gateway import status
 
 class TestGatewayPidState:
     def test_write_pid_file_records_gateway_metadata(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
 
         status.write_pid_file()
 
@@ -29,7 +29,7 @@ class TestGatewayPidState:
         """
         import pytest
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
 
         # First write wins.
         status.write_pid_file()
@@ -45,7 +45,7 @@ class TestGatewayPidState:
         assert payload["pid"] == os.getpid()
 
     def test_get_running_pid_rejects_live_non_gateway_pid(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"
         pid_path.write_text(str(os.getpid()))
 
@@ -57,7 +57,7 @@ class TestGatewayPidState:
         # process that no longer exists. The next gateway startup must be
         # able to unlink it so ``write_pid_file``'s O_EXCL create succeeds —
         # otherwise systemd's restart loop hits "PID file race lost" forever.
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"
         dead_pid = 999999  # not our pid, and below we simulate it's dead
         pid_path.write_text(json.dumps({
@@ -76,7 +76,7 @@ class TestGatewayPidState:
         assert not pid_path.exists()
 
     def test_get_running_pid_accepts_gateway_metadata_when_cmdline_unavailable(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"
         pid_path.write_text(json.dumps({
             "pid": os.getpid(),
@@ -96,7 +96,7 @@ class TestGatewayPidState:
             status.release_gateway_runtime_lock()
 
     def test_get_running_pid_accepts_script_style_gateway_cmdline(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"
         pid_path.write_text(json.dumps({
             "pid": os.getpid(),
@@ -147,7 +147,7 @@ class TestGatewayPidState:
         assert pid_path.exists()
 
     def test_runtime_lock_claims_and_releases_liveness(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
 
         assert status.is_gateway_runtime_lock_active() is False
         assert status.acquire_gateway_runtime_lock() is True
@@ -158,7 +158,7 @@ class TestGatewayPidState:
         assert status.is_gateway_runtime_lock_active() is False
 
     def test_get_running_pid_treats_pid_file_as_stale_without_runtime_lock(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"
         pid_path.write_text(json.dumps({
             "pid": os.getpid(),
@@ -182,7 +182,7 @@ class TestGatewayPidState:
         handoffs.  Stale-cleanup must not go through that path or real
         crashed-process PID files never get removed.
         """
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"
         lock_path = tmp_path / "gateway.lock"
 
@@ -209,7 +209,7 @@ class TestGatewayPidState:
         assert not lock_path.exists()
 
     def test_get_running_pid_falls_back_to_live_lock_record(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"
         pid_path.write_text(json.dumps({
             "pid": 99999,
@@ -247,7 +247,7 @@ class TestGatewayPidState:
 
 class TestGatewayRuntimeStatus:
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         calls = []
 
         def _fake_atomic_json_write(path, payload, **kwargs):
@@ -269,7 +269,7 @@ class TestGatewayRuntimeStatus:
 
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):
         """Regression: setdefault() preserved stale PID from previous process (#1631)."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
 
         # Simulate a previous gateway run that left a state file with a stale PID
         state_path = tmp_path / "gateway_state.json"
@@ -289,7 +289,7 @@ class TestGatewayRuntimeStatus:
 
     def test_write_runtime_status_overwrites_stale_argv_on_restart(self, tmp_path, monkeypatch):
         """Regression: gateway_state.json must not keep the previous launch argv."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
 
         state_path = tmp_path / "gateway_state.json"
         state_path.write_text(json.dumps({
@@ -312,7 +312,7 @@ class TestGatewayRuntimeStatus:
         assert payload["start_time"] == 2000
 
     def test_write_runtime_status_records_platform_failure(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
 
         status.write_runtime_status(
             gateway_state="startup_failed",
@@ -331,7 +331,7 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
 
     def test_write_runtime_status_explicit_none_clears_stale_fields(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
 
         status.write_runtime_status(
             gateway_state="startup_failed",
@@ -647,7 +647,7 @@ class TestTakeoverMarker:
     """
 
     def test_write_marker_records_target_identity(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
 
         ok = status.write_takeover_marker(target_pid=12345)
@@ -663,7 +663,7 @@ class TestTakeoverMarker:
 
     def test_consume_returns_true_when_marker_names_self(self, tmp_path, monkeypatch):
         """Primary happy path: planned takeover is recognised."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         # Mark THIS process as the target
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
         ok = status.write_takeover_marker(target_pid=os.getpid())
@@ -678,7 +678,7 @@ class TestTakeoverMarker:
 
     def test_consume_returns_false_for_different_pid(self, tmp_path, monkeypatch):
         """A marker naming a DIFFERENT process must not be consumed as ours."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
         # Marker names a different PID
         other_pid = os.getpid() + 9999
@@ -695,7 +695,7 @@ class TestTakeoverMarker:
 
     def test_consume_returns_false_on_start_time_mismatch(self, tmp_path, monkeypatch):
         """PID reuse defence: old marker's start_time mismatches current process."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         # Marker says target started at time 100 with our PID
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
         status.write_takeover_marker(target_pid=os.getpid())
@@ -720,7 +720,7 @@ class TestTakeoverMarker:
         misclassified as an unexpected UNKNOWN exit. With start_time
         unavailable we fall back to PID equality alone, bounded by the TTL.
         """
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         # Simulate Windows: no start_time available for any PID.
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
 
@@ -735,7 +735,7 @@ class TestTakeoverMarker:
         assert not (tmp_path / ".gateway-takeover.json").exists()
 
     def test_consume_returns_false_when_marker_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
 
         result = status.consume_takeover_marker_for_self()
 
@@ -745,7 +745,7 @@ class TestTakeoverMarker:
         """A marker older than 60s must be ignored."""
         from datetime import datetime, timezone, timedelta
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         marker_path = tmp_path / ".gateway-takeover.json"
         # Hand-craft a marker written 2 minutes ago
         stale_time = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
@@ -764,7 +764,7 @@ class TestTakeoverMarker:
         assert not marker_path.exists()
 
     def test_consume_handles_malformed_marker_gracefully(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         marker_path = tmp_path / ".gateway-takeover.json"
         marker_path.write_text("not valid json{")
 
@@ -774,7 +774,7 @@ class TestTakeoverMarker:
         assert result is False
 
     def test_consume_handles_marker_with_missing_fields(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         marker_path = tmp_path / ".gateway-takeover.json"
         marker_path.write_text(json.dumps({"only_replacer_pid": 99999}))
 
@@ -785,7 +785,7 @@ class TestTakeoverMarker:
         assert not marker_path.exists()
 
     def test_clear_takeover_marker_is_idempotent(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
 
         # Nothing to clear — must not raise
         status.clear_takeover_marker()
@@ -803,7 +803,7 @@ class TestTakeoverMarker:
 
     def test_write_marker_returns_false_on_write_failure(self, tmp_path, monkeypatch):
         """write_takeover_marker is best-effort; returns False but doesn't raise."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
 
         def raise_oserror(*args, **kwargs):
             raise OSError("simulated write failure")
@@ -824,7 +824,7 @@ class TestTakeoverMarker:
         The distinguishing check is ``target_pid == our_pid AND
         target_start_time == our_start_time``. Different PID always wins.
         """
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         marker_path = tmp_path / ".gateway-takeover.json"
         # Fresh marker (timestamp is recent) but names a totally different PID
         from datetime import datetime, timezone
@@ -846,7 +846,7 @@ class TestPlannedStopMarker:
     """Tests for intentional service/manual gateway stop markers."""
 
     def test_write_marker_records_target_identity(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
 
         ok = status.write_planned_stop_marker(target_pid=12345)
@@ -861,7 +861,7 @@ class TestPlannedStopMarker:
         assert "written_at" in payload
 
     def test_consume_returns_true_when_marker_names_self(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
         ok = status.write_planned_stop_marker(target_pid=os.getpid())
         assert ok is True
@@ -872,7 +872,7 @@ class TestPlannedStopMarker:
         assert not (tmp_path / ".gateway-planned-stop.json").exists()
 
     def test_consume_returns_false_for_different_pid(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
         ok = status.write_planned_stop_marker(target_pid=os.getpid() + 9999)
         assert ok is True
@@ -885,7 +885,7 @@ class TestPlannedStopMarker:
     def test_consume_returns_false_for_stale_marker(self, tmp_path, monkeypatch):
         from datetime import datetime, timezone, timedelta
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         marker_path = tmp_path / ".gateway-planned-stop.json"
         stale_time = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
         marker_path.write_text(json.dumps({
@@ -902,7 +902,7 @@ class TestPlannedStopMarker:
         assert not marker_path.exists()
 
     def test_clear_planned_stop_marker_is_idempotent(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
 
         status.clear_planned_stop_marker()
@@ -915,7 +915,7 @@ class TestPlannedStopMarker:
         status.clear_planned_stop_marker()
 
     def test_write_marker_returns_false_on_write_failure(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
 
         def raise_oserror(*args, **kwargs):
             raise OSError("simulated write failure")
@@ -935,13 +935,13 @@ class TestPlannedStopMarker:
         ``_get_process_start_time`` returns None on macOS / native Windows
         (no ``/proc/<pid>/stat``). The planned-stop watcher only runs there,
         so if the authoritative consume required a non-None start_time match
-        it would always return False — and ``hermes gateway stop`` would be
+        it would always return False — and ``savarez gateway stop`` would be
         misclassified as an unexpected ``UNKNOWN`` exit, exit 1, and revived
         by the service manager (the very crash loop #34597 set out to fix).
         With start_time unavailable on BOTH sides we fall back to PID
         equality alone, bounded by the marker TTL.
         """
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         # Simulate Windows: no start_time available for any PID.
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
 
@@ -964,7 +964,7 @@ class TestPlannedStopMarker:
         Falling back to PID equality when start_time is unknown must remain
         a PID check — a marker for a different process is never ours.
         """
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
 
         ok = status.write_planned_stop_marker(target_pid=os.getpid() + 9999)
@@ -983,7 +983,7 @@ class TestPlannedStopMarker:
         unavailable. When both sides report one (Linux), a mismatch must
         still reject — otherwise PID reuse could resurrect a stale marker.
         """
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
         status.write_planned_stop_marker(target_pid=os.getpid())
 

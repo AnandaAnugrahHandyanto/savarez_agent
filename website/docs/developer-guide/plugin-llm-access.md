@@ -337,7 +337,7 @@ plugins:
       llm:
         # Allow this plugin to choose a different Hermes provider
         # (must be one Hermes already knows about — same names as
-        # `hermes model` and config.yaml model.provider).
+        # `savarez model` and config.yaml model.provider).
         allow_provider_override: true
 
         # Optionally restrict which providers. Use ["*"] for any.
@@ -402,7 +402,7 @@ don't have to:
 * **Provider resolution.** Reads `model.provider` + `model.model`
   from the user's config (or the explicit overrides when trusted).
 * **Auth.** Pulls API keys, OAuth tokens, or refresh tokens from
-  `~/.hermes/auth.json` / env, including the credential pool when
+  `~/.savarez/auth.json` / env, including the credential pool when
   one is configured. The plugin never sees them.
 * **Vision routing.** When image input is supplied and the user's
   active text model is text-only, the host falls back to the

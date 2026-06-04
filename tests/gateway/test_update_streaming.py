@@ -1,6 +1,6 @@
 """Tests for /update live streaming, prompt forwarding, and gateway IPC.
 
-Tests the new --gateway mode for hermes update, including:
+Tests the new --gateway mode for savarez update, including:
 - _gateway_prompt() file-based IPC
 - _watch_update_progress() output streaming and prompt detection
 - Message interception for update prompt responses
@@ -77,7 +77,7 @@ class TestGatewayPrompt:
         thread = threading.Thread(target=write_response)
         thread.start()
 
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+        with patch.dict(os.environ, {"SAVAREZ_HOME": str(hermes_home)}):
             from hermes_cli.main import _gateway_prompt
             result = _gateway_prompt("Restore? [Y/n]", "y", timeout=5.0)
 
@@ -108,7 +108,7 @@ class TestGatewayPrompt:
         thread = threading.Thread(target=capture_and_respond)
         thread.start()
 
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+        with patch.dict(os.environ, {"SAVAREZ_HOME": str(hermes_home)}):
             from hermes_cli.main import _gateway_prompt
             _gateway_prompt("Configure now? [Y/n]", "n", timeout=5.0)
 
@@ -123,7 +123,7 @@ class TestGatewayPrompt:
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
 
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+        with patch.dict(os.environ, {"SAVAREZ_HOME": str(hermes_home)}):
             from hermes_cli.main import _gateway_prompt
             result = _gateway_prompt("test?", "default_val", timeout=0.5)
 
@@ -136,7 +136,7 @@ class TestGatewayPrompt:
         (hermes_home / ".update_response").write_text("")
 
         # Write prompt file so the function starts polling
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+        with patch.dict(os.environ, {"SAVAREZ_HOME": str(hermes_home)}):
             from hermes_cli.main import _gateway_prompt
             # Pre-create the response
             result = _gateway_prompt("test?", "default_val", timeout=2.0)
@@ -207,7 +207,7 @@ class TestRestoreStashWithInputFn:
 
 
 class TestUpdateCommandGatewayFlag:
-    """Verify the gateway spawns hermes update --gateway."""
+    """Verify the gateway spawns savarez update --gateway."""
 
     @pytest.mark.asyncio
     async def test_spawns_with_gateway_flag(self, tmp_path):

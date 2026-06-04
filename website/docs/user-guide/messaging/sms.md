@@ -2,7 +2,7 @@
 sidebar_position: 8
 sidebar_label: "SMS (Twilio)"
 title: "SMS (Twilio)"
-description: "Set up Hermes Agent as an SMS chatbot via Twilio"
+description: "Set up Savarez AI Agent as an SMS chatbot via Twilio"
 ---
 
 # SMS Setup (Twilio)
@@ -37,14 +37,14 @@ The SMS gateway shares credentials with the optional [telephony skill](/referenc
 ### Interactive setup (recommended)
 
 ```bash
-hermes gateway setup
+savarez gateway setup
 ```
 
 Select **SMS (Twilio)** from the platform list. The wizard will prompt for your credentials.
 
 ### Manual setup
 
-Add to `~/.hermes/.env`:
+Add to `~/.savarez/.env`:
 
 ```bash
 TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -102,7 +102,7 @@ SMS_WEBHOOK_PORT=3000
 ## Step 4: Start the Gateway
 
 ```bash
-hermes gateway
+savarez gateway
 ```
 
 You should see:

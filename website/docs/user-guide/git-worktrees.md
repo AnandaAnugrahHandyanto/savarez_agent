@@ -2,12 +2,12 @@
 sidebar_position: 3
 sidebar_label: "Git Worktrees"
 title: "Git Worktrees"
-description: "Run multiple Hermes agents safely on the same repository using git worktrees and isolated checkouts"
+description: "Run multiple Savarez AI agents safely on the same repository using git worktrees and isolated checkouts"
 ---
 
 # Git Worktrees
 
-Hermes Agent is often used on large, long‑lived repositories. When you want to:
+Savarez AI Agent is often used on large, long‑lived repositories. When you want to:
 
 - Run **multiple agents in parallel** on the same project, or
 - Keep experimental refactors isolated from your main branch,
@@ -20,8 +20,8 @@ This page shows how to combine worktrees with Hermes so each session has a clean
 
 Hermes treats the **current working directory** as the project root:
 
-- CLI: the directory where you run `hermes` or `hermes chat`
-- Messaging gateways: the directory set by `terminal.cwd` in `~/.hermes/config.yaml`
+- CLI: the directory where you run `savarez` or `savarez chat`
+- Messaging gateways: the directory set by `terminal.cwd` in `~/.savarez/config.yaml`
 
 If you run multiple agents in the **same checkout**, their changes can interfere with each other:
 
@@ -122,7 +122,7 @@ Notes:
 
 - `git worktree remove` will refuse to remove a worktree with uncommitted changes unless you force it.
 - Removing a worktree does **not** automatically delete the branch; you can delete or keep the branch using normal `git branch` commands.
-- Hermes checkpoint data under `~/.hermes/checkpoints/` is not automatically pruned when you remove a worktree, but it is usually very small.
+- Hermes checkpoint data under `~/.savarez/checkpoints/` is not automatically pruned when you remove a worktree, but it is usually very small.
 
 ## Best Practices
 

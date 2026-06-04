@@ -1,12 +1,12 @@
 ---
 sidebar_position: 14
 title: "AWS Bedrock"
-description: "将 Hermes Agent 与 Amazon Bedrock 配合使用——原生 Converse API、IAM 身份验证、Guardrails 及跨区域推理"
+description: "将 Savarez AI Agent 与 Amazon Bedrock 配合使用——原生 Converse API、IAM 身份验证、Guardrails 及跨区域推理"
 ---
 
 # AWS Bedrock
 
-Hermes Agent 通过 **Converse API** 原生支持 Amazon Bedrock——而非 OpenAI 兼容端点。这让你可以完整访问 Bedrock 生态系统：IAM 身份验证、Guardrails、跨区域推理配置文件以及所有基础模型。
+Savarez AI Agent 通过 **Converse API** 原生支持 Amazon Bedrock——而非 OpenAI 兼容端点。这让你可以完整访问 Bedrock 生态系统：IAM 身份验证、Guardrails、跨区域推理配置文件以及所有基础模型。
 
 ## 前提条件
 
@@ -31,17 +31,17 @@ Hermes Agent 通过 **Converse API** 原生支持 Amazon Bedrock——而非 Ope
 pip install hermes-agent[bedrock]
 
 # 选择 Bedrock 作为提供商
-hermes model
+savarez model
 # → 选择 "More providers..." → "AWS Bedrock"
 # → 选择你的区域和模型
 
 # 开始对话
-hermes chat
+savarez chat
 ```
 
 ## 配置
 
-运行 `hermes model` 后，你的 `~/.hermes/config.yaml` 将包含以下内容：
+运行 `savarez model` 后，你的 `~/.savarez/config.yaml` 将包含以下内容：
 
 ```yaml
 model:
@@ -90,7 +90,7 @@ bedrock:
 
 ## 可用模型
 
-Bedrock 模型使用**推理配置文件 ID** 进行按需调用。`hermes model` 选择器会自动显示这些 ID，并将推荐模型置于顶部：
+Bedrock 模型使用**推理配置文件 ID** 进行按需调用。`savarez model` 选择器会自动显示这些 ID，并将推荐模型置于顶部：
 
 | 模型 | ID | 备注 |
 |-------|-----|-------|
@@ -119,7 +119,7 @@ Bedrock 模型使用**推理配置文件 ID** 进行按需调用。`hermes model
 ## 诊断
 
 ```bash
-hermes doctor
+savarez doctor
 ```
 
 诊断工具会检查：
@@ -133,8 +133,8 @@ hermes doctor
 Bedrock 可与所有 Hermes gateway 平台配合使用（Telegram、Discord、Slack、飞书等）。将 Bedrock 配置为提供商后，正常启动 gateway 即可：
 
 ```bash
-hermes gateway setup
-hermes gateway start
+savarez gateway setup
+savarez gateway start
 ```
 
 Gateway 读取 `config.yaml` 并使用相同的 Bedrock 提供商配置。

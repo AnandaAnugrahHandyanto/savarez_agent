@@ -59,20 +59,20 @@ def register_credential_file(
 ) -> bool:
     """Register a credential file for mounting into remote sandboxes.
 
-    *relative_path* is relative to ``HERMES_HOME`` (e.g. ``google_token.json``).
+    *relative_path* is relative to ``SAVAREZ_HOME`` (e.g. ``google_token.json``).
     Returns True if the file exists on the host and was registered.
 
     Security: rejects absolute paths and path traversal sequences (``..``).
-    The resolved host path must remain inside HERMES_HOME so that a malicious
+    The resolved host path must remain inside SAVAREZ_HOME so that a malicious
     skill cannot declare ``required_credential_files: ['../../.ssh/id_rsa']``
     and exfiltrate sensitive host files into a container sandbox.
     """
     hermes_home = _resolve_hermes_home()
 
-    # Reject absolute paths — they bypass the HERMES_HOME sandbox entirely.
+    # Reject absolute paths — they bypass the SAVAREZ_HOME sandbox entirely.
     if os.path.isabs(relative_path):
         logger.warning(
-            "credential_files: rejected absolute path %r (must be relative to HERMES_HOME)",
+            "credential_files: rejected absolute path %r (must be relative to SAVAREZ_HOME)",
             relative_path,
         )
         return False
@@ -80,7 +80,7 @@ def register_credential_file(
     host_path = hermes_home / relative_path
 
     # Resolve symlinks and normalise ``..`` before the containment check so
-    # that traversal like ``../. ssh/id_rsa`` cannot escape HERMES_HOME.
+    # that traversal like ``../. ssh/id_rsa`` cannot escape SAVAREZ_HOME.
     from tools.path_security import validate_within_dir
 
     containment_error = validate_within_dir(host_path, hermes_home)

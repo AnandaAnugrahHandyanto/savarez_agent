@@ -7,12 +7,12 @@ https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-provider
 
 Subcommands:
   hermes fallback [list]   Show the current fallback chain (default when no subcommand)
-  hermes fallback add      Pick provider + model via the same picker as `hermes model`,
+  hermes fallback add      Pick provider + model via the same picker as `savarez model`,
                            then append the selection to the chain
   hermes fallback remove   Pick an entry to delete from the chain
   hermes fallback clear    Remove all fallback entries
 
-Storage: ``fallback_providers`` in ``~/.hermes/config.yaml`` (top-level, list of
+Storage: ``fallback_providers`` in ``~/.savarez/config.yaml`` (top-level, list of
 ``{provider, model, base_url?, api_mode?}`` dicts).  The legacy single-dict
 ``fallback_model`` format is migrated to the new list format on first add.
 """
@@ -96,7 +96,7 @@ def _restore_auth_active_provider(value: Any) -> None:
     except Exception:
         # Best-effort — if auth.json can't be restored, the user's primary
         # provider may have been deactivated by the picker.  They can re-run
-        # `hermes model` to fix it.  Don't fail the fallback add.
+        # `savarez model` to fix it.  Don't fail the fallback add.
         pass
 
 
@@ -145,7 +145,7 @@ def _describe_primary(config: Dict[str, Any]) -> Optional[str]:
 
 
 def cmd_fallback_add(args) -> None:
-    """Launch the same picker as `hermes model`, then append the selection to the chain."""
+    """Launch the same picker as `savarez model`, then append the selection to the chain."""
     from hermes_cli.main import _require_tty, select_provider_and_model
     from hermes_cli.config import load_config, save_config
 
@@ -159,7 +159,7 @@ def cmd_fallback_add(args) -> None:
 
     print()
     print("  Adding a fallback provider.  The picker below is the same one used by")
-    print("  `hermes model` — select the provider + model you want as a fallback.")
+    print("  `savarez model` — select the provider + model you want as a fallback.")
     print()
 
     try:

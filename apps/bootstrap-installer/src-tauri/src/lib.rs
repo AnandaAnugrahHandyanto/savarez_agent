@@ -93,14 +93,14 @@ fn get_mode(state: tauri::State<'_, Arc<AppState>>) -> AppMode {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Tracing → bootstrap-installer.log under HERMES_HOME/logs/ so install
+    // Tracing → bootstrap-installer.log under SAVAREZ_HOME/logs/ so install
     // failures leave a trail for support. Console output also goes here in
     // debug builds.
     let _guard = paths::init_logging();
 
     let mode = AppMode::from_args(std::env::args().skip(1));
     // Escape hatch: `--reinstall`/`--repair` forces the installer UI even when
-    // Hermes is already installed, so users can re-run setup to repair a broken
+    // Savarez is already installed, so users can re-run setup to repair a broken
     // install instead of the launcher fast path silently relaunching the app.
     let force_setup = force_setup_from_args(std::env::args().skip(1));
     tracing::info!(?mode, force_setup, "Hermes installer starting");
@@ -114,7 +114,7 @@ pub fn run() {
         .setup(move |app| {
             use tauri::Manager;
             // Launcher fast path (macOS only): a bare ("Install") launch when
-            // Hermes is already installed should NOT show the installer or
+            // Savarez is already installed should NOT show the installer or
             // rebuild — it should just open the app, so the /Applications
             // "Hermes" doubles as a normal launcher (first run installs, every
             // later run launches instantly). The window is kept hidden until

@@ -1,4 +1,4 @@
-# Hermes Agent Persona
+# Savarez AI Agent Persona
 
 <!--
 This file defines the agent's personality and tone.

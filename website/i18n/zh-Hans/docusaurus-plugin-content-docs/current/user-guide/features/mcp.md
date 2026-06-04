@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "MCP（模型上下文协议）"
-description: "通过 MCP 将 Hermes Agent 连接到外部工具服务器，并精确控制 Hermes 加载哪些 MCP 工具"
+description: "通过 MCP 将 Savarez AI Agent 连接到外部工具服务器，并精确控制 Hermes 加载哪些 MCP 工具"
 ---
 
 # MCP（模型上下文协议）
 
-MCP 让 Hermes Agent 连接到外部工具服务器，使 agent 能够使用 Hermes 本身之外的工具——GitHub、数据库、文件系统、浏览器栈、内部 API 等等。
+MCP 让 Savarez AI Agent 连接到外部工具服务器，使 agent 能够使用 Hermes 本身之外的工具——GitHub、数据库、文件系统、浏览器栈、内部 API 等等。
 
 如果你曾经希望 Hermes 使用某个已经存在于其他地方的工具，MCP 通常是最简洁的方式。
 
@@ -23,11 +23,11 @@ MCP 让 Hermes Agent 连接到外部工具服务器，使 agent 能够使用 Her
 1. 安装 MCP 支持（如果你使用了标准安装脚本，已包含在内）：
 
 ```bash
-cd ~/.hermes/hermes-agent
+cd ~/.savarez/hermes-agent
 uv pip install -e ".[mcp]"
 ```
 
-2. 在 `~/.hermes/config.yaml` 中添加一个 MCP 服务器：
+2. 在 `~/.savarez/config.yaml` 中添加一个 MCP 服务器：
 
 ```yaml
 mcp_servers:
@@ -39,7 +39,7 @@ mcp_servers:
 3. 启动 Hermes：
 
 ```bash
-hermes chat
+savarez chat
 ```
 
 4. 让 Hermes 使用 MCP 支持的能力。
@@ -91,7 +91,7 @@ mcp_servers:
 
 ## 基本配置参考
 
-Hermes 从 `~/.hermes/config.yaml` 的 `mcp_servers` 下读取 MCP 配置。
+Hermes 从 `~/.savarez/config.yaml` 的 `mcp_servers` 下读取 MCP 配置。
 
 ### 常用字段
 
@@ -129,7 +129,7 @@ mcp_servers:
 
 ## 内置预设
 
-对于知名 MCP 服务器，`hermes mcp add` 接受 `--preset` 标志，自动填写传输层细节，无需手动查找命令和参数。预设只提供默认值——你在同一命令行传入的其他内容（环境变量、头信息、过滤规则）仍然优先生效。
+对于知名 MCP 服务器，`savarez mcp add` 接受 `--preset` 标志，自动填写传输层细节，无需手动查找命令和参数。预设只提供默认值——你在同一命令行传入的其他内容（环境变量、头信息、过滤规则）仍然优先生效。
 
 | 预设 | 配置内容 |
 |---|---|
@@ -137,7 +137,7 @@ mcp_servers:
 
 ```bash
 # 一行命令将 Codex CLI 添加为 MCP 服务器
-hermes mcp add codex --preset codex
+savarez mcp add codex --preset codex
 ```
 
 等价于写入：
@@ -149,7 +149,7 @@ mcp_servers:
     args: ["mcp-server"]
 ```
 
-你可以使用任意本地名称（`hermes mcp add my-codex --preset codex` 完全可以）；预设只提供 `command`/`args` 默认值。
+你可以使用任意本地名称（`savarez mcp add my-codex --preset codex` 完全可以）；预设只提供 `command`/`args` 默认值。
 
 ## Hermes 注册 MCP 工具的方式
 
@@ -407,7 +407,7 @@ Inspect the project root and explain the directory layout.
 
 ```bash
 # 验证 MCP 依赖已安装（标准安装已包含）
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd ~/.savarez/hermes-agent && uv pip install -e ".[mcp]"
 
 node --version
 npx --version
@@ -497,7 +497,7 @@ mcp_servers:
 ### 快速开始
 
 ```bash
-hermes mcp serve
+savarez mcp serve
 ```
 
 这会启动一个 stdio MCP 服务器。进程生命周期由 MCP 客户端（而非你）管理。
@@ -566,19 +566,19 @@ events_wait(after_cursor=42, timeout_ms=30000)
 ### 选项
 
 ```bash
-hermes mcp serve              # 普通模式
-hermes mcp serve --verbose    # 在 stderr 输出调试日志
+savarez mcp serve              # 普通模式
+savarez mcp serve --verbose    # 在 stderr 输出调试日志
 ```
 
 ### 工作原理
 
-MCP 服务器直接从 Hermes 的会话存储（`~/.hermes/sessions/sessions.json` 和 SQLite 数据库）读取会话数据。后台线程轮询数据库以获取新消息，并维护一个内存事件队列。发送消息时，使用与 Hermes agent 本身相同的 `send_message` 基础设施。
+MCP 服务器直接从 Hermes 的会话存储（`~/.savarez/sessions/sessions.json` 和 SQLite 数据库）读取会话数据。后台线程轮询数据库以获取新消息，并维护一个内存事件队列。发送消息时，使用与 Savarez AI agent 本身相同的 `send_message` 基础设施。
 
 读取操作（列出会话、读取历史、轮询事件）**不需要** gateway 运行。发送操作**需要** gateway 运行，因为平台适配器需要活跃连接。
 
 ### 当前限制
 
-- 内嵌的 `hermes mcp serve` 目前只暴露 **stdio-only** MCP 服务器。如果你需要 HTTP MCP 服务器，请运行单独的适配器——或者，更常见的做法是使用 Hermes 的 MCP **客户端**侧，它已经同时支持 stdio 和 HTTP（`mcp_servers.yaml` / `config.yaml` 中的 `url` + `headers`；参见上方的 [HTTP 服务器](#http-servers)）。
+- 内嵌的 `savarez mcp serve` 目前只暴露 **stdio-only** MCP 服务器。如果你需要 HTTP MCP 服务器，请运行单独的适配器——或者，更常见的做法是使用 Hermes 的 MCP **客户端**侧，它已经同时支持 stdio 和 HTTP（`mcp_servers.yaml` / `config.yaml` 中的 `url` + `headers`；参见上方的 [HTTP 服务器](#http-servers)）。
 - 事件轮询间隔约 200ms，通过基于 mtime 优化的数据库轮询实现（文件未变化时跳过处理）
 - 暂不支持 `claude/channel` 推送通知协议
 - 仅支持纯文本发送（`messages_send` 不支持媒体/附件发送）

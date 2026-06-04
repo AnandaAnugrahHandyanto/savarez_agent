@@ -21,7 +21,7 @@ Every Hermes installation ships with bundled skills. See what's available:
 /skills
 
 # Or from the CLI:
-hermes skills list
+savarez skills list
 ```
 
 This shows a compact list with names and descriptions:
@@ -90,18 +90,18 @@ Official optional skills ship with Hermes but aren't active by default. Install 
 
 ```bash
 # Install an official optional skill
-hermes skills install official/research/arxiv
+savarez skills install official/research/arxiv
 
 # Install from the hub in a chat session
 /skills install official/creative/songwriting-and-ai-music
 
 # Install a single-file SKILL.md directly from any HTTP(S) URL
-hermes skills install https://sharethis.chat/SKILL.md
+savarez skills install https://sharethis.chat/SKILL.md
 /skills install https://example.com/SKILL.md --name my-skill
 ```
 
 What happens:
-1. The skill directory is copied to `~/.hermes/skills/`
+1. The skill directory is copied to `~/.savarez/skills/`
 2. It appears in your `skills_list` output
 3. It becomes available as a slash command
 
@@ -113,7 +113,7 @@ Installed skills take effect in new sessions. If you want it available in the cu
 
 ```bash
 # Check it's there
-hermes skills list | grep arxiv
+savarez skills list | grep arxiv
 
 # Or in chat
 /skills search arxiv
@@ -159,10 +159,10 @@ Manage skill config from the CLI:
 
 ```bash
 # Interactive config for a specific skill
-hermes skills config gif-search
+savarez skills config gif-search
 
 # View all skill config
-hermes config show | grep '^skills\.config'
+savarez config show | grep '^skills\.config'
 ```
 
 ---
@@ -174,12 +174,12 @@ Skills are just markdown files with YAML frontmatter. Creating one takes under f
 ### 1. Create the Directory
 
 ```bash
-mkdir -p ~/.hermes/skills/my-category/my-skill
+mkdir -p ~/.savarez/skills/my-category/my-skill
 ```
 
 ### 2. Write SKILL.md
 
-```markdown title="~/.hermes/skills/my-category/my-skill/SKILL.md"
+```markdown title="~/.savarez/skills/my-category/my-skill/SKILL.md"
 ---
 name: my-skill
 description: Brief description of what this skill does
@@ -235,10 +235,10 @@ For API details, load the reference: `skill_view("my-skill", "references/api-doc
 Start a new session and try your skill:
 
 ```bash
-hermes chat -q "/my-skill help me with the thing"
+savarez chat -q "/my-skill help me with the thing"
 ```
 
-The skill appears automatically — no registration needed. Drop it in `~/.hermes/skills/` and it's live.
+The skill appears automatically — no registration needed. Drop it in `~/.savarez/skills/` and it's live.
 
 :::info
 The agent can also create and update skills itself using `skill_manage`. After solving a complex problem, Hermes may offer to save the approach as a skill for next time.
@@ -251,7 +251,7 @@ The agent can also create and update skills itself using `skill_manage`. After s
 Control which skills are available on which platforms:
 
 ```bash
-hermes skills
+savarez skills
 ```
 
 This opens an interactive TUI where you can enable or disable skills per platform (CLI, Telegram, Discord, etc.). Useful when you want certain skills only available in specific contexts — for example, keeping development skills off Telegram.
@@ -281,7 +281,7 @@ Both are persistent across sessions, but they serve different purposes:
 
 **Let the agent create skills.** After a complex multi-step task, Hermes will often offer to save the approach as a skill. Say yes — these agent-authored skills capture the exact workflow including pitfalls that were discovered along the way.
 
-**Use categories.** Organize skills into subdirectories (`~/.hermes/skills/devops/`, `~/.hermes/skills/research/`, etc.). This keeps the list manageable and helps the agent find relevant skills faster.
+**Use categories.** Organize skills into subdirectories (`~/.savarez/skills/devops/`, `~/.savarez/skills/research/`, etc.). This keeps the list manageable and helps the agent find relevant skills faster.
 
 **Update skills when they go stale.** If you use a skill and hit issues not covered by it, tell Hermes to update the skill with what you learned. Skills that aren't maintained become liabilities.
 

@@ -36,9 +36,9 @@ Board resolution order (highest precedence first, all optional):
   the "currently selected" board. Written by ``hermes kanban boards
   switch <slug>``. When absent, the active board is ``default``.
 
-In standard installs ``<root>`` is ``~/.hermes``. In Docker / custom
-deployments where ``HERMES_HOME`` points outside ``~/.hermes`` (e.g.
-``/opt/hermes``), ``<root>`` is ``HERMES_HOME``. Legacy env-var
+In standard installs ``<root>`` is ``~/.savarez``. In Docker / custom
+deployments where ``SAVAREZ_HOME`` points outside ``~/.savarez`` (e.g.
+``/opt/hermes``), ``<root>`` is ``SAVAREZ_HOME``. Legacy env-var
 overrides still work:
 
 * ``HERMES_KANBAN_DB`` — pin the database file path directly.
@@ -254,12 +254,12 @@ def kanban_home() -> Path:
     1. ``HERMES_KANBAN_HOME`` env var when set and non-empty (explicit
        override for tests and unusual deployments).
     2. ``get_default_hermes_root()``, which already returns ``<root>``
-       when ``HERMES_HOME`` is ``<root>/profiles/<name>``, and returns
-       ``HERMES_HOME`` directly for Docker / custom deployments.
+       when ``SAVAREZ_HOME`` is ``<root>/profiles/<name>``, and returns
+       ``SAVAREZ_HOME`` directly for Docker / custom deployments.
 
     The kanban board is shared across profiles **by design** (see the
     module docstring). Resolving the kanban paths through the active
-    profile's ``HERMES_HOME`` would silently fork the board per profile,
+    profile's ``SAVAREZ_HOME`` would silently fork the board per profile,
     which breaks the dispatcher / worker handoff.
     """
     override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
@@ -6408,8 +6408,8 @@ def _rotate_worker_log(
 def _module_hermes_argv() -> list[str]:
     """Return the interpreter-bound Hermes CLI invocation."""
     # ``hermes_cli.main`` is the console-script target declared in
-    # pyproject.toml, NOT a top-level ``hermes`` package — there is no
-    # ``hermes`` package to import.
+    # pyproject.toml, NOT a top-level ``savarez`` package — there is no
+    # ``savarez`` package to import.
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
@@ -6481,7 +6481,7 @@ def _hermes_path_argv(path: str) -> list[str]:
 
 
 def _resolve_hermes_argv() -> list[str]:
-    """Resolve the ``hermes`` invocation as argv parts for ``Popen``.
+    """Resolve the ``savarez`` invocation as argv parts for ``Popen``.
 
     Tries in order:
 
@@ -6495,7 +6495,7 @@ def _resolve_hermes_argv() -> list[str]:
        dispatcher therefore falls back to the interpreter-bound module form
        for implicit ``.cmd`` / ``.bat`` shims.
     3. ``sys.executable -m hermes_cli.main`` — fallback for setups where
-       Hermes is launched from a venv and the ``hermes`` shim is not on
+       Hermes is launched from a venv and the ``savarez`` shim is not on
        the dispatcher's ``$PATH`` (cron, systemd ``User=`` services,
        launchd jobs, detached processes, etc.). Goes through the running
        interpreter so the result is independent of ``$PATH``.
@@ -6537,8 +6537,8 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     """
     from pathlib import Path as _Path
 
-    # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill.
+    # An unset SAVAREZ_HOME means the worker falls back to the default root
+    # home (``~/.savarez``), which ships the bundled skill.
     base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
     skills_root = base / "skills"
     if not skills_root.is_dir():
@@ -6615,23 +6615,23 @@ def _default_spawn(
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
 
-    # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
+    # Inject SAVAREZ_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
     # config.  Without this, `env = dict(os.environ)` copies only the parent's
     # env, and when the child process starts `hermes -p <name>` the
     # _apply_profile_override() runs *before* hermes_constants is imported.
-    # If HERMES_HOME is absent from the child's env, get_hermes_home() falls
+    # If SAVAREZ_HOME is absent from the child's env, get_hermes_home() falls
     # back to Path.home() / ".hermes" (the DEFAULT profile root), ignoring the
     # profile-specific config entirely.  Fixes profile-scoped fallback_providers
     # being invisible to kanban workers.
     from hermes_cli.profiles import resolve_profile_env
     try:
-        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
+        env["SAVAREZ_HOME"] = resolve_profile_env(profile_arg)
     except FileNotFoundError:
         # Profile dir doesn't exist — defer resolution to the CLI's
         # _apply_profile_override() via HERMES_PROFILE (set below).
         # This only happens in test fixtures where the isolated
-        # HERMES_HOME never had profiles created.
+        # SAVAREZ_HOME never had profiles created.
         pass
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
@@ -6664,7 +6664,7 @@ def _default_spawn(
         env["TERMINAL_MAX_FOREGROUND_TIMEOUT"] = foreground_timeout
     # Pin the shared board + workspaces root the dispatcher resolved, so
     # that even when the worker activates a profile (`hermes -p <name>`
-    # rewrites HERMES_HOME), its kanban paths still match the
+    # rewrites SAVAREZ_HOME), its kanban paths still match the
     # dispatcher's. Belt-and-braces with the `get_default_hermes_root()`
     # resolution in `kanban_home()` — symmetric resolution is the norm,
     # but unusual symlink / Docker layouts are caught here too.
@@ -6684,7 +6684,7 @@ def _default_spawn(
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
-        # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
+        # Worker subprocesses switch to a profile-scoped SAVAREZ_HOME above,
         # so they see that profile's shell-hook allowlist instead of the
         # dispatcher's root allowlist. Pass --accept-hooks explicitly so
         # profile-local worker sessions still register configured hooks.
@@ -6704,7 +6704,7 @@ def _default_spawn(
     # profile-scoped skills dirs, and preloading a missing skill is
     # fatal at CLI startup. Omitting it is safe — the lifecycle
     # contract still ships via KANBAN_GUIDANCE.
-    if _kanban_worker_skill_available(env.get("HERMES_HOME")):
+    if _kanban_worker_skill_available(env.get("SAVAREZ_HOME")):
         cmd.extend(["--skills", "kanban-worker"])
     # Per-task force-loaded skills. Each name goes in its own
     # `--skills X` pair rather than a single comma-joined arg: the CLI
@@ -6749,8 +6749,8 @@ def _default_spawn(
     except FileNotFoundError:
         log_f.close()
         raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            "`savarez` executable not found on PATH. "
+            "Install Savarez AI Agent or activate its venv before running the kanban dispatcher."
         )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The

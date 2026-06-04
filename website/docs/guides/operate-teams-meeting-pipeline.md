@@ -54,21 +54,21 @@ You MUST run `maintain-subscriptions` on a schedule. Pick one of these three opt
 
 #### Option 1: Hermes cron (recommended if you already run the Hermes gateway)
 
-Hermes ships a built-in cron scheduler. The `--no-agent` mode runs a script as the job (rather than using an LLM), and `--script` must point at a file under `~/.hermes/scripts/`. First create the script:
+Hermes ships a built-in cron scheduler. The `--no-agent` mode runs a script as the job (rather than using an LLM), and `--script` must point at a file under `~/.savarez/scripts/`. First create the script:
 
 ```bash
-mkdir -p ~/.hermes/scripts
-cat > ~/.hermes/scripts/maintain-teams-subscriptions.sh <<'EOF'
+mkdir -p ~/.savarez/scripts
+cat > ~/.savarez/scripts/maintain-teams-subscriptions.sh <<'EOF'
 #!/usr/bin/env bash
 exec hermes teams-pipeline maintain-subscriptions
 EOF
-chmod +x ~/.hermes/scripts/maintain-teams-subscriptions.sh
+chmod +x ~/.savarez/scripts/maintain-teams-subscriptions.sh
 ```
 
 Then register a script-only cron job that runs every 12 hours (gives 6x headroom against the 72h expiry window):
 
 ```bash
-hermes cron create "0 */12 * * *" \
+savarez cron create "0 */12 * * *" \
   --name "teams-pipeline-maintain-subscriptions" \
   --no-agent \
   --script maintain-teams-subscriptions.sh \
@@ -78,8 +78,8 @@ hermes cron create "0 */12 * * *" \
 Verify it was registered and inspect the next run time:
 
 ```bash
-hermes cron list
-hermes cron status        # scheduler status
+savarez cron list
+savarez cron status        # scheduler status
 ```
 
 #### Option 2: systemd timer (recommended for Linux production deployments)
@@ -127,7 +127,7 @@ systemctl list-timers hermes-teams-pipeline-maintain.timer
 0 */12 * * * /usr/local/bin/hermes teams-pipeline maintain-subscriptions >> /var/log/hermes/teams-pipeline-maintain.log 2>&1
 ```
 
-Make sure the cron environment has the `MSGRAPH_*` credentials. Simplest fix: source `~/.hermes/.env` at the top of a wrapper script that crontab calls.
+Make sure the cron environment has the `MSGRAPH_*` credentials. Simplest fix: source `~/.savarez/.env` at the top of a wrapper script that crontab calls.
 
 #### Verifying renewal is working
 

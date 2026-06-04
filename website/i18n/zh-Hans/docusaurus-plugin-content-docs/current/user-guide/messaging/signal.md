@@ -1,7 +1,7 @@
 ---
 sidebar_position: 6
 title: "Signal"
-description: "通过 signal-cli 守护进程将 Hermes Agent 设置为 Signal 机器人"
+description: "通过 signal-cli 守护进程将 Savarez AI Agent 设置为 Signal 机器人"
 ---
 
 # Signal 配置
@@ -83,7 +83,7 @@ curl http://127.0.0.1:8080/api/v1/check
 最简单的方式：
 
 ```bash
-hermes gateway setup
+savarez gateway setup
 ```
 
 从平台菜单中选择 **Signal**。向导将：
@@ -96,7 +96,7 @@ hermes gateway setup
 
 ### 手动配置
 
-在 `~/.hermes/.env` 中添加：
+在 `~/.savarez/.env` 中添加：
 
 ```bash
 # 必填
@@ -114,9 +114,9 @@ SIGNAL_HOME_CHANNEL=+1234567890                  # cron 任务的默认投递目
 然后启动 gateway：
 
 ```bash
-hermes gateway              # 前台运行
-hermes gateway install      # 安装为用户服务
-sudo hermes gateway install --system   # 仅 Linux：开机自启系统服务
+savarez gateway              # 前台运行
+savarez gateway install      # 安装为用户服务
+sudo savarez gateway install --system   # 仅 Linux：开机自启系统服务
 ```
 
 ---

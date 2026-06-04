@@ -259,7 +259,7 @@ class TestProfileCompletion:
     def test_bash_has_profiles_helper(self):
         out = generate_bash(_make_parser())
         assert "_hermes_profiles()" in out
-        assert 'profiles_dir="$HOME/.hermes/profiles"' in out
+        assert 'profiles_dir="$HOME/.savarez/profiles"' in out
 
     def test_bash_completes_profiles_after_p_flag(self):
         out = generate_bash(_make_parser())
@@ -272,7 +272,7 @@ class TestProfileCompletion:
         assert "use|delete|show|alias|rename|export)" in out
 
     def test_bash_profile_actions_complete_profile_names(self):
-        """After 'hermes profile use', complete with profile names."""
+        """After 'savarez profile use', complete with profile names."""
         out = generate_bash(_make_parser())
         # The profile case should have _hermes_profiles for name-taking actions
         lines = out.split("\n")
@@ -289,7 +289,7 @@ class TestProfileCompletion:
     def test_zsh_has_profiles_helper(self):
         out = generate_zsh(_make_parser())
         assert "_hermes_profiles()" in out
-        assert "$HOME/.hermes/profiles" in out
+        assert "$HOME/.savarez/profiles" in out
 
     def test_zsh_has_profile_flag_completion(self):
         out = generate_zsh(_make_parser())
@@ -303,7 +303,7 @@ class TestProfileCompletion:
     def test_fish_has_profiles_helper(self):
         out = generate_fish(_make_parser())
         assert "__hermes_profiles" in out
-        assert "$HOME/.hermes/profiles" in out
+        assert "$HOME/.savarez/profiles" in out
 
     def test_fish_has_profile_flag_completion(self):
         out = generate_fish(_make_parser())

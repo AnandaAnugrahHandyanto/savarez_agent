@@ -26,12 +26,12 @@
 运行设置向导：
 
 ```bash
-hermes gateway setup
+savarez gateway setup
 ```
 
 选择 **BlueBubbles (iMessage)** 并输入服务端 URL 和密码。
 
-或直接在 `~/.hermes/.env` 中设置环境变量：
+或直接在 `~/.savarez/.env` 中设置环境变量：
 
 ```bash
 BLUEBUBBLES_SERVER_URL=http://192.168.1.10:1234
@@ -49,12 +49,12 @@ hermes pairing approve bluebubbles <CODE>
 ```
 使用 `hermes pairing list` 查看待处理的配对码和已授权用户。
 
-**预授权特定用户**（在 `~/.hermes/.env` 中）：
+**预授权特定用户**（在 `~/.savarez/.env` 中）：
 ```bash
 BLUEBUBBLES_ALLOWED_USERS=user@icloud.com,+15551234567
 ```
 
-**开放访问**（在 `~/.hermes/.env` 中）：
+**开放访问**（在 `~/.savarez/.env` 中）：
 ```bash
 BLUEBUBBLES_ALLOW_ALL_USERS=true
 ```
@@ -62,7 +62,7 @@ BLUEBUBBLES_ALLOW_ALL_USERS=true
 ### 5. 启动 Gateway
 
 ```bash
-hermes gateway run
+savarez gateway run
 ```
 
 Hermes 将连接至你的 BlueBubbles 服务端，注册 webhook，并开始监听 iMessage 消息。
@@ -91,7 +91,7 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 | `BLUEBUBBLES_ALLOWED_USERS` | 否 | — | 逗号分隔的授权用户列表 |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | 否 | `false` | 允许所有用户 |
 
-自动将消息标记为已读由 `~/.hermes/config.yaml` 中 `platforms.bluebubbles.extra` 下的 `send_read_receipts` 键控制（默认值：`true`）。该选项没有对应的环境变量。
+自动将消息标记为已读由 `~/.savarez/config.yaml` 中 `platforms.bluebubbles.extra` 下的 `send_read_receipts` 键控制（默认值：`true`）。该选项没有对应的环境变量。
 
 ## 功能特性
 
@@ -136,7 +136,7 @@ Agent 处理消息期间，iMessage 对话中会显示"正在输入……"。需
 ### 消息未送达
 - 检查 webhook 是否已在 BlueBubbles Server → Settings → API → Webhooks 中注册
 - 确认 webhook URL 可从 Mac 访问
-- 查看 `hermes logs gateway` 中的 webhook 错误（或使用 `hermes logs -f` 实时跟踪）
+- 查看 `savarez logs gateway` 中的 webhook 错误（或使用 `savarez logs -f` 实时跟踪）
 
 ### "Private API helper not connected"
 - 安装 Private API helper：[docs.bluebubbles.app](https://docs.bluebubbles.app/helper-bundle/installation)

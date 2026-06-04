@@ -59,7 +59,7 @@ const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navi
 const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   const gateway = useStore($gateway)
   const [submitting, setSubmitting] = useState<ApprovalChoice | null>(null)
-  // "Always allow" persists the pattern to ~/.hermes/config.yaml permanently, so
+  // "Always allow" persists the pattern to ~/.savarez/config.yaml permanently, so
   // it goes through a confirm step rather than firing straight from the menu.
   const [confirmAlways, setConfirmAlways] = useState(false)
   const busy = submitting !== null
@@ -180,7 +180,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
             <DialogTitle>Always allow this command?</DialogTitle>
             <DialogDescription>
               This adds the “{request.description}” pattern to your permanent allowlist (
-              <code className="font-mono text-xs">~/.hermes/config.yaml</code>). Hermes won’t ask again for commands
+              <code className="font-mono text-xs">~/.savarez/config.yaml</code>). Hermes won’t ask again for commands
               like this — in this session or any future one.
             </DialogDescription>
           </DialogHeader>

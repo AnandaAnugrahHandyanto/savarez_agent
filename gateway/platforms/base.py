@@ -489,7 +489,7 @@ from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
-    "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
+    "Load this skill in the local CLI to be prompted, or add the key to ~/.savarez/.env manually."
 )
 
 
@@ -556,7 +556,7 @@ async def _ssrf_redirect_guard(response):
 # (e.g. Telegram file URLs expire after ~1 hour).
 # ---------------------------------------------------------------------------
 
-# Default location: {HERMES_HOME}/cache/images/ (legacy: image_cache/)
+# Default location: {SAVAREZ_HOME}/cache/images/ (legacy: image_cache/)
 IMAGE_CACHE_DIR = get_hermes_dir("cache/images", "image_cache")
 
 
@@ -826,7 +826,7 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
-_HERMES_HOME = get_hermes_home()
+_SAVAREZ_HOME = get_hermes_home()
 _HERMES_ROOT = get_default_hermes_root()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
 MEDIA_DELIVERY_TRUST_RECENT_ENV = "HERMES_MEDIA_TRUST_RECENT_FILES"
@@ -844,18 +844,18 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     VIDEO_CACHE_DIR,
     DOCUMENT_CACHE_DIR,
     SCREENSHOT_CACHE_DIR,
-    _HERMES_HOME / "image_cache",
-    _HERMES_HOME / "audio_cache",
-    _HERMES_HOME / "video_cache",
-    _HERMES_HOME / "document_cache",
-    _HERMES_HOME / "browser_screenshots",
+    _SAVAREZ_HOME / "image_cache",
+    _SAVAREZ_HOME / "audio_cache",
+    _SAVAREZ_HOME / "video_cache",
+    _SAVAREZ_HOME / "document_cache",
+    _SAVAREZ_HOME / "browser_screenshots",
     # Canonical cache layout — listed alongside the legacy *_cache dirs so
     # generated artifacts deliver on installs that have both (#31733).
-    _HERMES_HOME / "cache" / "images",
-    _HERMES_HOME / "cache" / "audio",
-    _HERMES_HOME / "cache" / "videos",
-    _HERMES_HOME / "cache" / "documents",
-    _HERMES_HOME / "cache" / "screenshots",
+    _SAVAREZ_HOME / "cache" / "images",
+    _SAVAREZ_HOME / "cache" / "audio",
+    _SAVAREZ_HOME / "cache" / "videos",
+    _SAVAREZ_HOME / "cache" / "documents",
+    _SAVAREZ_HOME / "cache" / "screenshots",
 )
 
 # Default recency window for trusting freshly-produced files (seconds).
@@ -958,7 +958,7 @@ def _media_delivery_denied_paths() -> List[Path]:
     # The active Hermes profile and shared Hermes root both contain control
     # files and credentials. Only cache subdirectories under them are
     # explicitly allowlisted above.
-    for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
+    for hermes_root in (_SAVAREZ_HOME, _HERMES_ROOT):
         denied.append(hermes_root / ".env")
         denied.append(hermes_root / "auth.json")
         denied.append(hermes_root / "credentials")
@@ -1060,8 +1060,8 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
             return str(resolved)
 
     # Non-strict mode (default): accept anything not on the denylist.
-    # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
-    # ~/.hermes/auth.json, etc. — so the obvious prompt-injection sites
+    # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, ~/.savarez/.env,
+    # ~/.savarez/auth.json, etc. — so the obvious prompt-injection sites
     # (``MEDIA:/etc/passwd``, ``MEDIA:~/.ssh/id_rsa``) remain rejected.
     if not _media_delivery_strict_mode():
         if _path_under_denied_prefix(resolved):

@@ -22,7 +22,7 @@ Scope (what we expose):
   - text_to_speech                       — TTS
   - kanban_* (complete/block/comment/    — kanban worker + orchestrator
     heartbeat/show/list/create/            handoff (stateless: read env var,
-    unblock/link)                          write ~/.hermes/kanban.db)
+    unblock/link)                          write ~/.savarez/kanban.db)
 
 What we DO NOT expose:
   - terminal / shell                     — codex's own shell tool
@@ -88,7 +88,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     # in the callback, a worker spawned with openai_runtime=codex_app_server
     # could do the work but couldn't report completion back to the kernel,
     # making it hang until timeout. Stateless dispatch — they just read
-    # the env var and write to ~/.hermes/kanban.db.
+    # the env var and write to ~/.savarez/kanban.db.
     "kanban_complete",
     "kanban_block",
     "kanban_comment",
@@ -125,7 +125,7 @@ def _build_server() -> Any:
     mcp = FastMCP(
         "hermes-tools",
         instructions=(
-            "Hermes Agent's tool surface, exposed for use inside a Codex "
+            "Savarez AI Agent's tool surface, exposed for use inside a Codex "
             "session. Use these for capabilities Codex's built-in toolset "
             "doesn't cover: web search/extract, browser automation, "
             "subagent delegation, vision, image generation, persistent "

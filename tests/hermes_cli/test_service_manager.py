@@ -545,13 +545,13 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
     log_run = svc_dir / "log" / "run"
     assert log_run.is_file()
     log_text = log_run.read_text()
-    # CRITICAL: HERMES_HOME must be a runtime env-var expansion, NOT
+    # CRITICAL: SAVAREZ_HOME must be a runtime env-var expansion, NOT
     # a Python-substituted absolute path. Negative-assert the wrong
     # form so future regressions are caught.
-    assert "$HERMES_HOME" in log_text
+    assert "$SAVAREZ_HOME" in log_text
     assert "logs/gateways/coder" in log_text
     assert "/opt/data/logs/gateways/coder" not in log_text, (
-        "log_dir was hard-coded; must use ${HERMES_HOME} at run time"
+        "log_dir was hard-coded; must use ${SAVAREZ_HOME} at run time"
     )
     # `1` action directive forwards lines to stdout BEFORE the file
     # destination so the supervised gateway's stdout (including the
@@ -707,7 +707,7 @@ def test_lifecycle_raises_gateway_not_registered_for_missing_slot(
     assert excinfo.value.service == "gateway-typo"
     msg = str(excinfo.value)
     assert "'typo'" in msg
-    assert "hermes profile create typo" in msg
+    assert "savarez profile create typo" in msg
     # And critically: s6-svc was NOT invoked.
     assert not any(c[0] == "s6-svc" for c in fake_subprocess_run)
 

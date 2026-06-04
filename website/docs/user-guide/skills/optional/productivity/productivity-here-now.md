@@ -14,7 +14,7 @@ Publish static sites to &#123;slug&#125;.here.now and store private files in clo
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/productivity/here-now` |
+| Source | Optional — install with `savarez skills install official/productivity/here-now` |
 | Path | `optional-skills/productivity/here-now` |
 | Version | `1.15.3` |
 | Author | here.now |
@@ -215,7 +215,7 @@ For Drives:
 | `--title {text}`       | Viewer title (non-HTML sites)             |
 | `--description {text}` | Viewer description                            |
 | `--ttl {seconds}`      | Set expiry (authenticated only)               |
-| `--client {name}`      | Agent name for attribution (e.g. `hermes`)    |
+| `--client {name}`      | Agent name for attribution (e.g. `savarez`)    |
 | `--base-url {url}`     | API base URL (default: `https://here.now`)    |
 | `--allow-nonherenow-base-url` | Allow sending auth to non-default `--base-url` |
 | `--api-key {key}`      | API key override (prefer credentials file)    |

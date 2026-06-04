@@ -1,8 +1,8 @@
 """Tests for the configurable default interface (cli vs tui).
 
-`hermes` launches the classic prompt_toolkit REPL by default, but users can
+`savarez` launches the classic prompt_toolkit REPL by default, but users can
 flip ``display.interface: tui`` in config.yaml to make the modern Ink TUI the
-default for bare ``hermes`` / ``hermes chat``. Explicit flags always win:
+default for bare ``savarez`` / ``savarez chat``. Explicit flags always win:
 
     --cli                forces the classic REPL (highest precedence)
     --tui / HERMES_TUI=1 forces the TUI
@@ -108,7 +108,7 @@ class TestWantsTuiEarly:
             (tmp_path / "config.yaml").write_text(
                 f"display:\n  interface: {interface}\n"
             )
-            monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+            monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
             monkeypatch.setattr(m, "_EARLY_INTERFACE_CACHE", None)
 
         return _make
@@ -135,15 +135,15 @@ class TestWantsTuiEarly:
         assert m._wants_tui_early([]) is False
 
     def test_missing_config_defaults_to_cli(self, tmp_path, monkeypatch):
-        # HERMES_HOME points at an empty dir — no config.yaml.
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # SAVAREZ_HOME points at an empty dir — no config.yaml.
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         monkeypatch.setattr(m, "_EARLY_INTERFACE_CACHE", None)
         assert m._wants_tui_early([]) is False
 
     def test_unreadable_config_defaults_to_cli(self, tmp_path, monkeypatch):
         # Garbage YAML must not crash the hot path; falls back to cli.
         (tmp_path / "config.yaml").write_text("this: : : not valid yaml\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("SAVAREZ_HOME", str(tmp_path))
         monkeypatch.setattr(m, "_EARLY_INTERFACE_CACHE", None)
         assert m._wants_tui_early([]) is False
 

@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Telegram"
-description: "Set up Hermes Agent as a Telegram bot"
+description: "Set up Savarez AI Agent as a Telegram bot"
 ---
 
 # Telegram Setup
 
-Hermes Agent integrates with Telegram as a full-featured conversational bot. Once connected, you can chat with your agent from any device, send voice memos that get auto-transcribed, receive scheduled task results, and use the agent in group chats. The integration is built on [python-telegram-bot](https://python-telegram-bot.org/) and supports text, voice, images, and file attachments.
+Savarez AI Agent integrates with Telegram as a full-featured conversational bot. Once connected, you can chat with your agent from any device, send voice memos that get auto-transcribed, receive scheduled task results, and use the agent in group chats. The integration is built on [python-telegram-bot](https://python-telegram-bot.org/) and supports text, voice, images, and file attachments.
 
 ## Step 1: Create a Bot via BotFather
 
@@ -14,7 +14,7 @@ Every Telegram bot requires an API token issued by [@BotFather](https://t.me/Bot
 
 1. Open Telegram and search for **@BotFather**, or visit [t.me/BotFather](https://t.me/BotFather)
 2. Send `/newbot`
-3. Choose a **display name** (e.g., "Hermes Agent") — this can be anything
+3. Choose a **display name** (e.g., "Savarez AI Agent") — this can be anything
 4. Choose a **username** — this must be unique and end in `bot` (e.g., `my_hermes_bot`)
 5. BotFather replies with your **API token**. It looks like this:
 
@@ -103,7 +103,7 @@ This requires Telegram to deliver ordinary group messages to the gateway, so dis
 
 ## Step 4: Find Your User ID
 
-Hermes Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.
+Savarez AI Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.
 
 **Method 1 (recommended):** Message [@userinfobot](https://t.me/userinfobot) — it instantly replies with your user ID.
 
@@ -116,14 +116,14 @@ Save this number; you'll need it for the next step.
 ### Option A: Interactive Setup (Recommended)
 
 ```bash
-hermes gateway setup
+savarez gateway setup
 ```
 
 Select **Telegram** when prompted. The wizard asks for your bot token and allowed user IDs, then writes the configuration for you.
 
 ### Option B: Manual Configuration
 
-Add the following to `~/.hermes/.env`:
+Add the following to `~/.savarez/.env`:
 
 ```bash
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
@@ -133,7 +133,7 @@ TELEGRAM_ALLOWED_USERS=123456789    # Comma-separated for multiple users
 ### Start the Gateway
 
 ```bash
-hermes gateway
+savarez gateway
 ```
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
@@ -201,7 +201,7 @@ For **cloud deployments** (Fly.io, Railway, Render, etc.), **webhook mode** is m
 
 ### Configuration
 
-Add the following to `~/.hermes/.env`:
+Add the following to `~/.savarez/.env`:
 
 ```bash
 TELEGRAM_WEBHOOK_URL=https://my-app.fly.dev/telegram
@@ -271,7 +271,7 @@ The proxy applies to both the main Telegram connection and the fallback IP trans
 
 Use the `/sethome` command in any Telegram chat (DM or group) to designate it as the **home channel**. Scheduled tasks (cron jobs) deliver their results to this channel.
 
-You can also set it manually in `~/.hermes/.env`:
+You can also set it manually in `~/.savarez/.env`:
 
 ```bash
 TELEGRAM_HOME_CHANNEL=-1001234567890
@@ -304,7 +304,7 @@ Voice messages you send on Telegram are automatically transcribed by Hermes's co
 
 #### Skipping STT: pass the raw audio file to the agent
 
-If you'd rather have the **agent itself** handle audio — for diarization, a custom transcription tool, or just archiving the recording — set `stt.enabled: false` in `~/.hermes/config.yaml`:
+If you'd rather have the **agent itself** handle audio — for diarization, a custom transcription tool, or just archiving the recording — set `stt.enabled: false` in `~/.savarez/config.yaml`:
 
 ```yaml
 stt:
@@ -409,7 +409,7 @@ curl "http://127.0.0.1:8081/bot<YOUR_BOT_TOKEN>/getMe"
 
 ### Step 4: Point Hermes at the local server
 
-Add the URLs under `platforms.telegram.extra` in `~/.hermes/config.yaml`:
+Add the URLs under `platforms.telegram.extra` in `~/.savarez/config.yaml`:
 
 ```yaml
 platforms:
@@ -434,8 +434,8 @@ When `base_url` is set, Hermes:
 Restart the gateway and look for a confirmation log line:
 
 ```bash
-hermes gateway restart
-grep -E "Using custom Telegram base_url|Using Telegram local_mode" ~/.hermes/logs/gateway.log | tail
+savarez gateway restart
+grep -E "Using custom Telegram base_url|Using Telegram local_mode" ~/.savarez/logs/gateway.log | tail
 ```
 
 ### Step 5: `local_mode` — file access on disk
@@ -464,14 +464,14 @@ If you see that, the cap-lift is working but the file-share isn't. Verify `ls -l
 Send the bot a voice note or audio file that's bigger than 20 MB. Tail the gateway log:
 
 ```bash
-tail -f ~/.hermes/logs/gateway.log | grep -iE "telegram|cache"
+tail -f ~/.savarez/logs/gateway.log | grep -iE "telegram|cache"
 ```
 
 You should see a `[Telegram] Cached user voice at /home/<user>/.hermes/cache/audio/...` line and **no** "too large" rejection. Combined with `stt.enabled: false` (above), the path to the original audio file then lands in the agent's inbound message for downstream processing.
 
 ## Group Chat Usage
 
-Hermes Agent works in Telegram group chats with a few considerations:
+Savarez AI Agent works in Telegram group chats with a few considerations:
 
 - **Privacy mode** determines what messages the bot can see (see [Step 3](#step-3-privacy-mode-critical-for-groups))
 - `TELEGRAM_ALLOWED_USERS` still applies — only authorized users can trigger the bot, even in groups
@@ -506,9 +506,9 @@ To operate several profiles, run the gateway command once per profile. For examp
 
 ```bash
 # default profile
-hermes gateway start
-hermes gateway status
-hermes gateway stop
+savarez gateway start
+savarez gateway status
+savarez gateway stop
 
 # named profiles
 hermes -p research gateway start
@@ -516,7 +516,7 @@ hermes -p research gateway status
 hermes -p research gateway stop
 ```
 
-For a small fixed fleet, use a shell loop or script that calls `hermes gateway <action>` for the default profile and `hermes -p <profile> gateway <action>` for each named profile. This is more reliable than assuming a single process-level command controls every named profile on every service manager.
+For a small fixed fleet, use a shell loop or script that calls `savarez gateway <action>` for the default profile and `hermes -p <profile> gateway <action>` for each named profile. This is more reliable than assuming a single process-level command controls every named profile on every service manager.
 
 ### Troubleshooting: works in DMs but not groups
 
@@ -545,7 +545,7 @@ the sender-user allowlist.
 
 ### Example group trigger configuration
 
-Add this to `~/.hermes/config.yaml`:
+Add this to `~/.savarez/config.yaml`:
 
 ```yaml
 telegram:
@@ -595,7 +595,7 @@ Before adding topics to your config, the user must **enable Topics mode** in the
 Without this, Hermes will log `The chat is not a forum` on startup and skip topic creation. This is a Telegram client-side setting — the bot cannot enable it programmatically.
 :::
 
-Add topics under `platforms.telegram.extra.dm_topics` in `~/.hermes/config.yaml`:
+Add topics under `platforms.telegram.extra.dm_topics` in `~/.savarez/config.yaml`:
 
 ```yaml
 platforms:
@@ -741,7 +741,7 @@ gateway:
         disable_topic_auto_rename: true
 ```
 
-When this flag is on, Hermes still generates an internal session title (used by `hermes sessions`, the TUI, etc.) but never edits the Telegram topic name. Useful when you organise topics by hand under BotFather Threaded Mode and don't want every first reply to overwrite the title.
+When this flag is on, Hermes still generates an internal session title (used by `savarez sessions`, the TUI, etc.) but never edits the Telegram topic name. Useful when you organise topics by hand under BotFather Threaded Mode and don't want every first reply to overwrite the title.
 
 ### `/new` inside a topic
 
@@ -790,7 +790,7 @@ Send `/topic off` in the root DM. Hermes flips the row off, clears the chat's `(
 If you need to clean up by hand (e.g. a bulk reset across many chats), remove the rows directly:
 
 ```bash
-sqlite3 ~/.hermes/state.db \
+sqlite3 ~/.savarez/state.db \
   "UPDATE telegram_dm_topic_mode SET enabled = 0 WHERE chat_id = '<your_chat_id>'; \
    DELETE FROM telegram_dm_topic_bindings WHERE chat_id = '<your_chat_id>';"
 ```
@@ -813,7 +813,7 @@ A team supergroup with forum topics for different workstreams:
 
 ### Configuration
 
-Add topic bindings under `platforms.telegram.extra.group_topics` in `~/.hermes/config.yaml`:
+Add topic bindings under `platforms.telegram.extra.group_topics` in `~/.savarez/config.yaml`:
 
 ```yaml
 platforms:
@@ -881,7 +881,7 @@ When streaming is enabled (`gateway.streaming.enabled: true`), Hermes picks one 
 | `edit` (default) | Legacy progressive `editMessageText` polling for every chat type. |
 | `off` | Disable streaming entirely (final reply only, no progressive updates). |
 
-In `~/.hermes/config.yaml`:
+In `~/.savarez/config.yaml`:
 
 ```yaml
 gateway:
@@ -1074,7 +1074,7 @@ In some restricted networks, `api.telegram.org` may resolve to an IP that is unr
 TELEGRAM_FALLBACK_IPS=149.154.167.220,149.154.167.221
 ```
 
-Or in `~/.hermes/config.yaml`:
+Or in `~/.savarez/config.yaml`:
 
 ```yaml
 platforms:
@@ -1107,10 +1107,10 @@ Set the proxy in your environment before starting the gateway:
 
 ```bash
 export HTTPS_PROXY=http://proxy.example.com:8080
-hermes gateway
+savarez gateway
 ```
 
-Or add it to `~/.hermes/.env`:
+Or add it to `~/.savarez/.env`:
 
 ```bash
 HTTPS_PROXY=http://proxy.example.com:8080
@@ -1178,10 +1178,10 @@ Numeric YAML keys are automatically normalized to strings.
 
 | Problem | Solution |
 |---------|----------|
-| Bot not responding at all | Verify `TELEGRAM_BOT_TOKEN` is correct. Check `hermes gateway` logs for errors. |
+| Bot not responding at all | Verify `TELEGRAM_BOT_TOKEN` is correct. Check `savarez gateway` logs for errors. |
 | Bot responds with "unauthorized" | Your user ID is not in `TELEGRAM_ALLOWED_USERS`. Double-check with @userinfobot. |
 | Bot ignores group messages | Privacy mode is likely on. Disable it (Step 3) or make the bot a group admin. **Remember to remove and re-add the bot after changing privacy.** |
-| Voice messages not transcribed | Verify STT is available: install `faster-whisper` for local transcription, or set `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY` in `~/.hermes/.env`. |
+| Voice messages not transcribed | Verify STT is available: install `faster-whisper` for local transcription, or set `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY` in `~/.savarez/.env`. |
 | Voice replies are files, not bubbles | Install `ffmpeg` (needed for Edge TTS Opus conversion). |
 | Bot token revoked/invalid | Generate a new token via `/revoke` then `/newbot` or `/token` in BotFather. Update your `.env` file. |
 | Webhook not receiving updates | Verify `TELEGRAM_WEBHOOK_URL` is publicly reachable (test with `curl`). Ensure your platform/reverse proxy routes inbound HTTPS traffic from the URL's port to the local listen port configured by `TELEGRAM_WEBHOOK_PORT` (they do not need to be the same number). Ensure SSL/TLS is active — Telegram only sends to HTTPS URLs. Check firewall rules. |
@@ -1205,7 +1205,7 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 Tap a button to answer, or tap **Other** to type a free-form response (the next message you send becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
-Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+Configure the response timeout via `agent.clarify_timeout` in `~/.savarez/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
 
 ## Push notification volume
 
@@ -1216,7 +1216,7 @@ Telegram fires a push notification on every message the bot sends. For long agen
 | `important` (default) | Only **final responses**, **approval prompts**, and **slash-command confirmations** ring. Tool progress, streaming chunks, and status messages are delivered with `disable_notification=true`. |
 | `all` | Every outgoing message fires a push notification. Legacy behavior; opt in if you genuinely want to hear about every tool call. |
 
-Configure in `~/.hermes/config.yaml`:
+Configure in `~/.savarez/config.yaml`:
 
 ```yaml
 display:

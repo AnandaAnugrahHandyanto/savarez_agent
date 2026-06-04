@@ -1,7 +1,7 @@
 """Tests for `hermes portal` dispatch.
 
 `hermes portal` (no subcommand) is the human-readable alias for the Nous Portal
-one-shot onboarding (`hermes auth add nous --type oauth` / `hermes setup
+one-shot onboarding (`savarez auth add nous --type oauth` / `savarez setup
 --portal`). The prior status default moved to `hermes portal info`, with
 `status` retained as a back-compat alias.
 """

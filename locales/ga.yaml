@@ -219,7 +219,7 @@ gateway:
 
   restart:
     in_progress:           "⏳ Tá atosú gateway ar siúl cheana féin..."
-    restarting:            "♻ Ag atosú gateway. Mura gcuirfear in iúl duit laistigh de 60 soicind, atosaigh ón gconsól le `hermes gateway restart`."
+    restarting:            "♻ Ag atosú gateway. Mura gcuirfear in iúl duit laistigh de 60 soicind, atosaigh ón gconsól le `savarez gateway restart`."
 
   resume:
     db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
@@ -254,7 +254,7 @@ gateway:
     success:               "✅ Cainéal baile socraithe go **{name}** (ID: {chat_id}).\nSeachadfar tascanna cron agus teachtaireachtaí trasardáin anseo."
 
   status:
-    header:                "📊 **Stádas Hermes Gateway**"
+    header:                "📊 **Stádas Savarez Gateway**"
     session_id:            "**ID Seisiúin:** `{session_id}`"
     title:                 "**Teideal:** {title}"
     created:               "**Cruthaithe:** {timestamp}"
@@ -298,9 +298,9 @@ gateway:
     invalid_count:         "Líon neamhbhailí \"{arg}\" — úsáid /undo nó /undo N."
 
   update:
-    platform_not_messaging:  "✗ Tá /update ar fáil amháin ó ardáin teachtaireachtaí. Rith `hermes update` ón teirminéal."
+    platform_not_messaging:  "✗ Tá /update ar fáil amháin ó ardáin teachtaireachtaí. Rith `savarez update` ón teirminéal."
     not_git_repo:            "✗ Ní stór git é seo — ní féidir nuashonrú."
-    hermes_cmd_not_found:    "✗ Níorbh fhéidir an t-ordú `hermes` a aimsiú. Tá Hermes ag rith, ach níorbh fhéidir leis an ordú nuashonraithe an inrite a aimsiú ar PATH ná tríd an léirmhínitheoir Python reatha. Bain triail as `hermes update` a rith de láimh i do theirminéal."
+    hermes_cmd_not_found:    "✗ Níorbh fhéidir an t-ordú `savarez` a aimsiú. Tá Hermes ag rith, ach níorbh fhéidir leis an ordú nuashonraithe an inrite a aimsiú ar PATH ná tríd an léirmhínitheoir Python reatha. Bain triail as `savarez update` a rith de láimh i do theirminéal."
     start_failed:            "✗ Theip ar nuashonrú a thosú: {error}"
     starting:                "⚕ Ag tosú nuashonrú Hermes… Cuirfidh mé an dul chun cinn ar shruth anseo."
 

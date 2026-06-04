@@ -215,7 +215,7 @@ gateway:
 
   restart:
     in_progress:           "⏳ Gateway yeniden başlatma zaten sürüyor..."
-    restarting:            "♻ Gateway yeniden başlatılıyor. 60 saniye içinde bildirim almazsanız konsoldan `hermes gateway restart` ile yeniden başlatın."
+    restarting:            "♻ Gateway yeniden başlatılıyor. 60 saniye içinde bildirim almazsanız konsoldan `savarez gateway restart` ile yeniden başlatın."
 
   resume:
     db_unavailable:        "Oturum veritabanı kullanılamıyor."
@@ -250,7 +250,7 @@ gateway:
     success:               "✅ Ana kanal **{name}** (ID: {chat_id}) olarak ayarlandı.\nCron işleri ve platformlar arası mesajlar buraya iletilecek."
 
   status:
-    header:                "📊 **Hermes Gateway Durumu**"
+    header:                "📊 **Savarez Gateway Durumu**"
     session_id:            "**Oturum kimliği:** `{session_id}`"
     title:                 "**Başlık:** {title}"
     created:               "**Oluşturuldu:** {timestamp}"
@@ -294,9 +294,9 @@ gateway:
     invalid_count:         "Geçersiz sayı \"{arg}\" — /undo veya /undo N kullanın."
 
   update:
-    platform_not_messaging:  "✗ /update yalnızca mesajlaşma platformlarında kullanılabilir. Terminalden `hermes update` komutunu çalıştırın."
+    platform_not_messaging:  "✗ /update yalnızca mesajlaşma platformlarında kullanılabilir. Terminalden `savarez update` komutunu çalıştırın."
     not_git_repo:            "✗ Git deposu değil — güncellenemiyor."
-    hermes_cmd_not_found:    "✗ `hermes` komutu bulunamadı. Hermes çalışıyor, ancak güncelleme komutu yürütülebilir dosyayı PATH'te veya mevcut Python yorumlayıcısı aracılığıyla bulamadı. Terminalde `hermes update` komutunu manuel olarak çalıştırmayı deneyin."
+    hermes_cmd_not_found:    "✗ `savarez` komutu bulunamadı. Hermes çalışıyor, ancak güncelleme komutu yürütülebilir dosyayı PATH'te veya mevcut Python yorumlayıcısı aracılığıyla bulamadı. Terminalde `savarez update` komutunu manuel olarak çalıştırmayı deneyin."
     start_failed:            "✗ Güncelleme başlatılamadı: {error}"
     starting:                "⚕ Hermes güncellemesi başlatılıyor… İlerlemeyi buraya akıtacağım."
 

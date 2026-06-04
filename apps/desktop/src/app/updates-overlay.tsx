@@ -84,7 +84,7 @@ export function UpdatesOverlay() {
         {phase === 'applying' && <ApplyingView apply={apply} />}
 
         {phase === 'manual' && (
-          <ManualView command={apply.command ?? 'hermes update'} onDone={() => handleClose(false)} />
+          <ManualView command={apply.command ?? 'savarez update'} onDone={() => handleClose(false)} />
         )}
 
         {phase === 'error' && (
@@ -311,7 +311,7 @@ function ApplyingView({ apply }: { apply: UpdateApplyState }) {
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          The Hermes updater will take over in its own window and reopen Hermes when it&rsquo;s done.
+          The Savarez updater will take over in its own window and reopen Hermes when it&rsquo;s done.
         </DialogDescription>
       </div>
 

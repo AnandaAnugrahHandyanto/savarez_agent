@@ -1,10 +1,10 @@
 """Managed uv — one path, no guessing.
 
-Hermes owns its own uv binary at ``$HERMES_HOME/bin/uv`` (or ``uv.exe`` on
+Hermes owns its own uv binary at ``$SAVAREZ_HOME/bin/uv`` (or ``uv.exe`` on
 Windows).  Every code path that needs uv resolves it from that single location.
 If the binary is missing, ``ensure_uv()`` bootstraps it via the official
 standalone installer with ``UV_UNMANAGED_INSTALL`` / ``UV_INSTALL_DIR`` pointed
-at ``$HERMES_HOME/bin`` so the installer writes directly there — no PATH
+at ``$SAVAREZ_HOME/bin`` so the installer writes directly there — no PATH
 probing, no conda guards, no multi-location resolution chains.
 
 When ``ensure_uv()`` bootstraps uv for the first time (i.e. there was no
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 def managed_uv_path() -> Path:
     """Return the path where Hermes keeps *its* uv binary.
 
-    ``$HERMES_HOME/bin/uv`` on POSIX, ``$HERMES_HOME\\bin\\uv.exe`` on
+    ``$SAVAREZ_HOME/bin/uv`` on POSIX, ``$SAVAREZ_HOME\\bin\\uv.exe`` on
     Windows.  The directory may not exist yet — callers should use
     ``ensure_uv()`` to bootstrap it.
     """
@@ -158,7 +158,7 @@ def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> b
 def update_managed_uv() -> Optional[str]:
     """Run ``uv self update`` on the managed uv binary.
 
-    Call this during ``hermes update`` so the managed copy stays current.
+    Call this during ``savarez update`` so the managed copy stays current.
     Returns the managed path on success, ``None`` if uv isn't available or
     the self-update fails (non-fatal — the old version still works).
     """
@@ -196,7 +196,7 @@ def _install_uv(target: Path) -> None:
 
     Uses ``UV_UNMANAGED_INSTALL`` (POSIX) or ``UV_INSTALL_DIR`` (Windows)
     so the astral installer writes the binary directly into
-    ``$HERMES_HOME/bin/`` instead of ``~/.local/bin/``.
+    ``$SAVAREZ_HOME/bin/`` instead of ``~/.local/bin/``.
     """
     system = platform.system()
     env = {

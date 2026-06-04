@@ -1,4 +1,4 @@
-"""Tests that `hermes model` always shows the model selection menu for custom
+"""Tests that `savarez model` always shows the model selection menu for custom
 providers, even when a model is already saved.
 
 Regression test for the bug where _model_flow_named_custom() returned
@@ -13,14 +13,14 @@ import pytest
 
 @pytest.fixture
 def config_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME with a minimal config."""
+    """Isolated SAVAREZ_HOME with a minimal config."""
     home = tmp_path / "hermes"
     home.mkdir()
     config_yaml = home / "config.yaml"
     config_yaml.write_text("model: old-model\ncustom_providers: []\n")
     env_file = home / ".env"
     env_file.write_text("")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("SAVAREZ_HOME", str(home))
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
@@ -329,7 +329,7 @@ class TestCustomProviderModelSwitch:
     def test_bare_custom_current_provider_matches_env_base_url_before_first_fallback(
         self, config_home, monkeypatch
     ):
-        """`hermes model` must mark the custom provider matching model.base_url
+        """`savarez model` must mark the custom provider matching model.base_url
         as current instead of falling back to the first saved custom provider.
 
         Regression: with ``model.provider: custom`` and multiple

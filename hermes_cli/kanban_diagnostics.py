@@ -434,7 +434,7 @@ def _rule_triage_aux_unavailable(task, events, runs, now, cfg) -> list[Diagnosti
             label=f"Configure {primary_slot}",
             payload={
                 "command": (
-                    f"hermes config set {primary_slot}.provider auto"
+                    f"savarez config set {primary_slot}.provider auto"
                 )
             },
             suggested=True,
@@ -446,7 +446,7 @@ def _rule_triage_aux_unavailable(task, events, runs, now, cfg) -> list[Diagnosti
             label=f"Or configure fallback {fallback_slot}",
             payload={
                 "command": (
-                    f"hermes config set {fallback_slot}.provider auto"
+                    f"savarez config set {fallback_slot}.provider auto"
                 )
             },
         ))
@@ -864,7 +864,7 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     * Profile was deleted, leaving its tasks stranded.
     * External worker pool (Codex CLI, Claude Code lane, custom daemon)
       is down, hung, or wasn't started.
-    * Dispatcher is misconfigured (wrong board, wrong HERMES_HOME).
+    * Dispatcher is misconfigured (wrong board, wrong SAVAREZ_HOME).
 
     Pre-rule, all of these silently rotted in ``skipped_nonspawnable`` —
     the dispatcher correctly skipped them (good — no respawn loop) but

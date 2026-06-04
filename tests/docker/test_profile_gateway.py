@@ -17,7 +17,7 @@ want up``). Both states are valid "user asked for gateway up" results
 the supervised process's health. ``s6-svc -u`` records ``want up`` in
 the supervise/status file regardless of the run-script outcome.
 
-Every ``docker exec`` here runs as the unprivileged ``hermes`` user
+Every ``docker exec`` here runs as the unprivileged ``savarez`` user
 (via :func:`docker_exec_sh` in conftest); see the conftest module
 docstring.
 """
@@ -76,7 +76,7 @@ def test_profile_create_then_gateway_start(
     )
     time.sleep(3)
 
-    r = _sh(container_name, f"hermes profile create {PROFILE}")
+    r = _sh(container_name, f"savarez profile create {PROFILE}")
     assert r.returncode == 0, f"profile create failed: {r.stderr}"
 
     # Profile create's s6-register hook should have produced a service slot.
@@ -121,13 +121,13 @@ def test_profile_delete_stops_gateway(
     )
     time.sleep(3)
 
-    _sh(container_name, f"hermes profile create {PROFILE}")
+    _sh(container_name, f"savarez profile create {PROFILE}")
     _sh(container_name, f"hermes -p {PROFILE} gateway start", timeout=60)
     time.sleep(3)
 
     r = _sh(
         container_name,
-        f"hermes profile delete {PROFILE} --yes",
+        f"savarez profile delete {PROFILE} --yes",
         timeout=30,
     )
     assert r.returncode == 0, f"profile delete failed: {r.stderr}"
