@@ -14,11 +14,12 @@ Modify, debug, or extend the s6-overlay supervision tree inside the Hermes Agent
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/software-development/hermes-s6-container-supervision` |
+| Source | Optional — install with `hermes skills install official/devops/hermes-s6-container-supervision` |
+| Path | `optional-skills/devops/hermes-s6-container-supervision` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux |
 | Tags | `docker`, `s6`, `supervision`, `gateway`, `profiles` |
 | Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), `hermes-agent-dev` |
 
