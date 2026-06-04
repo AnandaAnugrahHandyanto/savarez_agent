@@ -21,7 +21,7 @@ let
 
   # Single npm deps fetch from the workspace root lockfile.
   # All workspace packages share this derivation.
-  npmDepsHash = "sha256-2CoB0uUc8Pf9iNR0I1EzVqgL89B5sADnC9sxGah8ndU=";
+  npmDepsHash = "sha256-N057/aMaDHfsBzOESdf8rOdSghyr0gO5eYr6NU5ZTh8=";
 
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
@@ -235,6 +235,12 @@ in
 
       if [ "$NEW_HASH" = "$OLD_HASH" ]; then
         echo "ok"
+        if [ -n "''${GITHUB_OUTPUT:-}" ]; then
+          {
+            echo "stale=false"
+            echo "changed=false"
+          } >> "$GITHUB_OUTPUT"
+        fi
         exit 0
       fi
 
@@ -245,9 +251,9 @@ in
       if [ -n "$LINK_REPO" ] && [ -n "$LINK_SHA" ]; then
         LIB_URL="$LINK_SERVER/$LINK_REPO/blob/$LINK_SHA/$LIB_FILE#L$HASH_LINE"
         LOCK_URL="$LINK_SERVER/$LINK_REPO/blob/$LINK_SHA/$LOCK_FILE"
-        REPORT="- [\`$LIB_FILE:$HASH_LINE\`]($LIB_URL): \`$OLD_HASH\` → \`$NEW_HASH\` — lockfile: [\`$LOCK_FILE\`]($LOCK_URL)"$'\\n'
+        REPORT="- [\`$LIB_FILE:$HASH_LINE\`]($LIB_URL): \`$OLD_HASH\` -> \`$NEW_HASH\` - lockfile: [\`$LOCK_FILE\`]($LOCK_URL)"
       else
-        REPORT="- \`$LIB_FILE:$HASH_LINE\`: \`$OLD_HASH\` → \`$NEW_HASH\`"$'\\n'
+        REPORT="- \`$LIB_FILE:$HASH_LINE\`: \`$OLD_HASH\` -> \`$NEW_HASH\`"
       fi
 
       if [ "$MODE" = "--apply" ]; then
@@ -281,7 +287,7 @@ in
           [ "$FIXED" -eq 1 ] && echo "changed=true" || echo "changed=false"
           if [ -n "$REPORT" ]; then
             echo "report<<REPORT_EOF"
-            printf "%s" "$REPORT"
+            printf "%s\n" "$REPORT"
             echo "REPORT_EOF"
           fi
         } >> "$GITHUB_OUTPUT"
