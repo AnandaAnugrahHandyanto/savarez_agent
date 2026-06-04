@@ -13423,6 +13423,16 @@ def main():
             "doctor` first to see active advisories and their IDs."
         ),
     )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output diagnostic results as JSON",
+    )
+    doctor_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show route-by-route provider resolution details",
+    )
     doctor_parser.set_defaults(func=cmd_doctor)
 
     # =========================================================================
