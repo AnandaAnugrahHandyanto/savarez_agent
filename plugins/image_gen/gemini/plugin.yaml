@@ -1,0 +1,7 @@
+name: gemini
+version: 1.0.0
+description: "Google Gemini image generation/editing backend. Supports text-to-image and input/reference image workflows via Google AI Studio."
+author: NousResearch
+kind: backend
+requires_env:
+  - GEMINI_API_KEY
