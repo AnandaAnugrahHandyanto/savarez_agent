@@ -1,6 +1,7 @@
 """Tests for agent-settings copy in the interactive setup wizard."""
 
-from hermes_cli.setup import setup_agent_settings
+from hermes_constants import DEFAULT_COMPRESSION_THRESHOLD
+from hermes_cli.setup import _apply_default_agent_settings, setup_agent_settings
 
 
 def test_setup_agent_settings_uses_displayed_max_iterations_value(tmp_path, monkeypatch, capsys):
@@ -76,3 +77,22 @@ def test_setup_agent_settings_prefers_config_over_stale_env(tmp_path, monkeypatc
     assert "Press Enter to keep 60." not in out
     # And the stale .env entry gets cleaned up
     assert "HERMES_MAX_ITERATIONS" in removed_keys
+
+
+def test_apply_default_agent_settings_uses_new_compression_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    saved_configs: list[dict] = []
+    monkeypatch.setattr("hermes_cli.setup.remove_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.setup.save_config",
+        lambda cfg: saved_configs.append(cfg.copy()),
+    )
+
+    config: dict = {}
+    _apply_default_agent_settings(config)
+
+    out = capsys.readouterr().out
+    assert config["compression"]["threshold"] == DEFAULT_COMPRESSION_THRESHOLD
+    assert f"Compression threshold: {DEFAULT_COMPRESSION_THRESHOLD:.2f}" in out
+    assert saved_configs, "default setup should persist the updated config"

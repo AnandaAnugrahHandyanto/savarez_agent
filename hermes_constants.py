@@ -17,6 +17,12 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
     "_HERMES_HOME_OVERRIDE", default=_UNSET
 )
 
+# Default point at which Hermes starts compacting conversation history.
+# 70% keeps more live context than the historical 50% default while still
+# leaving substantial headroom for tool schemas, system prompt growth, and
+# response tokens before provider-side overflow recovery is needed.
+DEFAULT_COMPRESSION_THRESHOLD = 0.70
+
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
     """Set a context-local Hermes home override and return its reset token.

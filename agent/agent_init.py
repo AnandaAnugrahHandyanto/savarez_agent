@@ -49,7 +49,7 @@ from agent.tool_guardrails import (
 )
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
-from hermes_constants import get_hermes_home
+from hermes_constants import DEFAULT_COMPRESSION_THRESHOLD, get_hermes_home
 from utils import base_url_host_matches
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
@@ -1226,7 +1226,9 @@ def init_agent(
     _compression_cfg = _agent_cfg.get("compression", {})
     if not isinstance(_compression_cfg, dict):
         _compression_cfg = {}
-    compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+    compression_threshold = float(
+        _compression_cfg.get("threshold", DEFAULT_COMPRESSION_THRESHOLD)
+    )
     try:
         from agent.auxiliary_client import _compression_threshold_for_model as _cthresh_fn
         _model_cthresh = _cthresh_fn(agent.model)
