@@ -1,0 +1,22 @@
+name: notebooklm
+version: 0.1.0
+description: "Collect Hermes logs and draft X post ideas for NotebookLM."
+author: "Hermes local plugin"
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+requires_env:
+  - name: NOTEBOOKLM_ENTERPRISE_PROJECT_NUMBER
+    description: "Google Cloud project number for NotebookLM Enterprise API calls."
+    secret: false
+  - name: NOTEBOOKLM_ENTERPRISE_ACCESS_TOKEN
+    description: "Optional Google Cloud OAuth access token; otherwise gcloud auth is used."
+    secret: true
+provides_tools:
+  - notebooklm_status
+  - notebooklm_collect
+  - notebooklm_brainstorm
+  - notebooklm_sync
+  - notebooklm_run
