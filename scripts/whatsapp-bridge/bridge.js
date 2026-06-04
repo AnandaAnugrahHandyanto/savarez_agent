@@ -9,6 +9,7 @@
  *   GET  /messages       - Long-poll for new incoming messages
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
+ *   POST /react          - React to a message { chatId, messageId, emoji }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
  *   POST /typing         - Send typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
@@ -551,6 +552,35 @@ app.post('/edit', async (req, res) => {
     }
 
     res.json({ success: true, messageIds });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// React to a message
+app.post('/react', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, messageId, emoji, fromMe } = req.body;
+  if (!chatId || !messageId || !emoji) {
+    return res.status(400).json({ error: 'chatId, messageId, and emoji are required' });
+  }
+
+  try {
+    const reactionMessage = {
+      react: {
+        text: emoji,
+        key: {
+          remoteJid: chatId,
+          fromMe: fromMe === true || fromMe === 'true',
+          id: messageId,
+        },
+      },
+    };
+    await sendWithTimeout(chatId, reactionMessage);
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
