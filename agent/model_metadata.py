@@ -957,14 +957,37 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     error_lower = error_msg.lower()
 
     # Must look like an output-cap error, not a prompt-length error.
+    # Anthropic format: "max_tokens … available_tokens: N"
+    # OpenRouter/Nous format: "N in the output" (e.g. "262000 in the output")
     is_output_cap_error = (
         "max_tokens" in error_lower
-        and ("available_tokens" in error_lower or "available tokens" in error_lower)
+        and (
+            "available_tokens" in error_lower
+            or "available tokens" in error_lower
+            or re.search(r'\d+\s+in\s+the\s+output', error_lower) is not None
+        )
     )
     if not is_output_cap_error:
         return None
 
-    # Extract the available_tokens figure.
+    # Try OpenRouter/Nous format first:
+    #   "maximum context length is 256000 … 5683 of text input, 13410 of tool input, 262000 in the output"
+    # Compute available output = context_length - text_input - tool_input
+    or_match = re.search(
+        r'maximum\s+context\s+length\s+is\s+(\d+).*?'
+        r'(\d+)\s+of\s+text\s+input.*?'
+        r'(\d+)\s+of\s+tool\s+input',
+        error_lower, re.DOTALL,
+    )
+    if or_match:
+        max_ctx = int(or_match.group(1))
+        text_input = int(or_match.group(2))
+        tool_input = int(or_match.group(3))
+        available = max_ctx - text_input - tool_input
+        if available >= 1:
+            return available
+
+    # Extract the available_tokens figure (Anthropic format).
     # Anthropic format: "… = available_tokens: 10000"
     patterns = [
         r'available_tokens[:\s]+(\d+)',
