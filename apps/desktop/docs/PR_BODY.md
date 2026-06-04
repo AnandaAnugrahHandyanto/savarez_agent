@@ -1,3 +1,11 @@
+## 📣 Latest Updates
+
+- **Merge conflicts resolved** — branch synced with upstream main (2026-06-04)
+- **@Yuxin-Qiao's helper PR merged** — adds Vitest tests for locale key parity + normalizeLocale coverage
+- **Thank you @Yuxin-Qiao** for the thorough review and contributions!
+
+---
+
 ## 🇬🇧 English
 
 ### Hermes Desktop — Multilingual i18n Support (8 Languages)
