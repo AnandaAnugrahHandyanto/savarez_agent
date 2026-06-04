@@ -144,7 +144,7 @@ def notify(message, chain_id):
     NOTIFY_FILE.parent.mkdir(parents=True, exist_ok=True)
     notifications = []
     try:
-        with open(NOTIFY_FILE, "a+") as f:
+        with open(NOTIFY_FILE, "a+", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             f.seek(0)
             raw = f.read()
@@ -176,7 +176,7 @@ def read_notifications(clear=False):
         return []
 
     try:
-        with open(NOTIFY_FILE, "r+") as f:
+        with open(NOTIFY_FILE, "r+", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             raw = f.read()
             notifications = json.loads(raw) if raw.strip() else []
