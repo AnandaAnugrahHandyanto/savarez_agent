@@ -3,6 +3,7 @@ import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import {
   type ClipboardEvent,
+  type CompositionEvent,
   type FormEvent,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
@@ -55,6 +56,7 @@ import { useAtCompletions } from './hooks/use-at-completions'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useVoiceConversation } from './hooks/use-voice-conversation'
 import { useVoiceRecorder } from './hooks/use-voice-recorder'
+import { isImeComposing } from './ime'
 import { dragHasAttachments, droppedFileInlineRef, insertInlineRefsIntoEditor } from './inline-refs'
 import { QueuePanel } from './queue-panel'
 import {
@@ -552,27 +554,39 @@ export function ChatBar({
     }
   }, [trigger])
 
+  const syncDraftFromEditor = useCallback(
+    (editor: HTMLDivElement) => {
+      if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
+        editor.replaceChildren()
+      }
+
+      const nextDraft = composerPlainText(editor)
+
+      if (nextDraft !== draftRef.current) {
+        draftRef.current = nextDraft
+        aui.composer().setText(nextDraft)
+      }
+
+      return nextDraft
+    },
+    [aui]
+  )
+
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
     // During IME composition the DOM contains uncommitted preedit text
-    // mixed with real content.  Skip state writes — compositionend will
-    // deliver the finalized text via a clean input event.
+    // mixed with real content. Skip state writes until compositionend,
+    // then sync the finalized text in one pass.
     if (composingRef.current) {
       return
     }
 
-    const editor = event.currentTarget
+    syncDraftFromEditor(event.currentTarget)
+    window.setTimeout(refreshTrigger, 0)
+  }
 
-    if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
-      editor.replaceChildren()
-    }
-
-    const nextDraft = composerPlainText(editor)
-
-    if (nextDraft !== draftRef.current) {
-      draftRef.current = nextDraft
-      aui.composer().setText(nextDraft)
-    }
-
+  const handleEditorCompositionEnd = (event: CompositionEvent<HTMLDivElement>) => {
+    composingRef.current = false
+    syncDraftFromEditor(event.currentTarget)
     window.setTimeout(refreshTrigger, 0)
   }
 
@@ -664,7 +678,7 @@ export function ChatBar({
     // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
     // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
     // preedit fires submitDraft() and splits the message mid-word.
-    if (composingRef.current || event.nativeEvent.isComposing) {
+    if (isImeComposing(event, composingRef.current)) {
       return
     }
 
@@ -1199,9 +1213,7 @@ export function ChatBar({
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
-        onCompositionEnd={() => {
-          composingRef.current = false
-        }}
+        onCompositionEnd={handleEditorCompositionEnd}
         onCompositionStart={() => {
           composingRef.current = true
         }}
