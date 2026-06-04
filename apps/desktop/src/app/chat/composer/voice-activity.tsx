@@ -2,11 +2,11 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { useTranslation } from '@/i18n'
 import { Loader2, Mic, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { stopVoicePlayback } from '@/lib/voice-playback'
 import { $voicePlayback } from '@/store/voice-playback'
-import { useTranslation } from '@/i18n'
 
 import type { VoiceActivityState } from './types'
 
@@ -171,6 +171,7 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
   }
 
   const recording = state.status === 'recording'
+
   const title = recording
     ? t('chat.composer.voice.activity.dictating')
     : t('chat.composer.voice.activity.transcribing')
