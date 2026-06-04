@@ -1567,6 +1567,10 @@ class PluginManager:
                 )
         return results
 
+    def has_hook(self, hook_name: str) -> bool:
+        """Return True when at least one callback is registered for a hook."""
+        return bool(self._hooks.get(hook_name))
+
     # -----------------------------------------------------------------------
     # Introspection
     # -----------------------------------------------------------------------
@@ -1646,6 +1650,10 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
+
+def has_hook(hook_name: str) -> bool:
+    """Return True when a hook has registered callbacks."""
+    return get_plugin_manager().has_hook(hook_name)
 
 
 _thread_tool_whitelist = threading.local()
