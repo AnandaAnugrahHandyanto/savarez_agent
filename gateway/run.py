@@ -2521,6 +2521,17 @@ class GatewayRunner:
         if adapter.fatal_error_retryable:
             platform_config = self.config.platforms.get(adapter.platform)
             if platform_config and adapter.platform not in self._failed_platforms:
+                # When multi-app Feishu is configured, platforms.get() returns
+                # a list. Pick the config matching this adapter instance.
+                if isinstance(platform_config, list):
+                    platform_config = next(
+                        (
+                            cfg
+                            for cfg in platform_config
+                            if cfg.extra.get("app_id") == getattr(adapter, "adapter_instance_id", None)
+                        ),
+                        platform_config[0] if platform_config else None,
+                    )
                 self._failed_platforms[adapter.platform] = {
                     "config": platform_config,
                     "attempts": 0,
