@@ -2615,6 +2615,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_ts,
+            is_bot=is_bot_message,
         )
 
         # Per-channel ephemeral prompt
