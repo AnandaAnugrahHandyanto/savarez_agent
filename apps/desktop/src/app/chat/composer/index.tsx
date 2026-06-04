@@ -20,6 +20,7 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { chatMessageText } from '@/lib/chat-messages'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
+import { isImeComposing } from '@/lib/keyboard'
 import { cn } from '@/lib/utils'
 import {
   $composerAttachments,
@@ -664,7 +665,7 @@ export function ChatBar({
     // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
     // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
     // preedit fires submitDraft() and splits the message mid-word.
-    if (composingRef.current || event.nativeEvent.isComposing) {
+    if (composingRef.current || isImeComposing(event.nativeEvent)) {
       return
     }
 

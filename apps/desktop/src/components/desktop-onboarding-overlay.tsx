@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
@@ -18,6 +18,7 @@ import {
   Sparkles,
   Terminal
 } from '@/lib/icons'
+import { isImeComposing } from '@/lib/keyboard'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
@@ -102,6 +103,10 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
     placeholder: 'http://127.0.0.1:8000/v1'
   }
 ]
+
+function shouldSubmitOnEnter(event: KeyboardEvent<HTMLInputElement>): boolean {
+  return event.key === 'Enter' && !isImeComposing(event.nativeEvent)
+}
 
 const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
   nous: { order: 0, title: 'Nous Portal' },
@@ -583,7 +588,7 @@ export function ApiKeyForm({
           autoFocus
           className="font-mono"
           onChange={e => setValue(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submit()}
+          onKeyDown={e => shouldSubmitOnEnter(e) && void submit()}
           placeholder={currentRedacted ?? (alreadySet ? 'Replace current value' : option.placeholder || 'Paste API key')}
           type={isLocal ? 'text' : 'password'}
           value={value}
@@ -658,7 +663,7 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
         <Input
           autoFocus
           onChange={e => setOnboardingCode(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submitOnboardingCode(ctx)}
+          onKeyDown={e => shouldSubmitOnEnter(e) && void submitOnboardingCode(ctx)}
           placeholder="Paste authorization code"
           value={flow.code}
         />
