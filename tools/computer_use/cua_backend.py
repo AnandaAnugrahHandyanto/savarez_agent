@@ -1,18 +1,34 @@
-"""Cua-driver backend (macOS only).
+"""Cua-driver backend (macOS + Windows).
 
 Speaks MCP over stdio to `cua-driver`. The Python `mcp` SDK is async, so we
 run a dedicated asyncio event loop on a background thread and marshal sync
 calls through it.
 
-Install: `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"`
+The same `cua-driver call <tool>` surface (click, type_text, hotkey, drag,
+scroll, screenshot, launch_app, list_apps, list_windows, get_window_state,
+move_cursor, wait) works identically across macOS + Windows — cua-driver's
+PARITY matrix marks every action tool VERIFIED on Windows in the
+cross-platform Rust port (`cua-driver-rs`).
+
+Linux support exists in cua-driver-rs but is alpha today — Linux PARITY
+rows are mostly OPEN, not VERIFIED — so it's gated off in
+`check_computer_use_requirements` until that flips upstream. The plumbing
+in this file is OS-agnostic, so flipping that gate later is one-line.
+
+Install:
+  - **macOS**:
+      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"
+  - **Windows** (PowerShell):
+      irm https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1 | iex
 
 After install, `cua-driver` is on $PATH and supports `cua-driver mcp` (stdio
 transport) which is what we invoke.
 
-The private SkyLight SPIs cua-driver uses (SLEventPostToPid, SLPSPostEvent-
-RecordTo, _AXObserverAddNotificationAndCheckRemote) are not Apple-public and
-can break on OS updates. Pin the installed version via `HERMES_CUA_DRIVER_
-VERSION` if you want reproducibility across an OS bump.
+The macOS path uses private SkyLight SPIs (SLEventPostToPid,
+SLPSPostEventRecordTo, _AXObserverAddNotificationAndCheckRemote) that aren't
+Apple-public and can break on OS updates. The Windows path in cua-driver-rs
+uses stable Win32 APIs (SendInput + UI Automation) — not subject to the
+same SPI breakage class.
 """
 
 from __future__ import annotations
@@ -39,10 +55,18 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Version pinning
+# Update checking
 # ---------------------------------------------------------------------------
-
-PINNED_CUA_DRIVER_VERSION = os.environ.get("HERMES_CUA_DRIVER_VERSION", "0.5.0")
+#
+# cua-driver ships a native `check-update` verb (and a `check_for_update` MCP
+# tool) that compares the installed binary against the latest GitHub release —
+# the source of truth — and caches the result (~20h). We prefer that over a
+# hardcoded version floor, which would rot and can't know what "latest" is.
+#
+# There is intentionally no version *pin* knob: the upstream installer always
+# fetches the latest release, so a `HERMES_CUA_DRIVER_VERSION` env var would
+# only have *looked* like it pinned. For a reproducible version, point
+# `HERMES_CUA_DRIVER_CMD` at a specific binary instead.
 
 _CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
 _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport
@@ -83,13 +107,98 @@ def cua_driver_binary_available() -> bool:
     return bool(shutil.which(_CUA_DRIVER_CMD))
 
 
+def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]:
+    """Run ``cua-driver check-update --json`` and return its parsed state.
+
+    The payload mirrors the ``check_for_update`` MCP tool:
+    ``{current_version, latest_version, update_available, ...}``.
+
+    Returns ``None`` (callers should stay quiet) when the result is
+    indeterminate: the binary is missing, the driver is too old to support
+    the verb (it predates trycua/cua#1734), the GitHub check failed (an
+    ``error`` field is set), or the output didn't parse. Best-effort; never
+    raises.
+    """
+    try:
+        proc = subprocess.run(
+            [_CUA_DRIVER_CMD, "check-update", "--json"],
+            capture_output=True, text=True, timeout=timeout,
+            # Some older drivers don't have the verb and fall through to a
+            # stdin-reading mode rather than erroring — DEVNULL gives them EOF
+            # so they exit fast instead of blocking until the timeout.
+            stdin=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+    out = (proc.stdout or "").strip()
+    if not out:
+        # Older drivers don't have the verb: usage goes to stderr, stdout empty.
+        return None
+    try:
+        data = json.loads(out)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or data.get("error"):
+        # A failed check (exit 1) carries its reason in `error` — indeterminate.
+        return None
+    return data
+
+
+def cua_driver_update_nudge() -> Optional[str]:
+    """One-line "an update is available" message, or ``None`` when up to date,
+    indeterminate, or the driver is too old to report."""
+    state = cua_driver_update_check()
+    if not state or not state.get("update_available"):
+        return None
+    latest = state.get("latest_version") or "?"
+    current = state.get("current_version") or "?"
+    return (
+        f"cua-driver {latest} is available (you have {current}); "
+        f"update with `hermes computer-use install --upgrade`."
+    )
+
+
+_update_checked = False
+
+
+def _maybe_nudge_update() -> None:
+    """Emit an update nudge at most once per process, off-thread so the
+    (cached, ~20h) GitHub poll never blocks the first computer_use action."""
+    global _update_checked
+    if _update_checked:
+        return
+    _update_checked = True
+
+    def _run() -> None:
+        try:
+            msg = cua_driver_update_nudge()
+        except Exception:
+            return
+        if msg:
+            logger.info("computer_use: %s", msg)
+
+    threading.Thread(
+        target=_run, name="cua-driver-update-check", daemon=True
+    ).start()
+
+
 def cua_driver_install_hint() -> str:
+    if sys.platform == "win32":
+        installer = (
+            '  irm https://raw.githubusercontent.com/trycua/cua/main/'
+            'libs/cua-driver/scripts/install.ps1 | iex'
+        )
+    else:
+        installer = (
+            '  /bin/bash -c "$(curl -fsSL '
+            'https://raw.githubusercontent.com/trycua/cua/main/'
+            'libs/cua-driver/scripts/install.sh)"'
+        )
     return (
         "cua-driver is not installed. Install with one of:\n"
         "  hermes computer-use install\n"
         "Or run the upstream installer directly:\n"
-        '  /bin/bash -c "$(curl -fsSL '
-        'https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"\n'
+        f"{installer}\n"
         "Or run `hermes tools` and enable the Computer Use toolset to install it automatically."
     )
 
@@ -324,7 +433,7 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 class CuaDriverBackend(ComputerUseBackend):
-    """Default computer-use backend. macOS-only via cua-driver MCP."""
+    """Default computer-use backend. Cross-platform via cua-driver MCP (macOS + Windows)."""
 
     def __init__(self) -> None:
         self._bridge = _AsyncBridge()
@@ -336,6 +445,21 @@ class CuaDriverBackend(ComputerUseBackend):
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
+        _maybe_nudge_update()
+        # The MCP client SDK (`mcp`) is an optional dependency (the
+        # `computer-use` / `mcp` extras), not part of Hermes' minimal core.
+        # Lazy-install it on first use — the same pattern every other optional
+        # backend uses — so users never hit an opaque `No module named 'mcp'`
+        # at invoke time. Auto-install is gated by `security.allow_lazy_installs`
+        # (default on); when it's disabled or fails, ensure() raises
+        # FeatureUnavailable carrying an actionable `uv pip install mcp==…`
+        # hint, which surfaces via the backend-unavailable path in tool.py.
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tool.computer_use", prompt=False)
+        # A just-installed package may not be importable until the import
+        # machinery's caches are refreshed within this process.
+        import importlib
+        importlib.invalidate_caches()
         self._session.start()
 
     def stop(self) -> None:
@@ -345,7 +469,10 @@ class CuaDriverBackend(ComputerUseBackend):
             self._bridge.stop()
 
     def is_available(self) -> bool:
-        if not _is_macos():
+        # cua-driver itself is cross-platform; we constrain Hermes to
+        # macOS + Windows because cua-driver-rs Linux is alpha (most rows
+        # in its PARITY matrix are OPEN). Flip when Linux goes VERIFIED.
+        if sys.platform not in ("darwin", "win32"):
             return False
         return cua_driver_binary_available()
 

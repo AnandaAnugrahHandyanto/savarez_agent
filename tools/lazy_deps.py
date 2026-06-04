@@ -175,6 +175,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "uvicorn[standard]==0.41.0",
         "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
     ),
+    # Computer Use (cua-driver) — the MCP client SDK used to spawn and talk
+    # to the cua-driver process over stdio. Matches the `mcp` / `computer-use`
+    # extras in pyproject.toml. The one-liner installer pulls this in via
+    # `[all]`; lazy-installing here covers lean / partial / broken-extra
+    # installs so computer_use never dead-ends on `No module named 'mcp'`.
+    "tool.computer_use": ("mcp==1.26.0",),
 }
 
 
