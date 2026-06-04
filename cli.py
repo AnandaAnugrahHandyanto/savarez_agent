@@ -12497,6 +12497,9 @@ class HermesCLI:
             sys.stdout.flush()
             time.sleep(0.15)
 
+            # Save pre-update history length for TTS current-turn isolation
+            _tts_history_len = len(self.conversation_history) - 1 if self.conversation_history else 0
+
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
@@ -12517,6 +12520,15 @@ class HermesCLI:
 
             # Get the final response
             response = result.get("final_response", "") if result else ""
+
+            # Play audio from text_to_speech tool results (if any) in background
+            self._tts_playback_thread = None
+            if result:
+                _cli_play_tts_media(
+                    result,
+                    history_len=_tts_history_len,
+                    thread_holder=lambda t: setattr(self, '_tts_playback_thread', t),
+                )
 
             # Auto-generate session title after first exchange (non-blocking)
             if response and result and not result.get("failed") and not result.get("partial"):
@@ -12707,6 +12719,8 @@ class HermesCLI:
                 stop_event.set()
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
+            if self._tts_playback_thread and self._tts_playback_thread.is_alive():
+                self._tts_playback_thread.join(timeout=10)
     
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
@@ -15490,6 +15504,64 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         first_response=first_response or "",
         log=lambda m: logger.info("%s", m),
     )
+
+
+# ---------------------------------------------------------------------------
+# CLI helper: play TTS audio from text_to_speech tool results
+# ---------------------------------------------------------------------------
+def _cli_play_tts_media(result: dict, history_len: int, thread_holder=None) -> None:
+    """Play audio files from text_to_speech tool results in a background thread."""
+    if not result:
+        return
+    messages = result.get("messages", [])
+    if not messages:
+        return
+
+    def _play():
+        try:
+            from tools.voice_mode import play_audio_file
+
+            # Build tool_call_id -> tool_name mapping
+            tool_name_by_call_id = {}
+            for msg in messages:
+                if msg.get("role") != "assistant":
+                    continue
+                for call in msg.get("tool_calls") or []:
+                    call_id = str(call.get("id") or call.get("call_id", ""))
+                    fn = call.get("function") or {}
+                    name = str(fn.get("name") or call.get("name", ""))
+                    if call_id and name:
+                        tool_name_by_call_id[call_id] = name
+
+            # Current-turn isolation (mirrors gateway _collect_auto_append_media_tags)
+            if history_len and len(messages) >= history_len:
+                msgs = messages[history_len:]
+            else:
+                msgs = messages
+
+            seen = set()
+            for msg in msgs:
+                if msg.get("role") not in ("tool", "function"):
+                    continue
+                cid = str(msg.get("tool_call_id") or msg.get("call_id", ""))
+                tool_name = tool_name_by_call_id.get(cid)
+                if tool_name not in {"text_to_speech", "text_to_speech_tool"}:
+                    continue
+                content = str(msg.get("content") or "")
+                if "MEDIA:" not in content:
+                    continue
+                for m in re.finditer(r'MEDIA:(\S+)', content):
+                    path = m.group(1).strip().rstrip('\\",}')
+                    if path and path not in seen and os.path.isfile(path):
+                        seen.add(path)
+                        play_audio_file(path)
+        except Exception:
+            pass  # Best-effort — never crash the main thread
+
+    t = threading.Thread(target=_play, daemon=True)
+    t.start()
+    if thread_holder:
+        thread_holder(t)
 
 
 def main(
