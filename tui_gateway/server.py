@@ -4726,6 +4726,84 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5027, str(e))
 
 
+@method("image.upload")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+
+    data_url = str(params.get("data_url", "") or "").strip()
+    if not data_url:
+        return _err(rid, 4015, "data_url required")
+
+    try:
+        import base64
+        import binascii
+        import re
+
+        from cli import _IMAGE_EXTENSIONS
+
+        match = re.match(r"^data:(image/[a-z0-9.+-]+);base64,(.+)$", data_url, re.I | re.S)
+        if not match:
+            return _err(rid, 4016, "unsupported image upload")
+
+        mime_type = match.group(1).lower()
+        raw_b64 = re.sub(r"\s+", "", match.group(2))
+        payload = base64.b64decode(raw_b64, validate=True)
+
+        if not payload:
+            return _err(rid, 4016, "empty image upload")
+        if len(payload) > 16 * 1024 * 1024:
+            return _err(rid, 4016, "image upload too large")
+
+        ext_by_mime = {
+            "image/bmp": ".bmp",
+            "image/gif": ".gif",
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/svg+xml": ".svg",
+            "image/tiff": ".tiff",
+            "image/webp": ".webp",
+            "image/x-icon": ".ico",
+        }
+        ext = ext_by_mime.get(mime_type)
+        raw_name = Path(str(params.get("name", "") or "")).name
+        requested_ext = Path(raw_name).suffix.lower()
+
+        if requested_ext in _IMAGE_EXTENSIONS:
+            ext = requested_ext
+        if ext not in _IMAGE_EXTENSIONS:
+            return _err(rid, 4016, f"unsupported image type: {mime_type}")
+
+        session["image_counter"] = session.get("image_counter", 0) + 1
+        img_dir = _hermes_home / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(raw_name).stem or "upload").strip("._")
+        if not safe_stem:
+            safe_stem = "upload"
+        img_path = (
+            img_dir
+            / f"upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}_{safe_stem[:48]}{ext}"
+        )
+        img_path.write_bytes(payload)
+
+        session.setdefault("attached_images", []).append(str(img_path))
+        return _ok(
+            rid,
+            {
+                "attached": True,
+                "path": str(img_path),
+                "count": len(session["attached_images"]),
+                "text": f"[User attached image: {img_path.name}]",
+                **_image_meta(img_path),
+            },
+        )
+    except binascii.Error:
+        return _err(rid, 4016, "invalid image upload")
+    except Exception as e:
+        return _err(rid, 5027, str(e))
+
+
 @method("image.detach")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)

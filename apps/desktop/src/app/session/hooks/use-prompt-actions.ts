@@ -70,6 +70,16 @@ function inlineErrorMessage(error: unknown, fallback: string): string {
   return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw).replace(/^Error:\s*/, '').trim()
 }
 
+function isImageNotFoundError(error: unknown) {
+  const message = inlineErrorMessage(error, '').toLowerCase()
+
+  return message.includes('image not found')
+}
+
+function imageNameFromPath(filePath: string) {
+  return filePath.split(/[\\/]/).filter(Boolean).pop() || 'image'
+}
+
 interface PromptActionsOptions {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
@@ -188,10 +198,25 @@ export function usePromptActions({
           continue
         }
 
-        const result = await requestGateway<ImageAttachResponse>('image.attach', {
-          session_id: sessionId,
-          path: attachment.path
-        })
+        let result: ImageAttachResponse
+
+        try {
+          result = await requestGateway<ImageAttachResponse>('image.attach', {
+            session_id: sessionId,
+            path: attachment.path
+          })
+        } catch (err) {
+          if (!isImageNotFoundError(err) || !attachment.path || !window.hermesDesktop?.readFileDataUrl) {
+            throw err
+          }
+
+          const dataUrl = await window.hermesDesktop.readFileDataUrl(attachment.path)
+          result = await requestGateway<ImageAttachResponse>('image.upload', {
+            session_id: sessionId,
+            data_url: dataUrl,
+            name: imageNameFromPath(attachment.path)
+          })
+        }
 
         if (!result.attached) {
           const label = attachment.label || (attachment.path ? pathLabel(attachment.path) : 'image')
