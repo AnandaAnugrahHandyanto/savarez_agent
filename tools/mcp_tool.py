@@ -3913,3 +3913,36 @@ def _stop_mcp_loop():
         # graceful shutdown are now orphaned — include active PIDs too
         # since the loop is gone and no session can still be in flight.
         _kill_orphaned_mcp_children(include_active=True)
+
+
+def ensure_mcp_discovered() -> None:
+    """Trigger MCP discovery when running in a synchronous context.
+
+    Intended to be called early in ``AIAgent`` construction so that every code
+    path that creates an agent — oneshot, batch_runner, delegate_tool,
+    background_review, curator, etc. — automatically discovers configured MCP
+    servers without each entry point having to remember to do so.
+
+    In an async context (gateway / ACP event loop) this is a no-op: those paths
+    already call ``discover_mcp_tools()`` via ``run_in_executor`` at startup to
+    avoid blocking the event loop (see #16856).  Calling it again from inside
+    the loop would cause the same freeze, so we detect the running loop and
+    return immediately.
+
+    ``discover_mcp_tools()`` is idempotent — already-connected servers are
+    skipped — so repeated calls from multiple agents in the same process are
+    cheap after the first one.
+    """
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+        # Inside an async event loop — gateway/ACP handles discovery separately.
+        return
+    except RuntimeError:
+        pass  # No running loop; safe to call the blocking discovery.
+
+    try:
+        discover_mcp_tools()
+    except Exception:
+        logger.debug("MCP tool discovery failed in ensure_mcp_discovered", exc_info=True)
