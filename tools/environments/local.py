@@ -97,8 +97,38 @@ _AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# Blocklist scope contract (#33936)
+# ---------------------------------------------------------------------------
+# ``_HERMES_PROVIDER_ENV_BLOCKLIST`` exists for *subprocess* sanitization only.
+# It is consumed by :func:`_sanitize_subprocess_env` and a small number of
+# call-sites that build child-process environments (terminal tool, Docker
+# environment, background process registry, gateway quick-command exec).
+#
+# Importing this module is a pure-Python operation that builds a
+# ``frozenset`` of names — it does **not** mutate ``os.environ`` and does
+# **not** remove any keys from the long-lived gateway / CLI / cron process.
+# The provider resolver in :mod:`hermes_cli.runtime_provider` still reads
+# every var on this list (``DEEPSEEK_API_KEY``, ``ANTHROPIC_API_KEY``, etc.)
+# from ``os.environ`` / ``~/.hermes/.env`` to populate runtime credentials.
+#
+# UX corollary: running ``env | grep DEEPSEEK_API_KEY`` from the agent's
+# terminal tool (or any other Hermes-managed subprocess) will return
+# empty by design — that's the sanitization in action. To verify that a
+# credential is actually visible to the *gateway* process, use
+# ``hermes doctor`` or import :mod:`os` from a Python repl attached to
+# the gateway and check ``os.environ`` directly.
+# ---------------------------------------------------------------------------
+
+
 def _build_provider_env_blocklist() -> frozenset:
-    """Derive the blocklist from provider, tool, and gateway config."""
+    """Derive the blocklist from provider, tool, and gateway config.
+
+    Used **only** by :func:`_sanitize_subprocess_env` to scrub secrets
+    out of child-process environments. Never mutates ``os.environ`` of
+    the calling Hermes process (gateway, CLI, cron). See the scope
+    contract block above for the full UX implications (#33936).
+    """
     blocked: set[str] = set()
 
     try:
@@ -203,7 +233,20 @@ def _inject_context_hermes_home(env: dict) -> None:
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
-    """Filter Hermes-managed secrets from a subprocess environment."""
+    """Filter Hermes-managed secrets from a subprocess environment.
+
+    Builds a fresh dict by copying ``base_env`` (typically
+    ``os.environ.copy()``) and dropping any key listed in
+    :data:`_HERMES_PROVIDER_ENV_BLOCKLIST` unless it is explicitly
+    opted in (skill-declared / config-listed passthrough, or the
+    ``_HERMES_FORCE_<name>`` override prefix in ``extra_env``).
+
+    This function never mutates ``base_env`` and never touches the
+    caller's ``os.environ``. The blocklist is a subprocess-scoped
+    filter; the gateway / CLI / cron process still reads provider
+    credentials directly from ``os.environ`` for its own provider
+    resolution (see #33936 and the scope contract block above).
+    """
     try:
         from tools.env_passthrough import is_env_passthrough as _is_passthrough
     except Exception:
