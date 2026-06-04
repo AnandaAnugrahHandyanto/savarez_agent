@@ -1113,7 +1113,15 @@ clone_repo() {
                 git reset --hard HEAD >/dev/null 2>&1 || true
                 git clean -fd >/dev/null 2>&1 || true
             fi
-            git checkout "$BRANCH"
+            # Issue #39333: a previous pinned-commit checkout (--detach) may
+            # have left the repo in detached HEAD.  A plain checkout of $BRANCH
+            # fails when the local branch ref doesn't exist.  Try the simple
+            # checkout first; if it fails, create/reset the branch from the
+            # remote tracking ref (mirrors hermes_cli/main.py's fallback).
+            if ! git checkout "$BRANCH" 2>/dev/null; then
+                log_info "Local branch '$BRANCH' not found — creating from origin/$BRANCH..."
+                git checkout -B "$BRANCH" "origin/$BRANCH"
+            fi
             git reset --hard "origin/$BRANCH"
         else
             log_error "Directory exists but is not a git repository: $INSTALL_DIR"

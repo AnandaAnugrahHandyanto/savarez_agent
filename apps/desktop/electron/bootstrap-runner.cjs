@@ -452,7 +452,14 @@ async function runStage({ scriptPath, installerKind, stage, emit, hermesHome, ac
   const durationMs = Date.now() - startedAt
 
   if (result.killed) {
-    const ev = { type: 'stage', name: stage.name, state: 'failed', durationMs, error: 'cancelled by user' }
+    // Issue #39333: "cancelled by user" is misleading when the abort fires
+    // due to an internal error cascade rather than explicit user cancellation.
+    // Surface any captured stderr/stdout to help diagnose the real cause.
+    const captured = (result.stderr || '').trim() || (result.stdout || '').trim()
+    const reason = captured
+      ? `process killed — last output: ${captured.slice(-300)}`
+      : 'cancelled by user'
+    const ev = { type: 'stage', name: stage.name, state: 'failed', durationMs, error: reason }
     emit(ev)
     return ev
   }
