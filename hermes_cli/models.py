@@ -2162,7 +2162,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             or _get_custom_base_url()
             or "http://127.0.0.1:1234/v1"
         )
-        api_key = os.getenv("LM_API_KEY", "") or ""
+        api_key = os.getenv("LM_API_KEY", "")
         try:
             live = fetch_lmstudio_models(api_key=api_key, base_url=base_url)
             if live:
