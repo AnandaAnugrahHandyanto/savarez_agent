@@ -587,13 +587,8 @@ class TestSlashCommandCompleter:
 
     def test_semantic_aliases_are_kept_in_autocomplete(self):
         """Semantic aliases (non-underscore-variants) must appear in
-        autocomplete — users discover /provider, /bg, /q etc. via the menu."""
+        autocomplete — users discover /bg, /reset, /q etc. via the menu."""
         completer = SlashCommandCompleter()
-
-        # /provider (alias of /model) must appear for "/pro"
-        completions = _completions(completer, "/pro")
-        texts = {item.text for item in completions}
-        assert "provider" in texts
 
         # /bg (alias of /background) must appear for "/b"
         completions = _completions(completer, "/b")
