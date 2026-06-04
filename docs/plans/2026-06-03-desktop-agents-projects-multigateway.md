@@ -8,6 +8,23 @@
 
 **Tech Stack:** Python FastAPI-style Dashboard handlers in `hermes_cli/web_server.py`, gateway session/config helpers under `gateway/`, Electron main-process connection config in `apps/desktop/electron/main.cjs`, React/Nanostores renderer in `apps/desktop/src/`, Vitest + pytest.
 
+## Current status — 2026-06-04
+
+The implementation chain has passed all planned Kanban gates. Keep this section as the handoff anchor until the project gets a dedicated Telegram topic.
+
+- `t_bcac4710` — **done**: connection registry v0, commit `f01bfcd82`.
+- `t_d30feb01` — **done**: QA review of connection registry; approved continuation.
+- `t_4b93caf4` — **done**: Dashboard entity APIs `/api/agents`, `/api/conversations`, `/api/projects`, commit `fe620aae2`.
+- `t_151bca30` — **done**: one-gateway Agents/Projects/Chats/Workspaces sidebar, commit `832eee500` plus follow-up repairs.
+- `t_5b5f2368` — **done**: multi-gateway read-only aggregation, commit `1a4412bf5` plus review-blocker repairs.
+- `t_a1139bf4` — **done**: selected-gateway routing for chat actions, commit `fc7776320` plus review repairs.
+- `t_c9f2ad7a` — **done**: design review path; changes were repaired and re-reviewed.
+- `t_fcb03af9` — **done**: final QA; completed `2026-06-04 00:11`.
+
+Current repo branch is `feat/desktop-control-surface-multigateway`. Desktop implementation evidence is on that branch up through `53ffcae9c`; later commits on the same branch may include unrelated runtime/ops hotfixes.
+
+Topic handoff requested: create a dedicated Telegram project topic in `Dolly Main Projects` named `▸ Hermes Desktop – Control Surface`, then write the resulting `telegram:<chat_id>:<thread_id>` target back to this plan, the knowledge page `projects/hermes-desktop-control-surface.md`, and any remaining follow-up/closeout task metadata.
+
 ---
 
 ## Source-of-truth model
