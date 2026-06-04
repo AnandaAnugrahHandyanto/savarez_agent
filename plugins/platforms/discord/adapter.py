@@ -5031,67 +5031,53 @@ def _component_check_auth(
 
 
 class ExecApprovalView(discord.ui.View):
-        """Interactive button view for exec approval of dangerous commands."""
-        def __init__(
-            self,
-            session_key: str,
-            allowed_user_ids: set,
-            allowed_role_ids: Optional[set] = None,
-        ):
-            super().__init__(timeout=300)
-            self.session_key = session_key
-            self.allowed_user_ids = allowed_user_ids
-            self.allowed_role_ids = allowed_role_ids or set()
-            self.resolved = False
+    """Interactive button view for exec approval."""
+    def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
+        super().__init__(timeout=300)
+        self.session_key = session_key
+        self.allowed_user_ids = allowed_user_ids
+        self.allowed_role_ids = allowed_role_ids or set()
+        self.resolved = False
 
-        async def on_timeout(self):
-            """Disable buttons on timeout."""
-            self.resolved = True
-            for child in self.children:
-                child.disabled = True
-            if self.message:
-                try:
-                    await self.message.edit(view=self)
-                except Exception:
-                    pass
-
-        def _check_auth(self, interaction: discord.Interaction) -> bool:
-            return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
-            )
-
-        async def _resolve(
-            self, interaction: discord.Interaction, choice: str,
-            color: discord.Color, label: str,
-        ):
-            if self.resolved:
-                await interaction.response.send_message("Already resolved~", ephemeral=True)
-                return
-
-            if not self._check_auth(interaction):
-                await interaction.response.send_message("Not authorized~", ephemeral=True)
-                return
-
-            self.resolved = True
-
-            embed = interaction.message.embeds[0] if (interaction.message and interaction.message.embeds) else None
-            if embed:
-                embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
-
-            for child in self.children:
-                child.disabled = True
-
+    async def on_timeout(self):
+        self.resolved = True
+        for child in self.children:
+            child.disabled = True
+        if self.message:
             try:
-                await interaction.response.edit_message(embed=embed, view=self)
+                await self.message.edit(view=self)
             except Exception:
                 pass
 
-            try:
-                from tools.approval import resolve_gateway_approval
-                resolve_gateway_approval(self.session_key, choice)
-            except Exception as exc:
-                logger.error("Failed to resolve gateway approval: %s", exc)
+    def _check_auth(self, interaction: discord.Interaction) -> bool:
+        return _component_check_auth(interaction, self.allowed_user_ids, self.allowed_role_ids)
+
+    async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label: str):
+        if self.resolved:
+            return
+        if not self._check_auth(interaction):
+            await interaction.response.send_message("Not authorized~", ephemeral=True)
+            return
+
+        self.resolved = True
+        embed = interaction.message.embeds[0] if (interaction.message and interaction.message.embeds) else None
+        if embed:
+            embed.color = color
+            embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+
+        for child in self.children:
+            child.disabled = True
+
+        try:
+            await interaction.response.edit_message(embed=embed, view=self)
+        except Exception:
+            pass
+
+        try:
+            from tools.approval import resolve_gateway_approval
+            resolve_gateway_approval(self.session_key, choice)
+        except Exception as exc:
+            logger.error("Failed to resolve: %s", exc)
 
             # Unblock the waiting agent thread via the gateway approval queue
             try:
