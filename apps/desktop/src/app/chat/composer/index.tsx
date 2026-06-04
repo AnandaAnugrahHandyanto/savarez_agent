@@ -916,11 +916,16 @@ export function ChatBar({
   }
 
   const queueCurrentDraft = useCallback(() => {
-    if (!activeQueueSessionKey || (!draft.trim() && attachments.length === 0)) {
+    // Read from the synchronous ref, not the async AUI state, for the same
+    // reason as submitDraft — the ref is guaranteed to hold the current
+    // editor content even when React has not yet reconciled the AUI state.
+    const currentDraft = draftRef.current
+
+    if (!activeQueueSessionKey || (!currentDraft.trim() && attachments.length === 0)) {
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: draft, attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: currentDraft, attachments })) {
       return false
     }
 
@@ -929,7 +934,7 @@ export function ChatBar({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draft])
+  }, [activeQueueSessionKey, attachments, clearDraft])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
@@ -1034,10 +1039,19 @@ export function ChatBar({
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submitDraft = () => {
+    // Read from draftRef.current instead of the AUI `draft` state so the
+    // submitted text always matches what is actually in the editor DOM.
+    // draftRef is updated synchronously in handleEditorInput whereas the
+    // AUI state (draft) is reconciled asynchronously by React and can be
+    // stale on Windows where input event timing differs, causing "random
+    // length" truncation of the submitted message.
+    const currentDraft = draftRef.current
+    const currentHasPayload = currentDraft.trim().length > 0 || attachments.length > 0
+
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
-      if (hasComposerPayload) {
+      if (currentHasPayload) {
         queueCurrentDraft()
       } else {
         // Stop button: an explicit interrupt must actually halt the running
@@ -1049,14 +1063,13 @@ export function ChatBar({
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }
-    } else if (!hasComposerPayload && queuedPrompts.length > 0) {
+    } else if (!currentHasPayload && queuedPrompts.length > 0) {
       void drainNextQueued()
-    } else if (draft.trim() || attachments.length > 0) {
-      const submitted = draft
+    } else if (currentHasPayload) {
       triggerHaptic('submit')
       clearDraft()
       clearComposerAttachments()
-      void onSubmit(submitted, { attachments })
+      void onSubmit(currentDraft, { attachments })
     }
 
     focusInput()
