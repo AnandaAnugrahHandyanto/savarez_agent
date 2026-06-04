@@ -37,9 +37,11 @@ except ImportError:  # pragma: no cover - exercised via _require_hd in tests
     HD_AVAILABLE = False
 
 _INSTALL_HINT = (
-    "delegation: the `hermes_delegation` package is not installed. "
-    "Install it with `pip install -e ~/.hermes/delegation-visualizer/` "
-    "(or `uv pip install -e ~/.hermes/delegation-visualizer/`)."
+    "delegation: the `hermes_delegation` package is not installed or wrong "
+    "Python version. Install with `python3.11 -m pip install -e "
+    "'~/.hermes/delegation-visualizer/[dev]' --break-system-packages` "
+    "(or `uv pip install -e ~/.hermes/delegation-visualizer/`). "
+    "Requires Python 3.11+."
 )
 
 # Defaults mirror the M1+M2 package (see hermes_delegation.cli).
@@ -68,7 +70,23 @@ def _cmd_status(args) -> int:
     if not _require_hd():
         return 1
 
-    from hermes_delegation.cli import _daemon_is_listening
+    # NOTE: ``_daemon_is_listening`` is a private (leading-underscore) symbol in
+    # the M1+M2 ``hermes_delegation.cli`` module, so it carries the usual risk of
+    # a private API: a future refactor could rename or remove it without a
+    # deprecation cycle. We rely on it because M1+M2 exposes no public liveness
+    # check for the verifier daemon — there is no public alternative today. The
+    # try/except below turns a vanished symbol into an actionable "re-install"
+    # message instead of a raw, unexplained ImportError traceback.
+    try:
+        from hermes_delegation.cli import _daemon_is_listening
+    except ImportError:
+        print(
+            "delegation: the M1+M2 `hermes_delegation` API has changed "
+            "(`hermes_delegation.cli._daemon_is_listening` is gone); please "
+            "re-install the delegation-visualizer package. " + _INSTALL_HINT,
+            file=sys.stderr,
+        )
+        return 1
 
     socket_path = Path(args.socket_path).expanduser()
     if _daemon_is_listening(socket_path):
@@ -205,7 +223,6 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     )
     p_verify.add_argument("task_id", help="task id to verify")
     _add_base_dir(p_verify)
-    _add_socket_path(p_verify)
     p_verify.set_defaults(func=_cmd_verify)
 
     p_report = subs.add_parser(
