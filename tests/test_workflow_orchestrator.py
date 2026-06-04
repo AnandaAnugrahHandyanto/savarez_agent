@@ -187,6 +187,89 @@ def test_sequential_plan_runs_one_task_at_a_time_and_passes_prior_summary_forwar
     assert result.total_duration_seconds == 1.5
 
 
+def test_stale_parent_interrupt_is_cleared_before_planning():
+    class Agent(_Agent):
+        def __init__(self):
+            self._interrupt_requested = True
+            self.clear_count = 0
+
+        def clear_interrupt(self):
+            self.clear_count += 1
+            self._interrupt_requested = False
+
+    agent = Agent()
+
+    def fake_llm(**kwargs):
+        assert agent._interrupt_requested is False
+        return _response(_planner_payload(subtasks=[{"goal": "inline", "context": "ok"}]))
+
+    orchestrator = WorkflowOrchestrator(
+        agent,
+        call_llm_fn=fake_llm,
+        delegate_fn=lambda **kwargs: json.dumps({"results": []}),
+        max_children_fn=lambda: 3,
+    )
+
+    result = orchestrator.run("task after prior interrupt")
+
+    assert result.delegated is False
+    assert agent.clear_count == 1
+    assert agent._interrupt_requested is False
+
+
+def test_interrupted_child_results_skip_synthesis_and_clear_interrupt():
+    class Agent(_Agent):
+        def __init__(self):
+            self._interrupt_requested = False
+            self.clear_count = 0
+
+        def clear_interrupt(self):
+            self.clear_count += 1
+            self._interrupt_requested = False
+
+    agent = Agent()
+    llm_calls = []
+
+    def fake_llm(**kwargs):
+        llm_calls.append(kwargs)
+        return _response(
+            _planner_payload(
+                subtasks=[
+                    {"goal": "Task A", "context": "A"},
+                    {"goal": "Task B", "context": "B"},
+                ]
+            )
+        )
+
+    def fake_delegate(*, tasks, parent_agent):
+        parent_agent._interrupt_requested = True
+        return json.dumps(
+            {
+                "results": [
+                    {"task_index": 0, "status": "completed", "summary": "done"},
+                    {"task_index": 1, "status": "interrupted", "summary": None},
+                ],
+                "total_duration_seconds": 0.5,
+            }
+        )
+
+    orchestrator = WorkflowOrchestrator(
+        agent,
+        call_llm_fn=fake_llm,
+        delegate_fn=fake_delegate,
+        max_children_fn=lambda: 3,
+    )
+
+    result = orchestrator.run("interrupting task")
+
+    assert result.interrupted is True
+    assert result.delegated is True
+    assert "Workflow interrupted" in result.final_response
+    assert agent._interrupt_requested is False
+    assert agent.clear_count == 2
+    assert len(llm_calls) == 1  # planner only; no synthesis after interrupt
+
+
 def test_delegate_error_raises_runtime_error():
     def fake_llm(**kwargs):
         return _response(

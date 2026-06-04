@@ -43,6 +43,7 @@ class WorkflowResult:
     final_response: str
     delegated: bool
     total_duration_seconds: float = 0.0
+    interrupted: bool = False
 
 
 class WorkflowOrchestrator:
@@ -94,6 +95,7 @@ class WorkflowOrchestrator:
         return WorkflowPlan(mode=mode, subtasks=subtasks, rationale=str(payload.get("rationale") or ""))
 
     def run(self, task: str) -> WorkflowResult:
+        self._clear_stale_parent_interrupt()
         plan = self.plan(task)
         if len(plan.subtasks) <= 1:
             return WorkflowResult(
@@ -105,6 +107,17 @@ class WorkflowOrchestrator:
             )
 
         child_results, total_duration = self._execute_plan(plan)
+        if _child_results_interrupted(child_results):
+            self._clear_stale_parent_interrupt()
+            return WorkflowResult(
+                task=task,
+                plan=plan,
+                child_results=child_results,
+                final_response=_interrupted_response(child_results),
+                delegated=True,
+                total_duration_seconds=total_duration,
+                interrupted=True,
+            )
         final_response = self._synthesize(task, plan, child_results)
         return WorkflowResult(
             task=task,
@@ -114,6 +127,26 @@ class WorkflowOrchestrator:
             delegated=True,
             total_duration_seconds=total_duration,
         )
+
+    def _clear_stale_parent_interrupt(self) -> None:
+        """Clear interrupt state before/after a workflow-owned turn.
+
+        Normal chat turns enter ``AIAgent.run_conversation()``, which owns the
+        interrupt lifecycle. Workflow turns call ``delegate_task`` directly, so a
+        stale parent interrupt would make delegate_task immediately abandon child
+        futures. Clearing here keeps old interrupts from poisoning the next
+        ultracode turn while still allowing interrupts that arrive during the
+        workflow to be observed by delegate_task.
+        """
+        clear_interrupt = getattr(self.agent, "clear_interrupt", None)
+        if callable(clear_interrupt):
+            clear_interrupt()
+        else:
+            try:
+                setattr(self.agent, "_interrupt_requested", False)
+                setattr(self.agent, "_interrupt_message", None)
+            except Exception:
+                pass
 
     def _call_planner(self, task: str) -> str:
         response = self.call_llm_fn(
@@ -246,6 +279,19 @@ def _safe_int(value: Any, fallback: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _child_results_interrupted(results: Sequence[Dict[str, Any]]) -> bool:
+    return any((result.get("status") or "").lower() == "interrupted" for result in results)
+
+
+def _interrupted_response(results: Sequence[Dict[str, Any]]) -> str:
+    completed = sum(1 for result in results if result.get("status") == "completed")
+    interrupted = sum(1 for result in results if result.get("status") == "interrupted")
+    return (
+        "Workflow interrupted before all subagents completed "
+        f"({completed} completed, {interrupted} interrupted)."
+    )
 
 
 def _plan_to_dict(plan: WorkflowPlan) -> Dict[str, Any]:

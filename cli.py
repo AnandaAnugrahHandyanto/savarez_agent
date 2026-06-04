@@ -10261,7 +10261,8 @@ class HermesCLI:
             "final_response": workflow_result.final_response,
             "messages": messages,
             "api_calls": 0,
-            "completed": True,
+            "completed": not workflow_result.interrupted,
+            "interrupted": workflow_result.interrupted,
             "workflow": True,
             "delegated": True,
             "workflow_plan": {
