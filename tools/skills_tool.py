@@ -305,7 +305,12 @@ def _capture_required_environment_variables(
         }
 
     missing_names = [entry["name"] for entry in missing_entries]
-    if _is_gateway_surface():
+    # Gateway surfaces are normally treated as unable to capture secrets (most
+    # messaging platforms can't prompt). But interactive gateway surfaces — the
+    # desktop app / TUI — register a secret-capture callback that routes to a
+    # secure secret.request overlay. Only short-circuit to the "unsupported"
+    # hint when no such callback exists, so those surfaces actually prompt.
+    if _is_gateway_surface() and _secret_capture_callback is None:
         return {
             "missing_names": missing_names,
             "setup_skipped": False,
