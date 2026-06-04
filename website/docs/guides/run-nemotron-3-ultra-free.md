@@ -42,9 +42,11 @@ Click **Start chatting**. That's it — you're talking to Nemotron 3 Ultra, free
 
 ## Option B — Command line
 
-Prefer the terminal? You'll need macOS, Linux, or Windows via [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) with `curl` installed (`curl` is preinstalled on most systems).
+Prefer the terminal?
 
 ### 1. Install Savarez AI Agent
+
+On macOS/Linux/WSL2/Android, run
 
 ```bash
 curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash

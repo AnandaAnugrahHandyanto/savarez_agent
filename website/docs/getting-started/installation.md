@@ -9,6 +9,8 @@ description: "Install Savarez AI Agent on Linux, macOS, WSL2, native Windows, or
 Get Savarez AI Agent up and running in under two minutes with the one-line installer.
 
 ## Quick Install
+### With the Hermes Desktop installer on macOS or Windows (recommended)
+To easily install the command-line and desktop applications, [download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
 
 ### Desktop App (macOS + Windows)
 
@@ -26,12 +28,14 @@ For a git-based install that tracks `main` and gives you the latest changes imme
 curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash
 ```
 
-### Windows (native, PowerShell)
+### Without Hermes Desktop:
+For a command-line only install without Hermes Desktop, run:
 
 Native Windows runs Savarez without WSL — the CLI, gateway, TUI, and tools all work natively. (Both native and WSL2 installs coexist cleanly; see the feature note below for the one WSL2-only feature.) Found a bug? Please [file issues](https://github.com/AnandaAnugrahHandyanto/savarez_agent/issues).
 
-Open PowerShell and run:
+#### Windows (native)
 
+Run in powershell:
 ```powershell
 iex (irm https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.ps1)
 ```
@@ -129,9 +133,7 @@ That logs you in, sets Nous as your provider, and turns on the Tool Gateway in o
 
 ## Prerequisites
 
-**pip install:** No prerequisites beyond Python 3.11+. Everything else is handled automatically.
-
-**Git installer:** The only prerequisite is **Git**. The installer automatically handles everything else:
+**Installer:** On non-Windows platforms, the only prerequisite is **Git**. The installer automatically handles everything else:
 
 - **uv** (fast Python package manager)
 - **Python 3.11** (via uv, no sudo needed)

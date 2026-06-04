@@ -1,4 +1,4 @@
----
+P---
 title: "Windows（原生）指南"
 description: "在 Windows 10 / 11 上原生运行 Savarez AI Agent — 安装、功能矩阵、UTF-8 控制台、Git Bash、将 gateway 作为计划任务、编辑器处理、PATH、卸载及常见问题"
 sidebar_label: "Windows（原生）"
@@ -140,12 +140,12 @@ Savarez 的 Windows stdio 垫片现在将 `EDITOR=notepad` 设为默认值。Not
 
 **用户覆盖仍然优先**（在 setdefault 之前检查）：
 
-| 编辑器 | PowerShell 命令 |
-|---|---|
-| VS Code | `$env:EDITOR = "code --wait"` |
+| 编辑器    | PowerShell 命令                                                                    |
+| --------- | ---------------------------------------------------------------------------------- |
+| VS Code   | `$env:EDITOR = "code --wait"`                                                      |
 | Notepad++ | `$env:EDITOR = "'C:\Program Files\Notepad++\notepad++.exe' -multiInst -nosession"` |
-| Neovim | `$env:EDITOR = "nvim"` |
-| Helix | `$env:EDITOR = "hx"` |
+| Neovim    | `$env:EDITOR = "nvim"`                                                             |
+| Helix     | `$env:EDITOR = "hx"`                                                               |
 
 VS Code 的 `--wait` 标志至关重要——没有它，编辑器会立即返回，Savarez 收到的是空缓冲区。
 

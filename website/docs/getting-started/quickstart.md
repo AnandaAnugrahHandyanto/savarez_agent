@@ -48,14 +48,13 @@ Pick the row that matches your goal:
 
 ## 1. Install Savarez AI Agent
 
-**Option A — pip (simplest):**
-
+### With the Hermes Desktop installer on Linux:
 ```bash
 pip install savarez-agent
 savarez postinstall     # optional: installs Node.js, browser, ripgrep, ffmpeg + runs setup
 ```
 
-PyPI releases track tagged versions (major/minor releases), not every commit on `main`. For bleeding-edge, use Option B.
+#### Windows (native)
 
 **Option B — git installer (tracks main branch):**
 
@@ -70,10 +69,6 @@ Prefer native installers for desktop use?
 
 :::tip Android / Termux
 If you're installing on a phone, see the dedicated [Termux guide](./termux.md) for the tested manual path, supported extras, and current Android-specific limitations.
-:::
-
-:::tip Windows Users
-Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) first, then run the command above inside your WSL2 terminal.
 :::
 
 After it finishes, reload your shell:

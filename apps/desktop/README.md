@@ -56,10 +56,7 @@ savarez update
 
 ## Requirements
 
-The installer handles everything for you (Python 3.11+, a portable Git, ripgrep). The only thing worth knowing:
-
-- **Windows** — the installer bundles its own Git and Python; no admin rights or system changes required.
-- **macOS / Linux** — uses your system Python 3.11+ (installed automatically if missing).
+The installer handles everything for you (Python 3.11+, a portable Git, ripgrep).
 
 ---
 

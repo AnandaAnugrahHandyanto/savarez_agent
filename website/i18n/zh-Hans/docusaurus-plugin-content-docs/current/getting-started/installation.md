@@ -31,6 +31,7 @@ iex (irm https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/
 安装程序处理**一切**：`uv`、Python 3.11、Node.js 22、`ripgrep`、`ffmpeg`，**以及一个便携式 Git Bash**（PortableGit——一个自包含的 Git-for-Windows 发行版，附带 `bash.exe` 和 Savarez 用于 shell 命令的完整 POSIX 工具链；在 32 位 Windows 上安装程序会回退到 MinGit，后者缺少 bash，终端工具和 agent 浏览器功能将被禁用）。它将仓库克隆到 `%LOCALAPPDATA%\savarez\savarez-agent`，创建虚拟环境，并将 `savarez` 添加到**用户 PATH**。安装完成后请重启终端（或打开新的 PowerShell 窗口）以使 PATH 生效。
 
 **Git 的处理方式：**
+
 1. 如果 `git` 已在你的 PATH 中，安装程序将使用现有安装。
 2. 否则，它会下载便携式 **PortableGit**（约 50MB，来自官方 `git-for-windows` GitHub 发布页）并解压到 `%LOCALAPPDATA%\savarez\git`。无需管理员权限，完全隔离——不会干扰任何系统 Git 安装，无论其状态如何。（在 32 位 Windows 上会回退到 MinGit，因为 PortableGit 仅提供 64 位和 ARM64 资产；依赖 bash 的 Savarez 功能在 32 位主机上无法使用。）
 
@@ -51,6 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agen
 ```
 
 安装程序会自动检测 Termux 并切换到经过测试的 Android 流程：
+
 - 使用 Termux `pkg` 安装系统依赖（`git`、`python`、`nodejs`、`ripgrep`、`ffmpeg`、构建工具）
 - 使用 `python -m venv` 创建虚拟环境
 - 自动导出 `ANDROID_API_LEVEL` 以用于 Android wheel 构建
@@ -154,17 +156,21 @@ savarez setup --portal
 **推荐的分步方式（Debian/Ubuntu）：**
 
 1. **一次性操作，以具有 sudo 权限的管理员用户身份**，安装 Chromium 所需的系统库：
+
    ```bash
    sudo npx playwright install-deps chromium
    ```
+
    （可在任意位置运行——`npx` 会自动获取 Playwright。）
 
 2. **以非特权服务用户身份**，运行常规安装程序。它会检测到缺少 sudo，跳过 `--with-deps`，并将 Chromium 安装到用户本地的 Playwright 缓存中：
+
    ```bash
    curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash
    ```
 
    如果想完全跳过 Playwright 步骤——例如在无头环境中运行且不需要浏览器自动化——传入 `--skip-browser`：
+
    ```bash
    curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash -s -- --skip-browser
    ```

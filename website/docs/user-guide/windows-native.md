@@ -17,7 +17,9 @@ If you prefer a real POSIX environment (for the dashboard's embedded terminal, `
 
 ## Quick install
 
-Open **PowerShell** (or Windows Terminal) and run:
+[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
+
+Or, for a command-line only install, open **PowerShell** (or Windows Terminal) and run:
 
 ```powershell
 iex (irm https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.ps1)
@@ -140,12 +142,12 @@ Savarez's Windows stdio shim now sets `EDITOR=notepad` as a default. Notepad shi
 
 **User overrides still win** (they're checked before the setdefault):
 
-| Editor | PowerShell command |
-|---|---|
-| VS Code | `$env:EDITOR = "code --wait"` |
+| Editor    | PowerShell command                                                                 |
+| --------- | ---------------------------------------------------------------------------------- |
+| VS Code   | `$env:EDITOR = "code --wait"`                                                      |
 | Notepad++ | `$env:EDITOR = "'C:\Program Files\Notepad++\notepad++.exe' -multiInst -nosession"` |
-| Neovim | `$env:EDITOR = "nvim"` |
-| Helix | `$env:EDITOR = "hx"` |
+| Neovim    | `$env:EDITOR = "nvim"`                                                             |
+| Helix     | `$env:EDITOR = "hx"`                                                               |
 
 The `--wait` flag on VS Code is critical — without it the editor returns immediately and Savarez gets a blank buffer back.
 
