@@ -6676,6 +6676,50 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
         return None
 
 
+def _list_carried_commits(git_cmd: list[str], cwd: Path, upstream_ref: str) -> list[str]:
+    """Return local commits ahead of ``upstream_ref`` in oldest-first order.
+
+    These are the "carried commits" shown in the banner: local customizations
+    that should survive a ``hermes update`` when upstream has advanced.
+    """
+    try:
+        result = subprocess.run(
+            git_cmd + ["rev-list", "--reverse", f"{upstream_ref}..HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _reapply_carried_commits(git_cmd: list[str], cwd: Path, commits: list[str]) -> tuple[bool, str | None]:
+    """Cherry-pick ``commits`` onto the current HEAD, oldest-first.
+
+    Returns ``(ok, failing_commit)``. On failure, this helper aborts the active
+    cherry-pick so callers can safely decide whether to reset/rollback.
+    """
+    for commit in commits:
+        result = subprocess.run(
+            git_cmd + ["cherry-pick", commit],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            subprocess.run(
+                git_cmd + ["cherry-pick", "--abort"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return False, commit
+    return True, None
+
+
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
     """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
@@ -10121,19 +10165,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # every user who ran ``hermes update`` for the 7 minutes between
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
+        carried_commits = _list_carried_commits(git_cmd, PROJECT_ROOT, f"origin/{branch}")
         try:
-            pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
-            if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
+            if carried_commits:
                 print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    f"  ↺ Preserving {len(carried_commits)} carried commit{'s' if len(carried_commits) != 1 else ''} on top of origin/{branch}..."
                 )
                 reset_result = subprocess.run(
                     git_cmd + ["reset", "--hard", f"origin/{branch}"],
@@ -10142,13 +10178,64 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True,
                 )
                 if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
+                    print(f"✗ Failed to reset to origin/{branch} before reapplying local commits.")
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
-                    print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
-                    )
                     sys.exit(1)
+                reapplied_ok, failing_commit = _reapply_carried_commits(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    carried_commits,
+                )
+                if not reapplied_ok:
+                    print()
+                    print("✗ Failed to reapply your carried commit(s) after updating.")
+                    if failing_commit:
+                        print(f"  Stopped while cherry-picking: {failing_commit}")
+                    if pre_pull_sha:
+                        print(f"→ Rolling back to {pre_pull_sha[:10]}...")
+                        rollback_result = subprocess.run(
+                            git_cmd + ["reset", "--hard", pre_pull_sha],
+                            cwd=PROJECT_ROOT,
+                            capture_output=True,
+                            text=True,
+                        )
+                        if rollback_result.returncode == 0:
+                            print("  ✓ Rollback complete — your prior working tree is restored.")
+                        else:
+                            print("  ✗ Rollback failed. Recover manually with:")
+                            print(f"    cd {PROJECT_ROOT} && git reset --hard {pre_pull_sha}")
+                    else:
+                        print("  Recover manually with: git reflog && git reset --hard <prev-sha>")
+                    sys.exit(1)
+            else:
+                pull_result = subprocess.run(
+                    git_cmd + ["pull", "--ff-only", "origin", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if pull_result.returncode != 0:
+                    # ff-only failed — local and remote have diverged (e.g. upstream
+                    # force-pushed or rebase).  Since local changes are already
+                    # stashed, reset to match the remote exactly.
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        )
+                        sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit

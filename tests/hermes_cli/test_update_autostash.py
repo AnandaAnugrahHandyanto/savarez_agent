@@ -478,6 +478,7 @@ def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch,
 def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
+    carried_commits: tuple[str, ...] = (),
     ff_only_fails=False,
     reset_fails=False,
     fetch_fails=False,
@@ -497,8 +498,12 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rev-list" in joined and "--reverse" in joined:
+            return SimpleNamespace(stdout="\n".join(carried_commits) + ("\n" if carried_commits else ""), stderr="", returncode=0)
         if "rev-list" in joined:
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
+        if "cherry-pick" in joined and "--abort" not in joined:
+            return SimpleNamespace(stdout="Applied\n", stderr="", returncode=0)
         if "--ff-only" in joined:
             if ff_only_fails:
                 return SimpleNamespace(
@@ -546,6 +551,28 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 0
+
+
+def test_cmd_update_reapplies_carried_commits_after_reset(monkeypatch, tmp_path, capsys):
+    """Local carried commits should be replayed on top of origin/main during update."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(carried_commits=("abc111", "def222"))
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert [c for c in recorded if c[:3] == ["git", "reset", "--hard"]] == [
+        ["git", "reset", "--hard", "origin/main"],
+    ]
+    assert [c for c in recorded if c[:2] == ["git", "cherry-pick"]] == [
+        ["git", "cherry-pick", "abc111"],
+        ["git", "cherry-pick", "def222"],
+    ]
+
+    out = capsys.readouterr().out
+    assert "Preserving 2 carried commits" in out
 
 
 # ---------------------------------------------------------------------------
@@ -784,3 +811,60 @@ def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, 
 
     out = capsys.readouterr().out
     assert "preserved in stash" in out
+
+
+def test_list_carried_commits_returns_oldest_first(monkeypatch, tmp_path):
+    def fake_run(cmd, **kwargs):
+        assert cmd == ["git", "rev-list", "--reverse", "origin/main..HEAD"]
+        return SimpleNamespace(stdout="aaa111\nbbb222\n", returncode=0)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    assert hermes_main._list_carried_commits(["git"], tmp_path, "origin/main") == ["aaa111", "bbb222"]
+
+
+def test_reapply_carried_commits_cherry_picks_all_in_order(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "cherry-pick"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    ok, failing = hermes_main._reapply_carried_commits(["git"], tmp_path, ["aaa111", "bbb222"])
+
+    assert ok is True
+    assert failing is None
+    assert calls == [
+        ["git", "cherry-pick", "aaa111"],
+        ["git", "cherry-pick", "bbb222"],
+    ]
+
+
+def test_reapply_carried_commits_aborts_on_failure(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "cherry-pick", "aaa111"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "cherry-pick", "bbb222"]:
+            return SimpleNamespace(stdout="", stderr="conflict", returncode=1)
+        if cmd == ["git", "cherry-pick", "--abort"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    ok, failing = hermes_main._reapply_carried_commits(["git"], tmp_path, ["aaa111", "bbb222"])
+
+    assert ok is False
+    assert failing == "bbb222"
+    assert calls == [
+        ["git", "cherry-pick", "aaa111"],
+        ["git", "cherry-pick", "bbb222"],
+        ["git", "cherry-pick", "--abort"],
+    ]
