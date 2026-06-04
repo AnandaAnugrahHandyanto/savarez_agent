@@ -3350,11 +3350,22 @@ class BasePlatformAdapter(ABC):
 
         coerce_plaintext_gateway_command(event)
         
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        # Defensive: if self.config is a list, something went wrong upstream.
+        # Log the error and fall back to defaults so the user sees a message.
+        if isinstance(self.config, list):
+            logger.error(
+                "[BasePlatformAdapter] self.config is a list (len=%d) for %s — "
+                "this should never happen. Falling back to default session key rules.",
+                len(self.config),
+                self.name,
+            )
+            session_key = build_session_key(event.source)
+        else:
+            session_key = build_session_key(
+                event.source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
