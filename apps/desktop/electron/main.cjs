@@ -1282,13 +1282,15 @@ async function applyUpdates(opts = {}) {
 
   try {
     const updater = resolveUpdaterBinary()
-    if (!updater && !IS_WINDOWS) {
-      // macOS/Linux drag-install: no staged Tauri hermes-setup. Unlike Windows
-      // (where a venv-shim file lock forces the quit→hand-off→rebuild dance),
-      // there's no mandatory file locking here, so the desktop can drive the
-      // whole update itself: `hermes update` (backend) + `hermes desktop
-      // --build-only` (OS-aware GUI rebuild), then swap the running .app bundle
-      // with the freshly built one and relaunch.
+    if (!IS_WINDOWS) {
+      // macOS/Linux: no mandatory file locking (unlike Windows' venv-shim
+      // lock), so the desktop can drive the whole update itself in-process:
+      // `hermes update` (backend) + `hermes desktop --build-only` (GUI rebuild),
+      // then swap the running .app bundle with the freshly built one and
+      // relaunch.  Prefer this path even when a staged hermes-setup binary
+      // exists, because handing off to the Tauri updater opens a second window
+      // and can produce a restart loop (the relaunched desktop re-detects
+      // pending updates and re-triggers the hand-off).
       return await applyUpdatesPosixInApp(opts)
     }
     if (!updater) {
