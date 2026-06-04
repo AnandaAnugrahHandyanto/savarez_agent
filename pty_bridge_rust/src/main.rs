@@ -1,5 +1,7 @@
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 
 #[tokio::main]
@@ -28,6 +30,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(pair.slave);
 
     // Thread to read PTY output and write to stdout
+    let is_running = Arc::new(AtomicBool::new(true));
+    let is_running_clone = Arc::clone(&is_running);
     let mut pty_reader = pair.master.try_clone_reader()?;
     std::thread::spawn(move || {
         let mut buf = [0u8; 65536];
@@ -41,6 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let _ = stdout.flush();
         }
+        is_running_clone.store(false, Ordering::SeqCst);
     });
 
     // Async loop to read stdin and write to PTY master input
@@ -50,10 +55,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 4096];
 
     loop {
+        if !is_running.load(Ordering::SeqCst) {
+            break;
+        }
         tokio::select! {
             res = stdin.read(&mut buf) => {
                 match res {
-                    Ok(0) => break, // EOF on stdin
+                    Ok(0) => {
+                        break;
+                    }
                     Ok(n) => {
                         let data = &buf[..n];
                         if let Some(caps) = resize_re.captures(data) {
@@ -73,13 +83,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    Err(_) => break,
+                    Err(_) => {
+                        break;
+                    }
                 }
             }
-            // Monitor if child process exits
+            // Monitor if child process exits or reader finished
             _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
-                if let Ok(Some(_status)) = child.try_wait() {
+                if !is_running.load(Ordering::SeqCst) {
                     break;
+                }
+                match child.try_wait() {
+                    Ok(Some(_status)) => {
+                        break;
+                    }
+                    Err(_) => {
+                        break;
+                    }
+                    Ok(None) => {}
                 }
             }
         }
@@ -87,5 +108,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Terminate child process if still running
     let _ = child.kill();
-    Ok(())
+    std::process::exit(0);
 }
