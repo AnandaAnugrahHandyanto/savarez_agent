@@ -9,6 +9,7 @@ import pytest
 from tools.credential_files import (
     clear_credential_files,
     get_credential_file_mounts,
+    from_agent_visible_cache_path,
     get_cache_directory_mounts,
     get_skills_directory_mount,
     iter_cache_files,
@@ -421,6 +422,30 @@ class TestCacheDirectoryMounts:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         assert get_cache_directory_mounts() == []
+
+    def test_from_agent_visible_reverses_cache_mount(self, tmp_path, monkeypatch):
+        """A container cache path maps back to its host path under Docker."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        (tmp_path / "cache" / "images").mkdir(parents=True)
+
+        result = from_agent_visible_cache_path("/root/.hermes/cache/images/shot.png")
+        assert result == str(tmp_path / "cache" / "images" / "shot.png")
+
+    def test_from_agent_visible_noop_when_not_docker(self, tmp_path, monkeypatch):
+        """Non-Docker backends never translate; the path passes through."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+
+        path = "/root/.hermes/cache/images/x.png"
+        assert from_agent_visible_cache_path(path) == path
+
+    def test_from_agent_visible_noop_for_unmapped_path(self, tmp_path, monkeypatch):
+        """A path outside any cache mount is returned unchanged (→ exec-read)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        assert from_agent_visible_cache_path("/workspace/x.png") == "/workspace/x.png"
 
 
 class TestIterCacheFiles:

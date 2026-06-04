@@ -105,11 +105,14 @@ def _validate_image_url(url: str) -> bool:
     return True
 
 
-def _detect_image_mime_type(image_path: Path) -> Optional[str]:
-    """Return a MIME type when the file looks like a supported image."""
-    with image_path.open("rb") as f:
-        header = f.read(64)
+def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
+    """Magic-byte MIME sniff on raw bytes (authoritative; no extension trust).
 
+    Returns ``None`` for anything without a recognized image header — including
+    SVG, which has no magic bytes and is not ingestible as vision by any
+    provider.
+    """
+    header = data[:64]
     if header.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if header.startswith(b"\xff\xd8\xff"):
@@ -120,11 +123,18 @@ def _detect_image_mime_type(image_path: Path) -> Optional[str]:
         return "image/bmp"
     if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "image/webp"
-    if image_path.suffix.lower() == ".svg":
+    return None
+
+
+def _detect_image_mime_type(image_path: Path) -> Optional[str]:
+    """Return a MIME type when the file looks like a supported image."""
+    with image_path.open("rb") as f:
+        mime = _detect_image_mime_type_from_bytes(f.read(64))
+    if mime is None and image_path.suffix.lower() == ".svg":
         head = image_path.read_text(encoding="utf-8", errors="ignore")[:4096].lower()
         if "<svg" in head:
             return "image/svg+xml"
-    return None
+    return mime
 
 
 def _is_retryable_download_error(error: Exception) -> bool:
@@ -285,30 +295,16 @@ def _determine_mime_type(image_path: Path) -> str:
     return mime_types.get(extension, 'image/jpeg')
 
 
-def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None) -> str:
-    """
-    Convert an image file to a base64-encoded data URL.
-    
-    Args:
-        image_path (Path): Path to the image file
-        mime_type (Optional[str]): MIME type of the image (auto-detected if None)
-        
-    Returns:
-        str: Base64-encoded data URL (e.g., "data:image/jpeg;base64,...")
-    """
-    # Read the image as bytes
-    data = image_path.read_bytes()
-    
-    # Encode to base64
+def _image_bytes_to_base64_data_url(data: bytes, mime: str) -> str:
+    """Encode raw image bytes as an RFC 2397 base64 data URL."""
     encoded = base64.b64encode(data).decode("ascii")
-    
-    # Determine MIME type
+    return f"data:{mime};base64,{encoded}"
+
+
+def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None) -> str:
+    """Convert an image file to a base64-encoded data URL."""
     mime = mime_type or _determine_mime_type(image_path)
-    
-    # Create data URL
-    data_url = f"data:{mime};base64,{encoded}"
-    
-    return data_url
+    return _image_bytes_to_base64_data_url(image_path.read_bytes(), mime)
 
 
 # Absolute hard ceiling for vision API payloads (20 MB) — above this, no major
@@ -343,53 +339,44 @@ def _is_image_size_error(error: Exception) -> bool:
 
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               max_base64_bytes: int = _RESIZE_TARGET_BYTES) -> str:
-    """Convert an image to a base64 data URL, auto-resizing if too large.
+    """Path wrapper around :func:`_resize_image_bytes_for_vision`."""
+    mime = mime_type or _determine_mime_type(image_path)
+    return _resize_image_bytes_for_vision(image_path.read_bytes(), mime, max_base64_bytes)
+
+
+def _resize_image_bytes_for_vision(data: bytes, mime: str,
+                                   max_base64_bytes: int = _RESIZE_TARGET_BYTES) -> str:
+    """Encode image bytes as a base64 data URL, auto-resizing if too large.
 
     Tries Pillow first to progressively downscale oversized images.  If Pillow
     is not installed or resizing still exceeds the limit, falls back to the raw
     bytes and lets the caller handle the size check.
-
-    Returns the base64 data URL string.
     """
-    # Quick file-size estimate: base64 expands by ~4/3, plus data URL header.
-    # Skip the expensive full-read + encode if Pillow can resize directly.
-    file_size = image_path.stat().st_size
-    estimated_b64 = (file_size * 4) // 3 + 100  # ~header overhead
-    if estimated_b64 <= max_base64_bytes:
-        # Small enough — just encode directly.
-        data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+    # base64 expands by ~4/3, plus data URL header; skip Pillow if it already fits.
+    if (len(data) * 4) // 3 + 100 <= max_base64_bytes:
+        data_url = _image_bytes_to_base64_data_url(data, mime)
         if len(data_url) <= max_base64_bytes:
             return data_url
-    else:
-        data_url = None  # defer full encode; try Pillow resize first
 
-    # Attempt auto-resize with Pillow (soft dependency)
     try:
         from PIL import Image
         import io as _io
     except ImportError:
         logger.info("Pillow not installed — cannot auto-resize oversized image")
-        if data_url is None:
-            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
-        return data_url  # caller will raise the size error
+        return _image_bytes_to_base64_data_url(data, mime)  # caller raises the size error
 
-    logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB), auto-resizing...",
-                file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
-                max_base64_bytes / (1024 * 1024))
+    logger.info("Image is %.1f MB (limit %.1f MB), auto-resizing...",
+                len(data) / (1024 * 1024), max_base64_bytes / (1024 * 1024))
 
-    mime = mime_type or _determine_mime_type(image_path)
-    # Choose output format: JPEG for photos (smaller), PNG for transparency
+    # Choose output format: JPEG for photos (smaller), PNG for transparency.
     pil_format = "PNG" if mime == "image/png" else "JPEG"
     out_mime = "image/png" if pil_format == "PNG" else "image/jpeg"
 
     try:
-        img = Image.open(image_path)
+        img = Image.open(_io.BytesIO(data))
     except Exception as exc:
         logger.info("Pillow cannot open image for resizing: %s", exc)
-        if data_url is None:
-            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
-        return data_url  # fall through to size-check in caller
-    # Convert RGBA to RGB for JPEG output
+        return _image_bytes_to_base64_data_url(data, mime)  # caller does the size-check
     if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
         img = img.convert("RGB")
 
@@ -443,8 +430,8 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                        max_base64_bytes / (1024 * 1024), len(candidate) / (1024 * 1024))
         return candidate
 
-    # Shouldn't reach here, but fall back to full encode
-    return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
+    # Shouldn't reach here, but fall back to the unresized encode.
+    return _image_bytes_to_base64_data_url(data, mime)
 
 
 # ---------------------------------------------------------------------------
@@ -607,77 +594,43 @@ def _build_native_vision_tool_result(
 async def _vision_analyze_native(
     image_url: str,
     question: str,
+    task_id: Optional[str] = None,
 ) -> Any:
     """Fast path for vision-capable main models.
 
-    Loads the image (local file OR remote URL), base64-encodes it, and
-    returns a multimodal tool-result envelope. The agent loop unwraps it;
-    provider adapters serialize it into the right tool-result-with-image
-    shape for each backend.
+    Resolves the image source to bytes (local file, file://, http(s), data:,
+    or a Docker-container path), base64-encodes it, and returns a multimodal
+    tool-result envelope. The agent loop unwraps it; provider adapters
+    serialize it into the right tool-result-with-image shape per backend.
 
     Returns:
         A ``_multimodal`` envelope dict on success.
         A JSON error string on failure (matches the existing tool-result
         contract so the agent loop displays errors normally).
     """
-    if not isinstance(image_url, str) or not image_url.strip():
-        return tool_error("image_url is required", success=False)
-
-    temp_image_path: Optional[Path] = None
-    should_cleanup = False
     try:
         from tools.interrupt import is_interrupted
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Resolve the image source (mirrors vision_analyze_tool's logic
-        # exactly so behaviour is consistent).
-        resolved_url = image_url
-        if resolved_url.startswith("file://"):
-            resolved_url = resolved_url[len("file://"):]
-        local_path = Path(os.path.expanduser(resolved_url))
+        from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
+        try:
+            resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
+        except ImageResolutionError as exc:
+            return tool_error(str(exc), success=False)
 
-        if local_path.is_file():
-            temp_image_path = local_path
-            should_cleanup = False
-        elif _validate_image_url(image_url):
-            blocked = check_website_access(image_url)
-            if blocked:
-                return tool_error(blocked["message"], success=False)
-            temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-            temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.jpg"
-            await _download_image(image_url, temp_image_path)
-            should_cleanup = True
-        else:
-            return tool_error(
-                "Invalid image source. Provide an HTTP/HTTPS URL or a "
-                "valid local file path.",
-                success=False,
-            )
+        image_data_url = _image_bytes_to_base64_data_url(resolved.data, resolved.mime)
 
-        image_size_bytes = temp_image_path.stat().st_size
-        detected_mime_type = _detect_image_mime_type(temp_image_path)
-        if not detected_mime_type:
-            return tool_error(
-                "Only real image files are supported for vision analysis.",
-                success=False,
-            )
-
-        image_data_url = _image_to_base64_data_url(
-            temp_image_path, mime_type=detected_mime_type,
-        )
-
-        # Proactive embed cap: this image gets baked into conversation
-        # history and re-sent on every subsequent turn.  Anthropic rejects
-        # any single base64 image over 5 MB with a 400, and because history
-        # is immutable, an oversized embed permanently wedges the session —
-        # retries can't clear bytes that are already in the request.  Resize
-        # DOWN to the embed target (4 MB, headroom under 5 MB) whenever the
-        # payload exceeds it, not just at the 20 MB hard ceiling.
+        # Proactive embed cap (#35732): this image gets baked into conversation
+        # history and re-sent on every subsequent turn.  Anthropic rejects any
+        # single base64 image over 5 MB with a 400, and because history is
+        # immutable, an oversized embed permanently wedges the session — retries
+        # can't clear bytes that are already in the request.  Resize DOWN to the
+        # embed target (4 MB, headroom under 5 MB) whenever the payload exceeds
+        # it, not just at the 20 MB hard ceiling.
         if len(image_data_url) > _EMBED_TARGET_BYTES:
-            image_data_url = _resize_image_for_vision(
-                temp_image_path, mime_type=detected_mime_type,
-                max_base64_bytes=_EMBED_TARGET_BYTES,
+            image_data_url = _resize_image_bytes_for_vision(
+                resolved.data, resolved.mime, max_base64_bytes=_EMBED_TARGET_BYTES,
             )
             # If even resizing can't get under the absolute hard ceiling,
             # there's nothing more we can do — reject rather than embed a
@@ -697,26 +650,19 @@ async def _vision_analyze_native(
             image_url=image_url,
             question=question,
             image_data_url=image_data_url,
-            image_size_bytes=image_size_bytes,
+            image_size_bytes=len(resolved.data),
         )
 
     except Exception as exc:
         logger.warning("Native vision fast path failed: %s", exc)
         return tool_error(f"Native vision failed: {exc}", success=False)
-    finally:
-        # Only delete temp files we created — never user-provided paths.
-        if should_cleanup and temp_image_path is not None:
-            try:
-                if temp_image_path.exists():
-                    temp_image_path.unlink()
-            except Exception:
-                pass
 
 
 async def vision_analyze_tool(
     image_url: str,
     user_prompt: str,
     model: str = None,
+    task_id: Optional[str] = None,
 ) -> str:
     """
     Analyze an image from a URL or local file path using vision AI.
@@ -746,8 +692,9 @@ async def vision_analyze_tool(
         Exception: If download fails, analysis fails, or API key is not set
         
     Note:
-        - For URLs, temporary images are stored under $HERMES_HOME/cache/vision/ and cleaned up
-        - For local file paths, the file is used directly and NOT deleted
+        - The source (local path, file://, http(s), data:, or a Docker-container
+          path) is resolved to bytes by ``tools.image_source``; any download
+          temp file is created and cleaned up there.
         - Supports common image formats (JPEG, PNG, GIF, WebP, etc.)
     """
     if not isinstance(user_prompt, str):
@@ -765,12 +712,6 @@ async def vision_analyze_tool(
         "image_size_bytes": 0
     }
     
-    temp_image_path = None
-    # Track whether we should clean up the file after processing.
-    # Local files (e.g. from the image cache) should NOT be deleted.
-    should_cleanup = True
-    detected_mime_type = None
-    
     try:
         from tools.interrupt import is_interrupted
         if is_interrupted():
@@ -778,54 +719,19 @@ async def vision_analyze_tool(
 
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
-        
-        # Determine if this is a local file path or a remote URL
-        # Strip file:// scheme so file URIs resolve as local paths.
-        resolved_url = image_url
-        if resolved_url.startswith("file://"):
-            resolved_url = resolved_url[len("file://"):]
-        local_path = Path(os.path.expanduser(resolved_url))
-        if local_path.is_file():
-            # Local file path (e.g. from platform image cache) -- skip download
-            logger.info("Using local image file: %s", image_url)
-            temp_image_path = local_path
-            should_cleanup = False  # Don't delete cached/local files
-        elif _validate_image_url(image_url):
-            # Remote URL -- download to a temporary location
-            blocked = check_website_access(image_url)
-            if blocked:
-                raise PermissionError(blocked["message"])
-            logger.info("Downloading image from URL...")
-            temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-            temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.jpg"
-            await _download_image(image_url, temp_image_path)
-            should_cleanup = True
-        else:
-            raise ValueError(
-                "Invalid image source. Provide an HTTP/HTTPS URL or a valid local file path."
-            )
-        
-        # Get image file size for logging
-        image_size_bytes = temp_image_path.stat().st_size
-        image_size_kb = image_size_bytes / 1024
-        logger.info("Image ready (%.1f KB)", image_size_kb)
 
-        detected_mime_type = _detect_image_mime_type(temp_image_path)
-        if not detected_mime_type:
-            raise ValueError("Only real image files are supported for vision analysis.")
-        
-        # Convert image to base64 — send at full resolution first.
-        # If the provider rejects it as too large, we auto-resize and retry.
-        logger.info("Converting image to base64...")
-        image_data_url = _image_to_base64_data_url(temp_image_path, mime_type=detected_mime_type)
-        data_size_kb = len(image_data_url) / 1024
-        logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
+        from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
+        try:
+            resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
+        except ImageResolutionError as exc:
+            raise ValueError(str(exc)) from exc
 
-        # Hard limit (20 MB) — no provider accepts payloads this large.
+        image_size_bytes = len(resolved.data)
+        image_data_url = _image_bytes_to_base64_data_url(resolved.data, resolved.mime)
+
+        # Hard limit (20 MB) — no provider accepts payloads this large; resize once.
         if len(image_data_url) > _MAX_BASE64_BYTES:
-            # Try to resize down to 5 MB before giving up.
-            image_data_url = _resize_image_for_vision(
-                temp_image_path, mime_type=detected_mime_type)
+            image_data_url = _resize_image_bytes_for_vision(resolved.data, resolved.mime)
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 raise ValueError(
                     f"Image too large for vision API: base64 payload is "
@@ -837,7 +743,7 @@ async def vision_analyze_tool(
                 )
 
         debug_call_data["image_size_bytes"] = image_size_bytes
-        
+
         # Use the prompt as provided (model_tools.py now handles full description formatting)
         comprehensive_prompt = user_prompt
         
@@ -900,8 +806,7 @@ async def vision_analyze_tool(
                     len(image_data_url) / (1024 * 1024),
                     _RESIZE_TARGET_BYTES / (1024 * 1024),
                 )
-                image_data_url = _resize_image_for_vision(
-                    temp_image_path, mime_type=detected_mime_type)
+                image_data_url = _resize_image_bytes_for_vision(resolved.data, resolved.mime)
                 messages[0]["content"][1]["image_url"]["url"] = image_data_url
                 response = await async_call_llm(**call_kwargs)
             else:
@@ -983,17 +888,6 @@ async def vision_analyze_tool(
         _debug.save()
         
         return json.dumps(result, indent=2, ensure_ascii=False)
-    
-    finally:
-        # Clean up temporary image file (but NOT local/cached files)
-        if should_cleanup and temp_image_path and temp_image_path.exists():
-            try:
-                temp_image_path.unlink()
-                logger.debug("Cleaned up temporary image file")
-            except Exception as cleanup_error:
-                logger.warning(
-                    "Could not delete temporary file: %s", cleanup_error, exc_info=True
-                )
 
 
 def check_vision_requirements() -> bool:
@@ -1112,6 +1006,7 @@ VISION_ANALYZE_SCHEMA = {
 def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     image_url = args.get("image_url", "")
     question = args.get("question", "")
+    task_id = kw.get("task_id")  # carries the Docker exec-read seam (#32709)
 
     # Fast path: when native image routing is in effect for the active main
     # model (provider accepts images in tool results, or the user set the
@@ -1121,7 +1016,7 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     # information loss, no extra latency.
     if _should_use_native_vision_fast_path():
         logger.info("vision_analyze: native fast path")
-        return _vision_analyze_native(image_url, question)
+        return _vision_analyze_native(image_url, question, task_id=task_id)
 
     # Legacy path: aux LLM describes the image and we return its text.
     full_prompt = (
@@ -1129,7 +1024,7 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         f"following question:\n\n{question}"
     )
     model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-    return vision_analyze_tool(image_url, full_prompt, model)
+    return vision_analyze_tool(image_url, full_prompt, model, task_id=task_id)
 
 
 registry.register(
@@ -1282,6 +1177,9 @@ async def video_analyze_tool(
         logger.info("Analyzing video: %s", video_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
 
+        # TODO: share tools.image_source's source-fetch layer once it is split
+        # from the image-specific _finalize (video needs its own magic-byte
+        # sniff + larger size cap, so it can't route through the image resolver).
         # Resolve local path vs remote URL
         resolved_url = video_url
         if resolved_url.startswith("file://"):

@@ -402,6 +402,30 @@ def to_agent_visible_cache_path(
     return host_path
 
 
+def from_agent_visible_cache_path(
+    container_path: str,
+    container_base: str = "/root/.hermes",
+) -> str:
+    """Translate a sandbox/container cache path back to its host path.
+
+    Inverse of ``to_agent_visible_cache_path``. Returns the input unchanged
+    when the active backend is not Docker, or when the path is not under any
+    auto-mounted cache directory — the caller then treats a still-container
+    path as "no host file" and falls back to an in-container read.
+    """
+    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+        return container_path
+
+    path = Path(container_path)
+    for mount in get_cache_directory_mounts(container_base=container_base):
+        try:
+            rel = path.relative_to(mount["container_path"])
+        except ValueError:
+            continue
+        return str(Path(mount["host_path"]) / rel)
+    return container_path
+
+
 def iter_cache_files(
     container_base: str = "/root/.hermes",
 ) -> List[Dict[str, str]]:

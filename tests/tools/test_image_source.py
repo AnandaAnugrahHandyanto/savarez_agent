@@ -1,0 +1,213 @@
+"""Unified vision image-source resolver."""
+import base64
+import shlex
+
+import pytest
+
+from tools.image_source import (
+    NotAnImage,
+    ResolveContext,
+    ResolvedImage,
+    SourceNotFound,
+    SourceTooLarge,
+    SourceUnsafe,
+    UnsupportedScheme,
+    resolve_image_source,
+)
+
+PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+
+@pytest.mark.asyncio
+async def test_data_url_resolves_to_bytes():
+    res = await resolve_image_source(f"data:image/png;base64,{PNG_B64}", ResolveContext())
+    assert isinstance(res, ResolvedImage)
+    assert res.mime == "image/png"
+    assert res.origin == "data"
+    assert res.data == base64.b64decode(PNG_B64)
+
+
+@pytest.mark.asyncio
+async def test_data_url_non_image_rejected():
+    with pytest.raises(NotAnImage):
+        await resolve_image_source("data:text/plain;base64,aGk=", ResolveContext())
+
+
+@pytest.mark.asyncio
+async def test_data_url_over_ingest_budget_rejected():
+    # > 50MB ingest budget -> rejected. (The 20MB *payload* cap is enforced
+    # post-resize at the call sites, not here — see test below.)
+    big = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * (60 * 1024 * 1024)).decode()
+    with pytest.raises(SourceTooLarge):
+        await resolve_image_source(f"data:image/png;base64,{big}", ResolveContext())
+
+
+@pytest.mark.asyncio
+async def test_data_url_within_ingest_budget_resolves():
+    # Regression guard: a 20-50MB image must NOT be rejected by the resolver —
+    # it has to reach the call site so it can be resized under the payload cap.
+    # (Previously _finalize hard-capped raw bytes at 20MB and broke this.)
+    big = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * (30 * 1024 * 1024)).decode()
+    res = await resolve_image_source(f"data:image/png;base64,{big}", ResolveContext())
+    assert res.origin == "data"
+    assert res.mime == "image/png"
+    assert len(res.data) > 20 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_unknown_scheme_rejected():
+    with pytest.raises(UnsupportedScheme):
+        await resolve_image_source("s3://bucket/x.png", ResolveContext())
+
+
+@pytest.mark.asyncio
+async def test_blank_source_rejected():
+    with pytest.raises(Exception):
+        await resolve_image_source("   ", ResolveContext())
+
+
+@pytest.mark.asyncio
+async def test_http_url_downloads_bytes(monkeypatch):
+    from tools import image_source
+
+    png = base64.b64decode(PNG_B64)
+
+    async def fake_download(url):
+        return png
+
+    monkeypatch.setattr(image_source, "_http_block_reason", lambda u: None)
+    monkeypatch.setattr(image_source, "_download_to_bytes", fake_download)
+    res = await resolve_image_source("https://ex.com/a.png", ResolveContext())
+    assert res.origin == "http"
+    assert res.data == png
+
+
+@pytest.mark.asyncio
+async def test_http_url_ssrf_blocked(monkeypatch):
+    from tools import image_source
+
+    monkeypatch.setattr(
+        image_source, "_http_block_reason", lambda u: "blocked: unsafe or private URL")
+    with pytest.raises(SourceUnsafe):
+        await resolve_image_source("http://169.254.169.254/x.png", ResolveContext())
+
+
+@pytest.mark.asyncio
+async def test_http_policy_block_preserves_message(monkeypatch):
+    # The specific website-policy reason must survive (not collapse to a
+    # generic "blocked" string), so the agent sees *why* the fetch was refused.
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda u: True)
+    monkeypatch.setattr(
+        "tools.website_policy.check_website_access",
+        lambda u: {"message": "Blocked by website policy: example.com"})
+    with pytest.raises(SourceUnsafe) as ei:
+        await resolve_image_source("https://example.com/a.png", ResolveContext())
+    assert "Blocked by website policy: example.com" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_file_uri_resolves(tmp_path):
+    img = tmp_path / "cache" / "images" / "a.png"
+    img.parent.mkdir(parents=True)
+    img.write_bytes(base64.b64decode(PNG_B64))
+    res = await resolve_image_source(f"file://{img}", ResolveContext())
+    assert res.origin == "file"
+    assert res.mime == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_local_path_outside_cache_allowed_in_pr1(tmp_path):
+    # PR 1 preserves today's permissive behavior; the allowlist (PR 2) is a seam.
+    img = tmp_path / "Pictures" / "cat.png"
+    img.parent.mkdir(parents=True)
+    img.write_bytes(base64.b64decode(PNG_B64))
+    res = await resolve_image_source(str(img), ResolveContext())
+    assert res.origin == "file"
+
+
+@pytest.mark.asyncio
+async def test_tilde_path_expanded(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    img = tmp_path / "shot.png"
+    img.write_bytes(base64.b64decode(PNG_B64))
+    res = await resolve_image_source("~/shot.png", ResolveContext())
+    assert res.origin == "file"
+
+
+@pytest.mark.asyncio
+async def test_missing_local_file_not_found(tmp_path):
+    with pytest.raises(SourceNotFound):
+        await resolve_image_source(str(tmp_path / "nope.png"), ResolveContext())
+
+
+class _FakeEnv:
+    def __init__(self, files):
+        self.files = files
+
+    def execute(self, command, cwd=None, **kw):
+        # base64 -- <path> | tr -d '\n'
+        tokens = shlex.split(command)
+        path = tokens[tokens.index("--") + 1]
+        if path in self.files:
+            return {"output": base64.b64encode(self.files[path]).decode(), "returncode": 0}
+        return {"output": "", "returncode": 1}
+
+
+@pytest.mark.asyncio
+async def test_container_path_exec_read_fallback(monkeypatch):
+    from tools import image_source
+
+    png = base64.b64decode(PNG_B64)
+    monkeypatch.setattr(image_source, "_get_active_env",
+                        lambda tid: _FakeEnv({"/workspace/shot.png": png}))
+    monkeypatch.setattr(image_source, "_maybe_translate_container_path", lambda p, ctx: p)
+    res = await resolve_image_source("/workspace/shot.png", ResolveContext(task_id="t1"))
+    assert res.origin == "container"
+    assert res.data == png
+
+
+@pytest.mark.asyncio
+async def test_container_fallback_fails_closed_without_env(monkeypatch):
+    from tools import image_source
+
+    monkeypatch.setattr(image_source, "_get_active_env", lambda tid: None)
+    monkeypatch.setattr(image_source, "_maybe_translate_container_path", lambda p, ctx: p)
+    with pytest.raises(SourceNotFound):
+        await resolve_image_source("/workspace/x.png", ResolveContext(task_id="t1"))
+
+
+class _RecordingEnv:
+    def __init__(self):
+        self.commands = []
+
+    def execute(self, command, cwd=None, **kw):
+        self.commands.append(command)
+        return {"output": "", "returncode": 1}
+
+
+@pytest.mark.asyncio
+async def test_exec_read_guards_against_dash_flag_injection(monkeypatch):
+    # A leading-dash path must not be parsed as a base64 option (argument
+    # injection); `--` must terminate option parsing before the quoted path.
+    from tools import image_source
+
+    env = _RecordingEnv()
+    monkeypatch.setattr(image_source, "_get_active_env", lambda tid: env)
+    monkeypatch.setattr(image_source, "_maybe_translate_container_path", lambda p, ctx: p)
+    with pytest.raises(SourceNotFound):
+        await resolve_image_source("./-i/etc/shadow", ResolveContext(task_id="t1"))
+    assert env.commands
+    cmd = env.commands[0]
+    assert " -- " in cmd
+    assert cmd.index(" -- ") < cmd.index("-i/etc/shadow")
+
+
+@pytest.mark.asyncio
+async def test_container_exec_read_nonimage_rejected(monkeypatch):
+    from tools import image_source
+
+    monkeypatch.setattr(image_source, "_get_active_env",
+                        lambda tid: _FakeEnv({"/workspace/x.png": b"not an image"}))
+    monkeypatch.setattr(image_source, "_maybe_translate_container_path", lambda p, ctx: p)
+    with pytest.raises(NotAnImage):
+        await resolve_image_source("/workspace/x.png", ResolveContext(task_id="t1"))
