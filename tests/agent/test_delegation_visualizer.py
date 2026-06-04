@@ -569,3 +569,33 @@ def test_install_hint_uses_runtime_detect(monkeypatch, tmp_path):
     # The hint should reference the detected hermes-agent root (parent of the
     # hermes_cli package), proving runtime detection drives the message.
     assert str(fake_root) in hint, hint
+
+
+# ---------------------------------------------------------------------------
+# module docstring discoverability (Task 6)
+# ---------------------------------------------------------------------------
+#
+# The module docstring doubles as the in-source `/delegation` user guide: a
+# user running `help(delegation_visualizer)` or
+# `python -c "import hermes_cli.delegation_visualizer; help(...)"` should be
+# able to discover the slash command, its subcommands, and how to install the
+# optional dependency without reading the implementation.
+
+def test_module_docstring_mentions_slash_command():
+    """The module docstring advertises the `/delegation` slash command."""
+    assert dv.__doc__ is not None
+    assert "/delegation" in dv.__doc__, dv.__doc__
+
+
+def test_module_docstring_mentions_subcommands():
+    """The module docstring documents all three subcommands."""
+    doc = dv.__doc__ or ""
+    for sub in ("status", "verify", "report"):
+        assert sub in doc, f"{sub!r} missing from module docstring:\n{doc}"
+
+
+def test_module_docstring_mentions_install():
+    """The module docstring tells the user how to install the dependency."""
+    doc = dv.__doc__ or ""
+    # Either the optional-extra name or a pip install command must appear.
+    assert ("[delegation]" in doc) or ("pip install" in doc), doc

@@ -1,25 +1,70 @@
-"""CLI subcommand: ``hermes delegation <subcommand>``.
+"""CLI subcommand: the ``/delegation`` slash command (``hermes delegation``).
 
-A thin wrapper around the standalone ``hermes_delegation`` package (the M1+M2
-delegation-visualizer). It exposes the three subcommands that make sense inside
-a Hermes session — ``status``, ``verify``, and ``report`` — and delegates the
-actual work to the M1+M2 public API:
+The ``/delegation`` slash command inspects multi-agent delegation runs from
+inside a Hermes session. It is a thin wrapper around the standalone
+``hermes_delegation`` package (the M1+M2 delegation-visualizer) and exposes the
+three subcommands that make sense inside an interactive session — ``status``,
+``verify``, and ``report``.
 
+Usage
+-----
+Inside a Hermes session (slash-command form)::
+
+    /delegation status
+    /delegation verify <task-id>
+    /delegation report <task-id> --output report.md
+
+Equivalent standalone CLI form::
+
+    hermes delegation status
+    hermes delegation verify <task-id>
+    hermes delegation report <task-id> --output report.md
+
+Subcommands
+-----------
 * ``status``  → check whether the verifier daemon is listening on its Unix
                 socket (uses ``hermes_delegation.cli._daemon_is_listening``).
-* ``verify``  → re-derive the authoritative snapshot from the ledger with
-                ``hermes_delegation.compute_snapshot`` and print it as JSON.
-* ``report``  → same snapshot, rendered to Markdown via
-                ``hermes_delegation.report.render_report``.
+                Prints the socket path. Exit code 0 when the daemon is running,
+                1 otherwise — usable as a health check in scripts / ``&&``
+                chains. The socket defaults to
+                ``~/.hermes/delegation/verifier.sock`` (override with
+                ``--socket-path``).
+* ``verify``  → re-derive the authoritative snapshot for a task from its ledger
+                with ``hermes_delegation.compute_snapshot`` and print it as
+                pretty JSON. Pure — reads ``<base-dir>/<task_id>.jsonl`` and
+                recomputes the snapshot, so no daemon is required. The base dir
+                defaults to ``~/.hermes/delegation/ledgers`` (override with
+                ``--base-dir``). Fails if the ledger is missing or malformed.
+* ``report``  → compute the snapshot the same way ``verify`` does, then render
+                it to the Markdown delegation report via
+                ``hermes_delegation.report.render_report``. Writes to the path
+                given by ``--output``; prints to stdout when omitted.
 
 ``watch`` and ``dashboard`` stay standalone-only (the live TUI is awkward in an
 interactive session); point users at ``hermes-delegation dashboard <task>`` in a
-separate terminal for the live view.
+separate terminal for the live view, and ``hermes-delegation watch &`` to start
+the verifier daemon.
 
+Install
+-------
+``/delegation`` requires the optional ``hermes_delegation`` package (Python
+3.11+). Install the optional extra from a hermes-agent checkout::
+
+    pip install -e ".[delegation]"
+
+or, from a PyPI/wheel install::
+
+    pip install "hermes-agent[delegation]"
+
+If the package is not installed (or the Python version is too old), every
+subcommand fails gracefully with an actionable install hint rather than
+crashing.
+
+Implementation notes
+--------------------
 This module mirrors ``hermes_cli/curator.py``: no side effects at import time,
 ``register_cli(parent)`` wires the argparse subparsers, and ``cli_main(argv)`` is
-a standalone entry point. If the ``hermes_delegation`` package is not installed,
-every subcommand fails gracefully with an install hint rather than crashing.
+a standalone entry point.
 """
 
 from __future__ import annotations
