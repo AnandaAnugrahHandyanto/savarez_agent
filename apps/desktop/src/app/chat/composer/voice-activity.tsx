@@ -6,6 +6,7 @@ import { Loader2, Mic, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { stopVoicePlayback } from '@/lib/voice-playback'
 import { $voicePlayback } from '@/store/voice-playback'
+import { useTranslation } from '@/i18n'
 
 import type { VoiceActivityState } from './types'
 
@@ -163,12 +164,16 @@ function PlaybackWaveform({ audioElement }: { audioElement: HTMLAudioElement | n
 }
 
 export function VoiceActivity({ state }: { state: VoiceActivityState }) {
+  const t = useTranslation()
+
   if (state.status === 'idle') {
     return null
   }
 
   const recording = state.status === 'recording'
-  const title = recording ? 'Dictating' : 'Transcribing'
+  const title = recording
+    ? t('chat.composer.voice.activity.dictating')
+    : t('chat.composer.voice.activity.transcribing')
 
   return (
     <div
@@ -201,6 +206,7 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
 }
 
 export function VoicePlaybackActivity() {
+  const t = useTranslation()
   const playback = useStore($voicePlayback)
 
   if (playback.status === 'idle') {
@@ -210,10 +216,10 @@ export function VoicePlaybackActivity() {
   const preparing = playback.status === 'preparing'
 
   const title = preparing
-    ? 'Preparing audio'
+    ? t('chat.composer.voice.playback.preparingAudio')
     : playback.source === 'voice-conversation'
-      ? 'Speaking response'
-      : 'Reading aloud'
+      ? t('chat.composer.voice.playback.speakingResponse')
+      : t('chat.composer.voice.playback.readingAloud')
 
   return (
     <div
@@ -241,7 +247,7 @@ export function VoicePlaybackActivity() {
         variant="ghost"
       >
         <VolumeX size={12} />
-        Stop
+        {t('chat.composer.voice.playback.stop')}
       </Button>
     </div>
   )
