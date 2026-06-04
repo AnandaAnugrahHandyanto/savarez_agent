@@ -1181,12 +1181,13 @@ def test_native_quota_state_dir_splits_pathsep_and_ignores_other_providers(monke
 
 def test_expired_legacy_quota_is_ignored(monkeypatch, worker_env):
     home = os.environ["HERMES_HOME"]
-    _write_quota_usage(home, pct=98.0, resets_at=datetime.now(timezone.utc) - timedelta(minutes=1))
+    legacy = _write_quota_usage(home, pct=98.0, resets_at=datetime.now(timezone.utc) - timedelta(minutes=1))
     monkeypatch.delenv("HERMES_NATIVE_QUOTA_STATE_DIR", raising=False)
 
     from tools.kanban_tools import _estimate_quota_usage
 
     assert _estimate_quota_usage() is None
+    assert not legacy.exists()
 
 
 def test_native_additional_limits_high_usage_beats_low_top_level_window(monkeypatch, worker_env):

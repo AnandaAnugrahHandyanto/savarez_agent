@@ -887,6 +887,10 @@ def _parse_legacy_quota_usage(path: Path, now: datetime) -> Optional[dict[str, A
         return None
     resets_at = parsed.get("resets_at")
     if _quota_timestamp_is_expired(resets_at, now):
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            logger.debug("failed to remove expired legacy quota state %s", path, exc_info=True)
         return None
     pct = _quota_pct_from_window(parsed)
     if pct is None:
