@@ -1049,3 +1049,97 @@ class TestClearFunctions:
         result = clear_all()
         assert result["deleted"] is False
         assert result["bytes_freed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Regression: issue #38891 — checkpoint dirs polluted on failed snapshot
+# ---------------------------------------------------------------------------
+
+class TestEnsureCheckpointDirPollution:
+    """When ``_take()`` fails, the dir must NOT be added to ``_checkpointed_dirs``.
+
+    Before the fix, ``ensure_checkpoint`` called
+    ``self._checkpointed_dirs.add(abs_dir)`` *before* ``_take()``.  If
+    ``_take()`` returned ``False`` or raised, the dir was permanently
+    recorded and all future calls short-circuited — preventing retries.
+    """
+
+    def test_dir_not_added_on_take_failure(self, tmp_path):
+        """_take() returns False → dir must not be in _checkpointed_dirs."""
+        m = CheckpointManager(enabled=True)
+        work_dir = str(tmp_path / "bad_project")
+        tmp_path.joinpath("bad_project").mkdir()
+
+        original_take = m._take
+        m._take = lambda wd, reason: False
+
+        try:
+            result = m.ensure_checkpoint(work_dir, reason="test")
+            assert result is False
+            assert work_dir not in m._checkpointed_dirs
+            # Retry should actually call _take again (not short-circuit)
+            result2 = m.ensure_checkpoint(work_dir, reason="retry")
+            assert result2 is False
+        finally:
+            m._take = original_take
+
+    def test_dir_not_added_on_take_exception(self, tmp_path):
+        """_take() raises → dir must not be in _checkpointed_dirs."""
+        m = CheckpointManager(enabled=True)
+        work_dir = str(tmp_path / "crash_project")
+        tmp_path.joinpath("crash_project").mkdir()
+
+        call_count = 0
+
+        def _take_that_raises(wd, reason):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("simulated failure")
+
+        m._take = _take_that_raises
+
+        result = m.ensure_checkpoint(work_dir, reason="test")
+        assert result is False
+        assert work_dir not in m._checkpointed_dirs
+        # Second call should retry, not skip
+        result2 = m.ensure_checkpoint(work_dir, reason="retry")
+        assert result2 is False
+        assert call_count == 2  # Both calls reached _take
+
+    def test_dir_added_on_success_then_skipped(self, tmp_path):
+        """_take() succeeds → dir is recorded → second call is a no-op."""
+        m = CheckpointManager(enabled=True)
+        work_dir = str(tmp_path / "good_project")
+        tmp_path.joinpath("good_project").mkdir()
+
+        m._take = lambda wd, reason: True
+
+        result1 = m.ensure_checkpoint(work_dir, reason="test")
+        assert result1 is True
+        assert work_dir in m._checkpointed_dirs
+
+        result2 = m.ensure_checkpoint(work_dir, reason="test")
+        assert result2 is False  # Already checkpointed
+
+    def test_false_then_success_retry(self, tmp_path):
+        """After _take() returns False, a later success should record the dir."""
+        m = CheckpointManager(enabled=True)
+        work_dir = str(tmp_path / "retry_project")
+        tmp_path.joinpath("retry_project").mkdir()
+
+        call_count = 0
+
+        def _take_selective(wd, reason):
+            nonlocal call_count
+            call_count += 1
+            return call_count >= 2  # Fail first, succeed second
+
+        m._take = _take_selective
+
+        result1 = m.ensure_checkpoint(work_dir, reason="first")
+        assert result1 is False
+        assert work_dir not in m._checkpointed_dirs
+
+        result2 = m.ensure_checkpoint(work_dir, reason="second")
+        assert result2 is True
+        assert work_dir in m._checkpointed_dirs
