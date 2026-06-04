@@ -228,6 +228,10 @@ def load_hermes_dotenv(
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 
+    # Preserve any parent-injected session token before dotenv clobbers it.
+    # A stale pinned token in .env causes a 401 auth mismatch boot loop (#38575).
+    _desktop_token: str | None = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN")
+
     # Fix corrupted .env files before python-dotenv parses them (#8908).
     if user_env.exists():
         _sanitize_env_file_if_needed(user_env)
@@ -243,6 +247,9 @@ def load_hermes_dotenv(
         loaded.append(project_env_path)
 
     _apply_external_secret_sources(home_path)
+
+    if _desktop_token is not None:
+        os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] = _desktop_token
 
     return loaded
 
