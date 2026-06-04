@@ -948,36 +948,68 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
            Fix: reduce max_tokens (the output cap) for this call.
            Do NOT touch context_length — the window hasn't shrunk.
 
-    Anthropic's API returns errors like:
+    Supported provider error formats:
+
+    **Anthropic**:
       "max_tokens: 32768 > context_window: 200000 - input_tokens: 190000 = available_tokens: 10000"
 
-    Returns the number of output tokens that would fit (e.g. 10000 above), or None if
-    the error does not look like a max_tokens-too-large error.
+    **OpenRouter / Nous Research inference**:
+      "This endpoint's maximum context length is 256000 tokens. However, you requested
+       about 281093 tokens (5683 of text input, 13410 of tool input, 262000 in the output)."
+      → available = context_length - text_input - tool_input = 236907
+
+    Returns the number of output tokens that would fit, or None if the error does not
+    look like a max_tokens-too-large error.
     """
     error_lower = error_msg.lower()
 
-    # Must look like an output-cap error, not a prompt-length error.
-    is_output_cap_error = (
+    # ── Phase 1: detect whether this is an output-cap error ──────────────
+
+    # Anthropic: "available_tokens" or "available tokens" with "max_tokens"
+    is_anthropic = (
         "max_tokens" in error_lower
         and ("available_tokens" in error_lower or "available tokens" in error_lower)
     )
-    if not is_output_cap_error:
+
+    # OpenRouter / Nous: "N in the output" + "maximum context length is X"
+    is_openrouter = bool(re.search(r'\d+\s+in\s+the\s+output', error_lower))
+
+    if not is_anthropic and not is_openrouter:
         return None
 
-    # Extract the available_tokens figure.
+    # ── Phase 2: extract available output tokens ─────────────────────────
+
     # Anthropic format: "… = available_tokens: 10000"
-    patterns = [
-        r'available_tokens[:\s]+(\d+)',
-        r'available\s+tokens[:\s]+(\d+)',
-        # fallback: last number after "=" in expressions like "200000 - 190000 = 10000"
-        r'=\s*(\d+)\s*$',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, error_lower)
-        if match:
-            tokens = int(match.group(1))
-            if tokens >= 1:
-                return tokens
+    if is_anthropic:
+        patterns = [
+            r'available_tokens[:\s]+(\d+)',
+            r'available\s+tokens[:\s]+(\d+)',
+            # fallback: last number after "=" in expressions like "200000 - 190000 = 10000"
+            r'=\s*(\d+)\s*$',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, error_lower)
+            if match:
+                tokens = int(match.group(1))
+                if tokens >= 1:
+                    return tokens
+
+    # OpenRouter / Nous format: extract components and calculate available.
+    #   "maximum context length is 256000 tokens"
+    #   "5683 of text input, 13410 of tool input, 262000 in the output"
+    # available = context_length - text_input - tool_input
+    ctx_match = re.search(r'max(?:imum)?\s+context\s+length\s+is\s+(\d+)', error_lower)
+    text_match = re.search(r'(\d+)\s+of\s+text\s+input', error_lower)
+    tool_match = re.search(r'(\d+)\s+of\s+tool\s+input', error_lower)
+
+    if ctx_match:
+        ctx_len = int(ctx_match.group(1))
+        text_in = int(text_match.group(1)) if text_match else 0
+        tool_in = int(tool_match.group(1)) if tool_match else 0
+        available = ctx_len - text_in - tool_in
+        if available >= 1:
+            return available
+
     return None
 
 

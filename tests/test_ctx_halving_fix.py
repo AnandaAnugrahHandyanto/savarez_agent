@@ -102,6 +102,47 @@ class TestParseAvailableOutputTokens:
         msg = "rate_limit_error: too many requests per minute"
         assert self._parse(msg) is None
 
+    # ── OpenRouter / Nous Research format ─────────────────────────────────
+
+    def test_openrouter_nous_format(self):
+        """OpenRouter/Nous error: parse context_length - text_input - tool_input."""
+        msg = (
+            "This request is not valid. Check the model name and other parameters. "
+            "Additional info: This endpoint's maximum context length is 256000 tokens. "
+            "However, you requested about 281093 tokens "
+            "(5683 of text input, 13410 of tool input, 262000 in the output). "
+            "Please reduce the length of either one, or use the context-compression plugin "
+            "to compress your prompt automatically."
+        )
+        # available = 256000 - 5683 - 13410 = 236907
+        assert self._parse(msg) == 236907
+
+    def test_openrouter_format_without_tool_input(self):
+        """OpenRouter error with no tool input component."""
+        msg = (
+            "This endpoint's maximum context length is 128000 tokens. "
+            "However, you requested about 135000 tokens "
+            "(135000 in the output)."
+        )
+        # available = 128000 - 0 - 0 = 128000
+        assert self._parse(msg) == 128000
+
+    def test_openrouter_format_with_only_text_input(self):
+        """OpenRouter error with text input but no tool input."""
+        msg = (
+            "This endpoint's maximum context length is 200000 tokens. "
+            "However, you requested about 210000 tokens "
+            "(10000 of text input, 200000 in the output)."
+        )
+        # available = 200000 - 10000 - 0 = 190000
+        assert self._parse(msg) == 190000
+
+    def test_openrouter_format_no_context_length(self):
+        """OpenRouter-like error without context length should still detect output amount."""
+        msg = "You requested 50000 in the output which exceeds the limit."
+        # No context_length match → cannot calculate available → None
+        assert self._parse(msg) is None
+
 
 # ---------------------------------------------------------------------------
 # Context-overflow recovery — only trust provider-reported limits
