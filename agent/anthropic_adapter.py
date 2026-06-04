@@ -369,21 +369,19 @@ def _normalize_base_url_text(base_url) -> str:
 def _normalize_anthropic_client_base_url(base_url: str | None) -> str:
     """Normalize base URLs before handing them to the Anthropic SDK.
 
-    Most Anthropic-compatible endpoints want the exact root passed through.
-    OpenCode's Anthropic-wire routes are the exception: Hermes stores the Go/Zen
-    profile base URLs with a trailing ``/v1`` for OpenAI-compatible transports,
-    but Anthropic's SDK appends its own ``/v1/messages`` suffix. Leaving the
-    stored ``/v1`` intact yields ``.../v1/v1/messages`` and a 404.
+    Anthropic's SDK appends its own ``/v1/messages`` suffix. Hermes often keeps
+    provider roots in an OpenAI-compatible form ending in ``/v1`` (OpenCode
+    Go/Zen, self-hosted Anthropic relays, some Azure-compatible proxies, etc.).
+    Passing that ``/v1`` through would produce ``.../v1/v1/messages`` and a 404,
+    so strip only the trailing transport suffix while preserving any earlier path
+    segments.
     """
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return ""
-    lowered = normalized.rstrip("/").lower()
-    if lowered.endswith("/zen/go/v1") or lowered.endswith("/zen/v1"):
-        import re as _re
+    import re as _re
 
-        return _re.sub(r"/v1/?$", "", normalized.rstrip("/"))
-    return normalized
+    return _re.sub(r"/v1/?$", "", normalized.rstrip("/"))
 
 
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:

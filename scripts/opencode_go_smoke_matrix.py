@@ -53,19 +53,33 @@ def _load_key() -> str:
 
 def _run(cmd: list[str], *, timeout: int = 180) -> dict[str, Any]:
     started = time.time()
-    proc = subprocess.run(
-        cmd,
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout,
+        )
+        output = proc.stdout
+        exit_code = proc.returncode
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        output = f"{stdout}{stderr}\nTIMEOUT after {timeout}s"
+        exit_code = 124
+    except FileNotFoundError as exc:
+        output = f"MISSING_CMD: {exc}"
+        exit_code = 127
+    except OSError as exc:
+        output = f"OSERROR: {type(exc).__name__}: {exc}"
+        exit_code = 1
     return {
         "cmd": cmd,
-        "exit_code": proc.returncode,
+        "exit_code": exit_code,
         "seconds": round(time.time() - started, 2),
-        "output": proc.stdout,
+        "output": output,
     }
 
 
@@ -125,8 +139,8 @@ def probe_aiagent(model: str) -> dict[str, Any]:
 
     started = time.time()
     api_mode = opencode_model_api_mode("opencode-go", model)
-    key = _load_key()
     try:
+        key = _load_key()
         agent = AIAgent(
             api_key=key,
             base_url="https://opencode.ai/zen/go/v1",
