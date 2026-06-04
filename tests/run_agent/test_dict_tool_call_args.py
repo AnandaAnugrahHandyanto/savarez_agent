@@ -56,6 +56,8 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
         "run_agent.handle_function_call",
         lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True, "args": args}),
     )
+    monkeypatch.setattr("agent.model_metadata._query_ollama_api_show", lambda *args, **kwargs: None)
+    monkeypatch.setattr("agent.model_metadata.detect_local_server_type", lambda *args, **kwargs: None)
 
     agent = AIAgent(
         model="test-model",

@@ -913,7 +913,7 @@ def _prune_pre_update_backups(backup_dir: Path, keep: int) -> int:
     backups = sorted(
         (p for p in backup_dir.iterdir()
          if p.is_file() and p.name.startswith(_PRE_UPDATE_PREFIX) and p.suffix.lower() == ".zip"),
-        key=lambda p: p.name,
+        key=lambda p: (p.stat().st_mtime_ns, p.name),
         reverse=True,
     )
 

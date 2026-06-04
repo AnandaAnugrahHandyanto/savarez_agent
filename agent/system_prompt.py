@@ -24,6 +24,7 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, List, Optional
 
 from agent.instruction_surface import (
@@ -336,13 +337,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # CLI), None lets build_context_files_prompt fall back to the launch
         # dir — the user's real cwd there, but the install dir for the gateway
         # daemon, which is why the gateway sets TERMINAL_CWD.
-        _context_cwd_path = resolve_context_cwd()
-        _context_cwd = str(_context_cwd_path) if _context_cwd_path is not None else None
+        _context_cwd = resolve_context_cwd()
         context_files_prompt = _r.build_context_files_prompt(
             cwd=_context_cwd, skip_soul=_soul_loaded)
         if context_files_prompt:
             context_parts.append(context_files_prompt)
-            project_block = build_project_context_manifest(cwd=_context_cwd or os.getcwd())
+            project_block = build_project_context_manifest(cwd=str(_context_cwd) if _context_cwd is not None else os.getcwd())
             if project_block:
                 _record_block(
                     id=project_block.id,
@@ -366,7 +366,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                     authority=650,
                     scope="project",
                     origin="agent.prompt_builder.build_context_files_prompt",
-                    path=_context_cwd,
+                    path=str(_context_cwd) if _context_cwd is not None else None,
                     trust="workspace",
                     cache_policy="session",
                     labels={"project", "workflow"},

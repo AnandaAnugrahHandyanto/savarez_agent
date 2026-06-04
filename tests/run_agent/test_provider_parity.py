@@ -60,6 +60,8 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
     monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
     monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
     monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr("agent.model_metadata._query_ollama_api_show", lambda *args, **kwargs: None)
+    monkeypatch.setattr("agent.model_metadata.detect_local_server_type", lambda *args, **kwargs: None)
     kwargs = dict(
         api_key="test-key",
         base_url=base_url,
@@ -1009,7 +1011,17 @@ class TestBuildAssistantMessage:
 # ── Auxiliary client provider resolution ─────────────────────────────────────
 
 class TestAuxiliaryClientProviderPriority:
-    """Verify auxiliary client resolution doesn't break for any provider."""
+    """Verify auxiliary fallback resolution doesn't break for any provider."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_main_provider(self, monkeypatch):
+        from agent import auxiliary_client
+
+        auxiliary_client._reset_aux_unhealthy_cache()
+        monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: None)
+        monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: None)
+        yield
+        auxiliary_client._reset_aux_unhealthy_cache()
 
     def test_openrouter_always_wins(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

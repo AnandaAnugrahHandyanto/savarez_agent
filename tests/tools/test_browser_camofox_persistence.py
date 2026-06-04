@@ -31,6 +31,13 @@ def _mock_response(status=200, json_data=None):
     return resp
 
 
+@pytest.fixture(autouse=True)
+def _isolate_camofox_get_requests():
+    """Keep navigate-side health/snapshot probes from reaching real localhost."""
+    with patch("tools.browser_camofox.requests.get", return_value=_mock_response(json_data={})):
+        yield
+
+
 def _enable_persistence():
     """Return a patch context that enables managed persistence via config."""
     config = {"browser": {"camofox": {"managed_persistence": True}}}

@@ -3,6 +3,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from tools.browser_camofox import (
     camofox_back,
@@ -69,6 +70,19 @@ def _mock_response(status=200, json_data=None):
     resp.content = b"\x89PNG\r\n\x1a\nfake"
     resp.raise_for_status = MagicMock()
     return resp
+
+
+@pytest.fixture(autouse=True)
+def _isolate_camofox_get_requests():
+    """Keep navigate-side health/snapshot probes from reaching real localhost."""
+    def _fake_get(url, *args, **kwargs):
+        if "localhost:19999" in url:
+            import requests
+            raise requests.ConnectionError("unreachable test Camofox")
+        return _mock_response(json_data={})
+
+    with patch("tools.browser_camofox.requests.get", side_effect=_fake_get):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +185,12 @@ class TestCamofoxNavigate:
         assert result["success"] is True
         assert result["url"] == "https://b.com"
 
-    def test_connection_error_returns_helpful_message(self, monkeypatch):
+    @patch("tools.browser_camofox.requests.post")
+    def test_connection_error_returns_helpful_message(self, mock_post, monkeypatch):
+        import requests
+
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
+        mock_post.side_effect = requests.ConnectionError("unreachable test Camofox")
         result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))
         assert result["success"] is False
         assert "Cannot connect" in result["error"]
