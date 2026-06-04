@@ -3091,6 +3091,10 @@ class HermesCLI:
         self.console = Console()
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
+        # Background thread handle for auto-playing TTS audio from tool results.
+        # Initialized here so run_agent's finally block can safely reference it
+        # even if an exception fires before the per-turn assignment.
+        self._tts_playback_thread = None
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
@@ -12719,8 +12723,9 @@ class HermesCLI:
                 stop_event.set()
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
-            if self._tts_playback_thread and self._tts_playback_thread.is_alive():
-                self._tts_playback_thread.join(timeout=10)
+            _tts_thr = getattr(self, "_tts_playback_thread", None)
+            if _tts_thr is not None and _tts_thr.is_alive():
+                _tts_thr.join(timeout=10)
     
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
