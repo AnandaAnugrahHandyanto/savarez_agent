@@ -3076,6 +3076,8 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+        <key>HERMES_GATEWAY_SERVICE</key>
+        <string>launchd</string>
     </dict>
     
     <key>RunAtLoad</key>

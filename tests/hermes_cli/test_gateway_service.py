@@ -1629,6 +1629,19 @@ class TestProfileArg:
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
 
+    def test_launchd_plist_marks_gateway_as_launchd_service(self, tmp_path, monkeypatch):
+        """launchd plist should mark the process so /restart uses the service path."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>HERMES_GATEWAY_SERVICE</key>" in plist
+        assert "<string>launchd</string>" in plist
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)
