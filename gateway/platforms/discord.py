@@ -31,6 +31,70 @@ _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 
+
+def _discord_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"true", "1", "yes", "on"}
+
+
+def _truncate_thread_name(name: str, limit: int = 80) -> str:
+    cleaned = re.sub(r"\s+", " ", (name or "")).strip()
+    if not cleaned:
+        return "Hermes"
+    if len(cleaned) > limit:
+        cleaned = cleaned[: max(0, limit - 3)].rstrip() + "..."
+    return cleaned or "Hermes"
+
+
+def _strip_discord_noise(content: str) -> str:
+    text = (content or "").strip()
+    text = re.sub(r"<@[!&]?\d+>", " ", text)
+    text = re.sub(r"<#\d+>", " ", text)
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[`*_~>|#\[\](){}]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" -–—:;,.!?\t\n")
+    return text
+
+
+def _legacy_auto_thread_name(content: str) -> str:
+    text = (content or "").strip()
+    text = re.sub(r"<@[!&]?\d+>", " ", text)
+    text = re.sub(r"<#\d+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return _truncate_thread_name(text)
+
+
+def _build_auto_thread_name(content: str) -> str:
+    candidate = _strip_discord_noise(content)
+    if not candidate:
+        return "Hermes"
+
+    # Keep the first meaningful clause/sentence. This must stay deterministic:
+    # the thread name is needed before the Discord thread exists.
+    parts = re.split(r"(?<=[.!?])\s+|\s+[–—]\s+|\s+-\s+", candidate, maxsplit=1)
+    if parts and parts[0].strip():
+        candidate = parts[0].strip()
+
+    prefixes = (
+        r"^(?:hey|hi|hello)\s+(?:hermes|joi)?[,!\s]+",
+        r"^(?:can|could|would)\s+you\s+",
+        r"^(?:please\s+)",
+        r"^(?:help\s+me\s+)",
+        r"^(?:i\s+need\s+you\s+to\s+)",
+        r"^(?:what(?:'s| is)\s+the\s+next\s+step\s+for\s+)",
+        r"^(?:how\s+do\s+i\s+)",
+    )
+    lowered_candidate = candidate
+    for pattern in prefixes:
+        transformed = re.sub(pattern, "", lowered_candidate, flags=re.IGNORECASE).strip(" -–—:;,.!?")
+        if transformed:
+            lowered_candidate = transformed
+    candidate = lowered_candidate
+
+    return _truncate_thread_name(candidate)
+
 try:
     import discord
     from discord import Message as DiscordMessage, Intents
@@ -3878,13 +3942,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # showing raw <@id>, <@&id>, or <#id> markers — the ID isn't
         # meaningful to humans glancing at the thread list (#6336).
         content = (message.content or "").strip()
-        # <@123>, <@!123>, <@&123>, <#123> — collapse to empty; normalize spaces.
-        content = re.sub(r"<@[!&]?\d+>", "", content)
-        content = re.sub(r"<#\d+>", "", content)
-        content = re.sub(r"\s+", " ", content).strip()
-        thread_name = content[:80] if content else "Hermes"
-        if len(content) > 80:
-            thread_name = thread_name[:77] + "..."
+        if _discord_bool_env("DISCORD_SMART_THREAD_TITLES", False):
+            thread_name = _build_auto_thread_name(content)
+        else:
+            thread_name = _legacy_auto_thread_name(content)
 
         try:
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
@@ -3908,6 +3969,23 @@ class DiscordAdapter(BasePlatformAdapter):
                     fallback_error,
                 )
                 return None
+
+    async def rename_thread(self, thread_id: str, title: str) -> bool:
+        """Best-effort visible Discord thread rename for auto-generated titles."""
+        if not self._client or not DISCORD_AVAILABLE or not thread_id or not title:
+            return False
+        thread_name = _truncate_thread_name(title)
+        try:
+            channel = self._client.get_channel(int(thread_id))
+            if channel is None:
+                channel = await self._client.fetch_channel(int(thread_id))
+            if not isinstance(channel, discord.Thread):
+                return False
+            await channel.edit(name=thread_name, reason="Hermes auto-generated session title")
+            return True
+        except Exception:
+            logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
+            return False
 
     async def create_handoff_thread(
         self,
@@ -4513,7 +4591,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

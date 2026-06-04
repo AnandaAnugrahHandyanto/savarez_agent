@@ -75,7 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from gateway.platforms.discord import DiscordAdapter, _build_auto_thread_name  # noqa: E402
 
 
 class FakeTree:
@@ -98,6 +98,15 @@ class FakeTree:
 
 @pytest.fixture
 def adapter():
+    import os
+    for key in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_SMART_THREAD_TITLES",
+    ):
+        os.environ.pop(key, None)
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(
@@ -493,6 +502,16 @@ def test_build_slash_event_uses_group_context_for_channels(adapter):
 # ------------------------------------------------------------------
 
 
+def test_build_auto_thread_name_summarizes_request():
+    assert _build_auto_thread_name(
+        "<@123> Can you make yourself auto-retitle threads intelligently? Based on the first message"
+    ) == "make yourself auto-retitle threads intelligently"
+
+
+def test_build_auto_thread_name_strips_polite_openers():
+    assert _build_auto_thread_name("please help me debug Discord thread titles") == "debug Discord thread titles"
+
+
 @pytest.mark.asyncio
 async def test_auto_create_thread_uses_message_content_as_name(adapter):
     thread = SimpleNamespace(id=999, name="Hello world")
@@ -510,6 +529,23 @@ async def test_auto_create_thread_uses_message_content_as_name(adapter):
     call_kwargs = message.create_thread.await_args[1]
     assert call_kwargs["name"] == "Hello world, how are you?"
     assert call_kwargs["auto_archive_duration"] == 1440
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_uses_summarized_name_when_enabled(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_SMART_THREAD_TITLES", "true")
+    thread = SimpleNamespace(id=999, name="smart")
+    message = SimpleNamespace(
+        content="<@123> Can you make yourself auto-retitle threads intelligently? Based on the first message",
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    await adapter._auto_create_thread(message)
+
+    name = message.create_thread.await_args[1]["name"]
+    assert name == "make yourself auto-retitle threads intelligently"
 
 
 @pytest.mark.asyncio
@@ -777,6 +813,29 @@ def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_AUTO_THREAD") == "true"
+
+
+def test_discord_smart_thread_titles_config_bridge(monkeypatch, tmp_path):
+    """discord.smart_thread_titles in config.yaml should bridge to runtime env."""
+    import yaml
+    from pathlib import Path
+
+    hermes_dir = tmp_path / ".hermes"
+    hermes_dir.mkdir()
+    config_path = hermes_dir / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "discord": {"smart_thread_titles": True},
+    }))
+
+    monkeypatch.delenv("DISCORD_SMART_THREAD_TITLES", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_SMART_THREAD_TITLES") == "true"
 
 
 # ------------------------------------------------------------------
