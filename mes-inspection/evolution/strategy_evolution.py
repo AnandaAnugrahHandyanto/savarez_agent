@@ -1,23 +1,37 @@
-"""策略进化引擎 - 遗传算法式策略优化。"""
+"""策略进化引擎 — 集成 hermes-agent-self-evolution (DSPy + GEPA)。
+
+底层进化算法使用 NousResearch/hermes-agent-self-evolution 开源项目：
+https://github.com/NousResearch/hermes-agent-self-evolution
+
+本模块提供 MES 巡检场景的适配层：
+- 将巡检 Skill 注册为可进化目标
+- 将故障案例转化为评估数据集
+- 调用 GEPA 优化器迭代改进 Skill
+- 保留本地策略跟踪（使用统计、活跃/归档状态）
+"""
 
 import json
-import math
-from datetime import datetime, timedelta
+import os
+import subprocess
+import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field, asdict
 
 
+# ── 本地策略跟踪 ──────────────────────────────────────────────────────
+
 @dataclass
 class Strategy:
-    """诊断策略。"""
+    """诊断策略（本地跟踪）。"""
     id: str
     name: str
     component: str
     fault_type: str
-    check_order: List[str]           # 检查步骤顺序
-    thresholds: Dict[str, float]     # 阈值参数
-    fix_actions: List[str]           # 修复动作
+    check_order: List[str]
+    thresholds: Dict[str, float]
+    fix_actions: List[str]
     created_at: str = ""
     fitness: float = 0.0
     use_count: int = 0
@@ -30,36 +44,76 @@ class Strategy:
         return asdict(self)
 
 
+# ── hermes-agent-self-evolution 集成 ───────────────────────────────────
+
+def _find_evolution_lib() -> Optional[Path]:
+    """查找 hermes-agent-self-evolution 库路径。
+
+    搜索顺序：
+    1. vendor/ 子目录（git clone）
+    2. PYTHONPATH 中已安装的 evolution 包
+    """
+    # 1. vendor 目录
+    vendor_path = Path(__file__).parent.parent / "vendor" / "hermes-agent-self-evolution"
+    if vendor_path.exists() and (vendor_path / "evolution" / "__init__.py").exists():
+        return vendor_path
+
+    # 2. 已安装的包
+    try:
+        import evolution.core.config
+        return None  # 已在 PYTHONPATH 中
+    except ImportError:
+        return None
+
+
+def _ensure_evolution_importable():
+    """确保 evolution 包可导入。"""
+    lib_path = _find_evolution_lib()
+    if lib_path and str(lib_path) not in sys.path:
+        sys.path.insert(0, str(lib_path))
+
+
 class StrategyEvolution:
     """策略进化引擎。
 
+    集成 hermes-agent-self-evolution 的 DSPy + GEPA 优化器，
+    用于自动进化 MES 巡检 Skills。
+
     进化周期：
-    - 周一：种群评估（计算适应度）
-    - 周三：交叉繁殖（组合策略）
-    - 周五：自然选择（归档低效策略）
+    - 运行 evolve_skill 命令优化 SKILL.md
+    - 本地跟踪策略使用统计和适应度
+    - 保留 Top 80% 策略，归档 Bottom 20%
     """
 
-    def __init__(self, data_dir: Optional[str] = None):
+    def __init__(self, config: Dict[str, Any] = None, data_dir: Optional[str] = None):
+        self.config = config or {}
+
         if data_dir:
             self.data_dir = Path(data_dir)
         else:
-            import os
             home = os.getenv("MES_INSPECTION_HOME", "")
             if home:
                 self.data_dir = Path(home) / "evolution"
             else:
                 self.data_dir = Path.home() / ".mes-inspection" / "evolution"
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
         self.strategies_path = self.data_dir / "strategies.json"
         self.strategies: Dict[str, Strategy] = self._load_strategies()
+
+        # 进化配置
+        self.iterations = self.config.get("iterations", 10)
+        self.eval_source = self.config.get("eval_source", "synthetic")
+        self.optimizer_model = self.config.get("optimizer_model", "openai/gpt-4.1")
+        self.eval_model = self.config.get("eval_model", "openai/gpt-4.1-mini")
+        self.hermes_repo = self.config.get("hermes_repo", os.getenv("HERMES_AGENT_REPO", ""))
+        self.skills_dir = self.config.get("skills_dir", "")
 
     def _load_strategies(self) -> Dict[str, Strategy]:
         if self.strategies_path.exists():
             with open(self.strategies_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return {
-                sid: Strategy(**s) for sid, s in data.items()
-            }
+            return {sid: Strategy(**s) for sid, s in data.items()}
         return {}
 
     def _save_strategies(self):
@@ -67,12 +121,9 @@ class StrategyEvolution:
         with open(self.strategies_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    def record_usage(
-        self,
-        strategy_id: str,
-        success: bool,
-        elapsed_seconds: float = 0,
-    ):
+    # ── 策略跟踪 ──────────────────────────────────────────────────────
+
+    def record_usage(self, strategy_id: str, success: bool, elapsed_seconds: float = 0):
         """记录策略使用结果。"""
         if strategy_id not in self.strategies:
             return
@@ -80,7 +131,6 @@ class StrategyEvolution:
         s.use_count += 1
         if success:
             s.success_count += 1
-        # 更新平均时间
         s.avg_time_seconds = (
             (s.avg_time_seconds * (s.use_count - 1) + elapsed_seconds) / s.use_count
         )
@@ -88,69 +138,129 @@ class StrategyEvolution:
         self._save_strategies()
 
     def calculate_fitness(self, strategy: Strategy) -> float:
-        """计算策略适应度。
-
-        fitness = 成功率 × 效率系数 × 时间衰减
-        """
+        """计算策略适应度。"""
         if strategy.use_count == 0:
             return 0.0
-
-        # 成功率
         success_rate = strategy.success_count / strategy.use_count
-
-        # 效率系数 (1 - 平均时间/最大超时)，最大超时假设 600s
-        max_timeout = 600
-        efficiency = max(0, 1 - strategy.avg_time_seconds / max_timeout)
-
-        # 时间衰减
+        efficiency = max(0, 1 - strategy.avg_time_seconds / 600)
         if strategy.last_used:
             try:
-                last = datetime.fromisoformat(strategy.last_used)
-                days_ago = (datetime.now() - last).days
-                if days_ago <= 30:
-                    recency = 1.0
-                elif days_ago <= 60:
-                    recency = 0.8
-                elif days_ago <= 90:
-                    recency = 0.5
-                else:
-                    recency = 0.2
+                days_ago = (datetime.now() - datetime.fromisoformat(strategy.last_used)).days
+                recency = 1.0 if days_ago <= 30 else (0.8 if days_ago <= 60 else (0.5 if days_ago <= 90 else 0.2))
             except ValueError:
                 recency = 0.5
         else:
             recency = 0.5
+        return round(success_rate * efficiency * recency, 4)
 
-        fitness = success_rate * efficiency * recency
-        return round(fitness, 4)
+    def create_strategy(
+        self, name: str, component: str, fault_type: str,
+        check_order: List[str], thresholds: Dict[str, float], fix_actions: List[str],
+    ) -> Strategy:
+        """创建新策略（先进入观察期）。"""
+        sid = f"s_{component}_{fault_type}_{len(self.strategies)+1:03d}"
+        strategy = Strategy(
+            id=sid, name=name, component=component, fault_type=fault_type,
+            check_order=check_order, thresholds=thresholds, fix_actions=fix_actions,
+            created_at=datetime.now().isoformat(), status="observing",
+        )
+        self.strategies[sid] = strategy
+        self._save_strategies()
+        return strategy
+
+    def get_active_strategies(self, component: str = None) -> List[Strategy]:
+        """获取活跃策略。"""
+        strategies = [s for s in self.strategies.values() if s.status == "active"]
+        if component:
+            strategies = [s for s in strategies if s.component == component]
+        return sorted(strategies, key=lambda s: s.fitness, reverse=True)
+
+    # ── GEPA 进化 ─────────────────────────────────────────────────────
+
+    def evolve_skill(self, skill_name: str, dry_run: bool = False) -> Dict[str, Any]:
+        """使用 hermes-agent-self-evolution 的 GEPA 优化器进化指定 Skill。
+
+        Args:
+            skill_name: 技能名称（如 mes-nginx-check）
+            dry_run: 仅验证配置，不执行优化
+
+        Returns:
+            进化结果摘要
+        """
+        _ensure_evolution_importable()
+
+        cmd = [
+            sys.executable, "-m", "evolution.skills.evolve_skill",
+            "--skill", skill_name,
+            "--iterations", str(self.iterations),
+            "--eval-source", self.eval_source,
+            "--optimizer-model", self.optimizer_model,
+            "--eval-model", self.eval_model,
+        ]
+
+        if self.hermes_repo:
+            cmd.extend(["--hermes-repo", self.hermes_repo])
+        if dry_run:
+            cmd.append("--dry-run")
+
+        env = os.environ.copy()
+        if self.hermes_repo:
+            env["HERMES_AGENT_REPO"] = self.hermes_repo
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=1800, env=env,
+            )
+            return {
+                "success": result.returncode == 0,
+                "skill_name": skill_name,
+                "stdout": result.stdout[-2000:] if result.stdout else "",
+                "stderr": result.stderr[-1000:] if result.stderr else "",
+                "returncode": result.returncode,
+            }
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "进化超时（30分钟限制）"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def evolve_all_mes_skills(self, dry_run: bool = False) -> List[Dict[str, Any]]:
+        """进化所有 MES 巡检 Skills。"""
+        mes_skills = [
+            "mes-nginx-check", "mes-jvm-check", "mes-rabbitmq-check",
+            "mes-oracle-check", "mes-elk-check", "mes-skywalking-check",
+        ]
+        results = []
+        for skill_name in mes_skills:
+            result = self.evolve_skill(skill_name, dry_run=dry_run)
+            results.append(result)
+        return results
+
+    # ── 自然选择 ──────────────────────────────────────────────────────
 
     def evolve(self) -> Dict[str, Any]:
-        """执行一轮进化，返回进化报告。"""
-        # 1. 评估所有策略
+        """执行一轮本地策略评估和自然选择。"""
         for s in self.strategies.values():
             s.fitness = self.calculate_fitness(s)
 
-        # 2. 分类
-        active = [s for s in self.strategies.values() if s.status == "active"]
-        active.sort(key=lambda s: s.fitness, reverse=True)
+        active = sorted(
+            [s for s in self.strategies.values() if s.status == "active"],
+            key=lambda s: s.fitness, reverse=True,
+        )
 
-        # 3. 自然选择：保留 Top 80%
         cutoff = max(1, int(len(active) * 0.8))
         survivors = active[:cutoff]
-        to_archive = active[cutoff:]
-
         archived_count = 0
-        for s in to_archive:
+        for s in active[cutoff:]:
             s.status = "archived"
             archived_count += 1
 
-        # 4. 对观察中的策略评估
-        observing = [s for s in self.strategies.values() if s.status == "observing"]
-        for s in observing:
-            if s.use_count >= 5 and s.fitness < 0.3:
-                s.status = "archived"
-                archived_count += 1
-            elif s.use_count >= 5 and s.fitness >= 0.3:
-                s.status = "active"
+        for s in self.strategies.values():
+            if s.status == "observing":
+                if s.use_count >= 5 and s.fitness < 0.3:
+                    s.status = "archived"
+                    archived_count += 1
+                elif s.use_count >= 5 and s.fitness >= 0.3:
+                    s.status = "active"
 
         self._save_strategies()
 
@@ -165,39 +275,6 @@ class StrategyEvolution:
                 for s in survivors[:5]
             ],
         }
-
-    def create_strategy(
-        self,
-        name: str,
-        component: str,
-        fault_type: str,
-        check_order: List[str],
-        thresholds: Dict[str, float],
-        fix_actions: List[str],
-    ) -> Strategy:
-        """创建新策略。"""
-        sid = f"s_{component}_{fault_type}_{len(self.strategies)+1:03d}"
-        strategy = Strategy(
-            id=sid,
-            name=name,
-            component=component,
-            fault_type=fault_type,
-            check_order=check_order,
-            thresholds=thresholds,
-            fix_actions=fix_actions,
-            created_at=datetime.now().isoformat(),
-            status="observing",  # 新策略先进入观察期
-        )
-        self.strategies[sid] = strategy
-        self._save_strategies()
-        return strategy
-
-    def get_active_strategies(self, component: str = None) -> List[Strategy]:
-        """获取活跃策略。"""
-        strategies = [s for s in self.strategies.values() if s.status == "active"]
-        if component:
-            strategies = [s for s in strategies if s.component == component]
-        return sorted(strategies, key=lambda s: s.fitness, reverse=True)
 
     def format_evolution_report(self) -> str:
         """格式化进化报告。"""

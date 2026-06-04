@@ -200,6 +200,23 @@ gitlab:
   mr_reviewers: []
 
 # ============================================================
+# 策略进化配置 (基于 hermes-agent-self-evolution)
+# ============================================================
+evolution:
+  # GEPA 进化迭代次数
+  iterations: 10
+  # 评估数据源: synthetic(自动生成) | golden(人工标注) | sessiondb(会话历史)
+  eval_source: "synthetic"
+  # 进化优化器模型（用于 GEPA 反思）
+  optimizer_model: "openai/gpt-4.1"
+  # 评估模型
+  eval_model: "openai/gpt-4.1-mini"
+  # hermes-agent 仓库路径（留空则使用 HERMES_AGENT_REPO 环境变量）
+  hermes_repo: ""
+  # Skills 目录（留空则使用默认路径）
+  skills_dir: ""
+
+# ============================================================
 # 模型配置
 # ============================================================
 model:

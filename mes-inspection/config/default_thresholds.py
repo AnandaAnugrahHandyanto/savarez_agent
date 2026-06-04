@@ -93,6 +93,14 @@ DEFAULT_THRESHOLDS = {
         "default_branch": "main",
         "mr_reviewers": [],
     },
+    "evolution": {
+        "iterations": 10,
+        "eval_source": "synthetic",
+        "optimizer_model": "openai/gpt-4.1",
+        "eval_model": "openai/gpt-4.1-mini",
+        "hermes_repo": "",
+        "skills_dir": "",
+    },
     "model": {
         "provider": "custom",
         "base_url": "",
