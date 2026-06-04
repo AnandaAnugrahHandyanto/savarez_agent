@@ -1548,6 +1548,37 @@ def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable
         assert kb.get_task(conn, c).status == "running"
 
 
+def test_default_spawn_uses_gated_acp_runner_when_enabled(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """KANBAN_WORKER_TRANSPORT=acp + launch guard routes dispatch to ACP runner."""
+    calls = []
+
+    class DummyProc:
+        pid = 4242
+
+    def fake_popen(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return DummyProc()
+
+    monkeypatch.setenv("KANBAN_WORKER_TRANSPORT", "acp")
+    monkeypatch.setenv("HERMES_ACP_ALLOW_LAUNCH", "1")
+    monkeypatch.setattr(kb.subprocess, "Popen", fake_popen)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="acp", assignee="gond")
+        res = kb.dispatch_once(conn, board="default", max_spawn=1)
+
+    assert [item[0] for item in res.spawned] == [task_id]
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert cmd[:3] == [sys.executable, "-m", "acp_client"]
+    assert "--run-kanban-task" in cmd
+    assert task_id in cmd
+    assert kwargs["env"]["HERMES_KANBAN_TASK"] == task_id
+    assert kwargs["env"]["HERMES_PROFILE"] == "gond"
+
+
 def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawnable):
     def boom(task, workspace):
         raise RuntimeError("spawn failed")

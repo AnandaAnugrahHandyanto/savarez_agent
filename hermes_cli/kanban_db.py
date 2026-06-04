@@ -6269,6 +6269,56 @@ def _spawn_callable_for_task(task: Task, spawn_fn=None):
     return _default_spawn
 
 
+def _spawn_acp_kanban_worker(
+    task: Task,
+    workspace: str,
+    env: dict[str, str],
+    *,
+    board: Optional[str] = None,
+    backend: str = "claude",
+) -> Optional[int]:
+    """Spawn the gated ACP outbound Kanban runner.
+
+    This is only reached after ``build_launch_plan(...).use_acp`` succeeds,
+    which requires both ``KANBAN_WORKER_TRANSPORT=acp`` and
+    ``HERMES_ACP_ALLOW_LAUNCH=1`` plus the optional ACP dependency. The child
+    performs the ACP session and writes the Kanban result back using the same
+    DB/workspace env pins as the PTY lane.
+    """
+    cmd = [
+        sys.executable,
+        "-m",
+        "acp_client",
+        "--run-kanban-task",
+        task.id,
+        "--workspace",
+        workspace,
+        "--backend",
+        backend,
+    ]
+    log_dir = worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task.id}.log"
+    rotate_bytes, backup_count = worker_log_rotation_config()
+    _rotate_worker_log(log_path, rotate_bytes, backup_count)
+    log_f = open(log_path, "ab")
+    try:
+        proc = subprocess.Popen(  # noqa: S603 -- fixed Python module argv, no shell
+            cmd,
+            cwd=workspace if os.path.isdir(workspace) else None,
+            stdin=subprocess.DEVNULL,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if _IS_WINDOWS else 0,
+        )
+    except FileNotFoundError:
+        log_f.close()
+        raise RuntimeError("Python executable not found while launching ACP Kanban worker")
+    return proc.pid
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -7547,6 +7597,31 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+
+    # Phase-2 outbound ACP transport: default-off and guarded. If the operator
+    # has explicitly requested ACP and set the launch guard, use the ACP runner;
+    # otherwise keep the existing PTY/Hermes worker path unchanged. A requested
+    # but unavailable ACP lane falls back here by design unless strict mode is
+    # implemented by a future caller.
+    try:
+        from acp_client.kanban_runner import build_launch_plan
+
+        plan = build_launch_plan(
+            workspace=workspace,
+            backend=env.get("KANBAN_WORKER_ACP_BACKEND") or "claude",
+            env=env,
+        )
+        if plan.use_acp:
+            return _spawn_acp_kanban_worker(
+                task,
+                workspace,
+                env,
+                board=board,
+                backend=plan.backend or "claude",
+            )
+    except Exception as exc:
+        if (env.get("KANBAN_WORKER_TRANSPORT") or "").strip().lower() in {"acp", "acp-client", "acp_client"}:
+            raise RuntimeError(f"ACP Kanban transport requested but failed to plan: {exc}") from exc
 
     cmd = [
         *_resolve_hermes_argv(),
