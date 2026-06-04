@@ -2095,6 +2095,11 @@ class GatewayRunner:
             )
 
 
+    def _bind_adapter_runtime(self, adapter: BasePlatformAdapter) -> None:
+        """Attach shared gateway runtime services used by adapter callbacks."""
+        adapter.pairing_store = self.pairing_store
+
+
     def _warn_if_docker_media_delivery_is_risky(self) -> None:
         """Warn when Docker-backed gateways lack an explicit export mount.
 
@@ -4499,6 +4504,7 @@ class GatewayRunner:
                 continue
             
             # Set up message + fatal error handlers
+            self._bind_adapter_runtime(adapter)
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
@@ -6242,6 +6248,7 @@ class GatewayRunner:
                         del self._failed_platforms[platform]
                         continue
 
+                    self._bind_adapter_runtime(adapter)
                     adapter.set_message_handler(self._handle_message)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)

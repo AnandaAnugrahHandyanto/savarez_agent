@@ -2810,16 +2810,13 @@ class SlackAdapter(BasePlatformAdapter):
         user_id = body.get("user", {}).get("id", "")
 
         # Authorization — reuse the exec-approval allowlist.
-        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
-        if allowed_csv:
-            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
-                logger.warning(
-                    "[Slack] Unauthorized slash-confirm click by %s (%s) — ignoring",
-                    user_name,
-                    user_id,
-                )
-                return
+        if not self._is_slack_button_user_authorized(channel_id, user_id):
+            logger.warning(
+                "[Slack] Unauthorized slash-confirm click by %s (%s) — ignoring",
+                user_name,
+                user_id,
+            )
+            return
 
         # Parse session_key|confirm_id back out
         if "|" not in value:
@@ -2920,16 +2917,13 @@ class SlackAdapter(BasePlatformAdapter):
         # Only authorized users may click approval buttons.  Button clicks
         # bypass the normal message auth flow in gateway/run.py, so we must
         # check here as well.
-        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
-        if allowed_csv:
-            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
-                logger.warning(
-                    "[Slack] Unauthorized approval click by %s (%s) — ignoring",
-                    user_name,
-                    user_id,
-                )
-                return
+        if not self._is_slack_button_user_authorized(channel_id, user_id):
+            logger.warning(
+                "[Slack] Unauthorized approval click by %s (%s) — ignoring",
+                user_name,
+                user_id,
+            )
+            return
 
         # Map action_id to approval choice
         choice_map = {
@@ -3004,6 +2998,48 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
         # (approval state already consumed by atomic pop above)
+
+    def _is_slack_button_user_authorized(self, channel_id: str, user_id: str) -> bool:
+        """Authorize Slack interactive callbacks against configured gateway access."""
+        if not user_id:
+            return False
+
+        if os.getenv("SLACK_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+            return True
+
+        pairing_store = getattr(self, "pairing_store", None)
+        is_approved = getattr(pairing_store, "is_approved", None)
+        if callable(is_approved):
+            try:
+                if is_approved(Platform.SLACK.value, user_id):
+                    return True
+            except Exception:
+                logger.debug("[Slack] pairing-store authorization check failed", exc_info=True)
+
+        configured_allowlists = [
+            os.getenv("SLACK_ALLOWED_USERS", "").strip(),
+            os.getenv("GATEWAY_ALLOWED_USERS", "").strip(),
+        ]
+        allowed_ids = {
+            value.strip()
+            for raw in configured_allowlists
+            for value in raw.split(",")
+            if value.strip()
+        }
+
+        if not allowed_ids:
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {
+                "true",
+                "1",
+                "yes",
+            }
+        if "*" in allowed_ids:
+            return True
+
+        check_ids = {user_id}
+        if "@" in user_id:
+            check_ids.add(user_id.split("@", 1)[0])
+        return bool(check_ids & allowed_ids)
 
     # ----- Thread context fetching -----
 
