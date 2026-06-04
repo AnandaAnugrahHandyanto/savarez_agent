@@ -5533,3 +5533,182 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
     assert payload["session_start"] == "2026-01-01T12:00:00"
     assert payload["system_prompt"] == "You are Hermes."
     assert payload["messages"] == history
+
+
+# ── #39013: auto-resume after TUI gateway respawn ──────────────────────
+
+
+def test_finalize_session_skips_db_end_on_tui_shutdown(monkeypatch):
+    """Layer 2: _finalize_session must NOT mark the session as ended in the DB
+    when the end reason is 'tui_shutdown' (atexit after gateway crash/exit).
+    If it does, the next gateway child sees a closed session and
+    prompt.submit + session.resume both fail."""
+    db_calls = {}
+
+    class FakeDB:
+        def end_session(self, session_id, end_reason):
+            db_calls["end_session"] = (session_id, end_reason)
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a: None)
+
+    agent = types.SimpleNamespace(session_id="shutdown-key")
+    agent.commit_memory_session = lambda h: None
+    session = _session(agent=agent, history=[{"role": "user", "content": "hi"}])
+    server._sessions["sd-sid"] = session
+
+    try:
+        server._finalize_session(session, end_reason="tui_shutdown")
+        assert "end_session" not in db_calls, (
+            "tui_shutdown must NOT call db.end_session() — "
+            "the session must stay alive for auto-resume"
+        )
+    finally:
+        server._sessions.pop("sd-sid", None)
+
+
+def test_finalize_session_still_calls_db_end_on_explicit_close(monkeypatch):
+    """Layer 2 edge: explicit session.close (tui_close) MUST still call
+    db.end_session() — only tui_shutdown is suppressed."""
+    db_calls = {}
+
+    class FakeDB:
+        def end_session(self, session_id, end_reason):
+            db_calls["end_session"] = (session_id, end_reason)
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a: None)
+
+    agent = types.SimpleNamespace(session_id="close-key")
+    agent.commit_memory_session = lambda h: None
+    session = _session(agent=agent, history=[{"role": "user", "content": "bye"}])
+    server._sessions["cl-sid"] = session
+
+    try:
+        server._finalize_session(session, end_reason="tui_close")
+        assert db_calls.get("end_session") == ("close-key", "tui_close"), (
+            "explicit tui_close MUST call db.end_session()"
+        )
+    finally:
+        server._sessions.pop("cl-sid", None)
+
+
+def test_session_resume_falls_back_to_most_recent_when_target_unknown(monkeypatch):
+    """Layer 1: When session.resume receives a target that isn't found in DB
+    (e.g., the TUI passes a short ephemeral sid after gateway restart),
+    fall back to the most recent human-facing session instead of returning
+    'session not found'."""
+    db_sessions = {
+        "real-key-123": {"id": "real-key-123", "title": "My Session"},
+    }
+    db_call_log = []
+
+    class FakeDB:
+        def get_session(self, target):
+            db_call_log.append(("get_session", target))
+            return db_sessions.get(target)
+
+        def get_session_by_title(self, target):
+            db_call_log.append(("get_session_by_title", target))
+            return None
+
+        def list_sessions_rich(self, source=None, limit=200):
+            db_call_log.append(("list_sessions_rich", source, limit))
+            return [
+                {"id": "real-key-123", "title": "My Session",
+                 "started_at": 1000, "source": "tui", "message_count": 5},
+            ]
+
+        def reopen_session(self, target):
+            db_call_log.append(("reopen_session", target))
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            return [{"role": "user", "content": "previous turn"}]
+
+        def update_session_cwd(self, key, cwd):
+            pass
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(
+        server, "_make_agent",
+        lambda *args, **kwargs: types.SimpleNamespace(model="test"),
+    )
+    monkeypatch.setattr(
+        server, "_session_info",
+        lambda agent, *a: {"model": "test", "tools": {}, "skills": {}},
+    )
+    monkeypatch.setattr(
+        server, "_init_session",
+        lambda sid, key, agent, history, cols=80: None,
+    )
+
+    # Pass a short sid that doesn't exist in DB — simulates TUI recovery
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume",
+         "params": {"session_id": "a1b2c3d4"}}
+    )
+
+    # Must succeed (fall back to most_recent) rather than return error
+    assert "result" in resp, f"Expected result, got error: {resp}"
+    assert resp["result"]["resumed"] == "real-key-123", (
+        f"Expected fallback to most_recent session, got: {resp}"
+    )
+    # Verify the fallback happened: get_session failed, then most_recent was used
+    assert ("get_session", "a1b2c3d4") in db_call_log
+    assert any(c[0] == "list_sessions_rich" for c in db_call_log)
+    # reopen_session must be called on the fallback target
+    assert ("reopen_session", "real-key-123") in db_call_log
+
+
+def test_session_resume_returns_error_when_ephemeral_sid_db_empty(monkeypatch):
+    """Edge case: when an ephemeral TUI sid is not found AND DB has no
+    sessions at all, return proper 'session not found' error — don't crash."""
+    class FakeDB:
+        def get_session(self, target):
+            return None
+
+        def get_session_by_title(self, target):
+            return None
+
+        def list_sessions_rich(self, source=None, limit=200):
+            return []
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume",
+         "params": {"session_id": "deadbeef"}}
+    )
+
+    assert "error" in resp, f"Expected error for empty DB, got: {resp}"
+    assert resp["error"]["code"] == 4007, (
+        f"Expected code 4007 (session not found), got: {resp['error']}"
+    )
+
+
+def test_session_resume_non_ephemeral_unknown_does_not_resume_most_recent(monkeypatch):
+    """Edge case: arbitrary missing resume targets (titles/full ids) must keep
+    returning 'session not found' instead of silently resuming the most recent
+    session. Only TUI's 8-hex crash-recovery sid gets the fallback."""
+    class FakeDB:
+        def get_session(self, target):
+            return None
+
+        def get_session_by_title(self, target):
+            return None
+
+        def list_sessions_rich(self, source=None, limit=200):
+            raise AssertionError("non-ephemeral targets must not use most_recent fallback")
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume",
+         "params": {"session_id": "missing-title-or-full-id"}}
+    )
+
+    assert "error" in resp, f"Expected error for unknown target, got: {resp}"
+    assert resp["error"]["code"] == 4007
