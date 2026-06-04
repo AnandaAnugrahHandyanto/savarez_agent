@@ -74,13 +74,14 @@ from gateway.platforms.telegram import _CALLBACK_SCRIPT_MAX_OUTPUT_BYTES, Telegr
 
 
 def _make_adapter():
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="x", extra={}))
+    # Short synthetic placeholder; tests never contact Telegram with this value.
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake", extra={}))
     adapter._bot = AsyncMock()
     adapter._app = MagicMock()
     return adapter
 
 
-def _make_query(data: str, *, user_id=111, chat_id=12345, thread_id=7):
+def _make_query(data: str, *, user_id=111, chat_id=12345, thread_id=7, chat_type="supergroup"):
     reply_markup = SimpleNamespace(name="existing-inline-keyboard")
     message = SimpleNamespace(
         chat_id=chat_id,
@@ -88,7 +89,7 @@ def _make_query(data: str, *, user_id=111, chat_id=12345, thread_id=7):
         message_thread_id=thread_id,
         text="Original text",
         reply_markup=reply_markup,
-        chat=SimpleNamespace(type="supergroup"),
+        chat=SimpleNamespace(type=chat_type),
     )
     query = SimpleNamespace(
         data=data,
@@ -126,7 +127,8 @@ def callback_dir(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_success_invokes_script_with_context_env_and_edits(callback_dir):
+async def test_success_invokes_script_with_context_env_and_edits(callback_dir, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
     record_path = callback_dir.parent / "record.json"
     _write_script(
         callback_dir,
@@ -143,8 +145,10 @@ record = {{
         "HERMES_TELEGRAM_CALLBACK_PREFIX": os.environ.get("HERMES_TELEGRAM_CALLBACK_PREFIX"),
         "HERMES_TELEGRAM_USER_ID": os.environ.get("HERMES_TELEGRAM_USER_ID"),
         "HERMES_TELEGRAM_CHAT_ID": os.environ.get("HERMES_TELEGRAM_CHAT_ID"),
+        "HERMES_TELEGRAM_CHAT_TYPE": os.environ.get("HERMES_TELEGRAM_CHAT_TYPE"),
         "HERMES_TELEGRAM_MESSAGE_ID": os.environ.get("HERMES_TELEGRAM_MESSAGE_ID"),
         "HERMES_TELEGRAM_THREAD_ID": os.environ.get("HERMES_TELEGRAM_THREAD_ID"),
+        "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY"),
     }},
 }}
 open({str(record_path)!r}, "w", encoding="utf-8").write(json.dumps(record))
@@ -162,6 +166,7 @@ print(json.dumps({{"ok": True, "answer_text": "Done", "edit_message_text": "Upda
     assert record["stdin"]["prefix"] == "task"
     assert record["stdin"]["telegram"]["user_id"] == "111"
     assert record["stdin"]["telegram"]["chat_id"] == "12345"
+    assert record["stdin"]["telegram"]["chat_type"] == "supergroup"
     assert record["stdin"]["telegram"]["message_id"] == "42"
     assert record["stdin"]["telegram"]["message_thread_id"] == "7"
     assert record["stdin"]["hermes"]["home"] == str(callback_dir.parents[1])
@@ -169,8 +174,10 @@ print(json.dumps({{"ok": True, "answer_text": "Done", "edit_message_text": "Upda
     assert record["env"]["HERMES_TELEGRAM_CALLBACK_PREFIX"] == "task"
     assert record["env"]["HERMES_TELEGRAM_USER_ID"] == "111"
     assert record["env"]["HERMES_TELEGRAM_CHAT_ID"] == "12345"
+    assert record["env"]["HERMES_TELEGRAM_CHAT_TYPE"] == "supergroup"
     assert record["env"]["HERMES_TELEGRAM_MESSAGE_ID"] == "42"
     assert record["env"]["HERMES_TELEGRAM_THREAD_ID"] == "7"
+    assert record["env"]["OPENAI_API_KEY"] is None
     query.answer.assert_awaited_once_with(text="Done", show_alert=False)
     query.edit_message_text.assert_awaited_once_with(text="Updated", reply_markup=None)
     query.edit_message_reply_markup.assert_not_awaited()
@@ -315,7 +322,19 @@ print('{{"ok": true}}')
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("data", ["missing:1", "bad.prefix:1", "toolongprefixname_over_32_chars_here:1", "nocolon"])
+@pytest.mark.parametrize(
+    "data",
+    [
+        "missing:1",
+        "bad.prefix:1",
+        "../escape:1",
+        "~home:1",
+        "slash/prefix:1",
+        r"back\\slash:1",
+        "toolongprefixname_over_32_chars_here:1",
+        "nocolon",
+    ],
+)
 async def test_missing_or_invalid_prefix_is_ignored(callback_dir, data):
     query = _make_query(data)
 
@@ -360,6 +379,52 @@ async def test_script_failures_answer_once_with_safe_text(callback_dir, script_b
     assert text == expected
     assert "secret-payload" not in text
     assert query.answer.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_nonzero_exit_with_valid_json_does_not_apply_response(callback_dir):
+    _write_script(
+        callback_dir,
+        "nonzero.py",
+        """#!/usr/bin/env python3
+import json
+import sys
+print(json.dumps({"ok": True, "answer_text": "Unsafe", "edit_message_text": "Do not apply"}))
+sys.exit(7)
+""",
+    )
+    query = _make_query("nonzero:1")
+
+    await _dispatch(_make_adapter(), query)
+
+    query.answer.assert_awaited_once_with(text="Callback action failed.")
+    query.edit_message_text.assert_not_awaited()
+    query.edit_message_reply_markup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_callback_chat_type_accepts_enum_like_value(callback_dir):
+    record_path = callback_dir.parent / "record.json"
+    _write_script(
+        callback_dir,
+        "enumtype.py",
+        f"""#!/usr/bin/env python3
+import json, os, sys
+ctx = json.load(sys.stdin)
+open({str(record_path)!r}, "w", encoding="utf-8").write(json.dumps({{
+    "stdin_chat_type": ctx["telegram"]["chat_type"],
+    "env_chat_type": os.environ.get("HERMES_TELEGRAM_CHAT_TYPE"),
+}}))
+print(json.dumps({{"ok": True, "answer_text": "Done"}}))
+""",
+    )
+    query = _make_query("enumtype:1", chat_type=SimpleNamespace(value="SUPERGROUP"))
+
+    await _dispatch(_make_adapter(), query)
+
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record == {"stdin_chat_type": "supergroup", "env_chat_type": "supergroup"}
+    query.answer.assert_awaited_once_with(text="Done", show_alert=False)
 
 
 @pytest.mark.asyncio
@@ -423,6 +488,30 @@ sys.stdout.flush()
     await _dispatch(_make_adapter(), query)
 
     query.answer.assert_awaited_once_with(text="Callback action failed.")
+    assert "secret-payload" not in query.answer.call_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_completed_stdout_is_not_applied_when_stderr_overflows(callback_dir):
+    _write_script(
+        callback_dir,
+        "stderr_overflow.py",
+        f"""#!/usr/bin/env python3
+import sys
+sys.stdout.write('{{"ok": true, "answer_text": "Unsafe", "edit_message_text": "Do not apply"}}')
+sys.stdout.flush()
+sys.stdout.close()
+sys.stderr.write("e" * {_CALLBACK_SCRIPT_MAX_OUTPUT_BYTES + 1})
+sys.stderr.flush()
+""",
+    )
+    query = _make_query("stderr_overflow:secret-payload")
+
+    await _dispatch(_make_adapter(), query)
+
+    query.answer.assert_awaited_once_with(text="Callback action failed.")
+    query.edit_message_text.assert_not_awaited()
+    query.edit_message_reply_markup.assert_not_awaited()
     assert "secret-payload" not in query.answer.call_args.kwargs["text"]
 
 
@@ -540,7 +629,7 @@ async def test_builtin_prefix_still_wins(callback_dir):
         f"""#!/usr/bin/env python3
 from pathlib import Path
 Path({str(marker)!r}).write_text("ran")
-print('{{"ok": true}}')
+print('{{"ok": true, "answer_text": "GENERIC SCRIPT USED", "edit_message_text": "GENERIC EDIT"}}')
 """,
     )
     adapter = _make_adapter()
@@ -551,3 +640,5 @@ print('{{"ok": true}}')
 
     adapter._handle_gmail_triage_callback.assert_awaited_once()
     assert not marker.exists()
+    query.answer.assert_not_awaited()
+    query.edit_message_text.assert_not_awaited()

@@ -202,7 +202,7 @@ The script receives:
 
 - argv 1: the full callback data string
 - stdin: a JSON object with `callback_data`, `prefix`, `telegram` metadata, and `hermes.home`
-- environment variables such as `HERMES_HOME`, `HERMES_TELEGRAM_CALLBACK_DATA`, `HERMES_TELEGRAM_CALLBACK_PREFIX`, `HERMES_TELEGRAM_USER_ID`, `HERMES_TELEGRAM_CHAT_ID`, `HERMES_TELEGRAM_MESSAGE_ID`, and `HERMES_TELEGRAM_THREAD_ID`
+- a minimal environment with safe process basics (`PATH`, locale/timezone/temp variables, and Windows process basics such as `USERPROFILE`, `SYSTEMROOT`, `COMSPEC`, `PATHEXT`, and `WINDIR`) plus explicit callback metadata: `HERMES_HOME`, `HERMES_TELEGRAM_CALLBACK_DATA`, `HERMES_TELEGRAM_CALLBACK_PREFIX`, `HERMES_TELEGRAM_USER_ID`, `HERMES_TELEGRAM_USER_NAME`, `HERMES_TELEGRAM_CHAT_ID`, `HERMES_TELEGRAM_CHAT_TYPE`, `HERMES_TELEGRAM_MESSAGE_ID`, and `HERMES_TELEGRAM_THREAD_ID`
 
 The script must print JSON to stdout:
 
@@ -265,9 +265,10 @@ Safety behavior:
 - Prefixes are limited to letters, numbers, `_`, and `-`, up to 32 characters.
 - Scripts must resolve inside `$HERMES_HOME/scripts/telegram-callbacks` and must be executable regular files; symlink escapes are rejected.
 - Callback authorization uses the same Telegram allowed user/chat/topic checks as built-in callbacks.
-- Scripts inherit the gateway process environment, including configured credentials/API keys; only place trusted operator-owned scripts in this directory.
+- Scripts do not inherit the full gateway process environment. Arbitrary credential variables such as API keys, tokens, and secrets are not forwarded.
 - Callback data is exposed to the script as argv and environment variables; use opaque IDs or state references, not secrets, in button payloads.
 - Scripts run with argv/stdin, not through a shell, and time out after 10 seconds.
+- A non-zero script exit code fails the callback action even if stdout contains valid response JSON; Hermes does not apply stdout JSON from failed processes.
 - Script stdout and stderr are each capped at 64 KiB; oversized output fails safely.
 - Script stderr and callback payloads are not reflected back to the Telegram user on failure.
 

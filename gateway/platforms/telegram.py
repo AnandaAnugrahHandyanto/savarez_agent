@@ -111,12 +111,32 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 
 
 MAX_COMMANDS_PER_SCOPE = 30
+# First-line defense against callback prefix injection: callback prefixes become
+# script basenames, so only allow a short portable filename subset here. The
+# later resolve()+relative_to() check still enforces directory containment for
+# symlinks or filesystem races.
 _CALLBACK_SCRIPT_PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _CALLBACK_SCRIPT_SUFFIXES = ("", ".py", ".sh")
 _CALLBACK_SCRIPT_TIMEOUT_S = 10.0
 _CALLBACK_SCRIPT_KILL_TIMEOUT_S = 2.0
 _CALLBACK_SCRIPT_MAX_OUTPUT_BYTES = 64 * 1024
 _CALLBACK_SCRIPT_FAILURE_TEXT = "Callback action failed."
+_CALLBACK_SCRIPT_INHERITED_ENV_VARS = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "SYSTEMROOT",
+    "COMSPEC",
+    "PATHEXT",
+    "WINDIR",
+)
 
 
 class _CallbackScriptOutputTooLarge(Exception):
@@ -153,13 +173,26 @@ async def _communicate_callback_script_limited(proc, input_bytes: bytes) -> tupl
             pass
         finally:
             proc.stdin.close()
+            wait_closed = getattr(proc.stdin, "wait_closed", None)
+            if callable(wait_closed):
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                    await wait_closed()
 
     wait_task = asyncio.create_task(proc.wait())
     stdout_task = asyncio.create_task(_read_callback_script_stream_limited(proc.stdout, "stdout"))
     stderr_task = asyncio.create_task(_read_callback_script_stream_limited(proc.stderr, "stderr"))
     try:
         _returncode, stdout_bytes, stderr_bytes = await asyncio.gather(wait_task, stdout_task, stderr_task)
-    except Exception:
+    except (Exception, asyncio.CancelledError):
+        # If one task fails after another stream already finished, consume that
+        # completed result before cancelling the rest. This avoids turning an
+        # already-complete read into a spurious CancelledError while still
+        # preserving fail-closed semantics for timeouts, oversized output, and
+        # non-zero exits (callers decide whether stdout is applied).
+        for task in (stdout_task, stderr_task):
+            if task.done() and not task.cancelled():
+                with contextlib.suppress(Exception):
+                    task.result()
         for task in (wait_task, stdout_task, stderr_task):
             if not task.done():
                 task.cancel()
@@ -198,6 +231,39 @@ def _callback_script_subprocess_kwargs(env: dict[str, str]) -> dict[str, Any]:
     else:
         kwargs["start_new_session"] = True
     return kwargs
+
+
+def _normalize_telegram_chat_type(value: Any) -> Optional[str]:
+    """Return a stable Telegram chat type string for enum, string, and test doubles."""
+    if value is None:
+        return None
+
+    candidates = [
+        getattr(value, "value", None),
+        getattr(value, "name", None),
+        value,
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        text = str(candidate).strip()
+        if not text:
+            continue
+        normalized = text.rsplit(".", 1)[-1].lower()
+        if normalized in {"private", "group", "supergroup", "channel"}:
+            return normalized
+    return None
+
+
+def _session_chat_type_from_telegram(value: Any, thread_id: Optional[str] = None) -> str:
+    normalized = _normalize_telegram_chat_type(value)
+    if normalized == "private":
+        return "dm"
+    if normalized == "supergroup":
+        return "forum" if thread_id is not None else "group"
+    if normalized in {"group", "channel"}:
+        return normalized
+    return "dm"
 
 
 def check_telegram_requirements() -> bool:
@@ -619,16 +685,10 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 from gateway.session import SessionSource
 
-                normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
-                if normalized_chat_type == "private":
-                    normalized_chat_type = "dm"
-                elif normalized_chat_type == "supergroup":
-                    normalized_chat_type = "forum" if thread_id is not None else "group"
-
                 source = SessionSource(
                     platform=Platform.TELEGRAM,
                     chat_id=str(chat_id or normalized_user_id),
-                    chat_type=normalized_chat_type,
+                    chat_type=_session_chat_type_from_telegram(chat_type, thread_id),
                     user_id=normalized_user_id,
                     user_name=str(user_name).strip() if user_name else None,
                     thread_id=str(thread_id) if thread_id is not None else None,
@@ -3333,6 +3393,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_id = getattr(query_message, "chat_id", None)
         query_chat = getattr(query_message, "chat", None)
         query_chat_type = getattr(query_chat, "type", None)
+        normalized_query_chat_type = _normalize_telegram_chat_type(query_chat_type)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
 
@@ -3349,7 +3410,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 query,
                 data,
                 query_chat_id=query_chat_id,
-                query_chat_type=query_chat_type,
+                query_chat_type=normalized_query_chat_type,
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
@@ -3371,7 +3432,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not self._is_callback_user_authorized(
                     caller_id,
                     chat_id=query_chat_id,
-                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    chat_type=normalized_query_chat_type,
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
                 ):
@@ -3437,7 +3498,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not self._is_callback_user_authorized(
                     caller_id,
                     chat_id=query_chat_id,
-                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    chat_type=normalized_query_chat_type,
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
                 ):
@@ -3491,12 +3552,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "parse_mode": ParseMode.MARKDOWN_V2,
                             **self._link_preview_kwargs(),
                         }
-                        chat_type_value = getattr(chat_type, "value", chat_type)
-                        is_private_chat = str(chat_type_value).lower() in {
-                            "private",
-                            str(ChatType.PRIVATE).lower(),
-                            str(getattr(ChatType.PRIVATE, "value", ChatType.PRIVATE)).lower(),
-                        }
+                        is_private_chat = _normalize_telegram_chat_type(chat_type) == "private"
                         if thread_id is not None and is_private_chat and prompt_message_id is not None:
                             reply_to_id = int(prompt_message_id)
                             send_kwargs["reply_to_message_id"] = reply_to_id
@@ -3537,7 +3593,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not self._is_callback_user_authorized(
                     caller_id,
                     chat_id=query_chat_id,
-                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    chat_type=normalized_query_chat_type,
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
                 ):
@@ -3638,7 +3694,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if not self._is_callback_user_authorized(
                 caller_id,
                 chat_id=query_chat_id,
-                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                chat_type=normalized_query_chat_type,
                 thread_id=str(query_thread_id) if query_thread_id is not None else None,
                 user_name=query_user_name,
             ):
@@ -3674,7 +3730,7 @@ class TelegramAdapter(BasePlatformAdapter):
             query,
             data,
             query_chat_id=query_chat_id,
-            query_chat_type=query_chat_type,
+            query_chat_type=normalized_query_chat_type,
             query_thread_id=query_thread_id,
             query_user_name=query_user_name,
         ):
@@ -3732,6 +3788,37 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         return str(value)
 
+    def _build_callback_script_env(
+        self,
+        context_obj: Dict[str, Any],
+        *,
+        data: str,
+        prefix: str,
+    ) -> Dict[str, str]:
+        env = {
+            key: value
+            for key in _CALLBACK_SCRIPT_INHERITED_ENV_VARS
+            if (value := os.environ.get(key)) is not None
+        }
+        env.update({
+            "HERMES_HOME": context_obj["hermes"]["home"],
+            "HERMES_TELEGRAM_CALLBACK_DATA": data,
+            "HERMES_TELEGRAM_CALLBACK_PREFIX": prefix,
+        })
+        telegram_context = context_obj["telegram"]
+        metadata_env = {
+            "HERMES_TELEGRAM_USER_ID": telegram_context.get("user_id"),
+            "HERMES_TELEGRAM_USER_NAME": telegram_context.get("user_name"),
+            "HERMES_TELEGRAM_CHAT_ID": telegram_context.get("chat_id"),
+            "HERMES_TELEGRAM_CHAT_TYPE": telegram_context.get("chat_type"),
+            "HERMES_TELEGRAM_MESSAGE_ID": telegram_context.get("message_id"),
+            "HERMES_TELEGRAM_THREAD_ID": telegram_context.get("message_thread_id"),
+        }
+        for key, value in metadata_env.items():
+            if value is not None:
+                env[key] = str(value)
+        return env
+
     def _build_callback_script_context(
         self,
         query,
@@ -3756,7 +3843,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "user_id": self._callback_value(user_id),
                 "user_name": query_user_name,
                 "chat_id": self._callback_value(query_chat_id),
-                "chat_type": self._callback_value(query_chat_type),
+                "chat_type": self._callback_value(_normalize_telegram_chat_type(query_chat_type)),
                 "message_id": self._callback_value(message_id),
                 "message_thread_id": self._callback_value(query_thread_id),
             },
@@ -3875,7 +3962,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_callback_user_authorized(
             caller_id,
             chat_id=query_chat_id,
-            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            chat_type=_normalize_telegram_chat_type(query_chat_type),
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
         ):
@@ -3893,25 +3980,14 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         context_bytes = json.dumps(context_obj, ensure_ascii=False).encode("utf-8")
 
-        env = os.environ.copy()
-        env.update({
-            "HERMES_HOME": context_obj["hermes"]["home"],
-            "HERMES_TELEGRAM_CALLBACK_DATA": data,
-            "HERMES_TELEGRAM_CALLBACK_PREFIX": prefix,
-        })
-        telegram_context = context_obj["telegram"]
-        metadata_env = {
-            "HERMES_TELEGRAM_USER_ID": telegram_context.get("user_id"),
-            "HERMES_TELEGRAM_CHAT_ID": telegram_context.get("chat_id"),
-            "HERMES_TELEGRAM_MESSAGE_ID": telegram_context.get("message_id"),
-            "HERMES_TELEGRAM_THREAD_ID": telegram_context.get("message_thread_id"),
-        }
-        for key, value in metadata_env.items():
-            if value is not None:
-                env[key] = value
+        env = self._build_callback_script_env(context_obj, data=data, prefix=prefix)
 
         proc = None
         try:
+            # Invoke the script directly with create_subprocess_exec: callback
+            # data is argv[1], stdin is JSON context, and no shell is involved.
+            # Do not replace this with shell=True execution; button payloads are
+            # user-controlled Telegram callback data.
             proc = await asyncio.create_subprocess_exec(
                 str(script_path),
                 data,
@@ -4017,7 +4093,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_callback_user_authorized(
             caller_id,
             chat_id=query_chat_id,
-            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            chat_type=_normalize_telegram_chat_type(query_chat_type),
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
         ):
@@ -4706,14 +4782,15 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             chat = await self._bot.get_chat(int(chat_id))
             
+            telegram_chat_type = _normalize_telegram_chat_type(getattr(chat, "type", None))
             chat_type = "dm"
-            if chat.type == ChatType.GROUP:
+            if telegram_chat_type == "group":
                 chat_type = "group"
-            elif chat.type == ChatType.SUPERGROUP:
+            elif telegram_chat_type == "supergroup":
                 chat_type = "group"
                 if chat.is_forum:
                     chat_type = "forum"
-            elif chat.type == ChatType.CHANNEL:
+            elif telegram_chat_type == "channel":
                 chat_type = "channel"
             
             return {
@@ -6267,21 +6344,15 @@ class TelegramAdapter(BasePlatformAdapter):
         chat = message.chat
         user = message.from_user
         
-        # Determine chat type.  Prefer direct comparisons when tests/mocks or
-        # python-telegram-bot enum values provide the actual ChatType object,
-        # then fall back to string normalization for plain strings.
+        # Determine chat type. Normalize PTB enums, plain strings, and mocks
+        # into a stable Telegram chat type before mapping to Hermes chat types.
         raw_chat_type = getattr(chat, "type", "")
         chat_type = "dm"
-        if ChatType is not None and raw_chat_type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        telegram_chat_type = _normalize_telegram_chat_type(raw_chat_type)
+        if telegram_chat_type in {"group", "supergroup"}:
             chat_type = "group"
-        elif ChatType is not None and raw_chat_type == ChatType.CHANNEL:
+        elif telegram_chat_type == "channel":
             chat_type = "channel"
-        else:
-            telegram_chat_type = str(raw_chat_type).split(".")[-1].lower()
-            if telegram_chat_type in {"group", "supergroup"}:
-                chat_type = "group"
-            elif telegram_chat_type == "channel":
-                chat_type = "channel"
 
         # Resolve Telegram topic name and skill binding.
         # Only preserve message_thread_id when Telegram marks the message as
