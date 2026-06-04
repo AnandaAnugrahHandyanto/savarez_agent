@@ -220,25 +220,9 @@ export function CommandPalette() {
         ]
       },
       {
-        heading: 'Settings',
-        items: [
-          ...SECTIONS.map(section => ({
-            icon: section.icon,
-            id: `set-config-${section.id}`,
-            keywords: ['settings', section.label],
-            label: section.label,
-            run: go(settingsTab(`config:${section.id}`))
-          })),
-          ...NON_CONFIG_SETTINGS.map(entry => ({
-            icon: entry.icon,
-            id: `set-${entry.tab}`,
-            keywords: ['settings', ...(entry.keywords ?? [])],
-            label: entry.label,
-            run: go(settingsTab(entry.tab))
-          }))
-        ]
-      },
-      {
+        // Declared before Settings: cmdk keeps group order, so this keeps the
+        // theme/mode pickers on top for "theme"/"color" queries instead of
+        // buried under a fuzzy Settings match.
         heading: 'Appearance',
         items: [
           {
@@ -255,6 +239,25 @@ export function CommandPalette() {
             label: 'Change color mode…',
             to: 'color-mode'
           }
+        ]
+      },
+      {
+        heading: 'Settings',
+        items: [
+          ...SECTIONS.map(section => ({
+            icon: section.icon,
+            id: `set-config-${section.id}`,
+            keywords: ['settings', section.label],
+            label: section.label,
+            run: go(settingsTab(`config:${section.id}`))
+          })),
+          ...NON_CONFIG_SETTINGS.map(entry => ({
+            icon: entry.icon,
+            id: `set-${entry.tab}`,
+            keywords: ['settings', ...(entry.keywords ?? [])],
+            label: entry.label,
+            run: go(settingsTab(entry.tab))
+          }))
         ]
       }
     ]
