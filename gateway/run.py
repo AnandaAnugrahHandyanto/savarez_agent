@@ -6224,6 +6224,10 @@ class GatewayRunner:
                             "Reconnect %s: non-retryable error (%s), removing from retry queue",
                             platform.value, adapter.fatal_error_message,
                         )
+                        try:
+                            await adapter.disconnect()
+                        except Exception:
+                            pass
                         del self._failed_platforms[platform]
                     else:
                         self._update_platform_runtime_status(
@@ -6239,6 +6243,10 @@ class GatewayRunner:
                             "Reconnect %s failed, next retry in %ds",
                             platform.value, backoff,
                         )
+                        try:
+                            await adapter.disconnect()
+                        except Exception:
+                            pass
                         # Retryable failures (network/DNS blips) keep retrying
                         # at the backoff cap indefinitely — they self-heal once
                         # connectivity returns. We do NOT auto-pause them: a
@@ -6248,6 +6256,12 @@ class GatewayRunner:
                         # `not fatal_error_retryable` branch above, so anything
                         # reaching here is by definition retryable.
                 except Exception as e:
+                    # Clean up adapter resources if it was created before the exception
+                    try:
+                        if 'adapter' in dir() and adapter is not None:
+                            await adapter.disconnect()
+                    except Exception:
+                        pass
                     self._update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying",
