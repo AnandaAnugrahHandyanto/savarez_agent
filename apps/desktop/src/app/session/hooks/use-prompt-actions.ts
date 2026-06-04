@@ -1,7 +1,7 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { type MutableRefObject, useCallback } from 'react'
 
-import { transcribeAudio } from '@/hermes'
+import { renameSession, transcribeAudio } from '@/hermes'
 import { appendTextPart, branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
   attachmentDisplayText,
@@ -36,6 +36,7 @@ import {
   setAwaitingResponse,
   setBusy,
   setMessages,
+  setSessions,
   setYoloActive
 } from '@/store/session'
 
@@ -76,6 +77,7 @@ interface PromptActionsOptions {
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
+  refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
@@ -140,6 +142,7 @@ export function usePromptActions({
   branchCurrentSession,
   createBackendSessionForSend,
   handleSkinCommand,
+  refreshSessions,
   requestGateway,
   selectedStoredSessionIdRef,
   startFreshSessionDraft,
@@ -454,6 +457,30 @@ export function usePromptActions({
         const renderSlashOutput = (text: string) =>
           appendSessionTextMessage(sessionId, 'system', recordInput ? slashStatusText(command, text) : text)
 
+        // /title <name> renames the session. Route through the REST endpoint
+        // (the same path the sidebar rename uses) instead of the slash worker:
+        // the worker is a separate subprocess whose SQLite write to the shared
+        // state.db can silently fail (notably on Windows, where file locking is
+        // stricter), so the title never persisted and the sidebar never
+        // refreshed. The REST writer is reliable; refreshSessions() then pulls
+        // the authoritative title back into the sidebar. A bare `/title` (no
+        // argument) still falls through to the worker to display the current
+        // title. See #38508.
+        if (normalizedName === 'title' && arg) {
+          try {
+            const result = await renameSession(sessionId, arg)
+            const finalTitle = (result.title || arg).trim()
+
+            setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
+            await refreshSessions().catch(() => undefined)
+            renderSlashOutput(finalTitle ? `Session title set: ${finalTitle}` : 'Session title cleared.')
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+
+          return
+        }
+
         if (normalizedName === 'skin') {
           renderSlashOutput(handleSkinCommand(arg))
 
@@ -554,6 +581,7 @@ export function usePromptActions({
       busyRef,
       createBackendSessionForSend,
       handleSkinCommand,
+      refreshSessions,
       requestGateway,
       startFreshSessionDraft,
       submitPromptText
