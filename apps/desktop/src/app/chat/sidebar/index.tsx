@@ -35,9 +35,11 @@ import {
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
+import { isManualChatSession } from '@/lib/session-sources'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { cn } from '@/lib/utils'
 import {
+  $manualSessionsOnly,
   $panesFlipped,
   $pinnedSessionIds,
   $sidebarAgentsGrouped,
@@ -260,7 +262,12 @@ export function ChatSidebar({
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 
-  const sortedSessions = useMemo(() => [...sessions].sort((a, b) => sessionTime(b) - sessionTime(a)), [sessions])
+  const manualSessionsOnly = useStore($manualSessionsOnly)
+  const sortedSessions = useMemo(() => {
+    const sorted = [...sessions].sort((a, b) => sessionTime(b) - sessionTime(a))
+
+    return manualSessionsOnly ? sorted.filter(isManualChatSession) : sorted
+  }, [sessions, manualSessionsOnly])
 
   const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
 
@@ -559,28 +566,43 @@ export function ChatSidebar({
             forceEmptyState={showSessionSkeletons}
             groups={agentsGrouped ? agentGroups : undefined}
             headerAction={
-              // Grouping operates on unpinned recents; if everything is
-              // pinned the toggle does nothing visible, so hide it to avoid
-              // a phantom click target.
-              agentSessions.length > 0 ? (
+              <div className="flex items-center gap-px">
                 <Button
-                  aria-label={agentsGrouped ? 'Show sessions as a single list' : 'Group sessions by workspace'}
+                  aria-label={manualSessionsOnly ? 'Show all sessions' : 'Hide automated sessions'}
                   className={cn(
                     'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
-                    agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                    manualSessionsOnly && 'bg-(--ui-control-active-background) text-foreground opacity-100'
                   )}
                   onClick={event => {
                     event.stopPropagation()
-                    setSidebarRecentsOpen(true)
-                    setSidebarAgentsGrouped(!agentsGrouped)
+                    $manualSessionsOnly.set(!manualSessionsOnly)
                   }}
                   size="icon-xs"
-                  title={agentsGrouped ? 'Ungroup sessions' : 'Group by workspace'}
+                  title={manualSessionsOnly ? 'Show cron and gateway sessions' : 'Manual chats only'}
                   variant="ghost"
                 >
-                  <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                  <Codicon name={manualSessionsOnly ? 'person' : 'history'} size="0.75rem" />
                 </Button>
-              ) : null
+                {agentSessions.length > 0 ? (
+                  <Button
+                    aria-label={agentsGrouped ? 'Show sessions as a single list' : 'Group sessions by workspace'}
+                    className={cn(
+                      'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                      agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                    )}
+                    onClick={event => {
+                      event.stopPropagation()
+                      setSidebarRecentsOpen(true)
+                      setSidebarAgentsGrouped(!agentsGrouped)
+                    }}
+                    size="icon-xs"
+                    title={agentsGrouped ? 'Ungroup sessions' : 'Group by workspace'}
+                    variant="ghost"
+                  >
+                    <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                  </Button>
+                ) : null}
+              </div>
             }
             label="Sessions"
             labelMeta={countLabel(agentSessions.length, knownSessionTotal)}

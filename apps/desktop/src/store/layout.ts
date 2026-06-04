@@ -21,6 +21,7 @@ export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
+const SIDEBAR_MANUAL_ONLY_STORAGE_KEY = 'hermes.desktop.manualSessionsOnly'
 const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
 
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
@@ -54,6 +55,7 @@ export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_K
 export const $sidebarPinsOpen = atom(true)
 export const $sidebarRecentsOpen = atom(true)
 export const $sidebarAgentsGrouped = atom(storedBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false))
+export const $manualSessionsOnly = atom(storedBoolean(SIDEBAR_MANUAL_ONLY_STORAGE_KEY, true))
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
 export const $panesFlipped = atom(storedBoolean(PANES_FLIPPED_STORAGE_KEY, false))
@@ -62,6 +64,7 @@ export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
 $pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids]))
 $sidebarAgentsGrouped.subscribe(grouped => persistBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, grouped))
+$manualSessionsOnly.subscribe(manualOnly => persistBoolean(SIDEBAR_MANUAL_ONLY_STORAGE_KEY, manualOnly))
 $panesFlipped.subscribe(flipped => persistBoolean(PANES_FLIPPED_STORAGE_KEY, flipped))
 
 export function setSidebarWidth(width: number) {
