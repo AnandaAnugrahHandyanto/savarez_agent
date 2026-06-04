@@ -9,12 +9,10 @@ configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
 """
 
 import asyncio
-import json
 import logging
 import os
 import re
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
@@ -111,6 +109,21 @@ def _env_key_for_server(name: str) -> str:
     return f"MCP_{name.upper().replace('-', '_')}_API_KEY"
 
 
+def _strip_bearer_prefix(token: str) -> str:
+    """Strip a leading ``Bearer `` from a pasted token.
+
+    The header template stores ``Authorization: Bearer ${MCP_X_API_KEY}``, so
+    if a user pastes a token that already includes the ``Bearer `` prefix the
+    server receives ``Bearer Bearer <jwt>`` → 401. Normalize on save. (#37792)
+    """
+    if not isinstance(token, str):
+        return token
+    stripped = token.strip()
+    if stripped[:7].lower() == "bearer ":
+        return stripped[7:].strip()
+    return stripped
+
+
 def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
     """Parse ``KEY=VALUE`` strings from CLI args into an env dict."""
     parsed: Dict[str, str] = {}
@@ -166,6 +179,27 @@ def _apply_mcp_preset(
 
 # ─── Discovery (temporary connect) ───────────────────────────────────────────
 
+def _resolve_mcp_server_config(config: dict) -> dict:
+    """Resolve ``${ENV}`` placeholders in a server config before connecting.
+
+    Mirrors ``_load_mcp_config()`` in ``tools/mcp_tool.py``: load
+    ``~/.hermes/.env`` into ``os.environ`` and recursively interpolate any
+    ``${VAR}`` placeholders. The CLI builds header templates like
+    ``Authorization: Bearer ${MCP_X_API_KEY}`` but the probe path never
+    resolved them, so the discovery probe sent the literal placeholder and
+    auth-requiring servers (e.g. n8n) returned 401 — while runtime tool
+    loading worked because it interpolates. (#37792)
+    """
+    from tools.mcp_tool import _interpolate_env_vars
+
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv()
+    except Exception:  # pragma: no cover — defensive
+        pass
+    return _interpolate_env_vars(config)
+
+
 def _probe_single_server(
     name: str, config: dict, connect_timeout: float = 30
 ) -> List[Tuple[str, str]]:
@@ -180,6 +214,8 @@ def _probe_single_server(
         _connect_server,
         _stop_mcp_loop,
     )
+
+    config = _resolve_mcp_server_config(config)
 
     _ensure_mcp_loop()
 
@@ -207,6 +243,22 @@ def _probe_single_server(
     return tools_found
 
 
+def _oauth_tokens_present(name: str) -> bool:
+    """Return True if an OAuth token file exists on disk for ``name``.
+
+    Used after ``hermes mcp login`` to distinguish a genuine authentication
+    from a probe that succeeded only because the server allowed
+    initialize/tools-list without auth (so no token was ever acquired).
+    """
+    try:
+        from tools.mcp_oauth import HermesTokenStorage
+        return HermesTokenStorage(name).has_cached_tokens()
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("Could not check OAuth tokens for '%s': %s", name, exc)
+        # Be permissive on unexpected errors: don't block a real success.
+        return True
+
+
 def _unwrap_exception_group(exc: BaseException) -> Exception:
     """Extract the root-cause exception from anyio TaskGroup wrappers.
 
@@ -221,222 +273,6 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
     if isinstance(exc, Exception):
         return exc
     return RuntimeError(str(exc))
-
-
-def _status_rank(status: str) -> int:
-    return {"ok": 0, "warn": 1, "fail": 2}.get(status, 1)
-
-
-def _diagnostic_check(checks: list[dict], name: str, status: str, detail: str) -> None:
-    checks.append({"name": name, "status": status, "detail": detail})
-
-
-def build_cursor_mcp_diagnostics(repo_root: Optional[str] = None) -> dict:
-    """Build read-only diagnostics for Cursor's Hermes MCP integration."""
-    repo = Path(repo_root or os.environ.get("HERMES_REPO") or Path.cwd()).expanduser()
-    repo = repo.resolve()
-    hermes_home = Path(os.environ.get("HERMES_HOME") or str(get_hermes_home())).expanduser()
-    agents_dir_env = os.environ.get("HERMES_AGENTS_DIR", "")
-    checks: list[dict] = []
-
-    launcher = repo / "hermes-mcp-serve"
-    if launcher.exists() and os.access(launcher, os.X_OK):
-        _diagnostic_check(checks, "launcher", "ok", f"{launcher} is executable")
-    elif launcher.exists():
-        _diagnostic_check(
-            checks,
-            "launcher",
-            "fail",
-            f"{launcher} exists but is not executable; run chmod +x hermes-mcp-serve",
-        )
-    else:
-        _diagnostic_check(checks, "launcher", "fail", f"{launcher} was not found")
-
-    cursor_config = repo / ".cursor" / "mcp.json"
-    expected_command = "${workspaceFolder}/hermes-mcp-serve"
-    if cursor_config.exists():
-        try:
-            config = json.loads(cursor_config.read_text(encoding="utf-8"))
-            server = config.get("mcpServers", {}).get("hermes", {})
-            command = server.get("command")
-            args = server.get("args")
-            if command == expected_command and args == []:
-                _diagnostic_check(checks, "cursor_config", "ok", "portable hermes server config")
-            else:
-                _diagnostic_check(
-                    checks,
-                    "cursor_config",
-                    "warn",
-                    f"expected command={expected_command!r}, args=[]; got command={command!r}, args={args!r}",
-                )
-        except Exception as exc:
-            _diagnostic_check(checks, "cursor_config", "fail", f"invalid JSON: {exc}")
-    else:
-        _diagnostic_check(checks, "cursor_config", "warn", f"{cursor_config} was not found")
-
-    example_config = repo / ".cursor" / "mcp.json.example"
-    if example_config.exists():
-        _diagnostic_check(checks, "cursor_config_example", "ok", str(example_config))
-    else:
-        _diagnostic_check(checks, "cursor_config_example", "warn", f"{example_config} was not found")
-
-    try:
-        import mcp_serve
-
-        if getattr(mcp_serve, "_MCP_SERVER_AVAILABLE", False):
-            _diagnostic_check(checks, "mcp_sdk", "ok", "mcp package is importable")
-        else:
-            _diagnostic_check(
-                checks,
-                "mcp_sdk",
-                "fail",
-                "mcp package is not importable; install with pip install -e '.[mcp,dev]'",
-            )
-        _diagnostic_check(checks, "mcp_server_import", "ok", "mcp_serve imported")
-    except Exception as exc:
-        _diagnostic_check(checks, "mcp_server_import", "fail", f"mcp_serve import failed: {exc}")
-
-    snapshot: dict = {}
-    tool_names: list[str] = []
-    try:
-        import hermes_skills_mcp as skills_mcp
-
-        snapshot = skills_mcp.build_fleet_context_snapshot(summary=True)
-
-        class _ToolCollector:
-            def __init__(self):
-                self.names: list[str] = []
-
-            def tool(self):
-                def _decorator(fn):
-                    self.names.append(fn.__name__)
-                    return fn
-
-                return _decorator
-
-        collector = _ToolCollector()
-        skills_mcp.register_skills_tools(collector)
-        tool_names = sorted(collector.names)
-        _diagnostic_check(
-            checks,
-            "skills_context_tools",
-            "ok",
-            f"{len(tool_names)} read-only tools registered: {', '.join(tool_names)}",
-        )
-    except Exception as exc:
-        _diagnostic_check(
-            checks,
-            "skills_context_tools",
-            "fail",
-            f"hermes_skills_mcp diagnostics failed: {exc}",
-        )
-
-    if snapshot:
-        if snapshot.get("registry_present"):
-            _diagnostic_check(
-                checks,
-                "agent_registry",
-                "ok",
-                f"{snapshot.get('agent_count', 0)} agent(s) indexed",
-            )
-        else:
-            _diagnostic_check(checks, "agent_registry", "warn", "AGENT_REGISTRY.json not found")
-
-        missing_layers = snapshot.get("missing_layers") or []
-        if missing_layers:
-            _diagnostic_check(
-                checks,
-                "fleet_layers",
-                "warn",
-                f"missing layers: {', '.join(str(item) for item in missing_layers)}",
-            )
-        else:
-            _diagnostic_check(checks, "fleet_layers", "ok", "all snapshot layers present")
-
-        gateway_status = "ok" if snapshot.get("gateway_reachable") else "warn"
-        gateway_detail = (
-            "gateway reachable; live ops tools can be used"
-            if snapshot.get("gateway_reachable")
-            else "gateway not reachable; skills/context tools are still available"
-        )
-        _diagnostic_check(checks, "gateway", gateway_status, gateway_detail)
-
-    worst = max((_status_rank(check["status"]) for check in checks), default=0)
-    overall = "ok" if worst == 0 else "attention" if worst == 1 else "fail"
-
-    suggested_config = {
-        "mcpServers": {
-            "hermes": {
-                "command": expected_command,
-                "args": [],
-                "env": {
-                    "HERMES_REPO": "${workspaceFolder}",
-                    "HERMES_HOME": "~/.hermes",
-                    "HERMES_AGENTS_DIR": "",
-                },
-            }
-        }
-    }
-
-    return {
-        "overall_status": overall,
-        "mode": snapshot.get("mode") if snapshot else "unknown",
-        "repo": str(repo),
-        "hermes_home": str(hermes_home),
-        "hermes_agents_dir": agents_dir_env,
-        "gateway_reachable": bool(snapshot.get("gateway_reachable")) if snapshot else False,
-        "skills_context_tools": tool_names,
-        "checks": checks,
-        "suggested_cursor_mcp_json": suggested_config,
-        "next_actions": [
-            "If launcher/config checks fail, copy .cursor/mcp.json.example to .cursor/mcp.json.",
-            "Keep host-specific HERMES_AGENTS_DIR values in local .cursor/mcp.json only.",
-            "Use town_brief() or fleet_context_snapshot(summary=True) for Cursor session bootstrap.",
-        ],
-    }
-
-
-def cmd_mcp_doctor(args=None):
-    """Diagnose Cursor/Hermes MCP setup without mutating configuration."""
-    diagnostics = build_cursor_mcp_diagnostics()
-    print()
-    print(color("  Hermes MCP Doctor", Colors.CYAN + Colors.BOLD))
-    print()
-    _info(f"Repo: {diagnostics['repo']}")
-    _info(f"HERMES_HOME: {diagnostics['hermes_home']}")
-    if diagnostics.get("hermes_agents_dir"):
-        _info(f"HERMES_AGENTS_DIR: {diagnostics['hermes_agents_dir']}")
-    else:
-        _info("HERMES_AGENTS_DIR: (not set)")
-    print()
-
-    for check in diagnostics["checks"]:
-        status = check["status"]
-        if status == "ok":
-            _success(f"{check['name']}: {check['detail']}")
-        elif status == "warn":
-            _warning(f"{check['name']}: {check['detail']}")
-        else:
-            _error(f"{check['name']}: {check['detail']}")
-
-    print()
-    _info(f"Overall: {diagnostics['overall_status']}")
-    _info(f"MCP mode: {diagnostics['mode']}")
-    _info(
-        "Gateway: "
-        + ("reachable" if diagnostics["gateway_reachable"] else "not reachable")
-    )
-
-    if diagnostics["overall_status"] != "ok":
-        print()
-        _info("Suggested .cursor/mcp.json:")
-        print(json.dumps(diagnostics["suggested_cursor_mcp_json"], indent=2))
-
-    print()
-    _info("Next actions:")
-    for action in diagnostics["next_actions"]:
-        _info(f"- {action}")
-    print()
 
 
 # ─── hermes mcp add ──────────────────────────────────────────────────────────
@@ -542,6 +378,7 @@ def cmd_mcp_add(args):
                 else:
                     api_key = _prompt("API key / Bearer token", password=True)
                     if api_key:
+                        api_key = _strip_bearer_prefix(api_key)
                         save_env_value(env_key, api_key)
                         _success(f"Saved to {display_hermes_home()}/.env as {env_key}")
 
@@ -849,6 +686,36 @@ def cmd_mcp_login(args):
     # Probe triggers the OAuth flow (browser redirect + callback capture).
     try:
         tools = _probe_single_server(name, server_config)
+        # A clean probe is NOT proof of authentication. Some MCP servers
+        # (notably Google's official Drive server) serve initialize +
+        # tools/list WITHOUT auth, so the probe lists tools even when the
+        # OAuth flow never completed — e.g. dynamic client registration
+        # 400'd because the provider doesn't support RFC 7591. Reporting
+        # "Authenticated — N tools" in that case is a false success: every
+        # real tool call later hangs until timeout because there's no token.
+        # Verify a token actually landed on disk before claiming success.
+        if not _oauth_tokens_present(name):
+            _warning(
+                "Server responded, but no OAuth token was obtained — "
+                "authentication did not complete."
+            )
+            print()
+            _info(
+                "Some providers (e.g. Google Drive, Atlassian) do not support "
+                "automatic client registration. For those you must create an "
+                "OAuth client yourself and add its credentials to config.yaml:"
+            )
+            print()
+            print(color(f"    mcp_servers:", Colors.DIM))
+            print(color(f"      {name}:", Colors.DIM))
+            print(color(f"        url: {url}", Colors.DIM))
+            print(color(f"        auth: oauth", Colors.DIM))
+            print(color(f"        oauth:", Colors.DIM))
+            print(color(f"          client_id: \"<your-oauth-client-id>\"", Colors.DIM))
+            print(color(f"          client_secret: \"<your-oauth-client-secret>\"", Colors.DIM))
+            print()
+            _info("Then re-run `hermes mcp login " + name + "`.")
+            return
         if tools:
             _success(f"Authenticated — {len(tools)} tool(s) available")
         else:
@@ -967,6 +834,24 @@ def mcp_command(args):
         run_mcp_server(verbose=getattr(args, "verbose", False))
         return
 
+    # Catalog subcommands live in mcp_picker / mcp_catalog. Import lazily so
+    # the original `mcp_config` module stays import-cheap.
+    if action == "picker":
+        from hermes_cli.mcp_picker import run_picker
+        run_picker()
+        return
+    if action == "catalog":
+        from hermes_cli.mcp_picker import show_catalog
+        show_catalog()
+        return
+    if action == "install":
+        from hermes_cli.mcp_picker import install_by_name
+        import sys as _sys
+        rc = install_by_name(getattr(args, "identifier", "") or "")
+        if rc:
+            _sys.exit(rc)
+        return
+
     handlers = {
         "add": cmd_mcp_add,
         "remove": cmd_mcp_remove,
@@ -977,24 +862,27 @@ def mcp_command(args):
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,
         "login": cmd_mcp_login,
-        "doctor": cmd_mcp_doctor,
     }
 
     handler = handlers.get(action)
     if handler:
         handler(args)
     else:
-        # No subcommand — show list
-        cmd_mcp_list()
+        # No subcommand — drop the user into the catalog picker. This is the
+        # "try enabling and it flows you into setup" UX matching `hermes plugin`.
+        from hermes_cli.mcp_picker import run_picker
+        run_picker()
         print(color("  Commands:", Colors.CYAN))
+        _info("hermes mcp                                    Open the catalog picker (default)")
+        _info("hermes mcp catalog                            List Nous-approved MCPs")
+        _info("hermes mcp install <name>                     Install a catalog MCP")
         _info("hermes mcp serve                              Run as MCP server")
-        _info("hermes mcp add <name> --url <endpoint>        Add an MCP server")
+        _info("hermes mcp add <name> --url <endpoint>        Add a custom MCP server")
         _info("hermes mcp add <name> --command <cmd>         Add a stdio server")
         _info("hermes mcp add <name> --preset <preset>       Add from a known preset")
         _info("hermes mcp remove <name>                      Remove a server")
-        _info("hermes mcp list                               List servers")
+        _info("hermes mcp list                               List configured servers")
         _info("hermes mcp test <name>                        Test connection")
         _info("hermes mcp configure <name>                   Toggle tools")
         _info("hermes mcp login <name>                       Re-authenticate OAuth")
-        _info("hermes mcp doctor                             Diagnose Cursor MCP setup")
         print()

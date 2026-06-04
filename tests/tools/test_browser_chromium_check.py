@@ -7,7 +7,6 @@ for the full command timeout before surfacing a useless error.
 """
 
 import os
-from pathlib import Path
 
 import pytest
 
@@ -19,13 +18,6 @@ def _reset_chromium_cache():
     bt._cached_chromium_installed = None
     yield
     bt._cached_chromium_installed = None
-
-
-@pytest.fixture(autouse=True)
-def _isolate_chromium_detection(monkeypatch):
-    """Ignore host Chrome/Chromium so tests only exercise Playwright cache logic."""
-    monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
-    monkeypatch.setattr(bt.shutil, "which", lambda _name: None)
 
 
 class TestChromiumSearchRoots:

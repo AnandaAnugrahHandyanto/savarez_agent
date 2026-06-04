@@ -658,49 +658,17 @@ class GoogleChatAdapter(BasePlatformAdapter):
             logger.exception("[GoogleChat] Background inbound processing failed")
 
     @staticmethod
-    def _complete_pubsub_dispatch(
-        future: Any,
-        *,
-        on_success: Optional[Any] = None,
-        on_failure: Optional[Any] = None,
-    ) -> None:
-        try:
-            future.result()
-        except Exception:
-            logger.exception("[GoogleChat] Background inbound processing failed")
-            if on_failure is not None:
-                try:
-                    on_failure()
-                except Exception:
-                    logger.debug("[GoogleChat] Pub/Sub nack callback failed", exc_info=True)
-            return
-        if on_success is not None:
-            try:
-                on_success()
-            except Exception:
-                logger.debug("[GoogleChat] Pub/Sub ack callback failed", exc_info=True)
-
-    @staticmethod
     def _loop_accepts_callbacks(loop: Optional[asyncio.AbstractEventLoop]) -> bool:
         return loop is not None and not bool(getattr(loop, "is_closed", lambda: False)())
 
-    def _submit_on_loop(
-        self,
-        coro: Any,
-        *,
-        on_success: Optional[Any] = None,
-        on_failure: Optional[Any] = None,
-    ) -> bool:
+    def _submit_on_loop(self, coro: Any) -> None:
         """Schedule a coroutine on the adapter loop from a Pub/Sub callback thread."""
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
             # Loop already closed (shutdown race). Safe to drop; Pub/Sub will
             # redeliver on next reconnect.
             logger.warning("[GoogleChat] Loop not accepting callbacks; dropping event")
-            close = getattr(coro, "close", None)
-            if close:
-                close()
-            return False
+            return
         try:
             from agent.async_utils import safe_schedule_threadsafe
             future = safe_schedule_threadsafe(
@@ -711,23 +679,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
             )
         except RuntimeError:
             logger.warning("[GoogleChat] Loop closed between check and submit")
-            close = getattr(coro, "close", None)
-            if close:
-                close()
-            return False
+            return
         if future is None:
-            close = getattr(coro, "close", None)
-            if close:
-                close()
-            return False
-        future.add_done_callback(
-            lambda fut: self._complete_pubsub_dispatch(
-                fut,
-                on_success=on_success,
-                on_failure=on_failure,
-            )
-        )
-        return True
+            return
+        future.add_done_callback(self._log_background_failure)
 
     # ------------------------------------------------------------------
     # Bot identity resolution
@@ -1292,24 +1247,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
             if "space" not in enriched_env and space:
                 enriched_env["space"] = space
 
-            dispatch_coro = self._dispatch_message(msg_with_space, enriched_env)
-            try:
-                submitted = self._submit_on_loop(
-                    dispatch_coro,
-                    on_success=message.ack,
-                    on_failure=message.nack,
-                )
-            except Exception:
-                close = getattr(dispatch_coro, "close", None)
-                if close:
-                    close()
-                raise
-            if not submitted:
-                message.nack()
+            self._submit_on_loop(self._dispatch_message(msg_with_space, enriched_env))
+            message.ack()
         except Exception:
             logger.exception("[GoogleChat] Error in _on_pubsub_message")
             try:
-                message.nack()
+                message.ack()
             except Exception:
                 pass
 
@@ -3033,11 +2976,7 @@ def _check_for_registry() -> bool:
 
 def _is_connected(config: PlatformConfig) -> bool:
     """``GatewayConfig.get_connected_platforms()`` polls this."""
-    return (
-        bool(getattr(config, "enabled", False))
-        and check_google_chat_requirements()
-        and _validate_config(config)
-    )
+    return bool(getattr(config, "enabled", False)) and _validate_config(config)
 
 
 def _env_enablement() -> Optional[Dict[str, Any]]:

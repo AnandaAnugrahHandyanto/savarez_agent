@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import types
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -132,7 +133,6 @@ _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
 from plugins.platforms.google_chat.adapter import (  # noqa: E402
     GoogleChatAdapter,
-    _is_connected,
     _is_google_owned_host,
     _mime_for_message_type,
     _redact_sensitive,
@@ -240,14 +240,6 @@ class TestPlatformRegistration:
     def test_requirements_check_returns_true_when_available(self):
         # The shim flag is True in this test module.
         assert check_google_chat_requirements() is True
-
-    def test_connected_requires_runtime_dependencies(self, monkeypatch):
-        cfg = _base_config()
-        monkeypatch.setattr(_gc_mod, "GOOGLE_CHAT_AVAILABLE", False)
-        try:
-            assert _is_connected(cfg) is False
-        finally:
-            monkeypatch.setattr(_gc_mod, "GOOGLE_CHAT_AVAILABLE", True)
 
 
 # ===========================================================================
@@ -537,14 +529,7 @@ class TestOnPubsubMessage:
             "message_name": "spaces/RELAY/messages/M.M",
         }
         msg = _make_pubsub_message(envelope)
-
-        def fake_submit(coro, *, on_success=None, on_failure=None):
-            coro.close()
-            if on_success is not None:
-                on_success()
-            return True
-
-        with patch.object(adapter, "_submit_on_loop", side_effect=fake_submit) as submit:
+        with patch.object(adapter, "_submit_on_loop") as submit:
             adapter._on_pubsub_message(msg)
             submit.assert_called_once()
         msg.ack.assert_called_once()
@@ -562,68 +547,10 @@ class TestOnPubsubMessage:
     def test_text_message_submits_to_loop(self, adapter):
         env = _make_chat_envelope(text="hola")
         msg = _make_pubsub_message(env)
-
-        def fake_submit(coro, *, on_success=None, on_failure=None):
-            coro.close()
-            if on_success is not None:
-                on_success()
-            return True
-
-        with patch.object(adapter, "_submit_on_loop", side_effect=fake_submit) as submit:
+        with patch.object(adapter, "_submit_on_loop") as submit:
             adapter._on_pubsub_message(msg)
             submit.assert_called_once()
         msg.ack.assert_called_once()
-        msg.nack.assert_not_called()
-
-    def test_text_message_ack_waits_for_dispatch_success(self, adapter):
-        env = _make_chat_envelope(text="hola")
-        msg = _make_pubsub_message(env)
-        callbacks = {}
-
-        def fake_submit(coro, *, on_success=None, on_failure=None):
-            coro.close()
-            callbacks["success"] = on_success
-            callbacks["failure"] = on_failure
-            return True
-
-        with patch.object(adapter, "_submit_on_loop", side_effect=fake_submit):
-            adapter._on_pubsub_message(msg)
-
-        msg.ack.assert_not_called()
-        msg.nack.assert_not_called()
-        callbacks["success"]()
-        msg.ack.assert_called_once()
-        msg.nack.assert_not_called()
-
-    def test_text_message_nacks_when_dispatch_fails(self, adapter):
-        env = _make_chat_envelope(text="hola")
-        msg = _make_pubsub_message(env)
-
-        def fake_submit(coro, *, on_success=None, on_failure=None):
-            coro.close()
-            if on_failure is not None:
-                on_failure()
-            return True
-
-        with patch.object(adapter, "_submit_on_loop", side_effect=fake_submit):
-            adapter._on_pubsub_message(msg)
-
-        msg.ack.assert_not_called()
-        msg.nack.assert_called_once()
-
-    def test_text_message_nacks_when_loop_rejects_handoff(self, adapter):
-        env = _make_chat_envelope(text="hola")
-        msg = _make_pubsub_message(env)
-
-        def fake_submit(coro, *, on_success=None, on_failure=None):
-            coro.close()
-            return False
-
-        with patch.object(adapter, "_submit_on_loop", side_effect=fake_submit) as submit:
-            adapter._on_pubsub_message(msg)
-            submit.assert_called_once()
-        msg.ack.assert_not_called()
-        msg.nack.assert_called_once()
 
     def test_callback_exception_does_not_escape(self, adapter):
         env = _make_chat_envelope(text="hola")
@@ -631,10 +558,9 @@ class TestOnPubsubMessage:
         with patch.object(
             adapter, "_submit_on_loop", side_effect=RuntimeError("boom")
         ):
-            # Must not re-raise; transient callback failures should redeliver.
+            # Must not re-raise (would trigger Pub/Sub infinite redelivery).
             adapter._on_pubsub_message(msg)
-        msg.ack.assert_not_called()
-        msg.nack.assert_called_once()
+        msg.ack.assert_called_once()
 
 
 class TestExtractMessagePayload:
@@ -1591,6 +1517,13 @@ class TestSetupFilesSlashCommand:
 
 
 class TestUserOAuthHelper:
+    @staticmethod
+    def _assert_private_json_file(path, expected):
+        assert json.loads(path.read_text(encoding="utf-8")) == expected
+        assert list(path.parent.glob(f"{path.stem}.tmp.*")) == []
+        if os.name != "nt":
+            assert (path.stat().st_mode & 0o777) == 0o600
+
     def test_load_user_credentials_returns_none_when_no_token(self, tmp_path, monkeypatch):
         """Missing token file is the expected no-op case (user hasn't
         run /setup-files yet). Must NOT raise."""
@@ -1684,6 +1617,120 @@ class TestUserOAuthHelper:
         assert a != b
         assert a != legacy
         assert "google_chat_user_oauth_pending" in str(a.parent)
+
+    def test_persist_credentials_writes_private_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.platforms.google_chat.oauth import _persist_credentials, _token_path
+
+        creds = type(
+            "Creds",
+            (),
+            {
+                "to_json": lambda self: json.dumps(
+                    {
+                        "client_id": "cid",
+                        "client_secret": "secret",
+                        "refresh_token": "rtok",
+                        "token": "atok",
+                    }
+                )
+            },
+        )()
+
+        path = _token_path("alice@example.com")
+        _persist_credentials(creds, path)
+
+        self._assert_private_json_file(
+            path,
+            {
+                "client_id": "cid",
+                "client_secret": "secret",
+                "refresh_token": "rtok",
+                "token": "atok",
+                "type": "authorized_user",
+            },
+        )
+
+    def test_client_secret_is_shared_across_profiles(self, tmp_path, monkeypatch):
+        """The OAuth client secret is host-wide infra: a secret seeded at the
+        default root by the documented one-time `--client-secret` host step
+        must be visible to a gateway running under a named profile.
+
+        Regression: `_client_secret_path()` used to scope to the active
+        HERMES_HOME, so a profile gateway reported 'No client credentials
+        stored on the host' even after the host setup had been run.
+        """
+        root = tmp_path / ".hermes"
+        profile_home = root / "profiles" / "bot1"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # Seed the secret at the default root, as the host setup does.
+        secret = root / "google_chat_user_client_secret.json"
+        secret.write_text("{}", encoding="utf-8")
+
+        # Resolve from inside a named profile.
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        from plugins.platforms.google_chat.oauth import _client_secret_path
+        assert _client_secret_path() == secret
+        assert _client_secret_path().exists()
+
+    def test_profile_local_client_secret_takes_precedence(self, tmp_path, monkeypatch):
+        """A profile-local secret (separate OAuth app per bot, or a legacy
+        profile-scoped seed) overrides the host-wide default when present."""
+        root = tmp_path / ".hermes"
+        profile_home = root / "profiles" / "bot1"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        (root / "google_chat_user_client_secret.json").write_text(
+            "{}", encoding="utf-8"
+        )
+        profile_secret = profile_home / "google_chat_user_client_secret.json"
+        profile_secret.write_text("{}", encoding="utf-8")
+
+        from plugins.platforms.google_chat.oauth import _client_secret_path
+        assert _client_secret_path() == profile_secret
+
+    def test_store_client_secret_writes_private_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        src = tmp_path / "client_secret.json"
+        payload = {"installed": {"client_id": "cid", "client_secret": "secret"}}
+        src.write_text(json.dumps(payload), encoding="utf-8")
+
+        from plugins.platforms.google_chat.oauth import (
+            _client_secret_path,
+            store_client_secret,
+        )
+
+        store_client_secret(str(src))
+
+        self._assert_private_json_file(_client_secret_path(), payload)
+
+    def test_save_pending_auth_writes_private_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.platforms.google_chat.oauth import (
+            _REDIRECT_URI,
+            _pending_auth_path,
+            _save_pending_auth,
+        )
+
+        _save_pending_auth(
+            state="state-123",
+            code_verifier="verifier-abc",
+            email="alice@example.com",
+        )
+
+        self._assert_private_json_file(
+            _pending_auth_path("alice@example.com"),
+            {
+                "state": "state-123",
+                "code_verifier": "verifier-abc",
+                "redirect_uri": _REDIRECT_URI,
+                "email": "alice@example.com",
+            },
+        )
 
 
 class TestPerUserAttachmentRouting:

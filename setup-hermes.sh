@@ -214,7 +214,7 @@ else
     # if mistral can't resolve.
     _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
     _ALL_EXTRAS=(
-        modal daytona vercel messaging matrix cron cli dev tts-premium slack
+        modal daytona messaging matrix cron cli dev tts-premium slack
         pty honcho mcp homeassistant sms acp voice dingtalk feishu google
         bedrock web youtube
     )
@@ -329,9 +329,15 @@ fi
 if [ ! -f ".env" ]; then
     if [ -f ".env.example" ]; then
         cp .env.example .env
+        # .env holds API keys — restrict to owner-only access (matches
+        # scripts/install.sh which already chmods 600 after creation).
+        chmod 600 .env 2>/dev/null || true
         echo -e "${GREEN}✓${NC} Created .env from template"
     fi
 else
+    # Tighten an existing .env's perms in case it was created elsewhere
+    # under a permissive umask.
+    chmod 600 .env 2>/dev/null || true
     echo -e "${GREEN}✓${NC} .env exists"
 fi
 
@@ -342,18 +348,11 @@ fi
 echo -e "${CYAN}→${NC} Setting up hermes command..."
 
 HERMES_BIN="$SCRIPT_DIR/venv/bin/hermes"
-HERMES_MCP_BIN="$SCRIPT_DIR/venv/bin/hermes-mcp-serve"
 COMMAND_LINK_DIR="$(get_command_link_dir)"
 COMMAND_LINK_DISPLAY_DIR="$(get_command_link_display_dir)"
 mkdir -p "$COMMAND_LINK_DIR"
 ln -sf "$HERMES_BIN" "$COMMAND_LINK_DIR/hermes"
 echo -e "${GREEN}✓${NC} Symlinked hermes → $COMMAND_LINK_DISPLAY_DIR/hermes"
-if [ -x "$HERMES_MCP_BIN" ]; then
-    ln -sf "$HERMES_MCP_BIN" "$COMMAND_LINK_DIR/hermes-mcp-serve"
-else
-    ln -sf "$SCRIPT_DIR/hermes-mcp-serve" "$COMMAND_LINK_DIR/hermes-mcp-serve"
-fi
-echo -e "${GREEN}✓${NC} Symlinked hermes-mcp-serve → $COMMAND_LINK_DISPLAY_DIR/hermes-mcp-serve"
 
 if is_termux; then
     export PATH="$COMMAND_LINK_DIR:$PATH"
