@@ -13915,6 +13915,40 @@ Examples:
         "--repo", default="", help="Target GitHub repo (e.g. openai/skills)"
     )
 
+    skills_optimize = skills_subparsers.add_parser(
+        "optimize",
+        help="Promote a candidate SKILL.md through a SkillOpt-style validation gate",
+        description=(
+            "Compare a candidate SKILL.md against the current skill and only "
+            "promote it when it is valid, passes the optional validator command, "
+            "and strictly improves the held-out score. Inspired by Yang et al., "
+            "SkillOpt: Executive Strategy for Self-Evolving Agent Skills (arXiv:2605.23904)."
+        ),
+    )
+    skills_optimize.add_argument("skill_path", help="Skill directory or SKILL.md to update")
+    skills_optimize.add_argument("--candidate", required=True, help="Candidate SKILL.md file")
+    skills_optimize.add_argument(
+        "--baseline-score", required=True, type=float, help="Held-out score of the current skill"
+    )
+    skills_optimize.add_argument(
+        "--candidate-score", required=True, type=float, help="Held-out score of the candidate skill"
+    )
+    skills_optimize.add_argument(
+        "--validator",
+        default="",
+        help="Optional shell command that must exit 0 before promotion; runs in the skill directory",
+    )
+    skills_optimize.add_argument(
+        "--allow-equal",
+        action="store_true",
+        help="Allow equal scores to promote (default requires strict improvement)",
+    )
+    skills_optimize.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Evaluate and record the gate decision without replacing SKILL.md",
+    )
+
     skills_snapshot = skills_subparsers.add_parser(
         "snapshot", help="Export/import skill configurations"
     )
