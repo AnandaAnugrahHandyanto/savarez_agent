@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-"""Savarez CLI - Main entry point.
+Savarez CLI - Main entry point.
 
 Usage:
     savarez                     # Interactive chat (default)
