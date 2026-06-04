@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -107,7 +108,7 @@ def _configured_terminal_cwd() -> str | None:
     raw = (os.environ.get("TERMINAL_CWD") or "").strip()
     if raw.lower() in _TERMINAL_CWD_SENTINELS:
         return None
-    expanded = os.path.expanduser(raw)
+    expanded = os.path.expanduser(_normalize_windows_msys_path(raw))
     if not os.path.isabs(expanded):
         return None
     return expanded
@@ -162,6 +163,86 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     return _configured_terminal_cwd()
 
 
+# ---------------------------------------------------------------------------
+# Windows MSYS / Git-Bash / WSL path translation.
+#
+# Bug: on Windows, ``Path("/c/dev/x")`` is a DRIVE-LESS ROOTED path
+# (drive='', root='\\', is_absolute() == False). So the resolver treats a
+# Git-Bash / MSYS / cygwin-style absolute path like ``/c/dev/tools/...`` as
+# RELATIVE, joins it onto the active drive, and resolves it to the literal
+# ``C:\c\dev\tools\...`` instead of ``C:\dev\tools\...``. The model/terminal
+# routinely emits these POSIX-rooted forms on Windows (MSYS bash, WSL mounts,
+# cygwin), so file reads/writes silently land in a bogus ``C:\c\...`` tree.
+#
+# Fix: BEFORE handing the path to ``Path()``, translate the three common
+# cygdrive/mount conventions to native Windows drive form — but ONLY when we
+# are actually on Windows running the LOCAL terminal backend. On a Docker /
+# Linux / SSH backend, ``/c/...`` or ``/root/...`` may be a REAL container
+# path and must pass through untouched.
+# ---------------------------------------------------------------------------
+
+# Matches a single drive letter at the root of a POSIX-style path, optionally
+# behind a ``/mnt/`` (WSL) or ``/cygdrive/`` (cygwin) prefix, where the letter
+# is followed by ``/`` or end-of-string. Anchored on a *single* letter then a
+# slash/end, so multi-letter POSIX roots like ``/tmp``, ``/home``, ``/root``,
+# ``/usr``, ``/var`` do NOT match (``/tmp`` -> letter 't' then 'm', not '/').
+_MSYS_DRIVE_RE = re.compile(r"^/(?:mnt/|cygdrive/)?([A-Za-z])(?=/|$)")
+
+
+def _terminal_backend_is_local(task_id: str = "default") -> bool:
+    """Return True when the active terminal backend is the LOCAL one.
+
+    The backend is selected by ``TERMINAL_ENV`` (default ``"local"``) and
+    surfaced via ``terminal_tool._get_env_config()["env_type"]``. We must NOT
+    rewrite POSIX-rooted paths for non-local backends (Docker, SSH, modal,
+    daytona, singularity) where ``/c/...`` / ``/root/...`` are real container
+    paths. Fail SAFE: if backend detection is unavailable for any reason, treat
+    it as non-local so we never translate a path we shouldn't.
+    """
+    try:
+        from tools.terminal_tool import _get_env_config
+
+        return _get_env_config().get("env_type", "local") == "local"
+    except Exception:
+        return False
+
+
+def _normalize_windows_msys_path(path: str, task_id: str = "default") -> str:
+    """Translate MSYS/cygdrive/WSL absolute paths to Windows form on Windows-local.
+
+    Only active when ``os.name == "nt"`` AND the terminal backend is local.
+    Translations::
+
+        /c/dev/x        -> C:/dev/x
+        /mnt/c/dev/x    -> C:/dev/x
+        /cygdrive/c/dev/x -> C:/dev/x
+        /c              -> C:/
+
+    Left UNCHANGED: real Windows paths (``C:\\dev\\x``, ``C:/dev/x``), genuine
+    relative paths (``src/x.ts``, ``./x``, ``x``), ``~``-paths, and non-drive
+    POSIX roots (``/tmp/x``, ``/home/x``, ``/root/x``) — the single-letter-drive
+    anchor naturally excludes those. Non-string input is returned unchanged.
+    """
+    if not isinstance(path, str) or not path:
+        return path
+    if os.name != "nt":
+        return path
+    if not _terminal_backend_is_local(task_id):
+        return path
+
+    match = _MSYS_DRIVE_RE.match(path)
+    if not match:
+        return path
+
+    drive = match.group(1).upper()
+    rest = path[match.end():]  # the part AFTER the drive letter (starts with '/' or empty)
+    if rest:
+        # rest begins with '/', e.g. "/dev/x" -> "C:/dev/x"
+        return f"{drive}:{rest}"
+    # bare "/c" (or "/mnt/c", "/cygdrive/c") -> "C:/"
+    return f"{drive}:/"
+
+
 def _resolve_base_dir(task_id: str = "default") -> Path:
     """Return the ABSOLUTE base directory for resolving relative paths.
 
@@ -185,7 +266,7 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     """
     root = _authoritative_workspace_root(task_id)
     if root:
-        base = Path(root).expanduser()
+        base = Path(_normalize_windows_msys_path(root, task_id)).expanduser()
     else:
         base = Path(os.getcwd())
     if not base.is_absolute():
@@ -202,7 +283,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
-    p = Path(filepath).expanduser()
+    p = Path(_normalize_windows_msys_path(filepath, task_id)).expanduser()
     if p.is_absolute():
         return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()
@@ -235,8 +316,8 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
             return None  # Inside the workspace — expected.
         except ValueError:
             return (
-                f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
-                f"OUTSIDE the active workspace ({str(root)!r}). The edit will land in "
+                f"Relative path {filepath!r} resolved to '{resolved}', which is "
+                f"OUTSIDE the active workspace ('{root}'). The edit will land in "
                 f"a different directory than the terminal's cwd. If this is not "
                 f"intended (e.g. a git-worktree session writing into the main "
                 f"checkout), pass an absolute path under the workspace instead."
