@@ -314,7 +314,11 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # Use session_id (from agent.session_id) not session_key — after compression,
     # session_key may be stale (the ended parent) while session_id is the live
     # continuation. Fix for #20001.
-    if session_id:
+    # Skip for tui_shutdown: the gateway process is exiting (atexit), not the
+    # user explicitly closing the session. The next gateway child after auto-
+    # respawn must be able to recover the session without a manual resume call.
+    # Fix for #39013.
+    if session_id and end_reason != "tui_shutdown":
         try:
             db = _get_db()
             if db is not None:
@@ -2974,6 +2978,23 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"session_id": None})
 
 
+def _looks_like_ephemeral_tui_sid(value: object) -> bool:
+    """Return True for TUI's in-memory 8-hex session ids."""
+    text = str(value or "")
+    return len(text) == 8 and all(c in "0123456789abcdef" for c in text.lower())
+
+
+def _most_recent_human_session(db: object) -> dict | None:
+    deny = frozenset({"tool"})
+    rows = db.list_sessions_rich(source=None, limit=200)
+    for row in rows:
+        src = (row.get("source") or "").strip().lower()
+        if src in deny:
+            continue
+        return row
+    return None
+
+
 @method("session.resume")
 def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")
@@ -2987,6 +3008,19 @@ def _(rid, params: dict) -> dict:
         found = db.get_session_by_title(target)
         if found:
             target = found["id"]
+        elif _looks_like_ephemeral_tui_sid(target):
+            # TUI recovery after gateway respawn may pass the ephemeral short
+            # sid (8 hex chars) instead of a DB session_key.  Fall back to
+            # the most recent human-facing session so the user isn't stranded
+            # with "session not found" after an auto-respawn.  Fix for #39013.
+            try:
+                found = _most_recent_human_session(db)
+                if found:
+                    target = found["id"]
+            except Exception:
+                logger.exception("session.resume fallback to most_recent failed")
+            if not found:
+                return _err(rid, 4007, "session not found")
         else:
             return _err(rid, 4007, "session not found")
     sid = uuid.uuid4().hex[:8]
