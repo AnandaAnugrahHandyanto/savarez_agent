@@ -231,7 +231,7 @@ There's no IAM role or scope that fixes this. The endpoint only accepts user
 credentials. So the bot has to act *as a user* whenever it uploads a file —
 specifically, as the user who asked for the file.
 
-### One-time host setup
+### One-time setup (per profile)
 
 1. Go to **APIs & Services → Credentials** in the same GCP project.
 2. **Create credentials → OAuth client ID → Desktop app**.
@@ -239,7 +239,12 @@ specifically, as the user who asked for the file.
 4. On the host, register the client with Savarez:
 
 ```bash
+# Default profile:
 python -m plugins.platforms.google_chat.oauth \
+    --client-secret /path/to/client_secret.json
+
+# A named profile gets its own separate registration:
+hermes -p <profile> python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 
@@ -333,13 +338,18 @@ The asker has no per-user OAuth token and there's no legacy fallback. Run
 `/setup-files` in their DM and follow Step 10. After the exchange completes
 the next file request uploads natively without a gateway restart.
 
-**`/setup-files start` says "No client credentials stored on the host."**
+**`/setup-files start` says "No client credentials stored."**
 
 The one-time host setup wasn't done. From a terminal on the host that runs
 Savarez:
 
 ```bash
+# Default profile:
 python -m plugins.platforms.google_chat.oauth \
+    --client-secret /path/to/client_secret.json
+
+# Named profile:
+hermes -p <profile> python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 

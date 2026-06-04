@@ -79,11 +79,7 @@ logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
 # Use the project's SAVAREZ_HOME helper so the token follows the user's
 # profile (e.g. tests can override via SAVAREZ_HOME=/tmp/...).
 try:
-    from hermes_constants import (
-        display_hermes_home,
-        get_default_hermes_root,
-        get_hermes_home,
-    )
+    from hermes_constants import display_hermes_home, get_hermes_home
 except (ModuleNotFoundError, ImportError):
     # Fallback for environments where hermes_constants isn't importable
     # (mirrors the same fallback used by the google-workspace skill's
@@ -91,24 +87,6 @@ except (ModuleNotFoundError, ImportError):
     def get_hermes_home() -> Path:
         val = os.environ.get("SAVAREZ_HOME", "").strip()
         return Path(val) if val else Path.home() / ".savarez"
-
-    def get_default_hermes_root() -> Path:
-        # Mirror hermes_constants.get_default_hermes_root(): resolve the
-        # profile root so host-wide files (the shared client secret) are
-        # found regardless of which profile is active.
-        native_home = Path.home() / ".hermes"
-        env_home = os.environ.get("HERMES_HOME", "").strip()
-        if not env_home:
-            return native_home
-        env_path = Path(env_home)
-        try:
-            env_path.resolve().relative_to(native_home.resolve())
-            return native_home
-        except ValueError:
-            pass
-        if env_path.parent.name == "profiles":
-            return env_path.parent.parent
-        return env_path
 
     def get_default_hermes_root() -> Path:
         # Mirror hermes_constants.get_default_hermes_root(): resolve the
