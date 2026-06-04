@@ -12,47 +12,29 @@ Nous Research has been inducted into the **Nemotron Coalition** of leading AI la
 The `nvidia/nemotron-3-ultra:free` tier is available from **June 4th to June 18th**. The `:free` tag is what keeps it on the no-cost plan — pick that exact variant.
 :::
 
-Pick whichever install fits you. The **desktop app** is the easiest — no terminal required. If you live in a terminal, the **command-line** install is right below it.
+Pick whichever install fits your OS. If you want the desktop UI, download the macOS or Windows installer from the [Desktop App page](https://hermes-agent.nousresearch.com/desktop). The CLI installer below works on macOS, Linux, WSL2, Termux, and native Windows PowerShell; after setup, you can also run `hermes desktop` to build and launch the desktop UI locally.
 
-## Option A — Desktop app (recommended)
+## Command line installer
 
-The simplest path: a one-click installer with a guided, point-and-click setup. No terminal needed.
-
-### 1. Download and install
-
-[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) for macOS or Windows, then open it. On first launch it finishes setting itself up (usually under a minute).
-
-### 2. Connect Nous Portal
-
-When the app opens, you'll see a "Let's get you set up" screen. Click **Nous Portal** (marked **Recommended**). Your browser opens — create a [Nous Portal](https://portal.nousresearch.com) account (or sign in), choose the **Free** plan, and authorize Hermes. The app connects automatically.
-
-### 3. Pick the free Nemotron 3 Ultra model
-
-After connecting, the app shows a **Default model** card. Click **Change**, search for **nemotron 3 ultra**, and select the variant tagged **Free tier**:
-
-```
-nvidia/nemotron-3-ultra:free
-```
-
-The `:free` tag is what keeps it on the no-cost tier — pick that variant.
-
-### 4. Start chatting
-
-Click **Start chatting**. That's it — you're talking to Nemotron 3 Ultra, free.
-
-## Option B — Command line
-
-Prefer the terminal? You'll need macOS, Linux, or Windows via [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) with `curl` installed (`curl` is preinstalled on most systems).
+You'll need macOS, Linux, WSL2, Termux, or native Windows PowerShell.
 
 ### 1. Install Hermes Agent
 
+Linux / macOS / WSL2 / Termux:
+
 ```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-Prefer to review first? Download [`install.sh`](https://hermes-agent.nousresearch.com/install.sh), inspect it, then run it.
+Native Windows PowerShell:
 
-After it finishes, reload your shell:
+```powershell
+iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+```
+
+Prefer to review first? Download [`install.sh`](https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh) or [`install.ps1`](https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1), inspect it, then run it.
+
+After it finishes, reload your shell (Linux / macOS / WSL2 / Termux) or open a new PowerShell window (native Windows):
 
 ```bash
 source ~/.bashrc   # or source ~/.zshrc
@@ -109,7 +91,7 @@ Already set up with another model?
 
 ## See also
 
-- **[Desktop App](/user-guide/desktop)** — The native one-click app (macOS, Windows, Linux)
+- **[Desktop App](/user-guide/desktop)** — Desktop UI install and local-build options
 - **[Run Hermes Agent with Nous Portal](/guides/run-hermes-with-nous-portal)** — Full Portal walkthrough: models, Tool Gateway, and verification
 - **[Nous Portal integration](/integrations/nous-portal)** — What's in the subscription
 - **[Quickstart](/getting-started/quickstart)** — Install-to-chat in under 5 minutes

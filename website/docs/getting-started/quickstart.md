@@ -64,19 +64,23 @@ PyPI releases track tagged versions (major/minor releases), not every commit on 
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-Prefer native installers for desktop use?
+**Windows (native, PowerShell):**
 
-- **Desktop downloads:** [GitHub Releases](https://github.com/NousResearch/hermes-agent/releases/latest)
+```powershell
+iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+```
+
+For the desktop UI, download the macOS or Windows installer from the [Desktop App page](https://hermes-agent.nousresearch.com/desktop). You can also install Hermes with the CLI path above, then run `hermes desktop` to build and launch the desktop app locally.
 
 :::tip Android / Termux
 If you're installing on a phone, see the dedicated [Termux guide](./termux.md) for the tested manual path, supported extras, and current Android-specific limitations.
 :::
 
 :::tip Windows Users
-Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) first, then run the command above inside your WSL2 terminal.
+Use the native PowerShell installer above for the normal Windows path. If you prefer WSL2, install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) first, then run the Linux/macOS command inside your WSL2 terminal.
 :::
 
-After it finishes, reload your shell:
+After it finishes, reload your shell (Linux / macOS / WSL2 / Termux) or open a new PowerShell window (native Windows):
 
 ```bash
 source ~/.bashrc   # or source ~/.zshrc

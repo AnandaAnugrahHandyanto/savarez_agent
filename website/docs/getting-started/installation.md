@@ -10,13 +10,15 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 
 ## Quick Install
 
-### Desktop App (macOS + Windows)
+### Desktop App
 
-Prefer a native installer?
+For the packaged desktop UI, download the macOS or Windows installer from the [Desktop App page](https://hermes-agent.nousresearch.com/desktop).
 
-- **Desktop downloads:** [GitHub Releases](https://github.com/NousResearch/hermes-agent/releases/latest)
+If you prefer the CLI path, install Hermes with the platform-specific installer below, then run `hermes desktop` to build and launch the desktop app locally. On Linux, macOS, or WSL2, you can also build the desktop app during installation:
 
-Desktop builds ship signed/notarized macOS artifacts and Windows installers with checksum files.
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --include-desktop
+```
 
 ### One-Line CLI Installer (Linux / macOS / WSL2)
 
@@ -42,13 +44,19 @@ The installer handles **everything**: `uv`, Python 3.11, Node.js 22, `ripgrep`, 
 1. If `git` is already on your PATH, the installer uses your existing install.
 2. Otherwise it downloads portable **PortableGit** (~50MB, from the official `git-for-windows` GitHub release) and unpacks it to `%LOCALAPPDATA%\hermes\git`.  No admin rights required.  Completely isolated — it won't interfere with any system Git install, broken or otherwise.  (On 32-bit Windows it falls back to MinGit because PortableGit ships only 64-bit and ARM64 assets; bash-dependent Hermes features won't work on 32-bit hosts.)
 
-**Why not use winget?**  Earlier designs auto-installed Git via `winget install Git.Git`, but winget fails badly when a system Git install is in a partial or broken state (exactly when users need the installer to just work).  The portable Git approach sidesteps winget, the Windows installer registry, and any existing system Git entirely.  If the Hermes Git install itself ever breaks, `Remove-Item %LOCALAPPDATA%\hermes\git` and re-run the installer — no system impact, no uninstall drama.
+**Why not use winget?**  Earlier designs auto-installed Git via `winget install Git.Git`, but winget fails badly when a system Git install is in a partial or broken state (exactly when users need the installer to just work).  The portable Git approach sidesteps winget, the Windows installer registry, and any existing system Git entirely.  If the Hermes Git install itself ever breaks, run `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\hermes\git"` in PowerShell and re-run the installer — no system impact, no uninstall drama.
 
 The installer also sets `HERMES_GIT_BASH_PATH` to the located `bash.exe` so Hermes resolves it deterministically in fresh shells.
 
 If you prefer WSL2, the Linux installer above works inside it; both native and WSL installs can coexist without conflict (native data lives under `%LOCALAPPDATA%\hermes`, WSL data lives under `~/.hermes`).
 
-**Desktop installer (alternative):** A thin GUI installer is also available — download Hermes Desktop, run the `.exe`, and on first launch it calls `install.ps1` under the hood to provision Python (via `uv`), Node, PortableGit, and the rest of the dependencies. The desktop app and the PowerShell-installed CLI share the same install and data directories, so you can use either or both. See the [Windows (Native) guide](../user-guide/windows-native#desktop-installer-alternative) for details.
+**Desktop app:** Native Windows users can either download the desktop installer from the [Desktop App page](https://hermes-agent.nousresearch.com/desktop) or use the PowerShell installer above. After the PowerShell install, open a new PowerShell window and run `hermes desktop`; it builds the desktop app on demand using the same install and data directories. If you specifically want the PowerShell installer to include the desktop build on first install, use the scriptblock form to pass `-IncludeDesktop`:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1))) -IncludeDesktop
+```
+
+See the [Windows (Native) guide](../user-guide/windows-native#desktop-app) for details.
 
 ### Android / Termux
 

@@ -22,27 +22,54 @@ Pick whichever fits the moment. They share state, so you can start a session in 
 
 ## Install
 
-### With the Hermes Desktop installer on MacOS or Windows (recommended)
+:::tip Desktop downloads
+Download the macOS or Windows installer from the [Hermes Desktop download page](https://hermes-agent.nousresearch.com/desktop).
+:::
 
-[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
+### Recommended CLI path: install Hermes, then launch Desktop
 
-### With the CLI installer on Linux, MacOS, or Windows
+Linux / macOS / WSL2:
 
-Add `--include-desktop` to the regular install script.
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+```
+
+Reload your shell so the `hermes` command is on `PATH`, then launch Desktop:
+
+```bash
+source ~/.bashrc   # or source ~/.zshrc
+hermes desktop
+```
+
+Native Windows (PowerShell):
+
+```powershell
+iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+```
+
+Open a new PowerShell window, then launch Desktop:
+
+```powershell
+hermes desktop
+```
+
+`hermes desktop` uses your current config, keys, sessions, and skills. By default it builds the current OS's packaged Electron app if needed, then launches it.
+
+Android/Termux supports the CLI install path, not the Electron desktop app. Linux desktop users should use the CLI/local-build path below.
+
+### Build Desktop during install
+
+On Linux, macOS, or WSL2, add `--include-desktop` to the regular install script:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --include-desktop
 ```
 
-### With an existing Hermes installation
+On native Windows, use the scriptblock form to pass `-IncludeDesktop`:
 
-If you already have Hermes installed, simply run
-
-```bash
-hermes desktop
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1))) -IncludeDesktop
 ```
-
-That uses your current config, keys, sessions, and skills.
 
 ## What's in the app
 
