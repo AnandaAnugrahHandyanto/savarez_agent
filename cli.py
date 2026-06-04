@@ -3704,9 +3704,22 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "active_subagents": 0,
             "active_background_tasks": 0,
             "active_background_processes": 0,
         }
+
+        # Count live delegate_task subagents. The registry entry is removed
+        # when each child exits, so this shows how many worker agents are
+        # actively running right now.
+        try:
+            from tools.delegate_tool import list_active_subagents
+            snapshot["active_subagents"] = sum(
+                1 for item in list_active_subagents()
+                if item.get("status") == "running"
+            )
+        except Exception:
+            pass
 
         # Count live /background tasks. The dict entry is removed in the
         # task thread's finally block, so len() reflects truly-running tasks.
@@ -3971,6 +3984,9 @@ class HermesCLI:
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
+                agent_count = snapshot.get("active_subagents", 0)
+                if agent_count:
+                    parts.append(f"🤖 {agent_count}")
                 bg_count = snapshot.get("active_background_tasks", 0)
                 if bg_count:
                     parts.append(f"▶ {bg_count}")
@@ -3993,6 +4009,9 @@ class HermesCLI:
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
+            agent_count = snapshot.get("active_subagents", 0)
+            if agent_count:
+                parts.append(f"🤖 {agent_count}")
             bg_count = snapshot.get("active_background_tasks", 0)
             if bg_count:
                 parts.append(f"▶ {bg_count}")
@@ -4039,6 +4058,7 @@ class HermesCLI:
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
                     compressions = snapshot.get("compressions", 0)
+                    agent_count = snapshot.get("active_subagents", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     frags = [
@@ -4050,6 +4070,9 @@ class HermesCLI:
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
+                    if agent_count:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-strong", f"🤖 {agent_count}"))
                     if bg_count:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
@@ -4074,6 +4097,7 @@ class HermesCLI:
 
                     bar_style = self._status_bar_context_style(percent)
                     compressions = snapshot.get("compressions", 0)
+                    agent_count = snapshot.get("active_subagents", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     frags = [
@@ -4089,6 +4113,9 @@ class HermesCLI:
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
+                    if agent_count:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", f"🤖 {agent_count}"))
                     if bg_count:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
@@ -5902,8 +5929,21 @@ class HermesCLI:
         print(f"  ✅ Stopped {killed} process(es).")
 
     def _handle_agents_command(self):
-        """Handle /agents — show background processes and agent status."""
+        """Handle /agents — show active subagents, processes, and agent status."""
+        from tools.delegate_tool import list_active_subagents
         from tools.process_registry import format_uptime_short, process_registry
+
+        subagents = [
+            item for item in list_active_subagents()
+            if item.get("status") == "running"
+        ]
+        _cprint(f"  Running subagents: {len(subagents)}")
+        for item in subagents:
+            sid = item.get("subagent_id", "?")
+            up = format_uptime_short(int(max(0, time.time() - float(item.get("started_at") or time.time()))))
+            goal = str(item.get("goal") or "")[:80]
+            tools = int(item.get("tool_count") or 0)
+            _cprint(f"    {sid} · {up} · tools:{tools} · {goal}")
 
         processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
