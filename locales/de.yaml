@@ -353,3 +353,44 @@ gateway:
     session_db_unavailable_prefix: "Session-Datenbank nicht verfügbar"
     session_not_found:           "Session nicht in der Datenbank gefunden."
     warn_passthrough:            "⚠️ {error}"
+
+cli:
+  welcome: "Willkommen bei Hermes Agent! Geben Sie Ihre Nachricht ein oder /help für Befehle."
+  welcome_tip: "Tipp: Geben Sie einfach Ihre Nachricht ein, um mit Hermes zu chatten!"
+  
+  help:
+    header: "Verfügbare Befehle"
+    tip: "Geben Sie einfach Ihre Nachricht ein, um mit Hermes zu chatten!"
+    multi_line: "Mehrzeilig: Alt+Enter für neue Zeile"
+  
+  error:
+    template: "Fehler: {error}"
+    invalid_input: "Ungültige Eingabe: {error}"
+    file_not_found: "Datei nicht gefunden: {path}"
+    command_not_found: "Befehl nicht gefunden: {cmd}"
+  
+  tips:
+    1: "/background <Prompt> (Alias /bg oder /btw) führt eine Aufgabe in einer separaten Sitzung aus, während die aktuelle frei bleibt."
+    2: "/branch gabelt die aktuelle Sitzung ab, sodass Sie eine andere Richtung erkunden können, ohne Fortschritte zu verlieren."
+    3: "/compress komprimiert manuell den Gesprächskontext, wenn er zu lang wird."
+    4: "/rollback listet Dateisystem-Checkpoints auf — stellen Sie vom Agenten geänderte Dateien in einen vorherigen Zustand wieder her."
+    5: "/title \"mein Projekt\" benennt Ihre Sitzung — Sie können sie später mit /resume oder hermes -c fortsetzen."
+    6: "/resume setzt eine zuvor benannte Sitzung fort."
+    7: "/queue <Prompt> reiht eine Nachricht für die nächste Runde ein, ohne die aktuelle zu unterbrechen."
+    8: "/undo entfernt den letzten Benutzer/Assistenten-Austausch."
+    9: "/retry sendet Ihre letzte Nachricht erneut — nützlich, wenn die Antwort des Agenten nicht ganz richtig war."
+    10: "/verbose schaltet die Tool-Fortschrittsanzeige um: aus → neu → alle → verbose."
+  
+  cmd:
+    new: "Neue Sitzung starten (neue Sitzungs-ID + Verlauf)"
+    resume: "Zuvor benannte Sitzung fortsetzen"
+    branch: "Aktuelle Sitzung abzweigen (anderen Pfad erkunden)"
+    compress: "Gesprächskontext komprimieren"
+    rollback: "Dateisystem-Checkpoints auflisten oder wiederherstellen"
+    title: "Titel für die aktuelle Sitzung festlegen"
+    undo: "N Benutzer-Runden sichern und erneut auffordern (Standard 1)"
+    retry: "Letzte Nachricht erneut senden (an Agent senden)"
+    stop: "Alle laufenden Hintergrundprozesse beenden"
+    background: "Einen Prompt im Hintergrund ausführen"
+    queue: "Einen Prompt für die nächste Runde einreihen (keine Unterbrechung)"
+    lang: "Anzeigesprache anzeigen oder ändern"

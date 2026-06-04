@@ -353,3 +353,44 @@ gateway:
     session_db_unavailable_prefix: "Database delle sessioni non disponibile"
     session_not_found:           "Sessione non trovata nel database."
     warn_passthrough:            "⚠️ {error}"
+
+cli:
+  welcome: "Benvenuto in Hermes Agent! Digita il tuo messaggio o /help per i comandi."
+  welcome_tip: "Suggerimento: Digita semplicemente il tuo messaggio per chattare con Hermes!"
+  
+  help:
+    header: "Comandi Disponibili"
+    tip: "Digita semplicemente il tuo messaggio per chattare con Hermes!"
+    multi_line: "Multilinea: Alt+Enter per una nuova riga"
+  
+  error:
+    template: "Errore: {error}"
+    invalid_input: "Input non valido: {error}"
+    file_not_found: "File non trovato: {path}"
+    command_not_found: "Comando non trovato: {cmd}"
+  
+  tips:
+    1: "/background <prompt> (alias /bg o /btw) esegue un task in una sessione separata mentre quella corrente rimane libera."
+    2: "/branch biforca la sessione corrente per esplorare una direzione diversa senza perdere i progressi."
+    3: "/compress comprime manualmente il contesto della conversazione quando diventa lungo."
+    4: "/rollback elenca i checkpoint del file system — ripristina i file modificati dall'agente a uno stato precedente."
+    5: "/title \"il mio progetto\" nomina la tua sessione — riprendila più tardi con /resume o hermes -c."
+    6: "/resume riprende una sessione precedentemente nominata."
+    7: "/queue <prompt> mette in coda un messaggio per il turno successivo senza interrompere quello corrente."
+    8: "/undo rimuove l'ultimo scambio utente/assistente."
+    9: "/retry reinoltra il tuo ultimo messaggio — utile quando la risposta dell'agente non era del tutto corretta."
+    10: "/verbose cicla la visualizzazione del progresso degli strumenti: spento → nuovo → tutti → verbose."
+  
+  cmd:
+    new: "Avvia nuova sessione (nuovo ID sessione + cronologia)"
+    resume: "Riprendi sessione precedentemente nominata"
+    branch: "Biforca sessione corrente (esplora un percorso diverso)"
+    compress: "Comprimi contesto conversazione"
+    rollback: "Elenca o ripristina checkpoint del file system"
+    title: "Imposta titolo per la sessione corrente"
+    undo: "Backup N turni utente e ri-prompt (predefinito 1)"
+    retry: "Riprova ultimo messaggio (reinvia all'agente)"
+    stop: "Termina tutti i processi in background"
+    background: "Esegui un prompt in background"
+    queue: "Metti in coda un prompt per il turno successivo (senza interruzione)"
+    lang: "Mostra o cambia lingua interfaccia"

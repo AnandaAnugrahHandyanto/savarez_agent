@@ -357,3 +357,44 @@ gateway:
     session_db_unavailable_prefix: "Níl bunachar sonraí na seisiún ar fáil"
     session_not_found:           "Seisiún gan a aimsiú sa bhunachar sonraí."
     warn_passthrough:            "⚠️ {error}"
+
+cli:
+  welcome: "Fáilte go Hermes Agent! Clóscríobh do theachtaireacht nó /help le haghaidh orduithe."
+  welcome_tip: "Leid: Clóscríobh do theachtaireacht chun comhrá a dhéanamh le Hermes!"
+  
+  help:
+    header: "Orduithe ar Fáil"
+    tip: "Clóscríobh do theachtaireacht chun comhrá a dhéanamh le Hermes!"
+    multi_line: "Il-líne: Alt+Enter le haghaidh líne nua"
+  
+  error:
+    template: "Earráid: {error}"
+    invalid_input: "Ionchur neamhbhailí: {error}"
+    file_not_found: "Comhad gan aimsiú: {path}"
+    command_not_found: "Ordú gan aimsiú: {cmd}"
+  
+  tips:
+    1: "/background <iomrá> (lias /bg nó /btw) ritheann sé tasc i seisiún ar leithligh agus fágann an ceann reatha saor."
+    2: "/branch scoiltíonn an seisiún reatha ionas gur féidir leat treo difrióil a iniúchadh gan dul chun cinn a chailleadh."
+    3: "/compress comhbhrúitear comhthéacs an chomhrá de láimh nuair a éiríonn sé fada."
+    4: "/rollback liostaíonn sé pointí seiceála comhadchórais — athchóirigh comhaid a d'athraigh an gníomhaire go staid roimhe seo."
+    5: "/title \"mo thionscadal\" ainmníonn do sheisiún — atosaigh é níos déanaí le /resume nó hermes -c."
+    6: "/resume atosaíonn seisiún a ainmníodh roimhe seo."
+    7: "/queue <iomrá> cuireann sé teachtaireacht i scuaine don chéad bhabhta gan an ceann reatha a bhacadh."
+    8: "/undo baineann sé an malartú úsáideora/cúntóra deireanach."
+    9: "/retry athsheolann do theachtaireacht deireanach — úsáideach nuair nach raibh freagra an ghníomhaire ceart go leor."
+    10: "/verbose rothaíonn sé taispeáint dul chun cinn uirlise: as → nua → gach → verbose."
+  
+  cmd:
+    new: "Tosaigh seisiún nua (ID seisiúin nua + stair)"
+    resume: "Atosaigh seisiún a ainmníodh roimhe seo"
+    branch: "Scoilt an seisiún reatha (iniúch cosán difrióil)"
+    compress: "Comhbhrúigh comhthéacs comhrá"
+    rollback: "Liostaigh nó athchóirigh pointí seiceála comhadchórais"
+    title: "Socraigh teideal don seisiún reatha"
+    undo: "Cúltaca N babhtaí úsáideora agus ath-iarratas (réamhshocrú 1)"
+    retry: "Atriail an teachtaireacht deireanach (athsheol chuig an ngníomhaire)"
+    stop: "Cuir deireadh le gach próiseas cúlra atá ag rith"
+    background: "Rith iarratas sa chúlra"
+    queue: "Cuir iarratas i scuaine don chéad bhabhta (gan briseadh)"
+    lang: "Taispeáin nó athraigh teanga an chomhéadain"

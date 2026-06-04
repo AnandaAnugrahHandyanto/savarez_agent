@@ -353,3 +353,44 @@ gateway:
     session_db_unavailable_prefix: "Oturum veritabanı kullanılamıyor"
     session_not_found:           "Oturum veritabanında bulunamadı."
     warn_passthrough:            "⚠️ {error}"
+
+cli:
+  welcome: "Hermes Agent'e hoş geldiniz! Mesajınızı yazın veya komutlar için /help yazın."
+  welcome_tip: "İpucu: Hermes ile sohbet etmek için sadece mesajınızı yazın!"
+  
+  help:
+    header: "Mevcut Komutlar"
+    tip: "Hermes ile sohbet etmek için sadece mesajınızı yazın!"
+    multi_line: "Çok satırlı: Yeni satır için Alt+Enter"
+  
+  error:
+    template: "Hata: {error}"
+    invalid_input: "Geçersiz girdi: {error}"
+    file_not_found: "Dosya bulunamadı: {path}"
+    command_not_found: "Komut bulunamadı: {cmd}"
+  
+  tips:
+    1: "/background <istem> (takma ad /bg veya /btw) ayrı bir oturumda görev çalıştırırken mevcut oturumunuz serbest kalır."
+    2: "/branch mevcut oturumu çatallayarak ilerleme kaybetmeden farklı bir yön keşfetmenizi sağlar."
+    3: "/compress konuşma bağlamı uzadığında manuel olarak sıkıştırır."
+    4: "/rollback dosya sistemi kontrol noktalarını listeler — ajanın değiştirdiği dosyaları önceki durumuna geri yükler."
+    5: "/title \"projem\" oturumunuza isim verir — daha sonra /resume veya hermes -c ile devam edebilirsiniz."
+    6: "/resume daha önce adlandırılmış bir oturuma devam eder."
+    7: "/queue <istem> mevcut turu kesintiye uğratmadan bir sonraki tur için mesajı kuyruğa alır."
+    8: "/undo son kullanıcı/asistan alışverişini kaldırır."
+    9: "/retry son mesajınızı yeniden gönderir — ajanın yanıtı tam doğru olmadığında kullanışlıdır."
+    10: "/verbose araç ilerleme görüntüsünü döngüye alır: kapalı → yeni → tüm → verbose."
+  
+  cmd:
+    new: "Yeni oturum başlat (yeni oturum kimliği + geçmiş)"
+    resume: "Önceden adlandırılmış oturuma devam et"
+    branch: "Mevcut oturumu çatalla (farklı yol keşfet)"
+    compress: "Konuşma bağlamını sıkıştır"
+    rollback: "Dosya sistemi kontrol noktalarını listele veya geri yükle"
+    title: "Mevcut oturum için başlık ayarla"
+    undo: "N kullanıcı turunu yedekle ve yeniden iste (varsayılan 1)"
+    retry: "Son mesajı yeniden dene (ajana yeniden gönder)"
+    stop: "Tüm arka plan işlemlerini sonlandır"
+    background: "Arka planda bir istem çalıştır"
+    queue: "Bir sonraki tur için istemi kuyruğa al (kesinti yok)"
+    lang: "Arayüz dilini göster veya değiştir"

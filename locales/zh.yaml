@@ -353,3 +353,44 @@ gateway:
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found:           "数据库中未找到该会话。"
     warn_passthrough:            "⚠️ {error}"
+
+cli:
+  welcome: "欢迎使用 Hermes Agent！输入消息或 /help 查看命令。"
+  welcome_tip: "提示：直接输入消息即可与 Hermes 对话！"
+  
+  help:
+    header: "可用命令"
+    tip: "直接输入消息即可与 Hermes 对话！"
+    multi_line: "多行输入：Alt+Enter 换行"
+  
+  error:
+    template: "错误：{error}"
+    invalid_input: "无效输入：{error}"
+    file_not_found: "文件未找到：{path}"
+    command_not_found: "命令未找到：{cmd}"
+  
+  tips:
+    1: "/background <提示>（别名 /bg 或 /btw）在独立会话中运行任务，当前会话不受影响。"
+    2: "/branch 分叉当前会话，可以探索不同方向而不丢失进度。"
+    3: "/compress 手动压缩对话上下文，适用于对话过长的情况。"
+    4: "/rollback 列出文件系统检查点 — 将代理修改的文件恢复到之前的状态。"
+    5: "/title \"我的项目\" 为会话命名 — 之后可用 /resume 或 hermes -c 恢复。"
+    6: "/resume 恢复之前命名的会话。"
+    7: "/queue <提示> 将消息排队到下一轮，不中断当前操作。"
+    8: "/undo 移除最后一组用户/助手交换。"
+    9: "/retry 重新发送上一条消息 — 当代理响应不理想时很有用。"
+    10: "/verbose 循环切换工具进度显示：关闭 → 新增 → 全部 → 详细。"
+  
+  cmd:
+    new: "开始新会话（新的会话 ID 和历史）"
+    resume: "恢复之前命名的会话"
+    branch: "分叉当前会话（探索不同路径）"
+    compress: "压缩对话上下文"
+    rollback: "列出或恢复文件系统检查点"
+    title: "设置当前会话标题"
+    undo: "备份 N 个用户轮次并重新提示（默认 1）"
+    retry: "重试上一条消息（重新发送给代理）"
+    stop: "终止所有运行中的后台进程"
+    background: "在后台运行提示"
+    queue: "将提示排队到下一轮（不中断）"
+    lang: "显示或更改界面语言"

@@ -353,3 +353,44 @@ gateway:
     session_db_unavailable_prefix: "Base de datos de sesiones no disponible"
     session_not_found:           "Sesión no encontrada en la base de datos."
     warn_passthrough:            "⚠️ {error}"
+
+cli:
+  welcome: "¡Bienvenido a Hermes Agent! Escribe tu mensaje o /help para ver los comandos."
+  welcome_tip: "Consejo: ¡Simplemente escribe tu mensaje para chatear con Hermes!"
+  
+  help:
+    header: "Comandos Disponibles"
+    tip: "¡Simplemente escribe tu mensaje para chatear con Hermes!"
+    multi_line: "Multilínea: Alt+Enter para nueva línea"
+  
+  error:
+    template: "Error: {error}"
+    invalid_input: "Entrada inválida: {error}"
+    file_not_found: "Archivo no encontrado: {path}"
+    command_not_found: "Comando no encontrado: {cmd}"
+  
+  tips:
+    1: "/background <prompt> (alias /bg o /btw) ejecuta una tarea en una sesión separada mientras la actual permanece libre."
+    2: "/branch bifurca la sesión actual para explorar una dirección diferente sin perder progreso."
+    3: "/compress comprime manualmente el contexto de la conversación cuando se vuelve largo."
+    4: "/rollback lista puntos de control del sistema de archivos — restaura archivos modificados por el agente a un estado anterior."
+    5: "/title \"mi proyecto\" nombra tu sesión — reanúdala más tarde con /resume o hermes -c."
+    6: "/resume reanuda una sesión previamente nombrada."
+    7: "/queue <prompt> encola un mensaje para el siguiente turno sin interrumpir el actual."
+    8: "/undo elimina el último intercambio usuario/asistente."
+    9: "/retry reenvía tu último mensaje — útil cuando la respuesta del agente no fue quite right."
+    10: "/verbose cicla la visualización de progreso de herramientas: apagado → nuevo → todo → verbose."
+  
+  cmd:
+    new: "Iniciar nueva sesión (nueva ID de sesión + historial)"
+    resume: "Reanudar sesión previamente nombrada"
+    branch: "Bifurcar sesión actual (explorar diferente camino)"
+    compress: "Comprimir contexto de conversación"
+    rollback: "Listar o restaurar puntos de control del sistema de archivos"
+    title: "Establecer título para la sesión actual"
+    undo: "Respaldar N turnos de usuario y re-prompt (predeterminado 1)"
+    retry: "Reintentar último mensaje (reenviar al agente)"
+    stop: "Terminar todos los procesos en segundo plano"
+    background: "Ejecutar un prompt en segundo plano"
+    queue: "Encolar un prompt para el siguiente turno (sin interrupción)"
+    lang: "Mostrar o cambiar el idioma de la interfaz"

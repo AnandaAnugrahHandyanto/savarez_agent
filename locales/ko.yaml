@@ -353,3 +353,44 @@ gateway:
     session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
     session_not_found:           "데이터베이스에서 세션을 찾을 수 없습니다."
     warn_passthrough:            "⚠️ {error}"
+
+cli:
+  welcome: "Hermes Agent에 오신 것을 환영합니다! 메시지를 입력하거나 /help로 명령어를 확인하세요."
+  welcome_tip: "팁: 메시지를 입력하기만 하면 Hermes와 대화할 수 있습니다!"
+  
+  help:
+    header: "사용 가능한 명령어"
+    tip: "메시지를 입력하기만 하면 Hermes와 대화할 수 있습니다!"
+    multi_line: "여러 줄: 새 줄 Alt+Enter"
+  
+  error:
+    template: "오류: {error}"
+    invalid_input: "잘못된 입력: {error}"
+    file_not_found: "파일을 찾을 수 없음: {path}"
+    command_not_found: "명령어를 찾을 수 없음: {cmd}"
+  
+  tips:
+    1: "/background <프롬프트> (별칭 /bg 또는 /btw)는 현재 세션이 자유로운 동안 별도의 세션에서 작업을 실행합니다."
+    2: "/branch는 현재 세션을 분기하여 진행 상황을 잃지 않고 다른 방향을 탐색할 수 있게 합니다."
+    3: "/compress는 대화 컨텍스트가 길어질 때 수동으로 압축합니다."
+    4: "/rollback은 파일 시스템 체크포인트를 나열하고 에이전트가 수정한 파일을 이전 상태로 복원합니다."
+    5: "/title \"내 프로젝트\"는 세션에 이름을 지정하고 나중에 /resume 또는 hermes -c로 다시 시작할 수 있습니다."
+    6: "/resume은 이전에 이름이 지정된 세션을 다시 시작합니다."
+    7: "/queue <프롬프트>는 현재 작업을 중단하지 않고 다음 턴을 위해 메시지를 대기열에 추가합니다."
+    8: "/undo는 마지막 사용자/어시스턴트 교환을 제거합니다."
+    9: "/retry는 마지막 메시지를 다시 보냅니다. 에이전트의 응답이 올바르지 않았을 때 유용합니다."
+    10: "/verbose는 도구 진행 상황 표시를 순환합니다: 끄기 → 새로 → 전체 → verbose."
+  
+  cmd:
+    new: "새 세션 시작 (새 세션 ID + 기록)"
+    resume: "이전에 이름이 지정된 세션 다시 시작"
+    branch: "현재 세션 분기 (다른 경로 탐색)"
+    compress: "대화 컨텍스트 압축"
+    rollback: "파일 시스템 체크포인트 나열 또는 복원"
+    title: "현재 세션에 제목 설정"
+    undo: "N개의 사용자 턴을 백업하고 다시 프롬프트 (기본값 1)"
+    retry: "마지막 메시지 재시도 (에이전트에 다시 전송)"
+    stop: "모든 실행 중인 백그라운드 프로세스 종료"
+    background: "백그라운드에서 프롬프트 실행"
+    queue: "다음 턴을 위해 프롬프트 대기열에 추가 (중단 없음)"
+    lang: "인터페이스 언어 표시 또는 변경"

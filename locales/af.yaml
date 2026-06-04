@@ -353,3 +353,44 @@ gateway:
     session_db_unavailable_prefix: "Sessie-databasis is nie beskikbaar"
     session_not_found:           "Sessie nie in databasis gevind nie."
     warn_passthrough:            "⚠️ {error}"
+
+cli:
+  welcome: "Welkom by Hermes Agent! Tik jou boodskap of /help vir opdragte."
+  welcome_tip: "Wenk: Tik net jou boodskap om met Hermes te gesels!"
+  
+  help:
+    header: "Beskikbare Opdragte"
+    tip: "Tik net jou boodskap om met Hermes te gesels!"
+    multi_line: "Meervoudig: Alt+Enter vir 'n nuwe reël"
+  
+  error:
+    template: "Fout: {error}"
+    invalid_input: "Ongeldige invoer: {error}"
+    file_not_found: "Lêer nie gevind nie: {path}"
+    command_not_found: "Opdrag nie gevind nie: {cmd}"
+  
+  tips:
+    1: "/background <aanduiding> (alias /bg of /btw) voer 'n taak in 'n aparte sessie uit terwyl die huidige een vry bly."
+    2: "/branch vurk die huidige sessie sodat jy 'n ander rigting kan verloor sonder om vordering te verloor."
+    3: "/compress komprimeer handmatig die gesprekskonteks wanneer dit lank word."
+    4: "/rollback lys lêerstelselkontrolepunte — herstel lêers wat deur die agent gewysig is na 'n vorige toestand."
+    5: "/title \"my projek\" noem jou sessie — hervat dit later met /resume of hermes -c."
+    6: "/resume hervat 'n voorheen genoemde sessie."
+    7: "/queue <aanduiding> plaas 'n boodskap in die ry vir die volgende beurt sonder om die huidige te onderbreek."
+    8: "/undo verwyder die laaste gebruiker/assistent-uitruiling."
+    9: "/retry stuur jou laaste boodskap weer — nuttig wanneer die agent se antwoord nie heeltemal reg was nie."
+    10: "/verbose siklusse gereedskapvordering vertoon: af → nuut → alles → verbose."
+  
+  cmd:
+    new: "Begin nuwe sessie (nuwe sessie-ID + geskiedenis)"
+    resume: "Hervat 'n voorheen genoemde sessie"
+    branch: "Vurk huidige sessie (verken 'n ander pad)"
+    compress: "Komprimeer gesprekskonteks"
+    rollback: "Lys of herstel lêerstelselkontrolepunte"
+    title: "Stel titel vir huidige sessie"
+    undo: "Berg N gebruiker-beurte en herhaal versoek (verstek 1)"
+    retry: "Probeer laaste boodskap weer (stuur weer na agent)"
+    stop: "Beëindig alle lopende agtergrondprosesse"
+    background: "Voer 'n aanduiding in die agtergrond uit"
+    queue: "Plaas 'n aanduiding in die ry vir die volgende beurt (geen onderbreking)"
+    lang: "Wys of verander die koppelvlaktaal"

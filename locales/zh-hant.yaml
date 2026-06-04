@@ -353,3 +353,44 @@ gateway:
     session_db_unavailable_prefix: "工作階段資料庫無法使用"
     session_not_found:           "資料庫中找不到此工作階段。"
     warn_passthrough:            "⚠️ {error}"
+
+cli:
+  welcome: "歡迎使用 Hermes Agent！輸入訊息或 /help 查看命令。"
+  welcome_tip: "提示：直接輸入訊息即可與 Hermes 對話！"
+  
+  help:
+    header: "可用命令"
+    tip: "直接輸入訊息即可與 Hermes 對話！"
+    multi_line: "多行輸入：Alt+Enter 換行"
+  
+  error:
+    template: "錯誤：{error}"
+    invalid_input: "無效輸入：{error}"
+    file_not_found: "檔案未找到：{path}"
+    command_not_found: "命令未找到：{cmd}"
+  
+  tips:
+    1: "/background <提示>（別名 /bg 或 /btw）在獨立工作階段中執行任務，當前工作階段不受影響。"
+    2: "/branch 分叉當前工作階段，可以探索不同方向而不丟失進度。"
+    3: "/compress 手動壓縮對話上下文，適用於對話過長的情況。"
+    4: "/rollback 列出檔案系統檢查點 — 將代理修改的檔案恢復到之前的狀態。"
+    5: "/title \"我的專案\" 為工作階段命名 — 之後可用 /resume 或 hermes -c 恢復。"
+    6: "/resume 恢復之前命名的工作階段。"
+    7: "/queue <提示> 將訊息排隊到下一輪，不中斷當前操作。"
+    8: "/undo 移除最後一組使用者/助手交換。"
+    9: "/retry 重新傳送上一條訊息 — 當代理回應不理想時很有用。"
+    10: "/verbose 循環切換工具進度顯示：關閉 → 新增 → 全部 → 詳細。"
+  
+  cmd:
+    new: "開始新工作階段（新的工作階段 ID 和歷史）"
+    resume: "恢復之前命名的工作階段"
+    branch: "分叉當前工作階段（探索不同路徑）"
+    compress: "壓縮對話上下文"
+    rollback: "列出或恢復檔案系統檢查點"
+    title: "設定當前工作階段標題"
+    undo: "備份 N 個使用者輪次並重新提示（預設 1）"
+    retry: "重試上一條訊息（重新傳送給代理）"
+    stop: "終止所有執行中的背景程序"
+    background: "在背景執行提示"
+    queue: "將提示排隊到下一輪（不中斷）"
+    lang: "顯示或變更介面語言"

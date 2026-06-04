@@ -353,3 +353,44 @@ gateway:
     session_db_unavailable_prefix: "A munkamenet-adatbázis nem érhető el"
     session_not_found:           "A munkamenet nem található az adatbázisban."
     warn_passthrough:            "⚠️ {error}"
+
+cli:
+  welcome: "Üdvözli a Hermes Agent! Írja be üzenetét vagy a /help parancsokért."
+  welcome_tip: "Tipp: Csak írja be üzenetét, hogy csevegjen a Hermesszel!"
+  
+  help:
+    header: "Elérhető Parancsok"
+    tip: "Csak írja be üzenetét, hogy csevegjen a Hermesszel!"
+    multi_line: "Többsoros: Alt+Enter új sorhoz"
+  
+  error:
+    template: "Hiba: {error}"
+    invalid_input: "Érvénytelen bemenet: {error}"
+    file_not_found: "Fájl nem található: {path}"
+    command_not_found: "Parancs nem található: {cmd}"
+  
+  tips:
+    1: "/background <prompt> (alias /bg vagy /btw) külön munkamenetben futtat feladatot, miközben a jelenlegi szabad marad."
+    2: "/branch elágaztatja a jelenlegi munkamenetet, hogy más irányt fedezzen fel anélkül, hogy elveszítené a haladást."
+    3: "/compress kézzel tömöríti a beszélgetési kontextust, ha az túl hosszúvá válik."
+    4: "/rollback felsorolja a fájlrendszer ellenőrzési pontjait — visszaállítja az ágens által módosított fájlokat egy korábbi állapotba."
+    5: "/title \"projektem\" elnevezi a munkamenetet — később folytathatja a /resume vagy hermes -c segítségével."
+    6: "/resume folytat egy korábban elnevezett munkamenetet."
+    7: "/queue <prompt> sorba állít egy üzenetet a következő körre anélkül, hogy megszakítaná a jelenlegit."
+    8: "/undo eltávolítja az utolsó felhasználó/asszisztens cserét."
+    9: "/retry újraküldi az utolsó üzenetét — hasznos, ha az ágens válasza nem volt teljesen helyes."
+    10: "/verbose körbeváltja az eszközfolyamat megjelenítését: ki → új → összes → verbose."
+  
+  cmd:
+    new: "Új munkamenet indítása (új munkamenet-azonosító + előzmények)"
+    resume: "Korábban elnevezett munkamenet folytatása"
+    branch: "Jelenlegi munkamenet elágaztatása (más út felfedezése)"
+    compress: "Beszélgetési kontextus tömörítése"
+    rollback: "Fájlrendszer ellenőrzési pontok listázása vagy visszaállítása"
+    title: "Cím beállítása a jelenlegi munkamenethez"
+    undo: "N felhasználói kör mentése és újraprompt (alapértelmezett 1)"
+    retry: "Utolsó üzenet újraküldése (újraküldés az ágensnek)"
+    stop: "Minden futó háttérfolyamat befejezése"
+    background: "Prompt futtatása háttérben"
+    queue: "Prompt sorba állítása a következő körre (megszakítás nélkül)"
+    lang: "Felület nyelvének megjelenítése vagy módosítása"

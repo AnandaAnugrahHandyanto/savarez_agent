@@ -353,3 +353,44 @@ gateway:
     session_db_unavailable_prefix: "Base de données de sessions indisponible"
     session_not_found:           "Session introuvable dans la base de données."
     warn_passthrough:            "⚠️ {error}"
+
+cli:
+  welcome: "Bienvenue sur Hermes Agent ! Tapez votre message ou /help pour les commandes."
+  welcome_tip: "Conseil : Tapez simplement votre message pour discuter avec Hermes !"
+  
+  help:
+    header: "Commandes Disponibles"
+    tip: "Tapez simplement votre message pour discuter avec Hermes !"
+    multi_line: "Multiligne : Alt+Enter pour une nouvelle ligne"
+  
+  error:
+    template: "Erreur : {error}"
+    invalid_input: "Entrée invalide : {error}"
+    file_not_found: "Fichier introuvable : {path}"
+    command_not_found: "Commande introuvable : {cmd}"
+  
+  tips:
+    1: "/background <prompt> (alias /bg ou /btw) exécute une tâche dans une session séparée tandis que la actuelle reste libre."
+    2: "/branch bifurque la session actuelle pour explorer une direction différente sans perdre de progrès."
+    3: "/compress compresse manuellement le contexte de la conversation quand il devient long."
+    4: "/rollback liste les points de contrôle du système de fichiers — restaure les fichiers modifiés par l'agent à un état antérieur."
+    5: "/title \"mon projet\" nomme votre session — reprenez-la plus tard avec /resume ou hermes -c."
+    6: "/resume reprend une session précédemment nommée."
+    7: "/queue <prompt> met en file d'attente un message pour le tour suivant sans interrompre le courant."
+    8: "/undo supprime le dernier échange utilisateur/assistant."
+    9: "/retry renvoie votre dernier message — utile lorsque la réponse de l'agent n'était pas tout à fait correcte."
+    10: "/verbose fait cycler l'affichage de progression des outils : éteint → nouveau → tous → verbose."
+  
+  cmd:
+    new: "Démarrer une nouvelle session (nouvel ID de session + historique)"
+    resume: "Reprendre une session précédemment nommée"
+    branch: "Bifurquer la session actuelle (explorer un chemin différent)"
+    compress: "Compresser le contexte de conversation"
+    rollback: "Lister ou restaurer les points de contrôle du système de fichiers"
+    title: "Définir un titre pour la session actuelle"
+    undo: "Sauvegarder N tours utilisateur et re-demander (par défaut 1)"
+    retry: "Réessayer le dernier message (renvoyer à l'agent)"
+    stop: "Terminer tous les processus en arrière-plan"
+    background: "Exécuter un prompt en arrière-plan"
+    queue: "Mettre en file d'attente un prompt pour le tour suivant (sans interruption)"
+    lang: "Afficher ou changer la langue de l'interface"
