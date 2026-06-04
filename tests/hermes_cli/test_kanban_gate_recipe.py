@@ -122,6 +122,34 @@ def test_gate_recipe_missing_artifact_blocks(kanban_home, tmp_path):
         assert kb.get_task(conn, tid).status == "blocked"
 
 
+def test_verification_failure_is_sticky_and_survives_recompute_ready(kanban_home, tmp_path):
+    """A verification_failed block must be sticky (STEP5b2 respawn-loop regression).
+
+    Without an explicit "blocked" event, _has_sticky_block returns False and
+    recompute_ready's circuit-breaker auto-recovery promotes the parentless
+    blocked card back to ready every dispatch tick -> the worker respawns
+    forever. A deterministic verification failure is a deliberate stop; only an
+    explicit unblock should re-dispatch it.
+    """
+    recipe = {"checks": [{"type": "artifact_exists", "path": "missing.json"}]}
+    with kb.connect() as conn:
+        tid = _create_gate_task(conn, tmp_path / "workspace", recipe=recipe)
+
+        with pytest.raises(kb.VerificationFailedError):
+            kb.complete_task(conn, tid, result="claimed pass")
+
+        assert kb.get_task(conn, tid).status == "blocked"
+        kinds = [kind for kind, _ in _events(conn, tid)]
+        assert "verification_failed" in kinds
+        # the sticky marker: a "blocked" event must accompany the failure
+        assert "blocked" in kinds
+        assert kb._has_sticky_block(conn, tid) is True
+
+        # recompute_ready must NOT auto-promote it back to ready (respawn guard)
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
 @pytest.mark.parametrize("recipe", [{"checks": []}, "{not json"])
 def test_gate_recipe_empty_or_unparseable_blocks(kanban_home, tmp_path, recipe):
     with kb.connect() as conn:

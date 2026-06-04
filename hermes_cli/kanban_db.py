@@ -3151,6 +3151,19 @@ def _record_verification_failure(
             {"findings": findings},
             run_id=run_id,
         )
+        if cur.rowcount == 1:
+            # Sticky-block the task so recompute_ready does NOT auto-promote it
+            # back to ready. _has_sticky_block keys off the most recent
+            # "blocked"/"unblocked" event; without an explicit "blocked" event a
+            # verification failure is mistaken for a circuit-breaker block and
+            # gets promoted every dispatch tick -> infinite worker respawn loop.
+            # Deterministic verification failure is a deliberate stop: only an
+            # explicit unblock should re-dispatch it.
+            _append_event(
+                conn, task_id, "blocked",
+                {"reason": "verification_failed"},
+                run_id=run_id,
+            )
 
 def complete_task(
     conn: sqlite3.Connection,
