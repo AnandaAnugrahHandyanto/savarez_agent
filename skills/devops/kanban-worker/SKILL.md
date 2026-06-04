@@ -187,6 +187,10 @@ Every tool has a CLI equivalent for human operators and scripts:
 - `kanban_complete` ↔ `hermes kanban complete <id> --summary "..." --metadata '{...}'`
 - `kanban_block` ↔ `hermes kanban block <id> "reason"`
 - `kanban_create` ↔ `hermes kanban create "title" --assignee <profile> [--parent <id>]`
+- `kanban_attach` ↔ `hermes kanban attach <id> <path> [--name ...] [--content-type ...]`
+- `kanban_attachments` ↔ `hermes kanban attachments <id>`
 - etc.
+
+**Attaching files.** When your run produces a real artifact a human or the next worker should download (a generated PDF/image/export), attach it instead of pasting a link in a comment: `kanban_attach` for bytes you have in hand (base64), or `kanban_attach_url` to have Hermes fetch an http(s) URL server-side. Both store a first-class attachment (25 MB cap) visible in the dashboard drawer and surfaced to the next worker's context with an absolute path. `kanban_attachments` lists what's already on the task. Workers may only attach to their own task.
 
 Use the tools from inside an agent; the CLI exists for the human at the terminal.
