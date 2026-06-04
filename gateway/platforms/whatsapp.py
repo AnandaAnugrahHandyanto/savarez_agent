@@ -98,7 +98,7 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     if not pid_file.exists():
         return
     try:
-        pid = int(pid_file.read_text().strip())
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
     except (ValueError, OSError, TypeError):
         try:
             pid_file.unlink()
@@ -123,7 +123,7 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
 def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
     """Write the bridge PID to a file for later cleanup."""
     try:
-        (session_path / "bridge.pid").write_text(str(pid))
+        (session_path / "bridge.pid").write_text(str(pid), encoding="utf-8")
     except OSError:
         pass
 
@@ -399,7 +399,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             _deps_fresh = False
             if (bridge_dir / "node_modules").exists():
                 try:
-                    _deps_fresh = (_dep_stamp.read_text().strip() == _pkg_hash) and bool(_pkg_hash)
+                    _deps_fresh = (
+                        _dep_stamp.read_text(encoding="utf-8").strip() == _pkg_hash
+                    ) and bool(_pkg_hash)
                 except OSError:
                     _deps_fresh = False
             if not _deps_fresh:
@@ -425,7 +427,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     print(f"[{self.name}] Dependencies installed")
                     if _pkg_hash:
                         try:
-                            _dep_stamp.write_text(_pkg_hash)
+                            _dep_stamp.write_text(_pkg_hash, encoding="utf-8")
                         except OSError:
                             pass  # Stamp is an optimization; install still succeeded
                 except Exception as e:
