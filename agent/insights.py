@@ -801,15 +801,21 @@ class InsightsEngine:
         if o.get("total_cache_read_tokens") or o.get("total_cache_write_tokens"):
             lines.append("  🧊 Prompt Cache")
             lines.append("  " + "─" * 56)
+            cache_hit = f"{o['cache_hit_rate']:.1f}%"
+            uncached = f"{o['uncached_input_rate']:.1f}%"
+            fresh_input = f"{o['total_input_tokens']:,}"
+            cache_read = f"{o['total_cache_read_tokens']:,}"
+            cache_write = f"{o['total_cache_write_tokens']:,}"
+            prompt_total = f"{o['total_prompt_tokens']:,}"
+
             lines.append(
-                f"  Cache hit:         {o['cache_hit_rate']:.1f}%"
-                f"          Uncached:        {o['uncached_input_rate']:.1f}%"
+                f"  {'Cache hit:':<17}{cache_hit:<14}  {'Uncached:':<15}{uncached}"
             )
             lines.append(
-                f"  Fresh input:       {o['total_input_tokens']:<12,}  Cache read:      {o['total_cache_read_tokens']:,}"
+                f"  {'Fresh input:':<17}{fresh_input:<14}  {'Cache read:':<15}{cache_read}"
             )
             lines.append(
-                f"  Cache write:       {o['total_cache_write_tokens']:<12,}  Prompt total:    {o['total_prompt_tokens']:,}"
+                f"  {'Cache write:':<17}{cache_write:<14}  {'Prompt total:':<15}{prompt_total}"
             )
             lines.append("")
 
