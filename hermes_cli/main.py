@@ -7463,7 +7463,7 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
         return True
 
     # When sandbox is explicitly disabled we don't need the SUID helper.
-    if os.environ.get("ELECTRON_DISABLE_SANDBOX"):
+    if os.environ.get("ELECTRON_DISABLE_SANDBOX", "").lower() in ("1", "true", "yes", "on"):
         return True
 
     sandbox = packaged_executable.parent / "chrome-sandbox"
