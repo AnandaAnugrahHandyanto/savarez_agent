@@ -537,8 +537,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(data)
 
-    def _should_observe_unmentioned_group_message(self, data: Dict[str, Any]) -> bool:
-        """Return True when a group message should be stored but not dispatched."""
+    def _whatsapp_group_observe_mode_enabled(self, data: Dict[str, Any]) -> bool:
+        """Return True when group observe mode applies to this message."""
         if not self._whatsapp_observe_unmentioned_group_messages():
             return False
         chat_id = str(data.get("chatId") or "")
@@ -551,6 +551,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if chat_id in self._whatsapp_free_response_chats():
             return False
         if not self._whatsapp_require_mention():
+            return False
+        return True
+
+    def _should_observe_unmentioned_group_message(self, data: Dict[str, Any]) -> bool:
+        """Return True when a group message should be stored but not dispatched."""
+        if not self._whatsapp_group_observe_mode_enabled(data):
             return False
         body = str(data.get("body") or "").strip()
         if body.startswith("/"):
@@ -575,13 +581,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
         return f"[{sender}|{user_id}]\n{event.text or ''}"
 
     def _apply_whatsapp_group_observe_attribution(self, event: MessageEvent) -> MessageEvent:
-        if not self._whatsapp_observe_unmentioned_group_messages():
-            return event
         raw_message = event.raw_message if isinstance(event.raw_message, dict) else {}
-        if not raw_message.get("isGroup", False):
-            return event
-        chat_id = str(raw_message.get("chatId") or "")
-        if not self._is_group_allowed(chat_id):
+        if not self._whatsapp_group_observe_mode_enabled(raw_message):
             return event
         return dataclasses.replace(
             event,

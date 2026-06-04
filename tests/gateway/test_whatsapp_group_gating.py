@@ -172,6 +172,53 @@ def test_observed_group_context_uses_shared_source_for_later_mentions():
     asyncio.run(_run())
 
 
+def test_observe_flag_without_mention_gating_keeps_normal_group_event_source():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=False,
+            observe_unmentioned_group_messages=True,
+        )
+
+        event = await adapter._build_message_event(
+            _group_message(
+                "hello everyone",
+                senderId="6281234567890@s.whatsapp.net",
+                senderName="Alice Example",
+            )
+        )
+
+        assert event is not None
+        assert event.source.user_id == "6281234567890@s.whatsapp.net"
+        assert event.source.user_name == "Alice Example"
+        assert event.text == "hello everyone"
+
+    asyncio.run(_run())
+
+
+def test_observe_flag_keeps_free_response_group_event_source():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            free_response_chats=["120363001234567890@g.us"],
+            observe_unmentioned_group_messages=True,
+        )
+
+        event = await adapter._build_message_event(
+            _group_message(
+                "hello everyone",
+                senderId="6281234567890@s.whatsapp.net",
+                senderName="Alice Example",
+            )
+        )
+
+        assert event is not None
+        assert event.source.user_id == "6281234567890@s.whatsapp.net"
+        assert event.source.user_name == "Alice Example"
+        assert event.text == "hello everyone"
+
+    asyncio.run(_run())
+
+
 def test_regex_mention_patterns_allow_custom_wake_words():
     adapter = _make_adapter(require_mention=True, mention_patterns=[r"^\s*chompy\b"])
 
