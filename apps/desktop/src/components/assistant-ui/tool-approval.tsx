@@ -5,6 +5,14 @@ import { type FC, useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -51,6 +59,9 @@ const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navi
 const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   const gateway = useStore($gateway)
   const [submitting, setSubmitting] = useState<ApprovalChoice | null>(null)
+  // "Always allow" persists the pattern to ~/.hermes/config.yaml permanently, so
+  // it goes through a confirm step rather than firing straight from the menu.
+  const [confirmAlways, setConfirmAlways] = useState(false)
   const busy = submitting !== null
 
   const respond = useCallback(
@@ -85,7 +96,13 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   )
 
   // ⌘/Ctrl+Enter → Run, Esc → Reject — matching Cursor's accept/skip bindings.
+  // While the confirm dialog is open it owns the keyboard (Esc closes it), so
+  // the strip-level shortcuts stand down to avoid denying the whole approval.
   useEffect(() => {
+    if (confirmAlways) {
+      return
+    }
+
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault()
@@ -99,7 +116,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
     window.addEventListener('keydown', onKeyDown, true)
 
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [respond])
+  }, [confirmAlways, respond])
 
   return (
     <div className="mt-1 flex items-center gap-2.5 ps-5" data-slot="tool-approval-inline">
@@ -129,7 +146,16 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="min-w-44">
             <DropdownMenuItem onSelect={() => void respond('session')}>Allow this session</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => void respond('always')}>Always allow</DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                // Defer one tick so the menu fully unmounts before the dialog
+                // mounts — otherwise Radix's focus-return races the dialog and
+                // dismisses it via onInteractOutside.
+                setTimeout(() => setConfirmAlways(true), 0)
+              }}
+            >
+              Always allow…
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
               Reject
             </DropdownMenuItem>
@@ -147,6 +173,41 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
         {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : 'Reject'}
         {submitting !== 'deny' && <span className="text-[0.625rem] opacity-55">Esc</span>}
       </Button>
+
+      <Dialog onOpenChange={setConfirmAlways} open={confirmAlways}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Always allow this command?</DialogTitle>
+            <DialogDescription>
+              This adds the “{request.description}” pattern to your permanent allowlist (
+              <code className="font-mono text-xs">~/.hermes/config.yaml</code>). Hermes won’t ask again for commands
+              like this — in this session or any future one.
+            </DialogDescription>
+          </DialogHeader>
+
+          {request.command.trim() && (
+            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-2.5 py-1.5 font-mono text-xs leading-snug text-foreground">
+              {request.command.trim()}
+            </pre>
+          )}
+
+          <DialogFooter>
+            <Button onClick={() => setConfirmAlways(false)} size="sm" variant="ghost">
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                setConfirmAlways(false)
+                void respond('always')
+              }}
+              size="sm"
+              variant="destructive"
+            >
+              Always allow
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
