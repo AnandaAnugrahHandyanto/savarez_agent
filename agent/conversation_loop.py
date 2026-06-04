@@ -1549,11 +1549,13 @@ def run_conversation(
                         agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                         logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
                         agent._persist_session(messages, conversation_history)
+                        _final_response = f"Invalid API response after {max_retries} retries: {_failure_hint}"
                         return {
+                            "final_response": _final_response,
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
-                            "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
+                            "error": _final_response,
                             "failed": True  # Mark as failure for filtering
                         }
                     
@@ -2920,11 +2922,13 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
                         agent._persist_session(messages, conversation_history)
+                        _final_response = f"Request payload too large: max compression attempts ({max_compression_attempts}) reached."
                         return {
+                            "final_response": _final_response,
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
-                            "error": f"Request payload too large: max compression attempts ({max_compression_attempts}) reached.",
+                            "error": _final_response,
                             "partial": True,
                             "failed": True,
                             "compression_exhausted": True,
@@ -2954,11 +2958,13 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}413 payload too large. Cannot compress further.")
                         agent._persist_session(messages, conversation_history)
+                        _final_response = "Request payload too large (413). Cannot compress further."
                         return {
+                            "final_response": _final_response,
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
-                            "error": "Request payload too large (413). Cannot compress further.",
+                            "error": _final_response,
                             "partial": True,
                             "failed": True,
                             "compression_exhausted": True,
@@ -3007,11 +3013,13 @@ def run_conversation(
                             agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                             agent._persist_session(messages, conversation_history)
+                            _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
                             return {
+                                "final_response": _final_response,
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
-                                "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
+                                "error": _final_response,
                                 "partial": True,
                                 "failed": True,
                                 "compression_exhausted": True,
@@ -3076,11 +3084,13 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                         agent._persist_session(messages, conversation_history)
+                        _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
                         return {
+                            "final_response": _final_response,
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
-                            "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
+                            "error": _final_response,
                             "partial": True,
                             "failed": True,
                             "compression_exhausted": True,
@@ -3110,11 +3120,13 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
                         logger.error(f"{agent.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
                         agent._persist_session(messages, conversation_history)
+                        _final_response = f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further."
                         return {
+                            "final_response": _final_response,
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
-                            "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
+                            "error": _final_response,
                             "partial": True,
                             "failed": True,
                             "compression_exhausted": True,
