@@ -129,6 +129,41 @@ class TestResponseStore:
         # resp_2 mapping should still be intact
         assert store.get_conversation("chat-b") == "resp_2"
 
+    def test_reuses_one_connection_per_db_path(self, tmp_path):
+        """Multiple store instances for one file share a process-local connection."""
+        db_path = tmp_path / "response_store.db"
+        first = ResponseStore(max_size=10, db_path=str(db_path))
+        second = ResponseStore(max_size=10, db_path=str(db_path))
+        try:
+            assert first._conn is second._conn
+            first.put("resp_1", {"output": "hello"})
+            assert second.get("resp_1") == {"output": "hello"}
+
+            first.close()
+            assert second.get("resp_1") == {"output": "hello"}
+
+            second.close()
+            third = ResponseStore(max_size=10, db_path=str(db_path))
+            try:
+                assert third._conn is not second._conn
+                assert third.get("resp_1") == {"output": "hello"}
+            finally:
+                third.close()
+        finally:
+            first.close()
+            second.close()
+
+    @pytest.mark.asyncio
+    async def test_adapter_disconnect_closes_response_store(self):
+        config = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(config)
+        store = MagicMock()
+        adapter._response_store = store
+
+        await adapter.disconnect()
+
+        store.close.assert_called_once()
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
     def test_file_store_created_owner_only_under_permissive_umask(self, tmp_path):
         """response_store.db must be 0o600 on creation even under umask 022."""
