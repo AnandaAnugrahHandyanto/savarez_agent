@@ -3021,6 +3021,18 @@ wheels = [
 ]
 
 [[package]]
+name = "nemo-relay"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/15/55/3b65643db2df02fb3838b3d251442e05b7306cbbc77e69884ae78743546f/nemo_relay-0.3.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:a6e44abe38bf6dda8f6a8b149cd9069a548186f24263ae8469d5a37cefc95209", size = 5282297, upload-time = "2026-05-29T22:32:36.315Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/ef/e2f4bc02f99f38706fdde0cdda6b6d8fddea9e6975da1b66377c35958b85/nemo_relay-0.3.0-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:99ba247121cd0d17b9c5e2a95beb42512243430773b93435848b8b4b9f9ca61f", size = 4722431, upload-time = "2026-05-29T22:32:38.088Z" },
+    { url = "https://files.pythonhosted.org/packages/12/18/bedb5d57f206e2859cef11f12f568974a529acf382436523a37e095b2cc7/nemo_relay-0.3.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:20bb1e4ed87f179befc4db3af2e35f08be711378b322f3672222d80294f57be7", size = 5002734, upload-time = "2026-05-29T22:32:40.191Z" },
+    { url = "https://files.pythonhosted.org/packages/26/ec/4b2e758a0a25397f2e97be889a11b7787d108658e0b60ddff5048b25adb8/nemo_relay-0.3.0-cp311-abi3-win_amd64.whl", hash = "sha256:e659c2772b35c0ea4897a91f6bf86b551ed403f6f41d0b60fd8151f5c78b83d0", size = 4947785, upload-time = "2026-05-29T22:32:41.784Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/91/45a3397559679d846ae023a82527c43b14631786b3a7c95e69c05e8bb553/nemo_relay-0.3.0-cp311-abi3-win_arm64.whl", hash = "sha256:9655514adb518e19caf7b3f6a08bbe82c1b24759c0a8021c3df949fd265bcef6", size = 4662147, upload-time = "2026-05-29T22:32:43.554Z" },
+]
+
+[[package]]
 name = "nest-asyncio"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4174,7 +4186,6 @@ name = "python-telegram-bot"
 version = "22.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "httpcore", marker = "python_full_version >= '3.14'" },
     { name = "httpx" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cd/9b/8df90c85404166a6631e857027866263adb27440d8af1dbeffbdc4f0166c/python_telegram_bot-22.6.tar.gz", hash = "sha256:50ae8cc10f8dff01445628687951020721f37956966b92a91df4c1bf2d113742", size = 1503761 }
@@ -4580,7 +4591,7 @@ name = "ruamel-yaml"
 version = "0.18.17"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ruamel-yaml-clib", marker = "python_full_version < '3.15' and platform_python_implementation == 'CPython'" },
+    { name = "ruamel-yaml-clib", marker = "platform_python_implementation == 'CPython'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3a/2b/7a1f1ebcd6b3f14febdc003e658778d81e76b40df2267904ee6b13f0c5c6/ruamel_yaml-0.18.17.tar.gz", hash = "sha256:9091cd6e2d93a3a4b157ddb8fabf348c3de7f1fb1381346d985b6b247dcd8d3c", size = 149602 }
 wheels = [
