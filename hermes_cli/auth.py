@@ -1360,7 +1360,9 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     """Return True only if the user has explicitly configured this provider.
 
     Checks:
-      1. active_provider in auth.json matches
+      1. active_provider in auth.json matches (in profile mode, the
+         global-root active_provider is honored when the profile has none
+         of its own — see ``_active_provider_from_store``)
       2. model.provider in config.yaml matches
       3. Provider-specific env vars are set (e.g. ANTHROPIC_API_KEY)
 
@@ -1371,10 +1373,13 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     """
     normalized = (provider_id or "").strip().lower()
 
-    # 1. Check auth.json active_provider
+    # 1. Check auth.json active_provider. Mirror get_active_provider() /
+    # resolve_provider(): a named profile that never selected its own
+    # provider still counts the global-root active_provider as the user's
+    # explicit choice. See issue #18594 follow-up.
     try:
         auth_store = _load_auth_store()
-        active = (auth_store.get("active_provider") or "").strip().lower()
+        active = (_active_provider_from_store(auth_store) or "").strip().lower()
         if active and active == normalized:
             return True
     except Exception:
