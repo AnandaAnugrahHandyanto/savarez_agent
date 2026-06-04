@@ -855,5 +855,8 @@
   "provider.desc.ollamacloud": "Ollama Cloud 기본 URL 오버라이드 (기본값: https://ollama.com/v1)",
   "provider.desc.awsbedrock": "Bedrock 인증용 AWS 명명된 프로필 (~/.aws/credentials에서)",
   "provider.desc.exa": "AI 네이티브 웹 검색 및 콘텐츠용 Exa API 키",
-  "provider.desc.parallel": "AI 네이티브 웹 검색 및 추출용 Parallel API 키"
+  "provider.desc.parallel": "AI 네이티브 웹 검색 및 추출용 Parallel API 키",
+  "titlebar.language": "Language",
+  "titlebar.languageDesc": "Choose a display language for the interface.",
+  "language.zh-TW": "中文（繁體）"
 }

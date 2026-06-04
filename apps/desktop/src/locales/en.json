@@ -855,5 +855,8 @@
   "provider.desc.ollamacloud": "Ollama Cloud base URL override (default: https://ollama.com/v1)",
   "provider.desc.awsbedrock": "AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
   "provider.desc.exa": "Exa API key for AI-native web search and contents",
-  "provider.desc.parallel": "Parallel API key for AI-native web search and extract"
+  "provider.desc.parallel": "Parallel API key for AI-native web search and extract",
+  "titlebar.language": "Language",
+  "titlebar.languageDesc": "Choose a display language for the interface.",
+  "language.zh-TW": "中文（繁體）"
 }

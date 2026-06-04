@@ -12,9 +12,10 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { triggerHaptic } from '@/lib/haptics'
-import { Volume2, VolumeX } from '@/lib/icons'
+import { Volume2, VolumeX, Globe } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { t } from '@/store/i18n'
+import { useTranslation, LANGUAGE_LABELS } from '@/store/i18n'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { $fileBrowserOpen, $sidebarOpen, toggleFileBrowserOpen, toggleSidebarOpen } from '@/store/layout'
 
@@ -171,6 +172,7 @@ export function TitlebarControls({
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
         <ProfilesMenuButton navigate={navigate} />
+        <LanguageMenuButton />
         {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
       </div>
@@ -209,6 +211,46 @@ function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavig
           <Codicon name="account" size="1rem" />
           <span>{t('titlebar.manageProfiles')}</span>
         </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function LanguageMenuButton() {
+  const { locale, setLocale, availableLocales } = useTranslation()
+  const currentLabel = LANGUAGE_LABELS[locale] ?? locale
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          aria-label={t('titlebar.language')}
+          className={cn(titlebarButtonClass, 'grid place-items-center bg-transparent select-none [&_svg]:size-4')}
+          onPointerDown={event => event.stopPropagation()}
+          title={currentLabel}
+          type="button"
+        >
+          <Globe />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-48" sideOffset={8}>
+        <div className="px-2 py-1.5">
+          <div className="text-sm font-medium text-foreground">{t('titlebar.language')}</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">{t('titlebar.languageDesc')}</div>
+        </div>
+        <DropdownMenuSeparator />
+        {availableLocales.map(code => (
+          <DropdownMenuItem
+            key={code}
+            onSelect={() => {
+              triggerHaptic('selection')
+              setLocale(code)
+            }}
+          >
+            <span className="flex-1 truncate">{LANGUAGE_LABELS[code] ?? code}</span>
+            {code === locale && <Codicon name="check" size="0.875rem" />}
+          </DropdownMenuItem>
+        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   )

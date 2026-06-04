@@ -855,5 +855,8 @@
   "provider.desc.ollamacloud": "Anulación de URL base de Ollama Cloud (predeterminado: https://ollama.com/v1)",
   "provider.desc.awsbedrock": "Perfil nombrado de AWS para autenticación Bedrock (de ~/.aws/credentials)",
   "provider.desc.exa": "Clave API de Exa para búsqueda web y contenidos con IA nativa",
-  "provider.desc.parallel": "Clave API de Parallel para búsqueda web y extracción con IA nativa"
+  "provider.desc.parallel": "Clave API de Parallel para búsqueda web y extracción con IA nativa",
+  "titlebar.language": "Language",
+  "titlebar.languageDesc": "Choose a display language for the interface.",
+  "language.zh-TW": "中文（繁體）"
 }

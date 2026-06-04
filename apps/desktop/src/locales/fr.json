@@ -855,5 +855,8 @@
   "provider.desc.ollamacloud": "Surcharge de l'URL de base Ollama Cloud (défaut : https://ollama.com/v1)",
   "provider.desc.awsbedrock": "Profil nommé AWS pour l'authentification Bedrock (depuis ~/.aws/credentials)",
   "provider.desc.exa": "Clé API Exa pour la recherche web et l'extraction de contenu IA",
-  "provider.desc.parallel": "Clé API Parallel pour la recherche web et l'extraction IA"
+  "provider.desc.parallel": "Clé API Parallel pour la recherche web et l'extraction IA",
+  "titlebar.language": "Language",
+  "titlebar.languageDesc": "Choose a display language for the interface.",
+  "language.zh-TW": "中文（繁體）"
 }
