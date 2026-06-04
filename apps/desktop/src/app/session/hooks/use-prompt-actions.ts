@@ -76,6 +76,7 @@ interface PromptActionsOptions {
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
+  refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
@@ -140,6 +141,7 @@ export function usePromptActions({
   branchCurrentSession,
   createBackendSessionForSend,
   handleSkinCommand,
+  refreshSessions,
   requestGateway,
   selectedStoredSessionIdRef,
   startFreshSessionDraft,
@@ -486,6 +488,10 @@ export function usePromptActions({
 
           const body = result?.output || `/${name}: no output`
           renderSlashOutput(result?.warning ? `warning: ${result.warning}\n${body}` : body)
+
+          if (name === 'title') {
+            void refreshSessions().catch(() => undefined)
+          }
 
           return
         } catch {
