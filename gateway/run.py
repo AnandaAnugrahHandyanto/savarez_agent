@@ -67,6 +67,74 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+
+def _positive_int_or_none(value: Any) -> Optional[int]:
+    """Parse a positive integer config value; invalid/empty values mean unset."""
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 1 else None
+
+
+def resolve_kanban_capacity_policy(kanban_cfg: Dict[str, Any]) -> Dict[str, Optional[int]]:
+    """Resolve generic Kanban capacity config plus legacy caps.
+
+    ``target_active_workers`` is a desired occupancy target, not a cap. It
+    raises the effective auto-decomposer burst size so a fleet targeting e.g.
+    ten active workers is not starved by the old default of three triage
+    decompositions per tick. ``max_active_workers`` is the new generic hard
+    cap; legacy ``max_spawn`` and ``max_in_progress`` remain live-concurrency
+    caps and the strictest positive configured cap wins.
+    """
+    cfg = kanban_cfg if isinstance(kanban_cfg, dict) else {}
+    target = _positive_int_or_none(cfg.get("target_active_workers"))
+    max_active = _positive_int_or_none(cfg.get("max_active_workers"))
+    legacy_max_spawn = _positive_int_or_none(cfg.get("max_spawn"))
+    legacy_max_in_progress = _positive_int_or_none(cfg.get("max_in_progress"))
+
+    caps = [v for v in (max_active, legacy_max_spawn, legacy_max_in_progress) if v is not None]
+    hard_cap = min(caps) if caps else None
+
+    raw_auto = _positive_int_or_none(cfg.get("auto_decompose_per_tick")) or 3
+    effective_auto = max(raw_auto, target or 0)
+
+    return {
+        "target_active_workers": target,
+        "max_active_workers": max_active,
+        "max_spawn": hard_cap if hard_cap is not None else legacy_max_spawn,
+        "max_in_progress": hard_cap if hard_cap is not None else legacy_max_in_progress,
+        "auto_decompose_per_tick": effective_auto,
+    }
+
+
+def classify_kanban_dispatch_health(
+    *,
+    running: int,
+    target_active_workers: Optional[int],
+    ready_or_review: int,
+    spawnable_ready_or_review: int,
+    capacity_full: bool,
+    auto_decompose_enabled: bool,
+    triage_pending: int,
+) -> str:
+    """Return a machine-readable dispatcher health bucket for telemetry."""
+    if capacity_full:
+        return "capacity_full"
+    if (
+        target_active_workers is not None
+        and running < target_active_workers
+        and ready_or_review == 0
+        and auto_decompose_enabled
+        and triage_pending > 0
+    ):
+        return "feeder_starvation"
+    if spawnable_ready_or_review > 0:
+        return "spawnable_ready_queue_stuck"
+    return "no_safe_or_no_ready_work"
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -5741,35 +5809,14 @@ class GatewayRunner:
         interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
         interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
-        # Read max_spawn config to limit concurrent kanban tasks
-        max_spawn = kanban_cfg.get("max_spawn", None)
+        capacity_policy = resolve_kanban_capacity_policy(kanban_cfg)
+        target_active_workers = capacity_policy["target_active_workers"]
+        max_spawn = capacity_policy["max_spawn"]
+        max_in_progress = capacity_policy["max_in_progress"]
+        if target_active_workers is not None:
+            logger.info("kanban dispatcher: target_active_workers=%d", target_active_workers)
         if max_spawn is not None:
-            logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
-
-        # Cap the number of simultaneously running tasks so slow workers
-        # (local LLMs, resource-constrained hosts) don't pile up and time
-        # out. When set, the dispatcher skips spawning when the board
-        # already has this many tasks in 'running' status.
-        raw_max_in_progress = kanban_cfg.get("max_in_progress", None)
-        max_in_progress = None
-        if raw_max_in_progress is not None:
-            try:
-                max_in_progress = int(raw_max_in_progress)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "kanban dispatcher: invalid kanban.max_in_progress=%r; ignoring",
-                    raw_max_in_progress,
-                )
-                max_in_progress = None
-            else:
-                if max_in_progress < 1:
-                    logger.warning(
-                        "kanban dispatcher: kanban.max_in_progress=%r is below 1; ignoring",
-                        raw_max_in_progress,
-                    )
-                    max_in_progress = None
-                else:
-                    logger.info(f"kanban dispatcher: max_in_progress={max_in_progress}")
+            logger.info("kanban dispatcher: max_active_workers=%d", max_spawn)
 
         raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
         try:
@@ -5992,18 +6039,14 @@ class GatewayRunner:
                 out.append((slug, _tick_once_for_board(slug)))
             return out
 
-        def _ready_nonempty() -> bool:
-            """Cheap probe: is there at least one ready+assigned+unclaimed
-            task on ANY board whose assignee maps to a real Hermes profile
-            (i.e. one the dispatcher would actually spawn for)?
-
-            Tasks assigned to control-plane lanes (e.g. ``orion-cc``,
-            ``orion-research``) are pulled by terminals via
-            ``claim_task`` directly and never spawnable, so a queue full
-            of those is "correctly idle", not "stuck". Filtering them out
-            here keeps the stuck-warn fire only on real failures (broken
-            PATH, missing venv, credential loss for a real Hermes profile).
-            """
+        def _dispatch_health_snapshot() -> dict[str, int]:
+            """Aggregate dispatcher health inputs across all boards."""
+            snapshot = {
+                "running": 0,
+                "ready_or_review": 0,
+                "spawnable_ready_or_review": 0,
+                "triage_pending": 0,
+            }
             try:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
@@ -6013,10 +6056,27 @@ class GatewayRunner:
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
+                    snapshot["running"] += int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+                        ).fetchone()[0]
+                    )
+                    snapshot["ready_or_review"] += int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM tasks "
+                            "WHERE status IN ('ready', 'review') "
+                            "AND assignee IS NOT NULL AND claim_lock IS NULL"
+                        ).fetchone()[0]
+                    )
+                    snapshot["triage_pending"] += int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM tasks WHERE status = 'triage'"
+                        ).fetchone()[0]
+                    )
                     if _kb.has_spawnable_ready(conn):
-                        return True
+                        snapshot["spawnable_ready_or_review"] += 1
                     if _kb.has_spawnable_review(conn):
-                        return True
+                        snapshot["spawnable_ready_or_review"] += 1
                 except Exception:
                     continue
                 finally:
@@ -6025,7 +6085,7 @@ class GatewayRunner:
                             conn.close()
                         except Exception:
                             pass
-            return False
+            return snapshot
 
         # Auto-decompose: turn fresh triage tasks into ready workgraphs
         # before the dispatcher fans out workers. Gated by
@@ -6034,14 +6094,7 @@ class GatewayRunner:
         # of triage tasks doesn't burst-spend the aux LLM in one tick;
         # remainder defers to subsequent ticks.
         auto_decompose_enabled = bool(kanban_cfg.get("auto_decompose", True))
-        try:
-            auto_decompose_per_tick = int(
-                kanban_cfg.get("auto_decompose_per_tick", 3) or 3
-            )
-        except (TypeError, ValueError):
-            auto_decompose_per_tick = 3
-        if auto_decompose_per_tick < 1:
-            auto_decompose_per_tick = 1
+        auto_decompose_per_tick = int(capacity_policy["auto_decompose_per_tick"] or 3)
 
         def _auto_decompose_tick() -> int:
             """Run the auto-decomposer for up to N triage tasks across all
@@ -6158,12 +6211,40 @@ class GatewayRunner:
                             res.promoted,
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
                         )
-                # Health telemetry (aggregate across boards)
-                ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
+                # Health telemetry (aggregate across boards). Warn only when
+                # spawnable work is actually waiting. Capacity-full and
+                # nonspawnable/control-plane queues are healthy idle states;
+                # feeder_starvation is logged separately so operators can
+                # raise auto_decompose_per_tick/target_active_workers without
+                # confusing it for a broken profile spawn path.
+                health_snapshot = await asyncio.to_thread(_dispatch_health_snapshot)
+                capacity_full = bool(
+                    max_spawn is not None
+                    and health_snapshot["running"] >= int(max_spawn)
+                )
+                health = classify_kanban_dispatch_health(
+                    running=health_snapshot["running"],
+                    target_active_workers=target_active_workers,
+                    ready_or_review=health_snapshot["ready_or_review"],
+                    spawnable_ready_or_review=health_snapshot["spawnable_ready_or_review"],
+                    capacity_full=capacity_full,
+                    auto_decompose_enabled=auto_decompose_enabled,
+                    triage_pending=health_snapshot["triage_pending"],
+                )
+                if health == "spawnable_ready_queue_stuck" and not any_spawned:
                     bad_ticks += 1
                 else:
                     bad_ticks = 0
+                if health == "feeder_starvation" and not any_spawned:
+                    logger.debug(
+                        "kanban dispatcher: target_active_workers=%s but running=%s "
+                        "and triage_pending=%s with no ready/review work; effective "
+                        "auto_decompose_per_tick=%s",
+                        target_active_workers,
+                        health_snapshot["running"],
+                        health_snapshot["triage_pending"],
+                        auto_decompose_per_tick,
+                    )
                 if bad_ticks >= HEALTH_WINDOW:
                     now = int(time.time())
                     if now - last_warn_at >= 300:

@@ -1902,6 +1902,20 @@ DEFAULT_CONFIG = {
         # raise these to keep more early failure evidence.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
+        # Capacity policy: target_active_workers is an occupancy target for
+        # the embedded gateway dispatcher, not a hard cap. When set, the
+        # gateway derives a larger auto_decompose_per_tick so boards targeting
+        # ~10 active workers are not starved by the historical default of 3.
+        # max_active_workers is the generic hard cap; legacy max_spawn and
+        # max_in_progress remain accepted live-concurrency caps and are folded
+        # together with this value by taking the strictest positive cap.
+        "target_active_workers": None,
+        "max_active_workers": None,
+        # Legacy dispatcher caps kept for compatibility. Both are live
+        # concurrency caps (running workers + this tick's spawns), not per-tick
+        # budgets. Prefer max_active_workers for new configs.
+        "max_spawn": None,
+        "max_in_progress": None,
         # Profile that decomposes tasks in the Triage column. When unset,
         # falls back to the default profile (the one `hermes` launches with
         # no -p flag). Set this to a dedicated 'orchestrator' profile if you
