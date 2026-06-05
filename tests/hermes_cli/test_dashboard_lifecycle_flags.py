@@ -122,6 +122,17 @@ class TestDashboardStop:
             cmd_dashboard(_ns(stop=True))
         assert exc.value.code == 0
 
+    def test_stop_treats_desktop_embedded_dashboards_as_not_running(self, capsys):
+        with patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[]), \
+             patch("hermes_cli.main._kill_stale_dashboard_processes") as mock_kill, \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(stop=True))
+        assert exc.value.code == 0
+        mock_kill.assert_not_called()
+        out = capsys.readouterr().out
+        assert "No hermes dashboard processes running" in out
+
 
 class TestLifecycleFlagsTakePrecedence:
     """If both --stop and --status are set, --status wins (it's listed
@@ -178,4 +189,12 @@ class TestArgparseWiring:
                    return_value=[]), \
              pytest.raises(SystemExit) as exc:
             mod.cmd_dashboard(_ns(status=True))
+        assert exc.value.code == 0
+
+    def test_hidden_desktop_embedded_flag_parses(self):
+        import hermes_cli.main as mod
+        with patch.object(sys, "argv", ["hermes", "dashboard", "--desktop-embedded", "--status"]), \
+             patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]), \
+             pytest.raises(SystemExit) as exc:
+            mod.main()
         assert exc.value.code == 0

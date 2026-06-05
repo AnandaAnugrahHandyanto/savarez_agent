@@ -7616,6 +7616,9 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
+_DESKTOP_EMBEDDED_DASHBOARD_FLAG = "--desktop-embedded"
+
+
 def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
@@ -7631,7 +7634,10 @@ def _find_stale_dashboard_pids(
     The dashboard has no service manager (systemd / launchd), no PID file,
     and we can't know the original launch args — so the only sane action
     after an update is to kill the stale process and let the user restart
-    it.  This helper is just the detection step; see
+    it. Desktop-spawned embedded dashboards are explicitly excluded via an
+    internal hidden marker flag so ``hermes dashboard --stop`` and the
+    post-``hermes update`` cleanup do not kill the Electron app's live
+    backend out from under it. This helper is just the detection step; see
     ``_kill_stale_dashboard_processes`` for the kill.
 
     *exclude_pids* is an optional set of PIDs that must never be returned.
@@ -7681,6 +7687,7 @@ def _find_stale_dashboard_pids(
                     pid_str = line[len("ProcessId=") :]
                     if (
                         any(p in current_cmd for p in patterns)
+                        and _DESKTOP_EMBEDDED_DASHBOARD_FLAG not in current_cmd
                         and int(pid_str) != self_pid
                     ):
                         try:
@@ -7713,7 +7720,11 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if (
+                        any(p in command for p in patterns)
+                        and _DESKTOP_EMBEDDED_DASHBOARD_FLAG not in command
+                        and pid != self_pid
+                    ):
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
@@ -15676,6 +15687,11 @@ Examples:
         "--status",
         action="store_true",
         help="List running hermes dashboard processes and exit",
+    )
+    dashboard_parser.add_argument(
+        _DESKTOP_EMBEDDED_DASHBOARD_FLAG,
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 
