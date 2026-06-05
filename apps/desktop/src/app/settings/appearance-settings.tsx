@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 
 import { SegmentedControl } from '@/components/ui/segmented-control'
@@ -80,6 +80,28 @@ export function AppearanceSettings() {
       .catch(() => { /* prefs not available — use default */ })
   }, [])
 
+  const trayLabels = useMemo(() => {
+    const lang = (typeof navigator !== 'undefined' ? navigator.language : 'en').split('-')[0]
+    const L: Record<string, Record<string, string>> = {
+      minimizeTitle: {
+        en: 'Minimize to Tray on Close',
+        pt: 'Minimizar para a bandeja ao fechar',
+        es: 'Minimizar a la bandeja al cerrar',
+        zh: '关闭时最小化到托盘'
+      },
+      minimizeDesc: {
+        en: 'When enabled, closing the window hides Hermes to the system tray instead of quitting.',
+        pt: 'Quando ativado, fechar a janela esconde o Hermes na bandeja do sistema em vez de sair.',
+        es: 'Cuando está activado, cerrar la ventana oculta Hermes en la bandeja del sistema en lugar de salir.',
+        zh: '启用后，关闭窗口会将 Hermes 隐藏到系统托盘而不是退出。'
+      }
+    }
+    return {
+      title: L.minimizeTitle[lang] || L.minimizeTitle.en,
+      description: L.minimizeDesc[lang] || L.minimizeDesc.en
+    }
+  }, [])
+
   return (
     <SettingsContent>
       <div className="grid gap-8">
@@ -139,8 +161,8 @@ export function AppearanceSettings() {
                 }}
               />
             }
-            description="When enabled, closing the window hides Hermes to the system tray instead of quitting."
-            title="Minimize to Tray on Close"
+            description={trayLabels.description}
+            title={trayLabels.title}
           />
         </section>
 

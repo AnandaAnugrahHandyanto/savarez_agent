@@ -2775,6 +2775,24 @@ function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
 
+// ── Tray translations ──────────────────────────────────────────
+// Matched against app.getLocale() language prefix (e.g. 'pt-BR' → 'pt').
+
+const TRAY_LABELS = Object.freeze({
+  open:  { en: 'Open Hermes',   pt: 'Abrir Hermes',    es: 'Abrir Hermes',    zh: '打开 Hermes' },
+  hide:  { en: 'Hide Hermes',   pt: 'Esconder Hermes',  es: 'Ocultar Hermes',  zh: '隐藏 Hermes' },
+  quit:  { en: 'Quit',          pt: 'Sair',             es: 'Salir',            zh: '退出'        }
+})
+
+function tr(key) {
+  try {
+    const lang = (app.getLocale() || 'en').split('-')[0]
+    return TRAY_LABELS[key]?.[lang] || TRAY_LABELS[key]?.en || key
+  } catch {
+    return TRAY_LABELS[key]?.en || key
+  }
+}
+
 function createTray() {
   if (tray) return
   if (IS_MAC) return // macOS uses the dock; no system tray needed.
@@ -2808,7 +2826,7 @@ function createTray() {
 
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: 'Abrir Hermes',
+      label: tr('open'),
       click: () => {
         if (!mainWindow || mainWindow.isDestroyed()) return
         mainWindow.show()
@@ -2816,7 +2834,7 @@ function createTray() {
       }
     },
     {
-      label: 'Esconder Hermes',
+      label: tr('hide'),
       click: () => {
         if (!mainWindow || mainWindow.isDestroyed()) return
         mainWindow.hide()
@@ -2824,7 +2842,7 @@ function createTray() {
     },
     { type: 'separator' },
     {
-      label: 'Sair',
+      label: tr('quit'),
       click: () => {
         forceQuit = true
         app.quit()
