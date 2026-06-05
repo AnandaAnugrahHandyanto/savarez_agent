@@ -205,6 +205,15 @@ class TestSupportsVisionOverride:
         }
         assert _supports_vision_override(cfg, "custom", "my-llava") is True
 
+    def test_per_provider_per_model_via_prefixed_config_name(self):
+        cfg = {
+            "model": {"provider": "custom:my-vllm"},
+            "providers": {
+                "my-vllm": {"models": {"my-llava": {"supports_vision": True}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "my-llava") is True
+
     def test_quoted_false_string_in_yaml_does_not_enable(self):
         # Real-world: user writes supports_vision: "false" (quoted).
         cfg = {"model": {"supports_vision": "false"}}

@@ -184,8 +184,8 @@ def _supports_vision_override(
       1. ``model.supports_vision`` (top-level shortcut for the active model)
       2. ``providers.<provider>.models.<model>.supports_vision``
          (named custom providers — ``provider`` may be the runtime-resolved
-         value ``"custom"`` and/or the user-declared name under
-         ``model.provider``; both are tried)
+         value ``"custom"``, the user-declared name under ``model.provider``,
+         and/or a stripped ``custom:<name>`` provider key; all are tried)
 
     Returns None when no override is set, so the caller falls through to
     models.dev. Returns False explicitly only when the user wrote a
@@ -209,7 +209,18 @@ def _supports_vision_override(
     config_provider = str(model_cfg.get("provider") or "").strip()
     providers_raw = cfg.get("providers")
     providers_cfg: Dict[str, Any] = providers_raw if isinstance(providers_raw, dict) else {}
-    for p in dict.fromkeys(filter(None, (provider, config_provider))):
+    provider_candidates: list[str] = []
+    for candidate in (provider, config_provider):
+        candidate = str(candidate or "").strip()
+        if not candidate:
+            continue
+        provider_candidates.append(candidate)
+        if candidate.startswith("custom:"):
+            named = candidate.split(":", 1)[1].strip()
+            if named:
+                provider_candidates.append(named)
+
+    for p in dict.fromkeys(provider_candidates):
         entry_raw = providers_cfg.get(p)
         entry: Dict[str, Any] = entry_raw if isinstance(entry_raw, dict) else {}
         models_raw = entry.get("models")
