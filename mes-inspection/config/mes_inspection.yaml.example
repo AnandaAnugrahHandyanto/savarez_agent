@@ -247,3 +247,28 @@ model:
   model_name: "Qwen3-235B-A22B-w8a8"
   # API Key 环境变量名
   api_key_env: "QWEN_API_KEY"
+
+# ============================================================
+# 调试工具配置
+# ============================================================
+debug:
+  # GC 日志文件路径
+  gc_log_path: "/u01/app/mes-app/logs/gc.log"
+  # 最大读取行数
+  gc_max_lines: 50000
+  # GC 暂停告警阈值 (秒)
+  gc_pause_warn_sec: 1.0
+  # GC 暂停严重阈值 (秒)
+  gc_pause_critical_sec: 5.0
+  # Full GC 次数告警阈值
+  gc_full_count_warn: 10
+  # 线程堆栈上下文行数
+  stack_context_lines: 10
+  # BLOCKED 线程告警阈值
+  stack_blocked_warn: 10
+  # ES 索引前缀
+  es_index_prefix: "39qjmes"
+  # ES 默认返回条数
+  es_default_size: 100
+  # ES 最大返回条数
+  es_max_size: 1000

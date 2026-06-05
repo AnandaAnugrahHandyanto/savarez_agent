@@ -113,4 +113,16 @@ DEFAULT_THRESHOLDS = {
         "model_name": "Qwen3-235B-A22B-w8a8",
         "api_key_env": "QWEN_API_KEY",
     },
+    "debug": {
+        "gc_log_path": "/u01/app/mes-app/logs/gc.log",
+        "gc_max_lines": 50000,
+        "gc_pause_warn_sec": 1.0,
+        "gc_pause_critical_sec": 5.0,
+        "gc_full_count_warn": 10,
+        "stack_context_lines": 10,
+        "stack_blocked_warn": 10,
+        "es_index_prefix": "39qjmes",
+        "es_default_size": 100,
+        "es_max_size": 1000,
+    },
 }
