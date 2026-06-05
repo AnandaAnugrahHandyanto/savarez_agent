@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager, contextmanager
 import asyncio
 import base64
 import binascii
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hmac
@@ -3041,6 +3042,49 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "curator",
 )
 
+_MODEL_OPTIONS_CACHE_TTL_SECONDS = 300.0
+_MODEL_OPTIONS_CACHE: Dict[tuple, Tuple[float, Dict[str, Any]]] = {}
+_MODEL_OPTIONS_CACHE_LOCK = threading.Lock()
+
+
+def _model_options_file_stamp() -> Tuple[Tuple[str, int], ...]:
+    hermes_home = Path(get_hermes_home())
+    stamps: List[Tuple[str, int]] = []
+    for name in ("config.yaml", ".env"):
+        path = hermes_home / name
+        try:
+            stamps.append((str(path), path.stat().st_mtime_ns))
+        except OSError:
+            stamps.append((str(path), 0))
+    return tuple(stamps)
+
+
+def _clear_model_options_cache() -> None:
+    with _MODEL_OPTIONS_CACHE_LOCK:
+        _MODEL_OPTIONS_CACHE.clear()
+
+
+def _cached_model_options_payload(ctx, **kwargs) -> Dict[str, Any]:
+    from hermes_cli.inventory import build_models_payload
+
+    key = (
+        _model_options_file_stamp(),
+        getattr(ctx, "current_provider", ""),
+        getattr(ctx, "current_model", ""),
+        getattr(ctx, "current_base_url", ""),
+        tuple(sorted(kwargs.items())),
+    )
+    now = time.monotonic()
+    with _MODEL_OPTIONS_CACHE_LOCK:
+        cached = _MODEL_OPTIONS_CACHE.get(key)
+        if cached and now - cached[0] < _MODEL_OPTIONS_CACHE_TTL_SECONDS:
+            return copy.deepcopy(cached[1])
+
+    payload = build_models_payload(ctx, **kwargs)
+    with _MODEL_OPTIONS_CACHE_LOCK:
+        _MODEL_OPTIONS_CACHE[key] = (now, copy.deepcopy(payload))
+    return payload
+
 
 @app.get("/api/model/options")
 def get_model_options(profile: Optional[str] = None):
@@ -3056,7 +3100,7 @@ def get_model_options(profile: Optional[str] = None):
     reads the SAME profile /api/model/set writes.
     """
     try:
-        from hermes_cli.inventory import build_models_payload, load_picker_context
+        from hermes_cli.inventory import load_picker_context
 
         # include_unconfigured + picker_hints + canonical_order mirror the
         # tui_gateway `model.options` JSON-RPC handler exactly, so every GUI
@@ -3066,8 +3110,11 @@ def get_model_options(profile: Optional[str] = None):
         # come back as skeleton rows carrying `authenticated=False` +
         # `auth_type`/`key_env`/`warning` so the GUI can render a setup
         # affordance instead of hiding the provider entirely.
+        # Routed through the cache wrapper (local fix) so repeated GUI polls
+        # don't rebuild the full payload every call; kwargs are part of the
+        # cache key so the richer arg set caches independently.
         with _profile_scope(profile):
-            return build_models_payload(
+            return _cached_model_options_payload(
                 load_picker_context(),
                 max_models=50,
                 include_unconfigured=True,
@@ -3142,9 +3189,9 @@ def get_recommended_default_model(provider: str = ""):
 
     # Non-Nous: first curated model for the provider, matching prior behaviour.
     try:
-        from hermes_cli.inventory import build_models_payload, load_picker_context
+        from hermes_cli.inventory import load_picker_context
 
-        payload = build_models_payload(load_picker_context(), max_models=50)
+        payload = _cached_model_options_payload(load_picker_context(), max_models=50)
         for row in payload.get("providers", []):
             if str(row.get("slug", "")).lower() == slug:
                 models = row.get("models") or []
@@ -3317,6 +3364,7 @@ def _apply_model_assignment_sync(
                 _log.debug("apply_nous_managed_defaults skipped", exc_info=True)
 
         save_config(cfg)
+        _clear_model_options_cache()
 
         # Register a named ``custom_providers`` entry for a custom/local
         # endpoint, mirroring the ``hermes model`` custom flow
@@ -3394,6 +3442,7 @@ def _apply_model_assignment_sync(
             aux[slot] = slot_cfg
         cfg["auxiliary"] = aux
         save_config(cfg)
+        _clear_model_options_cache()
         return {"ok": True, "scope": "auxiliary", "reset": True}
 
     if not provider:
@@ -3412,6 +3461,7 @@ def _apply_model_assignment_sync(
 
     cfg["auxiliary"] = aux
     save_config(cfg)
+    _clear_model_options_cache()
     return {
         "ok": True,
         "scope": "auxiliary",
@@ -3480,6 +3530,7 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
             save_config(_denormalize_config_from_web(body.config))
+            _clear_model_options_cache()
         return {"ok": True}
     except HTTPException:
         raise
@@ -3518,6 +3569,7 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
             save_env_value(body.key, body.value)
+            _clear_model_options_cache()
         return {"ok": True, "key": body.key}
     except ValueError as exc:
         # save_env_value raises ValueError for invalid names and for keys
@@ -3639,6 +3691,7 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
             removed = remove_env_value(body.key)
         if not removed:
             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
+        _clear_model_options_cache()
         return {"ok": True, "key": body.key}
     except HTTPException:
         raise
