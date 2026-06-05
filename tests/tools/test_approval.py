@@ -495,6 +495,34 @@ class TestHermesConfigWriteProtection:
         )
         assert dangerous is True
 
+    def test_awk_in_place_glued_flag(self):
+        # GNU getopt accepts the include arg glued to -i: `-iinplace`.
+        dangerous, key, desc = detect_dangerous_command(
+            "awk -iinplace '{gsub(/manual/,\"off\")}1' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_awk_in_place_equals_flag(self):
+        # `-i=inplace` is another accepted short-form spelling.
+        dangerous, key, desc = detect_dangerous_command(
+            "awk -i=inplace '{print}' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_awk_in_place_long_include_flag(self):
+        # `--include` is the long form of `-i`; `--include inplace` loads the
+        # same extension and must not be a free bypass.
+        dangerous, key, desc = detect_dangerous_command(
+            "gawk --include inplace '{print}' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_awk_in_place_long_include_equals_flag(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "gawk --include=inplace '{print}' ~/.hermes/.env"
+        )
+        assert dangerous is True
+
     def test_read_only_awk_on_config_safe(self):
         # Read-only awk has no `-i inplace` token and must not trip.
         dangerous, key, desc = detect_dangerous_command(
