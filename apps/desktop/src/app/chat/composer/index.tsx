@@ -59,6 +59,7 @@ import {
   type InlineRefInput,
   insertInlineRefsIntoEditor
 } from './inline-refs'
+import { composerUsesStackedLayout } from './layout'
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
@@ -75,11 +76,6 @@ import { UrlDialog } from './url-dialog'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 const COMPOSER_STACK_BREAKPOINT_PX = 320
-
-// A single editor line is ~28px (--composer-input-min-height 1.625rem + 0.5rem
-// vertical padding). Anything taller means the text wrapped to a second line,
-// which is when the composer should expand to the stacked layout.
-const COMPOSER_SINGLE_LINE_MAX_PX = 36
 
 const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
@@ -168,7 +164,6 @@ export function ChatBar({
 
   const [urlOpen, setUrlOpen] = useState(false)
   const [urlValue, setUrlValue] = useState('')
-  const [expanded, setExpanded] = useState(false)
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   const [tight, setTight] = useState(false)
   const [dragActive, setDragActive] = useState(false)
@@ -183,7 +178,7 @@ export function ChatBar({
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
   const slash = useSlashCompletions({ gateway: gateway ?? null })
 
-  const stacked = expanded || narrow || tight
+  const stacked = composerUsesStackedLayout({ draft, narrow, tight })
   const hasComposerPayload = draft.trim().length > 0 || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
@@ -318,28 +313,11 @@ export function ChatBar({
     }
   }, [urlOpen])
 
-  // Expansion (input on its own full-width row, controls below) is driven by
-  // the editor's *actual* rendered height via the ResizeObserver in
-  // syncComposerMetrics — it only fires when the text genuinely wraps to a
-  // second line, so the layout flips exactly at the wrap point rather than at
-  // a guessed character count. We only handle the two cases the observer
-  // can't: an explicit newline (expand before layout settles) and an emptied
-  // draft (collapse back). We never read scrollHeight per keystroke.
-  useEffect(() => {
-    if (!draft) {
-      setExpanded(false)
-
-      return
-    }
-
-    if (expanded) {
-      return
-    }
-
-    if (draft.includes('\n')) {
-      setExpanded(true)
-    }
-  }, [draft, expanded])
+  // Stacked layout is intentionally not driven by rendered wrap height.
+  // Switching from inline controls to a two-row composer changes the measured
+  // composer height, which changes the thread viewport height and makes the
+  // prompt appear to jump under the user's cursor. Long single-line prompts
+  // stay inline; explicit multiline input still uses the stacked layout.
 
   // Bucket measured heights so we only invalidate the global CSS var when
   // the size crosses a meaningful threshold. Without bucketing, the editor
@@ -370,18 +348,6 @@ export function ChatBar({
         lastTightRef.current = nextTight
         setTight(nextTight)
       }
-    }
-
-    // Expand once the input has actually wrapped past a single line. The
-    // observer only fires on real size changes, so this reads scrollHeight at
-    // most once per wrap (not per keystroke). One line ≈ 28px (1.625rem
-    // min-height + padding); a second line clears ~36px. We only ever expand
-    // here — collapse is handled by the emptied-draft effect to avoid
-    // oscillating across the wrap boundary as the input switches widths.
-    const editor = editorRef.current
-
-    if (editor && editor.scrollHeight > COMPOSER_SINGLE_LINE_MAX_PX) {
-      setExpanded(true)
     }
 
     if (height > 0) {
