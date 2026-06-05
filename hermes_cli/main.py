@@ -8155,7 +8155,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
 
 
 def _clean_managed_worktree(git_cmd: list[str], cwd: Path) -> bool:
-    """Discard working-tree dirt on a managed (non-fork) clone.
+    """Discard working-tree dirt on an explicitly managed checkout.
 
     On a managed install (%LOCALAPPDATA%\\savarez\\savarez-agent or
     ~/.savarez/savarez-agent) the user never edits the source tree, so any
@@ -8166,10 +8166,11 @@ def _clean_managed_worktree(git_cmd: list[str], cwd: Path) -> bool:
     clobber freshly-pulled source files (apps/desktop/ deletion →
     "[UNRESOLVED_ENTRY] Cannot resolve entry module index.html").
 
-    For a managed clone the correct move is to throw the dirt away with
-    ``git reset --hard HEAD`` + ``git clean -fd`` (mirroring install.ps1's
-    update path), NOT preserve it. Forks keep the stash machinery because
-    their local edits are intentional.
+    For an explicitly managed checkout the correct move is to throw the dirt
+    away with ``git reset --hard HEAD`` + ``git clean -fd`` (mirroring
+    install.ps1's update path), NOT preserve it. Ordinary source checkouts,
+    including upstream-origin checkouts, keep the stash machinery because
+    their local edits may be intentional.
 
     Returns True if the tree was cleaned (or was already clean), False on
     a git failure (caller should fall back to the stash path).
@@ -8359,6 +8360,7 @@ OFFICIAL_REPO_URLS = {
 }
 OFFICIAL_REPO_URL = "https://github.com/AnandaAnugrahHandyanto/savarez_agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
+MANAGED_CHECKOUT_MARKERS = (".hermes-bootstrap-complete",)
 
 
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -8392,6 +8394,19 @@ def _is_fork(origin_url: Optional[str]) -> bool:
         if normalized == official_normalized:
             return False
     return True
+
+
+def _is_managed_update_checkout(origin_url: Optional[str], cwd: Path) -> bool:
+    """Return True when this official checkout is safe to clean destructively.
+
+    The destructive clean path is only safe for checkouts Hermes explicitly
+    owns. An official ``origin`` alone is not enough proof: contributors can
+    also work from upstream-origin source checkouts with intentional local
+    files.
+    """
+    if not origin_url or _is_fork(origin_url):
+        return False
+    return any((cwd / marker).is_file() for marker in MANAGED_CHECKOUT_MARKERS)
 
 
 def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
@@ -10275,9 +10290,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # lockfile churn) update with a clean tree.
     _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
 
-    # Detect if we're updating from a fork (before any branch logic)
+    # Detect if we're updating from a fork, and whether this official-origin
+    # checkout has an explicit Hermes-owned marker that makes destructive
+    # worktree cleanup safe.
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
+    is_managed_checkout = _is_managed_update_checkout(origin_url, PROJECT_ROOT)
 
     if is_fork:
         print("⚠ Updating from fork:")
@@ -10384,8 +10402,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print(f"  {track_result.stderr.strip().splitlines()[0]}")
                     sys.exit(1)
         else:
-            # On a managed (non-fork) clone the user never edits the source
-            # tree, so any dirt is git artifact (CRLF, lockfile churn,
+            # On an explicitly managed checkout the user never edits the
+            # source tree, so any dirt is git artifact (CRLF, lockfile churn,
             # upstream-deleted dirs). Throw it away rather than stash/restore
             # it - the stash/restore cycle has clobbered freshly-pulled source
             # (apps/desktop/ → "[UNRESOLVED_ENTRY] index.html"). Forks fall
