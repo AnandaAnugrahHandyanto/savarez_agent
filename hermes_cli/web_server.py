@@ -851,6 +851,24 @@ async def get_status():
     }
 
 
+@app.get("/api/mission-control/blueprint")
+async def get_mission_control_blueprint():
+    """Blueprint + live-runtime Mission Control snapshot (session protected).
+
+    Auth is enforced by the dashboard middleware: loopback deployments require
+    the injected session token, while public/OAuth-gated deployments rely on
+    cookie auth. Keep this route thin so gated dashboards do not need the
+    loopback-only token header.
+    """
+    try:
+        from hermes_cli.mission_control import build_mission_control_snapshot
+
+        return build_mission_control_snapshot()
+    except Exception as exc:
+        _log.warning("mission-control blueprint failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to build Mission Control snapshot.") from exc
+
+
 @app.get("/api/system/stats")
 async def get_system_stats():
     """Host + process system stats for the System page.

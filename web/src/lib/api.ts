@@ -251,6 +251,8 @@ export async function buildWsUrl(
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getMissionControlBlueprint: () =>
+    fetchJSON<MissionControlSnapshot>("/api/mission-control/blueprint"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -970,6 +972,88 @@ export const api = {
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
 };
+
+export type MissionControlStatus = "active" | "partial" | "watch" | "planned" | string;
+
+export interface MissionControlCoverageItem {
+  id: string;
+  number?: string;
+  title: string;
+  domain: string;
+  part?: string;
+  summary: string;
+  where?: string;
+  route?: string;
+  sourceUrl?: string;
+  status: MissionControlStatus;
+  readiness: number;
+  evidence: string[];
+  next: string;
+  missionControl?: boolean;
+}
+
+export interface MissionControlDomainScore {
+  name: string;
+  score: number;
+  items: number;
+}
+
+export interface MissionControlSnapshot {
+  ok: boolean;
+  source: {
+    url: string;
+    title: string;
+    lastChecked: string;
+    extractedWith: string;
+    note: string;
+  };
+  blueprint: {
+    stepCount: number;
+    numberedStepCount: number;
+    hermesFeatureCount: number;
+    openclawFeatureCount: number;
+    parts: string[];
+  };
+  runtime: {
+    generatedAt: string;
+    home: string;
+    model: Record<string, unknown>;
+    env: Record<string, unknown>;
+    identity: Record<string, unknown>;
+    sessions: Record<string, unknown>;
+    skills: Record<string, unknown>;
+    cron: Record<string, unknown>;
+    mcp: Record<string, unknown>;
+    gateway: Record<string, unknown>;
+    tools: Record<string, unknown>;
+    safety: Record<string, unknown>;
+    voice: Record<string, unknown>;
+    dashboard: Record<string, unknown>;
+  };
+  coverage: {
+    summary: {
+      total: number;
+      readiness: number;
+      counts: Record<string, number>;
+    };
+    steps: MissionControlCoverageItem[];
+    features: MissionControlCoverageItem[];
+    domains: MissionControlDomainScore[];
+    weakestDomains: MissionControlDomainScore[];
+  };
+  actionQueue: Array<{
+    rank: number;
+    tone: "now" | "next" | "watch" | string;
+    title: string;
+    reason: string;
+    route: string;
+  }>;
+  privacy: Array<{ label: string; policy: string; detail: string }>;
+  deviceProof: {
+    principles: string[];
+    breakpoints: string[];
+  };
+}
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
  *
