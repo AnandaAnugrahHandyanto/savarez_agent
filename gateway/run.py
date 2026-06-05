@@ -407,6 +407,54 @@ def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
     return None
 
 
+def _format_resume_checkpoint_note(checkpoint: Optional[Dict[str, Any]]) -> str:
+    """Render a compact restart checkpoint for the resumed agent."""
+    if not isinstance(checkpoint, dict) or not checkpoint:
+        return ""
+    parts: list[str] = []
+    last_activity = checkpoint.get("last_activity_desc")
+    if isinstance(last_activity, str) and last_activity.strip():
+        parts.append(last_activity.strip()[:240])
+    current_tool = checkpoint.get("current_tool")
+    if isinstance(current_tool, str) and current_tool.strip():
+        parts.append(f"current tool: {current_tool.strip()[:80]}")
+    api_calls = checkpoint.get("api_call_count")
+    max_iterations = checkpoint.get("max_iterations")
+    if isinstance(api_calls, int) and isinstance(max_iterations, int) and max_iterations:
+        parts.append(f"iteration {api_calls}/{max_iterations}")
+    elif isinstance(api_calls, int):
+        parts.append(f"iteration {api_calls}")
+    return "Restart checkpoint: " + "; ".join(parts) + "." if parts else ""
+
+
+def _resume_checkpoint_from_agent(agent: Any) -> Optional[Dict[str, Any]]:
+    """Capture a JSON-safe activity snapshot from a running AIAgent."""
+    if agent is None or agent is _AGENT_PENDING_SENTINEL:
+        return None
+    summary_fn = getattr(agent, "get_activity_summary", None)
+    if not callable(summary_fn):
+        return None
+    try:
+        summary = summary_fn()
+    except Exception:
+        return None
+    if not isinstance(summary, dict):
+        return None
+    allowed = (
+        "last_activity_desc",
+        "current_tool",
+        "api_call_count",
+        "max_iterations",
+        "seconds_since_activity",
+    )
+    checkpoint: Dict[str, Any] = {}
+    for key in allowed:
+        value = summary.get(key)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            checkpoint[key] = value
+    return checkpoint or None
+
+
 def _auto_continue_freshness_window() -> float:
     """Return the configured auto-continue freshness window in seconds.
 
@@ -810,6 +858,21 @@ def _home_target_env_var(platform_name: str) -> str:
 def _home_thread_env_var(platform_name: str) -> str:
     """Return the optional thread/topic env var for a platform home target."""
     return f"{_home_target_env_var(platform_name)}_THREAD_ID"
+
+
+def _gateway_should_restart_via_service_manager() -> bool:
+    """Return True when /restart should let the supervisor relaunch us.
+
+    systemd exposes ``INVOCATION_ID``.  macOS launchd jobs expose an
+    ``XPC_SERVICE_NAME`` label; interactive shells commonly set it to ``0``,
+    which is not a managed service.  Containers use their restart policy and
+    lose detached helpers when PID 1 exits, so they also need the service path.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return True
+    if sys.platform == "darwin" and os.environ.get("XPC_SERVICE_NAME") not in {None, "", "0"}:
+        return True
+    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
 
 
 def _restart_notification_pending() -> bool:
@@ -6479,6 +6542,7 @@ class GatewayRunner:
                     self.session_store.mark_resume_pending(
                         _sk,
                         "restart_timeout" if self._restart_requested else "shutdown_timeout",
+                        checkpoint=_resume_checkpoint_from_agent(_agent),
                     )
                     _pre_drain_keys.append(_sk)
                 except Exception as _e:
@@ -6544,7 +6608,11 @@ class GatewayRunner:
                     if _agent is _AGENT_PENDING_SENTINEL:
                         continue
                     try:
-                        self.session_store.mark_resume_pending(_sk, _resume_reason)
+                        self.session_store.mark_resume_pending(
+                            _sk,
+                            _resume_reason,
+                            checkpoint=_resume_checkpoint_from_agent(_agent),
+                        )
                     except Exception as _e:
                         logger.debug(
                             "mark_resume_pending failed for %s: %s",
@@ -9428,6 +9496,16 @@ class GatewayRunner:
         if message_text is None:
             return
 
+        if not getattr(event, "internal", False):
+            try:
+                self.session_store.record_inflight_message(
+                    session_key,
+                    message_text,
+                    message_id=str(event.message_id) if event.message_id else None,
+                )
+            except Exception as _e:
+                logger.debug("record_inflight_message failed for %s: %s", session_key, _e)
+
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
@@ -9520,6 +9598,7 @@ class GatewayRunner:
                 self._clear_restart_failure_count(session_key)
                 try:
                     self.session_store.clear_resume_pending(session_key)
+                    self.session_store.clear_inflight_message(session_key)
                 except Exception as _e:
                     logger.debug(
                         "clear_resume_pending failed for %s: %s",
@@ -10827,11 +10906,10 @@ class GatewayRunner:
         # Docker/Podman container, use the service restart path: exit with
         # code 75 so the service manager / container restart policy restarts
         # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
-        _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        # under systemd (KillMode=mixed kills the cgroup), launchd (the helper
+        # races the managed job state), or Docker (tini exits when the gateway
+        # dies, taking the detached helper with it).
+        if _gateway_should_restart_via_service_manager():
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)
@@ -18160,12 +18238,30 @@ class GatewayRunner:
                     if _reason == "shutdown_timeout"
                     else "a gateway interruption"
                 )
+                _inflight_text = (
+                    getattr(_resume_entry, "inflight_message_text", None)
+                    if _resume_entry is not None
+                    else None
+                )
+                _checkpoint_note = _format_resume_checkpoint_note(
+                    getattr(_resume_entry, "resume_checkpoint", None)
+                    if _resume_entry is not None
+                    else None
+                )
+                _is_auto_resume_event = bool(not (message or "").strip())
+                if _is_auto_resume_event and isinstance(_inflight_text, str) and _inflight_text.strip():
+                    message = _inflight_text
+                    _tail_instruction = "resume the in-flight user request below"
+                else:
+                    _tail_instruction = "then address the user's new message below"
+                _checkpoint_suffix = f" {_checkpoint_note}" if _checkpoint_note else ""
                 message = (
                     f"[System note: Your previous turn in this session was interrupted "
-                    f"by {_reason_phrase}. The conversation history below is intact. "
-                    f"If it contains unfinished tool result(s), process them first and "
-                    f"summarize what was accomplished, then address the user's new "
-                    f"message below.]\n\n"
+                    f"by {_reason_phrase}. The conversation history below is intact, "
+                    f"and the current in-flight user request has been restored below."
+                    f"{_checkpoint_suffix} If the history contains unfinished tool "
+                    f"result(s), process them first and summarize what was accomplished; "
+                    f"otherwise {_tail_instruction}.]\n\n"
                     + message
                 )
             elif _has_fresh_tool_tail:
