@@ -976,9 +976,32 @@ def skill_view(
                     _record(None, categorized_path.with_suffix(".md"))
 
             # Strategy 2: recursive by directory name (catches nested skills
-            # like "foundations/runtime/explore-codebase" called by bare name).
+            # like "foundations/runtime/explore-codebase" called by bare name),
+            # and by declared frontmatter name. The frontmatter lookup keeps
+            # skill_view aligned with skills_list: if the list reports
+            # "spctrn-google-workspace" from a SKILL.md under
+            # "spctrn/google-workspace", that listed name must be loadable even
+            # though it differs from the leaf directory name.
             for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
                 if found_skill_md.parent.name == name:
+                    _record(found_skill_md.parent, found_skill_md)
+                    continue
+
+                try:
+                    content_head = found_skill_md.read_text(encoding="utf-8")[:4000]
+                    frontmatter, _ = _parse_frontmatter(content_head)
+                except (UnicodeDecodeError, PermissionError):
+                    continue
+                except Exception:
+                    logger.debug(
+                        "Skipping frontmatter-name lookup for %s: failed to parse",
+                        found_skill_md,
+                        exc_info=True,
+                    )
+                    continue
+
+                declared_name = str(frontmatter.get("name") or "")[:MAX_NAME_LENGTH]
+                if declared_name == name:
                     _record(found_skill_md.parent, found_skill_md)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
