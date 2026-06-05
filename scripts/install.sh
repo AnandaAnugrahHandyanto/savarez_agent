@@ -2296,8 +2296,16 @@ install_desktop() {
     # 1. Root workspace install so apps/desktop's deps (Electron, Vite,
     #    node-pty prebuilds) resolve. The browser-tools install runs in the
     #    repo-root package workspace, which does not pull apps/* deps.
+    #
+    #    Prefer `npm ci`: it deletes node_modules and reinstalls from the
+    #    lockfile, so it always produces a complete tree. Bare `npm install`
+    #    can report "up to date" against a stale node_modules/.package-lock.json
+    #    marker while node_modules is actually empty (Windows workspace-hoisting
+    #    flake) — leaving tsc/typescript unresolved and `npm run pack`'s
+    #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
+    #    only if `npm ci` is unavailable or the lockfile is out of sync.
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
-    ( cd "$INSTALL_DIR" && npm install ) || {
+    ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ) || {
         log_error "Desktop workspace npm install failed"
         return 1
     }
