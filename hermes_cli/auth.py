@@ -6165,6 +6165,68 @@ def _prompt_model_selection(
     _DIM = "\033[2m"
     _RESET = "\033[0m"
 
+    # Stable, eye-catching labels for the two synthetic slots.  The leading
+    # symbol makes "Enter custom model name" stand out in long lists — the
+    # user might be looking at minimax-M2.7-highspeed (which we just shipped
+    # to the curated list) and want to type a fresh M3.5 the provider
+    # released this morning.
+    _CUSTOM_MODEL_LABEL = "→ Enter custom model name…"
+    _SKIP_MODEL_LABEL = "Skip (keep current)"
+
+    def _build_display_choices():
+        """Return ``(display_choices, custom_index, skip_index)``.
+
+        Order in the picker:
+            [0] current model (if in ordered and non-empty)
+            [1] custom-name slot  ← always immediately after current
+            [2..N+1] the rest of ``ordered``
+            [N+2] skip slot
+        """
+        choices: list[str] = []
+        rest = list(ordered)
+        if rest and rest[0] == current_model:
+            # The first row is the current model — keep it on top so
+            # muscle memory / pre-selected cursor lands there.
+            choices.append(_label(rest[0]))
+            rest = rest[1:]
+        # Custom-name slot is the only row that lets the user bypass the
+        # curated list, so it gets a fixed, eye-catching position right
+        # after the current model.
+        custom_idx = len(choices)
+        choices.append(_CUSTOM_MODEL_LABEL)
+        for m in rest:
+            choices.append(_label(m))
+        skip_idx = len(choices)
+        choices.append(_SKIP_MODEL_LABEL)
+        return choices, custom_idx, skip_idx
+
+    def _display_idx_to_ordered_idx(
+        idx: int, custom_idx: int, skip_idx: int
+    ) -> int | None:
+        """Map a 0-indexed display-choices index back to ``ordered``.
+
+        Returns None for the synthetic custom/skip slots, or if the index
+        doesn't correspond to a real model.  The current-model-on-top
+        layout (when ordered[0] == current_model) is one shorter than
+        the no-current layout because current_model is in both ordered
+        and display, so we have to check the synthetic slots before
+        shifting.
+        """
+        if idx in (custom_idx, skip_idx):
+            return None
+        # If the current model is pinned at display[0], display indices
+        # for ordered[1:] are offset by -1 (they sit one slot earlier
+        # because custom was inserted at position 1 instead of 0).
+        has_pinned_current = (
+            current_model and ordered and ordered[0] == current_model
+        )
+        if has_pinned_current:
+            if idx == 0:
+                return 0
+            return idx - 1 if idx > custom_idx else idx
+        # No pinned current: ordered[i] lives at display[i+1].
+        return idx - 1
+
     # Try arrow-key menu first, fall back to number input.
     # Uses the shared curses radiolist (ESC/arrow-key handling that works
     # across terminals, incl. those that emit raw escape sequences) instead
@@ -6173,9 +6235,7 @@ def _prompt_model_selection(
     try:
         from hermes_cli.curses_ui import curses_radiolist
 
-        choices = [_label(mid) for mid in ordered]
-        choices.append("Enter custom model name")
-        choices.append("Skip (keep current)")
+        choices, custom_idx, skip_idx = _build_display_choices()
 
         _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
         unavailable_footer = unavailable_message.strip()
@@ -6209,26 +6269,28 @@ def _prompt_model_selection(
         if idx < 0:
             return None
         print()
-        if idx < len(ordered):
-            return ordered[idx]
-        elif idx == len(ordered):
+        if idx == custom_idx:
             try:
                 custom = input("Enter model name: ").strip()
             except (EOFError, KeyboardInterrupt):
                 return None
             return custom if custom else None
+        if idx == skip_idx:
+            return None
+        model_idx = _display_idx_to_ordered_idx(idx, custom_idx, skip_idx)
+        if model_idx is not None and 0 <= model_idx < len(ordered):
+            return ordered[model_idx]
         return None
     except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         pass
 
     # Fallback: numbered list
     print(menu_title)
-    num_width = len(str(len(ordered) + 2))
-    for i, mid in enumerate(ordered, 1):
-        print(f"  {i:>{num_width}}. {_label(mid)}")
-    n = len(ordered)
-    print(f"  {n + 1:>{num_width}}. Enter custom model name")
-    print(f"  {n + 2:>{num_width}}. Skip (keep current)")
+    _choices, _custom_idx, _skip_idx = _build_display_choices()
+    num_width = len(str(len(_choices)))
+    for i, label in enumerate(_choices, 1):
+        print(f"  {i:>{num_width}}. {label}")
+    n_choices = len(_choices)
 
     if _unavailable:
         _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
@@ -6243,18 +6305,24 @@ def _prompt_model_selection(
 
     while True:
         try:
-            choice = input(f"Choice [1-{n + 2}] (default: skip): ").strip()
+            choice = input(f"Choice [1-{n_choices}] (default: skip): ").strip()
             if not choice:
                 return None
-            idx = int(choice)
-            if 1 <= idx <= n:
-                return ordered[idx - 1]
-            elif idx == n + 1:
-                custom = input("Enter model name: ").strip()
-                return custom if custom else None
-            elif idx == n + 2:
+            idx_1based = int(choice)
+            if 1 <= idx_1based <= n_choices:
+                idx = idx_1based - 1
+                if idx == _custom_idx:
+                    custom = input("Enter model name: ").strip()
+                    return custom if custom else None
+                if idx == _skip_idx:
+                    return None
+                model_idx = _display_idx_to_ordered_idx(
+                    idx, _custom_idx, _skip_idx
+                )
+                if model_idx is not None and 0 <= model_idx < len(ordered):
+                    return ordered[model_idx]
                 return None
-            print(f"Please enter 1-{n + 2}")
+            print(f"Please enter 1-{n_choices}")
         except ValueError:
             print("Please enter a number")
         except (KeyboardInterrupt, EOFError):
