@@ -130,6 +130,24 @@ class TestRunConversationCodexPath:
         )
         assert user_count == 1, f"user message appeared {user_count}× in {result['messages']}"
 
+    def test_codex_session_uses_terminal_cwd_in_gateway_context(
+        self, fake_session, monkeypatch, tmp_path
+    ):
+        """Gateway processes are anchored in HERMES_HOME, so Codex must use
+        TERMINAL_CWD rather than os.getcwd() when starting its thread."""
+        project_dir = tmp_path / "project"
+        gateway_home = tmp_path / "hermes-home"
+        project_dir.mkdir()
+        gateway_home.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(project_dir))
+        monkeypatch.chdir(gateway_home)
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("ping")
+
+        assert agent._codex_session._cwd == str(project_dir)
+
     def test_background_review_NOT_invoked_below_threshold(self, fake_session):
         """A single turn shouldn't trigger background review — counters
         haven't reached the nudge interval (default 10)."""
