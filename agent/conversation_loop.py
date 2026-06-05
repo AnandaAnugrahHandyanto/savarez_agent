@@ -454,6 +454,8 @@ def run_conversation(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    agent._tool_error_loop_halt = None
+    agent._consecutive_tool_error_streak = {}
     # True until the server rejects an image_url content part with an error
     # like "Only 'text' content type is supported."  Set to False on first
     # rejection and kept False for the rest of the session so we never re-send
@@ -3985,6 +3987,20 @@ def run_conversation(
                                 agent.stream_delta_callback(None)
                             except Exception:
                                 pass
+                    break
+
+                if agent._tool_error_loop_halt is not None:
+                    _turn_exit_reason = "tool_error_loop_halt"
+                    final_response = agent._tool_error_loop_halt
+                    agent._emit_status("⚠️ Repeated tool error — halting to prevent runaway retry loop")
+                    agent._safe_print(f"\n⚠️ {final_response}\n")
+                    messages.append({"role": "assistant", "content": final_response})
+                    if agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(final_response)
+                            agent.stream_delta_callback(None)
+                        except Exception:
+                            pass
                     break
 
                 # Reset per-turn retry counters after successful tool

@@ -1142,6 +1142,28 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
 
+        # Consecutive identical-error circuit breaker.  When the same tool
+        # returns the same error ≥ 3 times in a row within one user turn, the
+        # model is stuck in a retry loop.  Set a halt flag so the conversation
+        # loop can break before burning the full iteration budget (issue: memory
+        # replace loop with missing old_text burned 44k-token context per retry).
+        if not _execution_blocked:
+            _err_text = function_result if isinstance(function_result, str) else str(function_result)
+            if _is_error_result:
+                _err_key = (function_name, _err_text[:120])
+                streak = agent._consecutive_tool_error_streak
+                streak[_err_key] = streak.get(_err_key, 0) + 1
+                if streak[_err_key] >= 3 and agent._tool_error_loop_halt is None:
+                    agent._tool_error_loop_halt = (
+                        f"Stopped: '{function_name}' returned the same error "
+                        f"{streak[_err_key]} times in a row. The model appears stuck "
+                        f"in a retry loop. Last error: {_err_text[:300]}"
+                    )
+            else:
+                # Clear streak for this tool on success
+                for k in [k for k in agent._consecutive_tool_error_streak if k[0] == function_name]:
+                    del agent._consecutive_tool_error_streak[k]
+
         # Track file-mutation outcome for the turn-end verifier.  See
         # the concurrent path for the rationale; both paths must feed
         # the same state so the footer reflects every tool call in the

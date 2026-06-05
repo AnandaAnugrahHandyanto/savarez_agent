@@ -407,6 +407,8 @@ def init_agent(
     agent._executing_tools = False
     agent._tool_guardrails = ToolCallGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+    agent._tool_error_loop_halt: str | None = None  # set when same tool error repeats ≥ 3× in a turn
+    agent._consecutive_tool_error_streak: dict = {}  # {(tool_name, err_fingerprint): count}
 
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
