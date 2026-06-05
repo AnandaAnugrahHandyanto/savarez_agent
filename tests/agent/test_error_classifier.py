@@ -328,6 +328,12 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
 
+    def test_429_rate_limit_exceeded_stays_rate_limit(self):
+        e = MockAPIError("Rate limit exceeded.", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     def test_429_billing_phrase_without_usage_limit_is_billing(self):
         e = MockAPIError("insufficient credits remaining", status_code=429)
         result = classify_api_error(e)
