@@ -1211,6 +1211,15 @@ export function ChatBar({
         onBlur={() => window.setTimeout(closeTrigger, 80)}
         onCompositionEnd={() => {
           composingRef.current = false
+          // Update draft from editor content when composition ends
+          const editor = editorRef.current
+          if (editor) {
+            const text = composerPlainText(editor)
+            if (text !== draftRef.current) {
+              draftRef.current = text
+              aui.composer().setText(text)
+            }
+          }
           setComposingVersion(v => v + 1)
         }}
         onCompositionStart={() => {
