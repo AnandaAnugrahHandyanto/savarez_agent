@@ -1277,6 +1277,65 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_pid == 100
 
 
+class TestCuaDriverCaptureModes:
+    def test_vision_capture_uses_get_window_state_screenshot(self):
+        windows = [
+            {"app_name": "Safari", "pid": 100, "window_id": 7,
+             "is_on_screen": True, "title": "Page", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        image_b64 = "aGVsbG8="
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": "", "images": [image_b64], "isError": False,
+             "structuredContent": {"screenshot_width": 1440, "screenshot_height": 900}},
+        ]
+
+        cap = backend.capture(mode="vision", app="Safari")
+
+        calls = backend._session.call_tool.call_args_list
+        assert calls[1].args[0] == "get_window_state"
+        assert calls[1].args[1] == {
+            "pid": 100,
+            "window_id": 7,
+            "capture_mode": "vision",
+        }
+        assert all(call.args[0] != "screenshot" for call in calls)
+        assert cap.png_b64 == image_b64
+        assert cap.png_bytes_len == 5
+        assert cap.width == 1440
+        assert cap.height == 900
+        assert cap.elements == []
+
+    def test_som_capture_requests_screenshot_and_elements(self):
+        windows = [
+            {"app_name": "Safari", "pid": 100, "window_id": 7,
+             "is_on_screen": True, "title": "Page", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        image_b64 = "aGVsbG8="
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": '✅ Safari — 1 element\n[1] AXButton id=Go\n',
+             "images": [image_b64], "isError": False,
+             "structuredContent": {"screenshot_width": 1440, "screenshot_height": 900}},
+        ]
+
+        cap = backend.capture(mode="som", app="Safari")
+
+        calls = backend._session.call_tool.call_args_list
+        assert calls[1].args[0] == "get_window_state"
+        assert calls[1].args[1]["capture_mode"] == "som"
+        assert cap.png_b64 == image_b64
+        assert cap.width == 1440
+        assert cap.height == 900
+        assert len(cap.elements) == 1
+        assert cap.elements[0].role == "AXButton"
+        assert cap.elements[0].label == "Go"
+
+
 class TestFocusAppFilterNoMatch:
     """focus_app(app=X) must return ok=False when X matches nothing —
     not silently target the frontmost window and report ok=True with a

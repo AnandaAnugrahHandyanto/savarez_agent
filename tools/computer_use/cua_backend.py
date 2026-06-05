@@ -354,7 +354,7 @@ class CuaDriverBackend(ComputerUseBackend):
         """Capture the frontmost on-screen window (optionally filtered by app name).
 
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
-        `get_window_state` (ax/som) or `screenshot` (vision).
+        `get_window_state` (ax/som/vision).
         """
         # Step 1: enumerate on-screen windows to find target pid/window_id.
         lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
@@ -424,22 +424,42 @@ class CuaDriverBackend(ComputerUseBackend):
         width = height = 0
         window_title = ""
 
+        def _set_screenshot_dimensions(out: Dict[str, Any]) -> None:
+            nonlocal width, height
+            gws_sc = out.get("structuredContent") or {}
+            if not isinstance(gws_sc, dict):
+                return
+            if gws_sc.get("screenshot_width"):
+                width = int(gws_sc["screenshot_width"])
+            if gws_sc.get("screenshot_height"):
+                height = int(gws_sc["screenshot_height"])
+
         if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
-            sc_out = self._session.call_tool(
-                "screenshot",
-                {"window_id": self._active_window_id, "format": "jpeg", "quality": 85},
-            )
-            if sc_out["images"]:
-                png_b64 = sc_out["images"][0]
-        else:
-            # get_window_state: AX tree + optional screenshot.
             gws_out = self._session.call_tool(
                 "get_window_state",
-                {"pid": self._active_pid, "window_id": self._active_window_id},
+                {
+                    "pid": self._active_pid,
+                    "window_id": self._active_window_id,
+                    "capture_mode": "vision",
+                },
+            )
+            if gws_out["images"]:
+                png_b64 = gws_out["images"][0]
+            _set_screenshot_dimensions(gws_out)
+        else:
+            # get_window_state: AX tree + optional screenshot.
+            capture_mode = "ax" if mode == "ax" else "som"
+            gws_out = self._session.call_tool(
+                "get_window_state",
+                {
+                    "pid": self._active_pid,
+                    "window_id": self._active_window_id,
+                    "capture_mode": capture_mode,
+                },
             )
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
+            _set_screenshot_dimensions(gws_out)
 
             # Parse element count from summary e.g. "✅ AppName — 42 elements, turn 3..."
             m = re.search(r'(\d+)\s+elements?', summary)
