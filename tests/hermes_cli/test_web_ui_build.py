@@ -140,6 +140,41 @@ class TestBuildWebUISkipsWhenFresh:
         assert kwargs["encoding"] == "utf-8"
         assert kwargs["errors"] == "replace"
 
+    def test_npm_ci_forces_include_dev(self, tmp_path):
+        """`npm ci` must pass --include=dev so an inherited NODE_ENV=production
+        (or npm omit=dev) can't strip the build toolchain (tsc/vite/
+        electron-builder), which otherwise fails the desktop self-update
+        rebuild with `tsc: command not found` (exit 127)."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+            _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        args, _ = mock_run.call_args
+        cmd = args[0]
+        assert cmd[:2] == ["/usr/bin/npm", "ci"]
+        assert "--include=dev" in cmd
+
+    def test_npm_install_fallback_forces_include_dev(self, tmp_path):
+        """When `npm ci` fails (lockfile out of sync) the `npm install`
+        fallback must still force --include=dev."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        ci_fail = __import__("subprocess").CompletedProcess([], 1, stdout="", stderr="lockfile out of sync")
+        install_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.subprocess.run", side_effect=[ci_fail, install_ok]) as mock_run:
+            result = _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        assert result.returncode == 0
+        assert mock_run.call_count == 2
+        install_args, _ = mock_run.call_args_list[1]
+        install_cmd = install_args[0]
+        assert install_cmd[:2] == ["/usr/bin/npm", "install"]
+        assert "--include=dev" in install_cmd
+
     def test_web_build_uses_idle_timeout_helper(self, tmp_path):
         """npm run build now goes through _run_with_idle_timeout (issue #33788).
 
