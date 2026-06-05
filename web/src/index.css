@@ -1,15 +1,15 @@
 @import 'tailwindcss';
 /* `fonts.css` must come BEFORE `globals.css`: as of @nous-research/ui 0.14.x,
-   `globals.css` only declares the `--font-*` CSS variables (Collapse, Rules
-   Compressed/Expanded, Mondwest). The `@font-face` registrations live in
-   `fonts.css`, so without this import the DS variables resolve to font
-   families the browser never loads and components fall back to a system
-   stack (Tabs, Segmented, Typography, Buttons, etc. all look unstyled). */
+  `globals.css` only declares the `--font-*` CSS variables (Collapse, Rules
+  Compressed/Expanded, Mondwest). The `@font-face` registrations live in
+  `fonts.css`, so without this import the DS variables resolve to font
+  families the browser never loads and components fall back to a system
+  stack (Tabs, Segmented, Typography, Buttons, etc. all look unstyled). */
 @import '@nous-research/ui/styles/fonts.css';
 @import '@nous-research/ui/styles/globals.css';
 
 /* Scan the published design-system bundle so its utility classes survive
-   Tailwind's JIT purge. */
+  Tailwind's JIT purge. */
 @source '../node_modules/@nous-research/ui/dist';
 
 /* ------------------------------------------------------------------ */
@@ -51,8 +51,8 @@
 
 :root {
   /* LENS_0 — from design-language/src/ui/components/overlays/index.tsx.
-     These are the defaults for the `default` (Savarez Teal) dashboard theme;
-     ThemeProvider rewrites them as inline styles when a user switches themes. */
+    These are the defaults for the `default` (Savarez Teal) dashboard theme;
+    ThemeProvider rewrites them as inline styles when a user switches themes. */
   --foreground: color-mix(in srgb, #ffffff 0%, transparent);
   --foreground-base: #ffffff;
   --foreground-alpha: 0;
@@ -68,7 +68,7 @@
   --noise-opacity-mul: 1;
 
   /* Typography tokens — rewritten by ThemeProvider. Defaults match the
-     system stack so themes that don't override look native. */
+    system stack so themes that don't override look native. */
   --theme-font-sans: system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
   --theme-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
@@ -84,18 +84,25 @@
   --theme-spacing-mul: 1;
   --theme-density: comfortable;
 
+  /* Savarez brand accent — orange #FF6B00. Used by primary CTAs, active
+    nav highlights, and the Moon/Sun toggle in the sidebar. Themes can
+    override via ThemeProvider. */
+  --color-accent: #FF6B00;
+  --color-accent-hover: #FF8533;
+  --color-accent-foreground: #ffffff;
+
   /* Data-series accents — consumed by Analytics + Models pages for the
-     input-vs-output token visualisations (chart bars, table values,
-     legend swatches). Defaults are tuned for the Savarez-teal LENS_0
-     look: cream input + emerald-400 output read as warm/cool against
-     the dark canvas. Themes override via ThemeProvider, which emits
-     these as `--series-input-token` / `--series-output-token`. */
+    input-vs-output token visualisations (chart bars, table values,
+    legend swatches). Defaults are tuned for the Savarez-teal LENS_0
+    look: cream input + emerald-400 output read as warm/cool against
+    the dark canvas. Themes override via ThemeProvider, which emits
+    these as `--series-input-token` / `--series-output-token`. */
   --series-input-token: #ffe6cb;
   --series-output-token: #34d399;
 }
 
 /* Theme tokens cascade into the document root so every descendant inherits
-   the font stack, base size, and letter spacing without explicit calls. */
+  the font stack, base size, and letter spacing without explicit calls. */
 html {
   font-family: var(--theme-font-sans);
   font-size: var(--theme-base-size);
@@ -104,6 +111,16 @@ html {
   height: 100dvh;
   max-height: 100dvh;
   overflow: hidden;
+  /* Smooth transition between dark/light themes to prevent the flash
+    that previously appeared on theme switch. */
+  transition: background-color 0.3s ease, color 0.3s ease;
+  /* Subtle 9router.com-style grid background. Faint in dark mode, more
+    visible in light mode via the data-theme attribute selector. */
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  background-attachment: fixed;
 }
 
 body {
@@ -112,6 +129,39 @@ body {
   height: 100%;
   margin: 0;
   overflow: hidden;
+  will-change: background-color, color;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Light-mode grid: darker lines on the cream canvas. The toggle flips
+  `data-theme` on <html> so this rule only paints for nous-blue. */
+html[data-theme="light"] {
+  background-image:
+    linear-gradient(rgba(0, 0, 0, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.05) 1px, transparent 1px);
+  background-size: 48px 48px;
+  background-attachment: fixed;
+}
+
+/* Animated background grid for the dashboard body — gives the page a
+  subtle 9router.com-like texture that scrolls with content. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 32px 32px;
+  will-change: opacity;
+}
+
+html[data-theme="light"] body::before {
+  background-image:
+    linear-gradient(rgba(0, 0, 0, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.03) 1px, transparent 1px);
 }
 
 code, kbd, pre, samp, .font-mono, .font-mono-ui {
@@ -119,9 +169,9 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
 }
 
 /* Density: scale the shadcn spacing utilities via a multiplier. The DS
-   components use `p-N` / `gap-N` / `space-*` classes which resolve against
-   Tailwind's spacing scale; multiplying `--spacing` at :root scales them
-   all proportionally in Tailwind v4. */
+  components use `p-N` / `gap-N` / `space-*` classes which resolve against
+  Tailwind's spacing scale; multiplying `--spacing` at :root scales them
+  all proportionally in Tailwind v4. */
 @theme inline {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
   --font-sans: var(--theme-font-sans);
@@ -148,18 +198,18 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
 }
 
 /* Nousnet's savarez-agent layout bumps `small` and `code` to readable
-   dashboard sizes. Keep in sync. */
+  dashboard sizes. Keep in sync. */
 small { font-size: 1.0625rem; }
 code { font-size: 0.875rem; }
 
 /* Shadcn-compat tokens.
-   The dashboard's page code predates the Nous DS and uses shadcn-style
-   utility classes (bg-card, text-muted-foreground, border-border, etc.)
-   extensively. Rather than rewrite every call site, we expose those
-   tokens on top of the Nous palette so classes continue to resolve. */
+  The dashboard's page code predates the Nous DS and uses shadcn-style
+  utility classes (bg-card, text-muted-foreground, border-border, etc.)
+  extensively. Rather than rewrite every call site, we expose those
+  tokens on top of the Nous palette so classes continue to resolve. */
 @theme inline {
   /* Remap foreground to midground so `text-foreground` / `bg-foreground`
-     stay visible — in LENS_0, `--foreground` itself has alpha 0. */
+    stay visible — in LENS_0, `--foreground` itself has alpha 0. */
   --color-foreground: var(--midground);
 
   --color-card: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
@@ -170,12 +220,12 @@ code { font-size: 0.875rem; }
   --color-secondary-foreground: var(--midground);
   --color-muted: color-mix(in srgb, var(--midground-base) 8%, var(--background-base));
   /* Routes the shadcn `muted-foreground` slot through the DS semantic
-     text-secondary token (defaults to midground 80%) so legacy call
-     sites that use `text-muted-foreground` get a readable color
-     instead of the old 55%-transparent default. */
+    text-secondary token (defaults to midground 80%) so legacy call
+    sites that use `text-muted-foreground` get a readable color
+    instead of the old 55%-transparent default. */
   --color-muted-foreground: var(--color-text-secondary);
-  --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
-  --color-accent-foreground: var(--midground);
+  --color-accent: var(--color-accent);
+  --color-accent-foreground: var(--color-accent-foreground);
   --color-destructive: #fb2c36;
   --color-destructive-foreground: #ffffff;
   --color-success: #4ade80;
@@ -234,10 +284,10 @@ code { font-size: 0.875rem; }
 }
 
 /* System UI-monospace stack — distinct from `font-courier` (Courier
-   Prime), used for dense data readouts where the display font would
-   break the grid. Routes through the theme's mono stack so themes
-   with a different monospace (JetBrains Mono, IBM Plex Mono, etc.)
-   still apply here. */
+  Prime), used for dense data readouts where the display font would
+  break the grid. Routes through the theme's mono stack so themes
+  with a different monospace (JetBrains Mono, IBM Plex Mono, etc.)
+  still apply here. */
 .font-mono-ui {
   font-family: var(--theme-font-mono);
 }
@@ -257,9 +307,9 @@ code { font-size: 0.875rem; }
 }
 
 /* When a theme provides `assets.bg`, the backdrop's <div> renders it as
-   a CSS background; the default filler <img> is hidden to prevent
-   double-compositing. Unset → initial → empty, so the :not() selector
-   matches and the default image stays visible. */
+  a CSS background; the default filler <img> is hidden to prevent
+  double-compositing. Unset → initial → empty, so the :not() selector
+  matches and the default image stays visible. */
 :root:not([style*="--theme-asset-bg:"]) .theme-default-filler {
   display: block;
 }
@@ -267,3 +317,11 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
+/* Orange-accent utility classes for primary CTAs and active states.
+  Reuses the brand `--color-accent` token so themes can recolor
+  everything in one place. */
+.bg-brand { background-color: var(--color-accent); }
+.text-brand { color: var(--color-accent); }
+.border-brand { border-color: var(--color-accent); }
+.ring-brand { --tw-ring-color: var(--color-accent); }
+.hover\:bg-brand-hover:hover { background-color: var(--color-accent-hover); }

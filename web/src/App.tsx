@@ -562,7 +562,7 @@ export default function App() {
                   className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
                   style={{ mixBlendMode: "plus-lighter" }}
                 >
-                  Hermes
+                  Savarez
                   <br />
                   Agent
                 </Typography>
@@ -658,25 +658,19 @@ export default function App() {
                 "px-3 py-2",
                 "border-t border-current/20",
                 isDesktopCollapsed
-                  ? "lg:flex-col lg:items-start lg:gap-3 lg:py-3"
+                  ? "lg:flex-col lg:items-center lg:gap-3 lg:py-3"
                   : "justify-between",
               )}
             >
               <div
                 className={cn(
                   "flex min-w-0 items-center gap-2",
-                  isDesktopCollapsed && "lg:flex-col lg:items-start",
+                  isDesktopCollapsed && "lg:flex-col lg:items-center",
                 )}
               >
                 <PluginSlot name="header-right" />
 
-                <SidebarIconWithTooltip
-                  collapsed={isDesktopCollapsed}
-                  label={t.theme?.switchTheme ?? "Switch theme"}
-                  tooltipWarmRef={tooltipWarmRef}
-                >
-                  <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
-                </SidebarIconWithTooltip>
+                <ThemeSwitcher />
 
                 <SidebarIconWithTooltip
                   collapsed={isDesktopCollapsed}
@@ -873,8 +867,8 @@ function SidebarSystemActions({
     {
       action: "update",
       icon: Download,
-      label: t.status.updateHermes,
-      runningLabel: t.status.updatingHermes,
+      label: t.status.updateSavarez,
+      runningLabel: t.status.updatingSavarez,
       spin: false,
     },
   ];

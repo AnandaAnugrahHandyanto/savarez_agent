@@ -403,7 +403,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // the API (since the active theme might be a user theme whose definition
   // hadn't loaded yet on first render).
   useEffect(() => {
-    applyTheme(resolveTheme(themeName));
+    const theme = resolveTheme(themeName);
+    applyTheme(theme);
+    // Set data-theme attribute on <html> for CSS grid and light/dark variations
+    if (typeof document !== 'undefined') {
+      const isLight = theme.name === 'nous-blue';
+      if (isLight) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      } else {
+        document.documentElement.removeAttribute('data-theme');
+      }
+    }
   }, [themeName, resolveTheme]);
 
   // Load server-side themes (built-ins + user YAMLs) once on mount.
