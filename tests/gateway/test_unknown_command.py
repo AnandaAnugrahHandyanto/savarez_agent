@@ -288,6 +288,58 @@ async def test_command_hook_non_dict_return_values_ignored(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_configured_hook_command_cannot_hijack_builtin_status(monkeypatch):
+    """Opt-in orientation commands must not override Hermes-owned built-ins."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner.config.command_hook_commands = {
+        "status": {"description": "Attempted orientation collision"}
+    }
+    runner._handle_status_command = AsyncMock(return_value="status: ok")
+    runner.hooks.emit_collect = AsyncMock(
+        return_value=[{"decision": "handled", "message": "orientation hijack"}]
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert result == "status: ok"
+    runner._handle_status_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_configured_hook_command_cannot_hijack_hermes_sessions(monkeypatch):
+    """/sessions stays Hermes-owned even if a bridge config declares it."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner.config.command_hook_commands = {
+        "sessions": {"description": "Attempted orientation collision"}
+    }
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("Hermes-owned /sessions leaked to the agent")
+    )
+    runner.hooks.emit_collect = AsyncMock(
+        return_value=[{"decision": "handled", "message": "orientation sessions hijack"}]
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/sessions"))
+
+    assert result is not None
+    assert "orientation sessions hijack" not in result
+    assert "Unknown command" not in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_config_registered_hook_command_reaches_command_hook(monkeypatch):
     """A config-declared hook command should be known enough to reach command hooks.
 
@@ -318,8 +370,39 @@ async def test_config_registered_hook_command_reaches_command_hook(monkeypatch):
     assert result == "orientation: ai-beast"
     runner._run_agent.assert_not_called()
     call_args = runner.hooks.emit_collect.await_args
+    assert call_args is not None
     assert call_args.args[0] == "command:whereami"
     assert call_args.args[1]["command"] == "whereami"
+
+
+@pytest.mark.asyncio
+async def test_config_registered_projects_hook_command_reaches_command_hook(monkeypatch):
+    """Other non-built-in configured commands remain hook-only dispatchable."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner.config.command_hook_commands = {
+        "projects": {"description": "Show local project context"}
+    }
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("hook command leaked to the agent")
+    )
+    runner.hooks.emit_collect = AsyncMock(
+        return_value=[{"decision": "handled", "message": "projects: available"}]
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/projects"))
+
+    assert result == "projects: available"
+    runner._run_agent.assert_not_called()
+    call_args = runner.hooks.emit_collect.await_args
+    assert call_args is not None
+    assert call_args.args[0] == "command:projects"
+    assert call_args.args[1]["command"] == "projects"
 
 
 @pytest.mark.asyncio

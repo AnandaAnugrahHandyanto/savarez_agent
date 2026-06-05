@@ -7873,6 +7873,11 @@ class GatewayRunner:
                 return False
             return is_gateway_known_command(name) or _is_configured_hook_command(name)
 
+        def _is_configured_builtin_collision(name: str | None) -> bool:
+            if not name:
+                return False
+            return is_gateway_known_command(name) and _is_configured_hook_command(name)
+
         # Resolve aliases to canonical name so dispatch and hook names
         # don't depend on the exact alias the user typed.
         _cmd_def = _resolve_cmd(command) if command else None
@@ -7919,7 +7924,11 @@ class GatewayRunner:
         # the previous fire-and-forget emit(): return values are now
         # honored, but handlers that return nothing behave exactly as
         # before (telemetry-style hooks keep working).
-        if command and _is_gateway_or_hook_command(canonical):
+        if (
+            command
+            and _is_gateway_or_hook_command(canonical)
+            and not _is_configured_builtin_collision(canonical)
+        ):
             raw_args = event.get_command_args().strip()
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
