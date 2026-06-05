@@ -1229,6 +1229,27 @@ export function ChatBar({
         onBlur={() => window.setTimeout(closeTrigger, 80)}
         onCompositionEnd={() => {
           composingRef.current = false
+
+          // After IME composition ends, the editor DOM has the final
+          // committed text but the assistant-ui composer state may not
+          // reflect it yet — the input handler bailed during composition.
+          // Use setTimeout to defer the sync past the current event cycle
+          // so React's automatic batching doesn't swallow the state update
+          // and the send-button icon (microphone vs. up-arrow) switches
+          // immediately, even when the post-composition input event is
+          // late or swallowed by the browser.
+          setTimeout(() => {
+            const editor = editorRef.current
+
+            if (editor) {
+              const text = composerPlainText(editor)
+
+              if (text !== draftRef.current) {
+                draftRef.current = text
+                aui.composer().setText(text)
+              }
+            }
+          }, 0)
         }}
         onCompositionStart={() => {
           composingRef.current = true
