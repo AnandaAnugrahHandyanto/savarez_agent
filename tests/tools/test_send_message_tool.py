@@ -1124,12 +1124,18 @@ class TestParseTargetRefSlack:
     def test_dm_id_is_explicit(self):
         assert _parse_target_ref("slack", "D123ABCDEF")[2] is True
 
-    def test_user_id_is_not_explicit(self):
-        """Slack user IDs (U...) and workspace IDs (W...) are NOT explicit send
-        targets. chat.postMessage rejects them — a DM must be opened first via
-        conversations.open to obtain a D... conversation ID.
+    def test_user_id_is_explicit_and_opens_dm(self):
+        """Slack user IDs (U...) ARE explicit send targets: the tool accepts a
+        bare user ID and _send_slack opens the DM (conversations.open) to resolve
+        it to a D... conversation ID. This lets the agent DM a user who is not in
+        the action='list' output. (See the [CGDU] target regex.)
         """
-        assert _parse_target_ref("slack", "U123ABCDEF")[2] is False
+        chat_id, _, is_explicit = _parse_target_ref("slack", "U123ABCDEF")
+        assert is_explicit is True
+        assert chat_id == "U123ABCDEF"
+
+    def test_workspace_id_is_not_explicit(self):
+        """Workspace IDs (W...) are still NOT recognized as explicit targets."""
         assert _parse_target_ref("slack", "W123ABCDEF")[2] is False
 
     def test_whitespace_is_stripped(self):
