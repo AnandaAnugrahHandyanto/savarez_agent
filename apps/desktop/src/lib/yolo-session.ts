@@ -7,10 +7,7 @@ import {
   setYoloActive
 } from '@/store/session'
 
-export type GatewayRequester = <T = unknown>(
-  method: string,
-  params?: Record<string, unknown>
-) => Promise<T>
+export type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
