@@ -132,20 +132,19 @@ skywalking:
   service_name: "mes-service"
 
 # ============================================================
-# 上游端点心跳检查配置（高频，2 分钟）
+# 上游节点心跳检查配置（通过 nginx_upstream_check_module）
 # ============================================================
 upstream:
-  targets:
-    - name: "mes-app-1"
-      url: "http://10.0.0.1:8080/health"
-    - name: "mes-app-2"
-      url: "http://10.0.0.2:8080/health"
+  # nginx_upstream_check_module 状态页 URL
+  # Nginx 配置示例：
+  #   location /upstream_status {
+  #       upstream_check;
+  #       upstream_check_type html;
+  #   }
+  # JSON 格式（推荐）：加 ?format=json
+  status_url: "http://localhost/upstream_status?format=json"
   # HTTP 超时（秒）
   timeout: 5
-  # 响应时间告警阈值（秒）
-  response_time_warn: 2.0
-  # 响应时间严重阈值（秒）
-  response_time_critical: 5.0
 
 # ============================================================
 # 告警器配置
