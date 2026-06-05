@@ -549,16 +549,7 @@ export function ChatBar({
     }
   }, [trigger])
 
-  const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
-    // During IME composition the DOM contains uncommitted preedit text
-    // mixed with real content.  Skip state writes — compositionend will
-    // deliver the finalized text via a clean input event.
-    if (composingRef.current) {
-      return
-    }
-
-    const editor = event.currentTarget
-
+  const syncDraftFromEditor = (editor: HTMLDivElement) => {
     if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
       editor.replaceChildren()
     }
@@ -571,6 +562,17 @@ export function ChatBar({
     }
 
     window.setTimeout(refreshTrigger, 0)
+  }
+
+  const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
+    // During IME composition the DOM contains uncommitted preedit text
+    // mixed with real content.  Skip state writes — compositionend re-syncs
+    // the finalized text via syncDraftFromEditor.
+    if (composingRef.current) {
+      return
+    }
+
+    syncDraftFromEditor(event.currentTarget)
   }
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
@@ -1208,8 +1210,13 @@ export function ChatBar({
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
-        onCompositionEnd={() => {
+        onCompositionEnd={event => {
+          // CJK IME commit: the input event carrying the finalized text often
+          // arrives while composingRef is still true and gets skipped above, so
+          // the composer payload (and Send button) never updates.  Re-sync the
+          // committed text here so Korean/Japanese/Chinese messages are sendable.
           composingRef.current = false
+          syncDraftFromEditor(event.currentTarget)
         }}
         onCompositionStart={() => {
           composingRef.current = true
