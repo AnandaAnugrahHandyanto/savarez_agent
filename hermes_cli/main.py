@@ -7331,6 +7331,36 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     return removed
 
 
+_DESKTOP_MACOS_SIGNING_ENV_VARS = (
+    "CSC_LINK",
+    "CSC_NAME",
+    "APPLE_SIGNING_IDENTITY",
+)
+
+
+def _desktop_explicit_macos_signing_requested(env) -> bool:
+    """Return True when the caller explicitly asked electron-builder to sign.
+
+    Local self-updates should not accidentally pick up whatever Developer ID
+    happens to be in the user's keychain. Explicit signing knobs still win.
+    """
+    if any((env.get(key) or "").strip() for key in _DESKTOP_MACOS_SIGNING_ENV_VARS):
+        return True
+    auto = (env.get("CSC_IDENTITY_AUTO_DISCOVERY") or "").strip().lower()
+    return auto not in {"", "0", "false", "no", "off"}
+
+
+def _desktop_build_env(env: dict[str, str], *, source_mode: bool) -> dict[str, str]:
+    build_env = dict(env)
+    if (
+        sys.platform == "darwin"
+        and not source_mode
+        and not _desktop_explicit_macos_signing_requested(build_env)
+    ):
+        build_env["CSC_IDENTITY_AUTO_DISCOVERY"] = "false"
+    return build_env
+
+
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
 
@@ -7344,12 +7374,12 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     Clearing the quarantine xattrs and re-applying a clean deep ad-hoc signature
     (omitting the hardened-runtime flag, which is meaningless without a real
     Developer ID) lets the rebuilt app relaunch. No-op when a real signing
-    identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly
+    identity is configured (CSC_LINK / CSC_NAME / APPLE_SIGNING_IDENTITY) so a properly
     signed/notarized build is never clobbered. Best-effort: never raises.
     """
     if sys.platform != "darwin":
         return
-    if os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY"):
+    if _desktop_explicit_macos_signing_requested(os.environ):
         return
     exe = _desktop_packaged_executable(desktop_dir)
     if exe is None:
@@ -7486,7 +7516,8 @@ def cmd_gui(args: argparse.Namespace):
             build_label = "source build" if source_mode else "packaged app"
             print(f"→ Building desktop {build_label}...")
             build_script = "build" if source_mode else "pack"
-            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            build_env = _desktop_build_env(env, source_mode=source_mode)
+            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=build_env, check=False)
             if build_result.returncode != 0 and not source_mode:
                 # A corrupt cached Electron zip makes `pack` fail with an ENOENT
                 # on the final `electron` -> `Hermes` rename: unpack-electron
@@ -7506,7 +7537,7 @@ def cmd_gui(args: argparse.Namespace):
                     print("  ⚠ Desktop build failed; cleared cached Electron download and retrying once...")
                     for p in purged:
                         print(f"    - {p}")
-                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=build_env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
@@ -10593,12 +10624,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("→ Checking if desktop app needs rebuilding...")
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise
-            # look hung). On the rare nonzero exit, retry once after waiting
-            # again for the venv — this covers a still-settling rebuild window
-            # the first wait didn't fully catch.
+            # look hung). ``cmd_gui`` already owns retryable desktop packaging
+            # recovery (Electron cache purge + one retry), so do not rerun the
+            # whole build command here: that repeats npm install/download work
+            # and makes in-app updates feel stuck after a transient pack failure.
             build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
-            if build_result.returncode != 0:
-                build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
 
