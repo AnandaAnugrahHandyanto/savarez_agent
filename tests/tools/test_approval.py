@@ -424,6 +424,28 @@ class TestHermesConfigWriteProtection:
         dangerous, key, desc = detect_dangerous_command("sed --in-place 's/manual/off/' ~/.hermes/config.yaml")
         assert dangerous is True
 
+    def test_sed_in_place_separate_token_config(self):
+        # -i can split out after another flag (`sed -n -i s/.../ config`).
+        # Pairs the perl/ruby separate-token coverage from b04c6e95f.
+        dangerous, key, desc = detect_dangerous_command(
+            "sed -n -i 's/manual/off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_sed_in_place_i_after_expr_env(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "sed -e 's/x/y/' -i ~/.hermes/.env"
+        )
+        assert dangerous is True
+
+    def test_sed_read_only_expr_safe(self):
+        # `sed -E '...' config` is a read transform (stdout), not in-place;
+        # the widened pattern must NOT trip on it.
+        dangerous, key, desc = detect_dangerous_command(
+            "sed -E 's/a/b/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is False
+
     def test_custom_hermes_home(self):
         dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/config.yaml")
         assert dangerous is True
