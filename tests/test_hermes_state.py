@@ -2388,6 +2388,65 @@ class TestSchemaInit:
 
         assert cols1 == cols2
 
+    def test_session_origin_columns_are_reconciled_before_deferred_indexes(self, tmp_path):
+        """Legacy sessions tables should gain gateway-origin columns before
+        indexes that reference those columns are created.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "legacy_sessions.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (7);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp REAL NOT NULL
+            );
+        """)
+        conn.commit()
+        assert {
+            r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }.isdisjoint({"chat_id", "session_key"})
+        conn.close()
+
+        migrated_db = SessionDB(db_path=db_path)
+
+        session_cols = {
+            r[1]
+            for r in migrated_db._conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        assert {
+            "chat_id",
+            "chat_type",
+            "chat_name",
+            "thread_id",
+            "parent_chat_id",
+            "session_key",
+        }.issubset(session_cols)
+
+        index_names = {
+            r[1]
+            for r in migrated_db._conn.execute("PRAGMA index_list(sessions)").fetchall()
+        }
+        assert "idx_sessions_session_key" in index_names
+        migrated_db.close()
+
     def test_schema_sql_is_source_of_truth(self, db):
         """Every column in SCHEMA_SQL exists in the live database.
 
