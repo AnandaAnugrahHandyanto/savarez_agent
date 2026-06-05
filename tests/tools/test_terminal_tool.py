@@ -3,6 +3,7 @@
 import json
 
 import tools.terminal_tool as terminal_tool
+from tools import process_registry as process_registry_module
 
 
 def setup_function():
@@ -707,3 +708,47 @@ def test_codex_review_guard_error_points_to_wrapper_entrypoint():
 
     assert error is not None
     assert "scripts/runtime/codex_review_guard.py" in error
+
+def test_codex_exec_detection_handles_paths_and_env_prefixes():
+    commands = [
+        "codex-yuna exec fix tests",
+        "codex exec fix tests",
+        "/usr/local/bin/codex-yuna exec fix tests",
+        "./bin/codex exec fix tests",
+        "FOO=bar OPENAI_API_KEY=x codex-yuna exec fix tests",
+        "env FOO=bar codex exec fix tests",
+        "env -u FOO codex exec fix tests",
+        "env -uFOO codex exec fix tests",
+        "env -i FOO=bar ./codex-yuna exec fix tests",
+    ]
+
+    for command in commands:
+        assert terminal_tool._codex_launch_info(command)["is_codex_exec"], command
+
+
+def test_codex_exec_detection_ignores_non_executable_mentions():
+    commands = [
+        "echo codex-yuna exec fix tests",
+        "python -c 'print(\"codex-yuna exec\")'",
+        "python - <<'PY'\ncodex exec sample\nPY",
+        "printf '%s\n' 'codex exec fix tests'",
+    ]
+
+    for command in commands:
+        assert not terminal_tool._codex_launch_info(command)["is_codex_exec"], command
+
+
+def test_codex_help_and_version_are_harmless():
+    commands = [
+        "codex-yuna --version",
+        "codex --version",
+        "codex-yuna exec --help",
+        "codex exec help",
+        "codex exec -h",
+        "codex exec --version",
+    ]
+
+    for command in commands:
+        info = terminal_tool._codex_launch_info(command)
+        assert info["is_harmless"], command
+        assert not info["is_codex_exec"], command
