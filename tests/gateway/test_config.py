@@ -669,6 +669,53 @@ class TestLoadGatewayConfig:
 
         assert config.command_hook_commands == {}
 
+    def test_ai_beast_orientation_in_config_yaml_is_loaded(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "command_hook_commands:\n"
+            "  whereami:\n"
+            "    description: Show local orientation context\n"
+            "  projects:\n"
+            "    description: Show local project context\n"
+            "ai_beast_orientation:\n"
+            "  enabled: true\n"
+            "  project_root: /tmp/ai-beast\n"
+            "  registry_root: docs/interaction-layer/registry\n"
+            "  bot_username: HermesBot\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.command_hook_commands == {
+            "whereami": {"description": "Show local orientation context"},
+            "projects": {"description": "Show local project context"},
+        }
+        assert config.ai_beast_orientation == {
+            "enabled": True,
+            "project_root": "/tmp/ai-beast",
+            "registry_root": "docs/interaction-layer/registry",
+            "bot_username": "HermesBot",
+        }
+
+    def test_invalid_ai_beast_orientation_in_config_yaml_is_ignored(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("ai_beast_orientation: not-a-mapping\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.ai_beast_orientation == {}
+
     def test_bridges_unauthorized_dm_behavior_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

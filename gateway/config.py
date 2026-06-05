@@ -777,6 +777,17 @@ def load_gateway_config() -> GatewayConfig:
                         type(chc).__name__,
                     )
 
+            abo = yaml_cfg.get("ai_beast_orientation")
+            if abo is not None:
+                if isinstance(abo, dict):
+                    gw_data["ai_beast_orientation"] = abo
+                else:
+                    logger.warning(
+                        "Ignoring invalid ai_beast_orientation in config.yaml "
+                        "(expected mapping, got %s)",
+                        type(abo).__name__,
+                    )
+
             stt_cfg = yaml_cfg.get("stt")
             if isinstance(stt_cfg, dict):
                 gw_data["stt"] = stt_cfg
