@@ -11,7 +11,6 @@ target a different attribute (e.g. `regex_pattern`, `sql_query`, `code_block`).
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import hmac
 import os
@@ -54,34 +53,29 @@ def main() -> int:
             f"  file: {args.snapshot}"
         )
 
-    # Verify HMAC integrity before unpickling
+    # Verify HMAC integrity before unpickling. The HMAC must live in a sidecar
+    # file (e.g. `iteration_N.pkl.hmac`) so we can verify the raw bytes WITHOUT
+    # unpickling them first. pickle.loads() executes arbitrary code, so the
+    # integrity check MUST happen on the file bytes, not on values extracted
+    # post-unpickle.
     secret = os.environ.get(HERMES_SNAPSHOT_SECRET)
     if secret:
+        hmac_path = args.snapshot.with_suffix(args.snapshot.suffix + ".hmac")
+        if not hmac_path.exists():
+            sys.exit(
+                f"HMAC sidecar not found: {hmac_path}. The snapshot must be "
+                "accompanied by an HMAC file written by the producer."
+            )
         raw_bytes = args.snapshot.read_bytes()
-        try:
-            outer = pickle.loads(raw_bytes)
-            if isinstance(outer, dict) and "population_snapshot" in outer:
-                expected_hmac = outer.get("hmac")
-                if expected_hmac:
-                    computed = hmac.new(
-                        secret.encode(),
-                        outer["population_snapshot"],
-                        hashlib.sha256,
-                    ).hexdigest()
-                    if not hmac.compare_digest(computed, expected_hmac):
-                        sys.exit(
-                            f"HMAC verification failed for {args.snapshot} — "
-                            "snapshot may have been tampered with or corrupted."
-                        )
-                else:
-                    sys.exit(
-                        f"snapshot {args.snapshot} is missing HMAC signature "
-                        "(HERMES_SNAPSHOT_SECRET is set but snapshot has no hmac field)"
-                    )
-            else:
-                sys.exit(f"snapshot {args.snapshot} is not a valid darwinian-evolver snapshot")
-        except Exception as e:
-            sys.exit(f"failed to verify HMAC for {args.snapshot}: {e}")
+        expected_hmac = hmac_path.read_text().strip()
+        computed = hmac.new(
+            secret.encode(), raw_bytes, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(computed, expected_hmac):
+            sys.exit(
+                f"HMAC verification failed for {args.snapshot} — "
+                "snapshot may have been tampered with or corrupted."
+            )
     else:
         print(
             f"WARNING: HERMES_SNAPSHOT_SECRET is not set — skipping HMAC verification "
