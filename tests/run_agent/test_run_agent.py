@@ -55,11 +55,21 @@ def test_is_destructive_command_treats_install_as_mutating():
 
 
 def test_run_conversation_dict_returns_include_final_response():
+    """Structurally enforce final_response on dict returns from run_conversation().
+
+    This parses source, including nested helpers, so it requires the .py file
+    to be available. It guards key presence and literal None values; runtime
+    tests still cover branch-specific values.
+    """
     from agent import conversation_loop
 
-    source = inspect.getsource(conversation_loop.run_conversation)
+    try:
+        source = inspect.getsource(conversation_loop.run_conversation)
+    except OSError as exc:
+        pytest.skip(f"run_conversation source is unavailable: {exc}")
     tree = ast.parse(source)
     missing = []
+    literal_none = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Dict):
             continue
@@ -69,10 +79,18 @@ def test_run_conversation_dict_returns_include_final_response():
         ]
         if "final_response" not in keys:
             missing.append(node.lineno)
+            continue
+        value = node.value.values[keys.index("final_response")]
+        if isinstance(value, ast.Constant) and value.value is None:
+            literal_none.append(node.lineno)
 
     assert missing == [], (
         "run_conversation() dict returns must preserve the final_response "
         f"contract; missing at source-local lines {missing}"
+    )
+    assert literal_none == [], (
+        "run_conversation() dict returns must expose actionable final_response "
+        f"text instead of literal None; literal None at source-local lines {literal_none}"
     )
 
 
