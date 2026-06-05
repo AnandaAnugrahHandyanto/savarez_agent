@@ -232,6 +232,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
         "gemini-3-flash-preview",
+        # 2.5 family is served by Code Assist standard-tier licenses where the
+        # gemini-3 *-preview slugs may still 404 (entitlement varies per
+        # project). Keep them in the curated list so those users still get a
+        # working pro/flash option in the picker and as a fallback target.
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
     ],
     "zai": [
         "glm-5.1",
