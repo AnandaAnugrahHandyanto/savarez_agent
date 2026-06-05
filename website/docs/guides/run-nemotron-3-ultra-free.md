@@ -48,6 +48,8 @@ Prefer the terminal?
 
 On macOS/Linux/WSL2/Android, run
 
+On macOS/Linux/WSL2/Android, run
+
 ```bash
 curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash
 ```

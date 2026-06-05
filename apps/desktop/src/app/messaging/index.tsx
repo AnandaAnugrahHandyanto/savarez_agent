@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { Tip } from '@/components/ui/tooltip'
 import {
   getMessagingPlatforms,
   type MessagingEnvVarInfo,
@@ -24,6 +23,8 @@ import { ListRow } from '../settings/primitives'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
+import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
+import { ListRow } from '../settings/primitives'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { PlatformAvatar } from './platform-icon'
