@@ -120,4 +120,57 @@ describe('useMessageStream', () => {
     expect(assistant?.parts.map(part => part.type)).toEqual(['text', 'tool-call', 'text'])
     expect(chatMessageText(assistant!)).toBe('Planning.Done.')
   })
+
+  it('does not duplicate streamed text when completion text contains the full final response', () => {
+    let state = initialState()
+
+    const updateSessionState = vi.fn(
+      (
+        sessionId: string,
+        updater: (state: ClientSessionState) => ClientSessionState,
+        _storedSessionId?: string | null
+      ) => {
+        expect(sessionId).toBe(SESSION_ID)
+        state = updater(state)
+
+        return state
+      }
+    )
+
+    let handle: HarnessHandle | null = null
+
+    render(<Harness onReady={h => (handle = h)} updateSessionState={updateSessionState} />)
+
+    handle!.handleGatewayEvent({ payload: {}, session_id: SESSION_ID, type: 'message.start' } as RpcEvent)
+    handle!.handleGatewayEvent({
+      payload: { text: 'Planning. ' },
+      session_id: SESSION_ID,
+      type: 'message.delta'
+    } as RpcEvent)
+    handle!.handleGatewayEvent({
+      payload: { args: { command: 'pwd' }, name: 'terminal', tool_id: 'tc-1' },
+      session_id: SESSION_ID,
+      type: 'tool.start'
+    } as RpcEvent)
+    handle!.handleGatewayEvent({
+      payload: { args: { command: 'pwd' }, name: 'terminal', result: 'ok', tool_id: 'tc-1' },
+      session_id: SESSION_ID,
+      type: 'tool.complete'
+    } as RpcEvent)
+    handle!.handleGatewayEvent({
+      payload: { text: 'Done.' },
+      session_id: SESSION_ID,
+      type: 'message.delta'
+    } as RpcEvent)
+    handle!.handleGatewayEvent({
+      payload: { text: 'Planning. Done.' },
+      session_id: SESSION_ID,
+      type: 'message.complete'
+    } as RpcEvent)
+
+    const assistant = state.messages.find(message => message.role === 'assistant')
+
+    expect(assistant?.parts.map(part => part.type)).toEqual(['text', 'tool-call', 'text'])
+    expect(chatMessageText(assistant!)).toBe('Planning. Done.')
+  })
 })

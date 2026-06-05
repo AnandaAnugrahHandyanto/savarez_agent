@@ -450,6 +450,25 @@ export function useMessageStream({
         const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
         const dedupeReference = normalize(finalText)
 
+        const finalTailAfterKeptText = (kept: ChatMessagePart[]) => {
+          let tail = finalText
+
+          for (const part of kept) {
+            if (part.type !== 'text') {
+              continue
+            }
+
+            const text = part.text.trim()
+            const candidate = tail.trimStart()
+
+            if (text && candidate.startsWith(text)) {
+              tail = candidate.slice(text.length).trimStart()
+            }
+          }
+
+          return tail
+        }
+
         const replaceTextPart = (parts: ChatMessagePart[]) => {
           const lastToolPartIndex = parts.reduce(
             (lastIndex, part, index) => (part.type === 'tool-call' ? index : lastIndex),
@@ -470,7 +489,9 @@ export function useMessageStream({
             return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
           })
 
-          return finalText ? [...kept, assistantTextPart(finalText)] : kept
+          const tail = finalTailAfterKeptText(kept)
+
+          return tail ? [...kept, assistantTextPart(tail)] : kept
         }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>
