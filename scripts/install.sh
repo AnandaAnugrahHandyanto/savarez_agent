@@ -731,6 +731,12 @@ check_node() {
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
     if [ -x "$HERMES_HOME/node/bin/node" ] && node_satisfies_build "$("$HERMES_HOME/node/bin/node" --version)"; then
         export PATH="$HERMES_HOME/node/bin:$PATH"
+        # Migration repair (#38889): a previously-broken install may have its
+        # node symlinks only in ~/.local/bin (off-PATH on root FHS) or missing.
+        # Re-link into the canonical dir + prune stale copies so re-running the
+        # installer (or `hermes update`) heals the box instead of leaving it
+        # broken.
+        link_bundled_node
         log_success "Node.js $("$HERMES_HOME/node/bin/node" --version) found (Hermes-managed)"
         HAS_NODE=true
         return 0
@@ -744,6 +750,36 @@ check_node() {
         log_info "Node.js not found — installing Node.js $NODE_VERSION LTS..."
     fi
     install_node
+}
+
+# Idempotently (re)create node/npm/npx PATH symlinks in the command-link dir
+# and prune stale ones in the other candidate dirs.  Shared by install_node
+# (fresh install) and check_node (migration repair of an existing broken box,
+# #38889).  Pruning only removes symlinks that resolve into THIS Hermes home's
+# node dir — never a real binary or a user's nvm/fnm link.
+link_bundled_node() {
+    local node_link_dir stale_dir name target
+    node_link_dir="$(get_command_link_dir)"
+    mkdir -p "$node_link_dir"
+    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
+    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
+    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+
+    for stale_dir in "$HOME/.local/bin" "/usr/local/bin"; do
+        [ "$stale_dir" = "$node_link_dir" ] && continue
+        for name in node npm npx; do
+            [ -L "$stale_dir/$name" ] || continue
+            target="$(readlink "$stale_dir/$name" 2>/dev/null || true)"
+            case "$target" in
+                # `|| true`: pruning a shadow link is best-effort. A failing
+                # rm (read-only parent dir, uid mismatch) must NOT abort the
+                # whole installer via `set -e` (line 16). See #38889.
+                "$HERMES_HOME/node/"*) rm -f "$stale_dir/$name" 2>/dev/null || true ;;
+            esac
+        done
+    done
+    # Never let this best-effort helper be the failing last command under set -e.
+    return 0
 }
 
 install_node() {
@@ -844,12 +880,7 @@ install_node() {
     mv "$extracted_dir" "$HERMES_HOME/node"
     rm -rf "$tmp_dir"
 
-    local node_link_dir
-    node_link_dir="$(get_command_link_dir)"
-    mkdir -p "$node_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+    link_bundled_node
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
@@ -2179,6 +2210,12 @@ ensure_browser() {
 
 ensure_mode() {
     detect_os
+    # Resolve the install layout so $ROOT_FHS_LAYOUT is set before check_node →
+    # install_node → get_command_link_dir() decides where to symlink node/npm/npx.
+    # Without this, a root FHS box reached via `install.sh --ensure node`
+    # (hermes_cli/dep_ensure.py, acp_adapter, TUI fallback) leaves ROOT_FHS_LAYOUT
+    # false and links node into ~/.local/bin (off-PATH) — the #38889 regression.
+    resolve_install_layout
 
     IFS=',' read -ra DEPS <<< "$ENSURE_DEPS"
     for dep in "${DEPS[@]}"; do
@@ -2217,6 +2254,9 @@ ensure_mode() {
 postinstall_mode() {
     print_banner
     detect_os
+    # Set $ROOT_FHS_LAYOUT before check_node/install_node so node/npm/npx are
+    # symlinked into the same dir as the hermes command on a root FHS box. (#38889)
+    resolve_install_layout
 
     log_info "Post-install mode: setting up Hermes for pip install"
 

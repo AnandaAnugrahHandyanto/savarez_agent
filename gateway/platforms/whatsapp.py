@@ -197,10 +197,15 @@ def check_whatsapp_requirements() -> bool:
     
     WhatsApp requires a Node.js bridge for most implementations.
     """
-    # Check for Node.js.  Resolve via shutil.which so we respect PATHEXT
-    # (node.exe vs node) and get a meaningful "not installed" signal
-    # instead of spawning a cmd flash on Windows.
-    _node = shutil.which("node")
+    # Check for Node.js.  Resolve with bundled-fallback awareness (PATH first,
+    # then <HERMES_HOME>/node/bin) so a bundled-but-off-PATH install (e.g. a
+    # root FHS install whose symlink is missing, #38889) doesn't make the
+    # WhatsApp bridge silently unavailable.
+    try:
+        from hermes_constants import find_node_executable
+        _node = find_node_executable("node")
+    except Exception:
+        _node = shutil.which("node")
     if not _node:
         return False
     try:
@@ -592,8 +597,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
                 # Resolve npm path so Windows can execute the .cmd shim.
                 # shutil.which honours PATHEXT; on POSIX it returns the
-                # plain executable path.
-                _npm_bin = shutil.which("npm") or "npm"
+                # plain executable path.  Fall back to the bundled npm at
+                # <HERMES_HOME>/node/bin when off-PATH (#38889).
+                _npm_bin = shutil.which("npm")
+                if not _npm_bin:
+                    try:
+                        from hermes_constants import find_node_executable
+                        _npm_bin = find_node_executable("npm")
+                    except Exception:
+                        _npm_bin = None
+                _npm_bin = _npm_bin or "npm"
                 try:
                     # Read timeout from environment variable, default to 300 seconds (5 minutes)
                     # to accommodate slower systems like Unraid NAS
@@ -659,9 +672,32 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
 
+            # Resolve node with bundled fallback and ensure the bundled node bin
+            # dir is on the bridge's PATH.  The requirement check and `npm install`
+            # above already use find_node_executable, so on a bundled-but-off-PATH
+            # install (root FHS w/ missing symlink, #38889) they pass — but a bare
+            # "node" argv0 here would still raise FileNotFoundError, and the bridge
+            # itself shells out to node tooling, so it needs the dir on PATH too.
+            node_bin = "node"
+            try:
+                from hermes_constants import (
+                    find_node_executable,
+                    bundled_node_bin_dir,
+                )
+
+                node_bin = find_node_executable("node") or "node"
+                _node_dir = str(bundled_node_bin_dir())
+                _path = bridge_env.get("PATH", "")
+                if _node_dir not in _path.split(os.pathsep):
+                    bridge_env["PATH"] = (
+                        _node_dir + os.pathsep + _path if _path else _node_dir
+                    )
+            except Exception:
+                node_bin = shutil.which("node") or "node"
+
             self._bridge_process = subprocess.Popen(
                 [
-                    "node",
+                    node_bin,
                     str(bridge_path),
                     "--port", str(self._bridge_port),
                     "--session", str(self._session_path),
