@@ -9,6 +9,7 @@ view) and don't need this.
 import hashlib
 import logging
 import os
+import posixpath
 import shlex
 import shutil
 import signal
@@ -87,7 +88,7 @@ def quoted_mkdir_command(dirs: list[str]) -> str:
 
 def unique_parent_dirs(files: list[tuple[str, str]]) -> list[str]:
     """Extract sorted unique parent directories from (host, remote) pairs."""
-    return sorted({str(Path(remote).parent) for _, remote in files})
+    return sorted({posixpath.dirname(remote) for _, remote in files})
 
 
 def _sha256_file(path: str) -> str:
@@ -206,7 +207,11 @@ class FileSyncManager:
         except Exception as exc:
             self._synced_files = prev_files
             self._pushed_hashes = prev_hashes
-            self._last_sync_time = time.monotonic()
+            # Do NOT advance _last_sync_time on failure: the docstring guarantees
+            # "on failure, state rolls back so the next cycle retries everything."
+            # Bumping the clock here suppresses the promised retry for the next
+            # _sync_interval seconds, leaving the remote with stale files.
+            # Ref: issue #39945.
             logger.warning("file_sync: sync failed, rolled back state: %s", exc)
 
     # ------------------------------------------------------------------
