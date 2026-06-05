@@ -43,7 +43,13 @@ import {
   setYoloActive
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type {
+  ModelOptionsResponse,
+  SessionCreateResponse,
+  SessionInfo,
+  SessionResumeResponse,
+  UsageStats
+} from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../types'
@@ -452,6 +458,30 @@ export function useSessionActions({
         setSessionStartedAt(Date.now())
         clearComposerDraft()
         clearComposerAttachments()
+
+        const storedRow = $sessions
+          .get()
+          .find(session => session.id === storedSessionId || session._lineage_root_id === storedSessionId)
+
+        if (storedRow?.model) {
+          setCurrentModel(storedRow.model)
+        }
+
+        void requestGateway<ModelOptionsResponse>('model.options', { session_id: cachedRuntimeId })
+          .then(opts => {
+            if (!isCurrentResume()) {
+              return
+            }
+
+            if (opts.model) {
+              setCurrentModel(opts.model)
+            }
+
+            if (opts.provider) {
+              setCurrentProvider(opts.provider)
+            }
+          })
+          .catch(() => undefined)
 
         void requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
           .then(usage => {
