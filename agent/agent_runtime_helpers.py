@@ -2281,38 +2281,40 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
 
 
 
-def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
-    """Append any pending /steer text to the last tool result in this turn.
+_STEER_USER_PREFIX = "[The user sent this mid-task via /steer]\n"
 
-    Called at the end of a tool-call batch, before the next API call.
-    The steer is appended to the last ``role:"tool"`` message's content
-    with a clear marker so the model understands it came from the user
-    and NOT from the tool itself. Role alternation is preserved —
-    nothing new is inserted, we only modify existing content.
 
-    Args:
-        messages: The running messages list.
-        num_tool_msgs: Number of tool results appended in this batch;
-            used to locate the tail slice safely.
+def deliver_pending_steer_as_user_turn(agent, messages: list) -> None:
+    """Deliver any pending /steer text as a new user-role message.
+
+    Called after a tool batch is fully appended (every tool_call_id
+    answered). The steer is appended as a separate ``role:"user"``
+    message so the model attributes it to the user — NOT to the tool.
+
+    Earlier the steer was concatenated into the last tool result's
+    content, but injection-hardened models read tool-result content as
+    untrusted data (the codebase wraps it in <untrusted_tool_result>
+    delimiters by design) and refuse to act on instructions found there.
+    A user-role message carries unambiguous provenance and survives both
+    wire formats: OpenAI sends user-after-tool directly; the Anthropic
+    adapter's _merge_consecutive_roles folds it into the tool-result user
+    turn as a trailing text block.
+
+    Only delivers when the message tail is a tool result — i.e. a batch
+    just completed and a user turn legally follows. If the tail is not a
+    tool result (all tools skipped by an interrupt, or no tools yet),
+    the steer is restashed so the next-turn fallback delivers it. This
+    preserves OpenAI's "answer every tool_call_id before any non-tool
+    message" rule and avoids the orphan-drop in repair_message_sequence.
     """
-    if num_tool_msgs <= 0 or not messages:
+    if not messages:
         return
     steer_text = agent._drain_pending_steer()
     if not steer_text:
         return
-    # Find the last tool-role message in the recent tail. Skipping
-    # non-tool messages defends against future code appending
-    # something else at the boundary.
-    target_idx = None
-    for j in range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1):
-        msg = messages[j]
-        if isinstance(msg, dict) and msg.get("role") == "tool":
-            target_idx = j
-            break
-    if target_idx is None:
-        # No tool result in this batch (e.g. all skipped by interrupt);
-        # put the steer back so the caller's fallback path can deliver
-        # it as a normal next-turn user message.
+    last = messages[-1]
+    if not (isinstance(last, dict) and last.get("role") == "tool"):
+        # Tail isn't a completed tool result — restash for later delivery.
         _lock = getattr(agent, "_pending_steer_lock", None)
         if _lock is not None:
             with _lock:
@@ -2324,22 +2326,9 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
             existing = getattr(agent, "_pending_steer", None)
             agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
         return
-    marker = f"\n\nUser guidance: {steer_text}"
-    existing_content = messages[target_idx].get("content", "")
-    if not isinstance(existing_content, str):
-        # Anthropic multimodal content blocks — preserve them and append
-        # a text block at the end.
-        try:
-            blocks = list(existing_content) if existing_content else []
-            blocks.append({"type": "text", "text": marker.lstrip()})
-            messages[target_idx]["content"] = blocks
-        except Exception:
-            # Fall back to string replacement if content shape is unexpected.
-            messages[target_idx]["content"] = f"{existing_content}{marker}"
-    else:
-        messages[target_idx]["content"] = existing_content + marker
+    messages.append({"role": "user", "content": f"{_STEER_USER_PREFIX}{steer_text}"})
     _ra().logger.info(
-        "Delivered /steer to agent after tool batch (%d chars): %s",
+        "Delivered /steer as user turn after tool batch (%d chars): %s",
         len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
@@ -2421,7 +2410,7 @@ __all__ = [
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",
     "extract_api_error_context",
-    "apply_pending_steer_to_tool_results",
+    "deliver_pending_steer_as_user_turn",
     "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]
