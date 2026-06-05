@@ -4435,8 +4435,7 @@ class AIAgent:
             opts = self._lmstudio_reasoning_options_cached()
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in opts)
-        if "openrouter" not in self._base_url_lower:
-            return False
+        # Mistral's API rejects `reasoning` — reject early regardless of model.
         if "api.mistral.ai" in self._base_url_lower:
             return False
 
@@ -4452,7 +4451,14 @@ class AIAgent:
             "tencent/hy3-preview",
             "xiaomi/",
         )
-        return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
+        # Model prefix match → reasoning is safe for this model on any provider
+        if any(model.startswith(prefix) for prefix in reasoning_model_prefixes):
+            return True
+
+        # Unknown URL + unknown model → safe default: don't send reasoning params.
+        if "openrouter" not in self._base_url_lower:
+            return False
+        return True
 
     def _lmstudio_reasoning_options_cached(self) -> list[str]:
         """Probe LM Studio's published reasoning ``allowed_options`` once per
