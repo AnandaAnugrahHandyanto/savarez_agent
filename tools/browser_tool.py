@@ -2007,7 +2007,20 @@ def _run_browser_command(
             idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
             browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
 
-        # Inject --no-sandbox when needed (issue #15765):
+        # Inject browser proxy from config (browser.proxy) if not already set
+        # via environment variable.  Supports http://, https://, socks5://, etc.
+        if not browser_env.get("AGENT_BROWSER_PROXY"):
+            try:
+                from hermes_cli.config import read_raw_config
+                _cfg = read_raw_config()
+                _proxy = cfg_get(_cfg, "browser", "proxy")
+                if _proxy:
+                    browser_env["AGENT_BROWSER_PROXY"] = str(_proxy)
+                    logger.debug("browser: injected proxy from config: %s", _proxy)
+            except Exception as e:
+                logger.debug("Could not read browser.proxy from config: %s", e)
+
+        # Inject --no-sandbox when needed
         # - Running as root: Chromium always refuses to start without it
         # - Ubuntu 23.10+ / AppArmor systems: unprivileged user namespaces
         #   are restricted, causing Chromium to exit with "No usable sandbox"
