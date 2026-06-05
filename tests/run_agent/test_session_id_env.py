@@ -14,8 +14,12 @@ from run_agent import AIAgent
 def _cleanup_env():
     """Remove HERMES_SESSION_ID before/after each test."""
     os.environ.pop("HERMES_SESSION_ID", None)
+    os.environ.pop("HERMES_SESSION_SOURCE", None)
+    os.environ.pop("HERMES_SESSION_VISIBILITY", None)
     yield
     os.environ.pop("HERMES_SESSION_ID", None)
+    os.environ.pop("HERMES_SESSION_SOURCE", None)
+    os.environ.pop("HERMES_SESSION_VISIBILITY", None)
 
 
 def test_session_id_env_set_on_init():
@@ -59,3 +63,57 @@ def test_session_id_contextvar_set():
     )
     from gateway.session_context import get_session_env
     assert get_session_env("HERMES_SESSION_ID") == custom_id
+
+
+def test_cli_session_source_env_is_persisted(tmp_path, monkeypatch):
+    """CLI integrations can tag their persisted session source and visibility."""
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "flashbyte-dashboard")
+    monkeypatch.setenv("HERMES_SESSION_VISIBILITY", "internal")
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            session_id="flashbyte-test",
+            platform="cli",
+            session_db=db,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent._ensure_db_session()
+        row = db.get_session("flashbyte-test")
+    finally:
+        db.close()
+
+    assert row["source"] == "flashbyte-dashboard"
+    assert row["visibility"] == "internal"
+
+
+def test_non_cli_platform_ignores_cli_session_source_env(tmp_path, monkeypatch):
+    """A CLI source env var must not relabel gateway platform sessions."""
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "flashbyte-dashboard")
+    monkeypatch.setenv("HERMES_SESSION_VISIBILITY", "internal")
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            session_id="telegram-test",
+            platform="telegram",
+            session_db=db,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent._ensure_db_session()
+        row = db.get_session("telegram-test")
+    finally:
+        db.close()
+
+    assert row["source"] == "telegram"
+    assert row["visibility"] == "user"

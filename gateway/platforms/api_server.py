@@ -1263,12 +1263,12 @@ class APIServerAdapter(BasePlatformAdapter):
     def _session_response(session: Dict[str, Any]) -> Dict[str, Any]:
         """Return a stable, client-safe session representation."""
         safe_keys = (
-            "id", "source", "user_id", "model", "title", "started_at", "ended_at",
-            "end_reason", "message_count", "tool_call_count", "input_tokens",
-            "output_tokens", "cache_read_tokens", "cache_write_tokens",
-            "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
-            "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id",
+            "id", "source", "visibility", "user_id", "model", "title",
+            "started_at", "ended_at", "end_reason", "message_count",
+            "tool_call_count", "input_tokens", "output_tokens",
+            "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+            "estimated_cost_usd", "actual_cost_usd", "api_call_count",
+            "parent_session_id", "last_active", "preview", "_lineage_root_id",
         )
         payload = {key: session.get(key) for key in safe_keys if key in session}
         # Avoid exposing full system prompts/model_config through the client API;
@@ -1327,6 +1327,15 @@ class APIServerAdapter(BasePlatformAdapter):
         limit = self._parse_nonnegative_int(request.query.get("limit"), default=50, maximum=200)
         offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
         source = request.query.get("source") or None
+        visibility = str(request.query.get("visibility") or "user").strip().lower()
+        if visibility not in {"user", "internal", "hidden", "all"}:
+            return web.json_response(
+                _openai_error(
+                    "visibility must be one of: user, internal, hidden, all",
+                    code="invalid_visibility",
+                ),
+                status=400,
+            )
         include_children = _coerce_request_bool(request.query.get("include_children"), default=False)
         sessions = db.list_sessions_rich(
             source=source,
@@ -1334,6 +1343,7 @@ class APIServerAdapter(BasePlatformAdapter):
             offset=offset,
             include_children=include_children,
             order_by_last_active=True,
+            visibility=visibility,
         )
         return web.json_response({
             "object": "list",
@@ -1369,7 +1379,16 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
-        db.create_session(session_id, "api_server", model=str(model) if model else None, system_prompt=system_prompt)
+        visibility = str(body.get("visibility") or "user").strip().lower()
+        if visibility not in {"user", "internal", "hidden"}:
+            return web.json_response(_openai_error("visibility must be one of: user, internal, hidden", code="invalid_visibility"), status=400)
+        db.create_session(
+            session_id,
+            "api_server",
+            model=str(model) if model else None,
+            system_prompt=system_prompt,
+            visibility=visibility,
+        )
         title = body.get("title")
         if title is not None:
             try:

@@ -1550,6 +1550,7 @@ async def get_sessions(
     min_messages: int = 0,
     archived: str = "exclude",
     order: str = "created",
+    visibility: str = "user",
 ):
     """List sessions.
 
@@ -1573,6 +1574,12 @@ async def get_sessions(
             status_code=400,
             detail="order must be one of: created, recent",
         )
+    visibility = (visibility or "user").strip().lower()
+    if visibility not in ("user", "internal", "hidden", "all"):
+        raise HTTPException(
+            status_code=400,
+            detail="visibility must be one of: user, internal, hidden, all",
+        )
     try:
         from hermes_state import SessionDB
         db = SessionDB()
@@ -1587,11 +1594,13 @@ async def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
+                visibility=visibility,
             )
             total = db.session_count(
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
+                visibility=visibility,
             )
             now = time.time()
             for s in sessions:
@@ -1601,6 +1610,7 @@ async def get_sessions(
                 )
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
+                s["visibility"] = s.get("visibility") or "user"
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
@@ -1610,7 +1620,7 @@ async def get_sessions(
 
 
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20):
+async def search_sessions(q: str = "", limit: int = 20, visibility: str = "user"):
     """Search sessions by ID plus full-text message content using FTS5.
 
     Direct session-id matches are surfaced first, then FTS message-content
@@ -1623,6 +1633,12 @@ async def search_sessions(q: str = "", limit: int = 20):
     """
     if not q or not q.strip():
         return {"results": []}
+    visibility = (visibility or "user").strip().lower()
+    if visibility not in ("user", "internal", "hidden", "all"):
+        raise HTTPException(
+            status_code=400,
+            detail="visibility must be one of: user, internal, hidden, all",
+        )
     try:
         from hermes_state import SessionDB
         db = SessionDB()
@@ -1720,7 +1736,12 @@ async def search_sessions(q: str = "", limit: int = 20):
             # logs, or another Hermes surface. FTS can't find those unless the
             # id happens to appear in message text. search_sessions_by_id is
             # SQL-bounded, so this stays cheap even with thousands of sessions.
-            for row in db.search_sessions_by_id(q, limit=safe_limit, include_archived=True):
+            for row in db.search_sessions_by_id(
+                q,
+                limit=safe_limit,
+                include_archived=True,
+                visibility=visibility,
+            ):
                 sid = row.get("id")
                 preview = (row.get("preview") or "").strip()
                 snippet = preview or f"Session ID: {sid}"
@@ -1749,7 +1770,11 @@ async def search_sessions(q: str = "", limit: int = 20):
             # Over-fetch so lineage dedup can still surface `limit` distinct
             # conversations even when several hits collapse onto one root.
             fetch_limit = max(safe_limit * 5, 50)
-            matches = db.search_messages(query=prefix_query, limit=fetch_limit)
+            matches = db.search_messages(
+                query=prefix_query,
+                limit=fetch_limit,
+                visibility=visibility,
+            )
 
             for m in matches:
                 if len(seen) >= safe_limit:
@@ -4675,13 +4700,17 @@ async def get_session_stats():
 
     db = SessionDB()
     try:
-        total = db.session_count(include_archived=True)
-        active_store = db.session_count(include_archived=False)
-        archived = db.session_count(archived_only=True)
+        total = db.session_count(include_archived=True, visibility="all")
+        active_store = db.session_count(include_archived=False, visibility="all")
+        archived = db.session_count(archived_only=True, visibility="all")
         messages = db.message_count()
         by_source: Dict[str, int] = {}
         try:
-            for s in db.list_sessions_rich(limit=10000, include_archived=True):
+            for s in db.list_sessions_rich(
+                limit=10000,
+                include_archived=True,
+                visibility="all",
+            ):
                 src = str(s.get("source") or "cli")
                 by_source[src] = by_source.get(src, 0) + 1
         except Exception:

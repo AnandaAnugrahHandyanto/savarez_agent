@@ -369,7 +369,13 @@ def build_top_level_parser():
     chat_parser.add_argument(
         "--source",
         default=None,
-        help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.",
+        help="Session source tag for filtering (default: cli). Use with --session-visibility internal for third-party integrations.",
+    )
+    chat_parser.add_argument(
+        "--session-visibility",
+        choices=["user", "internal", "hidden"],
+        default=None,
+        help="How this run appears in session lists (default: user). Integrations should use internal.",
     )
     _inherited_flag(
         chat_parser,

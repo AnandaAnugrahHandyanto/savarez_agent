@@ -33,7 +33,56 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
+
+SESSION_VISIBILITY_USER = "user"
+SESSION_VISIBILITY_INTERNAL = "internal"
+SESSION_VISIBILITY_HIDDEN = "hidden"
+SESSION_VISIBILITY_ALL = "all"
+SESSION_VISIBILITY_VALUES = {
+    SESSION_VISIBILITY_USER,
+    SESSION_VISIBILITY_INTERNAL,
+    SESSION_VISIBILITY_HIDDEN,
+}
+SESSION_VISIBILITY_FILTER_VALUES = SESSION_VISIBILITY_VALUES | {SESSION_VISIBILITY_ALL}
+
+
+def normalize_session_visibility(value: Any, default: str = SESSION_VISIBILITY_USER) -> str:
+    """Normalize persisted session visibility values.
+
+    Unknown values fall back to ``default`` so a bad environment variable does
+    not prevent the session row from being created.
+    """
+    fallback = default if default in SESSION_VISIBILITY_VALUES else SESSION_VISIBILITY_USER
+    if value is None:
+        return fallback
+    normalized = str(value).strip().lower()
+    if normalized in {"", SESSION_VISIBILITY_ALL}:
+        return fallback
+    if normalized == "visible":
+        return SESSION_VISIBILITY_USER
+    if normalized in SESSION_VISIBILITY_VALUES:
+        return normalized
+    return fallback
+
+
+def normalize_session_visibility_filter(
+    value: Any,
+    default: str | None = SESSION_VISIBILITY_USER,
+) -> Optional[str]:
+    """Return a visibility filter value, or ``None`` for all visibilities."""
+    if value is None:
+        value = default
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"", SESSION_VISIBILITY_ALL}:
+        return None
+    if normalized == "visible":
+        return SESSION_VISIBILITY_USER
+    if normalized in SESSION_VISIBILITY_VALUES:
+        return normalized
+    return normalize_session_visibility(default)
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -264,6 +313,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_platform TEXT,
     handoff_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
+    visibility TEXT NOT NULL DEFAULT 'user',
     archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
@@ -315,6 +365,8 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_sessions_visibility
+    ON sessions(visibility);
 """
 
 FTS_SQL = """
@@ -917,13 +969,16 @@ class SessionDB:
         user_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
+        visibility: str = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
+        visibility_value = normalize_session_visibility(visibility)
+
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, cwd, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, parent_session_id, cwd, visibility, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -933,6 +988,7 @@ class SessionDB:
                     system_prompt,
                     parent_session_id,
                     cwd,
+                    visibility_value,
                     time.time(),
                 ),
             )
@@ -1566,6 +1622,7 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         id_query: str = None,
+        visibility: str | None = SESSION_VISIBILITY_USER,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -1618,6 +1675,10 @@ class SessionDB:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
             params.extend(exclude_sources)
+        visibility_filter = normalize_session_visibility_filter(visibility)
+        if visibility_filter is not None:
+            where_clauses.append("COALESCE(s.visibility, 'user') = ?")
+            params.append(visibility_filter)
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)
@@ -2740,6 +2801,7 @@ class SessionDB:
         offset: int = 0,
         sort: str = None,
         include_inactive: bool = False,
+        visibility: str | None = SESSION_VISIBILITY_USER,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -2810,6 +2872,11 @@ class SessionDB:
             where_clauses.append(f"s.source NOT IN ({exclude_placeholders})")
             params.extend(exclude_sources)
 
+        visibility_filter = normalize_session_visibility_filter(visibility)
+        if visibility_filter is not None:
+            where_clauses.append("COALESCE(s.visibility, 'user') = ?")
+            params.append(visibility_filter)
+
         if role_filter:
             role_placeholders = ",".join("?" for _ in role_filter)
             where_clauses.append(f"m.role IN ({role_placeholders})")
@@ -2828,6 +2895,7 @@ class SessionDB:
                 m.timestamp,
                 m.tool_name,
                 s.source,
+                s.visibility,
                 s.model,
                 s.started_at AS session_started
             FROM messages_fts
@@ -2886,6 +2954,9 @@ class SessionDB:
                 if exclude_sources is not None:
                     tri_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
                     tri_params.extend(exclude_sources)
+                if visibility_filter is not None:
+                    tri_where.append("COALESCE(s.visibility, 'user') = ?")
+                    tri_params.append(visibility_filter)
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
@@ -2899,6 +2970,7 @@ class SessionDB:
                         m.timestamp,
                         m.tool_name,
                         s.source,
+                        s.visibility,
                         s.model,
                         s.started_at AS session_started
                     FROM messages_fts_trigram
@@ -2941,6 +3013,9 @@ class SessionDB:
                 if exclude_sources is not None:
                     like_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
                     like_params.extend(exclude_sources)
+                if visibility_filter is not None:
+                    like_where.append("COALESCE(s.visibility, 'user') = ?")
+                    like_params.append(visibility_filter)
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
@@ -2950,7 +3025,7 @@ class SessionDB:
                                   max(1, instr(m.content, ?) - 40),
                                   120) AS snippet,
                            m.content, m.timestamp, m.tool_name,
-                           s.source, s.model, s.started_at AS session_started
+                           s.source, s.visibility, s.model, s.started_at AS session_started
                     FROM messages m
                     JOIN sessions s ON s.id = m.session_id
                     WHERE {' AND '.join(like_where)}
@@ -3046,6 +3121,7 @@ class SessionDB:
         query: str,
         limit: int = 20,
         include_archived: bool = True,
+        visibility: str | None = SESSION_VISIBILITY_USER,
     ) -> List[Dict[str, Any]]:
         """Search surfaced sessions by exact/prefix/substring session id.
 
@@ -3071,6 +3147,7 @@ class SessionDB:
             include_archived=include_archived,
             order_by_last_active=True,
             id_query=needle,
+            visibility=visibility,
         )
 
         def score(row: Dict[str, Any]) -> int:
@@ -3134,6 +3211,7 @@ class SessionDB:
         min_message_count: int = 0,
         include_archived: bool = False,
         archived_only: bool = False,
+        visibility: str | None = SESSION_VISIBILITY_USER,
     ) -> int:
         """Count sessions, optionally filtered by source."""
         where_clauses = []
@@ -3142,6 +3220,10 @@ class SessionDB:
         if source:
             where_clauses.append("source = ?")
             params.append(source)
+        visibility_filter = normalize_session_visibility_filter(visibility)
+        if visibility_filter is not None:
+            where_clauses.append("COALESCE(visibility, 'user') = ?")
+            params.append(visibility_filter)
         if min_message_count > 0:
             where_clauses.append("message_count >= ?")
             params.append(min_message_count)

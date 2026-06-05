@@ -2054,6 +2054,8 @@ def cmd_chat(args):
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
+    if getattr(args, "session_visibility", None):
+        os.environ["HERMES_SESSION_VISIBILITY"] = args.session_visibility
 
     _pin_kanban_board_env()
 
@@ -14897,6 +14899,12 @@ Examples:
         "--source", help="Filter by source (cli, telegram, discord, etc.)"
     )
     sessions_list.add_argument(
+        "--visibility",
+        choices=["user", "internal", "hidden", "all"],
+        default=None,
+        help="Filter by session visibility (default: user, or all when --source is explicit)",
+    )
+    sessions_list.add_argument(
         "--limit", type=int, default=20, help="Max sessions to show"
     )
 
@@ -14950,6 +14958,12 @@ Examples:
         "--source", help="Filter by source (cli, telegram, discord, etc.)"
     )
     sessions_browse.add_argument(
+        "--visibility",
+        choices=["user", "internal", "hidden", "all"],
+        default=None,
+        help="Filter by session visibility (default: user, or all when --source is explicit)",
+    )
+    sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
     )
 
@@ -14973,13 +14987,17 @@ Examples:
 
         action = args.sessions_action
 
-        # Hide third-party tool sessions by default, but honour explicit --source
+        # Hide internal integration sessions by default, but honour explicit --source.
         _source = getattr(args, "source", None)
         _exclude = None if _source else ["tool"]
+        _visibility = getattr(args, "visibility", None) or ("all" if _source else "user")
 
         if action == "list":
             sessions = db.list_sessions_rich(
-                source=args.source, exclude_sources=_exclude, limit=args.limit
+                source=args.source,
+                exclude_sources=_exclude,
+                limit=args.limit,
+                visibility=_visibility,
             )
             if not sessions:
                 print("No sessions found.")
@@ -15086,8 +15104,12 @@ Examples:
             limit = getattr(args, "limit", 500) or 500
             source = getattr(args, "source", None)
             _browse_exclude = None if source else ["tool"]
+            _browse_visibility = getattr(args, "visibility", None) or ("all" if source else "user")
             sessions = db.list_sessions_rich(
-                source=source, exclude_sources=_browse_exclude, limit=limit
+                source=source,
+                exclude_sources=_browse_exclude,
+                limit=limit,
+                visibility=_browse_visibility,
             )
             db.close()
             if not sessions:
@@ -15135,12 +15157,12 @@ Examples:
             )
 
         elif action == "stats":
-            total = db.session_count()
+            total = db.session_count(visibility="all")
             msgs = db.message_count()
             print(f"Total sessions: {total}")
             print(f"Total messages: {msgs}")
             for src in ["cli", "telegram", "discord", "whatsapp", "slack"]:
-                c = db.session_count(source=src)
+                c = db.session_count(source=src, visibility="all")
                 if c > 0:
                     print(f"  {src}: {c} sessions")
             db_path = db.db_path

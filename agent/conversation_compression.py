@@ -514,12 +514,23 @@ def compress_context(
             except Exception:
                 os.environ["HERMES_SESSION_ID"] = agent.session_id
             agent._session_db_created = False
+            session_source = (
+                agent._session_db_source()
+                if hasattr(agent, "_session_db_source")
+                else agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+            )
+            session_visibility = (
+                agent._session_db_visibility()
+                if hasattr(agent, "_session_db_visibility")
+                else os.environ.get("HERMES_SESSION_VISIBILITY", "user")
+            )
             agent._session_db.create_session(
                 session_id=agent.session_id,
-                source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                source=session_source,
                 model=agent.model,
                 model_config=agent._session_init_model_config,
                 parent_session_id=old_session_id,
+                visibility=session_visibility,
             )
             agent._session_db_created = True
             # Auto-number the title for the continuation session

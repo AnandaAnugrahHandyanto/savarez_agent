@@ -297,6 +297,56 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def test_get_sessions_hides_internal_visibility_by_default(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="visible-session", source="cli")
+            db.create_session(
+                session_id="internal-session",
+                source="flashbyte-dashboard",
+                visibility="internal",
+            )
+        finally:
+            db.close()
+
+        default_rows = self.client.get("/api/sessions?limit=20&offset=0").json()
+        assert {s["id"] for s in default_rows["sessions"]} == {"visible-session"}
+        assert default_rows["total"] == 1
+
+        all_rows = self.client.get("/api/sessions?limit=20&offset=0&visibility=all").json()
+        assert {s["id"] for s in all_rows["sessions"]} == {
+            "visible-session",
+            "internal-session",
+        }
+        assert all_rows["total"] == 2
+
+    def test_session_search_hides_internal_visibility_by_default(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="visible-search", source="cli")
+            db.append_message("visible-search", "user", "needle visible")
+            db.create_session(
+                session_id="internal-search",
+                source="flashbyte-dashboard",
+                visibility="internal",
+            )
+            db.append_message("internal-search", "user", "needle internal")
+        finally:
+            db.close()
+
+        default_results = self.client.get("/api/sessions/search?q=needle").json()
+        assert {r["session_id"] for r in default_results["results"]} == {"visible-search"}
+
+        all_results = self.client.get("/api/sessions/search?q=needle&visibility=all").json()
+        assert {r["session_id"] for r in all_results["results"]} == {
+            "visible-search",
+            "internal-search",
+        }
+
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route
         was missing entirely, so the desktop rename dialog got a 405)."""
@@ -3967,4 +4017,3 @@ class TestValidateProviderCredential:
     def test_empty_value_rejected(self):
         data = self._post("OPENAI_API_KEY", "   ").json()
         assert data["ok"] is False
-

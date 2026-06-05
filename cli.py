@@ -5187,6 +5187,8 @@ class HermesCLI:
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id,
                 platform="cli",
+                session_source=os.environ.get("HERMES_SESSION_SOURCE"),
+                session_visibility=os.environ.get("HERMES_SESSION_VISIBILITY"),
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),
@@ -6702,6 +6704,7 @@ class HermesCLI:
                             "max_iterations": self.max_turns,
                             "reasoning_config": self.reasoning_config,
                         },
+                        visibility=os.environ.get("HERMES_SESSION_VISIBILITY", "user"),
                     )
                     self.agent._session_db_created = True
                 except Exception:
@@ -7177,6 +7180,7 @@ class HermesCLI:
                     "reasoning_config": self.reasoning_config,
                 },
                 parent_session_id=parent_session_id,
+                visibility=os.environ.get("HERMES_SESSION_VISIBILITY", "user"),
             )
         except Exception as e:
             _cprint(f"  Failed to create branch session: {e}")
@@ -9285,6 +9289,8 @@ class HermesCLI:
                     verbose_logging=False,
                     session_id=task_id,
                     platform="cli",
+                    session_source="background",
+                    session_visibility="internal",
                     session_db=self._session_db,
                     reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,

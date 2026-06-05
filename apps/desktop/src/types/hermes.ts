@@ -277,6 +277,7 @@ export interface SessionInfo {
   started_at: number
   title: null | string
   tool_call_count: number
+  visibility?: 'hidden' | 'internal' | 'user' | string
 }
 
 export interface SessionMessage {

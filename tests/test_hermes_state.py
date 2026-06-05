@@ -2994,6 +2994,56 @@ class TestExcludeSources:
         assert "cli" in sources
         assert "tool" not in sources
 
+
+class TestSessionVisibility:
+    """Tests for user-visible versus internal session rows."""
+
+    def test_internal_sessions_hidden_from_default_lists(self, db):
+        db.create_session("user-session", "cli")
+        db.create_session(
+            "internal-session",
+            "flashbyte-dashboard",
+            visibility="internal",
+        )
+
+        assert [s["id"] for s in db.list_sessions_rich()] == ["user-session"]
+        assert db.session_count() == 1
+
+        all_ids = {s["id"] for s in db.list_sessions_rich(visibility="all")}
+        assert all_ids == {"user-session", "internal-session"}
+        assert db.session_count(visibility="all") == 2
+
+    def test_visibility_filter_finds_internal_sessions(self, db):
+        db.create_session("user-session", "cli")
+        db.create_session(
+            "internal-session",
+            "flashbyte-dashboard",
+            visibility="internal",
+        )
+
+        sessions = db.list_sessions_rich(visibility="internal")
+
+        assert [s["id"] for s in sessions] == ["internal-session"]
+
+    def test_search_messages_hides_internal_sessions_by_default(self, db):
+        db.create_session("user-session", "cli")
+        db.append_message("user-session", "user", "Python user question")
+        db.create_session(
+            "internal-session",
+            "flashbyte-dashboard",
+            visibility="internal",
+        )
+        db.append_message("internal-session", "user", "Python internal ping")
+
+        default_results = db.search_messages("Python")
+        all_results = db.search_messages("Python", visibility="all")
+
+        assert {r["session_id"] for r in default_results} == {"user-session"}
+        assert {r["session_id"] for r in all_results} == {
+            "user-session",
+            "internal-session",
+        }
+
     def test_search_messages_no_exclusion_returns_all_sources(self, db):
         db.create_session("s1", "cli")
         db.append_message("s1", "user", "Rust deployment question")

@@ -385,6 +385,8 @@ class AIAgent:
         request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
+        session_source: str = None,
+        session_visibility: str = None,
         user_id: str = None,
         user_id_alt: str = None,
         user_name: str = None,
@@ -455,6 +457,8 @@ class AIAgent:
             request_overrides=request_overrides,
             prefill_messages=prefill_messages,
             platform=platform,
+            session_source=session_source,
+            session_visibility=session_visibility,
             user_id=user_id,
             user_id_alt=user_id_alt,
             user_name=user_name,
@@ -497,11 +501,31 @@ class AIAgent:
             logger.debug("SessionDB unavailable for recall", exc_info=True)
             return None
 
+    def _session_db_source(self) -> str:
+        explicit_source = getattr(self, "_session_source", None)
+        if explicit_source:
+            return str(explicit_source)
+        platform = getattr(self, "platform", None)
+        env_source = os.environ.get("HERMES_SESSION_SOURCE")
+        if env_source and (not platform or platform == "cli"):
+            return env_source
+        return platform or env_source or "cli"
+
+    def _session_db_visibility(self) -> str:
+        explicit_visibility = getattr(self, "_session_visibility", None)
+        if explicit_visibility:
+            return str(explicit_visibility)
+        platform = getattr(self, "platform", None)
+        env_visibility = os.environ.get("HERMES_SESSION_VISIBILITY")
+        if env_visibility and (not platform or platform == "cli"):
+            return env_visibility
+        return "user"
+
     def _ensure_db_session(self) -> None:
         """Create session DB row on first use. Disables _session_db on failure."""
         if self._session_db_created or not self._session_db:
             return
-        source = self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+        source = self._session_db_source()
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
@@ -512,6 +536,7 @@ class AIAgent:
                 user_id=None,
                 parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source),
+                visibility=self._session_db_visibility(),
             )
             self._session_db_created = True
         except Exception as e:
@@ -567,7 +592,7 @@ class AIAgent:
             start_context = {
                 "old_session_id": old_session_id,
                 "carry_over_context": carry_over_context,
-                "platform": getattr(self, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                "platform": self._session_db_source(),
                 "model": getattr(self, "model", ""),
                 "context_length": getattr(engine, "context_length", None),
                 "conversation_id": getattr(self, "_gateway_session_key", None),

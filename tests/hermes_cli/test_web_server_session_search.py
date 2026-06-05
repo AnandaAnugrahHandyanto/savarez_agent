@@ -14,9 +14,16 @@ class _FakeSessionDB:
 
     closed = False
 
-    def search_sessions_by_id(self, query, limit=20, include_archived=True):
+    def search_sessions_by_id(
+        self,
+        query,
+        limit=20,
+        include_archived=True,
+        visibility="user",
+    ):
         assert query == "20260603"
         assert include_archived is True
+        assert visibility == "user"
         return [
             {
                 "id": "20260603_090200_exact",
@@ -27,8 +34,9 @@ class _FakeSessionDB:
             }
         ]
 
-    def search_messages(self, query, limit=20):
+    def search_messages(self, query, limit=20, visibility="user"):
         assert query == "20260603*"
+        assert visibility == "user"
         return [
             {
                 "session_id": "20260603_090200_exact",

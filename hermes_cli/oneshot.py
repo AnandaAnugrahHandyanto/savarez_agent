@@ -341,6 +341,8 @@ def _run_agent(
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
+        session_source=os.environ.get("HERMES_SESSION_SOURCE"),
+        session_visibility=os.environ.get("HERMES_SESSION_VISIBILITY"),
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
