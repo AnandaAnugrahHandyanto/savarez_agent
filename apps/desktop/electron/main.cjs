@@ -226,6 +226,7 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+const DESKTOP_DISPLAY_CONFIG_PATH = path.join(app.getPath('userData'), 'display.json')
 // active-profile.json records which Hermes profile the desktop launches its
 // local backend as. When set, startHermes() passes `hermes --profile <name>
 // dashboard …`, which deterministically pins HERMES_HOME (see
@@ -511,6 +512,8 @@ let bootstrapFailure = null
 let bootstrapAbortController = null
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
+let displayConfigCache = null
+let displayConfigCacheMtime = null
 const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
@@ -1153,6 +1156,69 @@ function writeFileAtomic(targetPath, data, encoding) {
 function writeDesktopUpdateConfig(config) {
   fs.mkdirSync(path.dirname(DESKTOP_UPDATE_CONFIG_PATH), { recursive: true })
   writeFileAtomic(DESKTOP_UPDATE_CONFIG_PATH, JSON.stringify(config, null, 2))
+}
+
+function clampZoomLevel(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 0
+  return Math.min(Math.max(n, -9), 9)
+}
+
+function readDesktopDisplayConfig() {
+  let mtime = null
+  try {
+    mtime = fs.statSync(DESKTOP_DISPLAY_CONFIG_PATH).mtimeMs
+  } catch {
+    mtime = null
+  }
+
+  if (displayConfigCache && displayConfigCacheMtime === mtime) {
+    return displayConfigCache
+  }
+
+  let config = { zoomLevel: 0 }
+  try {
+    const raw = fs.readFileSync(DESKTOP_DISPLAY_CONFIG_PATH, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object') {
+      config = { zoomLevel: clampZoomLevel(parsed.zoomLevel) }
+    }
+  } catch {
+    // Missing or malformed display settings should fall back to actual size.
+  }
+
+  displayConfigCache = config
+  displayConfigCacheMtime = mtime
+  return config
+}
+
+function writeDesktopDisplayConfig(config) {
+  const cleaned = { zoomLevel: clampZoomLevel(config?.zoomLevel) }
+  fs.mkdirSync(path.dirname(DESKTOP_DISPLAY_CONFIG_PATH), { recursive: true })
+  writeFileAtomic(DESKTOP_DISPLAY_CONFIG_PATH, JSON.stringify(cleaned, null, 2))
+  displayConfigCache = cleaned
+  displayConfigCacheMtime = fs.statSync(DESKTOP_DISPLAY_CONFIG_PATH).mtimeMs
+}
+
+function setPersistentZoomLevel(window, zoomLevel) {
+  if (!window || window.isDestroyed()) return
+  const next = clampZoomLevel(zoomLevel)
+  window.webContents.setZoomLevel(next)
+  try {
+    writeDesktopDisplayConfig({ zoomLevel: next })
+  } catch (error) {
+    rememberLog(`[display] failed to save zoom level: ${error?.message || error}`)
+  }
+}
+
+function applyPersistentZoomLevel(window) {
+  if (!window || window.isDestroyed()) return
+  try {
+    const { zoomLevel } = readDesktopDisplayConfig()
+    window.webContents.setZoomLevel(zoomLevel)
+  } catch (error) {
+    rememberLog(`[display] failed to apply zoom level: ${error?.message || error}`)
+  }
 }
 
 // Match the backend's source resolution but bias toward a real git checkout.
@@ -3010,7 +3076,7 @@ function buildApplicationMenu() {
         label: 'Actual Size',
         accelerator: 'CommandOrControl+0',
         click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setZoomLevel(0)
+          if (mainWindow && !mainWindow.isDestroyed()) setPersistentZoomLevel(mainWindow, 0)
         }
       },
       {
@@ -3019,7 +3085,7 @@ function buildApplicationMenu() {
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
             const next = Math.min(mainWindow.webContents.getZoomLevel() + 0.1, 9)
-            mainWindow.webContents.setZoomLevel(next)
+            setPersistentZoomLevel(mainWindow, next)
           }
         }
       },
@@ -3029,7 +3095,7 @@ function buildApplicationMenu() {
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
             const next = Math.max(mainWindow.webContents.getZoomLevel() - 0.1, -9)
-            mainWindow.webContents.setZoomLevel(next)
+            setPersistentZoomLevel(mainWindow, next)
           }
         }
       },
@@ -3104,15 +3170,15 @@ function installZoomShortcuts(window) {
     const key = input.key
     if (key === '0') {
       event.preventDefault()
-      window.webContents.setZoomLevel(0)
+      setPersistentZoomLevel(window, 0)
     } else if (key === '=' || key === '+') {
       event.preventDefault()
       const next = Math.min(window.webContents.getZoomLevel() + ZOOM_STEP, 9)
-      window.webContents.setZoomLevel(next)
+      setPersistentZoomLevel(window, next)
     } else if (key === '-') {
       event.preventDefault()
       const next = Math.max(window.webContents.getZoomLevel() - ZOOM_STEP, -9)
-      window.webContents.setZoomLevel(next)
+      setPersistentZoomLevel(window, next)
     }
   })
 }
@@ -4581,17 +4647,21 @@ function createWindow() {
     rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
   })
 
-  if (DEV_SERVER) {
-    mainWindow.loadURL(DEV_SERVER)
-  } else {
-    mainWindow.loadURL(pathToFileURL(resolveRendererIndex()).toString())
-  }
+  mainWindow.webContents.on('did-finish-load', () => {
+    applyPersistentZoomLevel(mainWindow)
+  })
 
   mainWindow.webContents.once('did-finish-load', () => {
     broadcastBootProgress()
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))
   })
+
+  if (DEV_SERVER) {
+    mainWindow.loadURL(DEV_SERVER)
+  } else {
+    mainWindow.loadURL(pathToFileURL(resolveRendererIndex()).toString())
+  }
 }
 
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
