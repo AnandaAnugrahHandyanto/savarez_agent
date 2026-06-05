@@ -204,7 +204,7 @@ async def test_model_command_clears_replay_history_when_backend_changes(monkeypa
 
     monkeypatch.setattr(
         "hermes_cli.model_switch.parse_model_flags",
-        lambda raw_args: ("gpt-5.4", "openai-codex", False),
+        lambda raw_args: ("gpt-5.4", "openai-codex", False, False),
     )
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
