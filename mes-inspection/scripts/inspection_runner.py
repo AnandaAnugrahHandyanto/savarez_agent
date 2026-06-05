@@ -42,6 +42,7 @@ def create_checker(component: str) -> BaseChecker:
         "oracle": "scripts.oracle_check.OracleChecker",
         "elk": "scripts.elk_check.ElkChecker",
         "skywalking": "scripts.skywalking_check.SkyWalkingChecker",
+        "upstream": "scripts.upstream_check.UpstreamChecker",
     }
 
     if component not in checker_map:
@@ -116,6 +117,6 @@ def output_gate_result(result: Dict[str, Any]):
     print(json.dumps({"wakeAgent": True}, ensure_ascii=False))
 
 
-HEARTBEAT_COMPONENTS = ["nginx", "jvm"]
+HEARTBEAT_COMPONENTS = ["upstream"]
 FULL_CHECK_COMPONENTS = ["nginx", "jvm", "rabbitmq", "oracle", "elk", "skywalking"]
 DEEP_ANALYSIS_COMPONENTS = ["oracle", "elk"]

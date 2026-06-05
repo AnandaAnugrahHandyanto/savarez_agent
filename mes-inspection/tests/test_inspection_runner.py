@@ -102,9 +102,9 @@ class TestOutputGateResult:
 
 
 class TestComponentLists:
-    def test_heartbeat_has_nginx_jvm(self):
-        assert "nginx" in HEARTBEAT_COMPONENTS
-        assert "jvm" in HEARTBEAT_COMPONENTS
+    def test_heartbeat_has_upstream_only(self):
+        assert HEARTBEAT_COMPONENTS == ["upstream"]
+        assert "jvm" not in HEARTBEAT_COMPONENTS
 
     def test_full_check_has_all_6(self):
         assert len(FULL_CHECK_COMPONENTS) == 6
@@ -118,27 +118,22 @@ class TestEndToEnd:
     @patch("scripts.inspection_runner.create_checker")
     def test_heartbeat_normal_gate(self, mock_create):
         mock_checker = MagicMock()
-        mock_checker.check.return_value = _make_report("nginx", ExitCode.NORMAL)
+        mock_checker.check.return_value = _make_report("upstream", ExitCode.NORMAL)
         mock_create.return_value = mock_checker
-        result = run_inspections(["nginx", "jvm"])
+        result = run_inspections(["upstream"])
         assert result["abnormal"] is False
 
     @patch("scripts.inspection_runner.create_checker")
     def test_heartbeat_abnormal_gate(self, mock_create):
-        def side_effect(component):
-            m = MagicMock()
-            if component == "nginx":
-                m.check.return_value = _make_report("nginx", ExitCode.NORMAL)
-            else:
-                report = _make_report("jvm", ExitCode.CRITICAL)
-                report.checks = [CheckResult(name="堆内存", status=ExitCode.CRITICAL, value=95, threshold=90, message="堆内存使用率 95%")]
-                m.check.return_value = report
-            return m
-        mock_create.side_effect = side_effect
-        result = run_inspections(["nginx", "jvm"])
+        mock_checker = MagicMock()
+        report = _make_report("upstream", ExitCode.CRITICAL)
+        report.checks = [CheckResult(name="端点 [app-1]", status=ExitCode.CRITICAL, value=None, message="连接失败")]
+        mock_checker.check.return_value = report
+        mock_create.return_value = mock_checker
+        result = run_inspections(["upstream"])
         assert result["abnormal"] is True
         assert len(result["reports"]) == 1
-        assert result["reports"][0]["component"] == "jvm"
+        assert result["reports"][0]["component"] == "upstream"
 
     @patch("scripts.inspection_runner.create_checker")
     def test_full_check_mixed(self, mock_create):
