@@ -28,6 +28,7 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
+const { jsonBodyBuffer, jsonRequestHeaders } = require('./net-json.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -2193,7 +2194,7 @@ async function pickPort() {
 
 function fetchJson(url, token, options = {}) {
   return new Promise((resolve, reject) => {
-    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
+    const body = jsonBodyBuffer(options.body)
     const parsed = new URL(url)
     const client = parsed.protocol === 'https:' ? https : http
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
@@ -2207,11 +2208,7 @@ function fetchJson(url, token, options = {}) {
       parsed,
       {
         method: options.method || 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Hermes-Session-Token': token,
-          ...(body ? { 'Content-Length': String(body.length) } : {})
-        }
+        headers: jsonRequestHeaders({ body, token })
       },
       res => {
         const chunks = []
@@ -2267,7 +2264,7 @@ function fetchPublicJson(url, options = {}) {
   // any credentials exist, and any time we must not leak a token to an
   // endpoint that doesn't need one.
   return new Promise((resolve, reject) => {
-    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
+    const body = jsonBodyBuffer(options.body)
     let parsed
     try {
       parsed = new URL(url)
@@ -2287,10 +2284,7 @@ function fetchPublicJson(url, options = {}) {
       parsed,
       {
         method: options.method || 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(body ? { 'Content-Length': String(body.length) } : {})
-        }
+        headers: jsonRequestHeaders({ body })
       },
       res => {
         const chunks = []
@@ -3467,7 +3461,7 @@ function fetchJsonViaOauthSession(url, options = {}) {
       reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
       return
     }
-    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
+    const body = jsonBodyBuffer(options.body)
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     const request = electronNet.request({
@@ -3477,8 +3471,9 @@ function fetchJsonViaOauthSession(url, options = {}) {
       useSessionCookies: true,
       redirect: 'follow'
     })
-    request.setHeader('Content-Type', 'application/json')
-    if (body) request.setHeader('Content-Length', String(body.length))
+    for (const [name, value] of Object.entries(jsonRequestHeaders({ body, includeContentLength: false }))) {
+      request.setHeader(name, value)
+    }
 
     let timedOut = false
     const timer = setTimeout(() => {
