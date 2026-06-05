@@ -3,8 +3,17 @@
 import pytest
 from types import SimpleNamespace
 
+from agent.bedrock_adapter import _convert_content_to_converse, convert_messages_to_converse
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
+
+
+def _assert_nonblank_text_blocks(blocks):
+    for block in blocks:
+        if "text" in block:
+            assert block["text"].strip()
+        if "toolResult" in block:
+            _assert_nonblank_text_blocks(block["toolResult"]["content"])
 
 
 @pytest.fixture
@@ -65,6 +74,39 @@ class TestBedrockConvertTools:
         result = transport.convert_tools(tools)
         assert len(result) == 1
         assert result[0]["toolSpec"]["name"] == "terminal"
+
+
+class TestBedrockMessageConversion:
+
+    def test_empty_user_message_uses_nonblank_placeholder(self):
+        _, messages = convert_messages_to_converse([{"role": "user", "content": ""}])
+
+        assert messages == [{"role": "user", "content": [{"text": "(empty message)"}]}]
+        _assert_nonblank_text_blocks(messages[0]["content"])
+
+    def test_whitespace_text_part_uses_nonblank_placeholder(self):
+        blocks = _convert_content_to_converse([{"type": "text", "text": "\n\t "}])
+
+        assert blocks == [{"text": "(empty message)"}]
+        _assert_nonblank_text_blocks(blocks)
+
+    def test_assistant_first_padding_uses_nonblank_placeholder(self):
+        _, messages = convert_messages_to_converse([
+            {"role": "assistant", "content": "Ready"},
+            {"role": "user", "content": "Continue"},
+        ])
+
+        assert messages[0] == {"role": "user", "content": [{"text": "(empty message)"}]}
+        _assert_nonblank_text_blocks(messages[0]["content"])
+
+    def test_trailing_user_padding_uses_nonblank_placeholder(self):
+        _, messages = convert_messages_to_converse([
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "Answer"},
+        ])
+
+        assert messages[-1] == {"role": "user", "content": [{"text": "(empty message)"}]}
+        _assert_nonblank_text_blocks(messages[-1]["content"])
 
 
 class TestBedrockValidate:

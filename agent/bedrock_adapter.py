@@ -370,6 +370,8 @@ _NON_TOOL_CALLING_PATTERNS = [
     "amazon.titan-embed",   # Embedding models
 ]
 
+_EMPTY_TEXT_PLACEHOLDER = "(empty message)"
+
 
 def _model_supports_tool_use(model_id: str) -> bool:
     """Return True if the model is expected to support tool/function calling.
@@ -406,6 +408,16 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # Message format conversion: OpenAI → Bedrock Converse
 # ---------------------------------------------------------------------------
+
+def _text_block(text: Any) -> Dict[str, str]:
+    """Return a Converse text block that Bedrock will accept."""
+    if isinstance(text, str):
+        return {"text": text if text.strip() else _EMPTY_TEXT_PLACEHOLDER}
+    if text is None:
+        return {"text": _EMPTY_TEXT_PLACEHOLDER}
+    text = str(text)
+    return {"text": text if text.strip() else _EMPTY_TEXT_PLACEHOLDER}
+
 
 def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
     """Convert OpenAI-format tool definitions to Bedrock Converse ``toolConfig``.
@@ -446,25 +458,25 @@ def _convert_content_to_converse(content) -> List[Dict]:
       - Content arrays with text/image_url parts → mixed text/image blocks
 
     Filters out empty text blocks — Bedrock's Converse API rejects messages
-    where a text content block has an empty ``text`` field (ValidationException:
-    "text content blocks must be non-empty"). Ref: issue #9486.
+    where a text content block has empty or whitespace-only ``text`` content.
+    Ref: issues #9486 and #39829.
     """
     if content is None:
-        return [{"text": " "}]
+        return [_text_block(None)]
     if isinstance(content, str):
-        return [{"text": content}] if content.strip() else [{"text": " "}]
+        return [_text_block(content)]
     if isinstance(content, list):
         blocks = []
         for part in content:
             if isinstance(part, str):
-                blocks.append({"text": part})
+                blocks.append(_text_block(part))
                 continue
             if not isinstance(part, dict):
                 continue
             part_type = part.get("type", "")
             if part_type == "text":
                 text = part.get("text", "")
-                blocks.append({"text": text if text else " "})
+                blocks.append(_text_block(text))
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""
@@ -486,8 +498,8 @@ def _convert_content_to_converse(content) -> List[Dict]:
                     # Remote URL — Converse doesn't support URLs directly,
                     # include as text reference for the model.
                     blocks.append({"text": f"[Image: {url}]"})
-        return blocks if blocks else [{"text": " "}]
-    return [{"text": str(content)}]
+        return blocks if blocks else [_text_block(None)]
+    return [_text_block(content)]
 
 
 def convert_messages_to_converse(
@@ -574,7 +586,7 @@ def convert_messages_to_converse(
                 })
 
             if not content_blocks:
-                content_blocks = [{"text": " "}]
+                content_blocks = [_text_block(None)]
 
             # Merge with previous assistant message if needed (strict alternation)
             if converse_msgs and converse_msgs[-1]["role"] == "assistant":
@@ -600,11 +612,11 @@ def convert_messages_to_converse(
 
     # Converse requires the first message to be from the user
     if converse_msgs and converse_msgs[0]["role"] != "user":
-        converse_msgs.insert(0, {"role": "user", "content": [{"text": " "}]})
+        converse_msgs.insert(0, {"role": "user", "content": [_text_block(None)]})
 
     # Converse requires the last message to be from the user
     if converse_msgs and converse_msgs[-1]["role"] != "user":
-        converse_msgs.append({"role": "user", "content": [{"text": " "}]})
+        converse_msgs.append({"role": "user", "content": [_text_block(None)]})
 
     return (system_blocks if system_blocks else None, converse_msgs)
 
