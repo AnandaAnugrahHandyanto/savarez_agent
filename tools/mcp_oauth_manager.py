@@ -85,7 +85,7 @@ def _cross_process_oauth_lock(server_name: str):
         token_dir = _get_token_dir()
         token_dir.mkdir(parents=True, exist_ok=True)
         lock_path = token_dir / f"{_safe_filename(server_name)}.lock"
-        with open(lock_path, "a+") as fh:
+        with open(lock_path, "a+", encoding="utf-8") as fh:
             try:
                 os.chmod(lock_path, 0o600)
             except OSError:

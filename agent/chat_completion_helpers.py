@@ -61,7 +61,10 @@ _LOCAL_FALLBACK_LAUNCHD_LABELS: dict[tuple[str, str], list[str]] = {
 
 
 def _launchd_domain() -> str:
-    return f"gui/{os.getuid()}"
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return "gui/0"
+    return f"gui/{getuid()}"
 
 
 def _launchagent_plist(label: str) -> str:
