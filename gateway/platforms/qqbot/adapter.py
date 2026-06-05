@@ -675,11 +675,33 @@ class QQAdapter(BasePlatformAdapter):
             return True
         except Exception as exc:
             logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
+            # Clear stale WebSocket reference so _read_events() raises on
+            # the next call instead of returning silently on a closed socket.
+            # Without this, a closed-but-assigned _ws causes _read_events()
+            # to skip its while-loop and return normally, which resets
+            # backoff_idx in _listen_loop and creates a CPU-spinning
+            # tight loop with no await points.  See #17703.
+            self._ws = None
             return False
 
     async def _read_events(self) -> None:
-        """Read WebSocket frames until connection closes."""
-        if not self._ws:
+        """Read WebSocket frames until the connection closes.
+
+        This coroutine must terminate by raising whenever the underlying
+        transport is unusable.  Returning normally lets the outer
+        ``_listen_loop`` reset ``backoff_idx`` and re-enter immediately;
+        because no ``await`` in that path suspends, the event loop is
+        starved and the gateway spins at 100 % CPU (issue #17703).
+
+        Three independent guards prevent that:
+          1. Entry check — reject a stale closed socket up front.
+          2. The while-loop itself — ``await receive()`` is the
+             suspension point that keeps the event loop alive.
+          3. Post-loop fallback — if the loop exits without raising
+             while the adapter is still running, force an error so
+             ``_listen_loop`` takes the reconnect path.
+        """
+        if not self._ws or self._ws.closed:
             raise RuntimeError("WebSocket not connected")
 
         while self._running and self._ws and not self._ws.closed:
@@ -695,6 +717,15 @@ class QQAdapter(BasePlatformAdapter):
                 raise QQCloseError(msg.data, msg.extra)
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WebSocket closed")
+
+        # Fallback: the while-loop exited without raising (e.g. ws.closed
+        # became True between the entry guard and the loop, or _ws was
+        # cleared externally).  If the adapter is still supposed to be
+        # running, raise so _listen_loop schedules a reconnect instead of
+        # resetting backoff and re-entering this coroutine in a tight
+        # CPU-spinning loop with no await points.
+        if self._running:
+            raise RuntimeError("WebSocket closed")
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).
