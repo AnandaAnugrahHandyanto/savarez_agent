@@ -31,7 +31,7 @@ export function PluginPage({ name }: { name: string }) {
     // web bundle is stale and lacks those helpers. Without a boundary that
     // throw unmounts the whole dashboard. Contain it to this tab instead.
     return (
-      <PluginErrorBoundary key={name} name={name} message={t.common.pluginNotRegistered}>
+      <PluginErrorBoundary key={name} name={name} message={t.common.pluginCrashed}>
         <Component />
       </PluginErrorBoundary>
     );
