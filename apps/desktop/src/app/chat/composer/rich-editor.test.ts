@@ -16,3 +16,37 @@ describe('renderComposerContents', () => {
     expect(composerPlainText(editor)).toBe('@file:`<img src=x onerror=alert(1)>` <b>raw</b>')
   })
 })
+
+describe('composerPlainText', () => {
+  it('serializes plain contenteditable text', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.textContent = 'hi'
+
+    expect(composerPlainText(editor)).toBe('hi')
+  })
+
+  it('serializes CJK contenteditable text', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.textContent = '你好'
+
+    expect(composerPlainText(editor)).toBe('你好')
+  })
+
+  it('serializes numeric contenteditable text', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.textContent = '1'
+
+    expect(composerPlainText(editor)).toBe('1')
+  })
+
+  it('serializes a browser empty-editor break as a newline', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.append(document.createElement('br'))
+
+    expect(composerPlainText(editor)).toBe('\n')
+  })
+})

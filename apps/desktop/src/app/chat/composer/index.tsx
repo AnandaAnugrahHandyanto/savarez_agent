@@ -3,6 +3,7 @@ import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import {
   type ClipboardEvent,
+  type CompositionEvent,
   type FormEvent,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
@@ -108,6 +109,12 @@ const FOLLOW_UP_PLACEHOLDERS = [
 ]
 
 const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
+
+const clearEmptyEditorBreak = (editor: HTMLDivElement) => {
+  if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
+    editor.replaceChildren()
+  }
+}
 
 interface QueueEditState {
   attachments: ComposerAttachment[]
@@ -463,6 +470,20 @@ export function ChatBar({
   const insertInlineRefsRef = useRef(insertInlineRefs)
   insertInlineRefsRef.current = insertInlineRefs
 
+  const syncDraftFromEditor = useCallback(
+    (editor: HTMLDivElement) => {
+      const nextDraft = composerPlainText(editor)
+
+      if (nextDraft !== draftRef.current) {
+        draftRef.current = nextDraft
+        aui.composer().setText(nextDraft)
+      }
+
+      return nextDraft
+    },
+    [aui]
+  )
+
   useEffect(() => {
     return onComposerInsertRefsRequest(({ refs, target }) => {
       if (target === 'main') {
@@ -514,9 +535,7 @@ export function ChatBar({
 
     event.preventDefault()
     document.execCommand('insertText', false, pastedText)
-    const nextDraft = composerPlainText(event.currentTarget)
-    draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    syncDraftFromEditor(event.currentTarget)
   }
 
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
@@ -578,17 +597,18 @@ export function ChatBar({
 
     const editor = event.currentTarget
 
-    if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
-      editor.replaceChildren()
-    }
+    clearEmptyEditorBreak(editor)
+    syncDraftFromEditor(editor)
+    window.setTimeout(refreshTrigger, 0)
+  }
 
-    const nextDraft = composerPlainText(editor)
+  const handleEditorCompositionEnd = (event: CompositionEvent<HTMLDivElement>) => {
+    composingRef.current = false
 
-    if (nextDraft !== draftRef.current) {
-      draftRef.current = nextDraft
-      aui.composer().setText(nextDraft)
-    }
+    const editor = event.currentTarget
 
+    clearEmptyEditorBreak(editor)
+    syncDraftFromEditor(editor)
     window.setTimeout(refreshTrigger, 0)
   }
 
@@ -747,7 +767,7 @@ export function ChatBar({
     }
   }
 
-  const handleEditorKeyUp = () => {
+  const handleEditorKeyUp = (event: KeyboardEvent<HTMLDivElement>) => {
     // If this keyup belongs to a key the open trigger popover already consumed
     // in keydown (Arrow/Enter/Tab/Escape), skip the refresh. Those keys never
     // edit text, and for Escape the keydown already closed the menu — a refresh
@@ -758,6 +778,14 @@ export function ChatBar({
       triggerKeyConsumedRef.current = false
 
       return
+    }
+
+    const textEditKey =
+      event.key.length === 1 || event.key === 'Backspace' || event.key === 'Delete' || event.key === 'Enter'
+
+    if (textEditKey && !composingRef.current && !event.nativeEvent.isComposing) {
+      clearEmptyEditorBreak(event.currentTarget)
+      syncDraftFromEditor(event.currentTarget)
     }
 
     window.setTimeout(refreshTrigger, 0)
@@ -936,11 +964,13 @@ export function ChatBar({
   }
 
   const queueCurrentDraft = useCallback(() => {
-    if (!activeQueueSessionKey || (!draft.trim() && attachments.length === 0)) {
+    const text = draftRef.current
+
+    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: draft, attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
       return false
     }
 
@@ -949,7 +979,7 @@ export function ChatBar({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draft])
+  }, [activeQueueSessionKey, attachments, clearDraft])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
@@ -1054,6 +1084,11 @@ export function ChatBar({
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submitDraft = () => {
+    const latestDraft =
+      !composingRef.current && editorRef.current ? syncDraftFromEditor(editorRef.current) : draftRef.current
+
+    const latestHasComposerPayload = latestDraft.trim().length > 0 || attachments.length > 0
+
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
@@ -1064,12 +1099,12 @@ export function ChatBar({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(draft.trim())) {
-        const submitted = draft
+      if (!attachments.length && SLASH_COMMAND_RE.test(latestDraft.trim())) {
+        const submitted = latestDraft
         triggerHaptic('submit')
         clearDraft()
         void onSubmit(submitted)
-      } else if (hasComposerPayload) {
+      } else if (latestHasComposerPayload) {
         queueCurrentDraft()
       } else {
         // Stop button: an explicit interrupt must actually halt the running
@@ -1081,10 +1116,10 @@ export function ChatBar({
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }
-    } else if (!hasComposerPayload && queuedPrompts.length > 0) {
+    } else if (!latestHasComposerPayload && queuedPrompts.length > 0) {
       void drainNextQueued()
-    } else if (draft.trim() || attachments.length > 0) {
-      const submitted = draft
+    } else if (latestDraft.trim() || attachments.length > 0) {
+      const submitted = latestDraft
       triggerHaptic('submit')
       clearDraft()
       clearComposerAttachments()
@@ -1227,9 +1262,7 @@ export function ChatBar({
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
-        onCompositionEnd={() => {
-          composingRef.current = false
-        }}
+        onCompositionEnd={handleEditorCompositionEnd}
         onCompositionStart={() => {
           composingRef.current = true
         }}
