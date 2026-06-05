@@ -19,6 +19,8 @@ import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
+import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
+import { ListRow } from '../settings/primitives'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
@@ -108,6 +110,47 @@ const FIELD_COPY: Record<string, { advanced?: boolean; helpKey?: string; labelKe
   DISCORD_REPLY_TO_MODE: {
     labelKey: 'messaging.fields.discordReplyToMode.label',
     helpKey: 'messaging.fields.discordReplyToMode.help',
+    advanced: true
+  },
+  DISCORD_ALLOW_ALL_USERS: {
+    labelKey: 'messaging.fields.discordAllowAllUsers.label',
+    helpKey: 'messaging.fields.discordAllowAllUsers.help',
+    advanced: true
+  },
+  DISCORD_HOME_CHANNEL: {
+    labelKey: 'messaging.fields.discordHomeChannel.label',
+    helpKey: 'messaging.fields.discordHomeChannel.help',
+    advanced: true
+  },
+  DISCORD_HOME_CHANNEL_NAME: {
+    labelKey: 'messaging.fields.discordHomeChannelName.label',
+    helpKey: 'messaging.fields.discordHomeChannelName.help',
+    advanced: true
+  },
+  BLUEBUBBLES_ALLOW_ALL_USERS: {
+    labelKey: 'messaging.fields.bluebubblesAllowAllUsers.label',
+    helpKey: 'messaging.fields.bluebubblesAllowAllUsers.help',
+    advanced: true
+  },
+  MATTERMOST_ALLOW_ALL_USERS: {
+    labelKey: 'messaging.fields.mattermostAllowAllUsers.label',
+    advanced: true
+  },
+  MATTERMOST_HOME_CHANNEL: {
+    labelKey: 'messaging.fields.mattermostHomeChannel.label',
+    advanced: true
+  },
+  QQ_ALLOW_ALL_USERS: {
+    labelKey: 'messaging.fields.qqAllowAllUsers.label',
+    advanced: true
+  },
+  QQBOT_HOME_CHANNEL: {
+    labelKey: 'messaging.fields.qqbotHomeChannel.label',
+    helpKey: 'messaging.fields.qqbotHomeChannel.help',
+    advanced: true
+  },
+  QQBOT_HOME_CHANNEL_NAME: {
+    labelKey: 'messaging.fields.qqbotHomeChannelName.label',
     advanced: true
   },
   SLACK_BOT_TOKEN: {
@@ -514,7 +557,7 @@ function PlatformDetail({
 
           <section>
             <SectionTitle>{t('messaging.required')}</SectionTitle>
-            <div className="mt-3 space-y-4">
+            <div className="mt-3 grid gap-1">
               {requiredFields.length > 0 ? (
                 requiredFields.map(field => (
                   <MessagingField
@@ -538,7 +581,7 @@ function PlatformDetail({
           {optionalFields.length > 0 && (
             <section>
               <SectionTitle>{t('messaging.recommended')}</SectionTitle>
-              <div className="mt-3 space-y-4">
+              <div className="mt-3 grid gap-1">
                 {optionalFields.map(field => (
                   <MessagingField
                     edits={edits}
@@ -565,7 +608,7 @@ function PlatformDetail({
                 <DisclosureCaret open={showAdvanced} size="0.875rem" />
               </button>
               {showAdvanced && (
-                <div className="mt-3 space-y-4">
+                <div className="mt-3 grid gap-1">
                   {advancedFields.map(field => (
                     <MessagingField
                       edits={edits}
@@ -652,45 +695,48 @@ function MessagingField({
   t: Translate
 }) {
   const copy = fieldCopy(field, t)
+  const fieldId = `messaging-field-${field.key}`
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <label className="text-sm font-medium text-foreground" htmlFor={`messaging-field-${field.key}`}>
-          {copy.label}
-        </label>
-        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">{t('messaging.saved')}</span>}
-      </div>
-      <div className="flex items-center gap-2">
-        <Input
-          className="font-mono"
-          id={`messaging-field-${field.key}`}
-          onChange={event => onEdit(field.key, event.target.value)}
-          placeholder={field.is_set ? field.redacted_value || t('messaging.replaceCurrentValue') : copy.placeholder}
-          type={field.is_password ? 'password' : 'text'}
-          value={edits[field.key] || ''}
-        />
-        {field.url && (
-          <Button asChild size="icon-sm" title={t('messaging.openDocs')} variant="ghost">
-            <a href={field.url} rel="noreferrer" target="_blank">
-              <ExternalLink className="size-3.5" />
-            </a>
-          </Button>
-        )}
-        {field.is_set && (
-          <Button
-            disabled={saving === `clear:${field.key}`}
-            onClick={() => onClear(field.key)}
-            size="icon-sm"
-            title={t('messaging.clearKey', { key: field.key })}
-            variant="ghost"
-          >
-            <Trash2 className="size-3.5" />
-          </Button>
-        )}
-      </div>
-      {copy.help && <p className="text-xs leading-5 text-muted-foreground">{copy.help}</p>}
-    </div>
+    <ListRow
+      action={
+        <div className="flex items-center gap-2">
+          <Input
+            className={CREDENTIAL_CONTROL_CLASS}
+            id={fieldId}
+            onChange={event => onEdit(field.key, event.target.value)}
+            placeholder={field.is_set ? field.redacted_value || t('messaging.replaceCurrentValue') : copy.placeholder}
+            type={field.is_password ? 'password' : 'text'}
+            value={edits[field.key] || ''}
+          />
+          {field.url && (
+            <Button asChild className="size-8 shrink-0" title={t('messaging.openDocs')} variant="ghost">
+              <a href={field.url} rel="noreferrer" target="_blank">
+                <ExternalLink className="size-3.5" />
+              </a>
+            </Button>
+          )}
+          {field.is_set && (
+            <Button
+              className="size-8 shrink-0"
+              disabled={saving === `clear:${field.key}`}
+              onClick={() => onClear(field.key)}
+              title={t('messaging.clearKey', { key: field.key })}
+              variant="ghost"
+            >
+              <Trash2 className="size-3.5" />
+            </Button>
+          )}
+        </div>
+      }
+      description={copy.help}
+      title={
+        <span className="flex flex-wrap items-center gap-2">
+          <label htmlFor={fieldId}>{copy.label}</label>
+          {field.is_set && <span className="text-[0.66rem] font-medium text-primary">{t('messaging.saved')}</span>}
+        </span>
+      }
+    />
   )
 }
 

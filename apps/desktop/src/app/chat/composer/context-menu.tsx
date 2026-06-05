@@ -2,13 +2,7 @@ import { type ReactNode, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -165,12 +159,7 @@ function PromptSnippetsDialog({
   )
 }
 
-export function ContextMenuItem({
-  children,
-  disabled,
-  icon: Icon,
-  onSelect
-}: ContextMenuItemProps) {
+export function ContextMenuItem({ children, disabled, icon: Icon, onSelect }: ContextMenuItemProps) {
   return (
     <DropdownMenuItem disabled={disabled} onSelect={onSelect}>
       <Icon />

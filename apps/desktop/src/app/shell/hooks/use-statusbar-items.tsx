@@ -314,7 +314,11 @@ export function useStatusbarItems({
       {
         className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
         hidden: !showYoloToggle,
-        icon: yoloActive ? <ZapFilled className="size-3.5 shrink-0" /> : <Zap className="size-3.5 shrink-0 opacity-70" />,
+        icon: yoloActive ? (
+          <ZapFilled className="size-3.5 shrink-0" />
+        ) : (
+          <Zap className="size-3.5 shrink-0 opacity-70" />
+        ),
         id: 'yolo',
         onSelect: () => void toggleYolo(),
         title: yoloActive

@@ -60,7 +60,9 @@ const STATE_LABEL_KEY: Record<DesktopBootstrapStageState, string> = {
 
 function formatStageName(name: string): string {
   // 'system-packages' -> 'System packages'; 'uv' stays 'uv'
-  if (name.length <= 3) {return name}
+  if (name.length <= 3) {
+    return name
+  }
 
   return name
     .split('-')
@@ -69,12 +71,20 @@ function formatStageName(name: string): string {
 }
 
 function formatDuration(ms: number | null | undefined): string {
-  if (typeof ms !== 'number' || !Number.isFinite(ms)) {return ''}
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) {
+    return ''
+  }
 
-  if (ms < 1000) {return `${ms} ms`}
+  if (ms < 1000) {
+    return `${ms} ms`
+  }
+
   const s = ms / 1000
 
-  if (s < 60) {return `${s.toFixed(1)}s`}
+  if (s < 60) {
+    return `${s.toFixed(1)}s`
+  }
+
   const m = Math.floor(s / 60)
   const rs = Math.round(s - m * 60)
 
@@ -85,7 +95,10 @@ function formatDuration(ms: number | null | undefined): string {
 function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000))
 
-  if (s < 60) {return `${s}s`}
+  if (s < 60) {
+    return `${s}s`
+  }
+
   const m = Math.floor(s / 60)
 
   return `${m}:${String(s - m * 60).padStart(2, '0')}`
@@ -199,7 +212,9 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
   if (ev.type === 'log') {
     const next = state.log.concat({ ts: Date.now(), stage: ev.stage ?? null, line: ev.line, stream: ev.stream })
 
-    while (next.length > 500) {next.shift()}
+    while (next.length > 500) {
+      next.shift()
+    }
 
     return { ...state, log: next }
   }
@@ -240,7 +255,10 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   // Tick once a second while a bootstrap is in flight so running steps show a
   // live elapsed timer. Stops when nothing is active to avoid idle renders.
   useEffect(() => {
-    if (!state.active) {return}
+    if (!state.active) {
+      return
+    }
+
     const id = window.setInterval(() => setNow(Date.now()), 1000)
 
     return () => window.clearInterval(id)
@@ -248,17 +266,24 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
 
   // Subscribe to bootstrap events + load initial snapshot
   useEffect(() => {
-    if (!enabled) {return}
+    if (!enabled) {
+      return
+    }
+
     const desktop = window.hermesDesktop
 
-    if (!desktop || typeof desktop.onBootstrapEvent !== 'function') {return}
+    if (!desktop || typeof desktop.onBootstrapEvent !== 'function') {
+      return
+    }
 
     let cancelled = false
 
     desktop
       .getBootstrapState()
       .then(snapshot => {
-        if (!cancelled && snapshot) {setState(snapshot)}
+        if (!cancelled && snapshot) {
+          setState(snapshot)
+        }
       })
       .catch(() => {
         // Older Electron build without the IPC handler -- bootstrap UI just
@@ -285,25 +310,37 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   // the top-level error message and the user has to click "Show installer
   // output" to see WHY the stage failed.
   useEffect(() => {
-    if (state.error) {setLogOpen(true)}
+    if (state.error) {
+      setLogOpen(true)
+    }
   }, [state.error])
 
   // Mount logic: show whenever a bootstrap is in flight, completed-with-error,
   // or actively running with a manifest. Hide entirely after a successful
   // completion so the rest of the UI can take over.
   const shouldShow = useMemo(() => {
-    if (!enabled) {return false}
+    if (!enabled) {
+      return false
+    }
 
-    if (state.active) {return true}
+    if (state.active) {
+      return true
+    }
 
-    if (state.error) {return true}
+    if (state.error) {
+      return true
+    }
 
-    if (state.unsupportedPlatform) {return true}
+    if (state.unsupportedPlatform) {
+      return true
+    }
 
     return false
   }, [enabled, state.active, state.error, state.unsupportedPlatform])
 
-  if (!shouldShow) {return null}
+  if (!shouldShow) {
+    return null
+  }
 
   // Unsupported-platform branch: macOS/Linux packaged builds hit this when
   // there's no Hermes Agent installed yet and we can't drive install.sh
@@ -468,7 +505,10 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                   <>
                     {state.log.map((entry, i) => (
                       <div
-                        className={cn('whitespace-pre-wrap break-words', entry.stream === 'stderr' && 'text-muted-foreground')}
+                        className={cn(
+                          'whitespace-pre-wrap break-words',
+                          entry.stream === 'stderr' && 'text-muted-foreground'
+                        )}
                         key={i}
                       >
                         {entry.stage ? <span className="text-muted-foreground/70">[{entry.stage}] </span> : null}

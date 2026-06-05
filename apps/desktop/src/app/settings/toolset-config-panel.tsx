@@ -5,11 +5,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getToolsetConfig, revealEnvVar, selectToolsetProvider, setEnvVar } from '@/hermes'
 import { useTranslation } from '@/i18n'
-import { Check, ExternalLink, Eye, EyeOff, Loader2, Save, Trash2 } from '@/lib/icons'
+import { Check, Loader2, Save } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { ToolEnvVar, ToolProvider, ToolsetConfig } from '@/types/hermes'
 
+import { EnvVarActionsMenu, EnvVarActionsTrigger } from './env-var-actions-menu'
 import { Pill } from './primitives'
 
 interface ToolsetConfigPanelProps {
@@ -118,40 +119,20 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             <p className="mt-0.5 text-[0.7rem] text-muted-foreground">{envVar.prompt}</p>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {envVar.url && (
-            <Button asChild size="xs" title={t('settings.keys.actions.openDocs')} variant="ghost">
-              <a href={envVar.url} rel="noreferrer" target="_blank">
-                {t('settings.keys.actions.docs')}
-                <ExternalLink className="size-3" />
-              </a>
-            </Button>
-          )}
-          {isSet && (
-            <Button
-              onClick={() => void handleReveal()}
-              size="icon-xs"
-              title={t('settings.keys.actions.revealValue')}
-              variant="ghost"
-            >
-              {revealed !== null ? <EyeOff /> : <Eye />}
-            </Button>
-          )}
-          <Button onClick={() => setEditing(e => !e)} size="xs" variant="textStrong">
-            {isSet ? t('settings.keys.actions.replace') : t('settings.keys.actions.set')}
-          </Button>
-          {isSet && (
-            <Button
-              disabled={busy}
-              onClick={() => void handleClear()}
-              size="icon-xs"
-              title={t('settings.keys.actions.clearValue')}
-              variant="ghost"
-            >
-              <Trash2 />
-            </Button>
-          )}
-        </div>
+        {!editing && (
+          <EnvVarActionsMenu
+            clearDisabled={busy}
+            docsUrl={envVar.url}
+            isRevealed={revealed !== null}
+            isSet={isSet}
+            label={envVar.key}
+            onClear={() => void handleClear()}
+            onEdit={() => setEditing(true)}
+            onReveal={() => void handleReveal()}
+          >
+            <EnvVarActionsTrigger label={envVar.key} onClick={event => event.stopPropagation()} />
+          </EnvVarActionsMenu>
+        )}
       </div>
 
       {isSet && revealed !== null && (
