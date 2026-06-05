@@ -53,10 +53,15 @@ function prettifyBase(base: string): string {
   return titleCase(base.replace(/-/g, ' '))
 }
 
+interface ModelDisplayOptions {
+  preserveProviderPrefix?: boolean
+}
+
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
-export function modelDisplayParts(model: string): { name: string; tag: string } {
-  let base = modelBaseId(model)
+export function modelDisplayParts(model: string, options?: ModelDisplayOptions): { name: string; tag: string } {
+  const trimmed = model.trim()
+  let base = options?.preserveProviderPrefix ? trimmed : modelBaseId(model)
   let tag = ''
 
   for (const [pattern, label] of VARIANT_TAGS) {
@@ -68,12 +73,30 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
     }
   }
 
-  return { name: prettifyBase(base) || model.trim() || 'No model', tag }
+  if (options?.preserveProviderPrefix) {
+    return { name: base || trimmed || 'No model', tag }
+  }
+
+  return { name: prettifyBase(base) || trimmed || 'No model', tag }
+}
+
+/** Friendly labels intentionally hide provider prefixes. When that would make
+ *  multiple choices indistinguishable, callers can preserve the raw prefix for
+ *  just those ambiguous rows. */
+export function ambiguousModelDisplayNames(models: readonly string[]): Set<string> {
+  const counts = new Map<string, number>()
+
+  for (const model of models) {
+    const name = modelDisplayParts(model).name
+    counts.set(name, (counts.get(name) ?? 0) + 1)
+  }
+
+  return new Set([...counts].filter(([, count]) => count > 1).map(([name]) => name))
 }
 
 /** Friendly one-line model name for menus and the status bar. */
-export function displayModelName(model: string): string {
-  return modelDisplayParts(model).name
+export function displayModelName(model: string, options?: ModelDisplayOptions): string {
+  return modelDisplayParts(model, options).name
 }
 
 /** Status bar trigger label — model name plus the live session state (effort/fast). */

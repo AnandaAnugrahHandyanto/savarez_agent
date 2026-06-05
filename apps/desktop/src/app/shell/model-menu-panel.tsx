@@ -17,7 +17,12 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
-import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
+import {
+  ambiguousModelDisplayNames,
+  displayModelName,
+  modelDisplayParts,
+  reasoningEffortLabel
+} from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import {
   $visibleModels,
@@ -45,6 +50,7 @@ interface ModelMenuPanelProps {
 }
 
 interface ProviderGroup {
+  ambiguousNames: Set<string>
   families: ModelFamily[]
   provider: ModelOptionProvider
 }
@@ -139,7 +145,12 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                     : null
 
                 const isCurrent = activeId !== null
-                const name = modelDisplayParts(family.id).name
+                const friendlyName = modelDisplayParts(family.id).name
+
+                const name = modelDisplayParts(family.id, {
+                  preserveProviderPrefix: group.ambiguousNames.has(friendlyName)
+                }).name
+
                 // Capabilities are looked up against the active/base id; the
                 // -fast variant carries the same param support as its base.
                 const caps = group.provider.capabilities?.[family.id]
@@ -280,7 +291,11 @@ function groupModels(
     }
 
     if (families.length > 0) {
-      groups.push({ families, provider })
+      groups.push({
+        ambiguousNames: ambiguousModelDisplayNames(families.map(family => family.id)),
+        families,
+        provider
+      })
     }
   }
 
