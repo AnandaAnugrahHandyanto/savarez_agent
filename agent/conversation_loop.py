@@ -4003,8 +4003,16 @@ def run_conversation(
                 # Refund the iteration if the ONLY tool(s) called were
                 # execute_code (programmatic tool calling).  These are
                 # cheap RPC-style calls that shouldn't eat the budget.
+                # Both counters must move together: the while-loop condition
+                # (~L801) gates on api_call_count < max_iterations AND
+                # iteration_budget.remaining > 0, so refunding only the budget
+                # would still let execute_code burn down max_iterations. This
+                # mirrors the other refund sites (the Ollama-context bailout
+                # and the compression restart).
                 _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
                 if _tc_names == {"execute_code"}:
+                    api_call_count -= 1
+                    agent._api_call_count = api_call_count
                     agent.iteration_budget.refund()
                 
                 # Use real token counts from the API response to decide
