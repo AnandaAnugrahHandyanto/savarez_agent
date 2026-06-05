@@ -32,6 +32,7 @@ Requires:
 """
 
 import asyncio
+import errno
 import hashlib
 import hmac
 import json
@@ -765,6 +766,23 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             pass
         return "hermes-agent"
+
+    @staticmethod
+    def _is_bind_address_in_use(host: str, port: int) -> bool:
+        """Return True only when the configured bind address/port is occupied."""
+        try:
+            infos = _socket.getaddrinfo(host, port, type=_socket.SOCK_STREAM)
+        except OSError:
+            return False
+
+        for family, socktype, proto, _canonname, sockaddr in infos:
+            try:
+                with _socket.socket(family, socktype, proto) as sock:
+                    sock.bind(sockaddr)
+            except OSError as exc:
+                if exc.errno == errno.EADDRINUSE:
+                    return True
+        return False
 
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
@@ -4180,15 +4198,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 except ImportError:
                     pass
 
-            # Port conflict detection — fail fast if port is already in use
-            try:
-                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
-                    _s.settimeout(1)
-                    _s.connect(('127.0.0.1', self._port))
-                logger.error('[%s] Port %d already in use. Set a different port in config.yaml: platforms.api_server.port', self.name, self._port)
+            # Port conflict detection — fail fast if the configured bind address is already in use.
+            # Check the exact host/port pair instead of localhost-only: deployments may
+            # intentionally run a localhost proxy on the same port while the API server
+            # binds a Docker-facing host address (for example 172.18.0.1:8642).
+            if self._is_bind_address_in_use(self._host, self._port):
+                logger.error('[%s] Port %d already in use on %s. Set a different port in config.yaml: platforms.api_server.port', self.name, self._port, self._host)
                 return False
-            except (ConnectionRefusedError, OSError):
-                pass  # port is free
 
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()

@@ -5,7 +5,7 @@ that connect() refuses to start without API_SERVER_KEY.
 """
 
 import socket
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -119,6 +119,31 @@ class TestConnectBindGuard:
         assert is_network_accessible(adapter._host) is False
         result = await adapter.connect()
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_port_conflict_check_respects_configured_host(self):
+        """A localhost listener must not block binding the same port on a different host."""
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        try:
+            adapter = APIServerAdapter(
+                PlatformConfig(enabled=True, extra={"host": "127.0.0.2", "port": port, "key": "sk-test"})
+            )
+            with patch("gateway.platforms.api_server.web.AppRunner") as app_runner_cls, \
+                patch("gateway.platforms.api_server.web.TCPSite") as tcp_site_cls:
+                runner = app_runner_cls.return_value
+                runner.setup = AsyncMock()
+                site = tcp_site_cls.return_value
+                site.start = AsyncMock()
+
+                result = await adapter.connect()
+
+            assert result is True
+            tcp_site_cls.assert_called_once_with(runner, "127.0.0.2", port)
+        finally:
+            listener.close()
 
     @pytest.mark.asyncio
     async def test_allows_wildcard_with_key(self):
