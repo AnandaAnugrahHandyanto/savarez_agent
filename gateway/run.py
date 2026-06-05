@@ -5175,6 +5175,18 @@ class GatewayRunner:
         except Exception:
             return "default"
 
+    @staticmethod
+    def _parse_notification_sources(raw: Any) -> tuple[bool, set[str]]:
+        """Parse documented cross-profile Kanban notification sources."""
+        if isinstance(raw, str):
+            values = [part.strip() for part in raw.split(",")]
+        elif isinstance(raw, (list, tuple, set)):
+            values = [str(part).strip() for part in raw]
+        else:
+            values = []
+        sources = {value for value in values if value}
+        return "*" in sources, {value for value in sources if value != "*"}
+
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
 
@@ -5251,6 +5263,9 @@ class GatewayRunner:
         if not notifier_profile:
             notifier_profile = self._active_profile_name()
             self._kanban_notifier_profile = notifier_profile
+        notify_all_profiles, notification_sources = self._parse_notification_sources(
+            cfg.get("notification_sources") if isinstance(cfg, dict) else None
+        )
 
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
@@ -5314,10 +5329,16 @@ class GatewayRunner:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
                             for sub in subs:
                                 owner_profile = sub.get("notifier_profile") or None
-                                if owner_profile and owner_profile != notifier_profile:
+                                if (
+                                    owner_profile
+                                    and not notify_all_profiles
+                                    and owner_profile not in (notification_sources or {notifier_profile})
+                                ):
                                     logger.debug(
-                                        "kanban notifier: subscription for %s owned by profile %s; current profile %s skipping",
-                                        sub.get("task_id"), owner_profile, notifier_profile,
+                                        "kanban notifier: subscription for %s owned by profile %s; allowed sources %s; current profile %s skipping",
+                                        sub.get("task_id"), owner_profile,
+                                        sorted(notification_sources) if notification_sources else [notifier_profile],
+                                        notifier_profile,
                                     )
                                     continue
                                 platform = (sub.get("platform") or "").lower()
