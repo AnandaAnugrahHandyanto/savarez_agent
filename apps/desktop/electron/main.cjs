@@ -44,6 +44,7 @@ const {
   resolveReadableFileForIpc,
   resolveTimeoutMs
 } = require('./hardening.cjs')
+const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 
 let nodePty = null
 
@@ -2740,6 +2741,22 @@ async function waitForHermes(baseUrl, token) {
   throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
 }
 
+async function verifyRemoteGatewaySocket(connection) {
+  try {
+    await probeGatewayWebSocket(connection.wsUrl, {
+      stableMs: 250,
+      timeoutMs: 3_000
+    })
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `Hermes Desktop reached ${connection.baseUrl}/api/status but could not open the live gateway WebSocket at /api/ws. ` +
+        `Use the Hermes dashboard base URL, not an API-only /v1 or /health endpoint, and make sure the remote gateway accepts desktop WebSocket connections. ` +
+        `Probe error: ${detail}`
+    )
+  }
+}
+
 function getWindowButtonPosition() {
   if (!IS_MAC) return null
   return mainWindow?.getWindowButtonPosition?.() || WINDOW_BUTTON_POSITION
@@ -3747,17 +3764,38 @@ async function testDesktopConnectionConfig(input = {}) {
   // for local we fall back to the resolved/started backend.
   let baseUrl
   let token = null
+  let remote = null
   if (config.mode === 'remote') {
     baseUrl = normalizeRemoteBaseUrl(config.remote.url)
-    if ((config.remote.authMode || 'token') !== 'oauth') {
+    if ((config.remote.authMode || 'token') === 'oauth') {
+      if (!(await hasOauthSessionCookie(baseUrl))) {
+        throw new Error('Remote Hermes gateway uses OAuth, but you are not signed in yet.')
+      }
+      const ticket = await mintGatewayWsTicket(baseUrl)
+      remote = {
+        authMode: 'oauth',
+        baseUrl,
+        token: null,
+        wsUrl: buildGatewayWsUrlWithTicket(baseUrl, ticket)
+      }
+    } else {
       token = decryptDesktopSecret(config.remote.token)
+      remote = {
+        authMode: 'token',
+        baseUrl,
+        token,
+        wsUrl: buildGatewayWsUrl(baseUrl, token)
+      }
     }
   } else {
-    const remote = (await resolveRemoteBackend()) || (await startHermes())
+    remote = (await resolveRemoteBackend()) || (await startHermes())
     baseUrl = remote.baseUrl
     token = remote.token
   }
   const status = await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })
+  if (config.mode === 'remote') {
+    await verifyRemoteGatewaySocket(remote)
+  }
 
   return {
     ok: true,
@@ -4014,6 +4052,7 @@ async function startHermes() {
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
       await waitForHermes(remote.baseUrl, remote.token)
+      await verifyRemoteGatewaySocket(remote)
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',
