@@ -177,3 +177,28 @@ async def test_internal_events_bypass_hook(monkeypatch):
     # Even though the hook would say skip, internal events bypass it.
     await runner._handle_message(event)
     assert called["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_foreground_control_reply_short_circuits_plugins(monkeypatch):
+    """Built-in foreground CLI control replies before plugin hooks run."""
+    _clear_auth_env(monkeypatch)
+
+    calls = {"hook": 0}
+
+    def _fake_fg(event=None, gateway=None, **kwargs):
+        return {"action": "reply", "text": "foreground-reply"}
+
+    def _fake_hook(name, **kwargs):
+        calls["hook"] += 1
+        return []
+
+    monkeypatch.setattr("gateway.foreground_cli_control.maybe_handle_message", _fake_fg)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+
+    result = await runner._handle_message(_make_event("查询任务"))
+
+    assert result == "foreground-reply"
+    assert calls["hook"] == 0

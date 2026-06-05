@@ -215,6 +215,7 @@ def format_voice_record_key_for_status(raw: Any) -> str:
 
 from tools.voice_mode import (
     create_audio_recorder,
+    create_tts_output_path,
     is_whisper_hallucination,
     play_audio_file,
     transcribe_recording,
@@ -296,6 +297,10 @@ _continuous_recorder: Any = None
 # leak into the mic.
 _tts_playing = threading.Event()
 _tts_playing.set()  # initially "not playing"
+# Serialize TTS across TUI-triggered background calls.  Without this, two
+# nearly simultaneous replies can synthesize/play in separate daemon threads
+# and overlap in the speakers.
+_tts_lock = threading.Lock()
 _continuous_on_transcript: Optional[Callable[[str], None]] = None
 _continuous_on_status: Optional[Callable[[str], None]] = None
 _continuous_on_silent_limit: Optional[Callable[[], None]] = None
@@ -758,89 +763,85 @@ def speak_text(text: str) -> None:
     import tempfile
     import time
 
-    # Cancel any live capture before we open the speakers — otherwise the
-    # last ~200ms of the user's turn tail + the first syllables of our TTS
-    # both end up in the next recording window.  The continuous loop will
-    # re-arm itself after _tts_playing flips back (see _continuous_on_silence).
-    paused_recording = False
-    with _continuous_lock:
-        if (
-            _continuous_active
-            and _continuous_recorder is not None
-            and getattr(_continuous_recorder, "is_recording", False)
-        ):
-            try:
-                _continuous_recorder.cancel()
-                paused_recording = True
-            except Exception as e:
-                logger.warning("failed to pause recorder for TTS: %s", e)
+    with _tts_lock:
+        # Cancel any live capture before we open the speakers — otherwise the
+        # last ~200ms of the user's turn tail + the first syllables of our TTS
+        # both end up in the next recording window.  The continuous loop will
+        # re-arm itself after _tts_playing flips back (see _continuous_on_silence).
+        paused_recording = False
+        with _continuous_lock:
+            if (
+                _continuous_active
+                and _continuous_recorder is not None
+                and getattr(_continuous_recorder, "is_recording", False)
+            ):
+                try:
+                    _continuous_recorder.cancel()
+                    paused_recording = True
+                except Exception as e:
+                    logger.warning("failed to pause recorder for TTS: %s", e)
 
-    _tts_playing.clear()
-    _debug(f"speak_text: TTS begin (paused_recording={paused_recording})")
+        _tts_playing.clear()
+        _debug(f"speak_text: TTS begin (paused_recording={paused_recording})")
 
-    try:
-        from tools.tts_tool import text_to_speech_tool
+        try:
+            from tools.tts_tool import text_to_speech_tool
 
-        tts_text = text[:4000] if len(text) > 4000 else text
-        tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
-        tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
-        tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
-        tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)            # bold
-        tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)                # italic
-        tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)                  # inline code
-        tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
-        tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list bullets
-        tts_text = re.sub(r'---+', '', tts_text)                        # horizontal rules
-        tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)                  # excess newlines
-        tts_text = tts_text.strip()
-        if not tts_text:
-            return
+            tts_text = text[:4000] if len(text) > 4000 else text
+            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
+            tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
+            tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
+            tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)            # bold
+            tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)                # italic
+            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)                  # inline code
+            tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
+            tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list bullets
+            tts_text = re.sub(r'---+', '', tts_text)                        # horizontal rules
+            tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)                  # excess newlines
+            tts_text = tts_text.strip()
+            if not tts_text:
+                return
 
-        # MP3 output path, pre-chosen so we can play the MP3 directly even
-        # when text_to_speech_tool auto-converts to OGG for messaging
-        # platforms.  afplay's OGG support is flaky, MP3 always works.
-        os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
-        mp3_path = os.path.join(
-            tempfile.gettempdir(),
-            "hermes_voice",
-            f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3",
-        )
+            # Unique MP3 output path, pre-chosen so we can play the MP3 directly even
+            # when text_to_speech_tool auto-converts to OGG for messaging
+            # platforms.  afplay's OGG support is flaky, MP3 always works.
+            mp3_path = create_tts_output_path()
 
-        _debug(f"speak_text: synthesizing {len(tts_text)} chars -> {mp3_path}")
-        text_to_speech_tool(text=tts_text, output_path=mp3_path)
+            _debug(f"speak_text: synthesizing {len(tts_text)} chars -> {mp3_path}")
+            text_to_speech_tool(text=tts_text, output_path=mp3_path)
 
-        if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
-            _debug(f"speak_text: playing {mp3_path} ({os.path.getsize(mp3_path)} bytes)")
-            play_audio_file(mp3_path)
-            try:
-                os.unlink(mp3_path)
-                ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-                if os.path.isfile(ogg_path):
-                    os.unlink(ogg_path)
-            except OSError:
-                pass
-        else:
-            _debug(f"speak_text: TTS tool produced no audio at {mp3_path}")
-    except Exception as e:
-        logger.warning("Voice TTS playback failed: %s", e)
-        _debug(f"speak_text raised {type(e).__name__}: {e}")
-    finally:
-        _tts_playing.set()
-        _debug("speak_text: TTS done")
+            if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
+                _debug(f"speak_text: playing {mp3_path} ({os.path.getsize(mp3_path)} bytes)")
+                play_audio_file(mp3_path)
+                try:
+                    os.unlink(mp3_path)
+                    ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+                    if os.path.isfile(ogg_path):
+                        os.unlink(ogg_path)
+                except OSError:
+                    pass
+            else:
+                _debug(f"speak_text: TTS tool produced no audio at {mp3_path}")
+        except Exception as e:
+            logger.warning("Voice TTS playback failed: %s", e)
+            _debug(f"speak_text raised {type(e).__name__}: {e}")
+        finally:
+            _tts_playing.set()
+            _debug("speak_text: TTS done")
 
-        # Re-arm the mic so the user can answer without pressing Ctrl+B.
-        # Small delay lets the OS flush speaker output and afplay fully
-        # release the audio device before sounddevice re-opens the input.
-        if paused_recording:
-            time.sleep(0.3)
-            with _continuous_lock:
-                if _continuous_active and _continuous_recorder is not None:
-                    try:
-                        _continuous_recorder.start(
-                            on_silence_stop=_continuous_on_silence
-                        )
-                        _debug("speak_text: recording resumed after TTS")
-                    except Exception as e:
-                        logger.warning(
-                            "failed to resume recorder after TTS: %s", e
-                        )
+            # Re-arm the mic so the user can answer without pressing Ctrl+B.
+            # Small delay lets the OS flush speaker output and afplay fully
+            # release the audio device before sounddevice re-opens the input.
+            if paused_recording:
+                time.sleep(0.3)
+                with _continuous_lock:
+                    if _continuous_active and _continuous_recorder is not None:
+                        try:
+                            _continuous_recorder.start(
+                                on_silence_stop=_continuous_on_silence
+                            )
+                            _debug("speak_text: recording resumed after TTS")
+                        except Exception as e:
+                            logger.warning(
+                                "failed to resume recorder after TTS: %s", e
+                            )

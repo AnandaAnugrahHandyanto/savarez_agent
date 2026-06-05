@@ -33,6 +33,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
@@ -110,6 +111,7 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
+_local_model_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -1080,6 +1082,24 @@ def _looks_like_cuda_lib_error(exc: BaseException) -> bool:
     return any(marker in msg for marker in _CUDA_LIB_ERROR_MARKERS)
 
 
+def _local_whisper_runtime_config() -> tuple[str, str]:
+    """Return configured faster-whisper runtime settings.
+
+    Defaults preserve the existing CUDA auto-detection path, while allowing
+    CPU-only hosts (notably WSL without CUDA runtime libraries) to skip the
+    slow failed CUDA probe via ``stt.local.device: cpu``.
+    """
+    local_cfg = _load_stt_config().get("local", {})
+    if not isinstance(local_cfg, dict):
+        local_cfg = {}
+    device = str(local_cfg.get("device") or os.getenv("HERMES_LOCAL_STT_DEVICE") or "auto").strip() or "auto"
+    compute_type = (
+        str(local_cfg.get("compute_type") or os.getenv("HERMES_LOCAL_STT_COMPUTE_TYPE") or "auto").strip()
+        or "auto"
+    )
+    return device, compute_type
+
+
 def _load_local_whisper_model(model_name: str):
     """Load faster-whisper with graceful CUDA → CPU fallback.
 
@@ -1094,8 +1114,12 @@ def _load_local_whisper_model(model_name: str):
     library load failure fall back to CPU + int8.
     """
     from faster_whisper import WhisperModel
+    device, compute_type = _local_whisper_runtime_config()
+    common_kwargs = {"local_files_only": True}
+    if device != "auto" or compute_type != "auto":
+        return WhisperModel(model_name, device=device, compute_type=compute_type, **common_kwargs)
     try:
-        return WhisperModel(model_name, device="auto", compute_type="auto")
+        return WhisperModel(model_name, device="auto", compute_type="auto", **common_kwargs)
     except Exception as exc:
         if not _looks_like_cuda_lib_error(exc):
             raise
@@ -1104,7 +1128,42 @@ def _load_local_whisper_model(model_name: str):
             "Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.",
             exc,
         )
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+        return WhisperModel(model_name, device="cpu", compute_type="int8", **common_kwargs)
+
+
+def prewarm_local_whisper_model(model: Optional[str] = None) -> Dict[str, Any]:
+    """Load the configured local faster-whisper model before first recording.
+
+    The first ``WhisperModel(...)`` construction can be very slow on some WSL
+    hosts. Warming it when voice mode is enabled keeps that cost out of the
+    first "Transcribing..." interaction.
+    """
+    global _local_model, _local_model_name
+
+    stt_config = _load_stt_config()
+    if not is_stt_enabled(stt_config) or _get_provider(stt_config) != "local":
+        return {"success": True, "warmed": False, "reason": "local STT is not active"}
+
+    local_cfg = stt_config.get("local", {})
+    if not isinstance(local_cfg, dict):
+        local_cfg = {}
+    model_name = _normalize_local_model(model or local_cfg.get("model", DEFAULT_LOCAL_MODEL))
+
+    if not _HAS_FASTER_WHISPER and not _try_lazy_install_stt():
+        return {"success": False, "warmed": False, "error": "faster-whisper not installed"}
+
+    try:
+        with _local_model_lock:
+            if _local_model is not None and _local_model_name == model_name:
+                return {"success": True, "warmed": True, "cached": True, "model": model_name}
+            logger.info("Prewarming faster-whisper model '%s'...", model_name)
+            _local_model = _load_local_whisper_model(model_name)
+            _local_model_name = model_name
+            logger.info("Prewarmed faster-whisper model '%s'", model_name)
+            return {"success": True, "warmed": True, "cached": False, "model": model_name}
+    except Exception as e:
+        logger.warning("Local faster-whisper prewarm failed: %s", e, exc_info=True)
+        return {"success": False, "warmed": False, "error": str(e)}
 
 
 def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
@@ -1116,11 +1175,14 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
-        # Lazy-load the model (downloads on first use, ~150 MB for 'base')
-        if _local_model is None or _local_model_name != model_name:
-            logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = _load_local_whisper_model(model_name)
-            _local_model_name = model_name
+        # Lazy-load the model (downloads on first use, ~150 MB for 'base').
+        # Guard loading so a background prewarm and first user recording do not
+        # both pay the cold-start cost at the same time.
+        with _local_model_lock:
+            if _local_model is None or _local_model_name != model_name:
+                logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
+                _local_model = _load_local_whisper_model(model_name)
+                _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
         _forced_lang = (
@@ -1148,11 +1210,12 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
                 "evicting cached model and retrying on CPU (int8).",
                 exc,
             )
-            _local_model = None
-            _local_model_name = None
-            from faster_whisper import WhisperModel
-            _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
-            _local_model_name = model_name
+            with _local_model_lock:
+                _local_model = None
+                _local_model_name = None
+                from faster_whisper import WhisperModel
+                _local_model = WhisperModel(model_name, device="cpu", compute_type="int8", local_files_only=True)
+                _local_model_name = model_name
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
             transcript = " ".join(segment.text.strip() for segment in segments)
 

@@ -7415,9 +7415,24 @@ class GatewayRunner:
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
 
+        # Hard intercept for foreground CLI mobile-sync commands.
+        # Keep this before plugin/auth/agent dispatch so phrases like
+        # “查询任务” / “发送给2：...” never fall through to the model and
+        # hallucinate the old hidden-session workflow.
+        if not is_internal:
+            try:
+                from gateway import foreground_cli_control as _fg_control
+
+                _fg_result = _fg_control.maybe_handle_message(event=event, gateway=self)
+                if isinstance(_fg_result, dict) and _fg_result.get("action") == "reply":
+                    return str(_fg_result.get("text") or "")
+            except Exception as _fg_exc:
+                logger.warning("foreground CLI inline intercept failed: %s", _fg_exc)
+
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
+        #   {"action": "reply",   "text":  ...}     -> send text immediately, skip agent
         #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
         #   {"action": "allow"}   /   None          -> normal dispatch
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
@@ -7447,6 +7462,8 @@ class GatewayRunner:
                         source.chat_id or "unknown",
                     )
                     return None
+                if _action == "reply":
+                    return str(_result.get("text") or "")
                 if _action == "rewrite":
                     _new_text = _result.get("text")
                     if isinstance(_new_text, str):

@@ -80,7 +80,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   const { bellOnComplete, stdout, sys } = ctx.system
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
   const { setInput } = ctx.composer
-  const { submitRef } = ctx.submission
+  const { dispatchSubmission, submitRef } = ctx.submission
   const { setProcessing: setVoiceProcessing, setRecording: setVoiceRecording, setVoiceEnabled } = ctx.voice
 
   let pendingThinkingStatus = ''
@@ -567,7 +567,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // Just clear + defer submit so the cleared input is committed before
         // submit reads it.
         setInput('')
-        setTimeout(() => submitRef.current(text), 0)
+        dispatchSubmission(text)
 
         return
       }

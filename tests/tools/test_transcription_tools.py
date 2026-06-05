@@ -541,7 +541,7 @@ class TestTranscribeLocalExtended:
 
         call_args = []
 
-        def fake_whisper(model_name, device, compute_type):
+        def fake_whisper(model_name, device, compute_type, **_kwargs):
             call_args.append((device, compute_type))
             if device == "auto":
                 raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
@@ -581,7 +581,7 @@ class TestTranscribeLocalExtended:
         models = [gpu_model, cpu_model]
         call_args = []
 
-        def fake_whisper(model_name, device, compute_type):
+        def fake_whisper(model_name, device, compute_type, **_kwargs):
             call_args.append((device, compute_type))
             return models.pop(0)
 

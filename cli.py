@@ -3118,6 +3118,9 @@ class HermesCLI:
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
+        # focus_window_on_complete: restore and foreground the Windows terminal
+        # host after a response. This is useful when Hermes runs inside WSL.
+        self.focus_window_on_complete = CLI_CONFIG["display"].get("focus_window_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         _configure_output_history(
@@ -3401,6 +3404,7 @@ class HermesCLI:
         # These must exist before any direct chat() call because single-query
         # mode does not go through run().
         self._agent_running = False
+        self._current_user_task_preview = ""
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
         # Tracks whether the turn that just finished was interrupted via
@@ -3461,6 +3465,20 @@ class HermesCLI:
         self._voice_continuous = False
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
+        # Serialize voice TTS playback so rapid/concurrent replies do not
+        # spawn overlapping audio players.  Additional replies wait here and
+        # are spoken in arrival order by the background TTS threads.
+        self._voice_tts_lock = threading.Lock()
+
+        # Foreground CLI bridge: lets the gateway route phone commands into
+        # this visible CLI process without tmux or hidden sessions.
+        self._foreground_bridge_key = f"cli-{os.getpid()}-{self.session_id}"
+        self._foreground_bridge_commands: dict[str, dict] = {}
+        try:
+            title_name = os.environ.get("HERMES_FOREGROUND_CLI_NAME") or "Hermes CLI"
+            self._set_terminal_title(title_name, include_prefix=False)
+        except Exception:
+            pass
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
@@ -8277,6 +8295,30 @@ class HermesCLI:
         self._output_console().print(*args, **kwargs)
 
     @staticmethod
+    def _clean_terminal_title(value: str, max_len: int = 18) -> str:
+        """Return a compact, OSC-safe Windows Terminal tab title."""
+        title = re.sub(r"[\r\n\x00-\x1f\x7f]+", " ", str(value or "")).strip()
+        title = re.sub(r"\s+", " ", title)
+        if len(title) > max_len:
+            title = title[:max_len].rstrip()
+        return title or "Hermes CLI"
+
+    def _set_terminal_title(self, title: str, include_prefix: bool = True) -> None:
+        """Set the host terminal tab/window title without the old PID suffix."""
+        clean = self._clean_terminal_title(title)
+        if include_prefix and not clean.startswith("Hermes CLI"):
+            clean = self._clean_terminal_title(f"Hermes CLI {clean}", max_len=28)
+        sys.stdout.write(f"\033]0;{clean}\007")
+        sys.stdout.flush()
+
+    def _update_terminal_title_from_session_title(self, title: str) -> None:
+        """Use the generated task/session summary as the visible CLI title."""
+        try:
+            self._set_terminal_title(title, include_prefix=True)
+        except Exception:
+            pass
+
+    @staticmethod
     def _resolve_personality_prompt(value) -> str:
         """Accept string or dict personality value; return system prompt string."""
         if isinstance(value, dict):
@@ -9379,6 +9421,7 @@ class HermesCLI:
                 if self.bell_on_complete:
                     sys.stdout.write("\a")
                     sys.stdout.flush()
+                self._focus_window_on_complete(prompt)
 
             except Exception as e:
                 # Same TUI refresh pattern as success path (#2718)
@@ -11329,11 +11372,11 @@ class HermesCLI:
             raise
         _label = self._voice_record_key_label()
         if getattr(self._voice_recorder, "supports_silence_autostop", True):
-            _recording_hint = f"auto-stops on silence | {_label} to stop & exit continuous"
+            _recording_hint = f"auto-stops on silence | {_label} to stop | Esc to cancel"
         elif _is_termux_environment():
-            _recording_hint = f"Termux:API capture | {_label} to stop"
+            _recording_hint = f"Termux:API capture | {_label} to stop | Esc to cancel"
         else:
-            _recording_hint = f"{_label} to stop"
+            _recording_hint = f"{_label} to stop | Esc to cancel"
         _cprint(f"\n{_ACCENT}● Recording...{_RST} {_DIM}({_recording_hint}){_RST}")
 
         # Periodically refresh prompt to update audio level indicator
@@ -11347,6 +11390,30 @@ class HermesCLI:
                     self._app.invalidate()
                 time.sleep(0.15)
         threading.Thread(target=_refresh_level, daemon=True).start()
+
+    def _voice_cancel_recording(self) -> bool:
+        """Cancel active voice recording and discard captured audio.
+
+        Returns True when a recording was cancelled. This is intentionally
+        lightweight for key handlers: recorder.cancel() runs in a daemon
+        thread because it may need to acquire AudioRecorder._lock.
+        """
+        _recorder_ref = None
+        with self._voice_lock:
+            if not self._voice_recording or not self._voice_recorder:
+                return False
+            _recorder_ref = self._voice_recorder
+            self._voice_recording = False
+            self._voice_continuous = False
+
+        _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
+        threading.Thread(
+            target=_recorder_ref.cancel,
+            daemon=True,
+        ).start()
+        if hasattr(self, '_app') and self._app:
+            self._app.invalidate()
+        return True
 
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
@@ -11402,7 +11469,20 @@ class HermesCLI:
                 self._attached_images.clear()
                 if hasattr(self, '_app') and self._app:
                     self._app.invalidate()
-                self._pending_input.put(transcript)
+                if getattr(self, "_agent_running", False) and self.agent is not None and hasattr(self.agent, "steer"):
+                    try:
+                        accepted = bool(self.agent.steer(transcript))
+                    except Exception as exc:
+                        _cprint(f"{_DIM}Voice steer failed ({exc}); queued for next turn.{_RST}")
+                        self._pending_input.put(transcript)
+                    else:
+                        if accepted:
+                            preview = transcript[:80] + ("..." if len(transcript) > 80 else "")
+                            _cprint(f"{_ACCENT}⏩ Voice steer queued: {preview}{_RST}")
+                        else:
+                            self._pending_input.put(transcript)
+                else:
+                    self._pending_input.put(transcript)
                 submitted = True
             elif result.get("success"):
                 _cprint(f"{_DIM}No speech detected.{_RST}")
@@ -11470,57 +11550,70 @@ class HermesCLI:
         """Speak the agent's response aloud using TTS (runs in background thread)."""
         if not self._voice_tts:
             return
-        self._voice_tts_done.clear()
-        try:
-            from tools.tts_tool import text_to_speech_tool
-            from tools.voice_mode import play_audio_file
+        with getattr(self, "_voice_tts_lock", threading.Lock()):
+            self._voice_tts_done.clear()
+            try:
+                from tools.tts_tool import text_to_speech_tool
+                from tools.voice_mode import create_tts_output_path, play_audio_file
 
-            # Strip markdown and non-speech content for cleaner TTS
-            tts_text = text[:4000] if len(text) > 4000 else text
-            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)   # fenced code blocks
-            tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # [text](url) -> text
-            tts_text = re.sub(r'https?://\S+', '', tts_text)      # URLs
-            tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)  # bold
-            tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)      # italic
-            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)        # inline code
-            tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
-            tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list items
-            tts_text = re.sub(r'---+', '', tts_text)              # horizontal rules
-            tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)        # excessive newlines
-            tts_text = tts_text.strip()
-            if not tts_text:
-                return
+                # Strip markdown and non-speech content for cleaner TTS
+                tts_text = text[:4000] if len(text) > 4000 else text
+                tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)   # fenced code blocks
+                tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # [text](url) -> text
+                tts_text = re.sub(r'https?://\S+', '', tts_text)      # URLs
+                tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)  # bold
+                tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)      # italic
+                tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)        # inline code
+                tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
+                tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list items
+                tts_text = re.sub(r'---+', '', tts_text)              # horizontal rules
+                tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)        # excessive newlines
+                tts_text = tts_text.strip()
+                if not tts_text:
+                    return
 
-            # Use MP3 output for CLI playback (afplay doesn't handle OGG well).
-            # The TTS tool may auto-convert MP3->OGG, but the original MP3 remains.
-            os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
-            mp3_path = os.path.join(
-                tempfile.gettempdir(), "hermes_voice",
-                f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3",
-            )
+                # Use a unique MP3 output path for CLI playback (afplay doesn't handle OGG well).
+                # The TTS tool may auto-convert MP3->OGG, but the original MP3 remains.
+                mp3_path = create_tts_output_path()
 
-            text_to_speech_tool(text=tts_text, output_path=mp3_path)
+                text_to_speech_tool(text=tts_text, output_path=mp3_path)
 
-            # Play the MP3 directly (the TTS tool returns OGG path but MP3 still exists)
-            if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
-                play_audio_file(mp3_path)
-                # Clean up
-                try:
-                    os.unlink(mp3_path)
-                    ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-                    if os.path.isfile(ogg_path):
-                        os.unlink(ogg_path)
-                except OSError:
-                    pass
-        except Exception as e:
-            logger.warning("Voice TTS playback failed: %s", e)
-            _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")
-        finally:
-            self._voice_tts_done.set()
+                # Play through a global FIFO player shared by all CLI processes.
+                # This prevents overlapping/repeated TTS: the first completed
+                # CLI speaks first, later CLIs wait; the speaking CLI is focused
+                # immediately before playback.
+                if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
+                    player = Path.home() / ".local" / "bin" / "hermes-tts-global-play"
+                    if player.exists() and not getattr(self, "_test_force_direct_tts_playback", False):
+                        import subprocess
+                        subprocess.run(
+                            [str(player), str(os.getpid()), mp3_path, tts_text[:120]],
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=600,
+                        )
+                    else:
+                        self._focus_window_on_complete(tts_text)
+                        play_audio_file(mp3_path)
+                    # Clean up
+                    try:
+                        os.unlink(mp3_path)
+                        ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+                        if os.path.isfile(ogg_path):
+                            os.unlink(ogg_path)
+                    except OSError:
+                        pass
+            except Exception as e:
+                logger.warning("Voice TTS playback failed: %s", e)
+                _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")
+            finally:
+                self._voice_tts_done.set()
 
     def _handle_voice_command(self, command: str):
         """Handle /voice [on|off|tts|status] command."""
-        parts = command.strip().split(maxsplit=1)
+        command = command.strip().splitlines()[0] if command.strip() else ""
+        parts = command.split(maxsplit=1)
         subcommand = parts[1].lower().strip() if len(parts) > 1 else ""
 
         if subcommand == "on":
@@ -11551,6 +11644,20 @@ class HermesCLI:
         except Exception:
             pass
         return True
+
+    def _prewarm_voice_transcription(self):
+        """Warm local STT in the background so first voice input is responsive."""
+        def _bg_prewarm():
+            try:
+                from tools.voice_mode import prewarm_transcription
+
+                result = prewarm_transcription()
+                if not result.get("success"):
+                    logger.debug("Voice STT prewarm skipped/failed: %s", result.get("error") or result)
+            except Exception:
+                logger.debug("Voice STT prewarm failed", exc_info=True)
+
+        threading.Thread(target=_bg_prewarm, daemon=True).start()
 
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""
@@ -11611,6 +11718,8 @@ class HermesCLI:
         _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
         _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
+        _cprint(f"  {_DIM}Preparing local speech model in background...{_RST}")
+        self._prewarm_voice_transcription()
 
     def _disable_voice_mode(self):
         """Disable voice mode, cancel any active recording, and stop TTS."""
@@ -12581,6 +12690,7 @@ class HermesCLI:
                             "api_key": self.api_key,
                             "api_mode": self.api_mode,
                         },
+                        title_callback=self._update_terminal_title_from_session_title,
                     )
                 except Exception:
                     pass
@@ -12677,6 +12787,8 @@ class HermesCLI:
             if self.bell_on_complete:
                 sys.stdout.write("\a")
                 sys.stdout.flush()
+            if not self._voice_tts:
+                self._focus_window_on_complete()
 
             # Notify when iteration budget was hit
             if result and not result.get("completed") and not result.get("interrupted"):
@@ -12690,9 +12802,14 @@ class HermesCLI:
                     )
 
             # Speak response aloud if voice TTS is enabled
-            # Skip batch TTS when streaming TTS already handled it
-            if self._voice_tts and response and not use_streaming_tts:
+            # Skip batch TTS when streaming TTS already handled it. Do not
+            # focus at plain completion here; the global TTS player focuses
+            # the specific speaking CLI after it wins the playback queue lock.
+            if self._voice_tts and response and not use_streaming_tts and not getattr(self, "_suppress_next_tts", False):
                 self._voice_speak_response_async(response)
+            self._suppress_next_tts = False
+
+            self._complete_foreground_bridge_turn(response)
 
 
             # Re-queue the interrupt message (and any that arrived while we were
@@ -12779,6 +12896,97 @@ class HermesCLI:
             os.system("cls" if os.name == "nt" else "clear")
         except Exception:
             pass
+
+    def _focus_window_on_complete(self, task_preview: str | None = None) -> None:
+        """Best-effort restore/topmost/focus for the Windows CLI terminal host."""
+        if not getattr(self, "focus_window_on_complete", False):
+            return
+        helper = Path.home() / ".local" / "bin" / "hermes-cli-focus-window"
+        if not helper.exists():
+            return
+        preview = (task_preview or getattr(self, "_current_user_task_preview", "") or "").strip()
+        preview = re.sub(r"\s+", " ", preview)[:120]
+        try:
+            import subprocess
+            subprocess.Popen(
+                [str(helper), preview] if preview else [str(helper)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as e:
+            logging.debug("CLI completion window focus failed: %s", e)
+
+    def _check_foreground_bridge_commands(self) -> None:
+        """Poll gateway-enqueued commands for this visible CLI window."""
+        try:
+            from gateway import foreground_cli_bridge as _fg
+            _fg.register_client(
+                self._foreground_bridge_key,
+                os.environ.get("HERMES_FOREGROUND_CLI_NAME") or "HermesAI任务",
+                os.getpid(),
+                os.getcwd(),
+                self.session_id,
+            )
+            cmd = None
+            if getattr(self, "_agent_running", False):
+                _fg.update_client(
+                    self._foreground_bridge_key,
+                    status="running",
+                    session_id=self.session_id,
+                )
+            # Do not claim a queued phone/gateway command while this CLI is
+            # still busy. fetch_next_command() marks the command as running;
+            # if we call it while busy and return, the command is no longer
+            # pending and never reaches the CLI, leaving task state and
+            # “最后指令” misleading.
+            if getattr(self, "_agent_running", False) or getattr(self, "_command_running", False):
+                return
+            cmd = _fg.fetch_next_command(self._foreground_bridge_key)
+            if not cmd:
+                return
+            text = str(cmd.get("text") or "").strip()
+            if not text:
+                _fg.complete_command(cmd["id"], error="empty command")
+                return
+            self._foreground_bridge_commands[text] = cmd
+            _fg.update_client(
+                self._foreground_bridge_key,
+                status="running",
+                last_user=text,
+                session_id=self.session_id,
+            )
+            self._pending_input.put(text)
+        except Exception as e:
+            logging.debug("foreground CLI bridge poll failed: %s", e)
+
+    def _complete_foreground_bridge_turn(self, response: str) -> None:
+        """Mark a gateway-enqueued foreground command done after chat()."""
+        try:
+            if not self.conversation_history:
+                return
+            last_user = None
+            for msg in reversed(self.conversation_history):
+                if msg.get("role") == "user":
+                    last_user = msg.get("content")
+                    break
+            if not isinstance(last_user, str):
+                return
+            cmd = self._foreground_bridge_commands.pop(last_user, None)
+            if not cmd:
+                return
+            from gateway import foreground_cli_bridge as _fg
+            _fg.complete_command(cmd["id"], response=response or "")
+            _fg.update_client(
+                self._foreground_bridge_key,
+                status="idle",
+                last_response=response or "",
+                session_id=self.session_id,
+            )
+        except Exception as e:
+            logging.debug("foreground CLI bridge completion failed: %s", e)
+
 
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
@@ -13261,6 +13469,28 @@ class HermesCLI:
         self._voice_tts_done = threading.Event()  # Signals TTS playback finished
         self._voice_tts_done.set()  # Initially "done" (no TTS pending)
 
+        # Optional startup voice mode.  The runtime /voice command still owns
+        # the real enable path; this just invokes it after the prompt state
+        # exists so David can open Hermes CLI with voice + auto TTS already on.
+        try:
+            _raw_voice_cfg = self.config.get("voice") if isinstance(self.config, dict) else {}
+            _voice_cfg = _raw_voice_cfg if isinstance(_raw_voice_cfg, dict) else {}
+            if bool(_voice_cfg.get("auto_start", False)):
+                def _auto_enable_voice_mode():
+                    try:
+                        time.sleep(0.5)
+                        self._enable_voice_mode()
+                        if hasattr(self, '_app') and self._app:
+                            self._app.invalidate()
+                    except Exception as _exc:
+                        try:
+                            _cprint(f"{_DIM}Voice auto-start failed: {_exc}{_RST}")
+                        except Exception:
+                            pass
+                threading.Thread(target=_auto_enable_voice_mode, daemon=True).start()
+        except Exception:
+            pass
+
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._install_tool_callbacks()
 
@@ -13717,21 +13947,7 @@ class HermesCLI:
             now = time.time()
 
             # Cancel active voice recording.
-            # Run cancel() in a background thread to prevent blocking the
-            # event loop if AudioRecorder._lock or CoreAudio takes time.
-            _should_cancel_voice = False
-            _recorder_ref = None
-            with cli_ref._voice_lock:
-                if cli_ref._voice_recording and cli_ref._voice_recorder:
-                    _recorder_ref = cli_ref._voice_recorder
-                    cli_ref._voice_recording = False
-                    cli_ref._voice_continuous = False
-                    _should_cancel_voice = True
-            if _should_cancel_voice:
-                _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
-                threading.Thread(
-                    target=_recorder_ref.cancel, daemon=True
-                ).start()
+            if cli_ref._voice_cancel_recording():
                 event.app.invalidate()
                 return
 
@@ -13819,19 +14035,7 @@ class HermesCLI:
             the double-press 'force exit' feature of Ctrl+C.
             """
             # Cancel active voice recording.
-            _should_cancel_voice = False
-            _recorder_ref = None
-            with cli_ref._voice_lock:
-                if cli_ref._voice_recording and cli_ref._voice_recorder:
-                    _recorder_ref = cli_ref._voice_recorder
-                    cli_ref._voice_recording = False
-                    cli_ref._voice_continuous = False
-                    _should_cancel_voice = True
-            if _should_cancel_voice:
-                _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
-                threading.Thread(
-                    target=_recorder_ref.cancel, daemon=True
-                ).start()
+            if cli_ref._voice_cancel_recording():
                 event.app.invalidate()
                 return
 
@@ -13908,6 +14112,16 @@ class HermesCLI:
             else:
                 self._should_exit = True
                 event.app.exit()
+
+        _voice_recording_active = Condition(lambda: bool(self._voice_recording))
+
+        @kb.add('escape', filter=_voice_recording_active, eager=True)
+        def handle_escape_voice_recording(event):
+            """ESC cancels the current voice recording and discards audio."""
+            if cli_ref._voice_cancel_recording():
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
 
         _modal_prompt_active = Condition(
             lambda: bool(self._secret_state or self._sudo_state or self._slash_confirm_state)
@@ -14010,8 +14224,37 @@ class HermesCLI:
                     daemon=True,
                 ).start()
             else:
-                # Guard: don't START recording during agent run or interactive prompts
+                # Allow voice steering during an active agent run.  This is
+                # deliberately different from normal typed input: David uses
+                # the voice key as a "pause and guide me" affordance while the
+                # agent is thinking/using tools.  The transcript is delivered
+                # through the same mid-run steer path as /steer or
+                # display.busy_input_mode=steer, rather than being blocked by
+                # _agent_running and silently doing nothing.
                 if cli_ref._agent_running:
+                    if cli_ref._voice_processing:
+                        return
+                    # Interrupt TTS if playing, so user can start talking.
+                    if not cli_ref._voice_tts_done.is_set():
+                        try:
+                            from tools.voice_mode import stop_playback
+                            stop_playback()
+                            cli_ref._voice_tts_done.set()
+                        except Exception:
+                            pass
+                    with cli_ref._voice_lock:
+                        cli_ref._voice_continuous = False
+
+                    def _start_busy_voice_recording():
+                        try:
+                            cli_ref._voice_start_recording()
+                            if hasattr(cli_ref, '_app') and cli_ref._app:
+                                cli_ref._app.invalidate()
+                        except Exception as e:
+                            _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
+
+                    threading.Thread(target=_start_busy_voice_recording, daemon=True).start()
+                    event.app.invalidate()
                     return
                 if cli_ref._clarify_state or cli_ref._sudo_state or cli_ref._approval_state or cli_ref._slash_confirm_state:
                     return
@@ -15049,6 +15292,11 @@ class HermesCLI:
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
                 else:
+                    # Keep the foreground phone bridge alive even when process_loop
+                    # is temporarily blocked by another queued item or slow hook.
+                    # The bridge poller is internally guarded against claiming
+                    # commands while an agent/command is already running.
+                    self._check_foreground_bridge_commands()
                     # Do not repaint the idle prompt every second. In non-full-screen
                     # prompt_toolkit mode, background redraws can fight tmux/Ghostty/cmux
                     # viewport restoration after focus changes and visually move the
@@ -15069,6 +15317,7 @@ class HermesCLI:
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
+                            self._check_foreground_bridge_commands()
                             self._check_config_mcp_changes()
                             # Check for background process notifications (completions
                             # and watch pattern matches) while agent is idle.
@@ -15158,12 +15407,33 @@ class HermesCLI:
 
                     # Regular chat - run agent
                     self._agent_running = True
+                    self._current_user_task_preview = str(user_input or "")[:120]
+                    try:
+                        from gateway import foreground_cli_bridge as _fg
+                        _fg.update_client(
+                            self._foreground_bridge_key,
+                            status="running",
+                            last_user=str(user_input or "")[:500],
+                            session_id=self.session_id,
+                        )
+                    except Exception as _e:
+                        logging.debug("foreground CLI bridge busy update failed: %s", _e)
                     app.invalidate()  # Refresh status line
 
                     try:
                         self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
+                        try:
+                            from gateway import foreground_cli_bridge as _fg
+                            _fg.update_client(
+                                self._foreground_bridge_key,
+                                status="idle",
+                                session_id=self.session_id,
+                            )
+                        except Exception as _e:
+                            logging.debug("foreground CLI bridge idle update failed: %s", _e)
+                        self._current_user_task_preview = ""
                         self._spinner_text = ""
                         self._tool_start_time = 0.0
                         self._pending_tool_info.clear()
