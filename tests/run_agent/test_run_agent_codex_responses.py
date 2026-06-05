@@ -174,6 +174,25 @@ class _FakeResponsesStream:
         return self._final_response
 
 
+class _FakeResponsesStreamTypeErrorAfterEvents:
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        for event in self._events:
+            yield event
+        raise TypeError("'NoneType' object is not iterable")
+
+    def get_final_response(self):
+        raise AssertionError("SDK TypeError recovery should not need final response")
+
+
 class _FakeCreateStream:
     def __init__(self, events):
         self._events = list(events)
@@ -482,6 +501,34 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_recovers_from_sdk_output_none_typeerror(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="OK")],
+    )
+    stream = _FakeResponsesStreamTypeErrorAfterEvents(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_text.delta", delta="OK"),
+            SimpleNamespace(type="response.output_item.done", item=output_item),
+        ]
+    )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: stream,
+            create=lambda **kwargs: _codex_message_response("fallback should not run"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.status == "completed"
+    assert response.output == [output_item]
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
