@@ -21,6 +21,9 @@ from __future__ import annotations
 
 import json
 import logging
+import base64
+import mimetypes
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -143,8 +146,47 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
-def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[str, Any]:
+def _coerce_reference_image_paths(value: Any) -> List[str]:
+    """Normalize optional reference image paths/URLs from tool kwargs."""
+    if not isinstance(value, list):
+        return []
+    paths: List[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            paths.append(item.strip())
+    return paths
+
+
+def _reference_image_content_item(reference: str) -> Dict[str, str]:
+    """Convert a local reference image path or URL into a Responses input item."""
+    lowered = reference.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://") or lowered.startswith("data:image/"):
+        return {"type": "input_image", "image_url": reference}
+
+    path = Path(reference).expanduser()
+    if not path.is_file():
+        raise ValueError(f"Reference image is not readable: {reference}")
+
+    mime_type, _encoding = mimetypes.guess_type(str(path))
+    if not mime_type or not mime_type.startswith("image/"):
+        raise ValueError(f"Reference file is not a supported image: {reference}")
+
+    image_b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+    return {"type": "input_image", "image_url": f"data:{mime_type};base64,{image_b64}"}
+
+
+def _build_responses_payload(
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    reference_image_paths: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """Build the Codex Responses request body for an image_generation call."""
+    content: List[Dict[str, str]] = [{"type": "input_text", "text": prompt}]
+    for reference in _coerce_reference_image_paths(reference_image_paths):
+        content.append(_reference_image_content_item(reference))
+
     return {
         "model": _CODEX_CHAT_MODEL,
         "store": False,
@@ -152,7 +194,7 @@ def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[st
         "input": [{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": content,
         }],
         "tools": [{
             "type": "image_generation",
@@ -242,7 +284,14 @@ def _iter_sse_json(response: Any):
         yield payload
 
 
-def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _collect_image_b64(
+    token: str,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    reference_image_paths: Optional[List[str]] = None,
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     import httpx
     from agent.auxiliary_client import _codex_cloudflare_headers
@@ -253,7 +302,12 @@ def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> O
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     })
-    payload = _build_responses_payload(prompt=prompt, size=size, quality=quality)
+    payload = _build_responses_payload(
+        prompt=prompt,
+        size=size,
+        quality=quality,
+        reference_image_paths=reference_image_paths,
+    )
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
 
     image_b64: Optional[str] = None
@@ -367,6 +421,19 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
 
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
+        reference_image_paths = _coerce_reference_image_paths(kwargs.get("reference_image_paths"))
+        try:
+            for reference in reference_image_paths:
+                _reference_image_content_item(reference)
+        except ValueError as exc:
+            return error_response(
+                error=str(exc),
+                error_type="invalid_reference_image",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         token = _read_codex_access_token()
         if not token:
@@ -383,12 +450,14 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         try:
-            b64 = _collect_image_b64(
-                token,
-                prompt=prompt,
-                size=size,
-                quality=meta["quality"],
-            )
+            collect_kwargs: Dict[str, Any] = {
+                "prompt": prompt,
+                "size": size,
+                "quality": meta["quality"],
+            }
+            if reference_image_paths:
+                collect_kwargs["reference_image_paths"] = reference_image_paths
+            b64 = _collect_image_b64(token, **collect_kwargs)
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
             return error_response(
