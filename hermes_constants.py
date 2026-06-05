@@ -7,6 +7,7 @@ without risk of circular imports.
 import os
 import sys
 import sysconfig
+import ntpath
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -46,8 +47,43 @@ def _get_platform_default_hermes_home() -> Path:
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
         base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-        return base / "hermes"
+        return normalize_windows_msys_path(base / "hermes")
     return Path.home() / ".hermes"
+
+
+def normalize_windows_msys_path(path: str | Path) -> Path:
+    """Collapse MSYS/git-bash ``C:\\c\\...`` path mangling on native Windows.
+
+    Native CPython launched from git-bash/MSYS can see Win32 paths rewritten as
+    ``C:\\c\\Users\\...``.  The duplicate drive-letter segment creates a second
+    Hermes tree.  Only collapse the exact drive-letter duplicate pattern.
+    """
+    if sys.platform != "win32":
+        return Path(path)
+
+    raw = os.fspath(path)
+    drive, tail = ntpath.splitdrive(raw)
+    if len(drive) != 2 or drive[1] != ":":
+        return Path(path)
+
+    parts = [part for part in tail.replace("/", "\\").split("\\") if part]
+    if len(parts) < 2 or parts[0].lower() != drive[0].lower():
+        return Path(path)
+
+    return Path(ntpath.join(drive + "\\", *parts[1:]))
+
+
+def _is_relative_to_path(path: Path, base: Path) -> bool:
+    """Return True when *path* is inside *base* without resolving Windows paths."""
+    if sys.platform == "win32":
+        path_key = ntpath.normcase(ntpath.normpath(str(normalize_windows_msys_path(path))))
+        base_key = ntpath.normcase(ntpath.normpath(str(normalize_windows_msys_path(base))))
+        return path_key == base_key or path_key.startswith(base_key.rstrip("\\/") + "\\")
+    try:
+        path.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def get_hermes_home() -> Path:
@@ -68,11 +104,11 @@ def get_hermes_home() -> Path:
     """
     override = get_hermes_home_override()
     if override:
-        return Path(override)
+        return normalize_windows_msys_path(override)
 
     val = os.environ.get("HERMES_HOME", "").strip()
     if val:
-        return Path(val)
+        return normalize_windows_msys_path(val)
 
     # Guard: if a non-default profile is sticky-active, warn once that
     # the fallback to the default profile is almost certainly wrong.
@@ -105,7 +141,7 @@ def get_hermes_home() -> Path:
             except Exception:
                 pass
 
-    return _get_platform_default_hermes_home()
+    return normalize_windows_msys_path(_get_platform_default_hermes_home())
 
 
 def get_default_hermes_root() -> Path:
@@ -125,17 +161,14 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
-    native_home = _get_platform_default_hermes_home()
+    native_home = normalize_windows_msys_path(_get_platform_default_hermes_home())
     env_home = os.environ.get("HERMES_HOME", "")
     if not env_home:
         return native_home
-    env_path = Path(env_home)
-    try:
-        env_path.resolve().relative_to(native_home.resolve())
+    env_path = normalize_windows_msys_path(env_home)
+    if _is_relative_to_path(env_path, native_home):
         # HERMES_HOME is under ~/.hermes (normal or profile mode)
         return native_home
-    except ValueError:
-        pass
 
     # Docker / custom deployment.
     # Check if this is a profile path: <root>/profiles/<name>
@@ -302,7 +335,7 @@ def get_subprocess_home() -> str | None:
     hermes_home = get_hermes_home_override() or os.getenv("HERMES_HOME")
     if not hermes_home:
         return None
-    profile_home = os.path.join(hermes_home, "home")
+    profile_home = os.path.join(str(normalize_windows_msys_path(hermes_home)), "home")
     if os.path.isdir(profile_home):
         return profile_home
     return None
