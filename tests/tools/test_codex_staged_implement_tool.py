@@ -262,6 +262,8 @@ def test_dry_run_plan_with_explicit_scope_is_read_only_and_does_not_invoke_runne
 
     assert result["status"] == "dry_run_plan"
     assert result["risk_classification"] == "low"
+    assert result["scope_source"] == "explicit"
+    assert "inferred_template" not in result
     assert result["needs_user_confirmation"] is True
     assert result["resolved_workdir"] == str(repo.resolve())
     assert result["resolved_allowlist"]["files"] == ["README.md"]
@@ -312,36 +314,42 @@ def test_dry_run_plan_uncertain_scope_returns_needs_scope_without_runner_call(tm
 
 
 @pytest.mark.parametrize(
-    ("task", "expected_files"),
+    ("task", "expected_files", "expected_template"),
     [
         (
             "tighten terminal tool policy handling",
             ["tools/terminal_tool.py", "tests/tools/test_terminal_tool.py"],
+            "terminal",
         ),
         (
             "add process registry Codex metadata coverage",
             ["tools/process_registry.py", "tests/tools/test_process_registry.py"],
+            "process_registry",
         ),
         (
             "adjust stage runner timeout reporting",
             ["scripts/runtime/codex_stage_runner.py", "tests/scripts/test_codex_stage_runner.py"],
+            "stage_runner",
         ),
         (
             "harden impl guard final-output checks",
             ["scripts/runtime/codex_impl_guard.py", "tests/scripts/test_codex_impl_guard.py"],
+            "impl_guard",
         ),
         (
             "update review guard policy checks",
             ["scripts/runtime/codex_review_guard.py", "tests/scripts/test_codex_review_guard.py"],
+            "review_guard",
         ),
         (
             "fix review packet summary metadata",
             ["scripts/runtime/codex_review_packet.py", "tests/scripts/test_codex_review_packet.py"],
+            "review_packet",
         ),
     ],
 )
 def test_dry_run_plan_infers_known_template_scope_without_runner_call(
-    tmp_path, monkeypatch, task, expected_files
+    tmp_path, monkeypatch, task, expected_files, expected_template
 ):
     repo = _clean_repo(tmp_path)
     _commit_files(repo, expected_files)
@@ -357,6 +365,8 @@ def test_dry_run_plan_infers_known_template_scope_without_runner_call(
 
     assert result["status"] == "dry_run_plan"
     assert result["risk_classification"] == "low"
+    assert result["scope_source"] == "inferred"
+    assert result["inferred_template"] == expected_template
     assert result["needs_user_confirmation"] is True
     assert result["resolved_allowlist"] == {"files": expected_files, "globs": []}
     assert result["proposed_allowlist"] == {"files": expected_files, "globs": []}
@@ -382,6 +392,8 @@ def test_dry_run_plan_inferred_missing_files_fail_closed_without_globs(tmp_path,
 
     assert result["status"] == "dry_run_plan"
     assert result["risk_classification"] == "unsupported_template"
+    assert result["scope_source"] == "inferred"
+    assert result["inferred_template"] == "review_guard"
     assert result["proposed_stage_plan"] is None
     assert result["proposed_allowlist"] == {"files": [], "globs": []}
     assert result["resolved_allowlist"] == {"files": [], "globs": []}
@@ -404,6 +416,8 @@ def test_dry_run_plan_ambiguous_omitted_scope_returns_needs_scope_without_runner
 
     assert result["status"] == "dry_run_plan"
     assert result["risk_classification"] == "needs_scope"
+    assert result["scope_source"] == "inferred"
+    assert "inferred_template" not in result
     assert result["proposed_stage_plan"] is None
     assert result["proposed_allowlist"] == {"files": [], "globs": []}
     assert result["runner_exit_code"] is None
@@ -437,9 +451,38 @@ def test_dry_run_plan_cross_component_omitted_scope_returns_needs_split(tmp_path
 
     assert result["status"] == "dry_run_plan"
     assert result["risk_classification"] == "needs_split"
+    assert result["scope_source"] == "inferred"
+    assert "inferred_template" not in result
     assert result["proposed_stage_plan"] is None
     assert result["proposed_allowlist"] == {"files": [], "globs": []}
     assert result["next_required_action"] == "split_task_or_provide_explicit_scope"
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_dry_run_plan_template_plus_docs_path_need_split_keeps_template_audit(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    _commit_files(repo, ["tools/terminal_tool.py", "tests/tools/test_terminal_tool.py", "docs/a.md"])
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(
+        mode="dry_run_plan",
+        workdir=str(repo),
+        task="tighten terminal tool policy and update docs/a.md",
+    )
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "needs_split"
+    assert result["scope_source"] == "inferred"
+    assert result["inferred_template"] == "terminal"
+    assert result["proposed_stage_plan"] is None
+    assert result["proposed_allowlist"] == {"files": [], "globs": []}
     assert result["runner_exit_code"] is None
     assert calls == []
 
@@ -463,11 +506,52 @@ def test_dry_run_plan_infers_single_existing_docs_path_without_runner_call(tmp_p
 
     assert result["status"] == "dry_run_plan"
     assert result["risk_classification"] == "low"
+    assert result["scope_source"] == "inferred"
+    assert result["inferred_template"] == "docs_path"
     assert result["proposed_allowlist"] == {"files": ["docs/plans/example-plan.md"], "globs": []}
     assert result["proposed_stage_plan"]["slices"][0]["allowed_globs"] == []
     assert result["next_required_action"] == "confirm_inferred_scope_or_execute_with_explicit_scope"
     assert result["runner_exit_code"] is None
     assert calls == []
+
+
+def test_execute_inferred_docs_path_invokes_runner_with_docs_template_metadata(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    expected_files = ["docs/plans/example-plan.md"]
+    _commit_files(repo, expected_files)
+    captured = {}
+
+    def fake_runner(argv):
+        captured["argv"] = argv
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "status": "completed",
+                    "verification_status": "passed",
+                    "changed_files": expected_files,
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(
+        mode="execute_inferred",
+        workdir=str(repo),
+        task="update docs/plans/example-plan.md with Phase 17 notes",
+    )
+
+    assert result["status"] == "ready_for_review"
+    assert result["scope_source"] == "inferred"
+    assert result["inferred_template"] == "docs_path"
+    assert result["resolved_allowlist"] == {"files": expected_files, "globs": []}
+    assert result["changed_files"] == expected_files
+    plan_path = Path(captured["argv"][captured["argv"].index("--plan-file") + 1])
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert plan["slices"][0]["allowed_files"] == expected_files
+    assert plan["slices"][0]["allowed_globs"] == []
 
 
 def test_dry_run_plan_rejects_docs_path_traversal_before_inference(tmp_path, monkeypatch):
@@ -571,6 +655,8 @@ def test_execute_inferred_known_template_invokes_runner_with_inferred_allowlist(
     )
 
     assert result["status"] == "ready_for_review"
+    assert result["scope_source"] == "inferred"
+    assert result["inferred_template"] == "terminal"
     assert result["resolved_allowlist"] == {"files": expected_files, "globs": []}
     assert result["changed_files"] == expected_files
     assert result["runner_exit_code"] == 0
@@ -613,6 +699,7 @@ def test_execute_inferred_rejects_explicit_scope_instead_of_bypassing_inference(
 
     assert result["status"] == "rejected_scope"
     assert result["error"] == "execute_inferred requires omitted scope for inference"
+    assert result["scope_source"] == "explicit"
     assert result["runner_exit_code"] is None
     assert calls == []
 
@@ -641,15 +728,16 @@ def test_execute_inferred_explicit_scope_cannot_rescue_unsupported_task(tmp_path
 
 
 @pytest.mark.parametrize(
-    ("task", "expected_error"),
+    ("task", "expected_error", "expected_template"),
     [
-        ("make the runtime safer", "scope is required"),
-        ("tighten terminal tool policy and harden impl guard", "needs_split"),
-        ("update docs/../tools/terminal_tool.py with notes", "unsupported_template"),
+        ("make the runtime safer", "scope is required", None),
+        ("tighten terminal tool policy and harden impl guard", "needs_split", None),
+        ("update docs/../tools/terminal_tool.py with notes", "unsupported_template", None),
+        ("update review guard policy checks", "unsupported_template", "review_guard"),
     ],
 )
 def test_execute_inferred_uncertain_split_or_unsupported_scope_does_not_invoke_runner(
-    tmp_path, monkeypatch, task, expected_error
+    tmp_path, monkeypatch, task, expected_error, expected_template
 ):
     repo = _clean_repo(tmp_path)
     _commit_files(
@@ -673,6 +761,11 @@ def test_execute_inferred_uncertain_split_or_unsupported_scope_does_not_invoke_r
 
     assert result["status"] == "rejected_scope"
     assert result["error"] == expected_error
+    assert result["scope_source"] == "inferred"
+    if expected_template is None:
+        assert "inferred_template" not in result
+    else:
+        assert result["inferred_template"] == expected_template
     assert result["runner_exit_code"] is None
     assert calls == []
 
@@ -894,6 +987,8 @@ def test_runner_argv_and_plan_generation(tmp_path, monkeypatch):
     )
 
     assert result["status"] == "ready_for_review"
+    assert result["scope_source"] == "explicit"
+    assert "inferred_template" not in result
     assert result["next_required_action"] == "run_hermes_verification"
     assert captured["argv"][0].endswith("python") or "python" in captured["argv"][0]
     assert captured["argv"][1].endswith("scripts/runtime/codex_stage_runner.py")

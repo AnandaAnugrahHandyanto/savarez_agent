@@ -135,6 +135,8 @@ def _base_result(
     limit_exceeded: bool = False,
     out_of_scope_files: list[str] | None = None,
     candidate_disposition: str | None = None,
+    scope_source: str | None = None,
+    inferred_template: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
     if candidate_disposition is None:
@@ -166,6 +168,10 @@ def _base_result(
         "stopped_slice": stopped_slice,
         "verification_policy": verification_policy,
     }
+    if scope_source is not None:
+        result["scope_source"] = scope_source
+    if inferred_template is not None:
+        result["inferred_template"] = inferred_template
     result.update(extra)
     return result
 
@@ -319,27 +325,30 @@ def _docs_paths_from_task(task_text: str) -> tuple[list[str], bool]:
     return paths, unsafe
 
 
-def _infer_scope_from_task(repo: Path, task_text: str) -> tuple[dict[str, list[str]] | None, str | None]:
+def _infer_scope_from_task(repo: Path, task_text: str) -> tuple[dict[str, list[str]] | None, str | None, str | None]:
     lowered = task_text.lower()
     docs_paths, unsafe_docs_path = _docs_paths_from_task(task_text)
     if unsafe_docs_path:
-        return None, "unsupported_template"
+        return None, "unsupported_template", None
 
-    matches: list[list[str]] = []
-    for _name, phrases, files in _INFERRED_SCOPE_TEMPLATES:
+    matches: list[tuple[str, list[str]]] = []
+    for name, phrases, files in _INFERRED_SCOPE_TEMPLATES:
         if any(phrase in lowered for phrase in phrases):
-            matches.append(files)
+            matches.append((name, files))
 
     if len(matches) + len(docs_paths) > 1:
-        return None, "needs_split"
+        return None, "needs_split", matches[0][0] if len(matches) == 1 else None
 
     if matches:
-        return _existing_file_allowlist(repo, matches[0])
+        template_name, files = matches[0]
+        allowlist, scope_error = _existing_file_allowlist(repo, files)
+        return allowlist, scope_error, template_name
 
     if len(docs_paths) == 1:
-        return _existing_file_allowlist(repo, [docs_paths[0]])
+        allowlist, scope_error = _existing_file_allowlist(repo, [docs_paths[0]])
+        return allowlist, scope_error, "docs_path"
 
-    return None, "scope is required"
+    return None, "scope is required", None
 
 
 def _dirty_check(repo: Path) -> dict[str, Any]:
@@ -461,6 +470,7 @@ def _dry_run_plan_result(
     allowlist: dict[str, list[str]] | None,
     scope_error: str | None,
     scope_source: str = "explicit",
+    inferred_template: str | None = None,
 ) -> dict[str, Any]:
     dirty = _dirty_check(repo)
     empty_allowlist = {"files": [], "globs": []}
@@ -491,6 +501,8 @@ def _dry_run_plan_result(
             proposed_stage_plan=None,
             next_required_action=next_action,
             reason=scope_error,
+            scope_source=scope_source,
+            inferred_template=inferred_template,
         )
     assert allowlist is not None
     if not dirty["is_clean"]:
@@ -508,6 +520,8 @@ def _dry_run_plan_result(
             proposed_stage_plan=None,
             next_required_action="clean_worktree_before_execution",
             reason="dirty_worktree",
+            scope_source=scope_source,
+            inferred_template=inferred_template,
         )
     return _base_result(
         status="dry_run_plan",
@@ -531,6 +545,8 @@ def _dry_run_plan_result(
         next_required_action=_INFERRED_SCOPE_NEXT_ACTION
         if scope_source == "inferred"
         else "confirm_or_execute_with_explicit_scope",
+        scope_source=scope_source,
+        inferred_template=inferred_template,
     )
 
 
@@ -805,12 +821,12 @@ def _codex_staged_dry_run_plan(args: dict[str, Any]) -> dict[str, Any]:
         )
 
     scope_source = "explicit"
+    inferred_template = None
     if _explicit_scope_was_provided(args):
         allowlist, scope_error = _validate_scope(args, repo)
     else:
-        allowlist, scope_error = _infer_scope_from_task(repo, task_text)
-        if allowlist is not None:
-            scope_source = "inferred"
+        scope_source = "inferred"
+        allowlist, scope_error, inferred_template = _infer_scope_from_task(repo, task_text)
     return _dry_run_plan_result(
         repo=repo,
         git_head=git_head,
@@ -822,6 +838,7 @@ def _codex_staged_dry_run_plan(args: dict[str, Any]) -> dict[str, Any]:
         allowlist=allowlist,
         scope_error=scope_error,
         scope_source=scope_source,
+        inferred_template=inferred_template,
     )
 
 
@@ -925,11 +942,15 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
                 git_head=git_head,
                 verification_policy=verification_policy,
                 error="execute_inferred requires omitted scope for inference",
+                scope_source="explicit",
             )
         )
 
+    scope_source = "explicit"
+    inferred_template = None
     if mode == "execute_inferred":
-        allowlist, scope_error = _infer_scope_from_task(repo, task_text)
+        scope_source = "inferred"
+        allowlist, scope_error, inferred_template = _infer_scope_from_task(repo, task_text)
     else:
         allowlist, scope_error = _validate_scope(args, repo)
     if scope_error:
@@ -940,6 +961,8 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
                 git_head=git_head,
                 verification_policy=verification_policy,
                 error=scope_error,
+                scope_source=scope_source,
+                inferred_template=inferred_template,
             )
         )
 
@@ -954,6 +977,8 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
                 dirty_baseline_policy=dirty_policy,
                 dirty_check=dirty,
                 verification_policy=verification_policy,
+                scope_source=scope_source,
+                inferred_template=inferred_template,
             )
         )
 
@@ -980,6 +1005,8 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
                 verification_policy=verification_policy,
                 next_required_action=None,
                 error=type(exc).__name__,
+                scope_source=scope_source,
+                inferred_template=inferred_template,
             )
         )
     argv = [
@@ -1008,6 +1035,8 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
                 verification_policy=verification_policy,
                 runner_stdout_preview=_preview(exc.stdout if isinstance(exc.stdout, str) else ""),
                 runner_stderr_preview=_preview(exc.stderr if isinstance(exc.stderr, str) else ""),
+                scope_source=scope_source,
+                inferred_template=inferred_template,
             )
         )
 
@@ -1041,6 +1070,8 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
                 candidate_disposition=_candidate_disposition("malformed", limit_exceeded=malformed_oversized),
                 runner_stdout_preview=stdout_preview,
                 runner_stderr_preview=stderr_preview,
+                scope_source=scope_source,
+                inferred_template=inferred_template,
             )
         )
 
@@ -1094,6 +1125,8 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
             runner_stderr_preview=stderr_preview
             if status in {"malformed", "implementation_failed", "runner_unusable"}
             else "",
+            scope_source=scope_source,
+            inferred_template=inferred_template,
         )
     )
 
