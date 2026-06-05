@@ -2350,15 +2350,44 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+    def filter_media_delivery_paths(
+        media_files,
+        max_age_seconds: float = 300.0,
+    ) -> List[Tuple[str, bool]]:
+        """Drop unsafe or stale MEDIA paths and normalize accepted paths.
+
+        Files older than ``max_age_seconds`` (default 5 minutes) are rejected
+        as stale re-deliveries: when the agent quotes session history or memory
+        that contains a MEDIA: tag, extract_media() picks it up and this filter
+        prevents the old file from being re-sent to the user (issue #39607).
+
+        A TTL of 5 minutes is generous enough to cover slow tool chains (e.g.
+        long TTS synthesis + network round-trip) while still blocking files
+        that were generated minutes/hours/days ago.
+        """
+        import time as _time
         safe_media: List[Tuple[str, bool]] = []
+        now = _time.time()
         for media_path, is_voice in media_files or []:
             safe_path = validate_media_delivery_path(str(media_path))
-            if safe_path:
-                safe_media.append((safe_path, bool(is_voice)))
-            else:
+            if not safe_path:
                 logger.warning("Skipping unsafe MEDIA directive path outside allowed roots")
+                continue
+            # Reject stale files — guard against re-delivery of old TTS/image
+            # files referenced in session history or memory context.
+            try:
+                age = now - os.path.getmtime(safe_path)
+                if age > max_age_seconds:
+                    logger.info(
+                        "Skipping stale MEDIA file (age=%.0fs > %.0fs TTL): %s",
+                        age,
+                        max_age_seconds,
+                        safe_path,
+                    )
+                    continue
+            except OSError:
+                pass  # file missing or unreadable — let validate handle it
+            safe_media.append((safe_path, bool(is_voice)))
         return safe_media
 
     @staticmethod
