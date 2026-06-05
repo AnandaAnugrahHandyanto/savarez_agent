@@ -24,10 +24,12 @@ class WeiqiModePreset:
     base_url: str | None = None
     acp_command: str | None = None
     acp_args: tuple[str, ...] | None = None
+    disable_tools: bool = False
 
 
-OPUS_STATUS = "OPUS_ENABLED_CLAUDE_CODE_MAX_OPUS_4_8_CHAT_ONLY_NO_TOOLS"
-OPUS_ACP_COMMAND = "/Users/neo/.hermes/bin/claude-code-print-acp"
+OPUS_STATUS = "OPUS_ENABLED_CLAUDE_CODE_MAX_OPUS_SUBSCRIPTION_WITH_HERMES_TOOL_CALL_BRIDGE"
+SONNET_STATUS = "SONNET_ENABLED_CLAUDE_CODE_MAX_SONNET_SUBSCRIPTION_WITH_HERMES_TOOL_CALL_BRIDGE"
+CLAUDE_CODE_ACP_COMMAND = "/Users/neo/.hermes/bin/claude-code-print-acp"
 
 _PRESETS: dict[str, WeiqiModePreset] = {
     "default": WeiqiModePreset(
@@ -59,28 +61,41 @@ _PRESETS: dict[str, WeiqiModePreset] = {
     ),
     "advisor": WeiqiModePreset(
         key="advisor",
-        label="顾问/第二意见",
+        label="顾问/第二意见（Opus + Hermes 工具）",
         provider="copilot-acp",
-        model="claude-opus-4-8",
+        model="opus",
         reasoning="high",
-        description="第二意见、盲点挑战、战略顾问、教授/投资人视角；适合需要品味和判断的深度反馈。",
+        description="Claude Code Max Opus 订阅路线；Opus 作判断大脑，Hermes 保留工具执行权。",
         aliases=("顾问", "advisor", "opus"),
-        note=f"Opus 4.8 已通过 Claude Code Max 订阅路线启用；此模式仅作聊天大脑，不让 Opus 自己调用工具：{OPUS_STATUS}。",
+        note=f"Opus 使用 Claude Code Max 订阅路线；可通过 Hermes tool-call 桥请求 Hermes 工具：{OPUS_STATUS}。",
         base_url="acp://copilot",
-        acp_command=OPUS_ACP_COMMAND,
+        acp_command=CLAUDE_CODE_ACP_COMMAND,
+        acp_args=(),
+    ),
+    "sonnet": WeiqiModePreset(
+        key="sonnet",
+        label="Sonnet/工具执行",
+        provider="copilot-acp",
+        model="sonnet",
+        reasoning="medium",
+        description="Claude Code Max Sonnet 订阅路线；用于需要 Claude 判断但仍要 Hermes 工具执行的任务。",
+        aliases=("sonnet", "最新sonnet", "latest-sonnet"),
+        note=f"Sonnet 使用 Claude Code Max 订阅路线；可通过 Hermes tool-call 桥请求 Hermes 工具：{SONNET_STATUS}。",
+        base_url="acp://copilot",
+        acp_command=CLAUDE_CODE_ACP_COMMAND,
         acp_args=(),
     ),
     "creative": WeiqiModePreset(
         key="creative",
         label="播客/创意/品牌",
         provider="copilot-acp",
-        model="claude-opus-4-8",
+        model="opus",
         reasoning="high",
-        description="播客、内容方向、品牌创意、sevenchic、slogan/命名/叙事；优先使用 Opus 创意路线。",
+        description="播客、内容方向、品牌创意、sevenchic、slogan/命名/叙事；Opus 创意路线，Hermes 保留工具执行权。",
         aliases=("播客", "创意", "creative", "podcast"),
-        note=f"Opus 4.8 已通过 Claude Code Max 订阅路线启用；此模式仅作聊天大脑，不让 Opus 自己调用工具：{OPUS_STATUS}。",
+        note=f"Opus 使用 Claude Code Max 订阅路线；可通过 Hermes tool-call 桥请求 Hermes 工具：{OPUS_STATUS}。",
         base_url="acp://copilot",
-        acp_command=OPUS_ACP_COMMAND,
+        acp_command=CLAUDE_CODE_ACP_COMMAND,
         acp_args=(),
     ),
     "notes": WeiqiModePreset(

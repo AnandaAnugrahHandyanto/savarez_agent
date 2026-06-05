@@ -8179,6 +8179,9 @@ class GatewayRunner:
         if canonical == "status":
             return await self._handle_status_command(event)
 
+        if canonical == "routines":
+            return await self._handle_routines_command(event)
+
         if canonical == "agents":
             return await self._handle_agents_command(event)
 
@@ -10489,6 +10492,41 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
+    async def _handle_routines_command(self, event: MessageEvent) -> str:
+        """Handle /routines — operator-safe cron/launchd visibility."""
+        import shlex
+
+        from hermes_cli.routines import build_routines_report
+
+        args_text = (event.get_command_args() or "").strip()
+        include_disabled = False
+        include_launchd = True
+        limit = 12
+        try:
+            tokens = shlex.split(args_text)
+        except ValueError:
+            tokens = args_text.split()
+        idx = 0
+        while idx < len(tokens):
+            tok = tokens[idx]
+            if tok == "--all":
+                include_disabled = True
+            elif tok == "--no-launchd":
+                include_launchd = False
+            elif tok == "--limit" and idx + 1 < len(tokens):
+                try:
+                    limit = int(tokens[idx + 1])
+                except ValueError:
+                    pass
+                idx += 1
+            idx += 1
+
+        return build_routines_report(
+            include_disabled=include_disabled,
+            include_launchd=include_launchd,
+            limit=limit,
+        )
+
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
         from tools.process_registry import format_uptime_short, process_registry
@@ -11049,6 +11087,7 @@ class GatewayRunner:
             "api_mode": result.api_mode,
             "command": preset.acp_command,
             "args": list(preset.acp_args) if preset.acp_args is not None else None,
+            "disable_tools": preset.disable_tools,
         }
         if not hasattr(self, "_pending_model_notes"):
             self._pending_model_notes = {}
@@ -12843,6 +12882,9 @@ class GatewayRunner:
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+            bg_session_key = self._session_key_for_source(source)
+            if (self._session_model_overrides.get(bg_session_key) or {}).get("disable_tools"):
+                disabled_toolsets = enabled_toolsets
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -17214,6 +17256,8 @@ class GatewayRunner:
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        if session_key and (self._session_model_overrides.get(session_key) or {}).get("disable_tools"):
+            disabled_toolsets = enabled_toolsets
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):

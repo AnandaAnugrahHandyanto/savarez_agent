@@ -1,6 +1,7 @@
 from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
 from hermes_cli.weiqi_modes import (
     OPUS_STATUS,
+    SONNET_STATUS,
     classify_weiqi_auto_mode,
     is_auto_request,
     is_status_request,
@@ -10,7 +11,7 @@ from hermes_cli.weiqi_modes import (
 
 
 def test_chinese_mode_commands_resolve_to_mode_command():
-    for command in ["默认", "论文", "研究", "mba", "顾问", "播客", "创意", "整理", "中文润色", "润色", "省钱", "状态", "自动"]:
+    for command in ["默认", "论文", "研究", "mba", "顾问", "sonnet", "播客", "创意", "整理", "中文润色", "润色", "省钱", "状态", "自动"]:
         resolved = resolve_command(command)
         assert resolved is not None
         assert resolved.name == "mode"
@@ -23,9 +24,10 @@ def test_weiqi_mode_presets():
         "论文": ("research", "openai-codex", "gpt-5.5", "high"),
         "研究": ("research", "openai-codex", "gpt-5.5", "high"),
         "MBA": ("business", "openai-codex", "gpt-5.5", "high"),
-        "顾问": ("advisor", "copilot-acp", "claude-opus-4-8", "high"),
-        "播客": ("creative", "copilot-acp", "claude-opus-4-8", "high"),
-        "创意": ("creative", "copilot-acp", "claude-opus-4-8", "high"),
+        "顾问": ("advisor", "copilot-acp", "opus", "high"),
+        "sonnet": ("sonnet", "copilot-acp", "sonnet", "medium"),
+        "播客": ("creative", "copilot-acp", "opus", "high"),
+        "创意": ("creative", "copilot-acp", "opus", "high"),
         "整理": ("notes", "openai-codex", "gpt-5.5", "high"),
         "中文润色": ("polish", "openrouter", "moonshotai/kimi-k2.6", "medium"),
         "省钱": ("cheap", "openrouter", "qwen/qwen3.6-plus", "low"),
@@ -43,8 +45,9 @@ def test_mode_arg_resolution_and_status():
     assert is_status_request("mode", "状态")
     assert is_auto_request("自动", "")
     assert is_auto_request("mode", "smart")
-    assert OPUS_STATUS == "OPUS_ENABLED_CLAUDE_CODE_MAX_OPUS_4_8_CHAT_ONLY_NO_TOOLS"
-    assert len(list_weiqi_modes()) == 8
+    assert OPUS_STATUS == "OPUS_ENABLED_CLAUDE_CODE_MAX_OPUS_SUBSCRIPTION_WITH_HERMES_TOOL_CALL_BRIDGE"
+    assert SONNET_STATUS == "SONNET_ENABLED_CLAUDE_CODE_MAX_SONNET_SUBSCRIPTION_WITH_HERMES_TOOL_CALL_BRIDGE"
+    assert len(list_weiqi_modes()) == 9
 
 
 def test_weiqi_auto_routing_classifier():
