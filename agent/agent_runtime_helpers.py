@@ -28,6 +28,7 @@ import logging
 import re
 import time
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1749,11 +1750,13 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         )
     elif function_name == "model_switch":
         from tools.model_switch_tool import model_switch_tool as _model_switch_tool
-        return _model_switch_tool(
-            agent,
-            slug=function_args.get("slug", ""),
-            reason=function_args.get("reason", ""),
-            scope=function_args.get("scope", "session"),
+        return _finish_agent_tool(
+            _model_switch_tool(
+                agent,
+                slug=function_args.get("slug", ""),
+                reason=function_args.get("reason", ""),
+                scope=function_args.get("scope", "session"),
+            )
         )
     elif function_name == "delegate_task":
         return _finish_agent_tool(agent._dispatch_delegate_task(function_args))
@@ -1770,6 +1773,36 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             disabled_toolsets=getattr(agent, "disabled_toolsets", None),
         )
 
+
+
+def _longest_shared_prefix(a: str, b: str) -> str:
+    """Return the longest leading token-prefix shared by ``a`` and ``b``.
+
+    Why: Used by the namespace-prefix guard in ``repair_tool_call`` to strip
+    the shared leading namespace (e.g. ``kb_`` or ``mcp_knowledge_kb_``) before
+    re-scoring only the operation suffixes — prevents the shared prefix from
+    inflating SequenceMatcher ratio across semantically different ops.
+    What: Splits both names on ``_``, walks common segments, returns the joined
+    prefix with a trailing ``_`` so ``kb_`` anchors ``kb_add`` but not
+    ``kbx_add``.  Empty segments from double underscores are stripped via
+    ``filter(None, ...)`` so ``kb__search`` is handled deliberately rather
+    than by accident.
+    Test: Assert ``_longest_shared_prefix("kb_search", "kb_add")`` == ``"kb_"``;
+    ``_longest_shared_prefix("mcp_knowledge_kb_get", "mcp_knowledge_kb_add")``
+    == ``"mcp_knowledge_kb_"``; ``_longest_shared_prefix("terminal", "todo")``
+    == ``""``.
+    """
+    a_segs = list(filter(None, a.split("_")))
+    b_segs = list(filter(None, b.split("_")))
+    common = []
+    for sa, sb in zip(a_segs, b_segs):
+        if sa == sb:
+            common.append(sa)
+        else:
+            break
+    if not common:
+        return ""
+    return "_".join(common) + "_"
 
 
 def repair_tool_call(agent, tool_name: str) -> str | None:
@@ -1848,31 +1881,14 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
         # diverge significantly.  Strip the longest shared prefix built from
         # complete ``_``-delimited segments and re-score only the op suffixes.
         # If the op-suffix ratio is below 0.7 the repair is blocked.
-        def _longest_shared_prefix(a: str, b: str) -> str:
-            """Return the longest leading token-prefix shared by a and b.
-
-            Tokens are ``_``-delimited segments.  The prefix always ends with
-            ``_`` so that ``kb_`` is a prefix of ``kb_add`` but not of
-            ``kb_search`` for the purpose of left-anchored matching.
-            """
-            a_segs = a.split("_")
-            b_segs = b.split("_")
-            common = []
-            for sa, sb in zip(a_segs, b_segs):
-                if sa == sb:
-                    common.append(sa)
-                else:
-                    break
-            if not common:
-                return ""
-            return "_".join(common) + "_"
-
+        # The predicate checks that BOTH op-suffix strings are non-empty so the
+        # degenerate case where the emitted name exactly equals the shared prefix
+        # (no op suffix at all) activates the guard rather than bypassing it.
         shared_prefix = _longest_shared_prefix(lowered, candidate)
-        if shared_prefix and len(shared_prefix) < len(lowered) and len(shared_prefix) < len(candidate):
-            from difflib import SequenceMatcher as _SM
-            op_emitted = lowered[len(shared_prefix):]
-            op_candidate = candidate[len(shared_prefix):]
-            op_ratio = _SM(None, op_emitted, op_candidate).ratio()
+        op_emitted = lowered[len(shared_prefix):]
+        op_candidate = candidate[len(shared_prefix):]
+        if shared_prefix and op_emitted and op_candidate:
+            op_ratio = SequenceMatcher(None, op_emitted, op_candidate).ratio()
             if op_ratio < 0.7:
                 return None
         return candidate
@@ -2458,6 +2474,7 @@ __all__ = [
     "create_openai_client",
     "switch_model",
     "invoke_tool",
+    "_longest_shared_prefix",
     "repair_tool_call",
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",
