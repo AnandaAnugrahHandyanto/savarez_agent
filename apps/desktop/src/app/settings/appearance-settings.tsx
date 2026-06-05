@@ -1,7 +1,9 @@
 import { useStore } from '@nanostores/react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Switch } from '@/components/ui/switch'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -69,6 +71,14 @@ function SectionHead({ title, description, control }: { title: string; descripti
 export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const [closeToTray, setCloseToTray] = useState(true)
+
+  useEffect(() => {
+    window.hermesDesktop.tray
+      ?.getState()
+      .then(state => setCloseToTray(state.closeToTray))
+      .catch(() => { /* prefs not available — use default */ })
+  }, [])
 
   return (
     <SettingsContent>
@@ -114,6 +124,23 @@ export function AppearanceSettings() {
             }
             description="Product hides raw tool payloads; Technical shows full input/output."
             title="Tool Call Display"
+          />
+        </section>
+
+        <section>
+          <SectionHead
+            control={
+              <Switch
+                checked={closeToTray}
+                onCheckedChange={checked => {
+                  setCloseToTray(checked)
+                  window.hermesDesktop.tray?.setCloseBehavior(checked)
+                  triggerHaptic('crisp')
+                }}
+              />
+            }
+            description="When enabled, closing the window hides Hermes to the system tray instead of quitting."
+            title="Minimize to Tray on Close"
           />
         </section>
 
