@@ -166,7 +166,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Endpoints that do NOT require the session token.  Everything else under
 # /api/ is gated by the auth middleware below.
-#
+# ---------------------------------------------------------------------------
 # This list is defined in ``hermes_cli.dashboard_auth.public_paths`` so the
 # OAuth gate middleware can honour the same allowlist — keeping the two
 # gates in lockstep avoids drift like the wildcard-subdomain regression
@@ -175,10 +175,11 @@ app.add_middleware(
 #
 # Keep the upstream list minimal — only truly non-sensitive, read-only
 # endpoints belong there.
+#
+# NOTE: imported lazily inside auth_middleware() so that web_server.py
+# can be imported even when the dashboard_auth subpackage is not installed
+# (e.g. PyPI wheel that omits it).  See #39631 / #39674.
 # ---------------------------------------------------------------------------
-from hermes_cli.dashboard_auth.public_paths import (
-    PUBLIC_API_PATHS as _PUBLIC_API_PATHS,
-)
 
 
 def _has_valid_session_token(request: Request) -> bool:
@@ -331,6 +332,11 @@ async def auth_middleware(request: Request, call_next):
     # and is skipped here so the gate's session attachment isn't overridden.
     if getattr(request.app.state, "auth_required", False):
         return await call_next(request)
+    # Lazy import so web_server.py loads without dashboard_auth subpackage
+    # (e.g. PyPI wheel that omits it).  See #39631 / #39674.
+    from hermes_cli.dashboard_auth.public_paths import (
+        PUBLIC_API_PATHS as _PUBLIC_API_PATHS,
+    )
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
@@ -9230,8 +9236,15 @@ _mount_plugin_api_routes()
 # SPA catch-all so /{full_path:path} doesn't swallow them.  These are
 # always mounted — the gate middleware decides whether to enforce auth,
 # not whether the routes exist.
-from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
-app.include_router(_dashboard_auth_router)
+#
+# The import is wrapped in try/except so the dashboard starts without auth
+# when the dashboard_auth subpackage is missing (e.g. PyPI wheel that omitted
+# it).  See #39631 / #39674.
+try:
+    from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
+    app.include_router(_dashboard_auth_router)
+except ModuleNotFoundError:
+    _log.warning("dashboard_auth subpackage not found — auth routes disabled")
 
 mount_spa(app)
 
