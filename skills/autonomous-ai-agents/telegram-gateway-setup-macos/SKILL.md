@@ -49,7 +49,7 @@ The non-obvious part: `allowed_chats` (the whitelist) is **not** the same as `ho
 
 The user will ask "now what?" after creating a bot. There are **four** valid paths. Pick based on context:
 
-```
+```text
 User just created the bot and pasted the token
   ├─ Wants to TEST quickly, no persistence needed
   │   → Path A: curl avulso (5 seconds, no setup)
@@ -186,7 +186,7 @@ tail -20 ~/.hermes/logs/gateway.log
 
 **What good looks like:**
 
-```
+```log
 INFO gateway.platforms.telegram: [Telegram] set_my_commands OK for scope BotCommandScopeDefault (30 cmds)
 INFO gateway.platforms.telegram: [Telegram] Connected to Telegram (polling mode)
 INFO gateway.run: ✓ telegram connected
@@ -222,11 +222,12 @@ tail -30 ~/.hermes/logs/gateway.error.log
 ```
 
 - **`ValueError: invalid literal for int() with base 10: '@<username>'`:** the gateway is using a username string where it expects a numeric chat_id. Search for that username:
-  ```bash
-  grep -rn "<username>" ~/.hermes/ \
-    --include="*.yaml" --include="*.yml" --include="*.json" --include="*.env" \
-    --exclude-dir="hermes-agent" --exclude-dir="venv" 2>/dev/null
-  ```
+
+```bash
+grep -rn "<username>" ~/.hermes/ \
+  --include="*.yaml" --include="*.yml" --include="*.json" --include="*.env" \
+  --exclude-dir="hermes-agent" --exclude-dir="venv" 2>/dev/null
+```
   Common locations: `home_channel`, `TELEGRAM_HOME_CHANNEL` in `.env`, or a leftover `home_channel` in some other platform's section.
 - **`Unauthorized` or `401`:** token is wrong or revoked. Re-fetch from @BotFather.
 - **`Bad Request: chat not found`:** user has not messaged the bot yet (Step 5 of Path B was skipped).
