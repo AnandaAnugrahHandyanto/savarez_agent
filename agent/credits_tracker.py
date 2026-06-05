@@ -147,6 +147,15 @@ class CreditsState:
         return max(0.0, min(1.0, used / self.subscription_limit_micros))
 
 
+# ── Credits policy constants ─────────────────────────────────────────────────
+# Switching credits notices from sticky→TTL later would also require wiring a
+# paired *_TTL_MS companion for each notice kind — the field exists on AgentNotice
+# but is not yet plumbed through the policy loop.
+
+CREDITS_NOTICE_KIND = "sticky"      # v1: credits notices are sticky
+CREDITS_RESTORED_TTL_MS = 8000     # the only TTL notice in v1 (depletion-recovery confirmation)
+
+
 # ── AgentNotice (out-of-band notice payload; driver-agnostic) ────────────────
 
 
@@ -168,6 +177,110 @@ class AgentNotice:
     ttl_ms: Optional[int] = None   # honored only when kind == "ttl"
     key: Optional[str] = None      # dedupe / fired-once-latch / clear key
     id: Optional[str] = None
+
+
+# ── evaluate_credits_notices (pure reconciliation function) ──────────────────
+
+
+def evaluate_credits_notices(
+    state: CreditsState,
+    latch: dict,
+) -> tuple[list[AgentNotice], list[str]]:
+    """Reconcile credits notices against the latch. Mutates ``latch`` IN PLACE.
+
+    latch = {"active": set[str], "seen_below_90": bool}.
+
+    Returns ``(to_show: list[AgentNotice], to_clear: list[str])``.
+    Caller emits to_clear FIRST, then to_show.
+
+    Pure function — no I/O, no agent/run_agent imports.
+    """
+    to_show: list[AgentNotice] = []
+    to_clear: list[str] = []
+
+    uf = state.used_fraction
+
+    # Update the crossing latch: once we've seen uf < 0.9, warn90 may fire later.
+    if uf is not None and uf < 0.9:
+        latch["seen_below_90"] = True
+
+    active = latch["active"]
+
+    # ── Conditions ───────────────────────────────────────────────────────────
+    warn90_cond = uf is not None and uf >= 0.9
+    grant_cond = (
+        state.denominator_kind == "subscription_cap"
+        and uf is not None
+        and uf >= 1.0
+        and state.purchased_micros > 0
+    )
+    depleted_cond = not state.paid_access
+
+    # ── warn90 ───────────────────────────────────────────────────────────────
+    if warn90_cond and latch["seen_below_90"] and "credits.warn90" not in active:
+        # Belt-and-suspenders: parse_credits_headers always pairs the two limit
+        # fields today, but a future producer (e.g. L3 cold-start seed) could set
+        # subscription_limit_micros without subscription_limit_usd.  Render "$? cap"
+        # rather than "$None cap" in that case.
+        _cap_usd = state.subscription_limit_usd or "?"
+        to_show.append(
+            AgentNotice(
+                text=f"⚠ Credits 90% used · ${_cap_usd} cap",
+                level="warn",
+                kind=CREDITS_NOTICE_KIND,
+                key="credits.warn90",
+                id="credits.warn90",
+            )
+        )
+        active.add("credits.warn90")
+    elif "credits.warn90" in active and not warn90_cond:
+        to_clear.append("credits.warn90")
+        active.discard("credits.warn90")
+
+    # ── grant_spent ──────────────────────────────────────────────────────────
+    if grant_cond and "credits.grant_spent" not in active:
+        to_show.append(
+            AgentNotice(
+                text=f"• Grant spent · ${state.purchased_usd} top-up left",
+                level="info",
+                kind=CREDITS_NOTICE_KIND,
+                key="credits.grant_spent",
+                id="credits.grant_spent",
+            )
+        )
+        active.add("credits.grant_spent")
+    elif "credits.grant_spent" in active and not grant_cond:
+        to_clear.append("credits.grant_spent")
+        active.discard("credits.grant_spent")
+
+    # ── depleted ─────────────────────────────────────────────────────────────
+    if depleted_cond and "credits.depleted" not in active:
+        to_show.append(
+            AgentNotice(
+                text="✕ Access paused · run /usage to verify top-up / upgrade",
+                level="error",
+                kind=CREDITS_NOTICE_KIND,
+                key="credits.depleted",
+                id="credits.depleted",
+            )
+        )
+        active.add("credits.depleted")
+    elif "credits.depleted" in active and not depleted_cond:
+        to_clear.append("credits.depleted")
+        active.discard("credits.depleted")
+        # Recovery: also emit the success notice
+        to_show.append(
+            AgentNotice(
+                text="✓ Credit access restored",
+                level="success",
+                kind="ttl",
+                ttl_ms=CREDITS_RESTORED_TTL_MS,
+                key="credits.restored",
+                id="credits.restored",
+            )
+        )
+
+    return (to_show, to_clear)
 
 
 # ── parse_credits_headers ────────────────────────────────────────────────────
