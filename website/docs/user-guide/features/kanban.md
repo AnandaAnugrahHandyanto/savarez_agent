@@ -55,8 +55,10 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 ## Core concepts
 
 - **Board** — a standalone queue of tasks with its own SQLite DB, workspaces
-  directory, and dispatcher loop. A single install can have many boards
-  (e.g. one per project, repo, or domain); see [Boards (multi-project)](#boards-multi-project)
+  directory, and dispatcher loop. A single install should have at most a
+  handful of boards (they are a deployment/admin boundary, not a
+  per-project or per-repo boundary — use [tenant](#multi-tenant-usage) isolation for
+  those); see [Boards (multi-project)](#boards-multi-project)
   below. Single-project users stay on the `default` board and never see the
   word "board" outside this docs section.
 - **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
@@ -71,11 +73,42 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 
 ## Boards (multi-project)
 
-Boards let you separate unrelated streams of work — one per project, repo,
-or domain — into isolated queues. A new install has exactly one board
-called `default` (DB at `~/.hermes/kanban.db` for back-compat). Users who
-only want one stream of work never need to know about boards; the feature
-is opt-in.
+Boards let you separate unrelated streams of work into isolated queues.
+They are best used as a **deployment/admin boundary** — different env vars,
+different secrets, different infrastructure. For separating projects, repos,
+or client domains **within the same operator context**, use [tenant
+isolation](#multi-tenant-usage) instead, which keeps the dispatcher fleet
+unified and avoids the fragmentation problems described below.
+
+A new install has exactly one board called `default` (DB at
+`~/.hermes/kanban.db` for back-compat). Users who only want one stream of
+work never need to know about boards; the feature is opt-in.
+
+### When to create a separate board vs. use a tenant
+
+| Scenario | Use | Reason |
+|----------|-----|--------|
+| Multiple projects under the same operator | Single board + tenant per project | Unified dispatcher, cross-project visibility, single dashboard |
+| Environments with different API keys or secrets | Separate board per environment | Workers need different credential pools |
+| Completely unrelated operators (e.g. work vs. personal) | Separate board per operator | Different configs, profiles, and memory stores |
+| Multiple clients served by the same specialist fleet | Single board + tenant per client | Shared dispatcher + profile pool, isolated workspaces + memory |
+
+**Pitfalls of too many boards** (from real-world experience):
+
+- **Fragmented work view.** Tasks on different boards are invisible to each
+  other. Cross-board dependency linking is not supported. You end up
+  duplicating tasks or losing track of related work.
+- **Fragmented dispatcher fleet.** Each board runs through the same
+  dispatcher loop but workers are scoped to one board. A dispatcher
+  crash-loop from a missing profile on one board silently blocks only that
+  board's work — there's no unified alert.
+- **Silent crash-loops.** When a profile name is misspelled or missing on
+  one board but valid on another, the dispatcher spawn-fails on every tick
+  for the bad board's tasks. Since boards are isolated, no single board
+  shows a full picture of the problem.
+- **Unnecessary complexity.** One board is simpler to reason about, manage,
+  and monitor than N boards. Don't reach for a new board unless you have a
+  concrete operational reason (different secrets, different infra).
 
 Per-board isolation is absolute:
 

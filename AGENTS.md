@@ -894,6 +894,18 @@ Isolation model:
   same task (default: 2), the dispatcher auto-blocks it to prevent spin
   loops.
 
+Usage guidance:
+- **Keep board count O(1), not O(N).** Boards are a deployment/admin
+  boundary (different env vars, secrets, infrastructure), not a
+  per-project or per-repo boundary. Tenants are the right isolation
+  mechanism for separating projects, repos, or businesses.
+- **Do NOT create separate boards per repository, project, or client.**
+  Use a single board with tenant isolation for all work that shares the
+  same operator / dispatcher. Creating N boards fragments the work
+  view, prevents cross-board dependency linking, multiplies dispatcher
+  gateways, and creates silent crash-loop scenarios when a valid
+  profile name exists on one board but not another.
+
 Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
 ---
