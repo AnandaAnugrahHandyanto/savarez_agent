@@ -473,6 +473,42 @@ class TestHermesConfigWriteProtection:
         )
         assert dangerous is False
 
+    def test_awk_in_place_config(self):
+        # `awk -i inplace` is GNU awk's in-place edit extension — the same
+        # direct mutation as sed -i / perl -i, the one standard in-place
+        # editor those patterns did not cover.
+        dangerous, key, desc = detect_dangerous_command(
+            "awk -i inplace '{gsub(/manual/,\"off\")}1' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
+    def test_gawk_in_place_env(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "gawk -i inplace '{print}' ~/.hermes/.env"
+        )
+        assert dangerous is True
+
+    def test_awk_in_place_hermes_home_override(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "awk -i inplace '{print}' $HERMES_HOME/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_read_only_awk_on_config_safe(self):
+        # Read-only awk has no `-i inplace` token and must not trip.
+        dangerous, key, desc = detect_dangerous_command(
+            "awk '{print}' ~/.hermes/config.yaml"
+        )
+        assert dangerous is False
+
+    def test_awk_in_place_non_sensitive_path_safe(self):
+        # `awk -i inplace` on a non-Hermes path must not false-positive.
+        dangerous, key, desc = detect_dangerous_command(
+            "awk -i inplace '{print}' /tmp/scratch.txt"
+        )
+        assert dangerous is False
+
     def test_read_is_safe(self):
         # Reading config is not a write — must not trip.
         dangerous, key, desc = detect_dangerous_command("cat ~/.hermes/config.yaml")

@@ -452,6 +452,15 @@ DANGEROUS_PATTERNS = [
     # anywhere in the args, not just the first token — `perl -e '...'` (code
     # eval, no -i) does not trip because it has no `-...i` flag token.
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
+    # awk -i inplace / gawk -i inplace is GNU awk's in-place edit extension —
+    # the same direct-mutation escalation as the sed -i (#14639) and perl/ruby -i
+    # (a6a4e6f9d) pairings, reached through the one standard in-place editor those
+    # patterns do not cover. `-i inplace` loads the inplace extension and rewrites
+    # ~/.hermes/config.yaml (or .env) directly; the mtime-keyed config cache
+    # reloads it mid-session, so the agent can flip approvals.mode off and bypass
+    # the gate. Read-only awk ('{print}' with no `-i inplace`) lacks the flag and
+    # does not trip. Sibling follow-up to #14639 / a6a4e6f9d.
+    (rf'\b(?:g?awk)\b.*-i\s+inplace\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (awk -i inplace)"),
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
