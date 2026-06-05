@@ -812,6 +812,21 @@ def _home_thread_env_var(platform_name: str) -> str:
     return f"{_home_target_env_var(platform_name)}_THREAD_ID"
 
 
+def _gateway_should_restart_via_service_manager() -> bool:
+    """Return True when /restart should let the supervisor relaunch us.
+
+    systemd exposes ``INVOCATION_ID``.  macOS launchd jobs expose an
+    ``XPC_SERVICE_NAME`` label; interactive shells commonly set it to ``0``,
+    which is not a managed service.  Containers use their restart policy and
+    lose detached helpers when PID 1 exits, so they also need the service path.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return True
+    if sys.platform == "darwin" and os.environ.get("XPC_SERVICE_NAME") not in {None, "", "0"}:
+        return True
+    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+
 def _restart_notification_pending() -> bool:
     """Return True when a /restart completion marker is waiting to be delivered."""
     return (_hermes_home / ".restart_notify.json").exists()
@@ -10827,11 +10842,10 @@ class GatewayRunner:
         # Docker/Podman container, use the service restart path: exit with
         # code 75 so the service manager / container restart policy restarts
         # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
-        _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        # under systemd (KillMode=mixed kills the cgroup), launchd (the helper
+        # races the managed job state), or Docker (tini exits when the gateway
+        # dies, taking the detached helper with it).
+        if _gateway_should_restart_via_service_manager():
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)
