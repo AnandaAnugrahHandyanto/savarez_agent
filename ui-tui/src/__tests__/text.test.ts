@@ -15,9 +15,12 @@ import {
   pasteTokenLabel,
   sameToolTrailGroup,
   sanitizeAnsiForRender,
+  setToolEmojis,
   splitToolDuration,
   stripAnsi,
-  thinkingPreview
+  thinkingPreview,
+  toolCallEmoji,
+  toolEmoji
 } from '../lib/text.js'
 
 describe('isToolTrailResultLine', () => {
@@ -115,6 +118,20 @@ describe('sameToolTrailGroup', () => {
   it('rejects other tools', () => {
     expect(sameToolTrailGroup('searching', 'reading ✓')).toBe(false)
     expect(sameToolTrailGroup('searching', 'searching extra ✓')).toBe(false)
+  })
+})
+
+describe('tool emojis', () => {
+  it('maps backend tool emoji metadata onto raw names and rendered call labels', () => {
+    setToolEmojis({ read_file: '📖', terminal: '💻' })
+
+    expect(toolEmoji('read_file')).toBe('📖')
+    expect(toolEmoji('Read File')).toBe('📖')
+    expect(toolCallEmoji('Read File("/tmp/x") (0.9s)')).toBe('📖')
+    expect(toolCallEmoji('Terminal("npm test")')).toBe('💻')
+    expect(toolEmoji('unknown_tool')).toBe('⚡')
+
+    setToolEmojis({})
   })
 })
 

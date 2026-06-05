@@ -1713,6 +1713,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "fast": service_tier == "priority",
         "yolo": yolo,
         "tools": {},
+        "tool_emojis": {},
         "skills": {},
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
@@ -1735,12 +1736,14 @@ def _session_info(agent, session: dict | None = None) -> dict:
         pass
     try:
         from model_tools import get_toolset_for_tool
+        from agent.display import get_tool_emoji
 
         for t in getattr(agent, "tools", []) or []:
             name = t["function"]["name"]
             info["tools"].setdefault(get_toolset_for_tool(name) or "other", []).append(
                 name
             )
+            info["tool_emojis"][name] = get_tool_emoji(name, default="⚡")
     except Exception:
         pass
     try:
@@ -1923,6 +1926,12 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             "name": name,
             "context": _tool_ctx(name, args),
         }
+        try:
+            from agent.display import get_tool_emoji
+
+            payload["emoji"] = get_tool_emoji(name, default="⚡")
+        except Exception:
+            pass
         if _session_verbose(sid):
             args_text = _tool_args_text(args)
             if args_text:

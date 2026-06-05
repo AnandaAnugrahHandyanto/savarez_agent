@@ -25,6 +25,7 @@ import {
   pick,
   splitToolDuration,
   thinkingPreview,
+  toolCallEmoji,
   toolTrailLabel
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
@@ -1085,7 +1086,7 @@ export const ToolTrail = memo(function ToolTrail({
                   color={group.color}
                   content={
                     <>
-                      <Text color={t.color.accent}>● </Text>
+                      <Text color={t.color.accent}>{toolCallEmoji(group.label)} </Text>
                       {toolLabel(group)}
                       {isDelegateGroup ? (
                         <Text color={t.color.statusFg} dim>

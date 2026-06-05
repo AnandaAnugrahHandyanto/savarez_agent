@@ -2953,6 +2953,26 @@ def test_session_steer_errors_when_agent_has_no_steer_method():
     assert resp["error"]["code"] == 4010
 
 
+def test_session_info_includes_tool_emojis(monkeypatch):
+    fake_model_tools = types.ModuleType("model_tools")
+    fake_model_tools.get_toolset_for_tool = lambda name: "file"
+    fake_display = types.ModuleType("agent.display")
+    fake_display.get_tool_emoji = lambda name, default="⚡": {"read_file": "📖"}.get(name, default)
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "agent.display", fake_display)
+
+    agent = types.SimpleNamespace(
+        model="test-model",
+        tools=[{"function": {"name": "read_file"}}, {"function": {"name": "unknown_tool"}}],
+    )
+
+    info = server._session_info(agent)
+
+    assert info["tools"]["file"] == ["read_file", "unknown_tool"]
+    assert info["tool_emojis"]["read_file"] == "📖"
+    assert info["tool_emojis"]["unknown_tool"] == "⚡"
+
+
 def test_session_info_includes_mcp_servers(monkeypatch):
     fake_status = [
         {"name": "github", "transport": "http", "tools": 12, "connected": True},
