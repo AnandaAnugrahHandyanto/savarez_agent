@@ -36,6 +36,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
+import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { cn } from '@/lib/utils'
 import {
