@@ -6,6 +6,9 @@ echo "🚀 Démarrage de Hermes-Agent sur Railway..."
 # Activer l'environnement virtuel pour que la commande 'hermes' soit reconnue
 source /opt/hermes/.venv/bin/activate
 
+# Autoriser l'exécution en tant que root (requis sur certains environnements cloud comme Railway)
+export HERMES_ALLOW_ROOT_GATEWAY=1
+
 # 1. Lancer la Gateway en arrière-plan
 hermes gateway run &
 GATEWAY_PID=$!
