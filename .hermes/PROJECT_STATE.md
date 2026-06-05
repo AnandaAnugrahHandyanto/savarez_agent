@@ -660,3 +660,22 @@ No merge, deploy, production mutation, origin push, main push, dependency change
 - Docs/state sync checkpoint: `569006464` (`docs(ua): sync phase 6 completion state`) recorded Phase 6 completion state after `86313ec46`.
 - Current approval — 2026-06-04T06:04:36Z: JC approved pushing `feat/ua-phase6-trustworthy-handoff-security-review` to `jc-fork` and merging it into `jc-fork/feat/ua-phase5-development-hardening` only.
 - Guardrails preserved: no merge to `jc-fork/main`, no merge to `origin/main`, no deploy, no production mutation, no dependency change, no dashboard/UI, no auto-injection, no SQLite/vector store, no tree-sitter/WASM, no LLM/provider scanner calls, no PRL/Muster source copying, no active-profile skill edits outside the repo, and no other remote target is approved by this gate.
+
+### UA Tier 1 Static Signals — T1-005 completion checkpoint — 2026-06-05T03:42:11Z
+
+- Branch: `feat/ua-tier1-static-signals` tracking `jc-fork`.
+- Base before T1-005: `42914c1d6` (`feat(code-scan): refine entrypoint recommendations`).
+- Bead executed: `ua-tier1-005-run-ua-report-integration`.
+- Scope: integrated `static-signals.json` into public `run_ua.py` bundle flow, manifest artifact paths/integrity, summary/report data, rendered report, and subagent context bundle.
+- Boundary: Tier 1 outputs remain `heuristic_signal` / `not_validated`; marker presence is not semantic validation, security proof, runtime proof, CI proof, RLS/auth proof, deployment readiness, or an executed external gate.
+- Hermes verification:
+  - Public entrypoint smoke: PASS; `static-signals.json` present before final manifest use; manifest path/integrity matched SHA/bytes; context includes static signals; summary/context labels are `heuristic_signal` / `not_validated`; total signals `15`; bounded top context signals `8`.
+  - Focused tests: `221 passed in 34.20s`.
+  - Full `tests/code_scan`: `1074 passed in 168.29s (0:02:48)`.
+  - `py_compile`: PASS.
+  - `git diff --check`: PASS.
+  - Added-line static/scope scan: 0 hardcoded secret, shell injection, eval/exec, unsafe deserialization, SQL-format injection, or unfinished-marker hits. `executed_external_gate` hits were negative/boundary assertions only.
+- Final diff artifact: `/tmp/ua-tier1-artifacts/ua-tier1-005-run-ua-report-integration-final.diff` — 894 lines / 39047 bytes before closeout-doc append.
+- Reviewer verdict: PASS; no security, logic, or spec concerns.
+- Handoff: `.hermes/handoffs/2026-06-05-ua-tier1-005-complete.md`.
+- Guardrails preserved: no merge to main, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, or scanner-embedded LLM/provider calls performed.

@@ -1,6 +1,6 @@
 # UA Tier 1 Static Signals Layer — Planning Package
 
-> Status: execution approved by JC on 2026-06-05; serial bead execution in progress.
+> Status: execution approved by JC on 2026-06-05; serial beads T1-001 through T1-005 implemented, verified, reviewed, and ready for final push/closeout.
 > Branch: `feat/ua-tier1-static-signals`
 > Baseline: `97dcc97e1 fix(code-scan): enforce final bundle consistency`
 
@@ -110,13 +110,13 @@ Execute later only after separate explicit approval. JC separately approved seri
 [JC] prepare a branch and begin serial execution of all beads using codex-coder, if bead passes all verification tests commit and push to branch before executing the next bead.
 ```
 
-Current execution order:
+Execution order and status:
 
-1. `.beads/ua-tier1-001-static-signals-schema.md` — implemented and verified on this branch.
-2. `.beads/ua-tier1-002-supabase-migration-markers.md`
-3. `.beads/ua-tier1-003-edge-package-config-markers.md`
-4. `.beads/ua-tier1-004-entrypoint-hotspot-refinement.md`
-5. `.beads/ua-tier1-005-run-ua-report-integration.md`
+1. `.beads/ua-tier1-001-static-signals-schema.md` — complete; committed as `502fbc9ff`.
+2. `.beads/ua-tier1-002-supabase-migration-markers.md` — complete; committed as `6466daef9`.
+3. `.beads/ua-tier1-003-edge-package-config-markers.md` — complete; committed as `6fb2502d0`.
+4. `.beads/ua-tier1-004-entrypoint-hotspot-refinement.md` — complete; committed as `42914c1d6`.
+5. `.beads/ua-tier1-005-run-ua-report-integration.md` — complete; reviewer PASS; final local commit/push pending.
 
 ## Recommended Execution Routing
 

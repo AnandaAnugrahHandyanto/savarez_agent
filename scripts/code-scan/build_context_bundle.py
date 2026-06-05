@@ -37,6 +37,7 @@ OPTIONAL_ARTIFACTS = [
     "graph_analytics.json",  # UA-003
     "severity_analysis.json",  # UA-002
     "domain-surfaces.json",  # UA-P5-005
+    "static-signals.json",  # Tier 1 heuristic static markers
     "graph.json",
     "imports.json",
     "REPORT.md",
@@ -183,6 +184,7 @@ def build_context_envelope(
     severity = _load_json(bundle_dir, "severity_analysis.json")
     analytics = _load_json(bundle_dir, "graph_analytics.json")
     domain_surfaces = _load_json(bundle_dir, "domain-surfaces.json")
+    static_signals = _load_json(bundle_dir, "static-signals.json")
     graph = _load_json(bundle_dir, "graph.json")
 
     # --- scan_run_id ---
@@ -245,8 +247,12 @@ def build_context_envelope(
         severity=severity,
         analytics=analytics,
         domain_surfaces=domain_surfaces,
+        static_signals=static_signals,
         artifacts_missing=artifacts_missing,
         recommended_files=recommended_files,
+    )
+    static_signals_summary = _build_static_signals_summary(
+        static_signals, artifacts_missing
     )
 
     envelope = {
@@ -259,6 +265,7 @@ def build_context_envelope(
         "confidence": confidence,
         "recommended_files": recommended_files,
         "must_read_map": must_read_map,
+        "static_signals_summary": static_signals_summary,
         "reading_budget": reading_budget,
         "truncation_warnings": truncation_warnings,
         "suggested_questions": suggested_questions,
@@ -545,6 +552,51 @@ def _build_domain_surface_inventory_summary(
     }
 
 
+def _build_static_signals_summary(
+    static_signals: Optional[dict],
+    artifacts_missing: list[dict],
+) -> dict:
+    """Summarize static-signals.json with bounded top signals."""
+    if not static_signals:
+        return {
+            "available": False,
+            "reason": _artifact_missing_reason(artifacts_missing, "static-signals.json"),
+        }
+
+    summary = static_signals.get("summary", {}) if isinstance(static_signals, dict) else {}
+    signals = static_signals.get("signals", []) if isinstance(static_signals, dict) else []
+    top_signals = []
+    if isinstance(signals, list):
+        for item in sorted(
+            (sig for sig in signals if isinstance(sig, dict)),
+            key=lambda sig: (
+                str(sig.get("surface", "")),
+                str(sig.get("path", "")),
+                int(sig.get("line", 0) or 0),
+                str(sig.get("marker_type", "")),
+            ),
+        )[:8]:
+            top_signals.append({
+                "surface": item.get("surface", ""),
+                "path": item.get("path", ""),
+                "line": item.get("line", 0),
+                "marker_type": item.get("marker_type", ""),
+                "claim_type": item.get("claim_type", "heuristic_signal"),
+                "semantic_status": item.get("semantic_status", "not_validated"),
+            })
+
+    return {
+        "available": True,
+        "total_signals": summary.get("total_signals", len(top_signals)),
+        "by_surface": dict(sorted((summary.get("by_surface", {}) or {}).items())),
+        "by_marker_type": dict(sorted((summary.get("by_marker_type", {}) or {}).items())),
+        "top_signals": top_signals,
+        "top_signal_limit": 8,
+        "claim_type": static_signals.get("claim_type", "heuristic_signal"),
+        "semantic_status": static_signals.get("semantic_status", "not_validated"),
+    }
+
+
 def _outside_ua_scope_boundaries() -> list[str]:
     """Return the fixed boundary contract for critic packs."""
     return [
@@ -562,6 +614,7 @@ def _build_critic_pack(
     top_deterministic_facts: list[str],
     warning_orphan_triage_summary: list[str],
     domain_surface_inventory_summary: dict,
+    static_signals_summary: dict,
     outside_ua_scope_boundaries: list[str],
     focus_questions: list[str],
 ) -> dict:
@@ -572,6 +625,7 @@ def _build_critic_pack(
         "top_deterministic_facts": _bounded_list(top_deterministic_facts, 8),
         "warning_orphan_triage_summary": _bounded_list(warning_orphan_triage_summary, 8),
         "domain_surface_inventory_summary": domain_surface_inventory_summary,
+        "static_signals_summary": static_signals_summary,
         "outside_ua_scope_boundaries": outside_ua_scope_boundaries,
         "focus_questions": _bounded_list(focus_questions, 5),
     }
@@ -585,6 +639,7 @@ def _build_critic_packs(
     severity: Optional[dict],
     analytics: Optional[dict],
     domain_surfaces: Optional[dict],
+    static_signals: Optional[dict],
     artifacts_missing: list[dict],
     recommended_files: list[dict],
 ) -> dict:
@@ -593,6 +648,7 @@ def _build_critic_packs(
     top_facts = _build_top_deterministic_facts(scan, validation, recommended_files)
     triage = _build_warning_orphan_triage_summary(validation, severity)
     domain_summary = _build_domain_surface_inventory_summary(domain_surfaces, artifacts_missing)
+    static_summary = _build_static_signals_summary(static_signals, artifacts_missing)
     boundaries = _outside_ua_scope_boundaries()
 
     hub_count = 0
@@ -607,6 +663,7 @@ def _build_critic_packs(
             top_deterministic_facts=shared_context,
             warning_orphan_triage_summary=triage,
             domain_surface_inventory_summary=domain_summary,
+            static_signals_summary=static_summary,
             outside_ua_scope_boundaries=boundaries,
             focus_questions=[
                 "Which deterministic facts could be over-interpreted?",
@@ -620,6 +677,7 @@ def _build_critic_packs(
             top_deterministic_facts=shared_context,
             warning_orphan_triage_summary=triage,
             domain_surface_inventory_summary=domain_summary,
+            static_signals_summary=static_summary,
             outside_ua_scope_boundaries=boundaries,
             focus_questions=[
                 "Which surfaces or languages deserve first-pass orientation?",
@@ -633,6 +691,7 @@ def _build_critic_packs(
             top_deterministic_facts=shared_context,
             warning_orphan_triage_summary=triage,
             domain_surface_inventory_summary=domain_summary,
+            static_signals_summary=static_summary,
             outside_ua_scope_boundaries=boundaries,
             focus_questions=[
                 "Which recommended files are likely safest to inspect first?",

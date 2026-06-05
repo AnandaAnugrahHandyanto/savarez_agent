@@ -863,6 +863,71 @@ class TestUA_P6_005_MustReadMapRendering:
         assert "supabase/functions/invite/index.ts" in md
 
 
+class TestTier1StaticSignalsRendering:
+    """Rendered static-signal section must use exact non-proof boundary language."""
+
+    REQUIRED_STATIC_BOUNDARY = (
+        "These are heuristic content markers only. They do not prove security, "
+        "RLS correctness, auth correctness, runtime behavior, deployment readiness, "
+        "CI success, or policy semantics."
+    )
+
+    def test_static_signals_section_and_exact_boundary(self):
+        report = _make_report_data(
+            sections={
+                "scan": {
+                    "project_root": "/tmp/p",
+                    "scanned_at": "",
+                    "total_files": 1,
+                    "total_lines": 10,
+                    "languages": {},
+                    "categories": {},
+                    "frameworks": [],
+                },
+                "static_signals": {
+                    "available": True,
+                    "total_signals": 1,
+                    "by_surface": {"supabase_migration": 1},
+                    "by_marker_type": {"enable_rls": 1},
+                    "claim_type": "heuristic_signal",
+                    "semantic_status": "not_validated",
+                    "top_signals": [
+                        {
+                            "surface": "supabase_migration",
+                            "path": "supabase/migrations/001.sql",
+                            "line": 2,
+                            "marker_type": "enable_rls",
+                            "marker": "alter table profiles enable row level security;",
+                            "claim_type": "heuristic_signal",
+                            "semantic_status": "not_validated",
+                        }
+                    ],
+                },
+            },
+            claim_boundaries={"static_signals": "heuristic_signal"},
+        )
+
+        md = render_report.render_report_data(report)
+        assert "## Static Signals" in md
+        assert self.REQUIRED_STATIC_BOUNDARY in md
+        assert "heuristic_signal" in md
+        assert "not_validated" in md
+        static_section = md.split("## Static Signals", 1)[1].split("\n## ", 1)[0]
+        lower = static_section.lower()
+        forbidden = [
+            "static signals prove security",
+            "rls correctness verified",
+            "auth correctness verified",
+            "runtime behavior verified",
+            "deployment readiness verified",
+            "ci success verified",
+            "policy semantics verified",
+            "executed_external_gate",
+        ]
+        for phrase in forbidden:
+            assert phrase not in lower
+
+
 class TestUA_P6_007_SecurityEvidenceGapRendering:
     """UA-P6-007: security evidence gaps render as a bounded table."""
 

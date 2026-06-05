@@ -68,6 +68,7 @@ _ARTIFACT_KEYS = [
     ("orphan_triage", "orphan-triage"),
     ("hub_rankings", "hub-rankings"),
     ("semantic_signals", "semantic-signals"),
+    ("static_signals", "static-signals"),
     ("domain_surfaces", "domain-surfaces"),
     ("delta", "delta"),
     ("readiness", "readiness"),
@@ -610,6 +611,49 @@ def _build_domain_surfaces_section(domain_surfaces: Optional[dict], warnings: li
     }
 
 
+def _build_static_signals_section(static_signals: Optional[dict], warnings: list[str]) -> Any:
+    """Build bounded Tier 1 static-signal report data."""
+    if static_signals is None:
+        return "not_available"
+    if not isinstance(static_signals, dict):
+        warnings.append("static_signals: invalid artifact shape")
+        return "not_available"
+
+    summary = static_signals.get("summary", {}) or {}
+    signals = static_signals.get("signals", []) or []
+    top_signals = []
+    if isinstance(signals, list):
+        for item in sorted(
+            (sig for sig in signals if isinstance(sig, dict)),
+            key=lambda sig: (
+                str(sig.get("surface", "")),
+                str(sig.get("path", "")),
+                int(sig.get("line", 0) or 0),
+                str(sig.get("marker_type", "")),
+            ),
+        )[:8]:
+            top_signals.append({
+                "surface": item.get("surface", ""),
+                "path": item.get("path", ""),
+                "line": item.get("line", 0),
+                "marker_type": item.get("marker_type", ""),
+                "marker": item.get("marker", ""),
+                "claim_type": item.get("claim_type", "heuristic_signal"),
+                "semantic_status": item.get("semantic_status", "not_validated"),
+            })
+
+    return {
+        "available": True,
+        "total_signals": summary.get("total_signals", len(top_signals)),
+        "by_surface": dict(sorted((summary.get("by_surface", {}) or {}).items())),
+        "by_marker_type": dict(sorted((summary.get("by_marker_type", {}) or {}).items())),
+        "claim_type": static_signals.get("claim_type", "heuristic_signal"),
+        "semantic_status": static_signals.get("semantic_status", "not_validated"),
+        "top_signals": top_signals,
+        "top_signal_limit": 8,
+    }
+
+
 def _surface_paths(domain_surfaces: Optional[dict], surface_names: set[str]) -> list[str]:
     if not isinstance(domain_surfaces, dict):
         return []
@@ -742,6 +786,7 @@ def _build_totals(
     triage: Optional[dict],
     hubs: Optional[dict],
     semantic: Optional[dict],
+    static_signals: Optional[dict] = None,
     domain_surfaces: Optional[dict] = None,
 ) -> dict:
     totals: dict[str, Any] = {}
@@ -772,6 +817,8 @@ def _build_totals(
         totals["hubs_count"] = len(hubs.get("hub_rankings", []))
     if semantic:
         totals["symbol_count"] = semantic.get("totals", {}).get("symbols", 0)
+    if static_signals:
+        totals["static_signals_count"] = static_signals.get("summary", {}).get("total_signals", 0)
     if domain_surfaces:
         totals["domain_surfaces_count"] = domain_surfaces.get("summary", {}).get("total_surfaces", 0)
     return totals
@@ -788,6 +835,7 @@ def build_report_data(
     orphan_triage: Optional[dict] = None,
     hub_rankings: Optional[dict] = None,
     semantic_signals: Optional[dict] = None,
+    static_signals: Optional[dict] = None,
     domain_surfaces: Optional[dict] = None,
     delta: Optional[dict] = None,
     readiness: Optional[dict] = None,
@@ -815,12 +863,13 @@ def build_report_data(
         "orphan_triage": orphan_triage,
         "hub_rankings": hub_rankings,
         "semantic_signals": semantic_signals,
+        "static_signals": static_signals,
         "domain_surfaces": domain_surfaces,
         "delta": delta,
         "readiness": readiness,
     }
     for key in sorted(source_map.keys()):
-        if key == "domain_surfaces" and source_map[key] is None:
+        if key in {"domain_surfaces", "static_signals"} and source_map[key] is None:
             continue
         sources[key] = "loaded" if source_map[key] is not None else "not_provided"
 
@@ -832,11 +881,14 @@ def build_report_data(
         "orphan_triage": "orphan_triage",
         "hub_rankings": "hub_rankings",
         "semantic_signals": "semantic_signals",
+        "static_signals": "static_signals",
         "domain_surfaces": "domain_surfaces",
         "delta": "delta",
         "readiness": "readiness",
     }
     for key, label in optional_labels.items():
+        if key in {"domain_surfaces", "static_signals"} and source_map[key] is None:
+            continue
         if source_map[key] is None:
             warnings.append(f"{label}: not provided")
 
@@ -855,6 +907,9 @@ def build_report_data(
     sections["hub_rankings"] = _build_hub_rankings_section(hub_rankings, warnings)
     sections["semantic_signals"] = _build_semantic_section(
         semantic_signals, warnings
+    )
+    sections["static_signals"] = _build_static_signals_section(
+        static_signals, warnings
     )
     sections["domain_surfaces"] = _build_domain_surfaces_section(
         domain_surfaces, warnings
@@ -891,6 +946,7 @@ def build_report_data(
         orphan_triage,
         hub_rankings,
         semantic_signals,
+        static_signals,
         domain_surfaces,
     )
 
@@ -931,6 +987,7 @@ def build_report_data(
             "hub_rankings": "heuristic_signal",
             "orphan_triage": "heuristic_signal",
             "semantic_signals": "heuristic_signal",
+            "static_signals": "heuristic_signal",
             "readiness": "suggested_verification_not_run",
             "reading_plan": "suggested_verification_not_run",
             "security_evidence_gaps": "outside_ua_scope",
@@ -980,6 +1037,12 @@ def main() -> int:
         help="Path to semantic-signals.json",
     )
     parser.add_argument(
+        "--static-signals",
+        dest="static_signals",
+        default=None,
+        help="Path to static-signals.json",
+    )
+    parser.add_argument(
         "--domain-surfaces",
         dest="domain_surfaces",
         default=None,
@@ -1019,6 +1082,7 @@ def main() -> int:
     orphan_triage = _load_artifact(args.orphan_triage, "orphan_triage", warnings)
     hub_rankings = _load_artifact(args.hubs, "hub_rankings", warnings)
     semantic_signals = _load_artifact(args.semantic, "semantic_signals", warnings)
+    static_signals = _load_artifact(args.static_signals, "static_signals", warnings)
     domain_surfaces = _load_artifact(args.domain_surfaces, "domain_surfaces", warnings)
     delta = _load_artifact(args.delta, "delta", warnings)
     readiness = _load_artifact(args.readiness, "readiness", warnings)
@@ -1033,6 +1097,7 @@ def main() -> int:
             orphan_triage=orphan_triage,
             hub_rankings=hub_rankings,
             semantic_signals=semantic_signals,
+            static_signals=static_signals,
             domain_surfaces=domain_surfaces,
             delta=delta,
             readiness=readiness,

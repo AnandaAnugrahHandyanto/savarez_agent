@@ -192,6 +192,49 @@ class TestFinalBundleConsistency:
         _assert_final_bundle_consistent(out)
 
 
+class TestStaticSignalsRunUAIntegration:
+    """Tier 1 static signals must be emitted before final manifest/context."""
+
+    def test_review_bundle_registers_static_signals_with_integrity(self, tmp_path: Path):
+        target = str(FIXTURES_DIR / "static_signals_supabase")
+        out = tmp_path / "bundle"
+        rc, _, stderr = run_ua(target, str(out), mode="review")
+        assert rc == 0, f"review failed: {stderr}"
+
+        static_path = out / "static-signals.json"
+        assert static_path.exists(), "static-signals.json was not emitted"
+        static_signals = json.loads(static_path.read_text(encoding="utf-8"))
+        assert static_signals["claim_type"] == "heuristic_signal"
+        assert static_signals["semantic_status"] == "not_validated"
+        assert static_signals["summary"]["total_signals"] > 0
+
+        manifest = _load_manifest(str(out))
+        assert manifest["artifact_paths"]["static-signals.json"] == str(static_path)
+        integrity = manifest["artifact_integrity"]["static-signals.json"]
+        assert integrity["bytes"] == static_path.stat().st_size
+        assert integrity["sha256"] == hashlib.sha256(static_path.read_bytes()).hexdigest()
+
+        ctx = json.loads((out / "subagent-context.json").read_text(encoding="utf-8"))
+        included = {item["artifact"] for item in ctx["artifacts_included"]}
+        assert "static-signals.json" in included
+        assert "static-signals.json" not in {
+            item.get("artifact") for item in ctx.get("artifacts_missing", [])
+        }
+
+    def test_static_signal_summary_is_bounded_and_not_executed_gate(self, tmp_path: Path):
+        target = str(FIXTURES_DIR / "static_signals_supabase")
+        out = tmp_path / "bundle"
+        rc, _, stderr = run_ua(target, str(out), mode="preflight")
+        assert rc == 0, f"preflight failed: {stderr}"
+
+        summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+        static_summary = summary["static_signals"]
+        assert static_summary["claim_type"] == "heuristic_signal"
+        assert static_summary["semantic_status"] == "not_validated"
+        assert static_summary["total_signals"] > 0
+        assert "executed_external_gate" not in json.dumps(static_summary)
+
+
 # ── GREEN: artifact sets per mode ───────────────────────────────────────
 
 class TestInventoryMode:

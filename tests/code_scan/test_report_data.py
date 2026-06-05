@@ -951,3 +951,50 @@ class TestUA_P6_007_SecurityEvidenceGaps:
         assert any(gap["label"] == "static_analysis_finding" for gap in security["gaps"])
         assert any(gap["label"] == "suggested_verification_not_run" for gap in security["gaps"])
         assert result["claim_boundaries"]["security_evidence_gaps"] == "outside_ua_scope"
+
+
+class TestTier1StaticSignalsReportData:
+    """Tier 1 static signals stay heuristic and bounded in report data."""
+
+    def test_static_signals_section_preserves_boundary_labels(self):
+        scan = _load_fixture("scan.json")
+        static_signals = {
+            "claim_type": "heuristic_signal",
+            "semantic_status": "not_validated",
+            "summary": {
+                "total_signals": 2,
+                "by_surface": {"supabase_migration": 1, "package_config": 1},
+                "by_marker_type": {"enable_rls": 1, "script_test": 1},
+            },
+            "signals": [
+                {
+                    "surface": "supabase_migration",
+                    "path": "supabase/migrations/001.sql",
+                    "line": 3,
+                    "marker_type": "enable_rls",
+                    "marker": "alter table profiles enable row level security;",
+                    "claim_type": "heuristic_signal",
+                    "semantic_status": "not_validated",
+                },
+                {
+                    "surface": "package_config",
+                    "path": "package.json",
+                    "line": 6,
+                    "marker_type": "script_test",
+                    "marker": '"test": "vitest"',
+                    "claim_type": "heuristic_signal",
+                    "semantic_status": "not_validated",
+                },
+            ],
+        }
+
+        result = report_data.build_report_data(scan=scan, static_signals=static_signals)
+        section = result["sections"]["static_signals"]
+
+        assert result["sources"]["static_signals"] == "loaded"
+        assert result["totals"]["static_signals_count"] == 2
+        assert result["claim_boundaries"]["static_signals"] == "heuristic_signal"
+        assert section["claim_type"] == "heuristic_signal"
+        assert section["semantic_status"] == "not_validated"
+        assert len(section["top_signals"]) <= 8
+        assert "executed_external_gate" not in json.dumps(section)

@@ -1018,6 +1018,54 @@ class TestCriticPacksViaRunUA:
             assert role in data["critic_packs"]
 
 
+class TestTier1StaticSignalsContext:
+    """subagent-context may include bounded top static signals only."""
+
+    def test_context_summarizes_top_static_signals_with_labels(self, tmp_path: Path):
+        bundle = _make_minimal_bundle(tmp_path)
+        static_signals = {
+            "claim_type": "heuristic_signal",
+            "semantic_status": "not_validated",
+            "summary": {
+                "total_signals": 12,
+                "by_surface": {"supabase_migration": 10, "package_config": 2},
+                "by_marker_type": {"enable_rls": 10, "script_test": 2},
+            },
+            "signals": [
+                {
+                    "surface": "supabase_migration",
+                    "path": f"supabase/migrations/{idx:03d}.sql",
+                    "line": idx + 1,
+                    "marker_type": "enable_rls",
+                    "marker": "alter table profiles enable row level security;",
+                    "claim_type": "heuristic_signal",
+                    "semantic_status": "not_validated",
+                }
+                for idx in range(12)
+            ],
+        }
+        (bundle / "static-signals.json").write_text(json.dumps(static_signals), encoding="utf-8")
+        manifest_path = bundle / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifact_paths"]["static-signals.json"] = str(bundle / "static-signals.json")
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        data = json.loads(out.read_text(encoding="utf-8"))
+        summary = data["static_signals_summary"]
+
+        assert summary["available"] is True
+        assert summary["total_signals"] == 12
+        assert summary["claim_type"] == "heuristic_signal"
+        assert summary["semantic_status"] == "not_validated"
+        assert 0 < len(summary["top_signals"]) <= 8
+        for item in summary["top_signals"]:
+            assert item["claim_type"] == "heuristic_signal"
+            assert item["semantic_status"] == "not_validated"
+        assert "executed_external_gate" not in json.dumps(summary)
+
+
 class TestMustReadMapUA_P6_005:
     """UA-P6-005: subagent-context includes a bounded deterministic must-read map."""
 

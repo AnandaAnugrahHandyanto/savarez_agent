@@ -431,6 +431,63 @@ def _render_domain_surfaces(domain_surfaces: Any) -> str:
     return "\n".join(lines)
 
 
+def _render_static_signals(static_signals: Any) -> str:
+    """Render Tier 1 heuristic static-signal markers with non-proof boundary."""
+    lines = ["## Static Signals", ""]
+    boundary = (
+        "These are heuristic content markers only. They do not prove security, "
+        "RLS correctness, auth correctness, runtime behavior, deployment readiness, "
+        "CI success, or policy semantics."
+    )
+    lines.append(boundary)
+    lines.append("")
+
+    if static_signals == "not_available":
+        lines.append("*Not available — static-signals artifact not provided.*")
+        lines.append("")
+        return "\n".join(lines)
+    if not isinstance(static_signals, dict):
+        lines.append("*Not available.*")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append(f"Total signals: **{static_signals.get('total_signals', 0)}**")
+    lines.append(f"Claim type: `{_safe_inline(static_signals.get('claim_type', 'heuristic_signal'))}`")
+    lines.append(f"Semantic status: `{_safe_inline(static_signals.get('semantic_status', 'not_validated'))}`")
+    lines.append("")
+
+    by_surface = static_signals.get("by_surface", {}) or {}
+    if by_surface:
+        lines.append("### Signal counts by surface")
+        lines.append("")
+        lines.append("| Surface | Count |")
+        lines.append("|---------|-------|")
+        for surface, count in sorted(by_surface.items()):
+            lines.append(f"| {_safe_inline(surface)} | {count} |")
+        lines.append("")
+
+    top_signals = static_signals.get("top_signals", []) or []
+    if top_signals:
+        lines.append("### Top Signals")
+        lines.append("")
+        lines.append("| Surface | Path | Line | Marker Type | Claim | Status |")
+        lines.append("|---------|------|------|-------------|-------|--------|")
+        for item in top_signals:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| "
+                f"{_safe_inline(item.get('surface', ''))} | "
+                f"`{_safe_inline(item.get('path', ''))}` | "
+                f"{_safe_inline(item.get('line', ''))} | "
+                f"{_safe_inline(item.get('marker_type', ''))} | "
+                f"{_safe_inline(item.get('claim_type', 'heuristic_signal'))} | "
+                f"{_safe_inline(item.get('semantic_status', 'not_validated'))} |"
+            )
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _render_delta(delta: Any) -> str:
     """Render Delta Summary section."""
     lines = ["## Delta Summary", ""]
@@ -878,6 +935,7 @@ def render_report_data(report_data: dict, *, max_bytes: int = DEFAULT_MAX_BYTES)
     hub_rankings = sections.get("hub_rankings", "not_available")
     orphan_triage = sections.get("orphan_triage", "not_available")
     semantic = sections.get("semantic_signals", "not_available")
+    static_signals = sections.get("static_signals", "not_available")
     domain_surfaces = sections.get("domain_surfaces", "not_available")
     delta = sections.get("delta", "not_available")
     readiness = sections.get("readiness", "not_available")
@@ -914,7 +972,10 @@ def render_report_data(report_data: dict, *, max_bytes: int = DEFAULT_MAX_BYTES)
     # 7. Semantic Signals
     parts.append(_render_semantic_signals(semantic))
 
-    # 7b. Domain Surfaces
+    # 7b. Static Signals
+    parts.append(_render_static_signals(static_signals))
+
+    # 7c. Domain Surfaces
     parts.append(_render_domain_surfaces(domain_surfaces))
 
     # 8. Delta Summary
