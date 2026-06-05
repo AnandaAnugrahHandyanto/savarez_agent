@@ -41,6 +41,8 @@ import type {
 } from '@/types/hermes'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
+const VOICE_REQUEST_TIMEOUT_SECONDS = 24 * 60 * 60
+const VOICE_REQUEST_TIMEOUT_MS = VOICE_REQUEST_TIMEOUT_SECONDS * 1000
 
 export type {
   ActionResponse,
@@ -655,21 +657,29 @@ export function getActionStatus(name: string, lines = 200): Promise<ActionStatus
 }
 
 export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<AudioTranscriptionResponse> {
+  // Local STT can exceed Electron's default 15s backend timeout, especially
+  // when the larger Whisper model is cold. Use the same 24-hour request window
+  // as local voice playback, expressed in seconds above and converted here.
   return window.hermesDesktop.api<AudioTranscriptionResponse>({
     path: '/api/audio/transcribe',
     method: 'POST',
     body: {
       data_url: dataUrl,
       mime_type: mimeType
-    }
+    },
+    timeoutMs: VOICE_REQUEST_TIMEOUT_MS
   })
 }
 
 export function speakText(text: string): Promise<AudioSpeakResponse> {
+  // Local voice synthesis can legitimately take a long time for very long
+  // threads. Use a 24-hour request window, expressed in seconds above and
+  // converted at the Electron API boundary.
   return window.hermesDesktop.api<AudioSpeakResponse>({
     path: '/api/audio/speak',
     method: 'POST',
-    body: { text }
+    body: { text },
+    timeoutMs: VOICE_REQUEST_TIMEOUT_MS
   })
 }
 

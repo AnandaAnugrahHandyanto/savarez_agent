@@ -227,6 +227,10 @@ class TestChromeDebugLaunch:
              patch("hermes_cli.browser_connect.os.path.isfile", return_value=False):
             assert manual_chrome_debug_command(9222, "Linux") is None
 
+    def test_manual_command_returns_none_when_darwin_browser_missing(self):
+        with patch("hermes_cli.browser_connect.os.path.isfile", return_value=False):
+            assert manual_chrome_debug_command(9222, "Darwin") is None
+
     def test_connect_context_note_allows_expected_browser_use(self, monkeypatch):
         """`/browser connect` is an instruction to use the CDP browser.
 

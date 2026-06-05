@@ -92,6 +92,9 @@ DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest"
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
+LOCAL_STT_INITIAL_PROMPT_ENV = "HERMES_LOCAL_STT_INITIAL_PROMPT"
+LOCAL_STT_COMPUTE_TYPE_ENV = "HERMES_LOCAL_STT_COMPUTE_TYPE"
+LOCAL_STT_BEAM_SIZE_ENV = "HERMES_LOCAL_STT_BEAM_SIZE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
@@ -160,6 +163,24 @@ def _find_whisper_binary() -> Optional[str]:
     return _find_binary("whisper")
 
 
+def _local_command_env() -> Dict[str, str]:
+    """Return an env where Homebrew/local helper binaries are visible.
+
+    Hermes Desktop launches the dashboard from Electron with a deliberately
+    small PATH. The OpenAI Whisper CLI then shells out to ``ffmpeg`` by name,
+    so an absolute path to ``whisper`` is not enough; its child process also
+    needs Homebrew's bin directory on PATH.
+    """
+    env = os.environ.copy()
+    current_path = env.get("PATH", "")
+    path_parts = [part for part in current_path.split(os.pathsep) if part]
+    for directory in reversed(COMMON_LOCAL_BIN_DIRS):
+        if Path(directory).is_dir() and directory not in path_parts:
+            path_parts.insert(0, directory)
+    env["PATH"] = os.pathsep.join(path_parts)
+    return env
+
+
 def _get_local_command_template() -> Optional[str]:
     configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
     if configured:
@@ -202,6 +223,39 @@ def _normalize_local_model(model_name: Optional[str]) -> str:
 
 def _normalize_local_command_model(model_name: Optional[str]) -> str:
     return _normalize_local_model(model_name)
+
+
+def _local_stt_compute_type() -> str:
+    local_cfg = _load_stt_config().get("local", {})
+    configured = (
+        local_cfg.get("compute_type")
+        or os.getenv(LOCAL_STT_COMPUTE_TYPE_ENV)
+        or "auto"
+    )
+    compute_type = str(configured).strip()
+    return compute_type or "auto"
+
+
+def _local_stt_initial_prompt(local_cfg: Optional[dict] = None) -> Optional[str]:
+    if local_cfg is None:
+        local_cfg = _load_stt_config().get("local", {})
+    configured = local_cfg.get("initial_prompt") or os.getenv(LOCAL_STT_INITIAL_PROMPT_ENV)
+    if configured is None:
+        return None
+    prompt = str(configured).strip()
+    return prompt or None
+
+
+def _local_stt_beam_size(local_cfg: Optional[dict] = None) -> int:
+    if local_cfg is None:
+        local_cfg = _load_stt_config().get("local", {})
+    configured = local_cfg.get("beam_size") or os.getenv(LOCAL_STT_BEAM_SIZE_ENV) or 5
+    try:
+        beam_size = int(configured)
+    except (TypeError, ValueError):
+        logger.warning("Invalid local STT beam_size %r; using 5", configured)
+        return 5
+    return max(1, beam_size)
 
 
 def _try_lazy_install_stt() -> bool:
@@ -1094,8 +1148,9 @@ def _load_local_whisper_model(model_name: str):
     library load failure fall back to CPU + int8.
     """
     from faster_whisper import WhisperModel
+    compute_type = _local_stt_compute_type()
     try:
-        return WhisperModel(model_name, device="auto", compute_type="auto")
+        return WhisperModel(model_name, device="auto", compute_type=compute_type)
     except Exception as exc:
         if not _looks_like_cuda_lib_error(exc):
             raise
@@ -1104,7 +1159,8 @@ def _load_local_whisper_model(model_name: str):
             "Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.",
             exc,
         )
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+        fallback_compute_type = "int8" if compute_type == "auto" else compute_type
+        return WhisperModel(model_name, device="cpu", compute_type=fallback_compute_type)
 
 
 def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
@@ -1123,14 +1179,18 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
+        local_cfg = _load_stt_config().get("local", {})
         _forced_lang = (
-            _load_stt_config().get("local", {}).get("language")
+            local_cfg.get("language")
             or os.getenv(LOCAL_STT_LANGUAGE_ENV)
             or None
         )
-        transcribe_kwargs = {"beam_size": 5}
+        transcribe_kwargs = {"beam_size": _local_stt_beam_size(local_cfg)}
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
+        initial_prompt = _local_stt_initial_prompt(local_cfg)
+        if initial_prompt:
+            transcribe_kwargs["initial_prompt"] = initial_prompt
 
         try:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
@@ -1151,7 +1211,9 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model = None
             _local_model_name = None
             from faster_whisper import WhisperModel
-            _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            compute_type = _local_stt_compute_type()
+            fallback_compute_type = "int8" if compute_type == "auto" else compute_type
+            _local_model = WhisperModel(model_name, device="cpu", compute_type=fallback_compute_type)
             _local_model_name = model_name
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
             transcript = " ".join(segment.text.strip() for segment in segments)
@@ -1182,7 +1244,7 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
     command = [ffmpeg, "-y", "-i", file_path, converted_path]
 
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        subprocess.run(command, check=True, capture_output=True, text=True, env=_local_command_env())
         return converted_path, None
     except subprocess.CalledProcessError as e:
         details = e.stderr.strip() or e.stdout.strip() or str(e)
@@ -1224,18 +1286,38 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             )
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+            command_env = _local_command_env()
             if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+                completed = subprocess.run(
+                    command,
+                    shell=True,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=command_env,
+                )
             else:
-                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
+                completed = subprocess.run(
+                    shlex.split(command),
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=command_env,
+                )
             
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:
+                details = (completed.stderr or completed.stdout or "").strip()
+                if details:
+                    details = details[-1000:]
+                    error = f"Local STT command completed but did not produce a .txt transcript: {details}"
+                else:
+                    error = "Local STT command completed but did not produce a .txt transcript"
                 return {
                     "success": False,
                     "transcript": "",
-                    "error": "Local STT command completed but did not produce a .txt transcript",
+                    "error": error,
                 }
 
             transcript_text = txt_files[0].read_text(encoding="utf-8").strip()

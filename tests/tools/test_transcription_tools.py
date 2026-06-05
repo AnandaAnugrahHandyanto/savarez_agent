@@ -383,6 +383,25 @@ class TestTranscribeLocalCommand:
         assert "{model}" in template
         assert "{output_dir}" in template
 
+    def test_local_command_env_restores_common_bin_paths(self, monkeypatch, tmp_path):
+        brew_bin = tmp_path / "homebrew-bin"
+        local_bin = tmp_path / "local-bin"
+        brew_bin.mkdir()
+        local_bin.mkdir()
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.setattr(
+            "tools.transcription_tools.COMMON_LOCAL_BIN_DIRS",
+            (str(brew_bin), str(local_bin)),
+        )
+
+        from tools.transcription_tools import _local_command_env
+
+        path = _local_command_env()["PATH"].split(os.pathsep)
+
+        assert path[:2] == [str(brew_bin), str(local_bin)]
+        assert "/usr/bin" in path
+        assert "/bin" in path
+
     def test_command_fallback_with_template(self, monkeypatch, sample_ogg, tmp_path):
         out_dir = tmp_path / "local-out"
         out_dir.mkdir()
@@ -525,6 +544,44 @@ class TestTranscribeLocalExtended:
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
 
+    def test_local_config_passes_accuracy_kwargs(self, monkeypatch, tmp_path):
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "Qwen and Hermes"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([seg], info)
+
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {
+                "local": {
+                    "language": "en",
+                    "initial_prompt": "Josh, Hermes, Vera, Qwen, Morgana, Pinchpoint.",
+                    "beam_size": 7,
+                }
+            },
+        )
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", return_value=mock_model), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "large-v3")
+
+        assert result["success"] is True
+        assert mock_model.transcribe.call_args.kwargs == {
+            "beam_size": 7,
+            "language": "en",
+            "initial_prompt": "Josh, Hermes, Vera, Qwen, Morgana, Pinchpoint.",
+        }
+
     def test_load_time_cuda_lib_failure_falls_back_to_cpu(self, tmp_path):
         """Missing libcublas at load time → reload on CPU, succeed."""
         audio = tmp_path / "test.ogg"
@@ -548,6 +605,7 @@ class TestTranscribeLocalExtended:
             return cpu_model
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._local_stt_compute_type", lambda: "auto"), \
              patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):
@@ -586,6 +644,7 @@ class TestTranscribeLocalExtended:
             return models.pop(0)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._local_stt_compute_type", lambda: "auto"), \
              patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):
