@@ -131,6 +131,55 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps = {}) {
   return buildGatewayWsUrl(baseUrl, token)
 }
 
+/**
+ * Select an explicit per-profile remote override from a desktop connection
+ * config.
+ *
+ * Per-profile remotes let each Hermes profile point at its own backend: the
+ * connection config may carry a `profiles` map keyed by profile name, each
+ * entry shaped like the global `remote` block plus a `mode`. Only an entry
+ * with `mode === 'remote'` and a non-empty `url` counts as an override; any
+ * other entry (missing, local, or ur-less) returns null so the caller falls
+ * back to the env override / global remote / local spawn chain.
+ *
+ * Pure + electron-free: the returned `token` is the raw stored secret object
+ * (or string); main.cjs decrypts it with safeStorage. Returns
+ * `{ url, authMode, token } | null`.
+ *
+ * @param {{ profiles?: Record<string, any> }} config
+ * @param {string|null|undefined} profile
+ */
+function profileRemoteOverride(config, profile) {
+  const key = profile && String(profile).trim() ? String(profile).trim() : null
+  if (!key) {
+    return null
+  }
+
+  const profiles =
+    config && typeof config === 'object' && config.profiles && typeof config.profiles === 'object'
+      ? config.profiles
+      : null
+  if (!profiles) {
+    return null
+  }
+
+  const entry = profiles[key]
+  if (!entry || typeof entry !== 'object' || entry.mode !== 'remote') {
+    return null
+  }
+
+  const url = String(entry.url || '').trim()
+  if (!url) {
+    return null
+  }
+
+  return {
+    url,
+    authMode: entry.authMode === 'oauth' ? 'oauth' : 'token',
+    token: entry.token
+  }
+}
+
 function tokenPreview(value) {
   const raw = String(value || '')
 
@@ -210,6 +259,7 @@ module.exports = {
   cookiesHaveSession,
   cookiesHaveLiveSession,
   normalizeRemoteBaseUrl,
+  profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
   tokenPreview
