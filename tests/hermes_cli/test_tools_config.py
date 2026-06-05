@@ -9,6 +9,7 @@ from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
     _apply_toolset_change,
+    _checklist_toolset_keys,
     _configure_provider,
     _reconfigure_provider,
     _get_platform_tools,
@@ -20,6 +21,7 @@ from hermes_cli.tools_config import (
     _toolset_needs_configuration_prompt,
     CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
+    gui_toolset_label,
     _visible_providers,
     tools_command,
 )
@@ -76,6 +78,13 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
 
     assert enabled
     assert enabled.isdisjoint(_DEFAULT_OFF_TOOLSETS)
+
+
+def test_gui_toolset_label_strips_leading_emoji():
+    assert gui_toolset_label("🔍 Web Search & Scraping") == "Web Search & Scraping"
+    assert gui_toolset_label("👁️  Vision / Image Analysis") == "Vision / Image Analysis"
+    assert gui_toolset_label("🔌 My Plugin") == "My Plugin"
+    assert gui_toolset_label("Terminal & Processes") == "Terminal & Processes"
 
 
 def test_configurable_toolsets_include_messaging():

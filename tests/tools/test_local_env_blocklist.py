@@ -160,6 +160,7 @@ class TestProviderEnvBlocklist:
             "TWILIO_ACCOUNT_SID": "twilio-sid",
             "TWILIO_AUTH_TOKEN": "twilio-secret",
             "FIRECRAWL_API_KEY": "fc-secret",
+            "HERMES_DASHBOARD_SESSION_TOKEN": "dashboard-session-secret",
             "BROWSERBASE_PROJECT_ID": "bb-project",
             "ELEVENLABS_API_KEY": "el-secret",
             "DINGTALK_CLIENT_SECRET": "dingtalk-secret",
