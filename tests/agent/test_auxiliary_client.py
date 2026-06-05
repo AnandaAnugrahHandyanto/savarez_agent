@@ -2952,7 +2952,7 @@ class TestCodexAuxiliaryAdapterTimeout:
         class _SlowAliveCreateStream:
             def __iter__(self):
                 for _ in range(5):
-                    time.sleep(0.03)
+                    time.sleep(0.1)
                     yield SimpleNamespace(type="response.in_progress")
 
             def close(self): pass
@@ -2968,10 +2968,10 @@ class TestCodexAuxiliaryAdapterTimeout:
         with pytest.raises(TimeoutError):
             adapter.create(
                 messages=[{"role": "user", "content": "summarize this"}],
-                timeout=0.05,
+                timeout=0.01,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert time.monotonic() - started < 0.2
 
 
 class TestCodexAuxiliaryToolMessageConversion:

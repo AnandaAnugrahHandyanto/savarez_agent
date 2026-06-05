@@ -50,6 +50,8 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 
+from agent.codex_runtime import _consume_codex_event_stream
+
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # openai SDK pulls a large type tree (~240 ms cold, including responses/*,
 # graders/*). We expose `OpenAI` here as a thin proxy that imports the SDK on
@@ -767,7 +769,9 @@ class _CodexCompletionsAdapter:
             if converted:
                 resp_kwargs["tools"] = converted
 
-        # Stream and collect the response
+        # Stream and collect the response. The Codex stream consumer is imported
+        # at module load rather than inside the timed call path so a cold import
+        # cannot consume most of a short caller deadline before provider I/O.
         text_parts: List[str] = []
         tool_calls_raw: List[Any] = []
         usage = None
@@ -779,7 +783,7 @@ class _CodexCompletionsAdapter:
         def _timeout_message() -> str:
             return f"Codex auxiliary Responses stream exceeded {float(total_timeout):.1f}s total timeout"
 
-        def _close_client_on_timeout() -> None:
+        def _close_client_on_timeout(*, evict_cache: bool = True) -> None:
             timed_out.set()
             close = getattr(self._client, "close", None)
             if callable(close):
@@ -793,10 +797,17 @@ class _CodexCompletionsAdapter:
             # cache must drop that entry — otherwise the next auxiliary call
             # (compression retry, memory flush, etc.) reuses the dead client
             # and fails fast with a connection error.  See issue #23432.
-            try:
-                _evict_cached_client_instance(self._client)
-            except Exception:
-                logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
+            #
+            # Do not do cache eviction on the timer thread: in large test runs
+            # the cache can contain many entries, and taking the cache lock from
+            # the timer callback can starve the stream consumer long enough to
+            # violate short total-timeout deadlines.  The caller evicts before
+            # re-raising the TimeoutError once control returns to this thread.
+            if evict_cache:
+                try:
+                    _evict_cached_client_instance(self._client)
+                except Exception:
+                    logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
 
         def _check_cancelled() -> None:
             if deadline is not None and time.monotonic() >= deadline:
@@ -816,7 +827,7 @@ class _CodexCompletionsAdapter:
 
         try:
             if total_timeout:
-                timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
+                timeout_timer = threading.Timer(float(total_timeout), lambda: _close_client_on_timeout(evict_cache=False))
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
@@ -831,7 +842,6 @@ class _CodexCompletionsAdapter:
             # Consuming raw events and assembling the final response
             # ourselves from ``response.output_item.done`` makes us
             # structurally immune to that drift.
-            from agent.codex_runtime import _consume_codex_event_stream
 
             stream_kwargs = dict(resp_kwargs)
             stream_kwargs["stream"] = True
@@ -841,10 +851,46 @@ class _CodexCompletionsAdapter:
                 # cadence the old in-line ``_check_cancelled()`` used.
                 _check_cancelled()
 
+            def _iter_events_with_deadline(source: Any):
+                """Yield stream events without letting blocking ``next()`` overrun deadline."""
+                iterator = iter(source)
+                while True:
+                    _check_cancelled()
+                    remaining = None
+                    if deadline is not None:
+                        remaining = max(0.0, deadline - time.monotonic())
+                    box: List[Any] = []
+                    errors: List[BaseException] = []
+
+                    def _advance() -> None:
+                        try:
+                            box.append(next(iterator))
+                        except BaseException as exc:  # propagate StopIteration/errors on caller thread
+                            errors.append(exc)
+
+                    worker = threading.Thread(target=_advance, daemon=True)
+                    worker.start()
+                    worker.join(remaining)
+                    if worker.is_alive():
+                        _close_client_on_timeout(evict_cache=False)
+                        raise TimeoutError(_timeout_message())
+                    if errors:
+                        err = errors[0]
+                        if isinstance(err, StopIteration):
+                            return
+                        raise err
+                    if box:
+                        yield box[0]
+
             event_stream = self._client.responses.create(**stream_kwargs)
+            if timeout_timer is not None:
+                timeout_timer.cancel()
+                timeout_timer = None
+            _check_cancelled()
             try:
+                source_stream = _iter_events_with_deadline(event_stream) if deadline is not None else event_stream
                 final = _consume_codex_event_stream(
-                    event_stream,
+                    source_stream,
                     model=resp_kwargs.get("model"),
                     on_event=_on_each_event,
                 )
@@ -897,6 +943,10 @@ class _CodexCompletionsAdapter:
                 )
         except Exception as exc:
             if timed_out.is_set():
+                try:
+                    _evict_cached_client_instance(self._client)
+                except Exception:
+                    logger.debug("Codex auxiliary: cache eviction after timeout failed", exc_info=True)
                 raise TimeoutError(_timeout_message()) from exc
             logger.debug("Codex auxiliary Responses API call failed: %s", exc)
             raise
