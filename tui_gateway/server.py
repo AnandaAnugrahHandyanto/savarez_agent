@@ -8267,7 +8267,14 @@ def _(rid, params: dict) -> dict:
                 rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
             )
     except ImportError:
-        pass
+        # Fail-closed: a missing tools.approval module means we cannot
+        # screen the command for dangerous patterns. Refuse to execute
+        # rather than silently bypassing the guard -- a partial deploy,
+        # circular import, or syntax error in a dependency must not
+        # downgrade shell.exec into an unconditional ``subprocess.run``.
+        return _err(
+            rid, 4006, "dangerous-command guard unavailable; refusing to execute"
+        )
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()

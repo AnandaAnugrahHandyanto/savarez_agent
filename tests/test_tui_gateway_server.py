@@ -5694,3 +5694,97 @@ def test_notification_event_dedup_key_keeps_completions_one_shot():
     assert server._notification_event_dedup_key(first) == server._notification_event_dedup_key(
         replay
     )
+
+
+# --------------------------------------------------------------------------
+# shell.exec — dangerous-command guard must fail closed on ImportError
+# --------------------------------------------------------------------------
+
+
+def test_shell_exec_fails_closed_when_guard_unavailable(monkeypatch):
+    """If tools.approval cannot be imported, shell.exec must refuse to
+    execute the command rather than silently bypassing the guard.
+
+    Regression for the fail-open path where ``except ImportError: pass``
+    let arbitrary commands reach ``subprocess.run`` whenever the
+    dangerous-command screener could not be loaded (missing module,
+    circular import, syntax error in a dependency, partial deploy).
+    """
+    import builtins
+    import subprocess
+
+    original_import = builtins.__import__
+
+    def _refuse_approval(name, globals=None, locals=None, fromlist=(), level=0):
+        # Only intercept the targeted import; everything else flows
+        # through the real importer so the test does not interfere with
+        # unrelated lookups inside ``handle_request``.
+        if name == "tools.approval":
+            raise ImportError("simulated: tools.approval unavailable")
+        return original_import(name, globals, locals, fromlist, level)
+
+    subprocess_calls: list = []
+
+    def _record_run(*args, **kwargs):
+        subprocess_calls.append((args, kwargs))
+        raise AssertionError(
+            "subprocess.run was reached despite the guard being unavailable"
+        )
+
+    monkeypatch.setattr(builtins, "__import__", _refuse_approval)
+    monkeypatch.setattr(subprocess, "run", _record_run)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "shell.exec",
+            "params": {"command": "echo safe"},
+        }
+    )
+
+    assert "error" in resp, f"expected error response, got: {resp!r}"
+    assert resp["error"]["code"] == 4006, (
+        f"expected error code 4006 for unavailable guard, got: "
+        f"{resp['error']['code']!r}"
+    )
+    assert "guard unavailable" in resp["error"]["message"].lower(), (
+        "error message must explain why execution was refused; "
+        f"got: {resp['error']['message']!r}"
+    )
+    assert subprocess_calls == [], (
+        "shell.exec must not invoke subprocess.run when the guard is "
+        f"unavailable; got: {subprocess_calls!r}"
+    )
+
+
+def test_shell_exec_still_runs_when_guard_available(monkeypatch):
+    """Counterpart to ``test_shell_exec_fails_closed_when_guard_unavailable``:
+    when tools.approval imports successfully and the command is not
+    flagged dangerous, shell.exec must reach subprocess.run. Without
+    this guard the fail-closed fix could regress into "refuses
+    everything"."""
+    import subprocess
+    from types import SimpleNamespace
+
+    fake_approval = SimpleNamespace(
+        detect_dangerous_command=lambda cmd: (False, None, "")
+    )
+    monkeypatch.setitem(__import__("sys").modules, "tools.approval", fake_approval)
+
+    def _fake_run(cmd, **kwargs):
+        return SimpleNamespace(stdout="ok\n", stderr="", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    resp = server.handle_request(
+        {
+            "id": "2",
+            "method": "shell.exec",
+            "params": {"command": "echo ok"},
+        }
+    )
+
+    assert "result" in resp, f"expected result response, got: {resp!r}"
+    assert resp["result"]["stdout"] == "ok\n"
+    assert resp["result"]["code"] == 0
+
