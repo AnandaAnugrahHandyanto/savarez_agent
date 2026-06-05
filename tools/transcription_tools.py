@@ -118,7 +118,12 @@ MOONSHINE_SUPPORTED_LANGUAGES = frozenset({
 # Fun plan (Flash-Plus / Flash-Max) should keep STEPFUN_BASE_URL set to
 # https://api.stepfun.ai/step_plan/v1 so plan quota is consumed, not PAYG.
 # See https://platform.stepfun.ai/docs/en/api-reference/audio/asr-sse
-STEPFUN_STT_MODELS = frozenset({"stepaudio-2.5-asr", "stepaudio-2-asr-pro"})
+# Verified against the live API 2026-06-05: stepaudio-2.5-asr is the
+# only STT model currently exposed on the Step Plan tier. The StepFun
+# docs mention stepaudio-2-asr-pro, but the API returns 404 for it on
+# both /v1 and /step_plan/v1. See:
+# skills/software-development/discord-platform/references/stepfun-asr-model-availability.md
+STEPFUN_STT_MODELS = frozenset({"stepaudio-2.5-asr"})
 DEFAULT_STEPFUN_STT_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
@@ -2142,6 +2147,13 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     if provider == "stepfun":
         stepfun_cfg = stt_config.get("stepfun", {})
         model_name = model or stepfun_cfg.get("model", "stepaudio-2.5-asr")
+        if model_name not in STEPFUN_STT_MODELS:
+            logger.warning(
+                "STT stepfun model %r is not in the known catalogue %s. "
+                "The StepFun API will return 404 for unknown models — verify "
+                "the model name with the StepFun dashboard.",
+                model_name, sorted(STEPFUN_STT_MODELS),
+            )
         return _transcribe_stepfun(file_path, model_name)
 
     # User-declared command-type provider

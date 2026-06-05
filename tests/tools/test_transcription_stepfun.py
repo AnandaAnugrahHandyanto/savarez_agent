@@ -253,6 +253,69 @@ class TestTranscribeStepfunErrorEnvelope:
         assert _normalize_stepfun_stt_base_url("") == "https://api.stepfun.ai/step_plan/v1"
         assert _normalize_stepfun_stt_base_url(None) == "https://api.stepfun.ai/step_plan/v1"
 
+    def test_unknown_model_logs_warning(self, tmp_path, caplog, monkeypatch):
+        """Misconfigured model names (e.g. stepaudio-2-asr-pro, which the
+        StepFun API 404s) should produce a logger.warning so the user sees
+        the issue before burning a request. The handler still runs (we
+        don't pre-validate server-side), but the warning is loud."""
+        import logging
+        monkeypatch.setenv("STEPFUN_API_KEY", "test-key")
+        monkeypatch.setenv("STEPFUN_BASE_URL", "https://api.stepfun.ai/v1")
+        wav = tmp_path / "voice.ogg"
+        wav.write_bytes(b"OggS" + b"\x00" * 100)
+
+        cfg = {
+            "enabled": True,
+            "provider": "stepfun",
+            "stepfun": {"model": "stepaudio-2-asr-pro", "language": "ko"},
+        }
+
+        fake_resp = MagicMock()
+        fake_resp.__iter__ = lambda self: iter([b'data: [DONE]'])
+        fake_resp.__enter__ = lambda self: self
+        fake_resp.__exit__ = lambda self, *a: None
+
+        with caplog.at_level(logging.WARNING, logger="tools.transcription_tools"), \
+             patch("tools.transcription_tools._load_stt_config", return_value=cfg), \
+             patch("tools.transcription_tools.urllib.request.urlopen", return_value=fake_resp):
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(str(wav))
+
+        warnings = [r for r in caplog.records if "stepaudio-2-asr-pro" in r.getMessage()]
+        assert len(warnings) >= 1, f"Expected warning about unknown model, got: {[r.getMessage() for r in caplog.records]}"
+        assert "not in the known catalogue" in warnings[0].getMessage()
+
+    def test_known_model_does_not_warn(self, tmp_path, caplog, monkeypatch):
+        """The default stepaudio-2.5-asr must NOT trigger the unknown-model warning."""
+        import logging
+        monkeypatch.setenv("STEPFUN_API_KEY", "test-key")
+        monkeypatch.setenv("STEPFUN_BASE_URL", "https://api.stepfun.ai/v1")
+        wav = tmp_path / "voice.ogg"
+        wav.write_bytes(b"OggS" + b"\x00" * 100)
+
+        cfg = {
+            "enabled": True,
+            "provider": "stepfun",
+            "stepfun": {"model": "stepaudio-2.5-asr", "language": "ko"},
+        }
+
+        fake_resp = MagicMock()
+        fake_resp.__iter__ = lambda self: iter([
+            b'data: {"type": "transcript.text.delta", "delta": "Hi"}',
+            b'data: [DONE]',
+        ])
+        fake_resp.__enter__ = lambda self: self
+        fake_resp.__exit__ = lambda self, *a: None
+
+        with caplog.at_level(logging.WARNING, logger="tools.transcription_tools"), \
+             patch("tools.transcription_tools._load_stt_config", return_value=cfg), \
+             patch("tools.transcription_tools.urllib.request.urlopen", return_value=fake_resp):
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(str(wav))
+
+        unknown_warnings = [r for r in caplog.records if "not in the known catalogue" in r.getMessage()]
+        assert len(unknown_warnings) == 0, f"Got unexpected warning: {[r.getMessage() for r in unknown_warnings]}"
+
     def test_successful_transcription_collects_deltas(self, tmp_path, monkeypatch):
         """SSE transcript.text.delta events are concatenated into the final transcript."""
         monkeypatch.setenv("STEPFUN_API_KEY", "test-key")
