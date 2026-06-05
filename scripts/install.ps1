@@ -1327,7 +1327,13 @@ function Install-Venv {
     
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
+        # Take ownership and grant full control to the current user to handle reserved names or permission issues
+        takeown /F venv /A /R > $null 2>&1
+        icacls venv /grant "%USERNAME%:(OI)(CI)F" /T > $null 2>&1
         Remove-Item -Recurse -Force "venv"
+        if (Test-Path "venv") {
+            throw "Failed to remove existing venv directory. Please remove it manually and try again."
+        }
     }
     
     # uv creates the venv and pins the Python version in one step
