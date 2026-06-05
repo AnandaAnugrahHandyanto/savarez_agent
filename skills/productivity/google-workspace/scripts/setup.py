@@ -26,6 +26,7 @@ from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -103,6 +104,8 @@ def install_deps():
         pass
 
     print("Installing Google API dependencies...")
+
+    # First choice: pip in the current interpreter. Works for most installs.
     try:
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", "--quiet"] + REQUIRED_PACKAGES,
