@@ -191,6 +191,7 @@ python -m pytest tests/ -q
 - 🐛 [问题反馈](https://github.com/NousResearch/hermes-agent/issues)
 - 💡 [讨论区](https://github.com/NousResearch/hermes-agent/discussions)
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — 社区微信桥接：在同一微信账号上运行 Hermes Agent 和 OpenClaw。
+- 🔌 [hermes-telemetry](https://github.com/nujovich/hermes-telemetry) — Observability + budget plugin: captures per-session and per-cron token/cost/latency/tool-call metrics into local SQLite via hooks, with `/stats`, `/budget`, and OpenRouter-synced pricing.
 
 ---
 
