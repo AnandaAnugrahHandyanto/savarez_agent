@@ -2147,3 +2147,42 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestSessionIsolation:
+    """ContextCompressor must clear per-session state on session end.
+
+    This prevents compaction summaries from one session leaking into
+    another session (cross-contamination bug #38788).
+
+    The bug: on_session_end() is inherited as a no-op from ContextEngine.
+    _previous_summary survives session end, and the memory manager
+    exposes it to the next session that starts.
+    """
+
+    def test_on_session_end_clears_previous_summary(self, compressor):
+        """After on_session_end, _previous_summary must be None."""
+        # Simulate a compression that produced a summary
+        compressor._previous_summary = "Cron job detected 3 outages"
+        assert compressor._previous_summary is not None
+
+        # End the session — this MUST clear the summary
+        compressor.on_session_end(session_id="cron_abc123", messages=[])
+
+        assert compressor._previous_summary is None, (
+            "_previous_summary must be cleared on session end to prevent "
+            "cross-contamination between sessions (#38788)"
+        )
+
+    def test_on_session_end_preserves_other_state(self, compressor):
+        """on_session_end should not destroy unrelated state."""
+        compressor._previous_summary = "test summary"
+        compressor.last_prompt_tokens = 12345
+        compressor.compression_count = 3
+
+        compressor.on_session_end(session_id="test", messages=[])
+
+        assert compressor._previous_summary is None
+        # These should survive — they're global, not per-session
+        assert compressor.last_prompt_tokens == 12345
+        assert compressor.compression_count == 3

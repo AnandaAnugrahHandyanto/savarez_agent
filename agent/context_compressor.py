@@ -549,6 +549,15 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self.last_real_prompt_tokens = 0
+
+    def on_session_end(self, session_id: str, messages: list) -> None:
+        """Clear per-session compaction state so it cannot leak across sessions.
+
+        Without this, ``_previous_summary`` from a cron/background session
+        survives into the next live session via the memory manager's
+        ``on_session_switch`` path, causing cross-contamination (#38788).
+        """
+        self._previous_summary = None
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
