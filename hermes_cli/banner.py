@@ -154,7 +154,18 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         )
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
-
+# Detached HEAD (e.g. tag checkout) — not on a branch, so
+    # "commits behind origin/main" is misleading. Suppress the warning.
+    try:
+        sym = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if sym.returncode != 0:
+            return 0
+    except Exception:
+        pass
     try:
         result = subprocess.run(
             ["git", "rev-list", "--count", "HEAD..origin/main"],
