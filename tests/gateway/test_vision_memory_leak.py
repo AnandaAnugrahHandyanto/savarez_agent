@@ -78,3 +78,32 @@ class TestEnrichMessageWithVision:
         assert "photograph of a dog" in out
         assert "fenced leak" not in out
         assert "<memory-context>" not in out
+
+    def test_no_vision_provider_tells_model_not_to_guess(self, gateway_runner):
+        """If image pre-analysis cannot resolve a vision backend, the main
+        model must not receive a prompt that invites guessing or fake vision."""
+        fake_result = json.dumps({
+            "success": False,
+            "error": (
+                "Error analyzing image: No LLM provider configured for "
+                "task=vision provider=auto. Run: hermes setup"
+            ),
+            "analysis": "There was a problem with the request.",
+        })
+        with patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=fake_result)):
+            out = _run(gateway_runner._enrich_message_with_vision("caption", ["/tmp/img.jpg"]))
+        assert "could not analyze it because no vision-capable provider" in out
+        assert "do not guess" in out
+        assert "vision_analyze using image_url" not in out
+
+    def test_transient_vision_failure_keeps_retry_hint(self, gateway_runner):
+        """Non-configuration failures still leave the existing retry path
+        available so the agent can re-run vision_analyze if useful."""
+        fake_result = json.dumps({
+            "success": False,
+            "error": "Error analyzing image: provider timeout",
+            "analysis": "The vision request timed out.",
+        })
+        with patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=fake_result)):
+            out = _run(gateway_runner._enrich_message_with_vision("caption", ["/tmp/img.jpg"]))
+        assert "vision_analyze using image_url: /tmp/img.jpg" in out

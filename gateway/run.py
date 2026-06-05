@@ -15856,6 +15856,23 @@ class GatewayRunner:
                         f"image_url: {path} ~]"
                     )
                 else:
+                    error_text = " ".join(
+                        str(result.get(key) or "")
+                        for key in ("error", "analysis")
+                    ).lower()
+                    if (
+                        "no llm provider configured" in error_text
+                        or "no vision provider" in error_text
+                        or "provider configured for task=vision" in error_text
+                    ):
+                        enriched_parts.append(
+                            "[The user sent an image, but Hermes could not "
+                            "analyze it because no vision-capable provider is "
+                            "configured for image analysis. Tell the user that "
+                            "you cannot inspect the image right now; do not "
+                            "guess or ask them to describe it as if you saw it.]"
+                        )
+                        continue
                     enriched_parts.append(
                         "[The user sent an image but I couldn't quite see it "
                         "this time (>_<) You can try looking at it yourself "
