@@ -1229,6 +1229,21 @@ export function ChatBar({
         onBlur={() => window.setTimeout(closeTrigger, 80)}
         onCompositionEnd={() => {
           composingRef.current = false
+
+          // Reconcile the draft from the editor DOM immediately.
+          // With some IMEs (macOS Vietnamese Telex, Windows Japanese, etc.)
+          // the trailing `input` event after `compositionend` is not reliably
+          // delivered, which means the final composed text would never be
+          // written to the draft if we only rely on handleEditorInput.
+          // By reading the DOM here we guarantee the finalized text lands.
+          const editor = editorRef.current
+          if (editor) {
+            const next = composerPlainText(editor)
+            if (next !== draftRef.current) {
+              draftRef.current = next
+              aui.composer().setText(next)
+            }
+          }
         }}
         onCompositionStart={() => {
           composingRef.current = true
@@ -1284,6 +1299,18 @@ export function ChatBar({
 
             if (composingRef.current) {
               return
+            }
+
+            // Defensive reconcile: enter may race compositionend, so
+            // read the editor DOM one more time to ensure the draft
+            // reflects the latest composed text.
+            const editorSubmit = editorRef.current
+            if (editorSubmit) {
+              const nextSubmit = composerPlainText(editorSubmit)
+              if (nextSubmit !== draftRef.current) {
+                draftRef.current = nextSubmit
+                aui.composer().setText(nextSubmit)
+              }
             }
 
             submitDraft()
