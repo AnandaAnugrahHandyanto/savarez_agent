@@ -7841,10 +7841,37 @@ class GatewayRunner:
         command = event.get_command()
 
         from hermes_cli.commands import (
-            GATEWAY_KNOWN_COMMANDS,
             is_gateway_known_command,
             resolve_command as _resolve_cmd,
         )
+
+        def _configured_command_hook_names() -> set[str]:
+            if isinstance(self.config, dict):
+                commands_cfg = self.config.get("command_hook_commands", {}) or {}
+            else:
+                commands_cfg = getattr(self.config, "command_hook_commands", {}) or {}
+            if not isinstance(commands_cfg, dict):
+                return set()
+            names: set[str] = set()
+            for name in commands_cfg:
+                if not isinstance(name, str):
+                    continue
+                normalized = name.strip().lstrip("/").replace("_", "-")
+                if normalized:
+                    names.add(normalized)
+            return names
+
+        _command_hook_names = _configured_command_hook_names()
+
+        def _is_configured_hook_command(name: str | None) -> bool:
+            if not name:
+                return False
+            return name.replace("_", "-") in _command_hook_names
+
+        def _is_gateway_or_hook_command(name: str | None) -> bool:
+            if not name:
+                return False
+            return is_gateway_known_command(name) or _is_configured_hook_command(name)
 
         # Resolve aliases to canonical name so dispatch and hook names
         # don't depend on the exact alias the user typed.
@@ -7879,19 +7906,20 @@ class GatewayRunner:
         # run every command. When set → non-admins can run only commands in
         # ``user_allowed_commands`` (plus the always-allowed floor: /help,
         # /whoami). Plain chat is unaffected — only slash commands gate.
-        if command and canonical and is_gateway_known_command(canonical):
+        if command and canonical and _is_gateway_or_hook_command(canonical):
             _denied = self._check_slash_access(source, canonical)
             if _denied is not None:
                 return _denied
 
         # Fire the ``command:<canonical>`` hook for any recognized slash
-        # command — built-in OR plugin-registered. Handlers can return a
-        # dict with ``{"decision": "deny" | "handled" | "rewrite", ...}``
+        # command — built-in, plugin-registered, or explicitly configured for
+        # hook dispatch. Handlers can return a dict with
+        # ``{"decision": "deny" | "handled" | "rewrite", ...}``
         # to intercept dispatch before core handling runs. This replaces
         # the previous fire-and-forget emit(): return values are now
         # honored, but handlers that return nothing behave exactly as
         # before (telemetry-style hooks keep working).
-        if command and is_gateway_known_command(canonical):
+        if command and _is_gateway_or_hook_command(canonical):
             raw_args = event.get_command_args().strip()
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
@@ -8260,9 +8288,10 @@ class GatewayRunner:
                     # as free text (which leads to silent-failure behavior
                     # like the model inventing a delegate_task call).
                     # Normalize to hyphenated form before checking known
-                    # built-ins (command may be an alias target set by the
-                    # quick-command block above, so _cmd_def can be stale).
-                    if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
+                    # built-ins or explicit hook-only commands (command may be
+                    # an alias target set by the quick-command block above, so
+                    # _cmd_def can be stale).
+                    if not _is_gateway_or_hook_command(command):
                         logger.warning(
                             "Unrecognized slash command /%s from %s — "
                             "replying with unknown-command notice",
@@ -8277,6 +8306,13 @@ class GatewayRunner:
                         )
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
+
+        if command and _is_configured_hook_command(command):
+            return (
+                f"Command `/{command}` is registered for command hooks, "
+                "but no hook handled it. Configure a hook handler or remove "
+                "it from command_hook_commands."
+            )
         
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger

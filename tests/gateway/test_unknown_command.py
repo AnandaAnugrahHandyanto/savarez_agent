@@ -288,6 +288,97 @@ async def test_command_hook_non_dict_return_values_ignored(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_config_registered_hook_command_reaches_command_hook(monkeypatch):
+    """A config-declared hook command should be known enough to reach command hooks.
+
+    This is the chosen extension surface for local read-only gateway commands:
+    operators should be able to declare a slash command name for hook dispatch
+    without hardcoding the command in the generic registry and without routing an
+    unknown command to the agent loop.
+    """
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner.config.command_hook_commands = {
+        "whereami": {"description": "Show local orientation context"}
+    }
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("hook command leaked to the agent")
+    )
+    runner.hooks.emit_collect = AsyncMock(
+        return_value=[{"decision": "handled", "message": "orientation: ai-beast"}]
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/whereami"))
+
+    assert result == "orientation: ai-beast"
+    runner._run_agent.assert_not_called()
+    call_args = runner.hooks.emit_collect.await_args
+    assert call_args.args[0] == "command:whereami"
+    assert call_args.args[1]["command"] == "whereami"
+
+
+@pytest.mark.asyncio
+async def test_config_registered_hook_command_without_handler_returns_guidance(monkeypatch):
+    """A hook-only command must not fall through to the agent if hooks decline."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner.config.command_hook_commands = {
+        "whereami": {"description": "Show local orientation context"}
+    }
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("unhandled hook command leaked to the agent")
+    )
+    runner.hooks.emit_collect = AsyncMock(return_value=[])
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/whereami"))
+
+    assert result is not None
+    assert "registered for command hooks" in result
+    assert "/whereami" in result
+    runner._run_agent.assert_not_called()
+    runner.hooks.emit_collect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unregistered_unknown_command_still_returns_guidance(monkeypatch):
+    """Only explicitly declared hook commands should become hook-dispatchable."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner.config.command_hook_commands = {
+        "whereami": {"description": "Show local orientation context"}
+    }
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("unknown slash command leaked to the agent")
+    )
+    runner.hooks.emit_collect = AsyncMock(
+        return_value=[{"decision": "handled", "message": "should not run"}]
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/delete_project"))
+
+    assert result is not None
+    assert "Unknown command" in result
+    assert "/delete_project" in result
+    runner._run_agent.assert_not_called()
+    runner.hooks.emit_collect.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_command_hook_fires_for_plugin_registered_command(monkeypatch):
     """Plugin-registered slash commands should also trigger command:<name> hooks."""
     import gateway.run as gateway_run

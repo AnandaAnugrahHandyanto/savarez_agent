@@ -468,6 +468,11 @@ class GatewayConfig:
 
     # User-defined quick commands (slash commands that bypass the agent loop)
     quick_commands: Dict[str, Any] = field(default_factory=dict)
+
+    # User-defined slash commands that are recognized only for command hooks.
+    # These do not register core handlers or route unknown commands to the agent;
+    # they only allow explicit hook subscribers to handle ``command:<name>``.
+    command_hook_commands: Dict[str, Any] = field(default_factory=dict)
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -587,6 +592,7 @@ class GatewayConfig:
             },
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
+            "command_hook_commands": self.command_hook_commands,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
@@ -632,6 +638,10 @@ class GatewayConfig:
         if not isinstance(quick_commands, dict):
             quick_commands = {}
 
+        command_hook_commands = data.get("command_hook_commands", {})
+        if not isinstance(command_hook_commands, dict):
+            command_hook_commands = {}
+
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
@@ -656,6 +666,7 @@ class GatewayConfig:
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
+            command_hook_commands=command_hook_commands,
             sessions_dir=sessions_dir,
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
             filter_silence_narration=_coerce_bool(
@@ -742,6 +753,17 @@ def load_gateway_config() -> GatewayConfig:
                         "Ignoring invalid quick_commands in config.yaml "
                         "(expected mapping, got %s)",
                         type(qc).__name__,
+                    )
+
+            chc = yaml_cfg.get("command_hook_commands")
+            if chc is not None:
+                if isinstance(chc, dict):
+                    gw_data["command_hook_commands"] = chc
+                else:
+                    logger.warning(
+                        "Ignoring invalid command_hook_commands in config.yaml "
+                        "(expected mapping, got %s)",
+                        type(chc).__name__,
                     )
 
             stt_cfg = yaml_cfg.get("stt")

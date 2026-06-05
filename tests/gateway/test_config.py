@@ -197,6 +197,9 @@ class TestGatewayConfigRoundtrip:
             },
             reset_triggers=["/new"],
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
+            command_hook_commands={
+                "whereami": {"description": "Show local orientation context"},
+            },
             group_sessions_per_user=False,
             thread_sessions_per_user=True,
         )
@@ -207,6 +210,9 @@ class TestGatewayConfigRoundtrip:
         assert restored.platforms[Platform.TELEGRAM].token == "tok_123"
         assert restored.reset_triggers == ["/new"]
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+        assert restored.command_hook_commands == {
+            "whereami": {"description": "Show local orientation context"},
+        }
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
 
@@ -629,6 +635,39 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.quick_commands == {}
+
+    def test_command_hook_commands_in_config_yaml_are_loaded(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "command_hook_commands:\n"
+            "  whereami:\n"
+            "    description: Show local orientation context\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.command_hook_commands == {
+            "whereami": {"description": "Show local orientation context"},
+        }
+
+    def test_invalid_command_hook_commands_in_config_yaml_are_ignored(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("command_hook_commands: not-a-mapping\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.command_hook_commands == {}
 
     def test_bridges_unauthorized_dm_behavior_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
