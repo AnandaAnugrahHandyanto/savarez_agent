@@ -451,9 +451,14 @@ export function useMessageStream({
         const dedupeReference = normalize(finalText)
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
-          const kept = parts.filter(part => {
+          const lastToolPartIndex = parts.reduce(
+            (lastIndex, part, index) => (part.type === 'tool-call' ? index : lastIndex),
+            -1
+          )
+
+          const kept = parts.filter((part, index) => {
             if (part.type === 'text') {
-              return false
+              return lastToolPartIndex >= 0 && index < lastToolPartIndex
             }
 
             if (part.type !== 'reasoning' || !dedupeReference) {
