@@ -48,7 +48,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "delegate_task"}
+    {"todo", "session_search", "memory", "clarify", "model_switch", "delegate_task"}
 )
 
 
@@ -1840,7 +1840,42 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     # Fuzzy match as last resort.
     matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
     if matches:
-        return matches[0]
+        candidate = matches[0]
+        # BUG-8 namespace-prefix guard: when both the emitted name and the
+        # fuzzy-match candidate share a leading underscore-segment prefix
+        # (e.g. ``kb_`` or ``mcp_knowledge_kb_``), the shared prefix inflates
+        # the SequenceMatcher ratio beyond 0.7 even when the operation suffixes
+        # diverge significantly.  Strip the longest shared prefix built from
+        # complete ``_``-delimited segments and re-score only the op suffixes.
+        # If the op-suffix ratio is below 0.7 the repair is blocked.
+        def _longest_shared_prefix(a: str, b: str) -> str:
+            """Return the longest leading token-prefix shared by a and b.
+
+            Tokens are ``_``-delimited segments.  The prefix always ends with
+            ``_`` so that ``kb_`` is a prefix of ``kb_add`` but not of
+            ``kb_search`` for the purpose of left-anchored matching.
+            """
+            a_segs = a.split("_")
+            b_segs = b.split("_")
+            common = []
+            for sa, sb in zip(a_segs, b_segs):
+                if sa == sb:
+                    common.append(sa)
+                else:
+                    break
+            if not common:
+                return ""
+            return "_".join(common) + "_"
+
+        shared_prefix = _longest_shared_prefix(lowered, candidate)
+        if shared_prefix and len(shared_prefix) < len(lowered) and len(shared_prefix) < len(candidate):
+            from difflib import SequenceMatcher as _SM
+            op_emitted = lowered[len(shared_prefix):]
+            op_candidate = candidate[len(shared_prefix):]
+            op_ratio = _SM(None, op_emitted, op_candidate).ratio()
+            if op_ratio < 0.7:
+                return None
+        return candidate
 
     return None
 

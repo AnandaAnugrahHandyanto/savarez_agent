@@ -417,7 +417,7 @@ class TestAnthropicOAuthFlag:
             client, model = _try_anthropic()
 
         assert client is not None
-        assert model == "claude-haiku-4-5-20251001"
+        assert model == ""  # backstop removed 2026-05-31: haiku fallback replaced by ""
         assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
 
 
@@ -947,7 +947,7 @@ class TestVisionClientFallback:
 
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
-        assert model == "claude-haiku-4-5-20251001"
+        assert model == ""  # backstop removed 2026-05-31: haiku fallback replaced by ""
 
 
 class TestAuxiliaryPoolAwareness:
