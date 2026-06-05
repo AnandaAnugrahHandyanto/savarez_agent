@@ -520,9 +520,10 @@ class IRCAdapter(BasePlatformAdapter):
         source_user_name = user_name
         source_thread_id = None
         if observe_group_context and chat_type == "group":
-            event_text = self._irc_observe_attributed_text(text, user_id, user_name)
-            channel_prompt = self._irc_observe_channel_prompt()
             source_thread_id = _OBSERVED_CHANNEL_THREAD_ID
+            if not self._is_gateway_command_text(text):
+                event_text = self._irc_observe_attributed_text(text, user_id, user_name)
+                channel_prompt = self._irc_observe_channel_prompt()
 
         source = self.build_source(
             chat_id=chat_id,
@@ -548,6 +549,21 @@ class IRCAdapter(BasePlatformAdapter):
         sender = user_name or user_id or "unknown"
         user = user_id or sender
         return f"[{sender}|{user}]\n{text or ''}"
+
+    def _is_gateway_command_text(self, text: str) -> bool:
+        stripped = (text or "").lstrip()
+        if not stripped.startswith("/"):
+            return False
+        command = stripped.split(maxsplit=1)[0][1:].lower()
+        if "@" in command:
+            command = command.split("@", 1)[0]
+        if not command or "/" in command:
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            return resolve_command(command) is not None
+        except Exception:
+            return command in {"approve", "deny"}
 
     def _irc_observe_channel_prompt(self) -> str:
         return (

@@ -343,6 +343,50 @@ class TestIRCAdapterMessageParsing:
         assert build_session_key(observed_source) == build_session_key(addressed_source)
 
     @pytest.mark.asyncio
+    async def test_addressed_observed_channel_approve_command_stays_command(self, adapter):
+        handled = []
+
+        async def capture_event(event):
+            handled.append(event)
+
+        adapter.observe_unmentioned_group_messages = True
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = capture_event
+
+        await adapter._handle_line(":alice!u@host PRIVMSG #test :hermes: /approve")
+
+        assert len(handled) == 1
+        event = handled[0]
+        assert event.text == "/approve"
+        assert event.is_command() is True
+        assert event.get_command() == "approve"
+        assert event.source.thread_id == "observed-channel-context"
+        assert event.source.user_id == "alice"
+        assert event.channel_prompt is None
+
+    @pytest.mark.asyncio
+    async def test_addressed_observed_channel_deny_command_stays_command(self, adapter):
+        handled = []
+
+        async def capture_event(event):
+            handled.append(event)
+
+        adapter.observe_unmentioned_group_messages = True
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = capture_event
+
+        await adapter._handle_line(":alice!u@host PRIVMSG #test :hermes: /deny")
+
+        assert len(handled) == 1
+        event = handled[0]
+        assert event.text == "/deny"
+        assert event.is_command() is True
+        assert event.get_command() == "deny"
+        assert event.source.thread_id == "observed-channel-context"
+        assert event.source.user_id == "alice"
+        assert event.channel_prompt is None
+
+    @pytest.mark.asyncio
     async def test_handle_dm(self, adapter):
         """DMs (target == bot nick) should always be dispatched."""
         dispatched = []
