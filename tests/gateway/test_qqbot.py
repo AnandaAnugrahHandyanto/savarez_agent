@@ -476,6 +476,128 @@ class TestReadyHandling:
         assert adapter._session_id == "old_sess"
         assert adapter._last_seq == 60
 
+    @pytest.mark.asyncio
+    async def test_ready_starts_session_refresh_task(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter.SESSION_REFRESH_SECONDS = 60.0
+
+        adapter._dispatch_payload({
+            "op": 0, "t": "READY",
+            "s": 1,
+            "d": {"session_id": "sess_abc123"},
+        })
+
+        assert adapter._session_refresh_task is not None
+        assert not adapter._session_refresh_task.done()
+
+        adapter._stop_session_refresh()
+        await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    async def test_resumed_restarts_session_refresh_task(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter.SESSION_REFRESH_SECONDS = 60.0
+
+        adapter._dispatch_payload({
+            "op": 0, "t": "READY",
+            "s": 1,
+            "d": {"session_id": "sess_abc123"},
+        })
+        old_task = adapter._session_refresh_task
+
+        adapter._dispatch_payload({
+            "op": 0, "t": "RESUMED",
+            "s": 2,
+            "d": {},
+        })
+        await asyncio.sleep(0)
+
+        assert adapter._session_refresh_task is not None
+        assert adapter._session_refresh_task is not old_task
+        assert old_task is not None
+        assert old_task.cancelled()
+
+        adapter._stop_session_refresh()
+        await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_session_refresh_task(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter.SESSION_REFRESH_SECONDS = 60.0
+        adapter._dispatch_payload({
+            "op": 0, "t": "READY",
+            "s": 1,
+            "d": {"session_id": "sess_abc123"},
+        })
+
+        task = adapter._session_refresh_task
+        await adapter.disconnect()
+        await asyncio.sleep(0)
+
+        assert adapter._session_refresh_task is None
+        assert task is not None
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_session_refresh_loop_closes_websocket(self):
+        class FakeWebSocket:
+            closed = False
+
+            def __init__(self):
+                self.close_kwargs = None
+
+            async def close(self, **kwargs):
+                self.close_kwargs = kwargs
+                self.closed = True
+
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter.SESSION_REFRESH_SECONDS = 0
+        adapter._running = True
+        ws = FakeWebSocket()
+        adapter._ws = ws
+
+        await adapter._session_refresh_loop()
+
+        assert ws.closed is True
+        assert ws.close_kwargs == {"code": 1000, "message": b"session refresh"}
+
+    @pytest.mark.asyncio
+    async def test_read_events_closed_websocket_raises_close_error(self):
+        from gateway.platforms.qqbot import QQCloseError
+
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=True)
+
+        with pytest.raises(QQCloseError) as exc_info:
+            await adapter._read_events()
+
+        assert exc_info.value.code == 1000
+
+    @pytest.mark.asyncio
+    async def test_read_events_closing_frame_raises_close_error(self):
+        import gateway.platforms.qqbot.adapter as qq_module
+        from gateway.platforms.qqbot import QQCloseError
+
+        class FakeWebSocket:
+            closed = False
+
+            async def receive(self):
+                return SimpleNamespace(
+                    type=qq_module.aiohttp.WSMsgType.CLOSING,
+                    data=1000,
+                    extra="closing",
+                )
+
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = True
+        adapter._ws = FakeWebSocket()
+
+        with pytest.raises(QQCloseError) as exc_info:
+            await adapter._read_events()
+
+        assert exc_info.value.code == 1000
+
 
 # ---------------------------------------------------------------------------
 # _parse_json
