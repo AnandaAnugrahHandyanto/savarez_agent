@@ -25,6 +25,18 @@ class TestHomeChannelRoundtrip:
         assert restored.chat_id == "999"
         assert restored.name == "general"
 
+    def test_from_string_uses_platform_context(self):
+        restored = HomeChannel.from_dict(
+            "oc_b0b897cce6e70190959898f94fe8f9a8",
+            platform=Platform.FEISHU,
+        )
+
+        assert restored == HomeChannel(
+            platform=Platform.FEISHU,
+            chat_id="oc_b0b897cce6e70190959898f94fe8f9a8",
+            name="Home",
+        )
+
 
 class TestPlatformConfigRoundtrip:
     def test_to_dict_from_dict(self):
@@ -69,6 +81,21 @@ class TestPlatformConfigRoundtrip:
     def test_gateway_restart_notification_coerces_quoted_false(self):
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
+
+    def test_string_home_channel_uses_platform_context(self):
+        restored = PlatformConfig.from_dict(
+            {
+                "enabled": True,
+                "home_channel": "oc_b0b897cce6e70190959898f94fe8f9a8",
+            },
+            platform=Platform.FEISHU,
+        )
+
+        assert restored.home_channel == HomeChannel(
+            platform=Platform.FEISHU,
+            chat_id="oc_b0b897cce6e70190959898f94fe8f9a8",
+            name="Home",
+        )
 
 
 class TestGetConnectedPlatforms:
@@ -446,6 +473,28 @@ class TestLoadGatewayConfig:
             name="Nested Home",
         )
         assert telegram.extra["reply_prefix"] == "nested"
+
+    def test_load_gateway_config_accepts_string_home_channel(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  feishu:\n"
+            "    enabled: true\n"
+            "    home_channel: oc_b0b897cce6e70190959898f94fe8f9a8\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.FEISHU].home_channel == HomeChannel(
+            platform=Platform.FEISHU,
+            chat_id="oc_b0b897cce6e70190959898f94fe8f9a8",
+            name="Home",
+        )
 
     def test_top_level_platforms_override_nested_gateway_platforms(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

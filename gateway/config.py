@@ -225,9 +225,22 @@ class HomeChannel:
         return result
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "HomeChannel":
+    def from_dict(
+        cls,
+        data: Any,
+        platform: Optional[Platform] = None,
+    ) -> "HomeChannel":
+        if isinstance(data, str):
+            if platform is None:
+                raise ValueError("home_channel string requires platform context")
+            return cls(platform=platform, chat_id=data, name="Home")
+        if not isinstance(data, dict):
+            raise ValueError(f"home_channel must be a dict or string, got {type(data).__name__}")
+        resolved_platform = data.get("platform")
+        if resolved_platform is None and platform is not None:
+            resolved_platform = platform.value
         return cls(
-            platform=Platform(data["platform"]),
+            platform=Platform(resolved_platform),
             chat_id=str(data["chat_id"]),
             name=data.get("name", "Home"),
             thread_id=str(data["thread_id"]) if data.get("thread_id") else None,
@@ -317,10 +330,14 @@ class PlatformConfig:
         return result
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
+    def from_dict(
+        cls,
+        data: Dict[str, Any],
+        platform: Optional[Platform] = None,
+    ) -> "PlatformConfig":
         home_channel = None
         if "home_channel" in data:
-            home_channel = HomeChannel.from_dict(data["home_channel"])
+            home_channel = HomeChannel.from_dict(data["home_channel"], platform=platform)
 
         # gateway_restart_notification may be bridged into extra via the
         # shared-key loop in load_gateway_config(); check both top-level
@@ -611,7 +628,7 @@ class GatewayConfig:
         for platform_name, platform_data in data.get("platforms", {}).items():
             try:
                 platform = Platform(platform_name)
-                platforms[platform] = PlatformConfig.from_dict(platform_data)
+                platforms[platform] = PlatformConfig.from_dict(platform_data, platform=platform)
             except ValueError:
                 pass  # Skip unknown platforms
         
