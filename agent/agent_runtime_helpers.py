@@ -1890,12 +1890,15 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "interactive_prompt":
         def _execute(next_args: dict) -> Any:
             from tools.interactive_prompt_tool import interactive_prompt_tool as _ip_tool
+            from tools.human_input_gateway import get_interactive_prompt_timeout
+            _raw_timeout = next_args.get("timeout_seconds")
+            _timeout = int(_raw_timeout) if _raw_timeout is not None else get_interactive_prompt_timeout()
             return _finish_agent_tool(
                 _ip_tool(
                     question=next_args.get("question", ""),
                     options=next_args.get("options", []),
                     display_type=next_args.get("display_type", "buttons"),
-                    timeout_seconds=float(next_args.get("timeout_seconds", 900)),
+                    timeout_seconds=_timeout,
                     auth_policy=next_args.get("auth_policy", "session_owner_only"),
                     callback=getattr(agent, "interactive_prompt_callback", None),
                 ),
