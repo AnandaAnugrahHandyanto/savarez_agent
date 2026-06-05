@@ -309,6 +309,35 @@ def test_canonical_order_uses_slug_not_is_user_defined_flag():
     )
 
 
+def test_canonical_order_pins_current_provider_before_canonical_rows():
+    """When the active model is served by a custom endpoint, keep that
+    provider visible before canonical rows; selection still routes by
+    explicit provider slug.
+    """
+    rows = [
+        {"slug": "openrouter", "name": "OpenRouter",
+         "models": ["openai/gpt-5.5"], "total_models": 1,
+         "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+        {"slug": "pinchpoint", "name": "pinchpoint",
+         "models": ["gpt-5.5"], "total_models": 1,
+         "is_current": True, "is_user_defined": True,
+         "source": "user-config"},
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(
+            ctx,
+            include_unconfigured=True,
+            picker_hints=True,
+            canonical_order=True,
+        )
+
+    slugs = [r["slug"] for r in payload["providers"]]
+    assert slugs[0] == "pinchpoint"
+    assert slugs.index("pinchpoint") < slugs.index("openrouter")
+
+
 def test_canonical_order_with_unconfigured_preserves_full_universe():
     """Combined picker call: include_unconfigured + picker_hints +
     canonical_order is the production TUI shape. Verify the result

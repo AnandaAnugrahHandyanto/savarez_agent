@@ -127,9 +127,9 @@ def build_models_payload(
       the full provider universe in the picker).
     - ``picker_hints``: add ``authenticated``/``auth_type``/``key_env``/
       ``warning`` per row (TUI ``ModelPickerDialog`` shape).
-    - ``canonical_order``: reorder canonical-slug rows to
-      ``CANONICAL_PROVIDERS`` declaration order; truly-custom rows go
-      last (TUI display order).
+    - ``canonical_order``: keep the active provider row visible first, then
+      reorder canonical-slug rows to ``CANONICAL_PROVIDERS`` declaration
+      order, with truly-custom rows last (TUI display order).
     - ``pricing``: enrich each row with formatted per-model pricing and,
       for Nous, ``free_tier``/``unavailable_models`` so the GUI picker can
       show $/Mtok columns and gate paid models on free accounts —
@@ -273,8 +273,8 @@ def _apply_picker_hints(rows: list[dict]) -> None:
 
 
 def _reorder_canonical(rows: list[dict]) -> list[dict]:
-    """Canonical slugs in ``CANONICAL_PROVIDERS`` declaration order;
-    truly-custom rows last.
+    """Current provider first, then canonical slugs in declaration order,
+    then truly-custom rows.
 
     Keys on slug membership, NOT ``is_user_defined`` — section 3 of
     ``list_authenticated_providers`` sets ``is_user_defined=True`` on
@@ -285,12 +285,15 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
     from hermes_cli.models import CANONICAL_PROVIDERS
 
     order = {e.slug: i for i, e in enumerate(CANONICAL_PROVIDERS)}
+    current = [r for r in rows if r.get("is_current")]
+    current_ids = {id(r) for r in current}
+    remaining = [r for r in rows if id(r) not in current_ids]
     canon = sorted(
-        (r for r in rows if r["slug"] in order),
+        (r for r in remaining if r["slug"] in order),
         key=lambda r: order[r["slug"]],
     )
-    extras = [r for r in rows if r["slug"] not in order]
-    return canon + extras
+    extras = [r for r in remaining if r["slug"] not in order]
+    return current + canon + extras
 
 
 def _apply_pricing(rows: list[dict]) -> None:
