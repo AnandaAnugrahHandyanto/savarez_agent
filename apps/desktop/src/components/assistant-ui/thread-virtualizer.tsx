@@ -20,6 +20,7 @@ const ESTIMATED_ITEM_HEIGHT = 220
 const OVERSCAN = 4
 const AT_BOTTOM_THRESHOLD = 4
 const POST_RUN_BOTTOM_LOCK_MS = 1_200
+const USER_SCROLL_DISARM_PX = 24
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -326,16 +327,20 @@ function useThreadScrollAnchor({
         return
       }
 
-      // Disarm only when `scrollTop` decreases while both content height and
-      // viewport height are stable. A bare `top < lastTopRef.current` check is
-      // unsafe: virtualizer measurement, streaming markdown, composer resizing,
-      // window resizing, and toolbar/status updates can all move scrollTop as a
-      // layout side effect. Wheel-up and touchmove still disarm immediately via
-      // their own listeners below, so real user intent remains covered.
+      // Disarm when the viewport moves upward by a user-scale amount. Do not
+      // require content height to be stable: scrollbar drags / trackpad inertia
+      // often race with streaming growth, and the old "height must be stable"
+      // rule let the app yank the viewport back down while the user was trying
+      // to read. Keep a threshold so tiny virtualizer measurement jitters don't
+      // count as intent. Viewport height changes are still ignored because they
+      // naturally lower scrollTop when the window/composer grows.
       const heightGrew = el.scrollHeight > lastHeightRef.current
       const clientHeightChanged = Math.abs(el.clientHeight - lastClientHeightRef.current) > 1
+      const upwardDelta = lastTopRef.current - top
 
-      if (!heightGrew && !clientHeightChanged && top + 1 < lastTopRef.current) {
+      if (upwardDelta > USER_SCROLL_DISARM_PX && !clientHeightChanged) {
+        setMutableRef(stickyBottomRef, false)
+      } else if (!heightGrew && !clientHeightChanged && top + 1 < lastTopRef.current) {
         setMutableRef(stickyBottomRef, false)
       }
 
@@ -358,13 +363,23 @@ function useThreadScrollAnchor({
       }
     }
 
+    const onPointerDown = () => {
+      // Direct interaction with the scroll pane means the user, not the
+      // auto-follow loop, owns the viewport now. This catches scrollbar-thumb
+      // drags and text selection, both of which can happen without a wheel-up
+      // event.
+      disarm()
+    }
+
     el.addEventListener('scroll', onScroll, { passive: true })
     el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('pointerdown', onPointerDown, { passive: true })
     el.addEventListener('touchmove', disarm, { passive: true })
 
     return () => {
       el.removeEventListener('scroll', onScroll)
       el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('pointerdown', onPointerDown)
       el.removeEventListener('touchmove', disarm)
     }
   }, [scrollerRef, stickyBottomRef])
@@ -469,9 +484,11 @@ function useThreadScrollAnchor({
   }, [enabled, groupCount, pinToBottom, stickyBottomRef])
 
   // Completion swaps streaming placeholders/plain code for final rendered DOM
-  // (notably Shiki-highlighted code). Keep following the bottom briefly after
-  // `isRunning` flips false so that final measurement pass cannot strand the
-  // viewport near the top of a large code block.
+  // (notably Shiki-highlighted code). Follow actual content growth briefly
+  // after `isRunning` flips false, but do NOT run a per-frame bottom lock —
+  // that was the reported self-scrolling/jumping behavior. Resize-only
+  // following keeps final syntax-highlight growth visible without yanking the
+  // viewport when nothing changed.
   const prevIsRunningForLayoutRef = useRef(isRunning)
   useLayoutEffect(() => {
     const finishedRun = prevIsRunningForLayoutRef.current && !isRunning
@@ -481,32 +498,29 @@ function useThreadScrollAnchor({
       return undefined
     }
 
-    const lockUntil = performance.now() + POST_RUN_BOTTOM_LOCK_MS
-    let lockRaf: number | null = null
+    pinToBottom()
 
-    const lockFrame = () => {
-      lockRaf = null
+    const el = scrollerRef.current
+    const content = el?.firstElementChild
 
-      if (!stickyBottomRef.current) {
-        return
-      }
-
-      pinToBottom()
-
-      if (performance.now() < lockUntil) {
-        lockRaf = requestAnimationFrame(lockFrame)
-      }
+    if (!content) {
+      return undefined
     }
 
-    pinToBottom()
-    lockRaf = requestAnimationFrame(lockFrame)
+    const observer = new ResizeObserver(() => {
+      if (stickyBottomRef.current) {
+        pinToBottom()
+      }
+    })
+    const timeout = window.setTimeout(() => observer.disconnect(), POST_RUN_BOTTOM_LOCK_MS)
+
+    observer.observe(content)
 
     return () => {
-      if (lockRaf !== null) {
-        cancelAnimationFrame(lockRaf)
-      }
+      window.clearTimeout(timeout)
+      observer.disconnect()
     }
-  }, [enabled, isRunning, pinToBottom, stickyBottomRef])
+  }, [enabled, isRunning, pinToBottom, scrollerRef, stickyBottomRef])
 
   useAuiEvent('thread.runStart', jumpToBottom)
 }

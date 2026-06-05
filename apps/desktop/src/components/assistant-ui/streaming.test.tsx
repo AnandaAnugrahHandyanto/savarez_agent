@@ -566,6 +566,43 @@ describe('assistant-ui streaming renderer', () => {
     expect(viewport.scrollTop).toBe(420)
   })
 
+  it('honors upward scrollbar movement even when content grows in the same frame', async () => {
+    const { container } = render(<StreamingHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    let scrollHeight = 1_000
+
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+
+    await wait(80)
+
+    await act(async () => {
+      viewport.scrollTop = 800
+      fireEvent.scroll(viewport)
+    })
+
+    scrollHeight = 1_200
+
+    await act(async () => {
+      viewport.scrollTop = 420
+      fireEvent.scroll(viewport)
+    })
+
+    await act(async () => {
+      for (const observer of resizeObservers) {
+        observer.trigger(1_200)
+      }
+    })
+    await wait(0)
+
+    expect(viewport.scrollTop).toBe(420)
+  })
+
   it('keeps following final code-highlight growth when a run completes at bottom', async () => {
     const { container } = render(<StreamingHarness />)
 
@@ -589,6 +626,11 @@ describe('assistant-ui streaming renderer', () => {
     await wait(650)
 
     scrollHeight = 1_700
+    await act(async () => {
+      for (const observer of resizeObservers) {
+        observer.trigger(1_700)
+      }
+    })
     await wait(0)
 
     expect(viewport.scrollTop).toBe(1_700)
