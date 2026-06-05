@@ -19,14 +19,32 @@ const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  normAuthMode,
   normalizeRemoteBaseUrl,
   profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
   tokenPreview
 } = require('./connection-config.cjs')
+
+// --- connectionScopeKey / normAuthMode ---
+
+test('connectionScopeKey trims to a name or null for the global scope', () => {
+  assert.equal(connectionScopeKey('  coder '), 'coder')
+  assert.equal(connectionScopeKey(''), null)
+  assert.equal(connectionScopeKey(null), null)
+  assert.equal(connectionScopeKey(undefined), null)
+})
+
+test('normAuthMode coerces to token unless explicitly oauth', () => {
+  assert.equal(normAuthMode('oauth'), 'oauth')
+  assert.equal(normAuthMode('token'), 'token')
+  assert.equal(normAuthMode(undefined), 'token')
+  assert.equal(normAuthMode('weird'), 'token')
+})
 
 // --- profileRemoteOverride ---
 

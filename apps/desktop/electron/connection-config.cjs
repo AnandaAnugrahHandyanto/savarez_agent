@@ -131,39 +131,29 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps = {}) {
   return buildGatewayWsUrl(baseUrl, token)
 }
 
+// Normalize a profile name to a connection scope key, or null for the global
+// (default) connection. Shared by the resolver and the IPC layer.
+function connectionScopeKey(profile) {
+  return String(profile ?? '').trim() || null
+}
+
+// Coerce a remote auth mode to one of the two supported values ('token' default).
+function normAuthMode(mode) {
+  return mode === 'oauth' ? 'oauth' : 'token'
+}
+
 /**
- * Select an explicit per-profile remote override from a desktop connection
- * config.
+ * Select a profile's explicit remote override from a connection config, or null
+ * when it has none (so the caller falls back to env → global remote → local).
  *
- * Per-profile remotes let each Hermes profile point at its own backend: the
- * connection config may carry a `profiles` map keyed by profile name, each
- * entry shaped like the global `remote` block plus a `mode`. Only an entry
- * with `mode === 'remote'` and a non-empty `url` counts as an override; any
- * other entry (missing, local, or ur-less) returns null so the caller falls
- * back to the env override / global remote / local spawn chain.
- *
- * Pure + electron-free: the returned `token` is the raw stored secret object
- * (or string); main.cjs decrypts it with safeStorage. Returns
+ * The config may carry a `profiles` map keyed by name; an entry counts as an
+ * override only with `mode === 'remote'` and a non-empty `url`. Pure: `token`
+ * is the raw stored secret; main.cjs decrypts it. Returns
  * `{ url, authMode, token } | null`.
- *
- * @param {{ profiles?: Record<string, any> }} config
- * @param {string|null|undefined} profile
  */
 function profileRemoteOverride(config, profile) {
-  const key = profile && String(profile).trim() ? String(profile).trim() : null
-  if (!key) {
-    return null
-  }
-
-  const profiles =
-    config && typeof config === 'object' && config.profiles && typeof config.profiles === 'object'
-      ? config.profiles
-      : null
-  if (!profiles) {
-    return null
-  }
-
-  const entry = profiles[key]
+  const key = connectionScopeKey(profile)
+  const entry = key ? config?.profiles?.[key] : null
   if (!entry || typeof entry !== 'object' || entry.mode !== 'remote') {
     return null
   }
@@ -173,11 +163,7 @@ function profileRemoteOverride(config, profile) {
     return null
   }
 
-  return {
-    url,
-    authMode: entry.authMode === 'oauth' ? 'oauth' : 'token',
-    token: entry.token
-  }
+  return { url, authMode: normAuthMode(entry.authMode), token: entry.token }
 }
 
 function tokenPreview(value) {
@@ -256,8 +242,10 @@ module.exports = {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  normAuthMode,
   normalizeRemoteBaseUrl,
   profileRemoteOverride,
   resolveAuthMode,

@@ -32,8 +32,10 @@ const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  normAuthMode,
   normalizeRemoteBaseUrl,
   profileRemoteOverride,
   resolveAuthMode,
@@ -3504,7 +3506,7 @@ function sanitizeConnectionProfiles(raw) {
     if (url) {
       cleaned.url = url
     }
-    cleaned.authMode = entry.authMode === 'oauth' ? 'oauth' : 'token'
+    cleaned.authMode = normAuthMode(entry.authMode)
     if (entry.token && typeof entry.token === 'object') {
       cleaned.token = entry.token
     }
@@ -3599,29 +3601,19 @@ function writeActiveDesktopProfile(name) {
   return value || null
 }
 
-function connectionScopeKey(profile) {
-  return profile && String(profile).trim() ? String(profile).trim() : null
-}
-
 // Sanitize a connection config into the renderer-facing shape. With no
 // `profile` this describes the global/default connection (the existing
 // behavior); with a `profile` it describes that profile's per-profile remote
 // override (or an empty "local/inherit" view when the profile has none).
 async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig(), profile = null) {
   const key = connectionScopeKey(profile)
-  const scoped = key ? (config.profiles && config.profiles[key]) || null : null
+  const scoped = key ? config.profiles?.[key] || null : null
   const block = key ? scoped || {} : config.remote || {}
 
   const remoteToken = decryptDesktopSecret(block.token)
-  const authMode = block.authMode === 'oauth' ? 'oauth' : 'token'
+  const authMode = normAuthMode(block.authMode)
   const remoteUrl = String(block.url || '')
-  const mode = key
-    ? scoped && scoped.mode === 'remote'
-      ? 'remote'
-      : 'local'
-    : config.mode === 'remote'
-      ? 'remote'
-      : 'local'
+  const mode = (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
 
   let remoteOauthConnected = false
   if (authMode === 'oauth' && remoteUrl) {
@@ -3651,13 +3643,23 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   }
 }
 
+// Build + validate a `{ url, authMode, token }` remote block. OAuth gateways
+// authenticate via the login-window session cookie (verified at connect time in
+// resolveRemoteBackend), so only token-auth remotes require a saved token.
+function buildRemoteBlock(remoteUrl, authMode, token) {
+  if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
+    throw new Error('Remote gateway session token is required.')
+  }
+  return { url: normalizeRemoteBaseUrl(remoteUrl), authMode, token }
+}
+
 function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnectionConfig(), options = {}) {
   const persistToken = options.persistToken !== false
   const key = connectionScopeKey(input.profile)
   const mode = input.mode === 'remote' ? 'remote' : 'local'
 
   // The block being edited: a per-profile entry or the global remote block.
-  const existingBlock = key ? (existing.profiles && existing.profiles[key]) || {} : existing.remote || {}
+  const existingBlock = key ? existing.profiles?.[key] || {} : existing.remote || {}
   const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
   const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
@@ -3669,45 +3671,21 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
     : existingBlock.token
 
   if (key) {
-    // Per-profile scope: a remote entry pins this profile to its own backend;
-    // a local entry clears the override so the profile inherits the default.
+    // Per-profile scope: a remote entry pins this profile to its own backend; a
+    // local entry clears the override so the profile inherits the default.
     const profiles = { ...(existing.profiles || {}) }
-
     if (mode === 'remote') {
-      const entry = { mode: 'remote', url: normalizeRemoteBaseUrl(remoteUrl), authMode, token: nextToken }
-      if (authMode !== 'oauth' && !decryptDesktopSecret(entry.token)) {
-        throw new Error('Remote gateway session token is required.')
-      }
-      profiles[key] = entry
+      profiles[key] = { mode: 'remote', ...buildRemoteBlock(remoteUrl, authMode, nextToken) }
     } else {
       delete profiles[key]
     }
-
-    return {
-      mode: existing.mode === 'remote' ? 'remote' : 'local',
-      remote: existing.remote || {},
-      profiles
-    }
+    return { mode: existing.mode === 'remote' ? 'remote' : 'local', remote: existing.remote || {}, profiles }
   }
 
-  const nextRemote = {
-    url: remoteUrl,
-    authMode,
-    token: nextToken
-  }
-
-  if (mode === 'remote') {
-    nextRemote.url = normalizeRemoteBaseUrl(remoteUrl)
-
-    // OAuth gateways authenticate via the session cookie established by the
-    // login window, NOT a static token — so no token is required here. The
-    // cookie presence is verified at connect time (resolveRemoteBackend).
-    if (authMode !== 'oauth' && !decryptDesktopSecret(nextRemote.token)) {
-      throw new Error('Remote gateway session token is required.')
-    }
-  } else if (remoteUrl) {
-    nextRemote.url = normalizeRemoteBaseUrl(remoteUrl)
-  }
+  const nextRemote =
+    mode === 'remote'
+      ? buildRemoteBlock(remoteUrl, authMode, nextToken)
+      : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
 
   // Preserve per-profile overrides when saving the global connection.
   return { mode, remote: nextRemote, profiles: existing.profiles || {} }
@@ -3798,10 +3776,9 @@ async function resolveRemoteBackend(profile) {
     return buildRemoteConnection(override.url, override.authMode, token, 'profile')
   }
 
-  // 2. Env override (global).
+  // 2. Env override (global, token-auth only).
   const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
   const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
-
   if (rawEnvUrl) {
     if (!rawEnvToken) {
       throw new Error(
@@ -3809,25 +3786,14 @@ async function resolveRemoteBackend(profile) {
           'Both must be provided to connect to a remote Hermes backend.'
       )
     }
-
-    const baseUrl = normalizeRemoteBaseUrl(rawEnvUrl)
-
-    return {
-      baseUrl,
-      mode: 'remote',
-      source: 'env',
-      authMode: 'token',
-      token: rawEnvToken,
-      wsUrl: buildGatewayWsUrl(baseUrl, rawEnvToken)
-    }
+    return buildRemoteConnection(rawEnvUrl, 'token', rawEnvToken, 'env')
   }
 
   // 3. Global remote.
   if (config.mode !== 'remote') {
     return null
   }
-
-  const authMode = config.remote?.authMode === 'oauth' ? 'oauth' : 'token'
+  const authMode = normAuthMode(config.remote?.authMode)
   const token = authMode === 'oauth' ? null : decryptDesktopSecret(config.remote?.token)
   return buildRemoteConnection(config.remote?.url, authMode, token, 'settings')
 }
@@ -3913,7 +3879,7 @@ async function testDesktopConnectionConfig(input = {}) {
   let authMode = 'token'
   if (wantRemote && block?.url) {
     baseUrl = normalizeRemoteBaseUrl(block.url)
-    authMode = block.authMode === 'oauth' ? 'oauth' : 'token'
+    authMode = normAuthMode(block.authMode)
     if (authMode !== 'oauth') {
       token = decryptDesktopSecret(block.token)
     }
@@ -3921,7 +3887,7 @@ async function testDesktopConnectionConfig(input = {}) {
     const remote = (await resolveRemoteBackend(key)) || (await startHermes())
     baseUrl = remote.baseUrl
     token = remote.token
-    authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
+    authMode = normAuthMode(remote.authMode)
   }
   const status = await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })
 
