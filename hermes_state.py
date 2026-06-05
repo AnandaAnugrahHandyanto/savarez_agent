@@ -1414,7 +1414,14 @@ class SessionDB:
         # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
         # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
         # normalized to spaces by the whitespace collapsing step below
-        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', title)
+        # Strip ANSI/terminal escape sequences first, while the ESC anchor (0x1b)
+        # is still present: strip_ansi() (full ECMA-48) removes whole sequences.
+        # The control-char re.sub below then removes any lone C0 controls it
+        # leaves. Order matters: deleting ESC as a control char first would
+        # strand the printable body (e.g. "[31m") as visible garbage.
+        from tools.ansi_strip import strip_ansi
+        cleaned = strip_ansi(title)
+        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', cleaned)
 
         # Remove problematic Unicode control characters:
         # - Zero-width chars (U+200B-U+200F, U+FEFF)
