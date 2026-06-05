@@ -184,6 +184,34 @@ export const roseTheme: DashboardTheme = {
 };
 
 /**
+ * Clean, professional theme with zero decorative elements.
+ * Solid background, standard fonts, no webp overlays, no noise grain,
+ * no warm glow vignette. For users who need low-cognitive-friction
+ * or enterprise environments. Addresses #36865.
+ */
+export const cleanTheme: DashboardTheme = {
+  name: "clean",
+  label: "Clean",
+  description: "Minimal, high-contrast — no textures or decorative overlays",
+  palette: {
+    background: { hex: "#1E1E1E", alpha: 1 },
+    midground: { hex: "#E6E6E6", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(0, 0, 0, 0)",
+    noiseOpacity: 0,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: SYSTEM_SANS,
+    fontMono: SYSTEM_MONO,
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    density: "comfortable",
+  },
+};
+
+/**
  * Same look as ``defaultTheme`` but with a larger root font size, looser
  * line-height, and ``spacious`` density so every rem-based size in the
  * dashboard scales up. For users who find the default 15px UI too dense.
@@ -207,6 +235,7 @@ export const defaultLargeTheme: DashboardTheme = {
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
+  clean: cleanTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
