@@ -88,6 +88,17 @@ def test_terminal_output_ignores_invalid_hook_results(monkeypatch, tmp_path):
     assert result["output"] == "plain output"
 
 
+def test_terminal_output_ignores_empty_string_hook_result(monkeypatch, tmp_path):
+    result, _mock_env = _run_terminal(
+        monkeypatch,
+        tmp_path,
+        output="plain output",
+        invoke_hook=lambda hook_name, **kwargs: ["", None],
+    )
+
+    assert result["output"] == "plain output"
+
+
 def test_terminal_output_uses_first_valid_string_from_hooks(monkeypatch, tmp_path):
     result, _mock_env = _run_terminal(
         monkeypatch,

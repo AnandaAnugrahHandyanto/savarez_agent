@@ -203,10 +203,45 @@ sys.stdout = sys.stderr
 _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 
 
+_slash_worker_registry_lock = threading.Lock()
+_slash_workers_by_key: dict[str, list["_SlashWorker"]] = {}
+
+
+def _replace_registered_slash_worker(session_key: str, worker: "_SlashWorker") -> list["_SlashWorker"]:
+    """Register ``worker`` as the sole slash worker for ``session_key``.
+
+    The TUI can create multiple in-memory session objects for the same persisted
+    Hermes session (resume/new/branch/compression flows). Each session object
+    used to spawn its own persistent slash-worker subprocess, and abandoned
+    session objects left those children alive until gateway shutdown. Keep at
+    most one worker per session key inside this gateway process; slash commands
+    are serialized by the worker itself and a replacement is cheap.
+    """
+    with _slash_worker_registry_lock:
+        previous = [w for w in _slash_workers_by_key.get(session_key, []) if w is not worker]
+        _slash_workers_by_key[session_key] = [worker]
+    return previous
+
+
+def _unregister_slash_worker(session_key: str, worker: "_SlashWorker") -> None:
+    with _slash_worker_registry_lock:
+        workers = _slash_workers_by_key.get(session_key)
+        if not workers:
+            return
+        remaining = [w for w in workers if w is not worker]
+        if remaining:
+            _slash_workers_by_key[session_key] = remaining
+        else:
+            _slash_workers_by_key.pop(session_key, None)
+
+
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
     def __init__(self, session_key: str, model: str):
+        self.session_key = session_key
+        self._closed = False
+        self._close_lock = threading.Lock()
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
@@ -232,8 +267,18 @@ class _SlashWorker:
             cwd=os.getcwd(),
             env=os.environ.copy(),
         )
-        threading.Thread(target=self._drain_stdout, daemon=True).start()
-        threading.Thread(target=self._drain_stderr, daemon=True).start()
+        try:
+            threading.Thread(target=self._drain_stdout, daemon=True).start()
+            threading.Thread(target=self._drain_stderr, daemon=True).start()
+
+            for previous in _replace_registered_slash_worker(session_key, self):
+                try:
+                    previous.close()
+                except Exception:
+                    pass
+        except Exception:
+            self.close()
+            raise
 
     def _drain_stdout(self):
         for line in self.proc.stdout or []:
@@ -276,13 +321,33 @@ class _SlashWorker:
             )
 
     def close(self):
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        _unregister_slash_worker(self.session_key, self)
+        try:
+            if self.proc.stdin:
+                self.proc.stdin.close()
+        except Exception:
+            pass
         try:
             if self.proc.poll() is None:
                 self.proc.terminate()
-                self.proc.wait(timeout=1)
+                self.proc.wait(timeout=2)
         except Exception:
             try:
                 self.proc.kill()
+                self.proc.wait(timeout=2)
+            except Exception as exc:
+                self.stderr_tail = (
+                    self.stderr_tail + [f"failed to reap slash worker after kill: {exc}"]
+                )[-80:]
+        for stream_name in ("stdout", "stderr"):
+            try:
+                stream = getattr(self.proc, stream_name, None)
+                if stream:
+                    stream.close()
             except Exception:
                 pass
 

@@ -432,6 +432,43 @@ class TestShellFileOpsHelpers:
         assert result.content == "alpha\n"
 
 
+    def test_read_file_reports_malformed_stat_output(self, mock_env):
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/a.py")
+
+        assert result.error is not None
+        assert "expected byte count" in result.error
+        assert result.total_lines == 0
+        assert result.content == ""
+
+    def test_read_file_reports_malformed_line_count(self, mock_env):
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "12\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "print('ok')\n", "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": "print('ok')\n", "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/a.py")
+
+        assert result.error is not None
+        assert "expected line count" in result.error
+        assert result.file_size == 12
+        assert result.content == ""
+
+
 class TestSearchPathValidation:
     """Test that search() returns an error for non-existent paths."""
 
@@ -448,6 +485,21 @@ class TestSearchPathValidation:
         result = ops.search("pattern", path="/nonexistent/path")
         assert result.error is not None
         assert "not found" in result.error.lower() or "Path not found" in result.error
+
+    def test_search_reports_malformed_path_probe(self, mock_env):
+        """search() should fail loudly if the path probe returns blank stdout."""
+        def side_effect(command, **kwargs):
+            if "test -e" in command:
+                return {"output": "", "returncode": 0}
+            if "command -v" in command:
+                return {"output": "yes", "returncode": 0}
+            return {"output": "", "returncode": 0}
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.search("pattern", path="/maybe/path")
+        assert result.error is not None
+        assert "expected exists/not_found" in result.error
+        assert result.total_count == 0
 
     def test_search_nonexistent_path_files_mode(self, mock_env):
         """search(target='files') should also return error for bad paths."""

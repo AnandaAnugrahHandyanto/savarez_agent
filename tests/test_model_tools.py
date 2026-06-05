@@ -97,6 +97,25 @@ class TestHandleFunctionCall:
             ),
         ]
 
+    def test_empty_transform_hook_result_does_not_blank_tool_output(self):
+        """Empty-string transform hooks should be treated as no-op.
+
+        A plugin hook may accidentally return "" while observing a tool call;
+        that must not replace non-empty tool output with a blank result.
+        """
+        def fake_invoke_hook(hook_name, **kwargs):
+            if hook_name == "transform_tool_result":
+                return [""]
+            return []
+
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.invoke_hook", fake_invoke_hook),
+        ):
+            result = handle_function_call("web_search", {"q": "test"}, task_id="t1")
+
+        assert result == '{"ok":true}'
+
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
         """Regression: post_tool_call and transform_tool_result hooks must
         receive a non-negative integer ``duration_ms`` kwarg measuring

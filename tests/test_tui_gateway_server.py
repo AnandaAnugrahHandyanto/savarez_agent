@@ -3736,6 +3736,118 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     server._sessions.pop(sid, None)
 
 
+
+
+def test_slash_worker_replaces_previous_worker_for_same_session_key(monkeypatch):
+    """Creating a replacement slash worker must close the abandoned prior one.
+
+    TUI resume/new churn can build more than one in-memory session object for
+    the same persisted session key. Without this guard each object owns a
+    persistent slash_worker subprocess and stale workers accumulate.
+    """
+    import io
+
+    procs = []
+
+    class _FakeProc:
+        def __init__(self, *args, **kwargs):
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO()
+            self.stderr = io.StringIO()
+            self._returncode = None
+            self.terminated = False
+            self.killed = False
+            procs.append(self)
+
+        def poll(self):
+            return self._returncode
+
+        def terminate(self):
+            self.terminated = True
+            self._returncode = -15
+
+        def wait(self, timeout=None):
+            return self._returncode
+
+        def kill(self):
+            self.killed = True
+            self._returncode = -9
+
+    monkeypatch.setattr(server.subprocess, "Popen", _FakeProc)
+    monkeypatch.setattr(server, "_slash_workers_by_key", {})
+
+    first = server._SlashWorker("same-session", "gpt-5.5")
+    second = server._SlashWorker("same-session", "gpt-5.5")
+
+    try:
+        assert procs[0].stdin.closed is True
+        assert procs[0].terminated is True
+        assert first._closed is True
+        assert second._closed is False
+        assert server._slash_workers_by_key["same-session"] == [second]
+
+        second.close()
+        second.close()
+        assert procs[1].stdin.closed is True
+        assert procs[1].terminated is True
+        assert second._closed is True
+        assert "same-session" not in server._slash_workers_by_key
+    finally:
+        second.close()
+
+
+
+def test_slash_worker_cleans_up_subprocess_when_startup_fails(monkeypatch):
+    """If worker startup fails after Popen, the child process must not leak."""
+    import io
+
+    import pytest
+
+    procs = []
+
+    class _FakeProc:
+        def __init__(self, *args, **kwargs):
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO()
+            self.stderr = io.StringIO()
+            self._returncode = None
+            self.terminated = False
+            self.killed = False
+            procs.append(self)
+
+        def poll(self):
+            return self._returncode
+
+        def terminate(self):
+            self.terminated = True
+            self._returncode = -15
+
+        def wait(self, timeout=None):
+            return self._returncode
+
+        def kill(self):
+            self.killed = True
+            self._returncode = -9
+
+    class _BrokenThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("thread start failed")
+
+    monkeypatch.setattr(server.subprocess, "Popen", _FakeProc)
+    monkeypatch.setattr(server.threading, "Thread", _BrokenThread)
+    monkeypatch.setattr(server, "_slash_workers_by_key", {})
+
+    with pytest.raises(RuntimeError, match="thread start failed"):
+        server._SlashWorker("startup-fails", "gpt-5.5")
+
+    assert len(procs) == 1
+    assert procs[0].stdin.closed is True
+    assert procs[0].terminated is True
+    assert "startup-fails" not in server._slash_workers_by_key
+
 def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
     fake_mod = types.ModuleType("hermes_state")
 
@@ -4669,6 +4781,10 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
 
 def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    # Pin Linux so empty browser candidates produce the no-executable branch.
+    # On macOS manual_chrome_debug_command falls back to an `open -a` command
+    # even when get_chrome_debug_candidates() is empty.
+    monkeypatch.setattr("platform.system", lambda: "Linux")
     emitted: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         server,

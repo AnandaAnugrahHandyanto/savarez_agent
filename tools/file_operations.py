@@ -915,7 +915,13 @@ class ShellFileOperations(FileOperations):
         try:
             file_size = int(stat_output.strip())
         except ValueError:
-            file_size = 0
+            return ReadResult(
+                error=(
+                    f"Failed to read file metadata for {path}: expected byte count "
+                    f"from wc -c, got {stat_output!r}. The terminal backend may "
+                    "have returned empty or malformed stdout."
+                )
+            )
         
         # Check if file is too large
         if file_size > MAX_FILE_SIZE:
@@ -967,7 +973,14 @@ class ShellFileOperations(FileOperations):
         try:
             total_lines = int(wc_output.strip())
         except ValueError:
-            total_lines = 0
+            return ReadResult(
+                error=(
+                    f"Failed to read line count for {path}: expected line count "
+                    f"from wc -l, got {wc_output!r}. The terminal backend may "
+                    "have returned empty or malformed stdout."
+                ),
+                file_size=file_size,
+            )
         
         # Check if truncated
         truncated = total_lines > end_line
@@ -1050,7 +1063,13 @@ class ShellFileOperations(FileOperations):
         try:
             file_size = int(stat_output.strip())
         except ValueError:
-            file_size = 0
+            return ReadResult(
+                error=(
+                    f"Failed to read file metadata for {path}: expected byte count "
+                    f"from wc -c, got {stat_output!r}. The terminal backend may "
+                    "have returned empty or malformed stdout."
+                )
+            )
         if self._is_image(path):
             return ReadResult(is_image=True, is_binary=True, file_size=file_size)
         sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
@@ -1830,6 +1849,15 @@ class ShellFileOperations(FileOperations):
         
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
+        if "exists" not in check.stdout and "not_found" not in check.stdout:
+            return SearchResult(
+                error=(
+                    f"Could not validate search path {path}: expected exists/not_found "
+                    f"probe output, got {check.stdout!r}. The terminal backend may "
+                    "have returned empty or malformed stdout."
+                ),
+                total_count=0,
+            )
         if "not_found" in check.stdout:
             # Try to suggest nearby paths
             parent = os.path.dirname(path) or "."

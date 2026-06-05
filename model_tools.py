@@ -1131,7 +1131,7 @@ def handle_function_call(
                     error_message=error_message,
                 )
                 for hook_result in hook_results:
-                    if isinstance(hook_result, str):
+                    if isinstance(hook_result, str) and hook_result:
                         result = hook_result
                         break
         except Exception as _hook_err:
