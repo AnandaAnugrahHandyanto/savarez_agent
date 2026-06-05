@@ -3,12 +3,15 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $sessions, setSessions } from '@/store/session'
+import { $sessions, setConnection, setSessions } from '@/store/session'
+import type { ComposerAttachment } from '@/store/composer'
 import type { SessionInfo } from '@/types/hermes'
 
 import { usePromptActions } from './use-prompt-actions'
 
 vi.mock('@/hermes', () => ({
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
+  setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
 }))
 
@@ -39,7 +42,7 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 interface HarnessHandle {
-  submitText: (text: string) => Promise<boolean>
+  submitText: (text: string, options?: { attachments?: ComposerAttachment[] }) => Promise<boolean>
 }
 
 function Harness({
@@ -78,6 +81,33 @@ function Harness({
   return null
 }
 
+function setRemoteConnection() {
+  setConnection({
+    authMode: 'token',
+    baseUrl: 'https://remote.example',
+    isFullscreen: false,
+    logs: [],
+    mode: 'remote',
+    nativeOverlayWidth: 0,
+    source: 'settings',
+    token: 'redacted',
+    windowButtonPosition: null,
+    wsUrl: 'wss://remote.example/ws'
+  })
+}
+
+function localTextAttachment(overrides: Partial<ComposerAttachment> = {}): ComposerAttachment {
+  return {
+    id: 'file:/Users/mark/Desktop/note.txt',
+    kind: 'file',
+    label: 'note.txt',
+    localPath: '/Users/mark/Desktop/note.txt',
+    path: '/Users/mark/Desktop/note.txt',
+    refText: '@file:/Users/mark/Desktop/note.txt',
+    ...overrides
+  }
+}
+
 describe('usePromptActions /title', () => {
   beforeEach(() => {
     setSessions(() => [sessionInfo()])
@@ -85,6 +115,7 @@ describe('usePromptActions /title', () => {
 
   afterEach(() => {
     cleanup()
+    setConnection(null)
     vi.restoreAllMocks()
   })
 
@@ -162,5 +193,90 @@ describe('usePromptActions /title', () => {
     expect(requestGateway).toHaveBeenCalledWith('session.title', expect.objectContaining({ title: 'way too long title' }))
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
+  })
+})
+
+describe('usePromptActions remote local attachments', () => {
+  afterEach(() => {
+    cleanup()
+    setConnection(null)
+    vi.restoreAllMocks()
+  })
+
+  it('inlines Desktop-local text attachments before submitting to a remote backend', async () => {
+    setRemoteConnection()
+
+    const readFileText = vi.fn(async () => ({
+      binary: false,
+      byteSize: 22,
+      language: 'markdown',
+      mimeType: 'text/markdown',
+      path: '/Users/mark/Desktop/note.txt',
+      text: '# Note\nhello remote',
+      truncated: false
+    }))
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileText }
+    })
+
+    const refreshSessions = vi.fn(async () => undefined)
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />)
+
+    const submitted = await handle!.submitText('review this', { attachments: [localTextAttachment()] })
+
+    expect(submitted).toBe(true)
+    expect(readFileText).toHaveBeenCalledWith('/Users/mark/Desktop/note.txt')
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({
+        session_id: RUNTIME_SESSION_ID,
+        text: expect.stringContaining('Attached local file: note.txt')
+      })
+    )
+    const promptSubmit = requestGateway.mock.calls
+      .map(call => call as unknown[])
+      .find(call => call[0] === 'prompt.submit')?.[1] as { text: string } | undefined
+    if (!promptSubmit) {
+      throw new Error('prompt.submit call missing')
+    }
+    expect(promptSubmit.text).toContain('```markdown\n# Note\nhello remote\n```')
+    expect(promptSubmit.text).toContain('review this')
+    expect(promptSubmit.text).not.toContain('@file:/Users/mark/Desktop/note.txt')
+  })
+
+  it('fails visibly instead of sending an unreadable remote @file for binary local files', async () => {
+    setRemoteConnection()
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileText: vi.fn(async () => ({
+          binary: true,
+          byteSize: 12,
+          language: 'text',
+          mimeType: 'application/octet-stream',
+          path: '/Users/mark/Desktop/blob.bin',
+          text: '',
+          truncated: false
+        }))
+      }
+    })
+
+    const refreshSessions = vi.fn(async () => undefined)
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />)
+
+    const submitted = await handle!.submitText('review this', {
+      attachments: [localTextAttachment({ label: 'blob.bin', localPath: '/Users/mark/Desktop/blob.bin' })]
+    })
+
+    expect(submitted).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
   })
 })
