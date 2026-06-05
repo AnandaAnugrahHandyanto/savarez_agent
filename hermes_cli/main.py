@@ -8348,6 +8348,54 @@ def _restore_stashed_changes(
     return True
 
 
+def _discard_stashed_changes(
+    git_cmd: list[str],
+    cwd: Path,
+    stash_ref: str,
+) -> bool:
+    """Throw away a stash created before an update, without applying it.
+
+    Used only on a NON-interactive update when the user has set
+    ``updates.non_interactive_local_changes: discard`` — i.e. they've opted out
+    of keeping local source edits on this machine. Drops the stash entry
+    instead of re-applying it, so the working tree stays clean at the freshly
+    pulled HEAD. Unlike ``git reset --hard`` + ``git clean -fd``, this only
+    affects what was stashed (tracked changes + the untracked files we
+    explicitly captured) — ignored paths like node_modules/venv/build outputs
+    are never touched, since they were never stashed.
+
+    Returns True if the stash was dropped, False on a git failure (in which
+    case the stash is left in place for safety).
+    """
+    stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
+    if stash_selector is None:
+        print(
+            "⚠ Configured to discard local changes on non-interactive update, "
+            "but Hermes couldn't find the stash entry to drop."
+        )
+        _print_stash_cleanup_guidance(stash_ref)
+        return False
+
+    drop = subprocess.run(
+        git_cmd + ["stash", "drop", stash_selector],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if drop.returncode != 0:
+        print(
+            "⚠ Configured to discard local changes, but Hermes couldn't drop "
+            "the saved stash entry."
+        )
+        if drop.stderr.strip():
+            print(f"  {drop.stderr.strip().splitlines()[0]}")
+        _print_stash_cleanup_guidance(stash_ref, stash_selector)
+        return False
+
+    print("→ Discarded local source changes (updates.non_interactive_local_changes=discard).")
+    return True
+
+
 # =========================================================================
 # Fork detection and upstream management for `savarez update`
 # =========================================================================
@@ -8360,7 +8408,6 @@ OFFICIAL_REPO_URLS = {
 }
 OFFICIAL_REPO_URL = "https://github.com/AnandaAnugrahHandyanto/savarez_agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
-MANAGED_CHECKOUT_MARKERS = (".hermes-bootstrap-complete",)
 
 
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -8394,19 +8441,6 @@ def _is_fork(origin_url: Optional[str]) -> bool:
         if normalized == official_normalized:
             return False
     return True
-
-
-def _is_managed_update_checkout(origin_url: Optional[str], cwd: Path) -> bool:
-    """Return True when this official checkout is safe to clean destructively.
-
-    The destructive clean path is only safe for checkouts Hermes explicitly
-    owns. An official ``origin`` alone is not enough proof: contributors can
-    also work from upstream-origin source checkouts with intentional local
-    files.
-    """
-    if not origin_url or _is_fork(origin_url):
-        return False
-    return any((cwd / marker).is_file() for marker in MANAGED_CHECKOUT_MARKERS)
 
 
 def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
@@ -10290,12 +10324,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # lockfile churn) update with a clean tree.
     _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
 
-    # Detect if we're updating from a fork, and whether this official-origin
-    # checkout has an explicit Hermes-owned marker that makes destructive
-    # worktree cleanup safe.
+    # Detect if we're updating from a fork (before any branch logic)
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
-    is_managed_checkout = _is_managed_update_checkout(origin_url, PROJECT_ROOT)
 
     if is_fork:
         print("⚠ Updating from fork:")
@@ -10563,6 +10594,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                     )
                     print(f"  Restore manually with: git stash apply")
+                elif discard_local_changes:
+                    # Non-interactive update + user opted into discarding local
+                    # source edits (updates.non_interactive_local_changes:
+                    # discard). Throw the stash away instead of re-applying it.
+                    _discard_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                    )
                 else:
                     _restore_stashed_changes(
                         git_cmd,
