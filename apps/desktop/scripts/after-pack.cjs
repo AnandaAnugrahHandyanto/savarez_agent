@@ -1,3 +1,5 @@
+'use strict'
+
 /**
  * after-pack.cjs — electron-builder afterPack hook.
  *
@@ -8,10 +10,15 @@
  * to the stock "Electron" icon/name (the bug when the stamp lived only in
  * install.ps1, which the update path doesn't use).
  *
- * Windows-only: rcedit edits PE resources, irrelevant on macOS/Linux where the
- * app identity comes from the bundle Info.plist / desktop entry. Best-effort:
- * a stamp failure must never fail an otherwise-good build (worst case is the
- * stock icon, not a broken app), so we log and resolve rather than throw.
+ * Also cleans up the backup unpacked directory stashed by before-pack.cjs.
+ * Because afterPack only runs on a successful pack, the backup is safely
+ * removed here — if we reach this hook, the new build is complete.
+ *
+ * Windows-only stamp: rcedit edits PE resources, irrelevant on macOS/Linux
+ * where the app identity comes from the bundle Info.plist / desktop entry.
+ * Best-effort: a stamp failure must never fail an otherwise-good build (worst
+ * case is the stock icon, not a broken app), so we log and resolve rather
+ * than throw.
  *
  * electron-builder passes a context with:
  *   - electronPlatformName: 'win32' | 'darwin' | 'linux'
@@ -19,11 +26,32 @@
  *   - packager.appInfo.productFilename: the exe basename (e.g. 'Hermes')
  */
 
+const fs = require('node:fs')
 const path = require('node:path')
 
 const { stampExeIdentity } = require('./set-exe-identity.cjs')
 
+/** Remove the backup dir stashed by before-pack.cjs, if present. */
+function removeBackupDir(appOutDir) {
+  const backupDir = appOutDir + '.backup'
+  if (fs.existsSync(backupDir)) {
+    fs.rmSync(backupDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    console.log(`[after-pack] removed backup unpacked dir: ${backupDir}`)
+  }
+}
+
+exports.removeBackupDir = removeBackupDir
+
 exports.default = async function afterPack(context) {
+  // Always clean up the backup first — this only runs on successful pack.
+  try {
+    if (context && context.appOutDir) {
+      removeBackupDir(context.appOutDir)
+    }
+  } catch (err) {
+    console.warn(`[after-pack] could not remove backup dir (${err.message}); continuing`)
+  }
+
   if (context.electronPlatformName !== 'win32') {
     return
   }
