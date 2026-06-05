@@ -943,6 +943,20 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
 
+            # Catch-all no-op for unhandled Slack events.
+            # Without this, slack_bolt emits WARNING + 404 for every event
+            # the app is subscribed to but Hermes does not handle (e.g.
+            # reaction_added, user_change, user_huddle_changed). In busy
+            # workspaces the 404 failure rate can exceed Slack's 95%
+            # threshold, triggering automatic Event Subscription disabling
+            # and silencing all inbound messages (issue #6572).
+            @self._app.event(_re.compile(r".*"))
+            async def _ack_unhandled_event(event, logger):
+                logger.debug(
+                    "[Slack] Ignoring unhandled event type=%s",
+                    (event or {}).get("type", "unknown"),
+                )
+
             # Bring up the handler and watchdog atomically. ``_running`` only
             # flips to True after the handler is alive so the watchdog loop
             # observes the live task immediately; on any failure here we tear
