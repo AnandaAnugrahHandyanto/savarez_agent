@@ -258,7 +258,7 @@ class TestTerminalIntegration:
         register_env_passthrough([*blocked_provider_vars, "TENOR_API_KEY"])
         for name in blocked_provider_vars:
             assert not is_env_passthrough(name)
-        assert is_env_passthrough("TENOR_API_KEY")
+        assert not is_env_passthrough("TENOR_API_KEY")
 
         child_env = _scrub_child_env(
             {
@@ -274,5 +274,5 @@ class TestTerminalIntegration:
         )
         for name in blocked_provider_vars:
             assert name not in child_env
-        assert child_env["TENOR_API_KEY"] == "synthetic-skill-secret"
+        assert "TENOR_API_KEY" not in child_env
         assert child_env["PATH"] == "/usr/bin"
