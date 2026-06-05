@@ -19,6 +19,23 @@ def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
 
 
+def test_dashboard_session_token_not_overwritten_by_user_env(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=stale-dotenv-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "live-desktop-token")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "live-desktop-token"
+
+
 def test_project_env_overrides_stale_shell_values_when_user_env_missing(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     project_env = tmp_path / ".env"

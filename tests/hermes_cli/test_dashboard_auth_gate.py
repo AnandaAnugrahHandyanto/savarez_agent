@@ -132,6 +132,20 @@ def test_start_server_loopback_sets_auth_required_false(monkeypatch):
     assert web_server.app.state.auth_required is False
 
 
+def test_start_server_resyncs_session_token_from_env(monkeypatch):
+    """start_server adopts a desktop-injected token even after early import."""
+    _stub_uvicorn_run(monkeypatch)
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", "stale-module-token")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "live-desktop-token")
+
+    web_server.start_server(
+        host="127.0.0.1", port=9119,
+        open_browser=False, allow_public=False,
+    )
+
+    assert web_server._SESSION_TOKEN == "live-desktop-token"
+
+
 def test_start_server_insecure_public_sets_auth_required_false(monkeypatch):
     """``--insecure`` (allow_public=True) on a public host: gate stays OFF."""
     _stub_uvicorn_run(monkeypatch)

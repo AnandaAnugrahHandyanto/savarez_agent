@@ -38,6 +38,9 @@ _SECRET_SOURCES: dict[str, str] = {}
 # config re-parse, and the ASCII sanitization sweep still ran every time.
 _APPLIED_HOMES: set[str] = set()
 
+_DASHBOARD_SESSION_TOKEN_ENV = "HERMES_DASHBOARD_SESSION_TOKEN"
+_MISSING = object()
+
 
 def get_secret_source(env_var: str) -> str | None:
     """Return the label of the secret source that supplied ``env_var``, if any.
@@ -227,6 +230,10 @@ def load_hermes_dotenv(
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
+    dashboard_session_token = os.environ.get(
+        _DASHBOARD_SESSION_TOKEN_ENV,
+        _MISSING,
+    )
 
     # Fix corrupted .env files before python-dotenv parses them (#8908).
     if user_env.exists():
@@ -243,6 +250,9 @@ def load_hermes_dotenv(
         loaded.append(project_env_path)
 
     _apply_external_secret_sources(home_path)
+
+    if dashboard_session_token is not _MISSING:
+        os.environ[_DASHBOARD_SESSION_TOKEN_ENV] = dashboard_session_token
 
     return loaded
 
