@@ -174,6 +174,7 @@ export function ChatBar({
   const [focusRequestId, setFocusRequestId] = useState(0)
   const dragDepthRef = useRef(0)
   const composingRef = useRef(false)  // true during IME composition (CJK input)
+  const compositionEndedAtRef = useRef(-Infinity)
   const lastSpokenIdRef = useRef<string | null>(null)
 
   const narrow = useMediaQuery('(max-width: 30rem)')
@@ -579,8 +580,14 @@ export function ChatBar({
 
   const handleCompositionEnd = (event: CompositionEvent<HTMLDivElement>) => {
     composingRef.current = false
+    compositionEndedAtRef.current = performance.now()
     handleEditorInput(event)
   }
+
+  // macOS Chromium can fire compositionend before the Enter keydown that
+  // confirmed the preedit text, so keep that one Enter from submitting.
+  const isConfirmingRecentImeComposition = (event: KeyboardEvent<HTMLDivElement>) =>
+    event.key === 'Enter' && performance.now() - compositionEndedAtRef.current < 100
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
     trigger?.kind === '@' ? at.adapter : trigger?.kind === '/' ? slash.adapter : null
@@ -670,7 +677,7 @@ export function ChatBar({
     // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
     // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
     // preedit fires submitDraft() and splits the message mid-word.
-    if (composingRef.current || event.nativeEvent.isComposing) {
+    if (composingRef.current || event.nativeEvent.isComposing || isConfirmingRecentImeComposition(event)) {
       return
     }
 
@@ -1258,7 +1265,7 @@ export function ChatBar({
           onSubmit={e => {
             e.preventDefault()
 
-            if (composingRef.current) {
+            if (composingRef.current || performance.now() - compositionEndedAtRef.current < 100) {
               return
             }
 

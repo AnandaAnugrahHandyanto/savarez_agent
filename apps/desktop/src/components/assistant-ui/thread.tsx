@@ -886,6 +886,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   // `trigger`, which keyup sees as already-null after Escape).
   const triggerKeyConsumedRef = useRef(false)
   const composingRef = useRef(false)
+  const compositionEndedAtRef = useRef(-Infinity)
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
@@ -1205,6 +1206,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
   const handleCompositionEnd = (event: CompositionEvent<HTMLDivElement>) => {
     composingRef.current = false
+    compositionEndedAtRef.current = performance.now()
     handleInput(event)
   }
 
@@ -1257,7 +1259,13 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (composingRef.current || event.nativeEvent.isComposing) {
+    // macOS Chromium can fire compositionend before the Enter keydown that
+    // confirmed the preedit text, so keep that one Enter from submitting.
+    if (
+      composingRef.current ||
+      event.nativeEvent.isComposing ||
+      (event.key === 'Enter' && performance.now() - compositionEndedAtRef.current < 100)
+    ) {
       return
     }
 
