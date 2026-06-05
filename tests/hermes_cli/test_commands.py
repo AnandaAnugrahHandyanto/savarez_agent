@@ -116,6 +116,27 @@ class TestResolveCommand:
         assert topic.name == "topic"
         assert "topic" in GATEWAY_KNOWN_COMMANDS
 
+    def test_whoami_is_gateway_only(self):
+        """/whoami reports per-platform slash access tiers (admin / user).
+
+        It has a gateway handler (gateway/run.py) but no classic-CLI
+        dispatch branch, so it must be gateway_only. Without the flag it
+        leaks into CLI /help and autocomplete (derived from COMMANDS /
+        COMMANDS_BY_CATEGORY), and running it just prints
+        "Unknown command: /whoami". Regression guard for that
+        truth-in-advertising bug.
+        """
+        whoami = resolve_command("whoami")
+        assert whoami is not None
+        assert whoami.gateway_only is True
+        # Still dispatchable in the gateway where the handler lives.
+        assert "whoami" in GATEWAY_KNOWN_COMMANDS
+        # Must NOT surface in CLI help / autocomplete.
+        assert "/whoami" not in COMMANDS
+        assert all(
+            "/whoami" not in bucket for bucket in COMMANDS_BY_CATEGORY.values()
+        )
+
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"
