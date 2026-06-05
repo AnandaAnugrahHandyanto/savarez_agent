@@ -11,8 +11,11 @@ import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import numpy as np
 import pytest
+
+# numpy ships only in the optional "voice" extra (not [all,dev]); the mixer
+# math needs it, so skip this whole module when it isn't installed.
+np = pytest.importorskip("numpy")
 
 # voice_mixer lives inside the discord plugin package dir; import by path the
 # same way the adapter does.

@@ -44,11 +44,25 @@ the mixer's output cannot echo back into transcription.
 
 import logging
 import threading
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
-import numpy as np
+if TYPE_CHECKING:  # numpy is an optional ("voice" extra) dep — never import at runtime top-level
+    import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+def _require_numpy():
+    """Import numpy lazily.
+
+    numpy ships in the optional ``voice`` extra, not the base install, so this
+    module must import cleanly without it (the Discord adapter imports this
+    file unconditionally).  Callers that actually mix audio call this; if the
+    voice extra isn't installed they get a clear error instead of a top-level
+    ImportError that would break the whole adapter import.
+    """
+    import numpy as np  # noqa: PLC0415 — intentional lazy import
+    return np
 
 # Discord-native frame geometry (matches discord.opus.Encoder).
 SAMPLE_RATE = 48000
@@ -102,7 +116,7 @@ class MixerChild:
     def finished(self) -> bool:
         return self._finished
 
-    def read_frame(self) -> Optional[np.ndarray]:
+    def read_frame(self) -> "Optional[np.ndarray]":
         """Return the next 20 ms frame as an int16 ndarray, or None if done."""
         if self._finished:
             return None
@@ -113,6 +127,7 @@ class MixerChild:
                 self._finished = True
                 return None
 
+        np = _require_numpy()
         chunk = self._pcm[self._pos:self._pos + FRAME_SIZE]
         self._pos += FRAME_SIZE
         if len(chunk) < FRAME_SIZE:
@@ -237,7 +252,8 @@ class VoiceMixer:
             if self._closed:
                 return SILENCE_FRAME
 
-            acc: Optional[np.ndarray] = None
+            np = _require_numpy()
+            acc: "Optional[np.ndarray]" = None
 
             # Speech children (drop exhausted ones; release duck when last ends)
             if self._speech:
@@ -325,6 +341,7 @@ def synth_ambient_pcm(seconds: float = 4.0) -> bytes:
     (whole number of cycles, zero-crossing endpoints) and sit quietly under
     speech.  Mono content duplicated to stereo.
     """
+    np = _require_numpy()
     n = int(SAMPLE_RATE * seconds)
     t = np.arange(n, dtype=np.float64) / SAMPLE_RATE
 
