@@ -82,6 +82,112 @@ def _is_what_did_you_do_trigger(text: str | None) -> bool:
     return normalized in _WHAT_DID_YOU_DO_TRIGGERS
 
 
+def _route_gateway_message_mode(
+    event: "MessageEvent",
+    *,
+    active_mode: Optional[str] = None,
+) -> tuple["MessageEvent", "GatewayMessageMode"]:
+    """Apply QQ/gateway mode routing to an event.
+
+    The stripped text is what the agent sees and what gets persisted.  The
+    original delivery source stays unchanged except for ``session_scope``, which
+    only affects session-key construction so lightweight/ops/dev lanes do not
+    share transcript history or cached AIAgent instances.  ``active_mode`` is a
+    sticky per-chat default set by explicit switch phrases such as
+    `切到日常聊天路由`.
+    """
+    route = resolve_gateway_message_mode(getattr(event, "text", None), active_mode=active_mode)
+    if route.name == "dev" and not route.sticky_mode:
+        return event, route
+
+    source = getattr(event, "source", None)
+    if source is not None:
+        source = dataclasses.replace(source, session_scope=route.session_scope)
+    routed_event = dataclasses.replace(event, text=route.message, source=source)
+    return routed_event, route
+
+
+def _prepare_route_required_skills(
+    enabled_toolsets: List[str],
+    combined_ephemeral: str,
+    mode_route: "GatewayMessageMode",
+    *,
+    task_id: Optional[str] = None,
+) -> tuple[List[str], str]:
+    """Preload skills required by a gateway route into the agent prompt.
+
+    Gateway routes can require workflow skills to be present before the model
+    has a chance to decide whether to call ``skill_view``.  This helper keeps
+    that guarantee deterministic at the gateway layer, including lightweight
+    routes that intentionally preload a tiny base skill set.
+    """
+    required_skills = tuple(getattr(mode_route, "required_skills", ()) or ())
+    if not required_skills:
+        return list(enabled_toolsets or []), combined_ephemeral or ""
+
+    prepared_toolsets = list(enabled_toolsets or [])
+    if "skills" not in prepared_toolsets:
+        prepared_toolsets.append("skills")
+    blocks: List[str] = []
+    seen: set[str] = set()
+
+    for skill_name in required_skills:
+        skill_name = str(skill_name or "").strip()
+        if not skill_name or skill_name in seen:
+            continue
+        seen.add(skill_name)
+        try:
+            from tools.skills_tool import skill_view
+
+            raw = skill_view(skill_name, task_id=task_id, preprocess=False)
+            data = json.loads(raw)
+        except Exception as exc:
+            logger.warning(
+                "Failed to preload required route skill %s for mode %s: %s",
+                skill_name,
+                getattr(mode_route, "name", ""),
+                exc,
+            )
+            continue
+
+        if not data.get("success"):
+            logger.warning(
+                "Required route skill %s for mode %s was not loaded: %s",
+                skill_name,
+                getattr(mode_route, "name", ""),
+                data.get("error") or "unknown error",
+            )
+            continue
+
+        content = str(data.get("content") or "").strip()
+        if not content:
+            logger.warning(
+                "Required route skill %s for mode %s had no content",
+                skill_name,
+                getattr(mode_route, "name", ""),
+            )
+            continue
+
+        resolved_name = str(data.get("name") or skill_name).strip() or skill_name
+        blocks.append(
+            f'### skill_view(name="{skill_name}") → {resolved_name}\n{content}'
+        )
+
+    if not blocks:
+        return prepared_toolsets, combined_ephemeral or ""
+
+    required_prompt = (
+        "## Required route skills\n"
+        "The gateway preloaded these skills for this route. Treat them as if "
+        "you had just called skill_view yourself before replying. Follow them "
+        "unless they conflict with higher-priority user or project instructions.\n\n"
+        + "\n\n".join(blocks)
+    )
+    combined = (combined_ephemeral or "").strip()
+    combined = (combined + "\n\n" + required_prompt).strip() if combined else required_prompt
+    return prepared_toolsets, combined
+
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -1334,6 +1440,7 @@ from gateway.restart import (
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
 )
+from gateway.message_modes import GatewayMessageMode, resolve_gateway_message_mode
 
 
 from gateway.whatsapp_identity import (
@@ -2279,6 +2386,12 @@ class GatewayRunner:
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
 
+        # Per-chat sticky gateway route overrides set by phrases like
+        # `切到日常聊天路由`.  Keyed by the unscoped base session key so follow-up
+        # messages without a prefix stay in the lightweight/ops lane until the
+        # user switches back to the default/dev route.
+        self._gateway_message_mode_overrides: Dict[str, str] = {}
+
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
@@ -2704,6 +2817,71 @@ class GatewayRunner:
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
+
+    def _scoped_session_key_for_command(
+        self,
+        base_session_key: str,
+        *,
+        state_maps: tuple[dict, ...] = (),
+        prefer_active_mode: bool = True,
+    ) -> str:
+        """Resolve a slash/control command from a base chat key to its scoped lane.
+
+        Gateway slash commands bypass normal message-mode routing, so a plain
+        `/stop` or `/yolo` sent while the chat is sticky-routed to `ops` starts
+        with the unscoped base key.  Prefer exact state, then the sticky active
+        mode key, then any live scoped state under the same base chat.
+        """
+        session_key = str(base_session_key or "")
+        if not session_key or ":mode:" in session_key:
+            return session_key
+
+        candidates = [session_key]
+        active_mode = str(
+            (getattr(self, "_gateway_message_mode_overrides", {}) or {}).get(session_key)
+            or ""
+        ).strip()
+        if active_mode and active_mode != "dev":
+            candidates.append(f"{session_key}:mode:{active_mode}")
+
+        for mapping in state_maps or ():
+            if not isinstance(mapping, dict):
+                continue
+            for candidate in candidates:
+                if candidate in mapping:
+                    return candidate
+
+        scoped_prefix = f"{session_key}:mode:"
+        for mapping in state_maps or ():
+            if not isinstance(mapping, dict):
+                continue
+            for key in mapping.keys():
+                key_s = str(key or "")
+                if key_s.startswith(scoped_prefix):
+                    return key_s
+
+        if prefer_active_mode and len(candidates) > 1:
+            return candidates[1]
+        return session_key
+
+    def _source_for_session_key(self, source: SessionSource, session_key: str) -> SessionSource:
+        """Return a source carrying the mode scope implied by session_key."""
+        try:
+            base_key = self._session_key_for_source(source)
+        except Exception:
+            base_key = ""
+        if not session_key or not base_key or session_key == base_key:
+            return source
+        prefix = f"{base_key}:mode:"
+        if not str(session_key).startswith(prefix):
+            return source
+        scope = str(session_key)[len(prefix):].split(":", 1)[0]
+        if not scope:
+            return source
+        try:
+            return dataclasses.replace(source, session_scope=scope)
+        except Exception:
+            return source
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
@@ -6627,12 +6805,6 @@ class GatewayRunner:
                     _phase_elapsed(),
                 )
 
-            if self._restart_requested and self._restart_detached:
-                try:
-                    await self._launch_detached_restart_command()
-                except Exception as e:
-                    logger.error("Failed to launch detached gateway restart: %s", e)
-
             self._finalize_shutdown_agents(active_agents)
 
             # Also shut down memory providers on idle cached agents.
@@ -6739,6 +6911,18 @@ class GatewayRunner:
             from gateway.status import remove_pid_file, release_gateway_runtime_lock
             remove_pid_file()
             release_gateway_runtime_lock()
+
+            # Launch the replacement only after adapters have disconnected and
+            # their scoped platform locks (QQ bot app IDs, Telegram tokens, etc.)
+            # have been released.  Starting the watcher earlier can let the new
+            # gateway reach platform connection while the old adapter still owns
+            # the scoped lock, producing false startup conflicts such as
+            # "QQBot app ID already in use" during WebUI-hosted /restart.
+            if self._restart_requested and self._restart_detached:
+                try:
+                    await self._launch_detached_restart_command()
+                except Exception as e:
+                    logger.error("Failed to launch detached gateway restart: %s", e)
 
             # Write a clean-shutdown marker so the next startup knows this
             # wasn't a crash.  suspend_recently_active() only needs to run
@@ -7427,6 +7611,43 @@ class GatewayRunner:
         # IMPORTANT: recognized slash commands must bypass this interception.
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
+        # Route Chinese QQ/gateway text prefixes into logical lanes before
+        # computing the scoped session key.  This keeps `日常聊天 ...` and
+        # `运维 ...` out of the default development transcript/cache while
+        # preserving the same delivery chat_id for replies.  Explicit switch
+        # phrases such as `切到日常聊天路由` set a sticky base-chat default so
+        # follow-up messages without the prefix do not fall back to dev context.
+        _base_mode_key = self._session_key_for_source(source)
+        if not is_internal:
+            _mode_overrides = getattr(self, "_gateway_message_mode_overrides", None)
+            if not isinstance(_mode_overrides, dict):
+                _mode_overrides = {}
+                self._gateway_message_mode_overrides = _mode_overrides
+            _active_mode = _mode_overrides.get(_base_mode_key)
+            event, _gateway_message_mode = _route_gateway_message_mode(
+                event,
+                active_mode=_active_mode,
+            )
+            source = event.source
+            if _gateway_message_mode.sticky_mode:
+                if _gateway_message_mode.sticky_mode == "dev":
+                    _mode_overrides.pop(_base_mode_key, None)
+                else:
+                    _mode_overrides[_base_mode_key] = _gateway_message_mode.sticky_mode
+                if _gateway_message_mode.control_response:
+                    return _gateway_message_mode.control_response
+            if _gateway_message_mode.name != "dev":
+                logger.info(
+                    "gateway message mode routed: mode=%s prefix=%s active=%s platform=%s chat=%s",
+                    _gateway_message_mode.name,
+                    _gateway_message_mode.prefix,
+                    _active_mode or "",
+                    source.platform.value if source and source.platform else "unknown",
+                    source.chat_id if source else "unknown",
+                )
+        else:
+            _gateway_message_mode = GatewayMessageMode(name="dev", message=event.text or "")
+
         _quick_key = self._session_key_for_source(source)
         if _is_what_did_you_do_trigger(event.text):
             event = dataclasses.replace(event, text="/what-did-you-do")
@@ -7586,6 +7807,13 @@ class GatewayRunner:
         # has been *idle* beyond the inactivity threshold (or when the agent
         # object has no activity tracker and wall-clock age is extreme).
         _raw_stale_timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800)
+        _evt_cmd_for_scoped_control = event.get_command()
+        if _evt_cmd_for_scoped_control in {"stop", "steer", "queue", "q"}:
+            _quick_key = self._scoped_session_key_for_command(
+                _quick_key,
+                state_maps=(getattr(self, "_running_agents", {}) or {},),
+                prefer_active_mode=False,
+            )
         _stale_ts = self._running_agents_ts.get(_quick_key, 0)
         if _quick_key in self._running_agents and _stale_ts:
             _stale_age = time.time() - _stale_ts
@@ -8426,7 +8654,13 @@ class GatewayRunner:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _agent_result = await self._handle_message_with_agent(
+                event,
+                source,
+                _quick_key,
+                _run_generation,
+                message_mode=_gateway_message_mode,
+            )
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -8748,7 +8982,14 @@ class GatewayRunner:
                 pass
         return source
 
-    async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
+    async def _handle_message_with_agent(
+        self,
+        event,
+        source,
+        _quick_key: str,
+        run_generation: int,
+        message_mode: Optional[GatewayMessageMode] = None,
+    ):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
@@ -9360,6 +9601,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                message_mode=message_mode,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -9916,9 +10158,43 @@ class GatewayRunner:
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
-        
-        # Get existing session key
-        session_key = self._session_key_for_source(source)
+
+        # Slash commands bypass normal message-mode routing, so a plain /new
+        # sent while the chat is sticky-routed to lite/ops starts with the
+        # unscoped base key. Resolve it to the active scoped lane before
+        # resetting so the current route conversation does not survive and get
+        # reused the next time the user enters that lane.
+        base_source = source
+        try:
+            base_source = dataclasses.replace(source, session_scope=None)
+        except Exception:
+            pass
+        base_session_key = self._session_key_for_source(base_source)
+        _cache = getattr(self, "_agent_cache", None)
+        session_key = self._scoped_session_key_for_command(
+            base_session_key,
+            state_maps=(
+                getattr(self, "_running_agents", {}) or {},
+                _cache if isinstance(_cache, dict) else {},
+                getattr(self, "_session_model_overrides", {}) or {},
+                getattr(self, "_session_reasoning_overrides", {}) or {},
+                getattr(self, "_pending_model_notes", {}) or {},
+                getattr(getattr(self, "session_store", None), "_entries", {}) or {},
+            ),
+        )
+        source = self._source_for_session_key(source, session_key)
+        # /new is a conversation boundary, not just a transcript reset. Clear
+        # sticky gateway mode routing (e.g. `日常聊天` / `运维`) so the next
+        # plain follow-up starts from the default/dev route.
+        _mode_overrides = getattr(self, "_gateway_message_mode_overrides", None)
+        if isinstance(_mode_overrides, dict):
+            _mode_overrides.pop(session_key, None)
+            _mode_overrides.pop(base_session_key, None)
+            try:
+                _base_source = dataclasses.replace(source, session_scope=None)
+                _mode_overrides.pop(self._session_key_for_source(_base_source), None)
+            except Exception:
+                pass
         self._invalidate_session_run_generation(session_key, reason="session_reset")
 
         # Snapshot the old entry so on_session_finalize can report the
@@ -10503,7 +10779,12 @@ class GatewayRunner:
         """
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
-        session_key = session_entry.session_key
+        base_session_key = session_entry.session_key
+        session_key = self._scoped_session_key_for_command(
+            base_session_key,
+            state_maps=(getattr(self, "_running_agents", {}) or {},),
+        )
+        source = self._source_for_session_key(source, session_key)
 
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
@@ -12698,7 +12979,16 @@ class GatewayRunner:
             is_session_yolo_enabled,
         )
 
-        session_key = self._session_key_for_source(event.source)
+        session_key = self._scoped_session_key_for_command(
+            self._session_key_for_source(event.source),
+            state_maps=(
+                getattr(self, "_pending_approvals", {}),
+                getattr(self, "_running_agents", {}),
+                getattr(self, "_session_model_overrides", {}),
+                getattr(self, "_session_reasoning_overrides", {}),
+                getattr(self, "_pending_model_notes", {}),
+            ),
+        )
         current = is_session_yolo_enabled(session_key)
         if current:
             disable_session_yolo(session_key)
@@ -13756,7 +14046,16 @@ class GatewayRunner:
         available whenever the user asks, not only while the agent is running.
         """
         source = event.source
-        session_key = self._session_key_for_source(source)
+        base_session_key = self._session_key_for_source(source)
+        _cache = getattr(self, "_agent_cache", None)
+        session_key = self._scoped_session_key_for_command(
+            base_session_key,
+            state_maps=(
+                getattr(self, "_running_agents", {}) or {},
+                _cache if isinstance(_cache, dict) else {},
+            ),
+        )
+        source = self._source_for_session_key(source, session_key)
 
         # Try running agent first (mid-turn), then cached agent (between turns)
         agent = self._running_agents.get(session_key)
@@ -14484,14 +14783,16 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval, find_blocking_approval_session_key,
         )
 
-        if not has_blocking_approval(session_key):
+        approval_session_key = find_blocking_approval_session_key(session_key)
+        if approval_session_key is None:
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.approval_expired")
             return t("gateway.approve.no_pending")
+        session_key = approval_session_key
 
         # Parse args: support "all", "all session", "all always", "session", "always"
         args = event.get_command_args().strip().lower().split()
@@ -14530,16 +14831,18 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval, find_blocking_approval_session_key,
         )
 
-        if not has_blocking_approval(session_key):
+        approval_session_key = find_blocking_approval_session_key(session_key)
+        if approval_session_key is None:
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.deny.stale")
             return t("gateway.deny.no_pending")
+        session_key = approval_session_key
 
-        args = event.get_command_args().strip().lower()
+        args = event.get_command_args().strip().lower().split()
         resolve_all = "all" in args
 
         count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
@@ -16520,6 +16823,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        message_mode: Optional[GatewayMessageMode] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -16559,6 +16863,9 @@ class GatewayRunner:
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        mode_route = message_mode if isinstance(message_mode, GatewayMessageMode) else GatewayMessageMode(name="dev", message=message)
+        if mode_route.enabled_toolsets is not None:
+            enabled_toolsets = sorted(mode_route.enabled_toolsets)
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
@@ -17202,11 +17509,12 @@ class GatewayRunner:
         def run_sync():
             # The conditional re-assignment of `message` further below
             # (prepending model-switch notes) makes Python treat it as a
-            # local variable in the entire function.  `nonlocal` lets us
-            # read *and* reassign the outer `_run_agent` parameter without
-            # triggering an UnboundLocalError on the earlier read at
-            # `_resolve_turn_agent_config(message, …)`.
-            nonlocal message
+            # local variable in the entire function. Route-required skill
+            # preparation also rebinds `enabled_toolsets`, and the disabled
+            # toolset cleanup may rebind `disabled_toolsets`.  `nonlocal`
+            # lets us read *and* reassign the outer `_run_agent` locals
+            # without triggering UnboundLocalError on the earlier reads.
+            nonlocal message, enabled_toolsets, disabled_toolsets
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -17222,11 +17530,27 @@ class GatewayRunner:
             # Combine platform context, per-channel context, and the user-configured
             # ephemeral system prompt.
             combined_ephemeral = context_prompt or ""
+            if mode_route.system_prompt:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + mode_route.system_prompt).strip()
             event_channel_prompt = (channel_prompt or "").strip()
             if event_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+
+            enabled_toolsets, combined_ephemeral = _prepare_route_required_skills(
+                enabled_toolsets,
+                combined_ephemeral,
+                mode_route,
+                task_id=session_id,
+            )
+            if getattr(mode_route, "required_skills", None) and disabled_toolsets:
+                if isinstance(disabled_toolsets, str):
+                    disabled_toolsets = [disabled_toolsets]
+                disabled_toolsets = [
+                    toolset for toolset in disabled_toolsets
+                    if str(toolset).strip() != "skills"
+                ] or None
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart). Keep config.yaml authoritative for
@@ -17425,6 +17749,9 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
+                    skip_context_files=mode_route.skip_context_files,
+                    load_soul_identity=mode_route.load_soul_identity,
+                    skip_memory=mode_route.skip_memory,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )

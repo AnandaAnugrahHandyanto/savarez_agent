@@ -11,10 +11,13 @@ from gateway.platforms.base import (
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     MessageType,
+    coerce_plaintext_gateway_command,
     safe_url_for_log,
     utf16_len,
     _prefix_within_utf16_limit,
 )
+from gateway.config import Platform
+from gateway.session import SessionSource
 
 
 class TestSecretCaptureGuidance:
@@ -118,6 +121,44 @@ class TestMessageEventGetCommandArgs:
     def test_not_a_command_returns_full_text(self):
         event = MessageEvent(text="hello world")
         assert event.get_command_args() == "hello world"
+
+
+class TestCoercePlaintextGatewayCommand:
+    def _qq_event(self, text: str, chat_type: str = "dm") -> MessageEvent:
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.QQBOT,
+                chat_id="qq-chat",
+                chat_type=chat_type,
+                user_id="qq-user",
+            ),
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "重启gateway",
+            "重启 gateway",
+            "gateway重启",
+            "gateway restart",
+        ],
+    )
+    def test_qq_dm_plaintext_restart_aliases_become_restart_command(self, text):
+        event = self._qq_event(text)
+
+        coerce_plaintext_gateway_command(event)
+
+        assert event.text == "/restart"
+        assert event.get_command() == "restart"
+
+    def test_qq_group_plaintext_restart_alias_is_not_rewritten(self):
+        event = self._qq_event("重启gateway", chat_type="group")
+
+        coerce_plaintext_gateway_command(event)
+
+        assert event.text == "重启gateway"
 
 
 # ---------------------------------------------------------------------------

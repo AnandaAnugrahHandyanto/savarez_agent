@@ -231,6 +231,54 @@ async def test_launch_detached_restart_command_waiter_does_not_hang_on_zombie_pi
     assert "gateway run --replace" in shell_cmd
 
 
+@pytest.mark.asyncio
+async def test_detached_restart_relaunch_after_adapter_disconnect_and_lock_release(monkeypatch):
+    """Detached /restart must not start a replacement while platform locks are held.
+
+    WebUI-hosted QQ restarts previously spawned the detached replacement before
+    adapter.disconnect() released QQBot scoped app-ID locks, so the new process
+    could fail with "QQBot app ID already in use" and then exit.
+    """
+    runner, adapter = make_restart_runner()
+    order = []
+
+    async def fake_disconnect():
+        order.append("disconnect")
+
+    async def fake_launch():
+        order.append("launch")
+
+    monkeypatch.setattr(adapter, "disconnect", fake_disconnect)
+    monkeypatch.setattr(runner, "_launch_detached_restart_command", fake_launch)
+
+    import gateway.status as gateway_status
+    import tools.process_registry as process_registry_mod
+    import tools.terminal_tool as terminal_tool
+
+    monkeypatch.setattr(process_registry_mod.process_registry, "kill_all", lambda: 0)
+    monkeypatch.setattr(terminal_tool, "cleanup_all_environments", lambda: None)
+    try:
+        import tools.browser_tool as browser_tool
+        monkeypatch.setattr(browser_tool, "cleanup_all_browsers", lambda: None)
+    except Exception:
+        pass
+    monkeypatch.setattr(gateway_status, "remove_pid_file", lambda: order.append("remove_pid"))
+    monkeypatch.setattr(
+        gateway_status,
+        "release_gateway_runtime_lock",
+        lambda: order.append("release_runtime_lock"),
+    )
+
+    await gateway_run.GatewayRunner.stop(
+        runner,
+        restart=True,
+        detached_restart=True,
+        service_restart=False,
+    )
+
+    assert order == ["disconnect", "remove_pid", "release_runtime_lock", "launch"]
+
+
 # ── Shutdown notification tests ──────────────────────────────────────
 
 
