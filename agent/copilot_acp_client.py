@@ -8,6 +8,7 @@ back into the minimal shape Hermes expects from an OpenAI client.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import queue
@@ -317,6 +318,13 @@ class _ACPChatCompletions:
 
     def create(self, **kwargs: Any) -> Any:
         return self._client._create_chat_completion(**kwargs)
+
+    async def acreate(self, **kwargs: Any) -> Any:
+        """Async wrapper — runs the synchronous subprocess call in a thread."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, lambda: self._client._create_chat_completion(**kwargs),
+        )
 
 
 class _ACPChatNamespace:

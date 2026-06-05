@@ -40,6 +40,7 @@ Payment / credit exhaustion fallback:
   their OpenRouter balance but has Codex OAuth or another provider available.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -1124,6 +1125,31 @@ class AsyncAnthropicAuxiliaryClient:
         # See AsyncCodexAuxiliaryClient: mirror _real_client so cache
         # eviction on a poisoned underlying client also drops this entry.
         self._real_client = sync_wrapper._real_client
+
+
+class _AsyncCopilotACPAdapter:
+    """Thin async wrapper around CopilotACPClient for auxiliary calls."""
+
+    def __init__(self, sync_client):
+        self._sync = sync_client
+        self.chat = _AsyncCopilotACPChat(sync_client)
+
+
+class _AsyncCopilotACPChat:
+    def __init__(self, sync_client):
+        self._sync = sync_client
+        self.completions = _AsyncCopilotACPCompletions(sync_client)
+
+
+class _AsyncCopilotACPCompletions:
+    def __init__(self, sync_client):
+        self._sync = sync_client
+
+    async def create(self, **kwargs):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, lambda: self._sync._create_chat_completion(**kwargs),
+        )
 
 
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
@@ -3393,7 +3419,9 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     try:
         from agent.copilot_acp_client import CopilotACPClient
         if isinstance(sync_client, CopilotACPClient):
-            return sync_client, model
+            # ACP is sync (subprocess-based); wrap in async adapter so
+            # await client.chat.completions.create() works from async_call_llm.
+            return _AsyncCopilotACPAdapter(sync_client), model
     except ImportError:
         pass
 
