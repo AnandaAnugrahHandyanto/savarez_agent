@@ -5252,6 +5252,13 @@ class GatewayRunner:
             notifier_profile = self._active_profile_name()
             self._kanban_notifier_profile = notifier_profile
 
+        # Resolve notification_sources from config.
+        # ['*']  → accept all profiles;  ['a','b'] → whitelist;  [] → self only.
+        _cfg = getattr(self, "config", None)
+        _raw_ns: list[str] = getattr(_cfg, "notification_sources", []) if _cfg else []
+        ns_all = "*" in _raw_ns
+        ns_set = {s for s in _raw_ns if s != "*"}
+
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
 
@@ -5315,11 +5322,17 @@ class GatewayRunner:
                             for sub in subs:
                                 owner_profile = sub.get("notifier_profile") or None
                                 if owner_profile and owner_profile != notifier_profile:
-                                    logger.debug(
-                                        "kanban notifier: subscription for %s owned by profile %s; current profile %s skipping",
-                                        sub.get("task_id"), owner_profile, notifier_profile,
-                                    )
-                                    continue
+                                    # Cross-profile check: honour notification_sources config.
+                                    if ns_all:
+                                        pass  # ['*'] → accept all profiles
+                                    elif ns_set and owner_profile in ns_set:
+                                        pass  # whitelisted profile
+                                    else:
+                                        logger.debug(
+                                            "kanban notifier: subscription for %s owned by profile %s; current profile %s skipping",
+                                            sub.get("task_id"), owner_profile, notifier_profile,
+                                        )
+                                        continue
                                 platform = (sub.get("platform") or "").lower()
                                 if platform not in active_platforms:
                                     logger.debug(
