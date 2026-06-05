@@ -353,13 +353,14 @@ class TestIRCAdapterMessageParsing:
         adapter._message_handler = AsyncMock()
         adapter.handle_message = capture_event
 
-        await adapter._handle_line(":alice!u@host PRIVMSG #test :hermes: /approve")
+        await adapter._handle_line(":alice!u@host PRIVMSG #test :Hermes:/approve session")
 
         assert len(handled) == 1
         event = handled[0]
-        assert event.text == "/approve"
+        assert event.text == "/approve session"
         assert event.is_command() is True
         assert event.get_command() == "approve"
+        assert event.get_command_args() == "session"
         assert event.source.thread_id == "observed-channel-context"
         assert event.source.user_id == "alice"
         assert event.channel_prompt is None
@@ -375,13 +376,14 @@ class TestIRCAdapterMessageParsing:
         adapter._message_handler = AsyncMock()
         adapter.handle_message = capture_event
 
-        await adapter._handle_line(":alice!u@host PRIVMSG #test :hermes: /deny")
+        await adapter._handle_line(":alice!u@host PRIVMSG #test :Hermes:/deny all")
 
         assert len(handled) == 1
         event = handled[0]
-        assert event.text == "/deny"
+        assert event.text == "/deny all"
         assert event.is_command() is True
         assert event.get_command() == "deny"
+        assert event.get_command_args() == "all"
         assert event.source.thread_id == "observed-channel-context"
         assert event.source.user_id == "alice"
         assert event.channel_prompt is None
