@@ -198,13 +198,11 @@ else
         --python-version "$PYTHON_VERSION" \
         --only-binary :all: \
         --target "$WHEEL_DIR" \
-        --no-install \
         -r "$REQ_FILE" 2>&1 | tail -5 || {
         warn "uv pip install --target 失败，重试不限制二进制 ..."
         uv pip install \
             --python-version "$PYTHON_VERSION" \
             --target "$WHEEL_DIR" \
-            --no-install \
             -r "$REQ_FILE" 2>&1 | tail -5 || true
     }
 
@@ -256,13 +254,11 @@ uv pip install \
     --python-version "$PYTHON_VERSION" \
     --only-binary :all: \
     --target "$WHEEL_DIR" \
-    --no-install \
     -r "$LAZY_REQ" 2>&1 | tail -5 || {
     warn "部分 lazy deps 下载失败（可能无 Linux wheel），重试不限制二进制 ..."
     uv pip install \
         --python-version "$PYTHON_VERSION" \
         --target "$WHEEL_DIR" \
-        --no-install \
         -r "$LAZY_REQ" 2>&1 | tail -5 || true
 }
 
