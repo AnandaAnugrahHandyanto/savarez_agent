@@ -10,6 +10,8 @@ export interface ComposerAttachment {
   refText?: string
   previewUrl?: string
   path?: string
+  /** Absolute path on the Desktop client. Remote backends cannot read this directly. */
+  localPath?: string
   attachedSessionId?: string
 }
 

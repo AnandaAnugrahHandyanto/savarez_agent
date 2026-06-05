@@ -33,6 +33,7 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $busy,
+  $connection,
   $messages,
   $yoloActive,
   setAwaitingResponse,
@@ -94,6 +95,62 @@ interface PromptActionsOptions {
 interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
   fromQueue?: boolean
+}
+
+function fencedAttachmentBlock(label: string, language: string, text: string, truncated: boolean, byteSize: number) {
+  const fence = text.includes('```') ? '````' : '```'
+  const suffix = truncated ? `\n\n_[truncated: showing Desktop text preview of ${byteSize} bytes total]_` : ''
+
+  return [`Attached local file: ${label}`, `${fence}${language || 'text'}\n${text}\n${fence}${suffix}`].join('\n')
+}
+
+async function attachmentContextRefsForSubmit(attachments: ComposerAttachment[]) {
+  const remoteMode = $connection.get()?.mode === 'remote'
+  const refs: string[] = []
+
+  for (const attachment of attachments) {
+    const localPath = attachment.localPath?.trim()
+
+    if (remoteMode && localPath) {
+      if (attachment.kind === 'file') {
+        const result = await window.hermesDesktop?.readFileText(localPath)
+
+        if (!result) {
+          throw new Error(`Could not read ${attachment.label || localPath} on the Desktop client.`)
+        }
+
+        if (result.binary) {
+          throw new Error(`Remote mode cannot attach binary local file ${attachment.label || localPath} yet.`)
+        }
+
+        refs.push(
+          fencedAttachmentBlock(
+            attachment.label || result.path || localPath,
+            result.language || 'text',
+            result.text || '',
+            result.truncated === true,
+            result.byteSize || 0
+          )
+        )
+
+        continue
+      }
+
+      if (attachment.kind === 'folder') {
+        throw new Error(`Remote mode cannot attach local folder ${attachment.label || localPath} yet.`)
+      }
+
+      if (attachment.kind === 'image') {
+        throw new Error(`Remote mode cannot attach local image ${attachment.label || localPath} yet.`)
+      }
+    }
+
+    if (attachment.refText) {
+      refs.push(attachment.refText)
+    }
+  }
+
+  return refs.join('\n')
 }
 
 function renderCommandsCatalog(catalog: CommandsCatalogLike): string {
@@ -224,10 +281,15 @@ export function usePromptActions({
       const usingComposerAttachments = !options?.attachments
       const attachments = options?.attachments ?? $composerAttachments.get()
 
-      const contextRefs = attachments
-        .map(a => a.refText)
-        .filter(Boolean)
-        .join('\n')
+      let contextRefs = ''
+
+      try {
+        contextRefs = await attachmentContextRefsForSubmit(attachments)
+      } catch (err) {
+        notifyError(err, 'Attach files failed')
+
+        return false
+      }
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')

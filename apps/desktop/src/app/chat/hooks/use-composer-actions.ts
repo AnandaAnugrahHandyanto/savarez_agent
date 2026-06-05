@@ -247,6 +247,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
           label: pathLabel(path),
           detail: rel,
           refText: `@${kind}:${formatRefValue(rel)}`,
+          localPath: path,
           path
         })
       }
@@ -255,7 +256,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
   )
 
   const attachContextFilePath = useCallback(
-    (filePath: string) => {
+    (filePath: string, options: { local?: boolean } = {}) => {
       if (!filePath) {
         return false
       }
@@ -268,6 +269,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         label: pathLabel(filePath),
         detail: rel,
         refText: `@file:${formatRefValue(rel)}`,
+        ...(options.local && { localPath: filePath }),
         path: filePath
       })
 
@@ -276,7 +278,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     [currentCwd]
   )
 
-  const attachImagePath = useCallback(async (filePath: string) => {
+  const attachImagePath = useCallback(async (filePath: string, options: { local?: boolean } = {}) => {
     if (!filePath) {
       return false
     }
@@ -286,6 +288,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       kind: 'image',
       label: pathLabel(filePath),
       detail: filePath,
+      ...(options.local && { localPath: filePath }),
       path: filePath
     }
 
@@ -327,7 +330,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
           return false
         }
 
-        return attachImagePath(savedPath)
+        return attachImagePath(savedPath, { local: true })
       } catch (err) {
         notifyError(err, 'Image attach failed')
 
@@ -354,7 +357,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     }
 
     for (const path of paths) {
-      await attachImagePath(path)
+      await attachImagePath(path, { local: true })
     }
   }, [attachImagePath, currentCwd])
 
@@ -372,14 +375,14 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         return
       }
 
-      await attachImagePath(path)
+      await attachImagePath(path, { local: true })
     } catch (err) {
       notifyError(err, 'Clipboard paste failed')
     }
   }, [attachImagePath])
 
   const attachContextFolderPath = useCallback(
-    (folderPath: string) => {
+    (folderPath: string, options: { local?: boolean } = {}) => {
       if (!folderPath) {
         return false
       }
@@ -392,6 +395,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         label: pathLabel(folderPath),
         detail: rel,
         refText: `@folder:${formatRefValue(rel)}`,
+        ...(options.local && { localPath: folderPath }),
         path: folderPath
       })
 
@@ -456,7 +460,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {
-          if ((filePath && (await attachImagePath(filePath))) || (await attachImageBlob(file))) {
+          if ((filePath && (await attachImagePath(filePath, { local: true }))) || (await attachImageBlob(file))) {
             attached = true
 
             continue
@@ -467,7 +471,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
           continue
         }
 
-        if (filePath && attachContextFilePath(filePath)) {
+        if (filePath && attachContextFilePath(filePath, { local: true })) {
           attached = true
 
           continue
