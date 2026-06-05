@@ -224,6 +224,32 @@ class TestAdapterSessionCancellation:
         assert call_order.index("original:cancelled") < call_order.index("followup:processed")
         assert sk not in adapter._pending_messages
 
+    @pytest.mark.asyncio
+    async def test_cancel_session_processing_cancels_orphan_typing_task(self):
+        """/stop cleanup must clear any recorded typing refresh loop even if
+        runner state says there is no active agent."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def _orphan_typing():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        typing_task = asyncio.create_task(_orphan_typing())
+        await started.wait()
+        adapter._typing_tasks[sk] = typing_task
+
+        await adapter.cancel_session_processing(sk)
+
+        assert cancelled.is_set()
+        assert sk not in adapter._typing_tasks
+
 
 # ===========================================================================
 # Layer 2: Adapter-side on-entry self-heal for stale session locks

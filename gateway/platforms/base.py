@@ -1310,6 +1310,13 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # Active typing refresh tasks keyed by session.  The main processing
+        # task normally owns its local typing task, but cancellation can time
+        # out while the task unwinds network I/O.  Keeping a session-level
+        # handle lets /stop, /new, stale-lock cleanup, and later turns cancel
+        # any orphaned refresh loop instead of leaving Telegram/Discord stuck
+        # in a perpetual "typing..." state.
+        self._typing_tasks: Dict[str, asyncio.Task] = {}
 
     @property
     def has_fatal_error(self) -> bool:
@@ -2479,6 +2486,9 @@ class BasePlatformAdapter(ABC):
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
+        typing_task = self._typing_tasks.pop(session_key, None)
+        if typing_task is not None and not typing_task.done():
+            typing_task.cancel()
         return True
 
     def _start_session_processing(
@@ -2560,8 +2570,42 @@ class BasePlatformAdapter(ABC):
                 )
         if discard_pending:
             self._pending_messages.pop(session_key, None)
+        await self._cancel_typing_task_for_session(session_key)
         if release_guard:
             self._release_session_guard(session_key)
+
+    async def _cancel_typing_task_for_session(
+        self,
+        session_key: str,
+        *,
+        task: Optional[asyncio.Task] = None,
+        timeout: float = 0.5,
+    ) -> None:
+        """Cancel the typing refresh task recorded for ``session_key``.
+
+        ``task`` is supplied by the owning processing coroutine.  When omitted
+        (e.g. /stop cleanup), cancel whatever task is currently registered.
+        The pop is guard-matched so a stale processing task cannot remove a
+        newer turn's typing task after handoff.
+        """
+        current = self._typing_tasks.get(session_key)
+        if task is None:
+            task = current
+        elif current is not task:
+            # A newer processing task owns typing now.
+            return
+
+        if task is None:
+            return
+        if current is task:
+            self._typing_tasks.pop(session_key, None)
+        if task.done():
+            return
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
 
     async def _drain_pending_after_session_command(
         self,
@@ -2835,16 +2879,13 @@ class BasePlatformAdapter(ABC):
                 **_keep_typing_kwargs,
             )
         )
+        old_typing_task = self._typing_tasks.get(session_key)
+        if old_typing_task is not None and old_typing_task is not typing_task and not old_typing_task.done():
+            old_typing_task.cancel()
+        self._typing_tasks[session_key] = typing_task
 
         async def _stop_typing_task() -> None:
-            typing_task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                # Cancellation cleanup must not block adapter shutdown.  The
-                # typing task is already cancelled; if the parent task is also
-                # cancelling, let this message-processing task unwind now.
-                pass
+            await self._cancel_typing_task_for_session(session_key, task=typing_task)
         
         try:
             await self._run_processing_hook("on_processing_start", event)
