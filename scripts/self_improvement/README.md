@@ -61,11 +61,12 @@ and preferences are intentionally ignored even when they mention those words.
 
 ## `summarize.py`
 
-Summarizes `task_runs.jsonl` and `memory_context_audit.jsonl` into a compact
-review payload. It reports aggregate tokens/tool/API counts, the latest task's
-largest context contributors, memory-context candidate counts, and review flags
-such as `duplicate_skill_view`, `repeated_cronjob_list`, and
-`memory_context_noise`.
+Summarizes `task_runs.jsonl`, `memory_context_audit.jsonl`, and
+`context_metrics.jsonl` into a compact review payload. It reports aggregate
+tokens/tool/API counts, the latest task's largest context contributors,
+plugin-emitted tool-result sizes/risk flags, memory-context candidate counts,
+and review flags such as `duplicate_skill_view`, `repeated_cronjob_list`,
+`large_tool_output`, and `memory_context_noise`.
 
 ```bash
 python scripts/self_improvement/summarize.py
@@ -80,6 +81,8 @@ reason codes, content lengths, and memory ids only — not raw memory content.
 - `events.jsonl` — optional compact workflow-improvement events when
   `--append-event` is passed.
 - `memory_context_audit.jsonl` — non-destructive memory-context audit reports.
+- `context_metrics.jsonl` — opt-in plugin tool-call metrics with sanitized tool
+  names, argument key names, result sizes, and risk flags.
 
 Each task-run entry stores structured metrics only:
 

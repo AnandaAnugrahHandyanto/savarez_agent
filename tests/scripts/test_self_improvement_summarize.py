@@ -42,6 +42,41 @@ def test_summarize_reports_latest_task_and_context_contributors(tmp_path):
         + "\n",
         encoding="utf-8",
     )
+    (root / "context_metrics.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "kind": "tool_call_metric",
+                        "session_id": "s1",
+                        "tool_name": "skill_view",
+                        "result_chars": 48165,
+                        "risk_flags": ["large_tool_output", "very_large_tool_output"],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "tool_call_metric",
+                        "session_id": "s1",
+                        "tool_name": "skill_view",
+                        "result_chars": 48165,
+                        "risk_flags": ["duplicate_skill_view"],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "tool_call_metric",
+                        "session_id": "s1",
+                        "tool_name": "cronjob",
+                        "result_chars": 13463,
+                        "risk_flags": ["repeated_cronjob_list"],
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     result = summary.build_summary(root)
 
@@ -54,10 +89,25 @@ def test_summarize_reports_latest_task_and_context_contributors(tmp_path):
         "high_api_calls",
         "duplicate_skill_view",
         "repeated_cronjob_list",
+        "large_tool_output",
+        "very_large_tool_output",
         "memory_context_noise",
     ]
     assert result["largest_context_items"][0] == "tool:skill_view:48165"
     assert result["memory_context"]["candidate_count"] == 3
+    assert result["context_metrics"]["metric_count"] == 3
+    assert result["context_metrics"]["tool_counts"] == {"cronjob": 1, "skill_view": 2}
+    assert result["context_metrics"]["risk_flag_counts"] == {
+        "duplicate_skill_view": 1,
+        "large_tool_output": 1,
+        "repeated_cronjob_list": 1,
+        "very_large_tool_output": 1,
+    }
+    assert result["context_metrics"]["largest_tool_results"] == [
+        {"result_chars": 48165, "session_id": "s1", "tool_name": "skill_view"},
+        {"result_chars": 48165, "session_id": "s1", "tool_name": "skill_view"},
+        {"result_chars": 13463, "session_id": "s1", "tool_name": "cronjob"},
+    ]
 
 
 def test_main_prints_json_summary(tmp_path, capsys):

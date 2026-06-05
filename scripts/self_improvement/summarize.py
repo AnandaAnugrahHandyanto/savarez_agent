@@ -12,6 +12,7 @@ from hermes_constants import get_hermes_home
 DEFAULT_ROOT = get_hermes_home() / "ops" / "self-improvement-log"
 TASK_RUNS_FILENAME = "task_runs.jsonl"
 MEMORY_AUDIT_FILENAME = "memory_context_audit.jsonl"
+CONTEXT_METRICS_FILENAME = "context_metrics.jsonl"
 
 THRESHOLDS = {
     "input_tokens_high": 200_000,
@@ -55,7 +56,41 @@ def _tool_count(task_run: dict[str, Any], tool_name: str) -> int:
     return 0
 
 
-def review_flags(latest_task: dict[str, Any] | None, latest_memory_audit: dict[str, Any] | None) -> list[str]:
+def summarize_context_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    tool_counts: dict[str, int] = {}
+    risk_flag_counts: dict[str, int] = {}
+    for row in rows:
+        tool_name = str(row.get("tool_name") or "unknown")
+        tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+        for flag in row.get("risk_flags") or []:
+            flag_name = str(flag)
+            risk_flag_counts[flag_name] = risk_flag_counts.get(flag_name, 0) + 1
+
+    largest_tool_results = sorted(
+        (
+            {
+                "session_id": str(row.get("session_id") or ""),
+                "tool_name": str(row.get("tool_name") or "unknown"),
+                "result_chars": int(row.get("result_chars") or 0),
+            }
+            for row in rows
+        ),
+        key=lambda item: item["result_chars"],
+        reverse=True,
+    )[:8]
+    return {
+        "metric_count": len(rows),
+        "tool_counts": dict(sorted(tool_counts.items())),
+        "risk_flag_counts": dict(sorted(risk_flag_counts.items())),
+        "largest_tool_results": largest_tool_results,
+    }
+
+
+def review_flags(
+    latest_task: dict[str, Any] | None,
+    latest_memory_audit: dict[str, Any] | None,
+    context_metrics: dict[str, Any] | None = None,
+) -> list[str]:
     if latest_task is None:
         return []
     flags: list[str] = []
@@ -69,6 +104,15 @@ def review_flags(latest_task: dict[str, Any] | None, latest_memory_audit: dict[s
         flags.append("duplicate_skill_view")
     if _tool_count(latest_task, "cronjob") >= THRESHOLDS["repeated_cronjob_count"]:
         flags.append("repeated_cronjob_list")
+    risk_counts = (context_metrics or {}).get("risk_flag_counts") or {}
+    for risk_flag, review_flag in (
+        ("duplicate_skill_view", "duplicate_skill_view"),
+        ("repeated_cronjob_list", "repeated_cronjob_list"),
+        ("large_tool_output", "large_tool_output"),
+        ("very_large_tool_output", "very_large_tool_output"),
+    ):
+        if int(risk_counts.get(risk_flag) or 0) > 0 and review_flag not in flags:
+            flags.append(review_flag)
     if latest_memory_audit and int(latest_memory_audit.get("candidate_count") or 0) >= THRESHOLDS["memory_context_candidate_count"]:
         flags.append("memory_context_noise")
     return flags
@@ -77,8 +121,10 @@ def review_flags(latest_task: dict[str, Any] | None, latest_memory_audit: dict[s
 def build_summary(root: Path) -> dict[str, Any]:
     task_runs = read_jsonl(root / TASK_RUNS_FILENAME)
     memory_audits = read_jsonl(root / MEMORY_AUDIT_FILENAME)
+    context_metric_rows = read_jsonl(root / CONTEXT_METRICS_FILENAME)
     latest_task = task_runs[-1] if task_runs else None
     latest_memory_audit = memory_audits[-1] if memory_audits else None
+    context_metrics = summarize_context_metrics(context_metric_rows)
 
     telemetry_totals = {
         "input_tokens": _sum_int(task_runs, "input_tokens"),
@@ -95,10 +141,12 @@ def build_summary(root: Path) -> dict[str, Any]:
         "root": str(root),
         "task_runs": len(task_runs),
         "memory_context_audits": len(memory_audits),
+        "context_metric_rows": len(context_metric_rows),
         "latest_task_session": latest_task.get("session_id") if latest_task else "",
         "telemetry_totals": telemetry_totals,
         "largest_context_items": list((latest_task or {}).get("largest_context_items") or [])[:8],
         "tool_stats": list((latest_task or {}).get("tool_stats") or []),
+        "context_metrics": context_metrics,
         "memory_context": {
             "candidate_count": int((latest_memory_audit or {}).get("candidate_count") or 0),
             "candidates_preview": [
@@ -111,7 +159,7 @@ def build_summary(root: Path) -> dict[str, Any]:
                 if isinstance(candidate, dict)
             ],
         },
-        "review_flags": review_flags(latest_task, latest_memory_audit),
+        "review_flags": review_flags(latest_task, latest_memory_audit, context_metrics),
     }
 
 
