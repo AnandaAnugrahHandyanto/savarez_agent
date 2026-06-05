@@ -531,7 +531,7 @@ Because every login is verified against Nous Portal and protected by your Nous a
 
 To use the Nous provider you need an OAuth client ID (shape `agent:{id}`). There are two ways to get one:
 
-- **CLI — `hermes dashboard register`.** Run it on the host where the dashboard lives. It resolves your existing Nous login (run `hermes setup` first if you're not logged in), registers a self-hosted OAuth client with the Portal, and writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` into `~/.hermes/.env` for you. Optional flags: `--name` (a human-readable label, otherwise auto-generated), `--redirect-uri` (a public HTTPS callback URL for an internet-facing host), and `--portal-url` (override the Portal base URL, mainly for staging). Not available in managed/hosted installs, where the client ID is provisioned by the hosting platform.
+- **CLI — `hermes dashboard register`.** Run it on the host where the dashboard lives. It resolves your existing Nous login (run `hermes setup` first if you're not logged in), registers a self-hosted OAuth client with the Portal, and writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` into `~/.hermes/.env` for you. Optional flags: `--name` (a human-readable label, otherwise auto-generated), `--redirect-uri` (a public HTTPS callback URL for an internet-facing host), and `--portal-url` (override the Portal base URL, mainly for staging).
 
   ```bash
   hermes dashboard register
