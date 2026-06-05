@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 import types
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -131,6 +132,20 @@ def test_tui_verbose_tool_details_are_capped_before_emit(monkeypatch):
     assert capped.startswith("[showing verbose tail; omitted ")
     assert capped.endswith("three\nfour")
     assert "one" not in capped
+
+
+def test_tui_verbose_default_cap_stays_small(monkeypatch):
+    # Regression guard for #34095: the verbose tool text shipped to the TUI is
+    # rendered into a persisted, expanded-by-default trail block for the whole
+    # session. Raising this cap back toward the old 16KB re-introduces the Ink
+    # render-tree blowup that silently OOM-killed the TUI. Keep it small.
+    assert server._TUI_VERBOSE_TEXT_MAX_CHARS <= 2_000
+
+    huge = "x" * 40_000
+    capped = server._cap_tui_verbose_text(huge)
+
+    assert len(capped) < 2_000
+    assert capped.startswith("[showing verbose tail; omitted ")
 
 
 def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
@@ -5470,3 +5485,156 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         assert requeued["session_id"] == "proc_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):
+    """TUI /save (session.save RPC) must snapshot under the Hermes profile
+    home — not the project/workspace CWD — and include the system prompt,
+    mirroring the classic CLI /save and the dashboard save export.
+
+    Regression: the gateway handler wrote ``hermes_conversation_*.json`` to
+    ``os.path.abspath(...)`` (the workspace CWD) and only exported ``model``
+    and ``messages``, so ``system_prompt`` was missing.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    # Run from a different CWD to prove the snapshot does NOT leak there.
+    work = tmp_path / "workspace"
+    work.mkdir()
+    monkeypatch.chdir(work)
+
+    sid = "save-sid"
+    agent = types.SimpleNamespace(
+        model="hermes-test",
+        session_id="20260101_120000_abc123",
+        session_start=datetime(2026, 1, 1, 12, 0, 0),
+        _cached_system_prompt="You are Hermes.",
+    )
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    server._sessions[sid] = {
+        "agent": agent,
+        "session_key": "save-key",
+        "history": history,
+        "history_lock": threading.Lock(),
+        "created_at": 1735732800.0,
+    }
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert "result" in resp, resp
+    saved_file = Path(resp["result"]["file"])
+
+    # Must NOT leak into the workspace/project CWD.
+    assert not list(work.glob("hermes_conversation_*.json"))
+
+    saved_dir = home / "sessions" / "saved"
+    assert saved_file.parent == saved_dir
+    assert saved_file.exists()
+
+    payload = json.loads(saved_file.read_text())
+    assert payload["model"] == "hermes-test"
+    assert payload["session_id"] == "20260101_120000_abc123"
+    assert payload["session_start"] == "2026-01-01T12:00:00"
+    assert payload["system_prompt"] == "You are Hermes."
+    assert payload["messages"] == history
+
+
+def test_notification_event_dedup_key_preserves_distinct_watch_matches():
+    """Watch-match identity includes match content, not just session/type."""
+    base = {
+        "type": "watch_match",
+        "session_id": "proc_watch",
+        "command": "tail -f app.log",
+        "pattern": "READY",
+        "output": "READY on port 8000",
+        "suppressed": 0,
+    }
+
+    identical = dict(base)
+    distinct_output = {**base, "output": "READY on port 9000"}
+    distinct_pattern = {**base, "pattern": "MIGRATION_DONE"}
+
+    base_key = server._notification_event_dedup_key(base)
+    assert server._notification_event_dedup_key(identical) == base_key
+    assert server._notification_event_dedup_key(distinct_output) != base_key
+    assert server._notification_event_dedup_key(distinct_pattern) != base_key
+
+
+def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
+    """Distinct watch matches from one process emit; exact replay is deduped."""
+    from tools.process_registry import process_registry
+
+    turns = []
+    emitted = []
+
+    def _fake_run_prompt_submit(rid, sid, session, text):
+        turns.append(text)
+        with session["history_lock"]:
+            session["running"] = False
+
+    sess = _session()
+    server._sessions["sid_watch_dedup"] = sess
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(server, "_run_prompt_submit", _fake_run_prompt_submit)
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    base = {
+        "type": "watch_match",
+        "session_id": "proc_watch_dedup",
+        "command": "tail -f app.log",
+        "pattern": "READY",
+        "output": "READY on port 8000",
+        "suppressed": 0,
+    }
+    process_registry.completion_queue.put(base)
+    process_registry.completion_queue.put({**base, "output": "READY on port 9000"})
+    process_registry.completion_queue.put(dict(base))
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_watch_dedup", sess)
+        status_calls = [a for a in emitted if a[0] == "status.update"]
+        assert len(status_calls) == 2
+        status_text = "\n".join(call[2]["text"] for call in status_calls)
+        assert "READY on port 8000" in status_text
+        assert "READY on port 9000" in status_text
+        assert len(turns) == 3
+    finally:
+        server._sessions.pop("sid_watch_dedup", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_event_dedup_key_keeps_completions_one_shot():
+    """Completion identity remains process-session scoped to avoid floods."""
+    first = {
+        "type": "completion",
+        "session_id": "proc_done",
+        "command": "make build",
+        "exit_code": 0,
+        "output": "first output",
+    }
+    replay = {
+        "type": "completion",
+        "session_id": "proc_done",
+        "command": "make build --again",
+        "exit_code": 1,
+        "output": "different output should not change completion key",
+    }
+
+    assert server._notification_event_dedup_key(first) == server._notification_event_dedup_key(
+        replay
+    )
