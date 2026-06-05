@@ -136,7 +136,8 @@ app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 # on every server start. Either way it dies when the process exits and is
 # injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+_DASHBOARD_SESSION_TOKEN_ENV = "HERMES_DASHBOARD_SESSION_TOKEN"
+_SESSION_TOKEN = os.environ.get(_DASHBOARD_SESSION_TOKEN_ENV) or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
@@ -9254,7 +9255,13 @@ def start_server(
     allow_public: bool = False,
 ):
     """Start the web UI server."""
+    global _SESSION_TOKEN
+
     import uvicorn
+
+    env_session_token = os.environ.get(_DASHBOARD_SESSION_TOKEN_ENV)
+    if env_session_token:
+        _SESSION_TOKEN = env_session_token
 
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5
