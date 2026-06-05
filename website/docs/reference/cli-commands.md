@@ -1369,7 +1369,6 @@ Register this install as a self-hosted dashboard with your Nous Portal account, 
 |--------|---------|-------------|
 | `--name` | auto-generated | Human-readable label for the dashboard |
 | `--redirect-uri` | — | Public HTTPS OAuth redirect URI for an internet-facing host, e.g. `https://hermes.example.com/auth/callback`. Omit for localhost-only use. |
-| `--portal-url` | the portal you logged into | Override the Nous Portal base URL (the access token must be valid there). Also settable via `HERMES_DASHBOARD_PORTAL_URL`. Mainly for staging/preview. |
 
 ```bash
 hermes dashboard register
