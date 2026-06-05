@@ -325,7 +325,7 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
             (child,),
         )
         conn.commit()
-        assert kb.get_task(conn, child).status == "blocked"
+        assert _task_status(conn, child) == "blocked"
         # recompute_ready should promote blocked → ready
         promoted = kb.recompute_ready(conn)
         assert promoted == 1
@@ -344,6 +344,113 @@ def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
         assert kb.get_task(conn, c).status == "todo"
         kb.complete_task(conn, b)
         assert kb.get_task(conn, c).status == "ready"
+
+
+def _task_status(conn, task_id: str) -> str:
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    return task.status
+
+
+def _review_blocked_task(conn, title: str) -> str:
+    task_id = kb.create_task(conn, title=title, assignee="coder")
+    claimed = kb.claim_task(conn, task_id, claimer="worker:review")
+    assert claimed is not None
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert kb.block_task(
+        conn,
+        task_id,
+        reason="review-required: merged PR closure pending",
+        expected_run_id=task.current_run_id,
+    )
+    return task_id
+
+
+def _record_merged_reviewed_closure(
+    conn,
+    task_id: str,
+    *,
+    merged: bool = True,
+    pr_state: str = "closed",
+    approved: bool = True,
+    action: str = "reconcile_merged_lineage",
+) -> None:
+    payload = {
+        "schema_version": "kanban.post_review_closure.v1",
+        "original_task_id": task_id,
+        "bridge_task_id": "t_357a83e4",
+        "closure_action": action,
+        "status": "reconciled",
+        "github": {
+            "url": "https://github.com/2seok2/web-archive/pull/65",
+            "state": pr_state,
+            "merged": merged,
+            "merge_commit_sha": "37deeb369a50b6b3769b0f93dceaf5f4023a242a" if merged else None,
+        },
+        "reviewer_bridge": {"task_id": "t_357a83e4", "status": "approved" if approved else "blocked"},
+    }
+    with kb.write_txn(conn):
+        kb._append_event(conn, task_id, "post_review_closure", payload)
+
+
+def test_reconciled_merged_reviewed_parent_promotes_successor(kanban_home):
+    """Reproducer: t_38969b18 -> t_01b569ad should not stall after merge closure.
+
+    The original parent can still be stale/blocked when the closure lane has
+    already merged the reviewed PR and recorded explicit reconciliation
+    evidence.  In that case descendants are dependency-satisfied without a
+    manual bookkeeping pass on the stale parent.
+    """
+    with kb.connect() as conn:
+        parent = _review_blocked_task(
+            conn,
+            title="t_38969b18 stale reviewed implementation parent",
+        )
+        child = kb.create_task(
+            conn,
+            title="t_01b569ad downstream successor",
+            assignee="coder",
+            parents=[parent],
+        )
+        assert _task_status(conn, parent) == "blocked"
+        assert _task_status(conn, child) == "todo"
+
+        _record_merged_reviewed_closure(conn, parent)
+
+        assert kb.recompute_ready(conn) == 1
+        assert _task_status(conn, child) == "ready"
+        claimed = kb.claim_task(conn, child, claimer="dispatcher:reproducer")
+        assert claimed is not None
+        assert claimed.status == "running"
+
+
+def test_reconciled_parent_satisfaction_requires_merged_review_evidence(kanban_home):
+    with kb.connect() as conn:
+        parent = _review_blocked_task(conn, title="human gate")
+        child = kb.create_task(conn, title="successor", parents=[parent])
+
+        assert kb.recompute_ready(conn) == 0
+        assert _task_status(conn, child) == "todo"
+
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (child,))
+        assert kb.claim_task(conn, child, claimer="dispatcher:no-evidence") is None
+        assert _task_status(conn, child) == "todo"
+
+
+def test_open_or_unapproved_pr_closure_does_not_satisfy_parent(kanban_home):
+    with kb.connect() as conn:
+        parent = _review_blocked_task(conn, title="open pr parent")
+        child = kb.create_task(conn, title="successor", parents=[parent])
+
+        _record_merged_reviewed_closure(conn, parent, merged=False, pr_state="open")
+        assert kb.recompute_ready(conn) == 0
+        assert _task_status(conn, child) == "todo"
+
+        _record_merged_reviewed_closure(conn, parent, merged=True, approved=False)
+        assert kb.recompute_ready(conn) == 0
+        assert _task_status(conn, child) == "todo"
 
 
 # ---------------------------------------------------------------------------
@@ -395,16 +502,16 @@ def test_unblock_scheduled_rechecks_parent_gate(kanban_home):
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent")
         child = kb.create_task(conn, title="child", parents=[parent])
-        assert kb.get_task(conn, child).status == "todo"
+        assert _task_status(conn, child) == "todo"
         assert kb.schedule_task(conn, child, reason="wait until tomorrow") is True
 
         assert kb.unblock_task(conn, child) is True
-        assert kb.get_task(conn, child).status == "todo"
+        assert _task_status(conn, child) == "todo"
 
         kb.complete_task(conn, parent)
         assert kb.schedule_task(conn, child, reason="second timer") is True
         assert kb.unblock_task(conn, child) is True
-        assert kb.get_task(conn, child).status == "ready"
+        assert _task_status(conn, child) == "ready"
 
 
 def test_stale_claim_reclaimed(kanban_home, monkeypatch):
@@ -1054,7 +1161,7 @@ def test_recompute_ready_skips_tasks_at_failure_limit(kanban_home):
         # breaker has tripped and it should stay blocked.
         promoted = kb.recompute_ready(conn)
         assert promoted == 0
-        assert kb.get_task(conn, child).status == "blocked"
+        assert _task_status(conn, child) == "blocked"
 
         # Explicit unblock should still work and reset the counter.
         assert kb.unblock_task(conn, child)
@@ -1178,20 +1285,20 @@ def test_claim_rejects_when_parents_not_done(kanban_home):
             conn, title="child", assignee="a", parents=[parent],
         )
         # Child correctly starts 'todo' because parent is not 'done'.
-        assert kb.get_task(conn, child).status == "todo"
+        assert _task_status(conn, child) == "todo"
         # Simulate the race: a racy writer force-promotes the child to
         # 'ready' while parent is still pending.
         conn.execute(
             "UPDATE tasks SET status='ready' WHERE id=?", (child,),
         )
         conn.commit()
-        assert kb.get_task(conn, child).status == "ready"
+        assert _task_status(conn, child) == "ready"
 
         result = kb.claim_task(conn, child, claimer="host:1")
 
     assert result is None
     with kb.connect() as conn:
-        assert kb.get_task(conn, child).status == "todo"
+        assert _task_status(conn, child) == "todo"
         events = conn.execute(
             "SELECT kind, payload FROM task_events "
             "WHERE task_id = ? ORDER BY id",
@@ -1213,7 +1320,7 @@ def test_claim_succeeds_once_parents_done(kanban_home):
         kb.claim_task(conn, parent)
         assert kb.complete_task(conn, parent, result="ok")
         kb.recompute_ready(conn)
-        assert kb.get_task(conn, child).status == "ready"
+        assert _task_status(conn, child) == "ready"
         claimed = kb.claim_task(conn, child, claimer="host:1")
     assert claimed is not None
     assert claimed.status == "running"
@@ -1226,17 +1333,17 @@ def test_create_with_parents_stays_todo_until_parents_done(kanban_home):
         child = kb.create_task(
             conn, title="child", assignee="a", parents=[parent],
         )
-        assert kb.get_task(conn, child).status == "todo"
+        assert _task_status(conn, child) == "todo"
         # Dispatcher tick between create and some later event must NOT
         # produce a winner for this child.
         promoted = kb.recompute_ready(conn)
         assert promoted == 0
-        assert kb.get_task(conn, child).status == "todo"
+        assert _task_status(conn, child) == "todo"
         # Complete parent; complete_task internally runs recompute_ready,
         # which promotes the child to 'ready'.
         kb.claim_task(conn, parent)
         kb.complete_task(conn, parent, result="ok")
-        assert kb.get_task(conn, child).status == "ready"
+        assert _task_status(conn, child) == "ready"
 
 
 def test_unblock_with_pending_parents_goes_to_todo(kanban_home):
@@ -1258,12 +1365,12 @@ def test_unblock_with_pending_parents_goes_to_todo(kanban_home):
         )
         conn.commit()
         assert kb.unblock_task(conn, child)
-        assert kb.get_task(conn, child).status == "todo"
+        assert _task_status(conn, child) == "todo"
         # After parent completes + recompute, the child is ready.
         kb.claim_task(conn, parent)
         kb.complete_task(conn, parent, result="ok")
         kb.recompute_ready(conn)
-        assert kb.get_task(conn, child).status == "ready"
+        assert _task_status(conn, child) == "ready"
 
 
 def test_unblock_without_parents_goes_to_ready(kanban_home):
@@ -2663,10 +2770,10 @@ def test_archive_task_triggers_recompute_ready_for_dependents(kanban_home):
         parent = kb.create_task(conn, title="obsolete parent")
         child = kb.create_task(conn, title="child", parents=[parent])
 
-        assert kb.get_task(conn, child).status == "todo"
+        assert _task_status(conn, child) == "todo"
         assert kb.archive_task(conn, parent) is True
 
-        assert kb.get_task(conn, child).status == "ready", (
+        assert _task_status(conn, child) == "ready", (
             "child should promote to ready immediately after its last blocking "
             "parent is archived"
         )

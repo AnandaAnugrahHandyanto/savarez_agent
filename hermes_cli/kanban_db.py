@@ -2215,13 +2215,16 @@ def create_task(
                         missing = _find_missing_parents(conn, parents)
                         if missing:
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
-                        # If any parent is not yet done, we're todo.
+                        # If any parent is not dependency-satisfied, we're todo.
                         rows = conn.execute(
-                            "SELECT status FROM tasks WHERE id IN "
+                            "SELECT id, status FROM tasks WHERE id IN "
                             "(" + ",".join("?" * len(parents)) + ")",
                             parents,
                         ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        if any(
+                            not _parent_satisfies_dependency(conn, r["id"], r["status"])
+                            for r in rows
+                        ):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -2300,6 +2303,120 @@ def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> l
     ).fetchall()
     present = {r["id"] for r in rows}
     return [p for p in parents if p not in present]
+
+
+def _payload_dict(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        decoded = json.loads(str(raw))
+    except Exception:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {
+            "1", "true", "yes", "y", "approved", "pass", "passed",
+        }
+    return False
+
+
+def _has_reconciled_merged_review_closure(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> bool:
+    """Return whether a stale parent has explicit merged-reviewed closure evidence.
+
+    This is a conservative escape hatch for post-review closure lanes.  It
+    treats an otherwise stale parent as dependency-satisfied only when a
+    machine-readable event says that the reviewed PR lineage was reconciled
+    after merge.  Comments or prose summaries are intentionally ignored: a
+    genuine human gate must remain sticky unless automation writes the
+    explicit event payload.
+    """
+    rows = conn.execute(
+        """
+        SELECT kind, payload
+          FROM task_events
+         WHERE task_id = ?
+           AND kind IN (
+               'post_review_closure',
+               'post_review_closure_reconciled',
+               'merged_reviewed_closure',
+               'dependency_reconciled'
+           )
+         ORDER BY created_at DESC, id DESC
+        """,
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        payload = _payload_dict(row["payload"])
+        if payload.get("original_task_id") not in (None, task_id):
+            continue
+        closure_action = str(payload.get("closure_action") or "").strip().lower()
+        status = str(payload.get("status") or payload.get("closure_status") or "").strip().lower()
+        reconciled = (
+            closure_action == "reconcile_merged_lineage"
+            or status in {"reconciled", "merged_reviewed", "merged-reviewed", "merged", "closed"}
+            or _truthy(payload.get("lineage_reconciled"))
+        )
+        github_raw = payload.get("github")
+        github: dict[str, Any] = github_raw if isinstance(github_raw, dict) else {}
+        pr_raw = payload.get("pr")
+        pr: dict[str, Any] = pr_raw if isinstance(pr_raw, dict) else {}
+        pr_state = str(
+            github.get("state") or pr.get("state") or payload.get("pr_state") or ""
+        ).strip().lower()
+        merged = (
+            _truthy(github.get("merged"))
+            or _truthy(pr.get("merged"))
+            or _truthy(payload.get("pr_merged"))
+            or bool(
+                github.get("merge_commit_sha")
+                or pr.get("merge_commit_sha")
+                or payload.get("merge_commit_sha")
+            )
+        )
+        if pr_state and pr_state not in {"closed", "merged"}:
+            merged = False
+        reviewer_raw = payload.get("reviewer_bridge")
+        reviewer: dict[str, Any] = reviewer_raw if isinstance(reviewer_raw, dict) else {}
+        reviewer_status = str(reviewer.get("status") or "").strip().lower()
+        approved = (
+            _truthy(payload.get("reviewer_bridge_approved"))
+            or _truthy(payload.get("review_approved"))
+            or reviewer_status in {"approved", "pass", "passed"}
+            # Existing runner evidence stores bridge_task_id without duplicating
+            # the bridge verdict.  Accept that compatibility shape only when no
+            # explicit reviewer status contradicts it.
+            or (
+                closure_action == "reconcile_merged_lineage"
+                and bool(payload.get("bridge_task_id"))
+                and not reviewer_status
+            )
+        )
+        if reconciled and merged and approved:
+            return True
+    return False
+
+
+def _parent_satisfies_dependency(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    status: str,
+) -> bool:
+    return (
+        status in ("done", "archived")
+        or _has_reconciled_merged_review_closure(conn, parent_id)
+    )
 
 
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
@@ -2425,11 +2542,11 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
+        # If child was ready but parent is not dependency-satisfied, demote child to todo.
+        parent = conn.execute(
+            "SELECT id, status FROM tasks WHERE id = ?", (parent_id,)
+        ).fetchone()
+        if not _parent_satisfies_dependency(conn, parent["id"], parent["status"]):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -2881,7 +2998,12 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 def recompute_ready(
     conn: sqlite3.Connection, failure_limit: int = None,
 ) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
+    """Promote tasks when every parent is dependency-satisfied.
+
+    A parent is normally satisfied by ``done`` / ``archived``.  The only
+    non-terminal satisfaction path is explicit machine-readable evidence that
+    a stale post-review parent already had its approved PR merged and lineage
+    reconciled.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
@@ -2927,12 +3049,12 @@ def recompute_ready(
                 # this predicate back).
                 continue
             parents = conn.execute(
-                "SELECT t.status FROM tasks t "
+                "SELECT t.id, t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(_parent_satisfies_dependency(conn, p["id"], p["status"]) for p in parents):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -2986,19 +3108,27 @@ def claim_task(
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
         # Structural invariant: never transition ready -> running while any
-        # parent is not yet 'done'. This is the single enforcement point
-        # regardless of which writer (create_task, link_tasks, unblock_task,
-        # release_stale_claims, manual SQL) set status='ready'. If a racy
-        # writer promoted a task with undone parents, demote it back to
-        # 'todo' here — recompute_ready will re-promote when the parents
-        # actually finish. See RCA at
+        # parent is not dependency-satisfied. This is the single enforcement
+        # point regardless of which writer (create_task, link_tasks,
+        # unblock_task, release_stale_claims, manual SQL) set status='ready'.
+        # If a racy writer promoted a task with unsatisfied parents, demote it
+        # back to 'todo' here — recompute_ready will re-promote when the
+        # parents actually finish or when explicit merged-reviewed closure
+        # evidence is recorded. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
+        parents = conn.execute(
+            "SELECT p.id, p.status FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ?",
             (task_id,),
-        ).fetchone()
+        ).fetchall()
+        undone = next(
+            (
+                p for p in parents
+                if not _parent_satisfies_dependency(conn, p["id"], p["status"])
+            ),
+            None,
+        )
         if undone:
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "
