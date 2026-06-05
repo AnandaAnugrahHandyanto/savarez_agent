@@ -66,6 +66,10 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_YOUTUBE_URL_RE = re.compile(
+    r"https?://(?:www\.)?(?:youtube\.com|youtu\.be)/(?:\S+)",
+    re.IGNORECASE,
+)
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -1338,6 +1342,14 @@ def _compression_auto_reset_on_abort_platforms(user_config: Optional[dict]) -> s
     if not isinstance(raw, (list, tuple, set)):
         return set()
     return {str(item).strip().lower() for item in raw if str(item).strip()}
+
+
+def _transient_auto_skills_for_event(event) -> list[str]:
+    """Return turn-scoped skills to inject for matching gateway messages."""
+    text = str(getattr(event, "text", "") or "")
+    if _YOUTUBE_URL_RE.search(text):
+        return ["youtube-content"]
+    return []
 
 
 def _resolve_gateway_override_runtime(
@@ -9005,12 +9017,20 @@ class GatewayRunner:
             session_entry.auto_reset_reason = None
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
-        # Discord channel_skill_bindings).  Supports a single name or ordered list.
-        # Only inject on NEW sessions — ongoing conversations already have the
-        # skill content in their conversation history from the first message.
+        # Discord channel_skill_bindings) and turn-scoped URL triggers.
+        # Bound skills inject only on new sessions because ongoing
+        # conversations already have their payload in history. Transient
+        # triggers inject on every matching turn so a long-lived Telegram DM
+        # can still handle a YouTube URL without the user remembering /new.
         _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
-            _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
+        _bound_skill_names = [_auto] if isinstance(_auto, str) else list(_auto or [])
+        _transient_skill_names = _transient_auto_skills_for_event(event)
+        _skill_names = []
+        if _is_new_session:
+            _skill_names.extend(_bound_skill_names)
+        _skill_names.extend(_transient_skill_names)
+        _skill_names = list(dict.fromkeys(_skill_names))
+        if _skill_names:
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message
                 _combined_parts: list[str] = []

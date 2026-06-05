@@ -87,6 +87,18 @@ def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
 
 
+def test_transient_auto_skills_detects_youtube_urls():
+    event = _make_event("check this https://youtube.com/shorts/11K3tGgFnJs")
+
+    assert gateway_run._transient_auto_skills_for_event(event) == ["youtube-content"]
+
+
+def test_transient_auto_skills_ignores_regular_chat():
+    event = _make_event("just chatting about something")
+
+    assert gateway_run._transient_auto_skills_for_event(event) == []
+
+
 def test_turn_route_injects_priority_processing_without_changing_runtime():
     runner = _make_runner()
     runner._service_tier = "priority"
