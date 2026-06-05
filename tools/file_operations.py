@@ -2042,8 +2042,8 @@ class ShellFileOperations(FileOperations):
         result = self._exec(cmd, timeout=60)
         
         # rg exit codes: 0=matches found, 1=no matches, 2=error
-        if result.exit_code == 2 and not result.stdout.strip():
-            error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
+        if result.exit_code == 2:
+            error_msg = result.stdout.strip() or "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
         
         # Parse results based on output mode
@@ -2142,8 +2142,8 @@ class ShellFileOperations(FileOperations):
         result = self._exec(cmd, timeout=60)
         
         # grep exit codes: 0=matches found, 1=no matches, 2=error
-        if result.exit_code == 2 and not result.stdout.strip():
-            error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
+        if result.exit_code == 2:
+            error_msg = result.stdout.strip() or "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
         
         if output_mode == "files_only":
