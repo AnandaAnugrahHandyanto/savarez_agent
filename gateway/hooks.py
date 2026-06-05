@@ -55,11 +55,22 @@ class HookRegistry:
     def _register_builtin_hooks(self) -> None:
         """Register built-in hooks that are always active.
 
-        Currently empty — no shipped built-in hooks. Kept as the extension
-        point for future always-on gateway hooks so they drop in without
-        re-plumbing discover_and_load().
+        Built-in hooks must be safe when registered unconditionally.  Each
+        handler is responsible for remaining inert unless its own explicit
+        configuration enables behaviour.
         """
-        return
+        from gateway.ai_beast_orientation_hook import handle as ai_beast_orientation_handle
+
+        command_handlers = self._handlers.setdefault("command:*", [])
+        if ai_beast_orientation_handle not in command_handlers:
+            command_handlers.append(ai_beast_orientation_handle)
+        if not any(hook.get("name") == "ai_beast_orientation" for hook in self._loaded_hooks):
+            self._loaded_hooks.append({
+                "name": "ai_beast_orientation",
+                "description": "Opt-in, read-only AI Beast orientation command hook",
+                "events": ["command:*"],
+                "path": "builtin:gateway.ai_beast_orientation_hook",
+            })
 
     def discover_and_load(self) -> None:
         """

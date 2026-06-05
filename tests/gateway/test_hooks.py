@@ -111,6 +111,37 @@ class TestDiscoverAndLoad:
         assert len(reg.loaded_hooks) == 2
 
 
+class TestBuiltinHooks:
+    def test_registers_ai_beast_orientation_hook_once(self, tmp_path):
+        reg = HookRegistry()
+
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path / "missing-hooks"):
+            reg.discover_and_load()
+            reg.discover_and_load()
+
+        ai_beast_hooks = [hook for hook in reg.loaded_hooks if hook["name"] == "ai_beast_orientation"]
+        assert ai_beast_hooks == [
+            {
+                "name": "ai_beast_orientation",
+                "description": "Opt-in, read-only AI Beast orientation command hook",
+                "events": ["command:*"],
+                "path": "builtin:gateway.ai_beast_orientation_hook",
+            }
+        ]
+        assert len(reg._handlers["command:*"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_builtin_ai_beast_hook_is_inert_without_explicit_config(self, tmp_path):
+        reg = HookRegistry()
+
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path / "missing-hooks"):
+            reg.discover_and_load()
+
+        results = await reg.emit_collect("command:whereami", {"command": "whereami"})
+
+        assert results == []
+
+
 class TestEmit:
     @pytest.mark.asyncio
     async def test_emit_calls_sync_handler(self, tmp_path):
@@ -168,7 +199,7 @@ class TestEmit:
                       "    results.append(event_type)\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
             reg.discover_and_load()
 
         handler_fn = reg._handlers["command:*"][0]
