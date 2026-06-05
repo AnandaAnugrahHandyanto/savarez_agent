@@ -13,6 +13,7 @@ the safety net in _run_agent discards leaked command text.
 """
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -123,6 +124,20 @@ class TestCommandBypassActiveSession:
 
         assert sk not in adapter._pending_messages
         assert any("handled:reset" in r for r in adapter.sent_responses)
+
+    @pytest.mark.asyncio
+    async def test_clear_bypasses_guard(self):
+        """/clear must be dispatched with the raw command name."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+        adapter._dispatch_active_session_command = AsyncMock()
+
+        await adapter.handle_message(_make_event("/clear"))
+
+        assert sk not in adapter._pending_messages
+        adapter._dispatch_active_session_command.assert_awaited_once()
+        assert adapter._dispatch_active_session_command.await_args.args[2] == "clear"
 
     @pytest.mark.asyncio
     async def test_approve_bypasses_guard(self):

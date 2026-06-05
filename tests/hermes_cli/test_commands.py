@@ -102,6 +102,7 @@ class TestResolveCommand:
     def test_alias_resolves_to_canonical(self):
         assert resolve_command("bg").name == "background"
         assert resolve_command("reset").name == "new"
+        assert resolve_command("clear").name == "new"
         assert resolve_command("q").name == "queue"
         assert resolve_command("exit").name == "quit"
         assert resolve_command("gateway").name == "platforms"
@@ -165,6 +166,9 @@ class TestDerivedDicts:
 # ---------------------------------------------------------------------------
 
 class TestGatewayKnownCommands:
+    def test_clear_alias_is_gateway_known(self):
+        assert "clear" in GATEWAY_KNOWN_COMMANDS
+
     def test_excludes_cli_only_without_config_gate(self):
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
@@ -273,6 +277,7 @@ class TestSlackSubcommandMap:
         mapping = slack_subcommand_map()
         assert "bg" in mapping
         assert "reset" in mapping
+        assert "clear" in mapping
 
     def test_excludes_cli_only_without_config_gate(self):
         mapping = slack_subcommand_map()

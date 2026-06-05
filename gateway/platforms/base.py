@@ -3853,7 +3853,7 @@ class BasePlatformAdapter(ABC):
                 # and preserve ordering of queued follow-ups.  Route those
                 # through the dedicated handoff path that serializes
                 # cancellation + runner response + pending drain.
-                if cmd in {"stop", "new", "reset"}:
+                if cmd in {"stop", "new", "reset", "clear"}:
                     self._discard_text_debounce(session_key)
                     try:
                         await self._dispatch_active_session_command(event, session_key, cmd)

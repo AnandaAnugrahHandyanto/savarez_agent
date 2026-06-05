@@ -8747,8 +8747,13 @@ class HermesCLI:
         # change in hermes_cli/commands.py instead of touching every dispatch site.
         from hermes_cli.commands import resolve_command as _resolve_cmd
         _base_word = cmd_lower.split()[0].lstrip("/")
-        _cmd_def = _resolve_cmd(_base_word)
-        canonical = _cmd_def.name if _cmd_def else _base_word
+        if _base_word == "clear":
+            # Shared command resolution maps /clear to /new for gateways, but
+            # the interactive CLI keeps an extra screen/output-clear step.
+            canonical = "clear"
+        else:
+            _cmd_def = _resolve_cmd(_base_word)
+            canonical = _cmd_def.name if _cmd_def else _base_word
 
         # A bare `/resume` prompt is one-shot: any command other than the
         # resume/sessions handlers (which manage the pending state themselves)

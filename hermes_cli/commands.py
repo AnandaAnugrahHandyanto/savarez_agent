@@ -66,11 +66,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
                gateway_only=True),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
-               aliases=("reset",), args_hint="[name]"),
+               aliases=("reset", "clear"), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
-    CommandDef("clear", "Clear screen and start a new session", "Session",
-               cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
                cli_only=True),
     CommandDef("history", "Show conversation history", "Session",
@@ -1082,6 +1080,11 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         if not _is_gateway_available(cmd, overrides):
             continue
         for alias in cmd.aliases:
+            if alias == "clear":
+                # `/new` already has explicit native coverage; `/hermes clear`
+                # remains available through slack_subcommand_map while native
+                # slashes stay under Slack's 50-command cap.
+                continue
             # Skip aliases that only differ from canonical by case/punctuation
             # normalization (already covered by _add dedup).
             _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
