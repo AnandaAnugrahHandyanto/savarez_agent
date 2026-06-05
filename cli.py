@@ -5391,7 +5391,7 @@ class HermesCLI:
             if quiet:
                 print(msg, file=sys.stderr)
             else:
-                self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+                self._console_print(f"{_DIM}{_escape(msg)}{_RST}")
             return
 
         try:
@@ -5401,7 +5401,7 @@ class HermesCLI:
             if quiet:
                 print(msg, file=sys.stderr)
             else:
-                self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+                self._console_print(f"{_DIM}{_escape(msg)}{_RST}")
             return
 
         # Retarget the terminal/code-exec tools to match the process cwd.
@@ -5411,7 +5411,7 @@ class HermesCLI:
         if quiet:
             print(msg, file=sys.stderr)
         else:
-            self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+            self._console_print(f"{_DIM}{_escape(msg)}{_RST}")
 
     def _preload_resumed_session(self) -> bool:
         """Load a resumed session's history from the DB early (before first chat).
