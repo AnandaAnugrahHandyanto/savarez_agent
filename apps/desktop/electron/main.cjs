@@ -3478,7 +3478,8 @@ function fetchJsonViaOauthSession(url, options = {}) {
       redirect: 'follow'
     })
     request.setHeader('Content-Type', 'application/json')
-    if (body) request.setHeader('Content-Length', String(body.length))
+    // NOTE: Electron net.request computes Content-Length itself; setting it
+    // manually throws net::ERR_INVALID_ARGUMENT (electron#21091). Do not re-add.
 
     let timedOut = false
     const timer = setTimeout(() => {
