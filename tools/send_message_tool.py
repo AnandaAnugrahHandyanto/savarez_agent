@@ -749,11 +749,27 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- QQBot: native media attachment support via running gateway adapter ---
+    if platform == Platform.QQBOT and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_qqbot_via_adapter(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and qqbot; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -761,7 +777,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and qqbot"
         )
 
     last_result = None
@@ -1758,6 +1774,80 @@ async def _send_qqbot(pconfig, chat_id, message):
             return _error(f"QQBot send failed: channel={resp.status_code} c2c={resp_c2c.status_code} group={resp_group.status_code}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
+
+
+async def _send_qqbot_via_adapter(pconfig, chat_id, message, media_files=None):
+    """Send via QQBot using the running adapter's WebSocket connection.
+
+    This function reuses the active QQBot adapter instance for media
+    sending. The adapter handles the complex QQ API interaction for
+    uploading media files and sending them as rich messages.
+    """
+    try:
+        from gateway.platforms.qqbot import get_active_adapter
+    except ImportError:
+        return _error("QQBot adapter module not available.")
+
+    adapter = get_active_adapter()
+    if adapter is None:
+        return _error(
+            "QQBot adapter is not running. "
+            "Start the gateway with qqbot platform enabled first."
+        )
+
+    if not media_files:
+        return _error("QQBot adapter send requires media_files parameter.")
+
+    # Send each media file individually
+    results = []
+    for media_path in media_files:
+        try:
+            # Determine media type from file extension
+            ext = media_path.rsplit('.', 1)[-1].lower() if '.' in media_path else ''
+
+            if ext in {'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'}:
+                result = await adapter.send_image_file(
+                    chat_id, media_path, caption=message, reply_to=None
+                )
+            elif ext in {'mp3', 'wav', 'ogg', 'aac', 'm4a'}:
+                result = await adapter.send_voice(
+                    chat_id, media_path, caption=message, reply_to=None
+                )
+            elif ext in {'mp4', 'avi', 'mov', 'mkv', 'webm'}:
+                result = await adapter.send_video(
+                    chat_id, media_path, caption=message, reply_to=None
+                )
+            else:
+                result = await adapter.send_file(
+                    chat_id, media_path, caption=message, reply_to=None
+                )
+
+            if result.success:
+                results.append({
+                    "success": True,
+                    "message_id": result.message_id,
+                    "media_path": media_path
+                })
+            else:
+                results.append({
+                    "success": False,
+                    "error": result.error,
+                    "media_path": media_path
+                })
+        except Exception as e:
+            results.append({
+                "success": False,
+                "error": str(e),
+                "media_path": media_path
+            })
+
+    # Check results
+    failed = [r for r in results if not r.get("success")]
+    if failed:
+        return _error(f"QQBot media send failed: {failed[0].get('error')}")
+
+    return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+            "message_id": results[0].get("message_id") if results else None}
 
 
 async def _send_yuanbao(chat_id, message, media_files=None):
