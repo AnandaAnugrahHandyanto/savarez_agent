@@ -368,6 +368,37 @@ class TestWebServerEndpoints:
         restored = self.client.get("/api/sessions").json()
         assert any(s["id"] == "arch-me" for s in restored["sessions"])
 
+    def test_delete_session_targets_profile_db(self):
+        """DELETE can target another profile's state.db.
+
+        Cross-profile session lists tag rows with profile names; deleting one
+        of those rows must not resolve against the default profile DB.
+        """
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_state import SessionDB
+
+        profile_home = get_profile_dir("worker-alpha")
+        profile_home.mkdir(parents=True, exist_ok=True)
+
+        db = SessionDB(db_path=profile_home / "state.db")
+        try:
+            db.create_session(session_id="worker-session", source="cli")
+        finally:
+            db.close()
+
+        missing_default = self.client.delete("/api/sessions/worker-session")
+        assert missing_default.status_code == 404
+
+        resp = self.client.delete("/api/sessions/worker-session?profile=worker-alpha")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
+        db = SessionDB(db_path=profile_home / "state.db")
+        try:
+            assert db.resolve_session_id("worker-session") is None
+        finally:
+            db.close()
+
     def test_patch_session_without_fields_is_400(self):
         """An existing session + empty body is a bad request, not a 404."""
         from hermes_state import SessionDB
