@@ -1818,7 +1818,7 @@ async def _send_qqbot_via_adapter(pconfig, chat_id, message, media_files=None):
                     chat_id, media_path, caption=message, reply_to=None
                 )
             else:
-                result = await adapter.send_file(
+                result = await adapter.send_document(
                     chat_id, media_path, caption=message, reply_to=None
                 )
 

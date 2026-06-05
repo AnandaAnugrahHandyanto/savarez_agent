@@ -41,7 +41,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, ClassVar, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 try:
@@ -159,6 +159,19 @@ class QQAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
     _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires
+
+    # Active instance registry (class-level singleton)
+    _active_instance: ClassVar[Optional["QQAdapter"]] = None
+
+    @classmethod
+    def get_active(cls) -> Optional["QQAdapter"]:
+        """Return the currently connected QQAdapter, or None."""
+        return cls._active_instance
+
+    @classmethod
+    def set_active(cls, adapter: Optional["QQAdapter"]) -> None:
+        """Register (or clear) the active adapter instance."""
+        cls._active_instance = adapter
 
     @property
     def _log_tag(self) -> str:
@@ -325,6 +338,7 @@ class QQAdapter(BasePlatformAdapter):
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             self._mark_connected()
+            QQAdapter.set_active(self)  # Register as active adapter
             logger.info("[%s] Connected", self._log_tag)
             return True
         except Exception as exc:
@@ -339,6 +353,10 @@ class QQAdapter(BasePlatformAdapter):
         """Close all connections and stop listeners."""
         self._running = False
         self._mark_disconnected()
+
+        # Clear active instance if this is the active one
+        if QQAdapter._active_instance is self:
+            QQAdapter.set_active(None)
 
         if self._listen_task:
             self._listen_task.cancel()
@@ -3188,3 +3206,13 @@ class QQAdapter(BasePlatformAdapter):
             return True
         self._seen_messages[msg_id] = now
         return False
+
+
+# ---------------------------------------------------------------------------
+# Module-level thin delegate (preserve import compatibility for external callers)
+# ---------------------------------------------------------------------------
+
+
+def get_active_adapter() -> Optional["QQAdapter"]:
+    """Delegate to ``QQAdapter.get_active()``."""
+    return QQAdapter.get_active()

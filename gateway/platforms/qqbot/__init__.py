@@ -21,6 +21,7 @@ from .adapter import (  # noqa: F401
     check_qq_requirements,
     _coerce_list,
     _ssrf_redirect_guard,
+    get_active_adapter,
 )
 
 # -- Onboard (QR-code scan-to-configure) -----------------------------------
@@ -62,6 +63,7 @@ __all__ = [
     "check_qq_requirements",
     "_coerce_list",
     "_ssrf_redirect_guard",
+    "get_active_adapter",
     # onboard
     "BindStatus",
     "build_connect_url",
