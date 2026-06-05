@@ -896,6 +896,59 @@ def _get_cron_approval_mode() -> str:
         return "deny"
 
 
+def _get_project_autonomy_level() -> str:
+    """Return the active Kanban board autonomy level, defaulting to Medium.
+
+    Approval checks run in terminal/tool threads, not inside the Kanban DB layer.
+    Resolve board policy lazily here so worker, coordinator, gateway, and tool
+    sessions can share the same durable ``board.json`` autonomy metadata without
+    importing Kanban code at approval-module import time.
+    """
+    try:
+        from hermes_cli.kanban_db import DEFAULT_AUTONOMY_LEVEL, read_board_metadata
+
+        board = os.getenv("HERMES_KANBAN_BOARD") or None
+        meta = read_board_metadata(board)
+        return str(meta.get("autonomy_level") or DEFAULT_AUTONOMY_LEVEL)
+    except Exception as exc:
+        logger.debug("Project autonomy lookup failed: %s", exc, exc_info=True)
+        return "Medium"
+
+
+_ROUTINE_MEDIUM_APPROVAL_DESCRIPTIONS = {
+    "shell command via -c/-lc flag",
+    "script execution via -e/-c flag",
+    "script execution via heredoc",
+}
+
+
+def _is_routine_medium_project_warning(key: str, description: str, is_policy_warning: bool) -> bool:
+    """True for approval warnings High autonomy may safely auto-handle.
+
+    This intentionally stays narrow. High autonomy suppresses routine Medium
+    prompts (the common local shell/script wrapper false-positive class) but it
+    must not bypass Tirith findings, GitHub authority gates, runtime lifecycle,
+    secrets/config/access, destructive file/process/database actions, or any
+    other warning we have not explicitly classified as routine.
+    """
+    if is_policy_warning:
+        return False
+    if key.startswith("github-authority:") or key.startswith("tirith:"):
+        return False
+    desc = str(description or "").strip().lower()
+    return desc in _ROUTINE_MEDIUM_APPROVAL_DESCRIPTIONS
+
+
+def _project_autonomy_allows_routine_medium_auto_approval(warnings: list[tuple[str, str, bool]]) -> bool:
+    """Return True when active board High/Full may auto-approve warnings."""
+    if not warnings:
+        return False
+    if _get_project_autonomy_level() not in {"High", "Full"}:
+        return False
+    return all(_is_routine_medium_project_warning(key, desc, is_policy)
+               for key, desc, is_policy in warnings)
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Use the auxiliary LLM to assess risk and decide approval.
 
@@ -1317,6 +1370,27 @@ def check_all_command_guards(command: str, env_type: str,
     # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
+
+    # Project autonomy bridge: High/Full boards auto-handle only the narrow
+    # class of routine Medium prompts (script/shell wrapper false positives).
+    # Hardline and sudo guards already returned above; Tirith, GitHub authority,
+    # secrets/config, destructive, runtime, service, and unclassified warnings
+    # deliberately continue to the human/smart approval surfaces below.
+    if _project_autonomy_allows_routine_medium_auto_approval(warnings):
+        combined_desc = "; ".join(desc for _, desc, _ in warnings)
+        for key, _, _ in warnings:
+            approve_session(session_key, key)
+        logger.info(
+            "Project autonomy auto-approved routine medium prompt at %s autonomy: %s",
+            _get_project_autonomy_level(), command[:200],
+        )
+        return {
+            "approved": True,
+            "message": None,
+            "project_autonomy_approved": True,
+            "description": combined_desc,
+            "autonomy_level": _get_project_autonomy_level(),
+        }
 
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.

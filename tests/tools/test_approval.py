@@ -1525,3 +1525,102 @@ class TestApprovalTimeoutIsNotConsent:
         assert last_post.get("choice") == "timeout", (
             f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
         )
+
+
+class TestProjectAutonomyApprovalBridge:
+    """Project High autonomy suppresses only routine medium-risk prompts."""
+
+    SESSION_KEY = "test-project-autonomy-session"
+
+    def setup_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+        mod._pending.clear()
+        self._saved_env = {
+            k: os.environ.get(k)
+            for k in (
+                "HERMES_GATEWAY_SESSION",
+                "HERMES_CRON_SESSION",
+                "HERMES_YOLO_MODE",
+                "HERMES_SESSION_KEY",
+                "HERMES_INTERACTIVE",
+                "HERMES_KANBAN_BOARD",
+            )
+        }
+        os.environ.pop("HERMES_CRON_SESSION", None)
+        os.environ.pop("HERMES_YOLO_MODE", None)
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+        os.environ["HERMES_KANBAN_BOARD"] = "hermes-maintenance"
+
+    def teardown_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _manual_mode(self, monkeypatch):
+        from tools import approval as mod
+        monkeypatch.setattr(
+            mod,
+            "_get_approval_config",
+            lambda: {"mode": "manual", "gateway_timeout": 1, "timeout": 1},
+        )
+
+    def _board_level(self, monkeypatch, level):
+        from tools import approval as mod
+        monkeypatch.setattr(mod, "_get_project_autonomy_level", lambda: level)
+
+    def test_high_autonomy_auto_approves_routine_medium_shell_prompt(self, monkeypatch):
+        from tools import approval as mod
+        self._manual_mode(monkeypatch)
+        self._board_level(monkeypatch, "High")
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result = mod.check_all_command_guards("python -c 'print(42)'", "local")
+
+        assert result["approved"] is True
+        assert result.get("project_autonomy_approved") is True
+        assert notified == []
+
+    def test_medium_autonomy_still_prompts_for_same_medium_shell_prompt(self, monkeypatch):
+        from tools import approval as mod
+        self._manual_mode(monkeypatch)
+        self._board_level(monkeypatch, "Medium")
+
+        result = mod.check_all_command_guards("python -c 'print(42)'", "local")
+
+        assert result["approved"] is False
+        assert result.get("approval_pending") is True
+
+    def test_high_autonomy_does_not_bypass_hardline_block(self, monkeypatch):
+        from tools import approval as mod
+        self._manual_mode(monkeypatch)
+        self._board_level(monkeypatch, "High")
+
+        result = mod.check_all_command_guards("reboot", "local")
+
+        assert result["approved"] is False
+        assert result.get("hardline") is True
+
+    def test_high_autonomy_keeps_secret_and_runtime_prompts_human_gated(self, monkeypatch):
+        from tools import approval as mod
+        self._manual_mode(monkeypatch)
+        self._board_level(monkeypatch, "High")
+
+        config_result = mod.check_all_command_guards("echo x > ~/.hermes/config.yaml", "local")
+        gateway_result = mod.check_all_command_guards("hermes gateway restart", "local")
+
+        assert config_result["approved"] is False
+        assert config_result.get("approval_pending") is True
+        assert gateway_result["approved"] is False
+        assert gateway_result.get("approval_pending") is True
