@@ -13054,6 +13054,14 @@ class HermesCLI:
             ] if item is not None
         ]
 
+    def _drain_process_notifications(self) -> None:
+        try:
+            from tools.process_registry import process_registry
+            for _evt, _synth in process_registry.drain_notifications():
+                self._pending_input.put(_synth)
+        except Exception as exc:
+            logger.debug("failed to drain process notifications: %s", exc)
+
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         # Detect light/dark terminal mode now (before pt grabs the tty).
@@ -15039,6 +15047,10 @@ class HermesCLI:
         def process_loop():
             while not self._should_exit:
                 try:
+                    # Pull completion/watch notifications before blocking on input
+                    # so already-queued user input cannot starve synthetic events.
+                    self._drain_process_notifications()
+
                     # Check for pending input with timeout
                     try:
                         user_input = self._pending_input.get(timeout=0.1)
@@ -15046,14 +15058,6 @@ class HermesCLI:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
                             self._check_config_mcp_changes()
-                            # Check for background process notifications (completions
-                            # and watch pattern matches) while agent is idle.
-                            try:
-                                from tools.process_registry import process_registry
-                                for _evt, _synth in process_registry.drain_notifications():
-                                    self._pending_input.put(_synth)
-                            except Exception:
-                                pass
                         continue
                     
                     if not user_input:
@@ -15176,12 +15180,7 @@ class HermesCLI:
 
                         # Drain process notifications (completions + watch matches)
                         # that arrived while the agent was running.
-                        try:
-                            from tools.process_registry import process_registry
-                            for _evt, _synth in process_registry.drain_notifications():
-                                self._pending_input.put(_synth)
-                        except Exception:
-                            pass  # Non-fatal — don't break the main loop
+                        self._drain_process_notifications()
 
                 except Exception as e:
                     logger.warning("process_loop unhandled error (msg may be lost): %s", e)
