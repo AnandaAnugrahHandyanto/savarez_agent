@@ -1,7 +1,7 @@
 ---
 id: ua-tier1-003-edge-package-config-markers
 title: Edge Function and Package/Config Markers
-status: planned-not-approved
+status: completed
 executor: codex-coder
 parallel_safe: false
 risk: medium

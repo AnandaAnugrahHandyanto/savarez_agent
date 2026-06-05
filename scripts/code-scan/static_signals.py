@@ -33,6 +33,15 @@ DEFAULT_BOUNDARIES: List[str] = [
 ]
 
 SUPABASE_MIGRATION_SURFACE = "supabase_migration"
+SUPABASE_EDGE_FUNCTION_SURFACE = "supabase_edge_function"
+PACKAGE_CONFIG_SURFACE = "package_config"
+
+PACKAGE_CONFIG_BOUNDARY = (
+    "Tier 1 static signals are content markers only; package/config markers identify "
+    "available or declared gates only and do not prove the gates were executed or passed. "
+    "This does not prove security, RLS correctness, auth correctness, runtime behavior, "
+    "deployment readiness, CI success, or policy semantics."
+)
 
 _SUPABASE_MIGRATION_PATH_RE = re.compile(
     r"(?:^|/)supabase/migrations/[^/]+\.sql\Z",
@@ -60,6 +69,51 @@ _SUPABASE_MIGRATION_MARKERS = (
     (
         "create_function",
         re.compile(r"\bcreate\s+(?:or\s+replace\s+)?function\b", re.IGNORECASE),
+    ),
+)
+
+_SUPABASE_EDGE_FUNCTION_PATH_RE = re.compile(
+    r"^supabase/functions/[^/]+/index\.(?:ts|js)\Z",
+    re.IGNORECASE,
+)
+
+_SUPABASE_EDGE_FUNCTION_MARKERS = (
+    (
+        "authorization_header",
+        re.compile(r"headers\s*\.\s*get\s*\(\s*['\"][Aa]uthorization['\"]|['\"]Authorization['\"]"),
+    ),
+    ("bearer_token", re.compile(r"(?<![\w])bearer(?![\w])", re.IGNORECASE)),
+    ("jwt", re.compile(r"(?<![\w])jwt(?![\w])", re.IGNORECASE)),
+    ("get_user", re.compile(r"\bgetUser\s*\(", re.IGNORECASE)),
+    ("service_role_env", re.compile(r"service[_-]?role", re.IGNORECASE)),
+    ("deno_env", re.compile(r"\bDeno\s*\.\s*env\s*\.\s*get\s*\(", re.IGNORECASE)),
+    ("cors_header", re.compile(r"\bAccess-Control-Allow-[A-Za-z-]+\b", re.IGNORECASE)),
+    (
+        "cors_wildcard",
+        re.compile(r"\bAccess-Control-Allow-Origin\b.*['\"]\*['\"]", re.IGNORECASE),
+    ),
+    ("request_json", re.compile(r"\breq(?:uest)?\s*\.\s*json\s*\(", re.IGNORECASE)),
+    ("external_fetch", re.compile(r"\bfetch\s*\(", re.IGNORECASE)),
+)
+
+_WORKFLOW_PATH_RE = re.compile(r"^\.github/workflows/[^/]+\.ya?ml\Z", re.IGNORECASE)
+_VITE_CONFIG_PATH_RE = re.compile(r"^vite\.config\.[^/]+\Z", re.IGNORECASE)
+
+_PACKAGE_SCRIPT_MARKERS = (
+    ("script_test", "test"),
+    ("script_build", "build"),
+    ("script_lint", "lint"),
+    ("script_typecheck", "typecheck"),
+    ("script_audit", "audit"),
+)
+
+_WORKFLOW_MARKERS = (
+    ("ci_npm_ci", re.compile(r"\bnpm\s+ci\b", re.IGNORECASE)),
+    ("ci_test", re.compile(r"\b(?:npm|pnpm|yarn)\s+(?:run\s+)?test\b", re.IGNORECASE)),
+    ("ci_build", re.compile(r"\b(?:npm|pnpm|yarn)\s+(?:run\s+)?build\b", re.IGNORECASE)),
+    (
+        "ci_typecheck",
+        re.compile(r"\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:typecheck|type-check)\b", re.IGNORECASE),
     ),
 )
 
@@ -124,6 +178,34 @@ def _is_supabase_migration_path(rel_path: str) -> bool:
     return bool(_SUPABASE_MIGRATION_PATH_RE.search(normalized))
 
 
+def _normalize_rel_path(rel_path: str) -> str:
+    normalized = str(rel_path).replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def _is_supabase_edge_function_path(rel_path: str) -> bool:
+    """Return whether rel_path is a supported Supabase Edge Function entrypoint."""
+    return bool(_SUPABASE_EDGE_FUNCTION_PATH_RE.fullmatch(_normalize_rel_path(rel_path)))
+
+
+def _package_config_kind(rel_path: str) -> Optional[str]:
+    """Return the supported package/config file kind for rel_path, if any."""
+    normalized = _normalize_rel_path(rel_path)
+    if normalized == "package.json":
+        return "package_json"
+    if _WORKFLOW_PATH_RE.fullmatch(normalized):
+        return "workflow"
+    if _VITE_CONFIG_PATH_RE.fullmatch(normalized):
+        return "vite_config"
+    if normalized == "vercel.json":
+        return "vercel"
+    if normalized == "netlify.toml":
+        return "netlify"
+    return None
+
+
 def _marker_snippet(line: str, limit: int = 240) -> str:
     snippet = " ".join(line.strip().split())
     if len(snippet) <= limit:
@@ -175,6 +257,157 @@ def extract_supabase_migration_markers(
             emitted_by_type[marker_type] = emitted_by_type.get(marker_type, 0) + 1
 
     return signals
+
+
+def extract_edge_function_markers(
+    rel_path: str,
+    content: str,
+    max_per_type: int = 50,
+) -> List[Dict[str, Any]]:
+    """Extract heuristic Supabase Edge Function content markers.
+
+    Only supabase/functions/*/index.ts and supabase/functions/*/index.js are
+    scanned. This inventory does not validate auth, CORS, secrets, requests,
+    runtime behavior, deployment readiness, CI success, or security semantics.
+    """
+    normalized_path = _normalize_rel_path(rel_path)
+    if not _is_supabase_edge_function_path(normalized_path):
+        return []
+
+    try:
+        cap = int(max_per_type)
+    except (TypeError, ValueError):
+        cap = 50
+    if cap <= 0:
+        return []
+
+    signals: List[Dict[str, Any]] = []
+    emitted_by_type: Dict[str, int] = {}
+
+    for line_number, line in enumerate(str(content).splitlines(), start=1):
+        if not line.strip():
+            continue
+        for marker_type, pattern in _SUPABASE_EDGE_FUNCTION_MARKERS:
+            if emitted_by_type.get(marker_type, 0) >= cap:
+                continue
+            if not pattern.search(line):
+                continue
+            signals.append(
+                make_signal_record(
+                    surface=SUPABASE_EDGE_FUNCTION_SURFACE,
+                    path=normalized_path,
+                    line=line_number,
+                    marker_type=marker_type,
+                    marker=_marker_snippet(line),
+                )
+            )
+            emitted_by_type[marker_type] = emitted_by_type.get(marker_type, 0) + 1
+
+    return signals
+
+
+def _extract_package_json_markers(normalized_path: str, content: str) -> List[Dict[str, Any]]:
+    signals: List[Dict[str, Any]] = []
+    emitted = set()
+    script_patterns = [
+        (marker_type, re.compile(rf'["\']{re.escape(script_name)}["\']\s*:', re.IGNORECASE))
+        for marker_type, script_name in _PACKAGE_SCRIPT_MARKERS
+    ]
+
+    for line_number, line in enumerate(str(content).splitlines(), start=1):
+        for marker_type, pattern in script_patterns:
+            if marker_type in emitted or not pattern.search(line):
+                continue
+            signals.append(
+                make_signal_record(
+                    surface=PACKAGE_CONFIG_SURFACE,
+                    path=normalized_path,
+                    line=line_number,
+                    marker_type=marker_type,
+                    marker=_marker_snippet(line),
+                    boundary=PACKAGE_CONFIG_BOUNDARY,
+                )
+            )
+            emitted.add(marker_type)
+
+    return signals
+
+
+def _extract_workflow_markers(normalized_path: str, content: str) -> List[Dict[str, Any]]:
+    signals: List[Dict[str, Any]] = []
+    emitted = set()
+
+    for line_number, line in enumerate(str(content).splitlines(), start=1):
+        for marker_type, pattern in _WORKFLOW_MARKERS:
+            if marker_type in emitted or not pattern.search(line):
+                continue
+            signals.append(
+                make_signal_record(
+                    surface=PACKAGE_CONFIG_SURFACE,
+                    path=normalized_path,
+                    line=line_number,
+                    marker_type=marker_type,
+                    marker=_marker_snippet(line),
+                    boundary=PACKAGE_CONFIG_BOUNDARY,
+                )
+            )
+            emitted.add(marker_type)
+
+    return signals
+
+
+def extract_package_config_markers(
+    rel_path: str,
+    content: str,
+) -> List[Dict[str, Any]]:
+    """Extract heuristic package/config gate declaration markers.
+
+    These markers identify available or declared gates only. They do not prove
+    that npm, audit, CI, Vite, Vercel, Netlify, browser, or external commands
+    were executed or passed.
+    """
+    normalized_path = _normalize_rel_path(rel_path)
+    kind = _package_config_kind(normalized_path)
+    if kind is None:
+        return []
+
+    if kind == "package_json":
+        return _extract_package_json_markers(normalized_path, content)
+    if kind == "workflow":
+        return _extract_workflow_markers(normalized_path, content)
+
+    if kind == "vite_config":
+        signals: List[Dict[str, Any]] = []
+        for line_number, line in enumerate(str(content).splitlines(), start=1):
+            if "VITE_" not in line:
+                continue
+            signals.append(
+                make_signal_record(
+                    surface=PACKAGE_CONFIG_SURFACE,
+                    path=normalized_path,
+                    line=line_number,
+                    marker_type="vite_public_env",
+                    marker=_marker_snippet(line),
+                    boundary=PACKAGE_CONFIG_BOUNDARY,
+                )
+            )
+            break
+        return signals
+
+    if not str(content).strip():
+        return []
+
+    marker_type = "vercel_config" if kind == "vercel" else "netlify_config"
+    return [
+        make_signal_record(
+            surface=PACKAGE_CONFIG_SURFACE,
+            path=normalized_path,
+            line=1,
+            marker_type=marker_type,
+            marker=normalized_path,
+            boundary=PACKAGE_CONFIG_BOUNDARY,
+        )
+    ]
 
 
 def _normalize_signal(sig: Any) -> Dict[str, Any]:
@@ -259,6 +492,8 @@ def build_static_signals_artifact(
 # Convenience re-exports for consumers that want the canonical names
 __all__ = [
     "build_static_signals_artifact",
+    "extract_edge_function_markers",
+    "extract_package_config_markers",
     "extract_supabase_migration_markers",
     "make_signal_record",
     "SignalRecord",

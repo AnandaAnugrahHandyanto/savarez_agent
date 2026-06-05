@@ -19,6 +19,8 @@ if str(SCRIPTS_DIR) not in sys.path:
 # Import will fail in RED phase
 from static_signals import (
     build_static_signals_artifact,
+    extract_edge_function_markers,
+    extract_package_config_markers,
     extract_supabase_migration_markers,
     make_signal_record,
     SignalRecord,
@@ -334,3 +336,214 @@ class TestSupabaseMigrationMarkers:
         revoke_lines = [signal["line"] for signal in signals if signal["marker_type"] == "revoke_statement"]
         assert grant_lines == [1, 2]
         assert revoke_lines == [4, 5]
+
+
+class TestEdgeFunctionMarkers:
+    """Supabase Edge Function markers are static content inventory only."""
+
+    def test_extracts_required_edge_function_marker_types_with_lines(self):
+        content = "\n".join(
+            [
+                "import { serve } from 'https://deno.land/std/http/server.ts';",
+                "const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');",
+                "const supabaseUrl = Deno.env.get('SUPABASE_URL');",
+                "serve(async (req) => {",
+                "  const authHeader = req.headers.get('Authorization');",
+                "  const token = authHeader?.replace('Bearer ', '');",
+                "  const jwt = token;",
+                "  const { data: user } = await supabase.auth.getUser(jwt);",
+                "  const payload = await req.json();",
+                "  const upstream = await fetch('https://api.example.test/data');",
+                "  return new Response(JSON.stringify({ payload, upstream }), {",
+                "    headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization' },",
+                "  });",
+                "});",
+            ]
+        )
+
+        signals = extract_edge_function_markers(
+            "supabase/functions/example/index.ts",
+            content,
+        )
+
+        marker_types = {signal["marker_type"] for signal in signals}
+        assert marker_types == {
+            "authorization_header",
+            "bearer_token",
+            "jwt",
+            "get_user",
+            "service_role_env",
+            "deno_env",
+            "cors_header",
+            "cors_wildcard",
+            "request_json",
+            "external_fetch",
+        }
+
+        first_line_by_type = {}
+        for signal in signals:
+            first_line_by_type.setdefault(signal["marker_type"], signal["line"])
+
+        assert first_line_by_type["service_role_env"] == 2
+        assert first_line_by_type["deno_env"] == 2
+        assert first_line_by_type["authorization_header"] == 5
+        assert first_line_by_type["bearer_token"] == 6
+        assert first_line_by_type["jwt"] == 7
+        assert first_line_by_type["get_user"] == 8
+        assert first_line_by_type["request_json"] == 9
+        assert first_line_by_type["external_fetch"] == 10
+        assert first_line_by_type["cors_header"] == 12
+        assert first_line_by_type["cors_wildcard"] == 12
+
+        artifact = build_static_signals_artifact(signals)
+        assert artifact["summary"]["total_signals"] == len(signals)
+        assert artifact["summary"]["by_surface"] == {"supabase_edge_function": len(signals)}
+        assert artifact["summary"]["by_marker_type"]["authorization_header"] == 1
+        assert artifact["summary"]["by_marker_type"]["deno_env"] == 2
+        assert artifact["summary"]["by_marker_type"]["cors_header"] == 1
+
+        for signal in artifact["signals"]:
+            assert signal["surface"] == "supabase_edge_function"
+            assert signal["path"] == "supabase/functions/example/index.ts"
+            assert signal["claim_type"] == "heuristic_signal"
+            assert signal["semantic_status"] == "not_validated"
+            assert signal["semantic_status"] != "executed_external_gate"
+            assert "content markers only" in signal["boundary"]
+
+    def test_edge_markers_are_restricted_to_function_index_files(self):
+        content = "Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'); await req.json();"
+        assert extract_edge_function_markers("supabase/functions/example/index.ts", content)
+        assert extract_edge_function_markers("supabase/functions/example/index.js", content)
+        assert extract_edge_function_markers("supabase/functions/example/helper.ts", content) == []
+        assert extract_edge_function_markers("supabase/functions/example/nested/index.ts", content) == []
+        assert extract_edge_function_markers("apps/web/supabase/functions/example/index.ts", content) == []
+        assert extract_edge_function_markers("supabase/functions/example/index.tsx", content) == []
+
+
+class TestPackageConfigMarkers:
+    """Package/config markers identify declared gates, not executed gates."""
+
+    def test_extracts_package_json_script_markers_with_lines(self):
+        content = "\n".join(
+            [
+                "{",
+                '  "scripts": {',
+                '    "test": "vitest run",',
+                '    "build": "vite build",',
+                '    "lint": "eslint .",',
+                '    "typecheck": "tsc --noEmit",',
+                '    "audit": "npm audit --audit-level=high"',
+                "  }",
+                "}",
+            ]
+        )
+
+        signals = extract_package_config_markers("package.json", content)
+
+        assert [signal["marker_type"] for signal in signals] == [
+            "script_test",
+            "script_build",
+            "script_lint",
+            "script_typecheck",
+            "script_audit",
+        ]
+        assert [signal["line"] for signal in signals] == [3, 4, 5, 6, 7]
+
+        artifact = build_static_signals_artifact(signals)
+        assert artifact["summary"]["total_signals"] == 5
+        assert artifact["summary"]["by_surface"] == {"package_config": 5}
+        assert artifact["summary"]["by_marker_type"] == {
+            "script_test": 1,
+            "script_build": 1,
+            "script_lint": 1,
+            "script_typecheck": 1,
+            "script_audit": 1,
+        }
+        for signal in artifact["signals"]:
+            assert signal["claim_type"] == "heuristic_signal"
+            assert signal["semantic_status"] == "not_validated"
+            assert signal["semantic_status"] != "executed_external_gate"
+            assert "declared gates only" in signal["boundary"]
+            assert "do not prove the gates were executed or passed" in signal["boundary"]
+
+    def test_declared_npm_test_is_not_an_executed_external_gate(self):
+        signals = extract_package_config_markers(
+            "package.json",
+            '{"scripts":{"test":"npm run unit"}}',
+        )
+        artifact = build_static_signals_artifact(signals)
+
+        assert len(artifact["signals"]) == 1
+        signal = artifact["signals"][0]
+        assert signal["marker_type"] == "script_test"
+        assert signal["claim_type"] == "heuristic_signal"
+        assert signal["semantic_status"] == "not_validated"
+        assert signal["semantic_status"] != "executed_external_gate"
+        assert "executed_external_gate" not in json.dumps(artifact)
+
+    def test_extracts_workflow_vite_and_hosting_config_markers(self):
+        workflow = "\n".join(
+            [
+                "name: ci",
+                "jobs:",
+                "  test:",
+                "    steps:",
+                "      - run: npm ci",
+                "      - run: npm test",
+                "      - run: npm run build",
+                "      - run: npm run typecheck",
+            ]
+        )
+        vite = "\n".join(
+            [
+                "import { defineConfig } from 'vite';",
+                "export default defineConfig({});",
+                "console.log(import.meta.env.VITE_PUBLIC_SUPABASE_URL);",
+            ]
+        )
+
+        signals = []
+        signals.extend(extract_package_config_markers(".github/workflows/ci.yml", workflow))
+        signals.extend(extract_package_config_markers("vite.config.ts", vite))
+        signals.extend(extract_package_config_markers("vercel.json", '{"rewrites": []}'))
+        signals.extend(extract_package_config_markers("netlify.toml", "[build]\ncommand = 'npm run build'"))
+
+        marker_types = [signal["marker_type"] for signal in signals]
+        assert marker_types == [
+            "ci_npm_ci",
+            "ci_test",
+            "ci_build",
+            "ci_typecheck",
+            "vite_public_env",
+            "vercel_config",
+            "netlify_config",
+        ]
+        assert [signal["line"] for signal in signals] == [5, 6, 7, 8, 3, 1, 1]
+
+        artifact = build_static_signals_artifact(signals)
+        assert artifact["summary"]["total_signals"] == 7
+        assert artifact["summary"]["by_surface"] == {"package_config": 7}
+        assert artifact["summary"]["by_marker_type"]["ci_npm_ci"] == 1
+        assert artifact["summary"]["by_marker_type"]["vite_public_env"] == 1
+        assert artifact["summary"]["by_marker_type"]["vercel_config"] == 1
+        assert artifact["summary"]["by_marker_type"]["netlify_config"] == 1
+
+    def test_package_config_markers_are_restricted_to_allowed_paths(self):
+        package_content = '{"scripts":{"test":"vitest"}}'
+        workflow_content = "- run: npm ci"
+        vite_content = "import.meta.env.VITE_SUPABASE_URL"
+
+        assert extract_package_config_markers("package.json", package_content)
+        assert extract_package_config_markers(".github/workflows/ci.yml", workflow_content)
+        assert extract_package_config_markers(".github/workflows/ci.yaml", workflow_content)
+        assert extract_package_config_markers("vite.config.js", vite_content)
+        assert extract_package_config_markers("vite.config.mts", vite_content)
+        assert extract_package_config_markers("vercel.json", "{}")
+        assert extract_package_config_markers("netlify.toml", "[build]")
+
+        assert extract_package_config_markers("apps/web/package.json", package_content) == []
+        assert extract_package_config_markers(".github/actions/ci.yml", workflow_content) == []
+        assert extract_package_config_markers(".github/workflows/ci.txt", workflow_content) == []
+        assert extract_package_config_markers("src/vite.config.ts", vite_content) == []
+        assert extract_package_config_markers("vercel.dev.json", "{}") == []
+        assert extract_package_config_markers("netlify.ini", "[build]") == []
