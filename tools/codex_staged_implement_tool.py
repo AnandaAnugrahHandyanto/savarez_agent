@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,45 @@ _LIST_LIMIT = 200
 _DICT_LIMIT = 80
 _STRING_LIMIT = 4000
 _DIRTY_PATHS_LIMIT = 100
+_INFERRED_SCOPE_NEXT_ACTION = "confirm_inferred_scope_or_execute_with_explicit_scope"
+_INFERRED_SCOPE_TEMPLATES = (
+    (
+        "terminal",
+        ("terminal tool", "terminal policy", "tools/terminal_tool.py", "test_terminal_tool.py"),
+        ["tools/terminal_tool.py", "tests/tools/test_terminal_tool.py"],
+    ),
+    (
+        "process_registry",
+        (
+            "process registry codex metadata",
+            "process registry metadata",
+            "tools/process_registry.py",
+            "test_process_registry.py",
+        ),
+        ["tools/process_registry.py", "tests/tools/test_process_registry.py"],
+    ),
+    (
+        "stage_runner",
+        ("stage runner", "codex_stage_runner.py", "test_codex_stage_runner.py"),
+        ["scripts/runtime/codex_stage_runner.py", "tests/scripts/test_codex_stage_runner.py"],
+    ),
+    (
+        "impl_guard",
+        ("impl guard", "implementation guard", "codex_impl_guard.py", "test_codex_impl_guard.py"),
+        ["scripts/runtime/codex_impl_guard.py", "tests/scripts/test_codex_impl_guard.py"],
+    ),
+    (
+        "review_guard",
+        ("review guard", "codex_review_guard.py", "test_codex_review_guard.py"),
+        ["scripts/runtime/codex_review_guard.py", "tests/scripts/test_codex_review_guard.py"],
+    ),
+    (
+        "review_packet",
+        ("review packet", "codex_review_packet.py", "test_codex_review_packet.py"),
+        ["scripts/runtime/codex_review_packet.py", "tests/scripts/test_codex_review_packet.py"],
+    ),
+)
+_DOCS_PATH_RE = re.compile(r"(?<![\w./-])(docs/[A-Za-z0-9_./-]+)")
 
 
 def _json_result(payload: dict[str, Any]) -> str:
@@ -245,6 +285,63 @@ def _validate_scope(args: dict[str, Any], repo: Path) -> tuple[dict[str, list[st
     return {"files": files, "globs": globs}, None
 
 
+def _explicit_scope_was_provided(args: dict[str, Any]) -> bool:
+    return any(key in args and args.get(key) is not None for key in ("allowed_files", "allowed_globs"))
+
+
+def _existing_file_allowlist(repo: Path, files: list[str]) -> tuple[dict[str, list[str]] | None, str | None]:
+    if any(not (repo / path).is_file() for path in files):
+        return None, "unsupported_template"
+    allowlist, scope_error = _validate_scope({"allowed_files": files, "allowed_globs": []}, repo)
+    if scope_error:
+        return None, "unsupported_template"
+    return allowlist, None
+
+
+def _docs_paths_from_task(task_text: str) -> tuple[list[str], bool]:
+    paths: list[str] = []
+    unsafe = False
+    for match in _DOCS_PATH_RE.findall(task_text):
+        value = match.rstrip(".,;:)]}'\"")
+        parts = Path(value).parts
+        if (
+            not value
+            or Path(value).is_absolute()
+            or ".." in parts
+            or "\\" in value
+            or not parts
+            or parts[0] != "docs"
+        ):
+            unsafe = True
+            continue
+        if value not in paths:
+            paths.append(value)
+    return paths, unsafe
+
+
+def _infer_scope_from_task(repo: Path, task_text: str) -> tuple[dict[str, list[str]] | None, str | None]:
+    lowered = task_text.lower()
+    docs_paths, unsafe_docs_path = _docs_paths_from_task(task_text)
+    if unsafe_docs_path:
+        return None, "unsupported_template"
+
+    matches: list[list[str]] = []
+    for _name, phrases, files in _INFERRED_SCOPE_TEMPLATES:
+        if any(phrase in lowered for phrase in phrases):
+            matches.append(files)
+
+    if len(matches) + len(docs_paths) > 1:
+        return None, "needs_split"
+
+    if matches:
+        return _existing_file_allowlist(repo, matches[0])
+
+    if len(docs_paths) == 1:
+        return _existing_file_allowlist(repo, [docs_paths[0]])
+
+    return None, "scope is required"
+
+
 def _dirty_check(repo: Path) -> dict[str, Any]:
     proc = _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
     lines = [line for line in proc.stdout.splitlines() if line]
@@ -363,12 +460,23 @@ def _dry_run_plan_result(
     verification_policy: str,
     allowlist: dict[str, list[str]] | None,
     scope_error: str | None,
+    scope_source: str = "explicit",
 ) -> dict[str, Any]:
     dirty = _dirty_check(repo)
     empty_allowlist = {"files": [], "globs": []}
     if scope_error:
-        risk = "needs_scope" if scope_error == "scope is required" else "unsupported"
-        next_action = "provide_explicit_scope" if risk == "needs_scope" else "provide_narrow_explicit_scope"
+        if scope_error == "scope is required":
+            risk = "needs_scope"
+            next_action = "provide_explicit_scope"
+        elif scope_error == "needs_split":
+            risk = "needs_split"
+            next_action = "split_task_or_provide_explicit_scope"
+        elif scope_error == "unsupported_template":
+            risk = "unsupported_template"
+            next_action = "provide_explicit_scope"
+        else:
+            risk = "unsupported"
+            next_action = "provide_narrow_explicit_scope"
         return _base_result(
             status="dry_run_plan",
             resolved_workdir=str(repo),
@@ -420,7 +528,9 @@ def _dry_run_plan_result(
             continue_policy=continue_policy,
             dirty_policy=dirty_policy,
         ),
-        next_required_action="confirm_or_execute_with_explicit_scope",
+        next_required_action=_INFERRED_SCOPE_NEXT_ACTION
+        if scope_source == "inferred"
+        else "confirm_or_execute_with_explicit_scope",
     )
 
 
@@ -694,7 +804,13 @@ def _codex_staged_dry_run_plan(args: dict[str, Any]) -> dict[str, Any]:
             verification_policy=verification_policy,
         )
 
-    allowlist, scope_error = _validate_scope(args, repo)
+    scope_source = "explicit"
+    if _explicit_scope_was_provided(args):
+        allowlist, scope_error = _validate_scope(args, repo)
+    else:
+        allowlist, scope_error = _infer_scope_from_task(repo, task_text)
+        if allowlist is not None:
+            scope_source = "inferred"
     return _dry_run_plan_result(
         repo=repo,
         git_head=git_head,
@@ -705,6 +821,7 @@ def _codex_staged_dry_run_plan(args: dict[str, Any]) -> dict[str, Any]:
         verification_policy=verification_policy,
         allowlist=allowlist,
         scope_error=scope_error,
+        scope_source=scope_source,
     )
 
 

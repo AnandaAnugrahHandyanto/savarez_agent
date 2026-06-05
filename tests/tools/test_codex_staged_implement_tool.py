@@ -26,6 +26,15 @@ def _clean_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _commit_files(repo: Path, paths: list[str]) -> None:
+    for path in paths:
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# test fixture\n", encoding="utf-8")
+    _git(repo, "add", *paths)
+    _git(repo, "commit", "-m", "add fixture files")
+
+
 def _call(**kwargs):
     defaults = {
         "task": "make a small change",
@@ -270,6 +279,237 @@ def test_dry_run_plan_uncertain_scope_returns_needs_scope_without_runner_call(tm
     assert result["proposed_allowlist"] == {"files": [], "globs": []}
     assert result["next_required_action"] == "provide_explicit_scope"
     assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("task", "expected_files"),
+    [
+        (
+            "tighten terminal tool policy handling",
+            ["tools/terminal_tool.py", "tests/tools/test_terminal_tool.py"],
+        ),
+        (
+            "add process registry Codex metadata coverage",
+            ["tools/process_registry.py", "tests/tools/test_process_registry.py"],
+        ),
+        (
+            "adjust stage runner timeout reporting",
+            ["scripts/runtime/codex_stage_runner.py", "tests/scripts/test_codex_stage_runner.py"],
+        ),
+        (
+            "harden impl guard final-output checks",
+            ["scripts/runtime/codex_impl_guard.py", "tests/scripts/test_codex_impl_guard.py"],
+        ),
+        (
+            "update review guard policy checks",
+            ["scripts/runtime/codex_review_guard.py", "tests/scripts/test_codex_review_guard.py"],
+        ),
+        (
+            "fix review packet summary metadata",
+            ["scripts/runtime/codex_review_packet.py", "tests/scripts/test_codex_review_packet.py"],
+        ),
+    ],
+)
+def test_dry_run_plan_infers_known_template_scope_without_runner_call(
+    tmp_path, monkeypatch, task, expected_files
+):
+    repo = _clean_repo(tmp_path)
+    _commit_files(repo, expected_files)
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(mode="dry_run_plan", workdir=str(repo), task=task)
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "low"
+    assert result["needs_user_confirmation"] is True
+    assert result["resolved_allowlist"] == {"files": expected_files, "globs": []}
+    assert result["proposed_allowlist"] == {"files": expected_files, "globs": []}
+    assert result["proposed_stage_plan"]["slices"][0]["allowed_files"] == expected_files
+    assert result["proposed_stage_plan"]["slices"][0]["allowed_globs"] == []
+    assert result["next_required_action"] == "confirm_inferred_scope_or_execute_with_explicit_scope"
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_dry_run_plan_inferred_missing_files_fail_closed_without_globs(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    _commit_files(repo, ["scripts/runtime/codex_review_guard.py"])
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(mode="dry_run_plan", workdir=str(repo), task="update review guard policy checks")
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "unsupported_template"
+    assert result["proposed_stage_plan"] is None
+    assert result["proposed_allowlist"] == {"files": [], "globs": []}
+    assert result["resolved_allowlist"] == {"files": [], "globs": []}
+    assert result["next_required_action"] == "provide_explicit_scope"
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_dry_run_plan_ambiguous_omitted_scope_returns_needs_scope_without_runner_call(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(mode="dry_run_plan", workdir=str(repo), task="make the runtime safer")
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "needs_scope"
+    assert result["proposed_stage_plan"] is None
+    assert result["proposed_allowlist"] == {"files": [], "globs": []}
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_dry_run_plan_cross_component_omitted_scope_returns_needs_split(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    _commit_files(
+        repo,
+        [
+            "tools/terminal_tool.py",
+            "tests/tools/test_terminal_tool.py",
+            "scripts/runtime/codex_impl_guard.py",
+            "tests/scripts/test_codex_impl_guard.py",
+        ],
+    )
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(
+        mode="dry_run_plan",
+        workdir=str(repo),
+        task="tighten terminal tool policy and harden impl guard",
+    )
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "needs_split"
+    assert result["proposed_stage_plan"] is None
+    assert result["proposed_allowlist"] == {"files": [], "globs": []}
+    assert result["next_required_action"] == "split_task_or_provide_explicit_scope"
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_dry_run_plan_infers_single_existing_docs_path_without_runner_call(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    _commit_files(repo, ["docs/plans/example-plan.md"])
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(
+        mode="dry_run_plan",
+        workdir=str(repo),
+        task="update docs/plans/example-plan.md with Phase 15 notes",
+    )
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "low"
+    assert result["proposed_allowlist"] == {"files": ["docs/plans/example-plan.md"], "globs": []}
+    assert result["proposed_stage_plan"]["slices"][0]["allowed_globs"] == []
+    assert result["next_required_action"] == "confirm_inferred_scope_or_execute_with_explicit_scope"
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_dry_run_plan_rejects_docs_path_traversal_before_inference(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    _commit_files(repo, ["tools/terminal_tool.py"])
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(
+        mode="dry_run_plan",
+        workdir=str(repo),
+        task="update docs/../tools/terminal_tool.py with notes",
+    )
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "unsupported_template"
+    assert result["proposed_stage_plan"] is None
+    assert result["proposed_allowlist"] == {"files": [], "globs": []}
+    assert result["resolved_allowlist"] == {"files": [], "globs": []}
+    assert result["next_required_action"] == "provide_explicit_scope"
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_dry_run_plan_multiple_docs_paths_need_split(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    _commit_files(repo, ["docs/a.md", "docs/b.md"])
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(
+        mode="dry_run_plan",
+        workdir=str(repo),
+        task="update docs/a.md and docs/b.md",
+    )
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "needs_split"
+    assert result["proposed_stage_plan"] is None
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_dry_run_plan_inference_never_outputs_broad_globs(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    _commit_files(repo, ["tools/terminal_tool.py", "tests/tools/test_terminal_tool.py"])
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(mode="dry_run_plan", workdir=str(repo), task="tighten terminal tool policy")
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "low"
+    assert result["resolved_allowlist"]["globs"] == []
+    assert result["proposed_allowlist"]["globs"] == []
+    assert result["proposed_stage_plan"]["slices"][0]["allowed_globs"] == []
     assert calls == []
 
 
