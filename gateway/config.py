@@ -473,6 +473,11 @@ class GatewayConfig:
     # These do not register core handlers or route unknown commands to the agent;
     # they only allow explicit hook subscribers to handle ``command:<name>``.
     command_hook_commands: Dict[str, Any] = field(default_factory=dict)
+
+    # Opt-in local AI Beast orientation hook config. Kept as an untyped mapping
+    # so the gateway can pass explicit, caller-owned roots without adding live
+    # routing, registry, or service semantics here.
+    ai_beast_orientation: Dict[str, Any] = field(default_factory=dict)
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -593,6 +598,7 @@ class GatewayConfig:
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
             "command_hook_commands": self.command_hook_commands,
+            "ai_beast_orientation": self.ai_beast_orientation,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
@@ -642,6 +648,10 @@ class GatewayConfig:
         if not isinstance(command_hook_commands, dict):
             command_hook_commands = {}
 
+        ai_beast_orientation = data.get("ai_beast_orientation", {})
+        if not isinstance(ai_beast_orientation, dict):
+            ai_beast_orientation = {}
+
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
@@ -667,6 +677,7 @@ class GatewayConfig:
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
             command_hook_commands=command_hook_commands,
+            ai_beast_orientation=ai_beast_orientation,
             sessions_dir=sessions_dir,
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
             filter_silence_narration=_coerce_bool(

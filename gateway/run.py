@@ -7937,6 +7937,8 @@ class GatewayRunner:
                 "raw_command": command,
                 "args": raw_args,
                 "raw_args": raw_args,
+                "gateway_config": self.config,
+                "source": source,
             }
             try:
                 hook_results = await self.hooks.emit_collect(
