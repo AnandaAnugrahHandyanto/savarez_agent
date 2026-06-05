@@ -26,9 +26,10 @@ class TestHostHeaderValidator:
     def test_loopback_bind_accepts_loopback_names(self):
         from hermes_cli.web_server import _is_accepted_host
 
-        for bound in ("127.0.0.1", "localhost", "::1"):
+        for bound in ("127.0.0.1", "127.0.0.11", "localhost", "::1"):
             for host_header in (
                 "127.0.0.1", "127.0.0.1:9119",
+                "127.0.0.11", "127.0.0.11:9119",
                 "localhost", "localhost:9119",
                 "[::1]", "[::1]:9119",
             ):
@@ -36,18 +37,26 @@ class TestHostHeaderValidator:
                     f"bound={bound} must accept host={host_header}"
                 )
 
+    def test_loopback_bind_accepts_127_subnet_aliases(self):
+        """Container DNS can bind/callback through non-127.0.0.1 loopback IPs."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        assert _is_accepted_host("localhost:9119", "127.0.0.11")
+        assert _is_accepted_host("127.0.0.42:9119", "127.0.0.11")
+
     def test_loopback_bind_rejects_attacker_hostnames(self):
         """The core rebinding defence: attacker-controlled hosts that
         TTL-flip to 127.0.0.1 must be rejected."""
         from hermes_cli.web_server import _is_accepted_host
 
-        for bound in ("127.0.0.1", "localhost"):
+        for bound in ("127.0.0.1", "127.0.0.11", "localhost"):
             for attacker in (
                 "evil.example",
                 "evil.example:9119",
                 "rebind.attacker.test:80",
                 "localhost.attacker.test",  # subdomain trick
                 "127.0.0.1.evil.test",  # lookalike IP prefix
+                "127.0.0.11.evil.test",  # lookalike non-standard loopback
                 "",  # missing Host
             ):
                 assert not _is_accepted_host(attacker, bound), (

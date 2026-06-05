@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 import asyncio
 import base64
 import binascii
+import ipaddress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hmac
@@ -218,6 +219,17 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _is_loopback_host_value(host: str) -> bool:
+    """True when *host* names the local machine's loopback interface."""
+    normalized = (host or "").strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
 def should_require_auth(host: str, allow_public: bool) -> bool:
     """Return True iff the dashboard OAuth auth gate must be active.
 
@@ -231,7 +243,7 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
     are deliberately treated as PUBLIC — a hostile device on the same LAN is
     exactly the threat model the gate is designed for.
     """
-    return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
+    return (not _is_loopback_host_value(host)) and (not allow_public)
 
 
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
@@ -271,8 +283,8 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
 
     # Loopback bind: accept the loopback names
     bound_lc = bound_host.lower()
-    if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+    if _is_loopback_host_value(bound_lc):
+        return _is_loopback_host_value(host_only)
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc

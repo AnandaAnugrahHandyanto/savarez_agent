@@ -86,6 +86,8 @@ def test_loopback_host_header_validation_still_enforced(client_loopback):
 @pytest.mark.parametrize("host,allow_public,expected", [
     ("127.0.0.1", False, False),
     ("127.0.0.1", True,  False),
+    ("127.0.0.11", False, False),
+    ("127.0.0.11", True,  False),
     ("localhost", False, False),
     ("::1",       False, False),
     ("0.0.0.0",   True,  False),    # --insecure escape hatch
