@@ -353,5 +353,10 @@ def format_directory_for_display() -> str:
 
     lines.append('Use these as the "target" parameter when sending.')
     lines.append('Bare platform name (e.g. "telegram") sends to home channel.')
+    if platforms.get("slack"):
+        lines.append(
+            'Slack: to DM a user who is not listed above, target "slack:U0XXXXXXXX" '
+            '(their Slack user ID) — the DM channel is opened automatically.'
+        )
 
     return "\n".join(lines)
