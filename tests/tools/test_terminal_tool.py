@@ -1,5 +1,7 @@
 """Regression tests for sudo detection and sudo password handling."""
 
+import json
+
 import tools.terminal_tool as terminal_tool
 
 
@@ -170,6 +172,16 @@ def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir("C:\\Users\\Alice\\project\nwhoami")
 
 
+def test_terminal_description_routes_codex_implementation_to_staged_tool():
+    description = terminal_tool.TERMINAL_TOOL_DESCRIPTION
+
+    assert "codex_staged_implement" in description
+    assert "Do NOT call raw `codex-yuna exec`" in description
+    assert "codex_stage_runner.py" in description
+    assert "codex_impl_guard.py" in description
+    assert "codex_review_guard.py" in description
+
+
 def test_codex_review_subcommand_guard_accepts_json_schema_and_last_message():
     command = (
         "codex-yuna exec review --uncommitted --json "
@@ -225,6 +237,82 @@ def test_bare_foreground_codex_exec_gets_background_notify_guidance():
         assert guidance is not None
         assert "background=true" in guidance
         assert "notify_on_complete=true" in guidance
+
+
+def test_bare_codex_impl_launch_is_blocked_even_in_background():
+    commands = (
+        "codex-yuna exec --full-auto 'implement the change'",
+        "codex exec 'implement the change'",
+        "env FOO=bar codex-yuna exec 'implement the change'",
+        "bash -lc 'codex-yuna exec implement the change'",
+        "codex-yuna exec --full-auto 'review and implement the change'",
+        "codex exec 'review the code then fix it'",
+        "codex-yuna exec review and implement the change",
+        "codex exec review then fix it",
+        "codex-yuna exec review and implement the change --json --output-schema /tmp/schema --output-last-message /tmp/final",
+        "codex-yuna exec --full-auto review and implement --json --output-schema /tmp/schema --output-last-message /tmp/final",
+        "codex-yuna exec review --sandbox read-only --json --output-schema /tmp/schema --output-last-message /tmp/final 'review then fix it'",
+    )
+
+    for command in commands:
+        error = terminal_tool._codex_unguarded_impl_launch_error(command)
+
+        assert error is not None
+        assert "unguarded Codex implementation" in error
+        assert "codex_staged_implement" in error
+        assert "allowed_files" in error
+        assert "allowed_globs" in error
+        assert "codex_stage_runner.py" in error
+        assert "codex_impl_guard.py" in error
+        assert "codex_review_guard.py" in error
+
+
+def test_bare_read_only_codex_review_launch_is_not_blocked_as_impl():
+    commands = (
+        "codex-yuna exec --sandbox read-only --json --output-schema /tmp/schema --output-last-message /tmp/final --color never 'review current changes'",
+        "codex-yuna exec --sandbox=read-only --json --output-schema /tmp/schema --output-last-message /tmp/final --color=never 'review current changes'",
+        "codex-yuna exec review --sandbox read-only --json --output-schema /tmp/schema --output-last-message /tmp/final 'review current changes'",
+    )
+
+    for command in commands:
+        assert terminal_tool._codex_unguarded_impl_launch_error(command) is None
+
+
+def test_codex_impl_guard_wrappers_are_not_blocked_as_unguarded_impl():
+    commands = (
+        "python scripts/runtime/codex_impl_guard.py --prompt 'implement one slice'",
+        "python scripts/runtime/codex_stage_runner.py --plan-file /tmp/stage-plan.json",
+        "python scripts/runtime/codex_review_guard.py --prompt 'review current changes'",
+        "codex-yuna exec --help",
+        "codex --version",
+    )
+
+    for command in commands:
+        assert terminal_tool._codex_unguarded_impl_launch_error(command) is None
+
+
+def test_terminal_tool_blocks_background_bare_codex_impl_before_execution():
+    result = json.loads(terminal_tool.terminal_tool(
+        command="codex-yuna exec --full-auto 'implement the change'",
+        background=True,
+        pty=True,
+        notify_on_complete=True,
+    ))
+
+    assert result["status"] == "blocked"
+    assert result["code"] == "codex_unguarded_impl_blocked"
+    assert result["recommended_action"] == "use_codex_staged_implement"
+    assert "已拦截裸 Codex 开发调用" in result["error"]
+    assert "codex_staged_implement" in result["error"]
+    assert "allowed_files" in result["error"]
+    assert "allowed_globs" in result["error"]
+    assert "codex_stage_runner.py" in result["error"]
+    assert "codex_impl_guard.py" in result["error"]
+    assert "codex_review_guard.py --prompt <TEXT>" in result["error"]
+    assert "新会话或 runtime 重载" in result["error"]
+    assert result["user_message_zh"] == result["error"]
+    assert "unguarded Codex implementation" in result["technical_detail"]
+    assert "codex_staged_implement" in result["technical_detail"]
 
 
 def test_bare_codex_after_controlled_wrapper_still_gets_guidance():
