@@ -211,7 +211,7 @@ class TestJobCRUD:
         jobs_file.parent.mkdir(parents=True, exist_ok=True)
         jobs_file.write_text('"not an object"', encoding="utf-8")
 
-        with pytest.raises(RuntimeError, match="top-level is str, expected object"):
+        with pytest.raises(RuntimeError, match=r"expected \{'jobs': \[\.\.\.\]\}, got str"):
             load_jobs()
 
     def test_create_and_get(self, tmp_cron_dir):
