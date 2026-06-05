@@ -456,6 +456,7 @@ class TestSlackSocketWatchdog:
     async def test_watchdog_reconnects_when_transport_reports_disconnected(self):
         adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
         adapter._socket_watchdog_interval_s = 0.01
+        adapter._reconnect_grace_period_s = 0.05  # short grace for testing
         factory, instances = self._make_fake_handler_factory()
 
         with contextlib.ExitStack() as stack:
@@ -468,7 +469,8 @@ class TestSlackSocketWatchdog:
 
                 instances[0].client.is_connected = lambda: False
 
-                for _ in range(40):
+                # Wait longer than the grace period so the watchdog intervenes.
+                for _ in range(80):
                     if len(instances) >= 2:
                         break
                     await asyncio.sleep(0.01)
@@ -476,6 +478,69 @@ class TestSlackSocketWatchdog:
                 assert len(instances) >= 2, "watchdog did not heal dead transport"
                 assert instances[0].closed is True
                 assert adapter._handler is instances[-1]
+            finally:
+                await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_watchdog_respects_grace_period_before_reconnect(self):
+        """Watchdog must NOT restart while SDK auto-reconnect is in progress."""
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._socket_watchdog_interval_s = 0.01
+        adapter._reconnect_grace_period_s = 10.0  # long grace — never expires in test
+        factory, instances = self._make_fake_handler_factory()
+
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_stack(factory):
+                stack.enter_context(p)
+
+            try:
+                assert await adapter.connect() is True
+                assert len(instances) == 1
+
+                # Simulate transport disconnect.
+                instances[0].client.is_connected = lambda: False
+
+                # Wait well beyond the watchdog interval but within grace period.
+                for _ in range(40):
+                    await asyncio.sleep(0.01)
+
+                # The watchdog must NOT have created a new handler yet.
+                assert len(instances) == 1, (
+                    "watchdog restarted handler during grace period"
+                )
+            finally:
+                await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_watchdog_stand_down_when_sdk_recovers(self):
+        """Watchdog must clear its timer when SDK reconnects on its own."""
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._socket_watchdog_interval_s = 0.01
+        adapter._reconnect_grace_period_s = 0.05
+        factory, instances = self._make_fake_handler_factory()
+
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_stack(factory):
+                stack.enter_context(p)
+
+            try:
+                assert await adapter.connect() is True
+                assert len(instances) == 1
+
+                # Simulate transient disconnect.
+                instances[0].client.is_connected = lambda: False
+                await asyncio.sleep(0.03)
+
+                # SDK recovers before grace period expires.
+                instances[0].client.is_connected = lambda: True
+                await asyncio.sleep(0.1)
+
+                # Watchdog should NOT have restarted — only 1 handler instance.
+                assert len(instances) == 1, (
+                    "watchdog restarted after SDK recovered"
+                )
+                # Timer should be cleared.
+                assert adapter._disconnect_detected_at is None
             finally:
                 await adapter.disconnect()
 
