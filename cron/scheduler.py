@@ -279,7 +279,8 @@ def _looks_like_completion_watcher(job: dict) -> bool:
 
 def _terminal_completion_watcher_report(job: dict, output: str, final_response: str) -> bool:
     """Return True when a recurring completion watcher has reported terminal state."""
-    if job.get("schedule", {}).get("kind") not in {"cron", "interval"}:
+    schedule = job.get("schedule") or {}
+    if not isinstance(schedule, dict) or schedule.get("kind") not in {"cron", "interval"}:
         return False
     if not _looks_like_completion_watcher(job):
         return False
