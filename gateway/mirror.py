@@ -65,6 +65,7 @@ def mirror_to_session(
         }
 
         _append_to_sqlite(session_id, mirror_msg)
+        _append_to_jsonl(session_id, mirror_msg)
 
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
@@ -166,3 +167,20 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
     finally:
         if db is not None:
             db.close()
+
+
+def _append_to_jsonl(session_id: str, message: dict) -> None:
+    """Append a message to the JSONL session transcript file.
+
+    Writes a newline-delimited JSON record so JSONL-based readers (session
+    search, transcript viewer, context compressor) see the mirrored message.
+    """
+    try:
+        import json as _json
+        jsonl_path = _SESSIONS_DIR / session_id / "transcript.jsonl"
+        if not jsonl_path.parent.exists():
+            return
+        with open(jsonl_path, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(message, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.debug("Mirror JSONL write failed: %s", e)
