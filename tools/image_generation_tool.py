@@ -887,24 +887,40 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts. The underlying "
-        "backend (FAL, OpenAI, etc.) and model are user-configured and not "
-        "selectable by the agent. Returns either a URL or an absolute file "
-        "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "Generate or edit high-quality images. The underlying backend "
+        "(FAL, OpenAI, Gemini, etc.) and model are user-configured. When "
+        "`input_image` or `reference_images` are provided, capable providers "
+        "receive the actual image bytes/URLs for editing or reference-guided "
+        "generation. Returns either a URL or an absolute file path in the "
+        "`image` field; display it with markdown ![description](url-or-path) "
+        "and the gateway will deliver it."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "The text prompt describing the desired image. Be detailed and descriptive.",
+                "description": "The text prompt describing the desired image/edit. Be detailed and descriptive.",
             },
             "aspect_ratio": {
                 "type": "string",
                 "enum": list(VALID_ASPECT_RATIOS),
-                "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
+                "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 9:16 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "input_image": {
+                "type": "string",
+                "description": "Optional local path, URL, or data URI for an image to edit or use as the primary reference.",
+            },
+            "reference_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional additional reference image paths, URLs, or data URIs. Requires a provider that supports image inputs.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["generate", "edit"],
+                "description": "Optional intent hint. If omitted, providers auto-detect edit/reference mode from image inputs.",
             },
         },
         "required": ["prompt"],
@@ -951,7 +967,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, **image_kwargs):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -961,7 +977,8 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     ``"fal"`` itself, which now resolves to the
     ``plugins/image_gen/fal/`` plugin (the plugin re-enters this module's
     pipeline via ``_it`` indirection so behavior is identical to the
-    direct call, just routed through the registry).
+    direct call, just routed through the registry). Image/reference kwargs are
+    forwarded so capable providers can perform actual edit/reference workflows.
     """
     configured = _read_configured_image_provider()
     if not configured:
@@ -1006,6 +1023,9 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
 
     try:
         kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+        for key, value in image_kwargs.items():
+            if value not in (None, "", []):
+                kwargs[key] = value
         if configured_model:
             kwargs["model"] = configured_model
         result = provider.generate(**kwargs)
@@ -1035,12 +1055,25 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    image_kwargs = {
+        "input_image": args.get("input_image"),
+        "image_url": args.get("image_url"),
+        "reference_images": args.get("reference_images"),
+        "reference_image_urls": args.get("reference_image_urls"),
+        "mode": args.get("mode"),
+    }
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, **image_kwargs)
     if dispatched is not None:
         return dispatched
+
+    if any(value not in (None, "", []) for value in image_kwargs.values()):
+        return tool_error(
+            "image inputs require an image_gen provider with edit/reference support; "
+            "set image_gen.provider to 'gemini' or another capable backend"
+        )
 
     return image_generate_tool(
         prompt=prompt,

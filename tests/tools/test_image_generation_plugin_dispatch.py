@@ -15,11 +15,14 @@ def _reset_registry():
 
 
 class _FakeCodexProvider(ImageGenProvider):
+    last_kwargs = None
+
     @property
     def name(self) -> str:
         return "codex"
 
     def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        type(self).last_kwargs = kwargs
         return {
             "success": True,
             "image": "/tmp/codex-test.png",
@@ -51,6 +54,34 @@ class TestPluginDispatch:
         assert payload["provider"] == "codex"
         assert payload["image"] == "/tmp/codex-test.png"
         assert payload["aspect_ratio"] == "square"
+
+    def test_dispatch_forwards_image_input_kwargs(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: codex\n")
+        provider = _FakeCodexProvider()
+        _FakeCodexProvider.last_kwargs = None
+
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: provider if name == "codex" else None)
+
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "turn this into a campaign hero shot",
+            "landscape",
+            input_image="/tmp/source.png",
+            reference_images=["https://example.com/ref.png"],
+            mode="edit",
+        )
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is True
+        assert _FakeCodexProvider.last_kwargs["input_image"] == "/tmp/source.png"
+        assert _FakeCodexProvider.last_kwargs["reference_images"] == ["https://example.com/ref.png"]
+        assert _FakeCodexProvider.last_kwargs["mode"] == "edit"
 
     def test_dispatch_reports_missing_registered_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
