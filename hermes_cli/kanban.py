@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_feedback as kfb
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +444,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_tail.add_argument("--interval", type=float, default=1.0)
 
     # --- dispatch ---
+    p_review = sub.add_parser("review", help="Trigger a review run for a task")
+
+    p_review.add_argument("task_id", help="Task ID to review")
+
+    p_review.add_argument(
+        "--worktree", "-w", default=None,
+        help="Worktree path for git diff (default: current directory)",
+    )
+
+    p_qa = sub.add_parser("qa", help="Trigger a QA run for a task")
+
+    p_qa.add_argument("task_id", help="Task ID to QA-check")
+
+    p_qa.add_argument(
+        "--worktree", "-w", default=None,
+        help="Worktree path (default: current directory)",
+    )
+
     p_disp = sub.add_parser(
         "dispatch",
         help="One dispatcher pass: reclaim stale, promote ready, spawn workers",
@@ -726,6 +745,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         "block":    _cmd_block,
         "unblock":  _cmd_unblock,
         "archive":  _cmd_archive,
+        "review":   _cmd_review,
+        "qa":       _cmd_qa,
         "tail":     _cmd_tail,
         "dispatch": _cmd_dispatch,
         "daemon":   _cmd_daemon,
@@ -1659,6 +1680,18 @@ def _cmd_archive(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _cmd_review(args: argparse.Namespace) -> int:
+    summary = kfb.trigger_review(args.task_id, worktree_path=args.worktree)
+    print(summary)
+    return 0
+
+
+def _cmd_qa(args: argparse.Namespace) -> int:
+    summary = kfb.trigger_qa(args.task_id, worktree_path=args.worktree)
+    print(summary)
+    return 0
+
+
 def _cmd_tail(args: argparse.Namespace) -> int:
     last_id = 0
     print(f"Tailing events for {args.task_id}. Ctrl-C to stop.")
@@ -1685,6 +1718,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             max_spawn=args.max,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
         )
+        if not args.dry_run:
+            for tid, _who, workspace in res.spawned:
+                kfb.emit_diff_event(conn, tid, workspace or None)
     if getattr(args, "json", False):
         print(json.dumps({
             "reclaimed": res.reclaimed,

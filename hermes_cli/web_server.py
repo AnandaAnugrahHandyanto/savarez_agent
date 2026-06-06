@@ -6975,6 +6975,50 @@ def _ws_request_is_allowed(ws: "WebSocket") -> bool:
 _event_channels: dict[str, set] = {}
 _event_lock = asyncio.Lock()
 
+async def _kanban_watcher(task_id: str, channel: str) -> None:
+    """Poll kanban task_events for a task and broadcast as tool.complete events."""
+    try:
+        import hermes_cli.kanban_db as kdb  # local import — not all deployments need it
+    except Exception:
+        return
+    last_id = 0
+    while True:
+        await asyncio.sleep(2)
+        if not _event_channels.get(channel):
+            break
+        try:
+            conn = kdb.connect()
+            try:
+                rows = conn.execute(
+                    "SELECT id, kind, payload FROM task_events"
+                    " WHERE task_id=? AND id>?"
+                    " AND kind IN ('diff','review_result','qa_result')"
+                    " ORDER BY id",
+                    (task_id, last_id),
+                ).fetchall()
+            finally:
+                conn.close()
+        except Exception:
+            _log.exception("kanban_watcher: DB read failed for task %s", task_id)
+            continue
+        for row in rows:
+            last_id = row[0]
+            raw = row[2] or "{}"
+            payload_obj = {"tool_id": f"kanban_{row[0]}", "name": row[1], "summary": raw}
+            try:
+                diff_data = json.loads(raw)
+                if row[1] == "diff" and isinstance(diff_data, dict):
+                    ud = diff_data.get("unified_diff") or diff_data.get("diff")
+                    if ud:
+                        payload_obj["inline_diff"] = ud
+            except Exception:
+                pass
+            event = json.dumps(
+                {"jsonrpc": "2.0", "method": "event",
+                 "params": {"type": "tool.complete", "payload": payload_obj}}
+            )
+            await _broadcast_event(channel, event)
+
 
 def _resolve_chat_argv(
     resume: Optional[str] = None,
@@ -7261,6 +7305,10 @@ async def events_ws(ws: WebSocket) -> None:
 
     async with _event_lock:
         _event_channels.setdefault(channel, set()).add(ws)
+
+    task_id = ws.query_params.get("task_id", "")
+    if task_id:
+        asyncio.create_task(_kanban_watcher(task_id, channel))
 
     try:
         while True:
