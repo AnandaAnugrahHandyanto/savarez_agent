@@ -29,7 +29,14 @@ import {
   unpinSession
 } from '../store/layout'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, normalizeProfileKey, refreshActiveProfile } from '../store/profile'
+import {
+  $activeGatewayProfile,
+  $freshSessionRequest,
+  $profileScope,
+  ALL_PROFILES,
+  normalizeProfileKey,
+  refreshActiveProfile
+} from '../store/profile'
 import {
   $activeSessionId,
   $currentCwd,
@@ -139,6 +146,7 @@ export function DesktopController() {
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const terminalTakeover = useStore($terminalTakeover)
   const panesFlipped = useStore($panesFlipped)
+  const profileScope = useStore($profileScope)
 
   const routedSessionId = routeSessionId(location.pathname)
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
@@ -262,7 +270,8 @@ export function DesktopController() {
       // Unified cross-profile list (served read-only off each profile's
       // state.db; no per-profile backend is spawned). Single-profile users get
       // the same rows tagged profile="default".
-      const result = await listAllProfileSessions(limit, 1)
+      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+      const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile)
 
       if (refreshSessionsRequestRef.current === requestId) {
         setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
@@ -274,7 +283,7 @@ export function DesktopController() {
         setSessionsLoading(false)
       }
     }
-  }, [])
+  }, [profileScope])
 
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()
