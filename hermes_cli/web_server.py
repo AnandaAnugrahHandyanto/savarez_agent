@@ -730,6 +730,43 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
+def _scan_gateway_pid_in_container() -> Optional[int]:
+    """Find a live gateway PID — container deployment fallback.
+
+    In Docker/Kubernetes deployments where the gateway runs as the container
+    entrypoint, ``gateway.pid`` / ``gateway.lock`` files are never reliably
+    written, so :func:`get_running_pid` returns ``None`` even when the
+    gateway is alive.  Reuse the canonical gateway process scanner instead of
+    duplicating a narrower ``pgrep`` pattern here; the shared scanner already
+    covers supported entrypoints such as ``hermes gateway run``,
+    ``python -m hermes_cli.main gateway run``, and
+    ``python /path/hermes_cli/main.py gateway run``.
+
+    Only runs when :func:`is_container` reports True, so non-container hosts
+    are unaffected.
+    """
+    try:
+        from hermes_constants import is_container
+    except Exception:
+        return None
+    if not is_container():
+        return None
+    try:
+        from hermes_cli.gateway import find_gateway_pids
+
+        pids = find_gateway_pids()
+    except Exception:
+        return None
+
+    self_pid = os.getpid()
+    for pid in pids:
+        if pid == self_pid:
+            continue
+        if isinstance(pid, int) and pid > 0:
+            return pid
+    return None
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
@@ -739,6 +776,11 @@ async def get_status():
     # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
     # dashboard works when the gateway runs in a separate container.
     gateway_pid = get_running_pid()
+    if gateway_pid is None:
+        # Docker/Kubernetes fallback: get_running_pid() depends on pid/lock
+        # files that aren't written in the PID-1 entrypoint pattern.  See
+        # _scan_gateway_pid_in_container() for the full rationale.
+        gateway_pid = _scan_gateway_pid_in_container()
     gateway_running = gateway_pid is not None
     remote_health_body: dict | None = None
 
