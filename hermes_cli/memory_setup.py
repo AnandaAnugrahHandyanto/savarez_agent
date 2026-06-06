@@ -97,16 +97,16 @@ def _install_dependencies(provider_name: str) -> None:
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
     import shutil
-    uv_path = shutil.which("uv")
-    if not uv_path:
-        print(f"  ⚠ uv not found — cannot install dependencies")
-        print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
+    pipx_path = shutil.which("pipx")
+    if not pipx_path:
+        print(f"  ⚠ pipx not found — cannot install dependencies")
+        print(f"  Install pipx: python3 -m pip install --user pipx")
         print(f"  Then re-run: hermes memory setup")
         return
 
     try:
         subprocess.run(
-            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing,
+            [pipx_path, "install", "--python", sys.executable] + missing,
             check=True, timeout=120,
             capture_output=True,
         )
@@ -116,10 +116,10 @@ def _install_dependencies(provider_name: str) -> None:
         stderr = (e.stderr or b"").decode()[:200]
         if stderr:
             print(f"    {stderr}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(f"  Run manually: pipx install --python {sys.executable} {' '.join(missing)}")
     except Exception as e:
         print(f"  ⚠ Install failed: {e}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(f"  Run manually: pipx install --python {sys.executable} {' '.join(missing)}")
 
     # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])
