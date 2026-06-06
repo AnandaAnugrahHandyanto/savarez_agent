@@ -2832,6 +2832,64 @@ class TestVoiceTTSPlayback:
 
         assert runner._voice_reply_context_prompt(event) == ""
 
+    def test_is_voice_reply_turn_detects_enabled_voice_messages(self):
+        """Only opted-in voice messages use the low-latency voice route."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        runner._voice_mode["telegram:ch1"] = "voice_only"
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="ch1")
+
+        assert runner._is_voice_reply_turn(
+            MessageEvent(source=source, text="test", message_type=MessageType.VOICE)
+        ) is True
+        assert runner._is_voice_reply_turn(
+            MessageEvent(source=source, text="test", message_type=MessageType.TEXT)
+        ) is False
+
+    def test_voice_fast_reply_route_disabled_by_default(self):
+        """Normal installs keep existing Hermes runtime unless config opts in."""
+        runner = self._make_runner()
+
+        assert runner._voice_fast_reply_route({"voice": {}}) is None
+
+    def test_voice_fast_reply_route_uses_configured_fast_runtime(self, monkeypatch):
+        """voice.fast_reply can route voice notes to a fast, tool-free model."""
+        from hermes_cli import runtime_provider
+        runner = self._make_runner()
+
+        def fake_resolve_runtime_provider(**kwargs):
+            assert kwargs["requested"] == "google-gemini-cli"
+            return {
+                "api_key": "key",
+                "base_url": "https://example.invalid/v1",
+                "provider": "google-gemini-cli",
+                "api_mode": "openai",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            }
+
+        monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", fake_resolve_runtime_provider)
+
+        route = runner._voice_fast_reply_route({
+            "voice": {
+                "fast_reply": {
+                    "enabled": True,
+                    "provider": "google-gemini-cli",
+                    "model": "gemini-3-flash-preview",
+                    "max_turns": 3,
+                    "max_tokens": 512,
+                }
+            }
+        })
+
+        assert route["model"] == "gemini-3-flash-preview"
+        assert route["runtime"]["provider"] == "google-gemini-cli"
+        assert route["runtime"]["max_tokens"] == 512
+        assert route["enabled_toolsets"] == []
+        assert route["max_iterations"] == 3
+
 
 class TestUDPKeepalive:
     """UDP keepalive prevents Discord from dropping the voice session."""
