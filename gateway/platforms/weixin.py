@@ -1792,7 +1792,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
             # Scan for sticker tags (%emotion%) before text delivery.
             from gateway.sticker_middleware import scan_sticker_tags
-            final_content, sticker_path = scan_sticker_tags(final_content)
+            final_content, sticker_path = scan_sticker_tags(final_content, platform="weixin")
 
             # Deliver text content.
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]

@@ -1776,6 +1776,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        # Scan for sticker tags (%emotion%) before text delivery.
+        from gateway.sticker_middleware import scan_sticker_tags
+        content, sticker_path = scan_sticker_tags(content, platform="feishu")
+
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
@@ -1816,6 +1820,13 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 last_response = response
+
+            # Deliver sticker image if tag was matched.
+            if sticker_path:
+                try:
+                    await self.send_image_file(chat_id=chat_id, image_path=sticker_path, metadata=metadata)
+                except Exception as exc:
+                    logger.warning("[Feishu] sticker delivery failed for %s: %s", sticker_path, exc)
 
             return self._finalize_send_result(last_response, "send failed")
         except Exception as exc:

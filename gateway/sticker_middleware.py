@@ -1,5 +1,5 @@
 """
-Sticker tag middleware for Weixin platform.
+Sticker tag middleware for Weixin and Feishu platforms.
 
 Scans LLM response text for %emotion% tags, selects a random sticker image
 from the corresponding mood directory, and returns cleaned text + image path.
@@ -8,9 +8,8 @@ Design: LLM embeds tags like %愉快% in its reply. The gateway send layer
 intercepts, strips the tag, and optionally sends a sticker image.
 This avoids the LLM tool-calling loop that caused repeated speech issues.
 
-Two sticker sources (auto-discovered):
-  1. ~/.hermes/stickers/{mood}/     — new directory structure (subdirs)
-  2. ~/.hermes/output/stickers/     — old flat files (mood_N.ext)
+Sticker source: ~/.hermes/stickers/{mood}/ (subdirectories by emotion category)
+
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ STICKER_DIR = os.path.expanduser("~/.hermes/stickers")
 TAG_PATTERN = re.compile(r"%([一-鿿]+)%")
 
 # Probability of actually sending a sticker (0.0 = never, 1.0 = always)
-SEND_PROBABILITY = 0.5
+SEND_PROBABILITY = 1.0
 
 
 def _discover_moods() -> dict[str, list[str]]:
@@ -57,7 +56,7 @@ def _discover_moods() -> dict[str, list[str]]:
     return moods
 
 
-def scan_sticker_tags(text: str) -> Tuple[str, Optional[str]]:
+def scan_sticker_tags(text: str, platform: str = "") -> Tuple[str, Optional[str]]:
     """
     Scan text for %emotion% sticker tags.
 
@@ -67,6 +66,12 @@ def scan_sticker_tags(text: str) -> Tuple[str, Optional[str]]:
     If a valid tag is found and a sticker image exists, there is a 50% chance
     the sticker path is returned. The tag is always stripped from the text.
     Mood directories are discovered dynamically — no hardcoded mapping.
+
+    Args:
+        text: LLM response text to scan.
+        platform: Platform name (e.g. "weixin", "feishu"). When "weixin",
+                  GIF files are excluded since WeChat does not support
+                  animated images.
     """
     match = TAG_PATTERN.search(text)
     if not match:
@@ -90,6 +95,16 @@ def scan_sticker_tags(text: str) -> Tuple[str, Optional[str]]:
         logger.debug("No stickers found for tag: %s (available: %s)", tag, list(moods.keys()))
         cleaned = TAG_PATTERN.sub("", text).strip()
         return cleaned, None
+
+    # WeChat does not support animated images — exclude GIF files
+    if platform == "weixin":
+        static_files = [f for f in files if not f.lower().endswith(".gif")]
+        if static_files:
+            files = static_files
+        else:
+            logger.debug("No static stickers for tag %s on weixin (all GIF)", tag)
+            cleaned = TAG_PATTERN.sub("", text).strip()
+            return cleaned, None
 
     sticker_path = random.choice(files)
 
