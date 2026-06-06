@@ -133,6 +133,88 @@ class TestFlushAfterCompression:
             )
 
 
+class TestFlushCursorResetOnRotationFailure:
+    """Regression: the flush cursor must be reset the instant the session id
+    rotates, not only after the (fallible) create_session/title/system-prompt
+    DB calls succeed.
+
+    Before the fix, ``_last_flushed_db_idx = 0`` was the last statement in the
+    rotation try-block.  If any DB call after the id rotation raised (lock
+    contention, disk full, schema drift), the except clause merely logged and
+    the cursor kept its stale pre-compression value.  Because the compressed
+    transcript is shorter than that index, the subsequent flush wrote
+    ``messages[stale_idx:]`` — i.e. nothing — and the entire compressed
+    conversation was silently lost from the canonical SQLite store.
+    """
+
+    def _make_agent(self, session_db):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            from run_agent import AIAgent
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                session_db=session_db,
+                session_id="original-session",
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        return agent
+
+    def test_cursor_reset_even_when_post_rotation_db_call_fails(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            db.create_session(session_id="original-session", source="test")
+
+            agent = self._make_agent(db)
+            # Skip the just-in-time aux-provider feasibility probe.
+            agent._compression_feasibility_checked = True
+            agent._session_db_created = True
+
+            # The compressor returns a short transcript; we don't exercise the
+            # real LLM summariser here, only the session-rotation bookkeeping.
+            compressed_messages = [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary..."},
+                {"role": "assistant", "content": "continuing..."},
+                {"role": "user", "content": "new question"},
+            ]
+            agent.context_compressor.compress = lambda *a, **k: list(compressed_messages)
+
+            # Stale cursor from the long pre-compression history on the old
+            # session — large enough that messages[stale:] would be empty.
+            agent._last_flushed_db_idx = 200
+
+            # Inject a DB hiccup AFTER the id has rotated and the new row was
+            # created, mirroring a transient failure on the system-prompt write.
+            def _boom(*a, **k):
+                raise RuntimeError("simulated transient DB error")
+
+            with patch.object(db, "update_system_prompt", side_effect=_boom):
+                from agent.conversation_compression import compress_context
+
+                compressed, _sp = compress_context(
+                    agent,
+                    [{"role": "user", "content": f"m{i}"} for i in range(200)],
+                    "system prompt",
+                    approx_tokens=100_000,
+                )
+
+            # The id rotated despite the failure...
+            assert agent.session_id != "original-session"
+            # ...and the cursor was reset so the compressed transcript will be
+            # re-flushed to the new (empty) session instead of being skipped.
+            assert agent._last_flushed_db_idx == 0
+
+            # Prove the end-to-end consequence: a flush now persists the whole
+            # compressed transcript to the new session.
+            agent._flush_messages_to_session_db(compressed, None)
+            rows = db.get_messages(agent.session_id)
+            assert len(rows) == len(compressed_messages)
+
+
 # ---------------------------------------------------------------------------
 # Part 2: Gateway-side — history_offset after session split
 # ---------------------------------------------------------------------------
