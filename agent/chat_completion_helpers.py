@@ -674,8 +674,10 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         _prefs["sort"] = agent.provider_sort
     if agent.provider_require_parameters:
         _prefs["require_parameters"] = True
-    if agent.provider_data_collection:
+    if getattr(agent, "provider_data_collection", None):
         _prefs["data_collection"] = agent.provider_data_collection
+    if agent.provider_allow_fallbacks is not None:
+        _prefs["allow_fallbacks"] = agent.provider_allow_fallbacks
 
     # Claude max-output override on aggregators
     _ant_max = None

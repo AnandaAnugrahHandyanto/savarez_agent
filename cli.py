@@ -3322,6 +3322,7 @@ class HermesCLI:
         self._providers_order = pr.get("order")
         self._provider_require_params = pr.get("require_parameters", False)
         self._provider_data_collection = pr.get("data_collection")
+        self._provider_allow_fallbacks = pr.get("allow_fallbacks", True)
 
         # OpenRouter Pareto Code router knob — coding-score floor (0.0-1.0).
         # Only applied when model.model == "openrouter/pareto-code".
@@ -5197,6 +5198,7 @@ class HermesCLI:
                 provider_sort=self._provider_sort,
                 provider_require_parameters=self._provider_require_params,
                 provider_data_collection=self._provider_data_collection,
+                provider_allow_fallbacks=self._provider_allow_fallbacks,
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id,
                 platform="cli",
@@ -9318,6 +9320,7 @@ class HermesCLI:
                     provider_sort=self._provider_sort,
                     provider_require_parameters=self._provider_require_params,
                     provider_data_collection=self._provider_data_collection,
+                    provider_allow_fallbacks=self._provider_allow_fallbacks,
                     openrouter_min_coding_score=self._openrouter_min_coding_score,
                     fallback_model=self._fallback_model,
                 )
