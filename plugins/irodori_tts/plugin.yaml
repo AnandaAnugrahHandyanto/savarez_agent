@@ -1,0 +1,15 @@
+name: irodori-tts
+version: 0.1.0
+description: Local Irodori TTS provider backed by the Windows script harness.
+author: HermesAgent
+kind: backend
+platforms:
+  - windows
+entrypoint: plugins.irodori_tts
+provides_tools:
+  - irodori_tts_status
+  - irodori_tts_synthesize
+provides_cli:
+  - irodori-tts
+provides_tts_providers:
+  - irodori

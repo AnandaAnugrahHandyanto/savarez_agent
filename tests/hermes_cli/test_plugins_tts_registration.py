@@ -109,10 +109,13 @@ class TestRegisterTTSProvider:
             mgr = PluginManager()
             mgr.discover_and_load()
 
-        # Plugin loaded (register returned normally), but registry empty.
+        # Plugin loaded (register returned normally), but the invalid entry is absent.
         assert mgr._plugins["bad-tts-plugin"].enabled is True
         assert tts_registry.get_provider("not a provider") is None
-        assert tts_registry.list_providers() == []
+        provider_names = {
+            getattr(provider, "name", "") for provider in tts_registry.list_providers()
+        }
+        assert "not a provider" not in provider_names
         assert "does not inherit from TTSProvider" in caplog.text
 
         tts_registry._reset_for_tests()
