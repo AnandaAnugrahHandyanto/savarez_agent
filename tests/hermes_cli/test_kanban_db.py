@@ -650,6 +650,57 @@ def test_complete_records_result(kanban_home):
     assert task.completed_at is not None
 
 
+def test_complete_repairs_leaked_working_storage_status(kanban_home):
+    """Canonical live ``working`` must not strand an otherwise active run."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        claimed = kb.claim_task(conn, t, claimer="host:worker")
+        assert claimed is not None
+        active = kb.get_task(conn, t)
+        assert active is not None
+        run_id = active.current_run_id
+        conn.execute("UPDATE tasks SET status = 'working' WHERE id = ?", (t,))
+        conn.commit()
+
+        assert kb.complete_task(
+            conn, t, result="done", expected_run_id=run_id,
+        )
+        task = kb.get_task(conn, t)
+        run = kb.list_runs(conn, t)[-1]
+
+    assert task.status == "done"
+    assert run.outcome == "completed"
+
+
+def test_storage_status_for_request_maps_live_aliases_without_persisting_them(kanban_home):
+    assert kb.storage_status_for_request("working") == "ready"
+    assert kb.storage_status_for_request("waiting") == "todo"
+    assert kb.storage_status_for_request("dormant") == "triage"
+    assert kb.storage_status_for_request("blocked") == "blocked"
+    assert kb.storage_status_for_request("ready") == "ready"
+    with pytest.raises(ValueError, match="unknown status"):
+        kb.storage_status_for_request("banana")
+
+
+def test_block_repairs_leaked_working_storage_status(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        claimed = kb.claim_task(conn, t, claimer="host:worker")
+        assert claimed is not None
+        active = kb.get_task(conn, t)
+        assert active is not None
+        run_id = active.current_run_id
+        conn.execute("UPDATE tasks SET status = 'working' WHERE id = ?", (t,))
+        conn.commit()
+
+        assert kb.block_task(conn, t, reason="need human", expected_run_id=run_id)
+        task = kb.get_task(conn, t)
+        run = kb.list_runs(conn, t)[-1]
+
+    assert task.status == "blocked"
+    assert run.outcome == "blocked"
+
+
 def test_block_then_unblock(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")

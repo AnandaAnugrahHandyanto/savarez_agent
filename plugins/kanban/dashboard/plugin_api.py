@@ -810,7 +810,11 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 
         # --- status -------------------------------------------------------
         if payload.status is not None:
-            s = payload.status
+            requested_status = payload.status
+            try:
+                s = kanban_db.storage_status_for_request(requested_status)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"unknown status: {requested_status}")
             ok = True
             if s == "done":
                 ok = kanban_db.complete_task(
@@ -841,7 +845,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             elif s in ("todo", "triage", "scheduled"):
                 ok = _set_status_direct(conn, task_id, s)
             else:
-                raise HTTPException(status_code=400, detail=f"unknown status: {s}")
+                raise HTTPException(status_code=400, detail=f"unknown status: {requested_status}")
             if not ok:
                 # For ``ready``, name the blocking parent(s) so the dashboard
                 # can render an actionable toast instead of a silent no-op.
@@ -967,12 +971,16 @@ def _set_status_direct(
     structured complete/block/unblock/archive verbs (e.g. todo<->ready,
     running<->ready). Appends a ``status`` event row for the live feed.
 
+    Canonical live-status requests are normalized before storage writes so the
+    dashboard cannot persist ``working|waiting|dormant`` into ``tasks.status``.
+
     When this transitions OFF ``running`` to anything other than the
     terminal verbs above (which own their own run closing), we close the
     active run with outcome='reclaimed' so attempt history isn't
     orphaned. ``running -> ready`` via drag-drop is the common case
     (user yanking a stuck worker back to the queue).
     """
+    new_status = kanban_db.storage_status_for_request(new_status)
     with kanban_db.write_txn(conn):
         # Snapshot current state so we know whether to close a run.
         prev = conn.execute(
@@ -1167,7 +1175,13 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                     if not kanban_db.archive_task(conn, tid):
                         entry.update(ok=False, error="archive refused")
                 if payload.status is not None and not payload.archive:
-                    s = payload.status
+                    requested_status = payload.status
+                    try:
+                        s = kanban_db.storage_status_for_request(requested_status)
+                    except ValueError:
+                        entry.update(ok=False, error=f"unknown status {requested_status!r}")
+                        results.append(entry)
+                        continue
                     if s == "done":
                         ok = kanban_db.complete_task(
                             conn, tid,
@@ -1198,7 +1212,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                     elif s in {"todo", "triage"}:
                         ok = _set_status_direct(conn, tid, s)
                     else:
-                        entry.update(ok=False, error=f"unknown status {s!r}")
+                        entry.update(ok=False, error=f"unknown status {requested_status!r}")
                         results.append(entry)
                         continue
                     if not ok:
