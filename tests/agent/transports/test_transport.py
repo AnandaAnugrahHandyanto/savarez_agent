@@ -2,10 +2,9 @@
 
 import pytest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 from agent.transports.base import ProviderTransport
-from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from agent.transports.types import NormalizedResponse
 from agent.transports import get_transport, register_transport, _REGISTRY
 
 
@@ -60,6 +59,13 @@ class TestTransportRegistry:
         assert t is not None
         assert t.api_mode == "anthropic_messages"
 
+    def test_discovers_missing_transport_when_registry_partially_populated(self):
+        """Importing one transport directly must not hide other valid api_modes."""
+        import agent.transports.chat_completions  # noqa: F401
+        t = get_transport("codex_responses")
+        assert t is not None
+        assert t.api_mode == "codex_responses"
+
     def test_register_and_get(self):
         class DummyTransport(ProviderTransport):
             @property
@@ -112,6 +118,14 @@ class TestAnthropicTransport:
 
     def test_validate_response_empty_content(self, transport):
         r = SimpleNamespace(content=[])
+        assert transport.validate_response(r) is False
+
+    def test_validate_response_empty_content_with_end_turn_is_valid(self, transport):
+        r = SimpleNamespace(content=[], stop_reason="end_turn")
+        assert transport.validate_response(r) is True
+
+    def test_validate_response_empty_content_with_tool_use_is_invalid(self, transport):
+        r = SimpleNamespace(content=[], stop_reason="tool_use")
         assert transport.validate_response(r) is False
 
     def test_validate_response_valid(self, transport):
