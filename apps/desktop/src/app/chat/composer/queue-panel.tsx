@@ -30,9 +30,9 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
   }
 
   return (
-    <div className="rounded-t-2xl border border-b-0 border-border/65 bg-[color-mix(in_srgb,var(--dt-card)_70%,transparent)] pt-0.5 pb-1.5">
+    <div className="rounded-t-2xl border border-b-0 border-border/65 bg-[color-mix(in_srgb,var(--dt-card)_70%,transparent)] pt-0.5 pb-1">
       <button
-        className="flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-[0.72rem] font-medium text-muted-foreground/92 transition-colors hover:text-foreground/90"
+        className="flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-[0.72rem] font-medium text-muted-foreground/92 transition-colors hover:text-foreground/90"
         onClick={() => setCollapsed(open => !open)}
         type="button"
       >
@@ -41,7 +41,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
       </button>
 
       {!collapsed && (
-        <div className="space-y-0.5 px-1.5 pb-0.5">
+        <div className="space-y-0.5 px-1 pb-0.5">
           {entries.map(entry => {
             const isEditing = editingId === entry.id
             const attachmentsCount = entry.attachments.length
@@ -50,7 +50,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
             return (
               <div
                 className={cn(
-                  'group/queue-row flex items-center gap-1.5 rounded-lg border border-transparent px-1.5 py-1',
+                  'group/queue-row flex items-center gap-1.5 rounded-lg border border-transparent px-1.5 py-0.5',
                   'transition-colors duration-300 ease-out hover:bg-(--chrome-action-hover) hover:transition-none',
                   isEditing && 'border-[color-mix(in_srgb,var(--dt-composer-ring)_40%,transparent)] bg-accent/25'
                 )}
