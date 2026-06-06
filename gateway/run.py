@@ -1151,6 +1151,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    _log_safe_path,
     _reply_anchor_for_event,
     merge_pending_message_event,
 )
@@ -5669,8 +5670,8 @@ class GatewayRunner:
           2. ``event_payload['summary']`` (truncated first line)
           3. ``task.result`` (legacy fallback)
 
-        Files are deduplicated, missing files are silently skipped (the
-        path may have been mentioned for reference only), and delivery
+        Files are deduplicated, missing files are skipped with an INFO log
+        (the path may have been mentioned for reference only), and delivery
         errors are logged but do not break the notifier loop.
         """
         from pathlib import Path as _Path
@@ -5685,6 +5686,18 @@ class GatewayRunner:
             if expanded in seen:
                 return
             if not os.path.isfile(expanded):
+                # A worker reported this path as a deliverable artifact but no
+                # file exists on disk, so it is dropped from native upload.
+                # Mirror extract_local_files' INFO log (see commit 947e21b3d)
+                # so the gap is visible in gateway.log instead of the promised
+                # file silently never arriving. Explicit ``artifacts`` entries
+                # bypass extract_local_files, so this is the only place that
+                # drop gets logged.
+                logger.info(
+                    "kanban notifier: skipping missing artifact "
+                    "(no file on disk): %s",
+                    _log_safe_path(path),
+                )
                 return
             seen.add(expanded)
             candidates.append(expanded)
