@@ -117,6 +117,19 @@ class TestFindStaleDashboardPids:
             )
             assert sorted(_find_stale_dashboard_pids()) == [12345, 12346, 12347]
 
+    def test_desktop_embedded_dashboards_are_excluded(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(12345, "hermes dashboard --port 9119"),
+                    _ps_line(12346, "hermes dashboard --port 9120 --desktop-embedded"),
+                    _ps_line(12347, "python3 -m hermes_cli.main dashboard --desktop-embedded"),
+                ]) + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [12345]
+
     def test_self_pid_excluded(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
@@ -434,3 +447,18 @@ class TestWindowsWmicEncoding:
             )
             # Must not raise.
             assert _find_stale_dashboard_pids() == []
+
+    def test_wmic_excludes_desktop_embedded_dashboards(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=(
+                    "CommandLine=python -m hermes_cli.main dashboard --port 9119\n"
+                    "ProcessId=12345\n"
+                    "CommandLine=python -m hermes_cli.main dashboard --desktop-embedded --port 9120\n"
+                    "ProcessId=12346\n"
+                ),
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [12345]
