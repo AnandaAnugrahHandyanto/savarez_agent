@@ -362,6 +362,17 @@ def _parse_single_entry(
 _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
 
 
+def _expand_hook_path(path: str) -> str:
+    """Expand hook paths, honoring HOME overrides on native Windows too."""
+    expanded = path
+    if expanded == "~" or expanded.startswith(("~/", "~" + chr(92))):
+        home_override = os.environ.get("HOME")
+        if home_override:
+            suffix = expanded[2:] if len(expanded) > 1 else ""
+            expanded = os.path.join(home_override, suffix) if suffix else home_override
+    return os.path.expanduser(expanded)
+
+
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     """Run ``spec.command`` as a subprocess with ``stdin_json`` on stdin.
 
@@ -381,7 +392,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         "error": None,
     }
     try:
-        argv = shlex.split(os.path.expanduser(spec.command), posix=os.name != "nt")
+        argv = shlex.split(_expand_hook_path(spec.command), posix=os.name != "nt")
     except ValueError as exc:
         result["error"] = f"command {spec.command!r} cannot be parsed: {exc}"
         return result
@@ -802,7 +813,7 @@ def script_mtime_iso(command: str) -> Optional[str]:
     if not path:
         return None
     try:
-        expanded = os.path.expanduser(path)
+        expanded = _expand_hook_path(path)
         return datetime.fromtimestamp(
             os.path.getmtime(expanded), tz=timezone.utc,
         ).isoformat().replace("+00:00", "Z")
@@ -821,7 +832,7 @@ def script_is_executable(command: str) -> bool:
     path = _command_script_path(command)
     if not path:
         return False
-    expanded = os.path.expanduser(path)
+    expanded = _expand_hook_path(path)
     if not os.path.isfile(expanded):
         return False
     try:
