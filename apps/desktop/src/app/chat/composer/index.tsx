@@ -1291,7 +1291,12 @@ export function ChatBar({
           )}
           <SkinSlashPopover draft={draft} onSelect={selectSkinSlashCommand} />
           {activeQueueSessionKey && queuedPrompts.length > 0 && (
-            <div className="relative z-6 mb-1 px-0.5">
+            // Floated above the composer (out of flow) so the queue never
+            // inflates the composer's measured height — otherwise the thread
+            // reserves extra bottom padding and the chat visibly resizes as you
+            // queue. Cursor-style: the list overlays the (faded) chat instead.
+            // Capped height with internal scroll keeps a long queue on-screen.
+            <div className="absolute inset-x-0 bottom-full z-6 mb-1 max-h-[40vh] overflow-y-auto px-0.5">
               <QueuePanel
                 busy={busy}
                 editingId={queueEdit?.entryId ?? null}
