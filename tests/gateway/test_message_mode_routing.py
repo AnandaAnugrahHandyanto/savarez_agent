@@ -109,6 +109,49 @@ def test_ops_prefix_strips_text_and_selects_ops_tools():
     assert "Hermes operations" in route.system_prompt
 
 
+def test_content_prefix_strips_text_and_selects_content_creation_route():
+    route = resolve_gateway_message_mode("内容创意路由 3-6年级奥数第一天发什么")
+
+    assert route.name == "content"
+    assert route.prefix == "内容创意路由"
+    assert route.message == "3-6年级奥数第一天发什么"
+    assert route.session_scope == "content"
+    assert route.skip_context_files is True
+    assert route.load_soul_identity is True
+    assert route.skip_memory is False
+    assert route.enabled_toolsets == (
+        "web",
+        "vision",
+        "image_gen",
+        "video",
+        "session_search",
+        "clarify",
+    )
+    assert route.required_skills == (
+        "brand-content-marketing-advisor",
+        "content-trend-radar",
+        "hook-title-lab",
+        "xhs-graphic-generator",
+        "douyin-script-director",
+    )
+    assert route.expose_skill_tools is False
+    assert "project-dev-workflow" not in route.required_skills
+    assert "内容创意路由" in route.system_prompt
+    assert "publish-ready content" in route.system_prompt
+    assert "Xiaohongshu" in route.system_prompt
+    assert "Douyin" in route.system_prompt
+    assert "does not do development or operations" in route.system_prompt
+    assert "Do not write code" in route.system_prompt
+
+
+def test_content_prefix_short_form_accepts_plus_separator():
+    route = resolve_gateway_message_mode("内容创意+小红书图文怎么写")
+
+    assert route.name == "content"
+    assert route.prefix == "内容创意"
+    assert route.message == "小红书图文怎么写"
+
+
 def test_dev_prefix_switches_back_to_default_route_and_strips_text():
     route = resolve_gateway_message_mode("开发 继续做网关修复", active_mode="lite")
 
@@ -198,6 +241,52 @@ def test_switch_to_lite_mode_sets_sticky_control_response():
     assert route.name == "lite"
     assert route.sticky_mode == "lite"
     assert "日常聊天" in route.control_response
+
+
+def test_switch_to_content_mode_sets_sticky_control_response():
+    route = resolve_gateway_message_mode("切到内容创意路由")
+
+    assert route.name == "content"
+    assert route.sticky_mode == "content"
+    assert "内容创意" in route.control_response
+
+
+def test_sticky_content_mode_routes_followup_without_prefix():
+    route = resolve_gateway_message_mode("帮我做小红书图文和抖音脚本", active_mode="content")
+
+    assert route.name == "content"
+    assert route.message == "帮我做小红书图文和抖音脚本"
+    assert route.session_scope == "content"
+    assert route.required_skills == (
+        "brand-content-marketing-advisor",
+        "content-trend-radar",
+        "hook-title-lab",
+        "xhs-graphic-generator",
+        "douyin-script-director",
+    )
+
+
+def test_content_route_does_not_auto_escalate_development_requests():
+    route = resolve_gateway_message_mode("内容创意 改代码实现这个路由")
+
+    assert route.name == "content"
+    assert route.message == "改代码实现这个路由"
+    assert route.session_scope == "content"
+    assert "terminal" not in route.enabled_toolsets
+    assert "file" not in route.enabled_toolsets
+    assert "skills" not in route.enabled_toolsets
+    assert "todo" not in route.enabled_toolsets
+    assert "project-dev-workflow" not in route.required_skills
+    assert "outside 内容创意路由" in route.system_prompt
+
+
+def test_explicit_dev_prefix_can_leave_sticky_content_route():
+    route = resolve_gateway_message_mode("开发 继续改代码", active_mode="content")
+
+    assert route.name == "dev"
+    assert route.message == "继续改代码"
+    assert route.sticky_mode == "dev"
+    assert route.session_scope is None
 
 
 def test_routed_event_uses_stripped_text_and_scoped_session_key():
@@ -299,6 +388,42 @@ def test_ops_and_default_sessions_are_isolated_for_same_chat():
     assert build_session_key(ops) == "agent:main:qqbot:dm:chat-1:mode:ops"
 
 
+def test_content_and_default_sessions_are_isolated_for_same_chat():
+    base = SessionSource(
+        platform=Platform.QQBOT,
+        chat_id="chat-1",
+        chat_type="dm",
+        user_id="user-1",
+    )
+    content = SessionSource(
+        platform=Platform.QQBOT,
+        chat_id="chat-1",
+        chat_type="dm",
+        user_id="user-1",
+        session_scope="content",
+    )
+
+    assert build_session_key(base) == "agent:main:qqbot:dm:chat-1"
+    assert build_session_key(content) == "agent:main:qqbot:dm:chat-1:mode:content"
+
+
+def test_content_routed_event_uses_scoped_session_key():
+    source = SessionSource(
+        platform=Platform.QQBOT,
+        chat_id="chat-1",
+        chat_type="dm",
+        user_id="user-1",
+    )
+    event = MessageEvent(text="内容创意：给我小红书图文和抖音视频内容", source=source)
+
+    routed_event, route = _route_gateway_message_mode(event)
+
+    assert route.name == "content"
+    assert routed_event.text == "给我小红书图文和抖音视频内容"
+    assert routed_event.source.session_scope == "content"
+    assert build_session_key(routed_event.source) == "agent:main:qqbot:dm:chat-1:mode:content"
+
+
 def test_sticky_route_keys_do_not_bleed_between_dm_sources_without_chat_id():
     first = SessionSource(
         platform=Platform.QQBOT,
@@ -348,6 +473,43 @@ def test_scoped_group_route_key_is_suffix_of_its_base_conversation_key():
     assert base_key == "agent:main:qqbot:group:group-1:user-1"
     assert build_session_key(ops) == f"{base_key}:mode:ops"
     assert build_session_key(other_user_ops) == "agent:main:qqbot:group:group-1:user-2:mode:ops"
+
+
+def test_content_route_skills_are_preloaded_without_dev_or_ops_skills(monkeypatch):
+    from gateway.run import _prepare_route_required_skills
+
+    calls = []
+
+    def fake_skill_view(name, file_path=None, task_id=None, preprocess=True):
+        calls.append((name, file_path, task_id, preprocess))
+        return json.dumps({"success": True, "name": name, "content": f"# {name}\nloaded"})
+
+    monkeypatch.setattr("tools.skills_tool.skill_view", fake_skill_view)
+    route = resolve_gateway_message_mode("内容创意 做一套小红书图文和抖音脚本")
+
+    enabled_toolsets, combined_prompt = _prepare_route_required_skills(
+        ["web"],
+        "base prompt",
+        route,
+        task_id="task-content",
+    )
+
+    assert enabled_toolsets == ["web"]
+    assert "Required route skills" in combined_prompt
+    assert "skill_view(name=\"brand-content-marketing-advisor\")" in combined_prompt
+    assert "skill_view(name=\"content-trend-radar\")" in combined_prompt
+    assert "skill_view(name=\"hook-title-lab\")" in combined_prompt
+    assert "skill_view(name=\"xhs-graphic-generator\")" in combined_prompt
+    assert "skill_view(name=\"douyin-script-director\")" in combined_prompt
+    assert "project-dev-workflow" not in combined_prompt
+    assert "hermes-runtime-ops" not in combined_prompt
+    assert calls == [
+        ("brand-content-marketing-advisor", None, "task-content", False),
+        ("content-trend-radar", None, "task-content", False),
+        ("hook-title-lab", None, "task-content", False),
+        ("xhs-graphic-generator", None, "task-content", False),
+        ("douyin-script-director", None, "task-content", False),
+    ]
 
 
 def test_required_route_skills_are_preloaded_and_force_skills_toolset(monkeypatch):

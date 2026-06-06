@@ -126,7 +126,7 @@ def _prepare_route_required_skills(
         return list(enabled_toolsets or []), combined_ephemeral or ""
 
     prepared_toolsets = list(enabled_toolsets or [])
-    if "skills" not in prepared_toolsets:
+    if getattr(mode_route, "expose_skill_tools", True) and "skills" not in prepared_toolsets:
         prepared_toolsets.append("skills")
     blocks: List[str] = []
     seen: set[str] = set()

@@ -12,6 +12,13 @@ from typing import Optional
 
 _BASE_REQUIRED_SKILLS = ("using-superpowers",)
 _DEV_REQUIRED_SKILLS = (*_BASE_REQUIRED_SKILLS, "project-dev-workflow")
+_CONTENT_REQUIRED_SKILLS = (
+    "brand-content-marketing-advisor",
+    "content-trend-radar",
+    "hook-title-lab",
+    "xhs-graphic-generator",
+    "douyin-script-director",
+)
 
 
 @dataclass(frozen=True)
@@ -28,6 +35,7 @@ class GatewayMessageMode:
     skip_memory: bool = False
     system_prompt: str = ""
     required_skills: tuple[str, ...] = _BASE_REQUIRED_SKILLS
+    expose_skill_tools: bool = True
     sticky_mode: Optional[str] = None
     control_response: str = ""
 
@@ -42,6 +50,7 @@ _OPS_TOOLSETS = (
     "todo",
     "clarify",
 )
+_CONTENT_TOOLSETS = ("web", "vision", "image_gen", "video", "session_search", "clarify")
 _LITE_BASE_SKILLS = (
     "yume-skill/using-superpowers",
     "yume-skill/verification-before-completion",
@@ -132,8 +141,61 @@ Operate as Hermes runtime/config operations mode:
 - Do not assume the current development repository context is relevant unless the user explicitly asks for code changes.
 """
 
+_CONTENT_PROMPT = """# Gateway mode: 内容创意路由
+
+This gateway turn was routed by the user's `内容创意` / `内容创意路由` prefix or sticky content-creative route.
+Operate as a content creation assistant for Xiaohongshu graphic posts and Douyin short-video viral-content packages:
+- Focus only on content ideation, topic selection, Xiaohongshu article/graphic-post copy, Douyin short-video scripts, hooks, titles, covers, captions, hashtags, and private-domain lead-in copy.
+- When the user asks for content, give publish-ready content, not only advice or outlines. Include the actual article/caption/page copy and the actual video opening/script/shot/caption plan when relevant.
+- For Xiaohongshu, provide cover title, post title options, page-by-page carousel copy, body text, hashtags, and manual publishing checklist when the request is broad.
+- For Douyin, provide first-3-second hook, timed口播 script, shot list, subtitle emphasis, and manual private-domain lead-in when the request is broad.
+- Viral-content production means improving viral probability; never promise guaranteed virality, guaranteed enrollment, or guaranteed score improvement.
+- Avoid K12 high-risk wording such as 保证提分、押题、内部资料、官方资源、马上报名. Prefer 学习诊断、资料领取、方法自查、试听了解.
+- Do not auto-publish, auto-comment, auto-DM, log into platforms, use cookies, or operate social-media accounts.
+- This route does not do development or operations. Do not write code, run tests, inspect repos, commit, push, deploy, restart gateway/WebUI, or load development/ops workflow skills such as project-dev-workflow, writing-plans, codex-staged-development-review, github-pr-workflow, baota-webapp-operations, or hermes-runtime-ops.
+- If the user asks for code changes, tests, commits, deployment, gateway restart, runtime config, or other operations, reply briefly that this is outside 内容创意路由 and ask whether to switch to 开发 or 运维 route.
+"""
+
+_MODE_LABELS = {
+    "lite": "日常聊天",
+    "ops": "运维",
+    "content": "内容创意",
+}
+
 
 _PREFIXES = (
+    (
+        "内容创意路由",
+        GatewayMessageMode(
+            name="content",
+            message="",
+            prefix="内容创意路由",
+            session_scope="content",
+            enabled_toolsets=_CONTENT_TOOLSETS,
+            skip_context_files=True,
+            load_soul_identity=True,
+            skip_memory=False,
+            system_prompt=_CONTENT_PROMPT,
+            required_skills=_CONTENT_REQUIRED_SKILLS,
+            expose_skill_tools=False,
+        ),
+    ),
+    (
+        "内容创意",
+        GatewayMessageMode(
+            name="content",
+            message="",
+            prefix="内容创意",
+            session_scope="content",
+            enabled_toolsets=_CONTENT_TOOLSETS,
+            skip_context_files=True,
+            load_soul_identity=True,
+            skip_memory=False,
+            system_prompt=_CONTENT_PROMPT,
+            required_skills=_CONTENT_REQUIRED_SKILLS,
+            expose_skill_tools=False,
+        ),
+    ),
     (
         "日常聊天",
         GatewayMessageMode(
@@ -167,9 +229,24 @@ _PREFIXES = (
 )
 
 _STRIP_CHARS = " \t\r\n:：,，。.!！?？-—_、|/\\+＋"
-_MODE_BY_NAME = {template.name: template for _prefix, template in _PREFIXES}
+_MODE_BY_NAME: dict[str, GatewayMessageMode] = {}
+for _prefix, _template in _PREFIXES:
+    _MODE_BY_NAME.setdefault(_template.name, _template)
 _DEV_PREFIXES = ("开发",)
 _STICKY_MODE_SWITCHES = (
+    (
+        "content",
+        (
+            "切到内容创意路由",
+            "切换到内容创意路由",
+            "进入内容创意路由",
+            "切到内容创意模式",
+            "切换到内容创意模式",
+            "进入内容创意模式",
+            "内容创意路由",
+            "内容创意模式",
+        ),
+    ),
     (
         "lite",
         (
@@ -237,6 +314,7 @@ def _copy_mode(
         skip_memory=template.skip_memory,
         system_prompt=template.system_prompt,
         required_skills=required_skills if required_skills is not None else template.required_skills,
+        expose_skill_tools=template.expose_skill_tools,
         sticky_mode=sticky_mode,
         control_response=control_response,
     )
@@ -349,7 +427,7 @@ def resolve_gateway_message_mode(text: str | None, active_mode: str | None = Non
                     control_response="已切回开发路由。",
                 )
             template = _MODE_BY_NAME[mode_name]
-            response_label = "日常聊天" if mode_name == "lite" else "运维"
+            response_label = _MODE_LABELS.get(mode_name, mode_name)
             copy_fn = _copy_lite_mode if template.name == "lite" else _copy_mode
             return copy_fn(
                 template,
@@ -362,7 +440,7 @@ def resolve_gateway_message_mode(text: str | None, active_mode: str | None = Non
         if stripped.startswith(prefix):
             message = _strip_mode_prefix(raw, prefix)
             if not message:
-                label = "日常聊天" if template.name == "lite" else "运维"
+                label = _MODE_LABELS.get(template.name, template.name)
                 copy_fn = _copy_lite_mode if template.name == "lite" else _copy_mode
                 return copy_fn(
                     template,
