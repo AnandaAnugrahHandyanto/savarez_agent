@@ -29,6 +29,7 @@ const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
+const { chooseWindowsHermesHome } = require('./hermes-home.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -183,9 +184,11 @@ if (INSTALL_STAMP) {
 //   macOS / Linux: ~/.hermes (matches install.sh)
 //
 // Special case for Windows: if the user has a legacy ~/.hermes directory
-// (e.g., from a prior pip install or a manual setup) AND no
-// %LOCALAPPDATA%\hermes yet, prefer the legacy path so we don't orphan their
-// existing config / sessions / .env. New installs go to %LOCALAPPDATA%.
+// (e.g., from a prior pip install or a manual setup) with real data, prefer it
+// so we don't orphan their existing config / sessions / .env — even when the
+// installer has already created an (empty) %LOCALAPPDATA%\hermes. See
+// chooseWindowsHermesHome() in hermes-home.cjs. New installs go to
+// %LOCALAPPDATA%.
 //
 // HERMES_DESKTOP_USER_DATA_DIR (used by test:desktop:fresh) puts the sandbox
 // HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
@@ -197,9 +200,12 @@ function resolveHermesHome() {
     const localappdata = path.join(process.env.LOCALAPPDATA, 'hermes')
     const legacy = path.join(app.getPath('home'), '.hermes')
     // Migrate transparently to LOCALAPPDATA, but honour an existing legacy
-    // ~/.hermes setup (no LOCALAPPDATA install yet) so users don't lose state.
-    if (!directoryExists(localappdata) && directoryExists(legacy)) return legacy
-    return localappdata
+    // ~/.hermes setup so a CLI-first user's sessions aren't orphaned when the
+    // installer pre-creates an empty LOCALAPPDATA\hermes (#40178).
+    return chooseWindowsHermesHome(localappdata, legacy, {
+      dirExists: directoryExists,
+      fileExists
+    })
   }
   return path.join(app.getPath('home'), '.hermes')
 }
