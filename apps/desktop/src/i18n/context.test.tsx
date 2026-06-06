@@ -56,6 +56,17 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('label').textContent).toBe('Language')
   })
 
+  it('normalizes Korean aliases and returns Korean translations', () => {
+    render(
+      <I18nProvider configClient={null} initialLocale="KOREAN">
+        <LanguageProbe target="en" />
+      </I18nProvider>
+    )
+
+    expect(screen.getByTestId('locale').textContent).toBe('ko')
+    expect(screen.getByTestId('label').textContent).toBe('언어')
+  })
+
   it('loads the initial locale from display.language config', async () => {
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockResolvedValue({ display: { language: 'zh-Hans' } }),

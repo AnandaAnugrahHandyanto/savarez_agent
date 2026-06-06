@@ -16,6 +16,10 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('zh-CN')).toBe('zh')
     expect(normalizeLocale('zh-Hans')).toBe('zh')
     expect(normalizeLocale(' zh_hans_cn ')).toBe('zh')
+    expect(normalizeLocale('ko')).toBe('ko')
+    expect(normalizeLocale('ko-KR')).toBe('ko')
+    expect(normalizeLocale(' ko_kr ')).toBe('ko')
+    expect(normalizeLocale('KOREAN')).toBe('ko')
   })
 
   it('falls back to English for empty or unsupported values', () => {
@@ -26,13 +30,16 @@ describe('desktop i18n languages', () => {
 
   it('distinguishes exact locale ids from supported config aliases', () => {
     expect(isSupportedLocaleValue('zh-CN')).toBe(true)
+    expect(isSupportedLocaleValue('ko-KR')).toBe(true)
     expect(isSupportedLocaleValue('ja')).toBe(false)
     expect(isLocale('zh-CN')).toBe(false)
     expect(isLocale('zh')).toBe(true)
+    expect(isLocale('ko')).toBe(true)
   })
 
   it('returns the persisted config value for supported locales', () => {
     expect(localeConfigValue('en')).toBe('en')
     expect(localeConfigValue('zh')).toBe('zh')
+    expect(localeConfigValue('ko')).toBe('ko')
   })
 })
