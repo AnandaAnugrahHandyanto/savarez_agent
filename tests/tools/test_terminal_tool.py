@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 import tools.terminal_tool as terminal_tool
 from tools import process_registry as process_registry_module
 
@@ -292,9 +294,9 @@ def test_codex_impl_guard_wrappers_are_not_blocked_as_unguarded_impl():
         assert terminal_tool._codex_unguarded_impl_launch_error(command) is None
 
 
-def test_terminal_tool_blocks_background_bare_codex_impl_before_execution():
+def _assert_terminal_tool_blocks_as_unguarded_codex_impl(command: str):
     result = json.loads(terminal_tool.terminal_tool(
-        command="codex-yuna exec --full-auto 'implement the change'",
+        command=command,
         background=True,
         pty=True,
         notify_on_complete=True,
@@ -319,6 +321,42 @@ def test_terminal_tool_blocks_background_bare_codex_impl_before_execution():
     assert "Codex provider availability" in result["technical_detail"]
     assert "raw `codex-yuna exec` / `codex exec` as a Codex availability probe" in result["technical_detail"]
     assert "codex_staged_implement" in result["technical_detail"]
+    return result
+
+
+def test_terminal_tool_blocks_background_bare_codex_impl_before_execution():
+    _assert_terminal_tool_blocks_as_unguarded_codex_impl(
+        "codex-yuna exec --full-auto 'implement the change'"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "codex-yuna exec review then fix it",
+        "codex-yuna exec 'review then fix it'",
+    ],
+)
+def test_terminal_tool_routes_review_then_fix_to_impl_block_not_review_block(command):
+    result = _assert_terminal_tool_blocks_as_unguarded_codex_impl(command)
+
+    assert "Codex review launches must use" not in result["error"]
+
+
+def test_reviewing_existing_fix_remains_review_output_control_error():
+    result = json.loads(terminal_tool.terminal_tool(
+        command="codex-yuna exec review 'review the fix for this bug'",
+        background=True,
+        pty=True,
+        notify_on_complete=True,
+    ))
+
+    assert result["status"] == "blocked"
+    assert "code" not in result
+    assert "Codex review launches must use guarded structured output controls" in result["error"]
+    assert "--json" in result["error"]
+    assert "--output-schema <FILE>" in result["error"]
+    assert "--output-last-message <FILE>" in result["error"]
 
 
 def test_bare_codex_after_controlled_wrapper_still_gets_guidance():

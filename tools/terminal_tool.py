@@ -1850,6 +1850,13 @@ def _codex_review_launch_error(command: str, _depth: int = 0) -> str | None:
                 is_review = True
         if not is_review:
             continue
+        # A prompt that says "review then fix/apply/edit" is not a pure
+        # read-only review. Let the implementation guard classify and block it
+        # with the staged-implementation guidance instead of masking it as only
+        # a missing review-output-flags issue.
+        intent_tokens = after_exec[1:] if uses_review_subcommand else after_exec
+        if _codex_segment_has_write_intent(intent_tokens):
+            continue
 
         missing: list[str] = []
         if "--json" not in segment:
@@ -1896,11 +1903,17 @@ def _codex_segment_has_review_output_controls(segment: list[str], *, uses_review
 
 def _codex_segment_has_write_intent(tokens: list[str]) -> bool:
     text = " ".join(tokens)
-    return bool(re.search(
-        r"\b(implement|fix|modify|edit|write|apply|patch|create|delete|remove|update|commit|push|deploy|restart)\b",
-        text,
-        re.IGNORECASE,
-    ))
+    write_verbs = (
+        "implement|fix|modify|edit|write|apply|patch|create|delete|remove|"
+        "update|commit|push|deploy|restart"
+    )
+    # Treat explicit imperative/follow-up actions as write intent, but avoid
+    # classifying noun phrases such as "review the fix" or "review proposed
+    # edits" as implementation work.
+    return bool(
+        re.search(rf"^\s*(?:{write_verbs})\b", text, re.IGNORECASE)
+        or re.search(rf"\b(?:then|and|also|afterward|afterwards)\s+(?:{write_verbs})\b", text, re.IGNORECASE)
+    )
 
 
 def _codex_segment_is_read_only_review(segment: list[str], after_exec: list[str]) -> bool:
