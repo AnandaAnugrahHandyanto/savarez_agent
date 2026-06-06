@@ -109,3 +109,17 @@ def test_cleanup_provider_exception_is_swallowed(mock_invoke_hook):
         cli_mod._cleanup_done = False
 
     agent.shutdown_memory_provider.assert_called_once()
+
+
+@patch("tools.process_registry.process_registry")
+def test_cleanup_kills_background_processes(mock_registry):
+    """_run_cleanup must call process_registry.kill_all()."""
+    import cli as cli_mod
+
+    cli_mod._cleanup_done = False
+    try:
+        cli_mod._run_cleanup()
+    finally:
+        cli_mod._cleanup_done = False
+
+    mock_registry.kill_all.assert_called_once()
