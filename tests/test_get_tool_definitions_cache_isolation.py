@@ -25,11 +25,42 @@ import model_tools
 def _clear_cache():
     """Each test starts with an empty quiet_mode cache."""
     model_tools._tool_defs_cache.clear()
+    model_tools._tool_search_cfg_cache.clear()
     yield
     model_tools._tool_defs_cache.clear()
+    model_tools._tool_search_cfg_cache.clear()
 
 
 class TestQuietModeCacheIsolation:
+
+    def test_tool_search_config_cache_reuses_loaded_config_for_same_fingerprint(self, monkeypatch):
+        calls = {"count": 0}
+
+        def _fake_loader():
+            calls["count"] += 1
+            return type("Cfg", (), {"enabled": "off"})()
+
+        monkeypatch.setattr("tools.tool_search.load_config", _fake_loader)
+
+        model_tools._load_tool_search_config_cached((1, 2))
+        model_tools._load_tool_search_config_cached((1, 2))
+
+        assert calls["count"] == 1
+
+    def test_tool_search_config_cache_invalidates_on_clear(self, monkeypatch):
+        calls = {"count": 0}
+
+        def _fake_loader():
+            calls["count"] += 1
+            return type("Cfg", (), {"enabled": "off"})()
+
+        monkeypatch.setattr("tools.tool_search.load_config", _fake_loader)
+
+        model_tools._load_tool_search_config_cached((1, 2))
+        model_tools._clear_tool_defs_cache()
+        model_tools._load_tool_search_config_cached((1, 2))
+
+        assert calls["count"] == 2
 
     def test_first_uncached_call_returns_fresh_list(self):
         """The first quiet_mode call must not alias the cached object \u2014

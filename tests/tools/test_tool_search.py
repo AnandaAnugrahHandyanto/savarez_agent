@@ -139,6 +139,80 @@ class TestThresholdGate:
         cfg = ToolSearchConfig.from_raw({"enabled": "off"})
         assert not should_activate(cfg, deferrable_tokens=1_000_000, context_length=200_000)
 
+    def test_resolve_active_context_length_uses_model_config_metadata(self, monkeypatch):
+        import model_tools
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "model": "gpt-5.4",
+                    "provider": "custom:tokenflux",
+                    "base_url": "https://tokenflux.dev/v1",
+                    "context_length": 1_050_000,
+                }
+            },
+        )
+
+        captured = {}
+
+        def _fake_get_model_context_length(model_id, **kwargs):
+            captured["model_id"] = model_id
+            captured.update(kwargs)
+            return 1_050_000
+
+        monkeypatch.setattr(
+            "agent.model_metadata.get_model_context_length",
+            _fake_get_model_context_length,
+        )
+
+        assert model_tools._resolve_active_context_length() == 1_050_000
+        assert captured == {
+            "model_id": "gpt-5.4",
+            "base_url": "https://tokenflux.dev/v1",
+            "provider": "custom:tokenflux",
+            "config_context_length": 1_050_000,
+        }
+
+    def test_resolve_active_context_length_uses_named_custom_provider_metadata(self, monkeypatch):
+        import model_tools
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "default": "gpt-5.4",
+                    "provider": "custom:tokenflux",
+                },
+                "custom_providers": {
+                    "tokenflux": {
+                        "base_url": "https://tokenflux.dev/v1",
+                        "context_length": 1_050_000,
+                    }
+                },
+            },
+        )
+
+        captured = {}
+
+        def _fake_get_model_context_length(model_id, **kwargs):
+            captured["model_id"] = model_id
+            captured.update(kwargs)
+            return 1_050_000
+
+        monkeypatch.setattr(
+            "agent.model_metadata.get_model_context_length",
+            _fake_get_model_context_length,
+        )
+
+        assert model_tools._resolve_active_context_length() == 1_050_000
+        assert captured == {
+            "model_id": "gpt-5.4",
+            "base_url": "https://tokenflux.dev/v1",
+            "provider": "custom:tokenflux",
+            "config_context_length": 1_050_000,
+        }
+
     def test_zero_deferrable_never_activates(self):
         from tools.tool_search import ToolSearchConfig, should_activate
         cfg = ToolSearchConfig.from_raw({"enabled": "on"})
