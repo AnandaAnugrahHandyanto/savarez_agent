@@ -1,4 +1,9 @@
-"""Tests for ACP `authenticate(token=...)` → provider `api_key` forwarding.
+"""Tests for ACP ``authenticate`` → provider ``api_key`` forwarding.
+
+Wire shape: ``params._meta.oauth_token`` (not a top-level ``params.token`` —
+``AuthenticateRequest`` declares only ``methodId`` + ``_meta``). The SDK
+router spreads ``_meta`` into the handler's kwargs before dispatch, so the
+handler sees ``kwargs["oauth_token"]``.
 
 Covers:
   * ``SessionManager.set_auth_token`` / ``get_auth_token`` semantics
@@ -286,13 +291,28 @@ class TestAuthenticateDepositsToken:
         mgr = SessionManager()
         agent = HermesACPAgent(session_manager=mgr)
 
-        resp = _run(agent.authenticate("openrouter", token="sk-abc"))
+        resp = _run(agent.authenticate("openrouter", oauth_token="sk-abc"))
         assert resp is not None
         assert mgr.get_auth_token("openrouter") == "sk-abc"
 
     def test_authenticate_without_token_is_noop_on_dict(
         self, monkeypatch: pytest.MonkeyPatch
     ):
+        """No ``oauth_token`` kwarg → auth still succeeds, no deposit.
+
+        This also pins the legacy-shape behavior: a client sending
+        ``{"methodId": "openrouter", "token": "sk-x"}`` (top-level ``token``,
+        no ``_meta``) reaches us via the same kwargs shape — pydantic
+        validation against ``AuthenticateRequest`` drops the unknown
+        top-level field before the router calls us. So the misconfigured
+        client gets ``AuthenticateResponse()`` back ("auth succeeded"),
+        but no token is deposited; the bug surfaces on the next outbound
+        provider request as an upstream-auth error.
+
+        Guards against a future change that adds a top-level ``token``
+        field to ``AuthenticateRequest`` and silently revives ambiguity
+        between the legacy and ``_meta.oauth_token`` channels.
+        """
         from acp_adapter import server as _server
 
         monkeypatch.setattr(_server, "detect_provider", lambda: "openrouter")
@@ -312,8 +332,8 @@ class TestAuthenticateDepositsToken:
         mgr = SessionManager()
         agent = HermesACPAgent(session_manager=mgr)
 
-        _run(agent.authenticate("openrouter", token="t1"))
-        _run(agent.authenticate("openrouter", token="t2"))
+        _run(agent.authenticate("openrouter", oauth_token="t1"))
+        _run(agent.authenticate("openrouter", oauth_token="t2"))
         assert mgr.get_auth_token("openrouter") == "t2"
 
     def test_authenticate_does_not_deposit_when_provider_mismatches(
@@ -326,7 +346,7 @@ class TestAuthenticateDepositsToken:
         mgr = SessionManager()
         agent = HermesACPAgent(session_manager=mgr)
 
-        resp = _run(agent.authenticate("anthropic", token="sk-abc"))
+        resp = _run(agent.authenticate("anthropic", oauth_token="sk-abc"))
         assert resp is None
         assert mgr.get_auth_token("anthropic") is None
         assert mgr.get_auth_token("openrouter") is None
@@ -342,7 +362,35 @@ class TestAuthenticateDepositsToken:
 
         secret = "sk-very-secret-token-zzz"
         with caplog.at_level(logging.DEBUG):
-            _run(agent.authenticate("openrouter", token=secret))
+            _run(agent.authenticate("openrouter", oauth_token=secret))
 
         for record in caplog.records:
             assert secret not in record.getMessage()
+
+    def test_authenticate_accepts_oauth_token_kwarg_from_meta_spread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Mirrors what ``acp/router.py`` does after validating an
+        ``AuthenticateRequest`` whose JSON payload is::
+
+            {"methodId": "openrouter", "_meta": {"oauth_token": "sk-meta"}}
+
+        The router calls ``params = {k: getattr(model, k) for k in fields
+        if k != "field_meta"}`` then ``params.update(field_meta)`` and
+        finally ``await handler(**params)``. So our handler observes
+        ``method_id="openrouter", oauth_token="sk-meta"`` as kwargs — this
+        test exercises exactly that calling shape and asserts the deposit
+        happens by the ``_meta`` channel rather than any top-level field.
+        """
+        from acp_adapter import server as _server
+
+        monkeypatch.setattr(_server, "detect_provider", lambda: "openrouter")
+        mgr = SessionManager()
+        agent = HermesACPAgent(session_manager=mgr)
+
+        # Simulate router spread: method_id positionally, _meta entries as kwargs.
+        router_kwargs = {"oauth_token": "sk-meta"}
+        resp = _run(agent.authenticate("openrouter", **router_kwargs))
+
+        assert resp is not None
+        assert mgr.get_auth_token("openrouter") == "sk-meta"
