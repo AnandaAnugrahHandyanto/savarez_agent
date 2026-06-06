@@ -323,6 +323,31 @@ async function startSocket() {
       const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
       const hasQuotedMessage = !!contextInfo?.quotedMessage;
 
+      // Extract quoted message text for reply context injection
+      let quotedText = '';
+      if (contextInfo?.quotedMessage) {
+        const qm = contextInfo.quotedMessage;
+        if (qm.conversation) {
+          quotedText = qm.conversation;
+        } else if (qm.extendedTextMessage?.text) {
+          quotedText = qm.extendedTextMessage.text;
+        } else if (qm.imageMessage) {
+          quotedText = qm.imageMessage.caption || '[image]';
+        } else if (qm.videoMessage) {
+          quotedText = qm.videoMessage.caption || '[video]';
+        } else if (qm.documentMessage) {
+          quotedText = qm.documentMessage.caption || '[document]';
+        } else if (qm.audioMessage || qm.pttMessage) {
+          quotedText = '[audio]';
+        } else if (qm.stickerMessage) {
+          quotedText = '[sticker]';
+        } else if (qm.locationMessage) {
+          quotedText = '[location]';
+        } else if (qm.contactMessage) {
+          quotedText = '[contact]';
+        }
+      }
+
       // Extract message body
       let body = '';
       let hasMedia = false;
@@ -437,6 +462,7 @@ async function startSocket() {
         quotedParticipant,
         quotedRemoteJid,
         hasQuotedMessage,
+        quotedText,
         botIds,
         timestamp: msg.messageTimestamp,
       };
