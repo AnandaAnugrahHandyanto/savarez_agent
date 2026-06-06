@@ -236,12 +236,10 @@ export function usePromptActions({
         [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
         (hasImage ? 'What do you see in this image?' : '')
 
-      // A queue drain fires on the busy→false settle edge and is serialized by
-      // the queue's own drain lock. busyRef is synced from $busy by a separate
-      // effect that may not have flipped to false yet on that same edge, so
-      // honoring it here would bounce the drained send (return false → entry
-      // never removed → queue stalls silently). The user-initiated path keeps
-      // the guard so a stray Enter mid-turn can't double-submit.
+      // Queue drains fire on the busy→false settle edge, where busyRef (synced
+      // from $busy by a separate effect) may still read true — honoring it would
+      // bounce the drained send. The drain lock serializes them; the user path
+      // keeps the guard so a stray Enter mid-turn can't double-submit.
       if (!text || (!options?.fromQueue && busyRef.current)) {
         return false
       }
@@ -275,10 +273,9 @@ export function usePromptActions({
             awaitingResponse: true,
             pendingBranchGroup: null,
             sawAssistantPayload: false,
-            // A fresh submit is a new turn — clear any leftover interrupt flag from
-            // a prior stop, or the message stream drops every delta of THIS turn
-            // (mutateStream/completeAssistantMessage bail when interrupted). This
-            // is what made drained-after-interrupt queue sends go silent.
+            // Fresh submit = new turn — clear any leftover interrupt flag, else
+            // mutateStream/completeAssistantMessage drop every delta of this turn
+            // (what made drained-after-interrupt sends go silent).
             interrupted: false
           }),
           selectedStoredSessionIdRef.current

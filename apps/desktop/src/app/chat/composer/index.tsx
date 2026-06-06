@@ -719,9 +719,8 @@ export function ChatBar({
         return
       }
 
-      // Empty Enter while busy is a no-op — interrupting is an explicit gesture
-      // (the Stop button or Esc), never a stray Enter after sending. With a
-      // payload, submitDraft queues it; that's still wanted.
+      // Empty Enter while busy is a no-op — interrupting is explicit (Stop/Esc),
+      // never a stray Enter after sending. With a payload, submitDraft queues it.
       if (busy && !hasComposerPayload) {
         return
       }
@@ -731,8 +730,7 @@ export function ChatBar({
       return
     }
 
-    // Esc interrupts the running turn (Stop button parity). No trigger popover
-    // is open here — that case returns above — so Esc is unambiguous.
+    // Esc interrupts the running turn (Stop-button parity).
     if (event.key === 'Escape' && busy) {
       event.preventDefault()
       triggerHaptic('cancel')
@@ -1291,14 +1289,10 @@ export function ChatBar({
           )}
           <SkinSlashPopover draft={draft} onSelect={selectSkinSlashCommand} />
           {activeQueueSessionKey && queuedPrompts.length > 0 && (
-            // Floated above the composer (out of flow) so the queue never
-            // inflates the composer's measured height — otherwise the thread
-            // reserves extra bottom padding and the chat visibly resizes as you
-            // queue. Cursor-style: the list overlays the (faded) chat instead.
-            // Sits flush on the composer's top edge (shared border). The Root
-            // has pt-2 (0.5rem) above the visible surface, so we overlap down by
-            // that much (-mb-2) to land the panel's borderless bottom right on
-            // the surface's top border. Capped height + internal scroll.
+            // Out of flow so the queue never inflates the composer's measured
+            // height (that drives thread bottom padding → chat resizes on
+            // queue). Overlaps -mb-2 onto the surface's top border for a shared
+            // edge; capped + scrollable. Cursor-style overlay.
             <div className="absolute inset-x-0 bottom-full z-6 -mb-2 max-h-[40vh] overflow-y-auto">
               <QueuePanel
                 busy={busy}
