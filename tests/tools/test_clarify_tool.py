@@ -243,7 +243,7 @@ class TestSanitizeClarifyText:
         assert result == "and  and"
 
     def test_question_with_mention_example(self):
-        """Real-world example from PR description."""
-        result = _sanitize_clarify_text("<@&1492479197074165946>-agent 提供的信息如何？")
-        assert "-agent 提供的信息如何？" in result
+        """Real-world example: @bot mention with natural language."""
+        result = _sanitize_clarify_text("<@&1234567890> how is the provided information?")
+        assert "how is the provided information?" in result
         assert "<@&" not in result
