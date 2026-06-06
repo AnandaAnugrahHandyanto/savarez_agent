@@ -552,6 +552,12 @@ def run_conversation(
     # Track memory nudge trigger (turn-based, checked here).
     # Skill trigger is checked AFTER the agent loop completes, based on
     # how many tool iterations THIS turn used.
+    # NOTE: do NOT reset _turns_since_memory here even when the threshold is
+    # reached.  The review is only spawned when the turn completes without
+    # interruption (see the guard below).  Resetting the counter early would
+    # swallow a full nudge interval if the turn is interrupted — the review
+    # would be silently skipped and the counter already zeroed.  The reset
+    # is deferred to the spawn site below.
     _should_review_memory = False
     if (agent._memory_nudge_interval > 0
             and "memory" in agent.valid_tool_names
@@ -559,7 +565,6 @@ def run_conversation(
         agent._turns_since_memory += 1
         if agent._turns_since_memory >= agent._memory_nudge_interval:
             _should_review_memory = True
-            agent._turns_since_memory = 0
 
     # Add user message
     user_msg = {"role": "user", "content": user_message}
@@ -2720,6 +2725,61 @@ def run_conversation(
                 # compress history and retry, not abort immediately.
                 status_code = getattr(api_error, "status_code", None)
 
+                # ── Respect disabled auto-compaction on overflow ──────
+                # Ported from anomalyco/opencode#30749.  When the user has
+                # turned auto-compaction off (``compression.enabled: false``),
+                # NO automatic compaction trigger may fire — including the
+                # provider/request-size overflow recovery paths below
+                # (long-context-tier 429, 413 payload-too-large, and
+                # context-overflow).  Without this guard the proactive
+                # threshold path correctly honours the setting (see the
+                # preflight check and the post-response ``should_compress``
+                # gate) but a provider overflow error would still silently
+                # compress + rotate the session, bypassing the user's
+                # explicit choice.  Surface a terminal error instead so the
+                # user can compact manually (``/compress``), start fresh
+                # (``/new``), switch to a larger-context model, or reduce
+                # attachments.  Forced compaction via ``/compress``
+                # (``force=True``) is unaffected — it never reaches this loop.
+                _overflow_reasons = {
+                    FailoverReason.long_context_tier,
+                    FailoverReason.payload_too_large,
+                    FailoverReason.context_overflow,
+                }
+                if (
+                    classified.reason in _overflow_reasons
+                    and not getattr(agent, "compression_enabled", True)
+                ):
+                    agent._flush_status_buffer()
+                    agent._vprint(
+                        f"{agent.log_prefix}❌ Context overflow, but auto-compaction is disabled "
+                        f"(compression.enabled: false).",
+                        force=True,
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}   💡 Run /compress to compact manually, /new to start fresh, "
+                        f"switch to a larger-context model, or reduce attachments.",
+                        force=True,
+                    )
+                    logger.error(
+                        f"{agent.log_prefix}Context overflow ({classified.reason.value}) with "
+                        f"auto-compaction disabled — not compressing."
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "messages": messages,
+                        "completed": False,
+                        "api_calls": api_call_count,
+                        "error": (
+                            "Context overflow and auto-compaction is disabled "
+                            "(compression.enabled: false). Run /compress to compact manually, "
+                            "/new to start fresh, or switch to a larger-context model."
+                        ),
+                        "partial": True,
+                        "failed": True,
+                        "compaction_disabled": True,
+                    }
+
                 # ── Anthropic Sonnet long-context tier gate ───────────
                 # Anthropic returns HTTP 429 "Extra usage is required for
                 # long context requests" when a Claude Max (or similar)
@@ -4801,8 +4861,15 @@ def run_conversation(
                 review_memory=_should_review_memory,
                 review_skills=_should_review_skills,
             )
+            # Reset the counter only after the review is successfully spawned.
+            # Resetting at threshold-detection time (earlier in this function)
+            # caused the counter to be zeroed even on interrupted turns where
+            # the review was never actually spawned, silently losing one full
+            # nudge interval worth of turns before the next review attempt.
+            if _should_review_memory:
+                agent._turns_since_memory = 0
         except Exception:
-            pass  # Background review is best-effort
+            pass  # Background review is best-effort; counter preserved for retry
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in
