@@ -10,7 +10,7 @@ The curator is a background maintenance pass for **agent-created skills**. It tr
 
 It exists so that skills created via the [self-improvement loop](/user-guide/features/skills#agent-managed-skills-skill_manage-tool) don't pile up forever. Every time the agent solves a novel problem and saves a skill, that skill lands in `~/.hermes/skills/`. Without maintenance, you end up with dozens of narrow near-duplicates that pollute the catalog and waste tokens.
 
-The curator **never touches** bundled skills (shipped with the repo) or hub-installed skills (from [agentskills.io](https://agentskills.io)). It only reviews skills the agent itself authored. It also **never auto-deletes** — the worst outcome is archival into `~/.hermes/skills/.archive/`, which is recoverable.
+The curator **never touches** hub-installed skills (from [agentskills.io](https://agentskills.io)). Bundled skills (shipped with the repo) are also left alone **unless** `prune_builtins: true` is set under the `curator:` section of `config.yaml` (it is `true` by default), in which case bundled skills are subject to the same archival and consolidation passes as agent-created skills. It only reviews skills the agent itself authored. It also **never auto-deletes** — the worst outcome is archival into `~/.hermes/skills/.archive/`, which is recoverable.
 
 Tracks [issue #7816](https://github.com/NousResearch/hermes-agent/issues/7816).
 
@@ -45,6 +45,7 @@ curator:
   enabled: true
   interval_hours: 168          # 7 days
   min_idle_hours: 2
+  prune_builtins: true         # false to keep bundled skills permanently
   stale_after_days: 30
   archive_after_days: 90
 ```
