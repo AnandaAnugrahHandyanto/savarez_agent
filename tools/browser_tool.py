@@ -64,21 +64,28 @@ import time
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from utils import is_truthy_value
 
 try:
     from tools.website_policy import check_website_access
 except Exception:
     check_website_access = lambda url: None  # noqa: E731 — fail-open if policy module unavailable
 
-try:
-    from tools.url_safety import (
-        is_safe_url as _is_safe_url,
-        is_always_blocked_url as _is_always_blocked_url,
-    )
-except Exception:
-    _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
-    _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
+
+def _is_safe_url(url: str) -> bool:
+    try:
+        from tools.url_safety import is_safe_url as _impl
+        return bool(_impl(url))
+    except Exception:
+        return False  # fail-closed if safety module unavailable
+
+
+def _is_always_blocked_url(url: str) -> bool:
+    try:
+        from tools.url_safety import is_always_blocked_url as _impl
+        return bool(_impl(url))
+    except Exception:
+        return True  # fail-closed on the always-blocked floor too
+
 # Browser-provider ABC + registry — PR #25214 moved the per-vendor providers
 # (Browserbase / Browser Use / Firecrawl) out of ``tools/browser_providers/``
 # and into ``plugins/browser/<vendor>/``. The dispatcher consults the
@@ -100,6 +107,18 @@ def _is_camofox_mode() -> bool:
         return False
 
 logger = logging.getLogger(__name__)
+
+_TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+
+
+def _is_truthy_value(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY_STRINGS
+    return bool(value)
 
 # Lazily-populated legacy provider aliases.  These used to be imported at module
 # import time, which made browser_tool the cold-start heavyweight.  Keep the
@@ -1155,7 +1174,7 @@ def _allow_private_urls() -> bool:
         cfg = read_raw_config()
         browser_cfg = cfg.get("browser", {})
         if isinstance(browser_cfg, dict):
-            _cached_allow_private_urls = is_truthy_value(
+            _cached_allow_private_urls = _is_truthy_value(
                 browser_cfg.get("allow_private_urls"), default=False
             )
     except Exception as e:
