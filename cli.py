@@ -4222,6 +4222,35 @@ class HermesCLI:
         self._tool_start_time = 0.0  # clear tool timer when switching to thinking
         self._invalidate()
 
+    def _on_notice(self, notice) -> None:
+        """Render an out-of-band AgentNotice as a colored console line (CLI REPL).
+
+        The TUI renders these as a status-bar override; the plain REPL has no such
+        slot, so we print a single level-colored line above the prompt. level →
+        color: error=red, warn=yellow, success=green, info=dim. Fail-soft: a
+        rendering hiccup must never break the turn.
+        """
+        try:
+            level = getattr(notice, "level", "info") or "info"
+            text = getattr(notice, "text", "") or ""
+            if not text:
+                return
+            color = {
+                "error": "\033[31m",
+                "warn": "\033[33m",
+                "success": "\033[32m",
+                "info": _DIM,
+            }.get(level, _DIM)
+            _cprint(f"  {color}{text}{_RST}")
+        except Exception:
+            pass
+
+    def _on_notice_clear(self, key: str) -> None:
+        """Notice cleared. The REPL prints lines (no persistent slot to wipe), so
+        this is a no-op for rendering — kept so the agent's clear callback is bound
+        symmetrically with the show callback (and so future REPL UIs can hook it)."""
+        return
+
     # ── Streaming display ────────────────────────────────────────────────
 
     def _current_reasoning_callback(self):
@@ -5205,6 +5234,8 @@ class HermesCLI:
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
+                notice_callback=self._on_notice,
+                notice_clear_callback=self._on_notice_clear,
             )
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref
@@ -5212,6 +5243,16 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Hydrate credits notices at session OPEN (parity with the TUI), so a
+            # depletion / usage-band warning shows before the first message. The
+            # notice_callback is bound above → _on_notice renders the line. Idempotent
+            # + fail-open inside the helper; harmless for non-Nous providers.
+            try:
+                from agent.credits_tracker import seed_credits_at_session_start
+
+                seed_credits_at_session_start(self.agent)
+            except Exception:
+                pass
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
