@@ -1,0 +1,22 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+
+# Sovereign OS service — runs the context-repl refresh, sovereign-ingest on boot, and keeps the dashboard alive.
+# This ensures the coherent repo's DuckDB snapshots, history ingestion, and karpathy loop are supervised in the container.
+
+echo "[sovereign-os] Starting sovereign-os supervision service..."
+
+# Refresh context-repl (the coordination layer)
+echo "[sovereign-os] Refreshing context-repl..."
+/opt/hermes/.venv/bin/python3 /mnt/c/Dev/codex-canonical-state/context-repl/context-repl.py refresh
+
+# Ingest any new logs/dispatches (chat logs, subagent, execution ledger)
+echo "[sovereign-os] Ingesting history..."
+/opt/hermes/.venv/bin/sovereign-ingest --paths /mnt/c/Dev/codex-canonical-state/context-repl/current.json /mnt/c/SwarmOS/execution_ledger.jsonl /home/mike/.codex/sessions --db /opt/data/sovereign_context.duckdb || echo "[sovereign-os] Ingest had warnings (expected on first run)"
+
+# Run the dashboard (Node entry for UI)
+echo "[sovereign-os] Starting dashboard..."
+cd /mnt/c/Dev/github/sovereign-os && node dashboard.js &
+
+# Keep the service alive (s6 longrun pattern)
+exec sleep infinity
