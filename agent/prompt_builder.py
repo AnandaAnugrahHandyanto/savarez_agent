@@ -580,7 +580,15 @@ PLATFORM_HINTS = {
         "links are supported. "
         "You can send media files natively: include MEDIA:/absolute/path/to/file "
         "in your response. Images (.jpg, .png, .webp) are uploaded and displayed "
-        "inline, audio files as voice messages, and other files as attachments."
+        "inline, audio files as voice messages, and other files as attachments.\n\n"
+        "## 表情包使用规则\n"
+        "在回复中可以用 %情感% 标签来表达情绪，系统会自动发送对应的表情包。\n"
+        + _build_sticker_tag_hint() +
+        "规则：\n"
+        "- 每次回复最多用 1 个标签\n"
+        "- 标签放在句末，如\"今天心情不错 %愉快%\"\n"
+        "- 不要每次都用，自然一点\n"
+        "- 不要直接用 MEDIA: 路径"
     ),
     "weixin": (
         "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when "
