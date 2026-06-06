@@ -2037,6 +2037,110 @@ def _claimer_id() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Mac-bridge persona routing
+# ---------------------------------------------------------------------------
+
+# Profiles that run on the Mac Claude worker bridge rather than directly on
+# the conductor VM. For these, dispatch claims with ``mac:<session>`` from the
+# start so the audit trail never shows a transient ``conductor:*`` lock.
+MAC_PERSONAS: frozenset[str] = frozenset({"builder", "reviewer", "scout", "designer"})
+
+
+def _mac_session_name(profile: str, task_id: str) -> str:
+    """Return the deterministic tmux session name for a Mac-bridge dispatch.
+
+    Shape: ``<profile>-<task_id_without_t_prefix>``
+    e.g. ``builder-aec2624f`` for task ``t_aec2624f``.
+    """
+    short = task_id[2:] if task_id.startswith("t_") else task_id
+    return f"{profile}-{short}"
+
+
+def _spawn_mac_session(
+    task: "Task",
+    workspace: str,
+    *,
+    session_name: str,
+    board: Optional[str] = None,
+) -> None:
+    """Start a Mac-bridge tmux session for a Mac-persona task.
+
+    SSH-es to the Mac worker host and starts a detached tmux session running
+    ``hermes -p <profile> chat -q 'work kanban task <id>'``.
+
+    Returns None — the worker runs remotely; PID tracking is handled via the
+    ``mac:`` claim lock and heartbeat mechanism instead of a local pid.
+
+    When ``HERMES_MAC_SYNTHETIC=1`` the SSH call is skipped so smoke tests
+    and synthetic dispatches can exercise the routing without an active bridge.
+    """
+    import subprocess
+
+    if os.environ.get("HERMES_MAC_SYNTHETIC"):
+        return None
+
+    mac_host = os.environ.get("HERMES_MAC_HOST", "claude-worker@127.0.0.1")
+    mac_port = os.environ.get("HERMES_MAC_PORT", "2222")
+
+    profile_arg = task.assignee or ""
+
+    env_pairs = [
+        f"HERMES_KANBAN_TASK={task.id}",
+        f"HERMES_KANBAN_WORKSPACE={workspace}",
+        f"HERMES_KANBAN_DB={kanban_db_path(board=board)}",
+        f"HERMES_KANBAN_BOARD={_normalize_board_slug(board) or get_current_board()}",
+    ]
+    if task.claim_lock:
+        env_pairs.append(f"HERMES_KANBAN_CLAIM_LOCK={task.claim_lock}")
+    if task.current_run_id is not None:
+        env_pairs.append(f"HERMES_KANBAN_RUN_ID={task.current_run_id}")
+
+    env_str = " ".join(env_pairs)
+    inner = f"hermes -p {profile_arg} chat -q 'work kanban task {task.id}'"
+    remote_cmd = f"tmux new-session -d -s {session_name} {env_str} {inner}"
+
+    subprocess.run(
+        [
+            "ssh",
+            "-p", mac_port,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=10",
+            mac_host,
+            remote_cmd,
+        ],
+        check=True,
+        timeout=30,
+        capture_output=True,
+    )
+    return None
+
+
+def _set_mac_worker_info(
+    conn: "sqlite3.Connection",
+    task_id: str,
+    *,
+    session_name: str,
+) -> None:
+    """Record Mac-bridge dispatch metadata and emit a ``spawned`` event.
+
+    Analogous to :func:`_set_worker_pid` for remote Mac-persona tasks.
+    There is no local PID, so ``worker_pid`` is left NULL. Updates
+    ``task_runs.metadata`` with ``host_local=False`` and
+    ``mac_session=<session_name>`` so the audit script can verify routing.
+    """
+    payload: dict[str, Any] = {"mac_session": session_name, "host_local": False}
+    with write_txn(conn):
+        run_id = _current_run_id(conn, task_id)
+        if run_id is not None:
+            conn.execute(
+                "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False), run_id),
+            )
+        _append_event(conn, task_id, "spawned", payload, run_id=run_id)
+
+
+# ---------------------------------------------------------------------------
 # Task creation / mutation
 # ---------------------------------------------------------------------------
 
@@ -6214,7 +6318,20 @@ def dispatch_once(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        # Mac-persona preclaim: generate the session name and claim with
+        # ``mac:<session>`` BEFORE the claim write so no transient
+        # ``conductor:*`` lock ever appears in the claimed event.
+        _is_mac = bool(row_assignee) and row_assignee.lower() in MAC_PERSONAS
+        if _is_mac:
+            _mac_sess = _mac_session_name(row_assignee, row["id"])
+            claimed = claim_task(
+                conn, row["id"],
+                claimer=f"mac:{_mac_sess}",
+                ttl_seconds=ttl_seconds,
+            )
+        else:
+            _mac_sess = None
+            claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
         try:
@@ -6230,22 +6347,36 @@ def dispatch_once(
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
-            # Back-compat: older spawn_fn signatures accept only
-            # (task, workspace). Test stubs in the suite rely on that.
-            # Introspect the callable and pass `board` only when supported.
-            import inspect
-            try:
-                sig = inspect.signature(_spawn)
-                if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
+            if _is_mac and spawn_fn is None:
+                # Real Mac-bridge path: SSH to the Mac, no local pid.
+                _spawn_mac_session(
+                    claimed, str(workspace),
+                    session_name=_mac_sess,
+                    board=board,
+                )
+                _set_mac_worker_info(conn, claimed.id, session_name=_mac_sess)
+            else:
+                # Local or test-stub path.
+                _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+                # Back-compat: older spawn_fn signatures accept only
+                # (task, workspace). Test stubs in the suite rely on that.
+                # Introspect the callable and pass `board` only when supported.
+                import inspect
+                try:
+                    sig = inspect.signature(_spawn)
+                    if "board" in sig.parameters:
+                        pid = _spawn(claimed, str(workspace), board=board)
+                    else:
+                        pid = _spawn(claimed, str(workspace))
+                except (TypeError, ValueError):
                     pid = _spawn(claimed, str(workspace))
-            except (TypeError, ValueError):
-                pid = _spawn(claimed, str(workspace))
-            if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                if pid:
+                    _set_worker_pid(conn, claimed.id, int(pid))
+                if _is_mac and _mac_sess:
+                    # spawn_fn test-stub path: still persist mac routing
+                    # metadata so tests can verify host_local=False.
+                    _set_mac_worker_info(conn, claimed.id, session_name=_mac_sess)
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified
@@ -6300,7 +6431,19 @@ def dispatch_once(
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
-        claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        # Mac-persona preclaim for review tasks: same logic as ready dispatch.
+        _rev_assignee = row["assignee"]
+        _rev_is_mac = bool(_rev_assignee) and _rev_assignee.lower() in MAC_PERSONAS
+        if _rev_is_mac:
+            _rev_mac_sess = _mac_session_name(_rev_assignee, row["id"])
+            claimed = claim_review_task(
+                conn, row["id"],
+                claimer=f"mac:{_rev_mac_sess}",
+                ttl_seconds=ttl_seconds,
+            )
+        else:
+            _rev_mac_sess = None
+            claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
         try:
@@ -6322,19 +6465,29 @@ def dispatch_once(
         # means the review agent gets both kanban-worker (lifecycle)
         # and sdlc-review (review logic: AC verification, merge, etc.).
         claimed.skills = ["sdlc-review"]
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
-            import inspect
-            try:
-                sig = inspect.signature(_spawn)
-                if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
+            if _rev_is_mac and spawn_fn is None:
+                _spawn_mac_session(
+                    claimed, str(workspace),
+                    session_name=_rev_mac_sess,
+                    board=board,
+                )
+                _set_mac_worker_info(conn, claimed.id, session_name=_rev_mac_sess)
+            else:
+                _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+                import inspect
+                try:
+                    sig = inspect.signature(_spawn)
+                    if "board" in sig.parameters:
+                        pid = _spawn(claimed, str(workspace), board=board)
+                    else:
+                        pid = _spawn(claimed, str(workspace))
+                except (TypeError, ValueError):
                     pid = _spawn(claimed, str(workspace))
-            except (TypeError, ValueError):
-                pid = _spawn(claimed, str(workspace))
-            if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                if pid:
+                    _set_worker_pid(conn, claimed.id, int(pid))
+                if _rev_is_mac and _rev_mac_sess:
+                    _set_mac_worker_info(conn, claimed.id, session_name=_rev_mac_sess)
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
