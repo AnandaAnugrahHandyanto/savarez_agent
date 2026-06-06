@@ -4,6 +4,12 @@ import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import {
+  fileToDataUrl,
+  type ImageUploadPayload,
+  imageUploadPayloadFromFile,
+  imageUploadPayloadFromPath
+} from '@/lib/image-upload'
+import {
   addComposerAttachment,
   type ComposerAttachment,
   removeComposerAttachment,
@@ -11,7 +17,7 @@ import {
 } from '@/store/composer'
 import { notify, notifyError } from '@/store/notifications'
 
-import type { ImageDetachResponse } from '../../types'
+import type { ImageAttachResponse, ImageDetachResponse } from '../../types'
 
 const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|gif|webp|bmp|tiff?|svg|ico)$/i
 
@@ -276,35 +282,102 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     [currentCwd]
   )
 
-  const attachImagePath = useCallback(async (filePath: string) => {
-    if (!filePath) {
+  const shouldUploadImageToGateway = useCallback(async () => {
+    if (!activeSessionId) {
       return false
     }
 
-    const baseAttachment: ComposerAttachment = {
-      id: attachmentId('image', filePath),
-      kind: 'image',
-      label: pathLabel(filePath),
-      detail: filePath,
-      path: filePath
-    }
-
-    attachToMain(baseAttachment)
-
     try {
-      const previewUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
+      const connection = await window.hermesDesktop?.getConnection()
 
-      if (previewUrl) {
-        addComposerAttachment({ ...baseAttachment, previewUrl })
+      return connection?.mode === 'remote'
+    } catch {
+      return false
+    }
+  }, [activeSessionId])
+
+  const uploadImageToGateway = useCallback(
+    async (payload: ImageUploadPayload, previewUrl?: string) => {
+      if (!activeSessionId) {
+        return false
       }
 
-      return true
-    } catch (err) {
-      notifyError(err, 'Image preview failed')
+      const result = await requestGateway<ImageAttachResponse>('image.upload', {
+        session_id: activeSessionId,
+        ...payload
+      })
+
+      if (!result.attached || !result.path) {
+        notify({ kind: 'error', title: 'Image attach', message: result.message || 'Failed to upload image.' })
+
+        return false
+      }
+
+      attachToMain({
+        id: attachmentId('image', result.path),
+        kind: 'image',
+        label: pathLabel(result.path),
+        detail: result.path,
+        path: result.path,
+        previewUrl,
+        attachedSessionId: activeSessionId
+      })
 
       return true
-    }
-  }, [])
+    },
+    [activeSessionId, requestGateway]
+  )
+
+  const attachImagePath = useCallback(
+    async (filePath: string, options: { uploadToGateway?: boolean } = {}) => {
+      if (!filePath) {
+        return false
+      }
+
+      if (options.uploadToGateway && (await shouldUploadImageToGateway())) {
+        try {
+          const previewUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
+
+          if (!previewUrl) {
+            notify({ kind: 'error', title: 'Image attach', message: 'Failed to read image.' })
+
+            return false
+          }
+
+          return uploadImageToGateway(imageUploadPayloadFromPath(filePath, previewUrl), previewUrl)
+        } catch (err) {
+          notifyError(err, 'Image upload failed')
+
+          return false
+        }
+      }
+
+      const baseAttachment: ComposerAttachment = {
+        id: attachmentId('image', filePath),
+        kind: 'image',
+        label: pathLabel(filePath),
+        detail: filePath,
+        path: filePath
+      }
+
+      attachToMain(baseAttachment)
+
+      try {
+        const previewUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
+
+        if (previewUrl) {
+          addComposerAttachment({ ...baseAttachment, previewUrl })
+        }
+
+        return true
+      } catch (err) {
+        notifyError(err, 'Image preview failed')
+
+        return true
+      }
+    },
+    [shouldUploadImageToGateway, uploadImageToGateway]
+  )
 
   const attachImageBlob = useCallback(
     async (blob: Blob) => {
@@ -317,6 +390,13 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       }
 
       try {
+        if (await shouldUploadImageToGateway()) {
+          const file = blob as File
+          const previewUrl = await fileToDataUrl(file)
+
+          return uploadImageToGateway(await imageUploadPayloadFromFile(file), previewUrl)
+        }
+
         const buffer = await blob.arrayBuffer()
         const data = new Uint8Array(buffer)
         const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob))
@@ -334,7 +414,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         return false
       }
     },
-    [attachImagePath]
+    [attachImagePath, shouldUploadImageToGateway, uploadImageToGateway]
   )
 
   const pickImages = useCallback(async () => {
@@ -354,7 +434,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     }
 
     for (const path of paths) {
-      await attachImagePath(path)
+      await attachImagePath(path, { uploadToGateway: true })
     }
   }, [attachImagePath, currentCwd])
 
@@ -372,7 +452,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         return
       }
 
-      await attachImagePath(path)
+      await attachImagePath(path, { uploadToGateway: true })
     } catch (err) {
       notifyError(err, 'Clipboard paste failed')
     }
@@ -456,6 +536,18 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {
+          if (await shouldUploadImageToGateway()) {
+            if (await attachImageBlob(file)) {
+              attached = true
+
+              continue
+            }
+
+            lastFailure = `Could not attach ${file.name || 'image'}`
+
+            continue
+          }
+
           if ((filePath && (await attachImagePath(filePath))) || (await attachImageBlob(file))) {
             attached = true
 
@@ -482,7 +574,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       return attached
     },
-    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath]
+    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, shouldUploadImageToGateway]
   )
 
   const removeAttachment = useCallback(
