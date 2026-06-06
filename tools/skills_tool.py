@@ -79,6 +79,7 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled
+from agent.skill_utils import EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +102,8 @@ _PLATFORM_MAP = {
     "windows": "win32",
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
 _REMOTE_ENV_BACKENDS = frozenset(
-    {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
+    {"docker", "singularity", "modal", "ssh", "daytona"}
 )
 _secret_capture_callback = None
 
@@ -156,6 +156,18 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     as a public re-export so existing callers don't need updating.
     """
     from agent.skill_utils import skill_matches_platform as _impl
+    return _impl(frontmatter)
+
+
+def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
+    """Check if a skill is relevant to the current runtime environment.
+
+    Delegates to ``agent.skill_utils.skill_matches_environment`` — kept here
+    as a public re-export so existing callers don't need updating. This is an
+    offer-time relevance gate (kanban/docker/s6), NOT a hard-compatibility gate;
+    explicit skill loads bypass it.
+    """
+    from agent.skill_utils import skill_matches_environment as _impl
     return _impl(frontmatter)
 
 
@@ -305,7 +317,13 @@ def _capture_required_environment_variables(
         }
 
     missing_names = [entry["name"] for entry in missing_entries]
-    if _is_gateway_surface():
+    # Most gateway surfaces (messaging platforms) can't prompt for a secret, so
+    # they short-circuit to the "unsupported" hint. Interactive gateway surfaces
+    # — the desktop app / TUI — set HERMES_INTERACTIVE and register a
+    # secret-capture callback that routes to a secure secret.request overlay, so
+    # they fall through and actually prompt. (HERMES_INTERACTIVE is the same flag
+    # tools/approval.py uses to tell an interactive surface from a messaging one.)
+    if _is_gateway_surface() and not env_var_enabled("HERMES_INTERACTIVE"):
         return {
             "missing_names": missing_names,
             "setup_skipped": False,
@@ -584,6 +602,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 frontmatter, body = _parse_frontmatter(content)
 
                 if not skill_matches_platform(frontmatter):
+                    continue
+
+                if not skill_matches_environment(frontmatter):
                     continue
 
                 name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
