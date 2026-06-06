@@ -16,7 +16,9 @@ export function BrandMark({ className, ...props }: React.ComponentProps<'span'>)
       )}
       {...props}
     >
-      <img alt="" className="size-[55%] object-contain" src={assetPath('logo.png')} />
+      {/* logo.png is blue line-art on transparent; force it white so it reads
+          on both the brand-blue and near-black tiles. */}
+      <img alt="" className="size-[62%] object-contain brightness-0 invert" src={assetPath('logo.png')} />
     </span>
   )
 }
