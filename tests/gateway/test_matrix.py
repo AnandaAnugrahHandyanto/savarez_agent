@@ -392,6 +392,59 @@ class TestMatrixTypingIndicator:
 
 
 # ---------------------------------------------------------------------------
+# Invite auto-join policy
+# ---------------------------------------------------------------------------
+class TestMatrixInviteAutjoinPolicy:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._client = MagicMock()
+        self.adapter._client.join_room = AsyncMock()
+        self.adapter._refresh_dm_cache = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_invite_outside_allowed_rooms_is_not_joined(self):
+        self.adapter._allowed_rooms = {"!allowed:example.org"}
+        self.adapter._auto_join_unlisted_invites = False
+
+        await self.adapter._on_invite(types.SimpleNamespace(room_id="!space:example.org"))
+
+        self.adapter._client.join_room.assert_not_awaited()
+        assert "!space:example.org" not in self.adapter._joined_rooms
+
+    @pytest.mark.asyncio
+    async def test_pending_invite_outside_allowed_rooms_is_not_joined(self):
+        self.adapter._allowed_rooms = {"!allowed:example.org"}
+        self.adapter._auto_join_unlisted_invites = False
+
+        await self.adapter._join_pending_invites(
+            {"rooms": {"invite": {"!space:example.org": {}}}}
+        )
+
+        self.adapter._client.join_room.assert_not_awaited()
+        assert "!space:example.org" not in self.adapter._joined_rooms
+
+    @pytest.mark.asyncio
+    async def test_invite_for_allowed_room_is_joined(self):
+        self.adapter._allowed_rooms = {"!allowed:example.org"}
+        self.adapter._auto_join_unlisted_invites = False
+
+        await self.adapter._on_invite(types.SimpleNamespace(room_id="!allowed:example.org"))
+
+        self.adapter._client.join_room.assert_awaited_once()
+        assert "!allowed:example.org" in self.adapter._joined_rooms
+
+    @pytest.mark.asyncio
+    async def test_unlisted_invite_can_opt_in_to_legacy_autojoin(self):
+        self.adapter._allowed_rooms = {"!allowed:example.org"}
+        self.adapter._auto_join_unlisted_invites = True
+
+        await self.adapter._on_invite(types.SimpleNamespace(room_id="!space:example.org"))
+
+        self.adapter._client.join_room.assert_awaited_once()
+        assert "!space:example.org" in self.adapter._joined_rooms
+
+
+# ---------------------------------------------------------------------------
 # mxc:// URL conversion
 # ---------------------------------------------------------------------------
 

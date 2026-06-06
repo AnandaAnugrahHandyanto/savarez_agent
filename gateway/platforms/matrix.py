@@ -21,6 +21,8 @@ Environment variables:
     MATRIX_ALLOWED_ROOMS    Comma-separated room IDs; if set, bot ONLY responds in these rooms (whitelist; DMs exempt unless MATRIX_ALLOWED_ROOMS_APPLY_TO_DMS=true; alias of matrix.allowed_rooms)
     MATRIX_ALLOWED_ROOMS_APPLY_TO_DMS
                             Set "true" to enforce MATRIX_ALLOWED_ROOMS for Matrix DMs too (recommended for multi-profile deployments)
+    MATRIX_AUTO_JOIN_UNLISTED_INVITES
+                            Set "true" to auto-join invites for rooms not listed in MATRIX_ALLOWED_ROOMS. Default: false.
     MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
     MATRIX_DM_AUTO_THREAD       Auto-create threads for DM messages (default: false)
     MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
@@ -503,6 +505,20 @@ class MatrixAdapter(BasePlatformAdapter):
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
         }
+        auto_join_unlisted_raw = config.extra.get("auto_join_unlisted_invites")
+        if auto_join_unlisted_raw is None:
+            auto_join_unlisted_raw = os.getenv(
+                "MATRIX_AUTO_JOIN_UNLISTED_INVITES", "false"
+            )
+        if isinstance(auto_join_unlisted_raw, bool):
+            self._auto_join_unlisted_invites = auto_join_unlisted_raw
+        else:
+            self._auto_join_unlisted_invites = str(auto_join_unlisted_raw).lower() in {
+                "true",
+                "1",
+                "yes",
+                "on",
+            }
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -2098,10 +2114,35 @@ class MatrixAdapter(BasePlatformAdapter):
 
         await self.handle_message(msg_event)
 
+    def _should_join_invited_room(self, room_id: str) -> bool:
+        """Return True when an invite is allowed to be auto-joined.
+
+        Profile gateways commonly run with MATRIX_ALLOWED_ROOMS restricted to a
+        single deterministic contact room.  Auto-joining arbitrary pending
+        invites in that mode lets unrelated profile gateways join project Spaces
+        or other rooms they should only ignore.  Operators can opt back into the
+        legacy broad behavior with MATRIX_AUTO_JOIN_UNLISTED_INVITES=true.
+        """
+        if not room_id:
+            return False
+        if room_id in self._joined_rooms:
+            return True
+        if not self._allowed_rooms:
+            return True
+        if room_id in self._allowed_rooms:
+            return True
+        return bool(self._auto_join_unlisted_invites)
+
     async def _on_invite(self, event: Any) -> None:
-        """Auto-join rooms when invited."""
+        """Auto-join allowed rooms when invited."""
 
         room_id = str(getattr(event, "room_id", ""))
+        if not self._should_join_invited_room(room_id):
+            logger.info(
+                "Matrix: invited to %s — not joining because it is not in MATRIX_ALLOWED_ROOMS",
+                room_id,
+            )
+            return
 
         logger.info(
             "Matrix: invited to %s — joining",
@@ -2134,8 +2175,15 @@ class MatrixAdapter(BasePlatformAdapter):
         for room_id in invites:
             if room_id in self._joined_rooms:
                 continue
+            room_id = str(room_id)
+            if not self._should_join_invited_room(room_id):
+                logger.info(
+                    "Matrix: pending invite for %s ignored because it is not in MATRIX_ALLOWED_ROOMS",
+                    room_id,
+                )
+                continue
             logger.info("Matrix: reconciling pending invite for %s", room_id)
-            await self._join_room_by_id(str(room_id))
+            await self._join_room_by_id(room_id)
 
     # ------------------------------------------------------------------
     # Reactions (send, receive, processing lifecycle)
