@@ -789,7 +789,19 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.MATRIX:
             result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
-            result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
+            # Route DingTalk through the gateway live adapter when available.
+            # The adapter supports proactive send (OToMessage batchSend API)
+            # and session_webhook replies — both more capable than the
+            # standalone static-webhook path (_send_dingtalk).
+            result = await _send_via_adapter(
+                platform, pconfig, chat_id, chunk,
+                thread_id=thread_id,
+                media_files=media_files,
+                force_document=force_document,
+            )
+            # Fallback to static webhook if adapter is unavailable
+            if isinstance(result, dict) and result.get("error") and "adapter" in result.get("error", "").lower():
+                result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:

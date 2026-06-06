@@ -836,21 +836,30 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         # Check metadata first (for direct webhook sends)
         session_webhook = metadata.get("session_webhook")
+        use_proactive_api = False
         if not session_webhook:
             webhook_info = self._get_valid_webhook(chat_id)
             if not webhook_info:
-                logger.warning(
-                    "[%s] No valid session_webhook for chat_id=%s",
+                # No valid session_webhook — try proactive robot send API instead.
+                # The DingTalk OToMessage batchSend API can push messages to users
+                # without requiring a prior inbound message, using userIds (staffId).
+                logger.info(
+                    "[%s] No valid session_webhook for chat_id=%s, trying proactive send",
                     self.name, chat_id,
                 )
-                return SendResult(
-                    success=False,
-                    error="No valid session_webhook available. Reply must follow an incoming message.",
-                )
-            session_webhook, _ = webhook_info
+                use_proactive_api = True
+            else:
+                session_webhook, _ = webhook_info
 
-        if not self._http_client:
+        if not self._http_client and not use_proactive_api:
             return SendResult(success=False, error="HTTP client not initialized")
+
+        # Proactive send via OToMessage batchSend API (no session_webhook needed).
+        # Uses userIds (staffId) to target specific users directly. Requires the
+        # robot application to have "机器人主动发消息" permission enabled in
+        # DingTalk Open Platform (open.dingtalk.com).
+        if use_proactive_api:
+            return await self._proactive_send(chat_id, content)
 
         # Look up the inbound message for this chat (for AI Card routing)
         current_message = self._message_contexts.get(chat_id)
@@ -925,6 +934,183 @@ class DingTalkAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[%s] Send error: %s", self.name, e)
             return SendResult(success=False, error=str(e))
+
+    async def _proactive_send(
+        self,
+        chat_id: str,
+        content: str,
+    ) -> SendResult:
+        """Send a message proactively via the DingTalk OToMessage batchSend API.
+
+        Used when session_webhook is unavailable (e.g. cron push notifications,
+        cross-platform send_message calls) to send messages without requiring the
+        user to have sent an inbound message first.
+
+        Uses the new ``v1.0/robot/oToMessages/batchSend`` REST API which accepts
+        ``userIds`` (DingTalk staffId / userId) to target specific users, rather
+        than ``open_conversation_id`` which requires an existing session.
+
+        The old ``PrivateChatSendRequest`` SDK method (robot_1_0) returns
+        ``resource.not.found`` for proactive sends because it requires a prior
+        conversation context — the batchSend API does not.
+
+        Requires:
+        - ``_http_client`` initialized (always available after connect())
+        - ``access_token`` obtained via ``_get_access_token()`` (uses the same
+          client_id/secret already configured for Stream mode)
+        - Robot application must have "机器人主动发消息" permission enabled
+          in DingTalk Open Platform (open.dingtalk.com → 应用能力 → 机器人)
+        - ``userId`` (staffId) available — extracted from inbound message context
+          or from ``channel_directory.json`` (requires ``user_id`` field)
+        """
+        if not self._http_client:
+            return SendResult(
+                success=False,
+                error="HTTP client not initialized for proactive send.",
+            )
+
+        # Normalize markdown content for DingTalk
+        normalized = self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])
+
+        try:
+            access_token = await self._get_access_token()
+            if not access_token:
+                return SendResult(success=False, error="Could not obtain DingTalk access token")
+
+            # Resolve userId (staffId) for the target chat_id.
+            # The batchSend API requires userIds in staffId format, not
+            # open_conversation_id (cid...) format.
+            user_id = ""
+            current_message = self._message_contexts.get(chat_id)
+            if current_message:
+                user_id = (
+                    getattr(current_message, "sender_staff_id", "") or
+                    getattr(current_message, "sender_id", "") or ""
+                )
+            # If no stored context, try channel_directory for staffId mapping
+            if not user_id:
+                try:
+                    from gateway.channel_directory import load_directory
+                    directory = load_directory()
+                    dingtalk_channels = directory.get("platforms", {}).get("dingtalk", [])
+                    for ch in dingtalk_channels:
+                        if ch.get("id") == chat_id and ch.get("user_id"):
+                            user_id = ch["user_id"]
+                            break
+                except Exception:
+                    pass
+
+            if not user_id:
+                return SendResult(
+                    success=False,
+                    error="No userId/staffId available for proactive send. "
+                          "Add a 'user_id' field to the DingTalk entry in "
+                          "~/.hermes/channel_directory.json, or ensure the user "
+                          "has sent a message to the bot so sender_staff_id can "
+                          "be cached.",
+                )
+
+            # Determine conversation type (group vs DM) for the API endpoint.
+            # batchSend is for DMs; org_group_send SDK method is for groups.
+            is_group = False
+            if current_message:
+                conv_type = getattr(current_message, "conversation_type", "1") or "1"
+                is_group = conv_type == "2"
+
+            msg_param = json.dumps({
+                "title": "Hermes",
+                "text": normalized,
+            })
+
+            if is_group and self._robot_sdk and dingtalk_robot_client:
+                # Group send uses the existing SDK method (org_group_send)
+                # which accepts open_conversation_id directly.
+                request = dingtalk_robot_models.OrgGroupSendRequest(
+                    open_conversation_id=chat_id,
+                    robot_code=self._robot_code,
+                    msg_key="sampleMarkdown",
+                    msg_param=msg_param,
+                    token=access_token,
+                )
+                response = await self._robot_sdk.org_group_send_with_options_async(
+                    request,
+                    dingtalk_robot_models.OrgGroupSendHeaders(),
+                    runtime=tea_util_models.RuntimeOptions(),
+                )
+                body = response.body if response and response.body else None
+                if body and getattr(body, "success", False):
+                    msg_id = getattr(body, "process_query_key", None) or uuid.uuid4().hex[:12]
+                    logger.info(
+                        "[%s] Proactive group send succeeded for chat_id=%s",
+                        self.name, chat_id,
+                    )
+                    return SendResult(success=True, message_id=msg_id)
+                err_msg = "unknown error"
+                if body:
+                    err_msg = getattr(body, "message", None) or str(body)
+                return SendResult(success=False, error=f"Proactive group send failed: {err_msg}")
+
+            # DM send uses the new batchSend REST API.
+            # The SDK's PrivateChatSendRequest (robot_1_0) returns resource.not.found
+            # for proactive sends — it requires an existing conversation context.
+            # The batchSend API (/v1.0/robot/oToMessages/batchSend) uses userIds
+            # (staffId) directly and does not require prior interaction.
+            batch_url = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
+            batch_headers = {
+                "x-acs-dingtalk-access-token": access_token,
+                "Content-Type": "application/json",
+            }
+            batch_payload = {
+                "robotCode": self._robot_code,
+                "userIds": [user_id],
+                "msgKey": "sampleMarkdown",
+                "msgParam": msg_param,
+            }
+            batch_resp = await self._http_client.post(
+                batch_url, json=batch_payload, headers=batch_headers, timeout=15.0,
+            )
+            if batch_resp.status_code >= 300:
+                body_text = batch_resp.text[:500]
+                logger.warning(
+                    "[%s] Proactive batchSend HTTP %d for user_id=%s: %s",
+                    self.name, batch_resp.status_code, user_id, body_text,
+                )
+                return SendResult(
+                    success=False,
+                    error=f"Proactive batchSend HTTP {batch_resp.status_code}: {body_text}",
+                )
+            batch_data = batch_resp.json()
+            invalid = batch_data.get("invalidStaffIdList", [])
+            filtered = batch_data.get("filteredStaffIdList", [])
+            flow_controlled = batch_data.get("flowControlledStaffIdList", [])
+            if invalid and user_id in invalid:
+                return SendResult(
+                    success=False,
+                    error=f"Proactive batchSend: staffId {user_id} is invalid — "
+                          f"verify the userId matches a real DingTalk staffId.",
+                )
+            if filtered and user_id in filtered:
+                return SendResult(
+                    success=False,
+                    error=f"Proactive batchSend: staffId {user_id} was filtered — "
+                          f"the robot may not have permission to message this user.",
+                )
+            if flow_controlled and user_id in flow_controlled:
+                return SendResult(
+                    success=False,
+                    error=f"Proactive batchSend: staffId {user_id} was flow-controlled — "
+                          f"message rate limit exceeded, retry later.",
+                )
+            process_key = batch_data.get("processQueryKey", "")
+            logger.info(
+                "[%s] Proactive batchSend succeeded for user_id=%s chat_id=%s",
+                self.name, user_id, chat_id,
+            )
+            return SendResult(success=True, message_id=process_key or uuid.uuid4().hex[:12])
+
+        except Exception as e:
+            logger.error("[%s] Proactive send error for chat_id=%s: %s", self.name, chat_id, e)
+            return SendResult(success=False, error=f"Proactive send error: {e}")
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """DingTalk does not support typing indicators."""
