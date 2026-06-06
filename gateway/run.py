@@ -319,28 +319,19 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     return text
 
 
-_NOTICE_LEVEL_GLYPHS = {
-    "info": "•",
-    "warn": "⚠",
-    "error": "⛔",
-    "success": "✓",
-}
-
-
 def render_notice_line(notice) -> str:
     """Render an AgentNotice to a single plaintext line for messaging platforms.
 
     Messaging has no persistent status bar (unlike the TUI), so a notice is a
-    one-shot standalone push: a level glyph + the notice text. Plaintext only —
-    no markdown — so it renders uniformly across Telegram/Discord/Slack/SMS
-    without per-platform escaping. Fail-soft: a malformed notice degrades to its
-    text (or empty string) rather than raising on the agent's callback path.
+    one-shot standalone push. The notice policy already bakes the level glyph
+    (⚠ / • / ✕ / ✓) into the text, and the TUI + CLI REPL render that text
+    verbatim — so we emit it as-is here too. Prepending a per-level glyph would
+    DOUBLE it ("⚠ ⚠ Credits 90% used", "⛔ ✕ Credit access paused"). Plaintext
+    only — no markdown — so it renders uniformly across Telegram/Discord/Slack/
+    SMS without per-platform escaping. Fail-soft: a malformed/empty notice
+    degrades to "" rather than raising on the agent's callback path.
     """
-    text = str(getattr(notice, "text", "") or "").strip()
-    if not text:
-        return ""
-    glyph = _NOTICE_LEVEL_GLYPHS.get(str(getattr(notice, "level", "info") or "info"))
-    return f"{glyph} {text}" if glyph else text
+    return str(getattr(notice, "text", "") or "").strip()
 
 
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
