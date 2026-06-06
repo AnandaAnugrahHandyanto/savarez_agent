@@ -34,6 +34,38 @@ def fake_skills(tmp_path):
 
 
 class TestPathTraversalBlocked:
+    def test_dotdot_in_skill_name_cannot_select_sibling_skill(self, fake_skills):
+        """The skill name itself must not escape SKILLS_DIR.
+
+        Regression for #38643: a sibling directory containing SKILL.md must not
+        become the selected skill root via name="../outside-skill".
+        """
+        tmp_path = fake_skills["tmp_path"]
+        outside_skill = tmp_path / "outside-skill"
+        outside_skill.mkdir()
+        (outside_skill / "SKILL.md").write_text("# Outside Skill\n")
+        (outside_skill / ".env").write_text("ESCAPED_SECRET=do-not-leak")
+
+        result = json.loads(skill_view("../outside-skill", file_path=".env"))
+
+        assert result["success"] is False
+        assert "traversal" in result["error"].lower()
+        assert "do-not-leak" not in json.dumps(result)
+
+    def test_absolute_skill_name_rejected(self, fake_skills):
+        """Absolute skill names must not bypass the trusted search root."""
+        tmp_path = fake_skills["tmp_path"]
+        outside_skill = tmp_path / "outside-absolute"
+        outside_skill.mkdir()
+        (outside_skill / "SKILL.md").write_text("# Outside Absolute\n")
+        (outside_skill / ".env").write_text("ABSOLUTE_SECRET=do-not-leak")
+
+        result = json.loads(skill_view(str(outside_skill), file_path=".env"))
+
+        assert result["success"] is False
+        assert "relative path" in result["error"].lower()
+        assert "do-not-leak" not in json.dumps(result)
+
     def test_dotdot_in_file_path(self, fake_skills):
         """Direct .. traversal should be rejected."""
         result = json.loads(skill_view("test-skill", file_path="../../.env"))

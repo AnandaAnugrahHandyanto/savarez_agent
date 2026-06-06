@@ -73,7 +73,7 @@ from hermes_constants import get_hermes_home, display_hermes_home
 import os
 import re
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, Any, List, Optional, Set, Tuple
 
 from tools.registry import registry, tool_error
@@ -106,6 +106,21 @@ _REMOTE_ENV_BACKENDS = frozenset(
     {"docker", "singularity", "modal", "ssh", "daytona"}
 )
 _secret_capture_callback = None
+
+
+def _skill_lookup_path_error(name: str) -> Optional[str]:
+    """Return an error when a local skill lookup name can escape search roots."""
+    if not isinstance(name, str):
+        return "Skill name must be a string."
+
+    candidate = name.strip()
+    win_path = PureWindowsPath(candidate)
+    posix_path = PurePosixPath(candidate)
+    if posix_path.is_absolute() or win_path.is_absolute() or win_path.drive:
+        return "Skill name must be a relative path within the skills directory."
+    if ".." in win_path.parts or ".." in posix_path.parts:
+        return "Skill name cannot contain '..' path traversal components."
+    return None
 
 
 def load_env() -> Dict[str, str]:
@@ -847,6 +862,17 @@ def skill_view(
         JSON string with skill content or error message
     """
     try:
+        lookup_error = _skill_lookup_path_error(name)
+        if lookup_error:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": lookup_error,
+                    "hint": "Use a skill name or relative category path within the skills directory.",
+                },
+                ensure_ascii=False,
+            )
+
         local_category_name: str | None = None
         # ── Qualified name dispatch (plugin skills) ──────────────────
         # Names containing ':' are routed to the plugin skill registry.
@@ -932,6 +958,18 @@ def skill_view(
                 ensure_ascii=False,
             )
 
+        lookup_name = local_category_name or name
+        lookup_error = _skill_lookup_path_error(lookup_name)
+        if lookup_error:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": lookup_error,
+                    "hint": "Use a skill name or relative category path within the skills directory.",
+                },
+                ensure_ascii=False,
+            )
+
         skill_dir = None
         skill_md = None
 
@@ -959,7 +997,7 @@ def skill_view(
         for search_dir in all_dirs:
             # Strategy 1: direct path (e.g., "mlops/axolotl" or bare "axolotl"
             # at the top of the dir).
-            direct_path = search_dir / name
+            direct_path = search_dir / lookup_name
             if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
                 _record(direct_path, direct_path / "SKILL.md")
             elif direct_path.with_suffix(".md").exists():
@@ -978,11 +1016,11 @@ def skill_view(
             # Strategy 2: recursive by directory name (catches nested skills
             # like "foundations/runtime/explore-codebase" called by bare name).
             for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
-                if found_skill_md.parent.name == name:
+                if found_skill_md.parent.name == lookup_name:
                     _record(found_skill_md.parent, found_skill_md)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
-            for found_md in search_dir.rglob(f"{name}.md"):
+            for found_md in search_dir.rglob(f"{lookup_name}.md"):
                 if found_md.name != "SKILL.md":
                     _record(None, found_md)
 
