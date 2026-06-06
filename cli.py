@@ -13697,20 +13697,22 @@ class HermesCLI:
             """Down arrow: browse history when on last line, else move cursor down."""
             event.app.current_buffer.auto_down(count=event.arg)
 
+                # ── Cursor line movement ──
+        # Ctrl+Up/Down: Windows Terminal, xterm, iTerm2, WezTerm, Ghostty
+        # Shift+Up/Down: Kitty, foot, CSI u / modifyOtherKeys terminals
+
         @kb.add('c-up', filter=_normal_input)
         @kb.add('s-up', filter=_normal_input)
         def _move_cursor_up(event):
             buf = event.app.current_buffer
             doc = buf.document
             if doc.line_count > 1:
-                # Hard newlines: move between logical lines
                 row = doc.cursor_position_row
                 if row > 0:
                     target_row = row - 1
                     col = min(doc.cursor_position_col, len(doc.lines[target_row]))
                     buf.cursor_position = doc.translate_row_col_to_index(target_row, col)
             elif buf.cursor_position > 0:
-                # Visual wrapping: move between visual rows
                 cols = event.app.output.get_size().columns
                 pos = buf.cursor_position
                 visual_row = pos // cols
@@ -13725,14 +13727,12 @@ class HermesCLI:
             buf = event.app.current_buffer
             doc = buf.document
             if doc.line_count > 1:
-                # Hard newlines: move between logical lines
                 row = doc.cursor_position_row
                 if row < doc.line_count - 1:
                     target_row = row + 1
                     col = min(doc.cursor_position_col, len(doc.lines[target_row]))
                     buf.cursor_position = doc.translate_row_col_to_index(target_row, col)
             else:
-                # Visual wrapping: move between visual rows
                 cols = event.app.output.get_size().columns
                 pos = buf.cursor_position
                 visual_row = pos // cols
@@ -13741,6 +13741,32 @@ class HermesCLI:
                     visual_col = pos % cols
                     target = (visual_row + 1) * cols + visual_col
                     buf.cursor_position = min(target, len(buf.text))
+
+        # ── Left/Right cross hard-newline boundaries ──
+        # prompt_toolkit's default left/right only look at column, not
+        # row, so at column 0 of a non-first line left is dead.
+
+        @kb.add('left', filter=_normal_input)
+        def _move_cursor_left(event):
+            buf = event.app.current_buffer
+            doc = buf.document
+            if doc.cursor_position_col == 0 and doc.cursor_position_row > 0:
+                target_row = doc.cursor_position_row - 1
+                buf.cursor_position = doc.translate_row_col_to_index(
+                    target_row, len(doc.lines[target_row])
+                )
+            else:
+                buf.cursor_position += doc.get_cursor_left_position(count=event.arg)
+
+        @kb.add('right', filter=_normal_input)
+        def _move_cursor_right(event):
+            buf = event.app.current_buffer
+            doc = buf.document
+            row = doc.cursor_position_row
+            if doc.cursor_position_col >= len(doc.lines[row]) and row < doc.line_count - 1:
+                buf.cursor_position = doc.translate_row_col_to_index(row + 1, 0)
+            else:
+                buf.cursor_position += doc.get_cursor_right_position(count=event.arg)
         
         @kb.add('c-l')
         def handle_ctrl_l(event):
