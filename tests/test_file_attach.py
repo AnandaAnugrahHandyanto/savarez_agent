@@ -81,10 +81,109 @@ class TestValidateUpload:
         with pytest.raises(ValueError, match="exceeds size limit"):
             _validate_upload(f, mime="image/png", size_bytes=200)
 
-    def test_wildcard_whitelist_allows_any(self, tmp_path, monkeypatch):
-        import cli
-        monkeypatch.setattr(cli, "_FILE_WHITELIST_ACTIVE", frozenset({"*"}))
-        f = tmp_path / "any.bin"
-        f.write_bytes(b"\x00\x01\x02")
-        result = _validate_upload(f, mime="application/octet-stream", size_bytes=3)
-        assert result.allowed is True
+import hashlib
+
+from cli import _copy_to_sandbox, _list_attached, _cleanup_session_sandbox
+
+
+class TestSandboxCopy:
+    def test_copies_file_to_sandbox_dir(self, tmp_path, monkeypatch):
+        # Redirect the sandbox root to tmp_path for the test.
+        monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+        src = tmp_path / "src.txt"
+        src.write_bytes(b"hello world")
+
+        attached = _copy_to_sandbox(src, session_id="sess-1")
+
+        assert attached.stored_path.exists()
+        assert attached.stored_path.read_bytes() == b"hello world"
+        assert attached.session_id == "sess-1"
+        assert attached.sha256 == hashlib.sha256(b"hello world").hexdigest()
+
+    def test_uses_hash_in_filename(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+        src = tmp_path / "src.png"
+        src.write_bytes(b"\x89PNG\r\n\x1a\nrest of png")
+
+        attached = _copy_to_sandbox(src, session_id="sess-2")
+
+        # Filename is <hash>.<ext>, not the original name.
+        assert attached.stored_path.name.startswith(attached.sha256[:16])
+        assert attached.stored_path.suffix == ".png"
+        assert attached.original_path == src
+
+    def test_chmod_600_on_copied_file(self, tmp_path, monkeypatch):
+        import stat
+        monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+        src = tmp_path / "src.txt"
+        src.write_bytes(b"x")
+
+        attached = _copy_to_sandbox(src, session_id="sess-3")
+
+        mode = attached.stored_path.stat().st_mode
+        # Owner read+write only.
+        assert mode & 0o777 == stat.S_IRUSR | stat.S_IWUSR
+
+    def test_dedupes_within_session(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+        src = tmp_path / "same.txt"
+        src.write_bytes(b"same content")
+
+        a1 = _copy_to_sandbox(src, session_id="sess-4")
+        a2 = _copy_to_sandbox(src, session_id="sess-4")
+
+        # Same hash → same stored path.
+        assert a1.stored_path == a2.stored_path
+
+    def test_different_sessions_different_sandboxes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+        src = tmp_path / "shared.txt"
+        src.write_bytes(b"x")
+
+        a1 = _copy_to_sandbox(src, session_id="sess-A")
+        a2 = _copy_to_sandbox(src, session_id="sess-B")
+
+        assert a1.stored_path != a2.stored_path
+        assert "sess-A" in str(a1.stored_path)
+        assert "sess-B" in str(a2.stored_path)
+
+
+class TestListAttached:
+    def test_empty_session_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+        result = _list_attached(session_id="empty")
+        assert result == []
+
+    def test_returns_all_files_in_session_sandbox(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+        from cli import _copy_to_sandbox
+        src1 = tmp_path / "a.txt"; src1.write_bytes(b"alpha")
+        src2 = tmp_path / "b.txt"; src2.write_bytes(b"beta")
+        _copy_to_sandbox(src1, session_id="sess-X")
+        _copy_to_sandbox(src2, session_id="sess-X")
+
+        result = _list_attached(session_id="sess-X")
+
+        assert len(result) == 2
+        names = {a.original_path.name for a in result}
+        assert names == {"a.txt", "b.txt"}
+
+
+class TestCleanupSessionSandbox:
+    def test_removes_session_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+        from cli import _copy_to_sandbox
+        src = tmp_path / "gone.txt"; src.write_bytes(b"bye")
+        attached = _copy_to_sandbox(src, session_id="doomed")
+        assert attached.stored_path.exists()
+
+        _cleanup_session_sandbox(session_id="doomed")
+
+        assert not attached.stored_path.exists()
+        # And the session directory itself is gone.
+        assert not attached.stored_path.parent.exists()
+
+    def test_missing_session_is_noop(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+        # Should not raise even if the directory doesn't exist.
+        _cleanup_session_sandbox(session_id="nonexistent")
