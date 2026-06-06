@@ -879,6 +879,36 @@ class TestWeixinContentDedup:
         event = adapter.handle_message.await_args[0][0]
         assert event.text == "hello world"
 
+    def test_duplicate_text_is_normalized_before_content_dedup(self):
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
+
+        async def _drive():
+            await adapter._process_message(
+                {
+                    "from_user_id": "wxid_user1",
+                    "message_id": "msg-1",
+                    "item_list": [{"type": 1, "text_item": {"text": "ping"}}],
+                }
+            )
+            await adapter._process_message(
+                {
+                    "from_user_id": "wxid_user1",
+                    "message_id": "msg-2",
+                    "item_list": [{"type": 1, "text_item": {"text": "\u200bping\ufeff"}}],
+                }
+            )
+            await asyncio.sleep(0.2)
+
+        asyncio.run(_drive())
+
+        assert adapter.handle_message.await_count == 1
+        event = adapter.handle_message.await_args[0][0]
+        assert event.text == "ping"
+
     def test_content_dedup_not_called_for_messages_without_text(self):
         adapter = _make_adapter()
         adapter._poll_session = object()

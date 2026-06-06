@@ -1395,7 +1395,8 @@ class WeixinAdapter(BasePlatformAdapter):
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
         if text:
-            content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
+            normalized_text = self._normalize_text_for_dedup(text)
+            content_key = f"content:{sender_id}:{hashlib.md5(normalized_text.encode()).hexdigest()}"
             if self._dedup.is_duplicate(content_key):
                 logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
                 return
@@ -1475,6 +1476,17 @@ class WeixinAdapter(BasePlatformAdapter):
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
+
+    @staticmethod
+    def _normalize_text_for_dedup(text: str) -> str:
+        """Normalize Weixin text before content-fingerprint deduplication.
+
+        iLink can redeliver the same user text with invisible formatting
+        characters or whitespace differences and a different message_id. Keep
+        this conservative so distinct user messages remain distinct.
+        """
+        text = "".join(ch for ch in text if ch not in {"\ufeff", "\u200b", "\u200c", "\u200d"})
+        return re.sub(r"\s+", " ", text).strip()
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
