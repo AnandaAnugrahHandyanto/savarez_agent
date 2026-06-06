@@ -129,6 +129,7 @@ def _prepare_route_required_skills(
     if getattr(mode_route, "expose_skill_tools", True) and "skills" not in prepared_toolsets:
         prepared_toolsets.append("skills")
     blocks: List[str] = []
+    missing: List[tuple[str, str]] = []
     seen: set[str] = set()
 
     for skill_name in required_skills:
@@ -142,30 +143,36 @@ def _prepare_route_required_skills(
             raw = skill_view(skill_name, task_id=task_id, preprocess=False)
             data = json.loads(raw)
         except Exception as exc:
+            reason = str(exc) or "unknown error"
             logger.warning(
                 "Failed to preload required route skill %s for mode %s: %s",
                 skill_name,
                 getattr(mode_route, "name", ""),
-                exc,
+                reason,
             )
+            missing.append((skill_name, reason))
             continue
 
         if not data.get("success"):
+            reason = str(data.get("error") or "unknown error")
             logger.warning(
                 "Required route skill %s for mode %s was not loaded: %s",
                 skill_name,
                 getattr(mode_route, "name", ""),
-                data.get("error") or "unknown error",
+                reason,
             )
+            missing.append((skill_name, reason))
             continue
 
         content = str(data.get("content") or "").strip()
         if not content:
+            reason = "empty skill content"
             logger.warning(
                 "Required route skill %s for mode %s had no content",
                 skill_name,
                 getattr(mode_route, "name", ""),
             )
+            missing.append((skill_name, reason))
             continue
 
         resolved_name = str(data.get("name") or skill_name).strip() or skill_name
@@ -173,16 +180,30 @@ def _prepare_route_required_skills(
             f'### skill_view(name="{skill_name}") → {resolved_name}\n{content}'
         )
 
-    if not blocks:
+    prompt_parts: List[str] = []
+    if blocks:
+        prompt_parts.append(
+            "## Required route skills\n"
+            "The gateway preloaded these skills for this route. Treat them as if "
+            "you had just called skill_view yourself before replying. Follow them "
+            "unless they conflict with higher-priority user or project instructions.\n\n"
+            + "\n\n".join(blocks)
+        )
+    if missing:
+        missing_lines = []
+        for skill_name, reason in missing:
+            safe_reason = " ".join(str(reason or "unknown error").split())[:240]
+            missing_lines.append(f"- {skill_name}: {safe_reason}")
+        prompt_parts.append(
+            "## Required route skill preload warning\n"
+            "The gateway could not preload all skills required by this route. "
+            "先简短告诉用户：部分路由技能未能加载，当前回复会降级处理；不要假装这些技能已加载。\n"
+            + "\n".join(missing_lines)
+        )
+    if not prompt_parts:
         return prepared_toolsets, combined_ephemeral or ""
 
-    required_prompt = (
-        "## Required route skills\n"
-        "The gateway preloaded these skills for this route. Treat them as if "
-        "you had just called skill_view yourself before replying. Follow them "
-        "unless they conflict with higher-priority user or project instructions.\n\n"
-        + "\n\n".join(blocks)
-    )
+    required_prompt = "\n\n".join(prompt_parts)
     combined = (combined_ephemeral or "").strip()
     combined = (combined + "\n\n" + required_prompt).strip() if combined else required_prompt
     return prepared_toolsets, combined

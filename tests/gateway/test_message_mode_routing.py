@@ -512,6 +512,177 @@ def test_content_route_skills_are_preloaded_without_dev_or_ops_skills(monkeypatc
     ]
 
 
+@pytest.mark.parametrize(
+    ("message", "expected_skill"),
+    [
+        ("内容创意 小红书封面视觉排版怎么做", "xhs-visual-director"),
+        ("内容创意 把这段内容做成社媒卡片", "social-card-composer"),
+        ("内容创意 复盘这周笔记数据和评论反馈", "content-feedback-loop"),
+        ("内容创意 拆解这个短视频为什么火", "video-analysis-director"),
+        ("内容创意 找南沙本地达人和教育博主合作", "influencer-discovery-advisor"),
+    ],
+)
+def test_content_route_intent_based_preload_adds_specialist_skill(message, expected_skill):
+    route = resolve_gateway_message_mode(message)
+
+    assert route.name == "content"
+    assert expected_skill in route.required_skills
+    assert "project-dev-workflow" not in route.required_skills
+    assert "hermes-runtime-ops" not in route.required_skills
+
+
+def test_required_route_skill_missing_adds_explicit_feedback_to_prompt(monkeypatch):
+    from gateway.run import _prepare_route_required_skills
+
+    def fake_skill_view(name, file_path=None, task_id=None, preprocess=True):
+        if name == "xhs-visual-director":
+            return json.dumps({"success": False, "error": "not installed"})
+        return json.dumps({"success": True, "name": name, "content": f"# {name}\nloaded"})
+
+    monkeypatch.setattr("tools.skills_tool.skill_view", fake_skill_view)
+    route = resolve_gateway_message_mode("内容创意 小红书封面视觉排版怎么做")
+
+    enabled_toolsets, combined_prompt = _prepare_route_required_skills(
+        ["web"],
+        "base prompt",
+        route,
+        task_id="task-content-missing",
+    )
+
+    assert enabled_toolsets == ["web"]
+    assert "Required route skill preload warning" in combined_prompt
+    assert "xhs-visual-director" in combined_prompt
+    assert "not installed" in combined_prompt
+    assert "先简短告诉用户" in combined_prompt
+
+
+@pytest.mark.asyncio
+async def test_content_route_end_to_end_passes_intent_skills_to_aiagent(monkeypatch):
+    from collections import OrderedDict
+    from types import SimpleNamespace
+
+    import run_agent as run_agent_mod
+    import gateway.run as gateway_run
+
+    captured = {}
+
+    class FakeAIAgent:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+            self.tools = [{"name": "web_search"}]
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id")
+            self.session_prompt_tokens = 0
+            self.session_completion_tokens = 0
+            self.context_compressor = SimpleNamespace(last_prompt_tokens=0, context_length=0)
+
+        def run_conversation(self, message, **kwargs):
+            captured["run_message"] = message
+            captured["run_kwargs"] = kwargs
+            return {
+                "final_response": "内容产出完成",
+                "messages": [
+                    {"role": "user", "content": message},
+                    {"role": "assistant", "content": "内容产出完成"},
+                ],
+                "api_calls": 1,
+                "completed": True,
+            }
+
+    def fake_skill_view(name, file_path=None, task_id=None, preprocess=True):
+        captured.setdefault("skills", []).append(name)
+        return json.dumps({"success": True, "name": name, "content": f"# {name}\nloaded"})
+
+    monkeypatch.setattr(run_agent_mod, "AIAgent", FakeAIAgent)
+    monkeypatch.setattr("tools.skills_tool.skill_view", fake_skill_view)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "agent": {"disabled_toolsets": []},
+            "display": {
+                "tool_progress": "off",
+                "long_running_notifications": False,
+                "interim_assistant_messages": False,
+            },
+        },
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {}
+    runner.config = SimpleNamespace(streaming=SimpleNamespace(enabled=False, transport="off"))
+    runner.hooks = SimpleNamespace(loaded_hooks=False)
+    runner.session_store = SimpleNamespace(_entries={})
+    runner._agent_cache = OrderedDict()
+    runner._agent_cache_lock = None
+    runner._draining = False
+    runner._ephemeral_system_prompt = ""
+    runner._fallback_model = None
+    runner._pending_model_notes = {}
+    runner._pending_skills_reload_notes = {}
+    runner._prefill_messages = None
+    runner._provider_routing = {}
+    runner._reasoning_config = None
+    runner._service_tier = None
+    runner._session_db = None
+    runner._running_agents = {}
+    runner._get_proxy_url = lambda: None
+    runner._resolve_session_agent_runtime = lambda **_kwargs: (
+        "test-model",
+        {"provider": "test-provider", "base_url": "https://example.invalid", "api_key": "test-key"},
+    )
+    runner._resolve_session_reasoning_config = lambda **_kwargs: None
+    runner._load_service_tier = lambda: None
+    runner._resolve_turn_agent_config = lambda message, model, runtime: {
+        "model": model,
+        "runtime": runtime,
+        "request_overrides": {},
+    }
+    runner._thread_metadata_for_source = lambda source, event_message_id=None: None
+    runner._consume_pending_native_image_paths = lambda session_key: []
+    runner._is_session_run_current = lambda session_key, run_generation: True
+    runner._update_runtime_status = lambda status: None
+
+    async def run_inline(fn):
+        return fn()
+
+    runner._run_in_executor_with_context = run_inline
+
+    source = SessionSource(
+        platform=Platform.QQBOT,
+        chat_id="chat-1",
+        chat_type="dm",
+        user_id="user-1",
+    )
+    event = MessageEvent(text="内容创意 小红书封面视觉排版怎么做", source=source)
+    routed_event, route = _route_gateway_message_mode(event)
+    session_key = build_session_key(routed_event.source)
+
+    result = await GatewayRunner._run_agent(
+        runner,
+        routed_event.text,
+        "base context",
+        [],
+        routed_event.source,
+        "sess-content",
+        session_key=session_key,
+        message_mode=route,
+    )
+
+    assert result["final_response"] == "内容产出完成"
+    assert captured["run_message"] == "小红书封面视觉排版怎么做"
+    assert captured["run_kwargs"] == {"conversation_history": [], "task_id": "sess-content"}
+    assert captured["init"]["enabled_toolsets"] == sorted(route.enabled_toolsets)
+    assert captured["init"]["skip_context_files"] is True
+    assert captured["init"]["load_soul_identity"] is True
+    assert captured["init"]["skip_memory"] is False
+    assert captured["init"]["platform"] == "qqbot"
+    assert captured["init"]["gateway_session_key"] == "agent:main:qqbot:dm:chat-1:mode:content"
+    assert "skill_view(name=\"xhs-visual-director\")" in captured["init"]["ephemeral_system_prompt"]
+    assert "skill_view(name=\"project-dev-workflow\")" not in captured["init"]["ephemeral_system_prompt"]
+    assert captured["skills"] == list(route.required_skills)
+
+
 def test_required_route_skills_are_preloaded_and_force_skills_toolset(monkeypatch):
     from gateway.message_modes import GatewayMessageMode
     from gateway.run import _prepare_route_required_skills

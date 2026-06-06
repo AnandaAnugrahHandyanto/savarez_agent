@@ -19,6 +19,28 @@ _CONTENT_REQUIRED_SKILLS = (
     "xhs-graphic-generator",
     "douyin-script-director",
 )
+_CONTENT_INTENT_SKILL_RULES = (
+    (
+        ("封面", "视觉", "排版", "版式", "配图", "美观", "设计"),
+        ("xhs-visual-director",),
+    ),
+    (
+        ("社媒卡片", "卡片", "朋友圈图", "海报卡", "长图"),
+        ("social-card-composer",),
+    ),
+    (
+        ("复盘", "数据", "评论", "反馈", "表现", "涨粉", "爆了", "没爆"),
+        ("content-feedback-loop",),
+    ),
+    (
+        ("视频分析", "视频拆解", "拆解", "逐帧", "镜头分析", "为什么火", "对标视频"),
+        ("video-analysis-director",),
+    ),
+    (
+        ("达人", "kol", "博主", "探店", "投放", "合作"),
+        ("influencer-discovery-advisor",),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -367,6 +389,15 @@ def _lite_required_skills(message: str | None) -> tuple[str, ...]:
     return _dedupe_skills(_LITE_BASE_SKILLS, *matched)
 
 
+def _content_required_skills(message: str | None) -> tuple[str, ...]:
+    folded = _fold_text(message)
+    matched: list[tuple[str, ...]] = []
+    for keywords, skills in _CONTENT_INTENT_SKILL_RULES:
+        if _contains_any(folded, keywords):
+            matched.append(skills)
+    return _dedupe_skills(_CONTENT_REQUIRED_SKILLS, *matched)
+
+
 def _lite_should_escalate_to_dev(message: str | None) -> bool:
     folded = _fold_text(message)
     if not folded.strip():
@@ -400,6 +431,22 @@ def _copy_lite_mode(
     )
 
 
+def _copy_content_mode(
+    template: GatewayMessageMode,
+    *,
+    message: str,
+    sticky_mode: Optional[str] = None,
+    control_response: str = "",
+) -> GatewayMessageMode:
+    return _copy_mode(
+        template,
+        message=message,
+        sticky_mode=sticky_mode,
+        control_response=control_response,
+        required_skills=_content_required_skills(message),
+    )
+
+
 def resolve_gateway_message_mode(text: str | None, active_mode: str | None = None) -> GatewayMessageMode:
     """Resolve a lightweight/ops/dev mode from a user-facing text prefix.
 
@@ -428,7 +475,12 @@ def resolve_gateway_message_mode(text: str | None, active_mode: str | None = Non
                 )
             template = _MODE_BY_NAME[mode_name]
             response_label = _MODE_LABELS.get(mode_name, mode_name)
-            copy_fn = _copy_lite_mode if template.name == "lite" else _copy_mode
+            if template.name == "lite":
+                copy_fn = _copy_lite_mode
+            elif template.name == "content":
+                copy_fn = _copy_content_mode
+            else:
+                copy_fn = _copy_mode
             return copy_fn(
                 template,
                 message=raw,
@@ -441,7 +493,12 @@ def resolve_gateway_message_mode(text: str | None, active_mode: str | None = Non
             message = _strip_mode_prefix(raw, prefix)
             if not message:
                 label = _MODE_LABELS.get(template.name, template.name)
-                copy_fn = _copy_lite_mode if template.name == "lite" else _copy_mode
+                if template.name == "lite":
+                    copy_fn = _copy_lite_mode
+                elif template.name == "content":
+                    copy_fn = _copy_content_mode
+                else:
+                    copy_fn = _copy_mode
                 return copy_fn(
                     template,
                     message=raw,
@@ -450,6 +507,8 @@ def resolve_gateway_message_mode(text: str | None, active_mode: str | None = Non
                 )
             if template.name == "lite":
                 return _copy_lite_mode(template, message=message, sticky_mode=template.name)
+            if template.name == "content":
+                return _copy_content_mode(template, message=message, sticky_mode=template.name)
             return _copy_mode(template, message=message, sticky_mode=template.name)
 
     for prefix in _DEV_PREFIXES:
@@ -470,6 +529,8 @@ def resolve_gateway_message_mode(text: str | None, active_mode: str | None = Non
     if active_template is not None:
         if active_template.name == "lite":
             return _copy_lite_mode(active_template, message=raw)
+        if active_template.name == "content":
+            return _copy_content_mode(active_template, message=raw)
         return _copy_mode(active_template, message=raw)
 
     return _dev_mode(raw)
