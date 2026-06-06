@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
@@ -8,7 +9,7 @@ import { ErrorState } from '@/components/ui/error-state'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
-import { AlertCircle, Check, CheckCircle2, Copy, Loader2, Sparkles, Terminal } from '@/lib/icons'
+import { AlertCircle, Check, CheckCircle2, Copy, Loader2, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $updateApply,
@@ -179,9 +180,7 @@ function IdleView({
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
-        <span className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <Sparkles className="size-7" />
-        </span>
+        <BrandMark className="size-14" />
 
         <DialogTitle className="text-center text-xl">{u.availableTitle}</DialogTitle>
         <DialogDescription className="text-center text-sm">
