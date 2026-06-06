@@ -14,6 +14,8 @@ Usage:
     hermes setup               # Interactive setup wizard
     hermes logout              # Clear stored authentication
     hermes status              # Show status of all components
+    hermes governance          # Run Global Systems Office drift checks
+    hermes gso                 # Alias for governance
     hermes cron                # Manage cron jobs
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
@@ -6525,6 +6527,15 @@ def cmd_status(args):
     from hermes_cli.status import show_status
 
     show_status(args)
+
+
+def cmd_governance(args):
+    """Run Global Systems Office governance checks."""
+    from hermes_cli.governance import governance_command
+
+    code = governance_command(args)
+    if code:
+        sys.exit(code)
 
 
 def cmd_cron(args):
@@ -13533,6 +13544,38 @@ def main():
         "--deep", action="store_true", help="Run deep checks (may take longer)"
     )
     status_parser.set_defaults(func=cmd_status)
+
+    # =========================================================================
+    # governance command
+    # =========================================================================
+    governance_parser = subparsers.add_parser(
+        "governance",
+        aliases=["gso"],
+        help="Run Global Systems Office drift checks",
+        description="Inspect local work for cross-cutting drift, missing decision records, and verification gaps.",
+    )
+    governance_subparsers = governance_parser.add_subparsers(dest="governance_command")
+
+    governance_check = governance_subparsers.add_parser(
+        "check", help="Inspect the current git worktree for governance drift"
+    )
+    governance_check.add_argument("--root", help="Repository root to inspect (default: current directory)")
+    governance_check.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    governance_check.add_argument(
+        "--fail-on",
+        choices=["warning", "critical"],
+        help="Exit non-zero when report severity reaches this threshold",
+    )
+
+    governance_catalog = governance_subparsers.add_parser(
+        "catalog", help="Show the Global Systems Office component catalog"
+    )
+    governance_catalog.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    governance_subparsers.add_parser(
+        "adr-template", help="Print a lightweight architecture decision record template"
+    )
+    governance_parser.set_defaults(func=cmd_governance, governance_command="check")
 
     # =========================================================================
     # cron command
