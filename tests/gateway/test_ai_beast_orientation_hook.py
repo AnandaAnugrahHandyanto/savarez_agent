@@ -8,11 +8,17 @@ from __future__ import annotations
 
 import importlib
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
+
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.hooks import HookRegistry
+from gateway.platforms.base import MessageEvent
+from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 HOOK_MODULE = "gateway.ai_beast_orientation_hook"
@@ -60,6 +66,11 @@ def _clear_fake_ai_beast_modules() -> None:
     for name in list(sys.modules):
         if name == "ai_beast_registry" or name.startswith("ai_beast_registry."):
             sys.modules.pop(name, None)
+
+
+def _fake_ai_beast_adapter_calls() -> list:
+    adapter = importlib.import_module("ai_beast_registry.telegram_adapter")
+    return adapter.CALLS
 
 
 def _load_hook_module():
@@ -318,3 +329,158 @@ async def test_ai_beast_orientation_hook_does_not_call_forbidden_side_effects(tm
     assert result["decision"] == "handled"
     for forbidden_call in side_effects.values():
         forbidden_call.assert_not_called()
+
+
+def _make_gateway_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="chat-1",
+        user_id="user-1",
+        user_name="tester",
+        chat_type="dm",
+        thread_id="thread-1",
+    )
+
+
+def _make_gateway_event(text: str) -> MessageEvent:
+    return MessageEvent(text=text, source=_make_gateway_source(), message_id="message-1")
+
+
+def _make_gateway_runner_with_real_orientation_hook(project_root: Path):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+        command_hook_commands={"whereami": {}, "projects": {}},
+        ai_beast_orientation={
+            "enabled": True,
+            "project_root": str(project_root),
+            "bot_username": "hermes_test_bot",
+        },
+    )
+    adapter = MagicMock()
+    adapter.send = AsyncMock(side_effect=AssertionError("live platform send called"))
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = HookRegistry()
+    runner.hooks.discover_and_load()
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_gateway_source()),
+        session_id="session-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store.load_transcript.return_value = []
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.append_to_transcript = MagicMock()
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.update_session = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._reasoning_config = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._show_reasoning = False
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._should_send_voice_reply = lambda *_args, **_kwargs: False
+    runner._send_voice_reply = AsyncMock()
+    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
+    runner._emit_gateway_run_progress = AsyncMock()
+    runner._run_agent = AsyncMock(side_effect=AssertionError("AI Beast command leaked to agent"))
+    return runner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("/whereami", "Workspace: AI Beast"),
+        ("/projects", "Projects (read-only registry):"),
+    ],
+)
+async def test_ai_beast_orientation_gateway_command_path_uses_real_hook_without_agent_loop(
+    tmp_path, monkeypatch, command, expected
+):
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _clear_fake_ai_beast_modules()
+    runner = _make_gateway_runner_with_real_orientation_hook(tmp_path)
+
+    result = await runner._handle_message(_make_gateway_event(command))
+
+    assert result is not None
+    assert expected in result
+    if command == "/whereami":
+        assert "chat=chat-1 thread=thread-1" in result
+        assert "bot=hermes_test_bot" in result
+    runner._run_agent.assert_not_called()
+    runner.adapters[Platform.TELEGRAM].send.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/status", "/sessions"])
+async def test_ai_beast_orientation_gateway_fixture_preserves_hermes_owned_commands(
+    tmp_path, monkeypatch, command
+):
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _clear_fake_ai_beast_modules()
+    runner = _make_gateway_runner_with_real_orientation_hook(tmp_path)
+    runner._running_agents[build_session_key(_make_gateway_source())] = MagicMock()
+
+    result = await runner._handle_message(_make_gateway_event(command))
+
+    assert result is not None
+    assert "Workspace: AI Beast" not in result
+    assert "Projects (read-only registry):" not in result
+    assert _fake_ai_beast_adapter_calls() == []
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/task",
+        "/steer",
+        "/pause",
+        "/resume",
+        "/bindtopic",
+        "/switch",
+        "/open",
+        "/newsession",
+        "/steer hi",
+        "/task create something",
+        "/bindtopic interaction-routing-layer",
+        "/switch ai-beast",
+    ],
+)
+async def test_ai_beast_orientation_gateway_fixture_keeps_forbidden_commands_unavailable(
+    tmp_path, monkeypatch, command
+):
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _clear_fake_ai_beast_modules()
+    runner = _make_gateway_runner_with_real_orientation_hook(tmp_path)
+
+    result = await runner._handle_message(_make_gateway_event(command))
+
+    assert result is not None
+    assert "Workspace: AI Beast" not in result
+    assert "Projects (read-only registry):" not in result
+    assert "AI Beast" not in result
+    assert _fake_ai_beast_adapter_calls() == []
+    runner._run_agent.assert_not_called()
+    runner.adapters[Platform.TELEGRAM].send.assert_not_called()

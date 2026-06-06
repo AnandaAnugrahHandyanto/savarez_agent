@@ -7863,6 +7863,25 @@ class GatewayRunner:
 
         _command_hook_names = _configured_command_hook_names()
 
+        def _ai_beast_orientation_enabled() -> bool:
+            if isinstance(self.config, dict):
+                orientation_cfg = self.config.get("ai_beast_orientation", {}) or {}
+            else:
+                orientation_cfg = getattr(self.config, "ai_beast_orientation", {}) or {}
+            if not isinstance(orientation_cfg, dict):
+                return False
+            return bool(orientation_cfg.get("enabled"))
+
+        def _is_ai_beast_forbidden_boundary_command(name: str | None) -> bool:
+            if not name or not _ai_beast_orientation_enabled():
+                return False
+            try:
+                from gateway.ai_beast_orientation_hook import FORBIDDEN_COMMANDS
+            except Exception:
+                return False
+            normalized = name.strip().lstrip("/").replace("_", "-").lower()
+            return normalized in FORBIDDEN_COMMANDS
+
         def _is_configured_hook_command(name: str | None) -> bool:
             if not name:
                 return False
@@ -7904,6 +7923,13 @@ class GatewayRunner:
                         command = target_command.split()[0] if target_command else target_command
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
+
+        if command and _is_ai_beast_forbidden_boundary_command(canonical):
+            logger.info(
+                "Blocked AI Beast-forbidden slash command /%s before gateway dispatch",
+                canonical,
+            )
+            return ""
 
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM
