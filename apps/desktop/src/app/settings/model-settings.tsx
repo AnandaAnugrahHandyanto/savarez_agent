@@ -354,7 +354,6 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               {providerOptions.map(provider => (
                 <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
                   {provider.name}
-                  {provider.authenticated === false ? ' — set up' : ''}
                 </SelectItem>
               ))}
             </SelectContent>
