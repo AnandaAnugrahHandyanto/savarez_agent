@@ -2,8 +2,10 @@ version = 1
 revision = 3
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
-    "python_full_version >= '3.13'",
-    "python_full_version < '3.13'",
+    "(python_full_version >= '3.13' and platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or (python_full_version >= '3.13' and sys_platform != 'linux')",
+    "(python_full_version >= '3.13' and platform_machine == 'i386' and sys_platform == 'linux') or (python_full_version >= '3.13' and platform_machine == 'i486' and sys_platform == 'linux') or (python_full_version >= '3.13' and platform_machine == 'i586' and sys_platform == 'linux') or (python_full_version >= '3.13' and platform_machine == 'i686' and sys_platform == 'linux')",
+    "(python_full_version < '3.13' and platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or (python_full_version < '3.13' and sys_platform != 'linux')",
+    "(python_full_version < '3.13' and platform_machine == 'i386' and sys_platform == 'linux') or (python_full_version < '3.13' and platform_machine == 'i486' and sys_platform == 'linux') or (python_full_version < '3.13' and platform_machine == 'i586' and sys_platform == 'linux') or (python_full_version < '3.13' and platform_machine == 'i686' and sys_platform == 'linux')",
 ]
 
 [[package]]
@@ -1405,7 +1407,8 @@ dependencies = [
     { name = "psutil" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
     { name = "pydantic" },
-    { name = "pyjwt", extra = ["crypto"] },
+    { name = "pyjwt" },
+    { name = "pyjwt", extra = ["crypto"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
     { name = "python-dotenv" },
     { name = "pywinpty", marker = "sys_platform == 'win32'" },
     { name = "pyyaml" },
@@ -1414,7 +1417,8 @@ dependencies = [
     { name = "ruamel-yaml" },
     { name = "tenacity" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
+    { name = "uvicorn", extra = ["standard"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
 ]
 
 [package.optional-dependencies]
@@ -1425,13 +1429,15 @@ all = [
     { name = "agent-client-protocol" },
     { name = "aiohttp" },
     { name = "fastapi" },
-    { name = "google-api-python-client" },
-    { name = "google-auth-httplib2" },
-    { name = "google-auth-oauthlib" },
-    { name = "mcp" },
+    { name = "google-api-python-client", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
+    { name = "google-auth-httplib2", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
+    { name = "google-auth-oauthlib", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
+    { name = "mcp", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
+    { name = "python-multipart" },
     { name = "simple-term-menu" },
     { name = "starlette" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
+    { name = "uvicorn", extra = ["standard"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
     { name = "youtube-transcript-api" },
 ]
 anthropic = [
@@ -1555,10 +1561,12 @@ termux-all = [
     { name = "google-auth-oauthlib" },
     { name = "honcho-ai" },
     { name = "mcp" },
+    { name = "python-multipart" },
     { name = "python-telegram-bot", extra = ["webhooks"] },
     { name = "simple-term-menu" },
     { name = "starlette" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
+    { name = "uvicorn", extra = ["standard"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
 ]
 tts-premium = [
     { name = "elevenlabs" },
@@ -1573,8 +1581,10 @@ voice = [
 ]
 web = [
     { name = "fastapi" },
+    { name = "python-multipart" },
     { name = "starlette" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
+    { name = "uvicorn", extra = ["standard"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
 ]
 wecom = [
     { name = "defusedxml" },
@@ -1622,12 +1632,12 @@ requires-dist = [
     { name = "hermes-agent", extras = ["cli"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["cron"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["cron"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["google"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["google"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686' and extra == 'all') or (sys_platform != 'linux' and extra == 'all')" },
     { name = "hermes-agent", extras = ["google"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["homeassistant"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["homeassistant"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["honcho"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["mcp"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686' and extra == 'all') or (sys_platform != 'linux' and extra == 'all')" },
     { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["pty"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["pty"], marker = "extra == 'termux'" },
@@ -1659,11 +1669,13 @@ requires-dist = [
     { name = "psutil", specifier = "==7.2.2" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'", specifier = ">=0.7.0,<1" },
     { name = "pydantic", specifier = "==2.13.4" },
-    { name = "pyjwt", extras = ["crypto"], specifier = "==2.12.1" },
+    { name = "pyjwt", marker = "(platform_machine == 'i386' and sys_platform == 'linux') or (platform_machine == 'i486' and sys_platform == 'linux') or (platform_machine == 'i586' and sys_platform == 'linux') or (platform_machine == 'i686' and sys_platform == 'linux')", specifier = "==2.12.1" },
+    { name = "pyjwt", extras = ["crypto"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'", specifier = "==2.12.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.2" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "==1.3.0" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = "==2.4.0" },
     { name = "python-dotenv", specifier = "==1.2.2" },
+    { name = "python-multipart", marker = "extra == 'web'", specifier = "==0.0.27" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'messaging'", specifier = "==22.6" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'termux'", specifier = "==22.6" },
     { name = "pywinpty", marker = "sys_platform == 'win32'", specifier = ">=2.0.0,<3" },
@@ -1689,8 +1701,10 @@ requires-dist = [
     { name = "tenacity", specifier = "==9.1.4" },
     { name = "ty", marker = "extra == 'dev'", specifier = "==0.0.21" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = "==2025.3" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.24.0,<1" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = "==0.41.0" },
+    { name = "uvicorn", marker = "(platform_machine == 'i386' and sys_platform == 'linux') or (platform_machine == 'i486' and sys_platform == 'linux') or (platform_machine == 'i586' and sys_platform == 'linux') or (platform_machine == 'i686' and sys_platform == 'linux')", specifier = ">=0.24.0,<1" },
+    { name = "uvicorn", marker = "(platform_machine == 'i386' and sys_platform == 'linux' and extra == 'web') or (platform_machine == 'i486' and sys_platform == 'linux' and extra == 'web') or (platform_machine == 'i586' and sys_platform == 'linux' and extra == 'web') or (platform_machine == 'i686' and sys_platform == 'linux' and extra == 'web')", specifier = "==0.41.0" },
+    { name = "uvicorn", extras = ["standard"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'", specifier = ">=0.24.0,<1" },
+    { name = "uvicorn", extras = ["standard"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686' and extra == 'web') or (sys_platform != 'linux' and extra == 'web')", specifier = "==0.41.0" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
 provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "computer-use", "acp", "mistral", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
@@ -3965,12 +3979,12 @@ wheels = [
 [package.optional-dependencies]
 standard = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
-    { name = "httptools" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-    { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'" },
-    { name = "watchfiles" },
-    { name = "websockets" },
+    { name = "httptools", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
+    { name = "python-dotenv", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
+    { name = "pyyaml", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
+    { name = "uvloop", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686' and platform_python_implementation != 'PyPy' and sys_platform == 'linux') or (platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'linux' and sys_platform != 'win32')" },
+    { name = "watchfiles", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
+    { name = "websockets", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
 ]
 
 [[package]]

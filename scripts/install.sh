@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================================
 # Hermes Agent Installer
 # ============================================================================
@@ -80,6 +80,7 @@ STAGE_NAME=""
 JSON_OUTPUT=false
 NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
+LINUX_I686_SYSTEM_PYTHON=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -361,6 +362,20 @@ configure_linux_i686_tempdir() {
     log_info "Linux i686 detected — using $TMPDIR for installer temp files"
 }
 
+configure_linux_i686_uv_python_dirs() {
+    if ! is_linux_i686 || [ "$ROOT_FHS_LAYOUT" = true ]; then
+        return 0
+    fi
+
+    # uv has Linux i686 builds and can provision compatible CPython releases,
+    # but keep those interpreter downloads under Hermes' data dir on small
+    # 32-bit systems instead of defaulting to a possibly tmpfs-backed home.
+    export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$HERMES_HOME/uv/python}"
+    export UV_PYTHON_BIN_DIR="${UV_PYTHON_BIN_DIR:-$HERMES_HOME/uv/bin}"
+    mkdir -p "$UV_PYTHON_INSTALL_DIR" "$UV_PYTHON_BIN_DIR"
+    log_info "Linux i686 detected — using $UV_PYTHON_INSTALL_DIR for uv-managed Python"
+}
+
 find_compatible_python() {
     local candidate path
     for candidate in "${HERMES_PYTHON:-}" python3.13 python3.12 python3.11 python3; do
@@ -396,12 +411,14 @@ find_compatible_python() {
 resolve_install_layout() {
     if [ "$INSTALL_DIR_EXPLICIT" = true ]; then
         log_info "Install directory: $INSTALL_DIR (explicit)"
+        configure_linux_i686_uv_python_dirs
         return 0
     fi
 
     # Termux: package manager manages /data/data/..., keep code in HERMES_HOME.
     if is_termux; then
         INSTALL_DIR="$HERMES_HOME/hermes-agent"
+        configure_linux_i686_uv_python_dirs
         return 0
     fi
 
@@ -434,6 +451,7 @@ resolve_install_layout() {
 
     # Default: non-root, non-Termux → legacy user-scoped layout.
     INSTALL_DIR="$HERMES_HOME/hermes-agent"
+    configure_linux_i686_uv_python_dirs
 }
 
 get_command_link_dir() {
@@ -595,18 +613,17 @@ check_python() {
         return 0
     fi
 
-    if is_linux_i686; then
-        log_info "Linux i686 detected — using system Python instead of uv-managed Python"
-        log_info "uv-managed CPython does not publish Linux i686 builds; need Python >=3.11,<3.14."
+    if [ -n "${HERMES_PYTHON:-}" ]; then
         if PYTHON_PATH="$(find_compatible_python)"; then
             PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
             log_success "Python found: $PYTHON_FOUND_VERSION ($PYTHON_PATH)"
+            if is_linux_i686; then
+                LINUX_I686_SYSTEM_PYTHON=true
+            fi
             return 0
         fi
 
-        log_error "No compatible Python found for Linux i686"
-        log_info "Install Python 3.11, 3.12, or 3.13 with your distro/package manager,"
-        log_info "or set HERMES_PYTHON=/path/to/python before rerunning this installer."
+        log_error "HERMES_PYTHON does not point to Python >=3.11,<3.14: $HERMES_PYTHON"
         exit 1
     fi
 
@@ -626,9 +643,17 @@ check_python() {
         PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION")"
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python installed: $PYTHON_FOUND_VERSION"
+    elif is_linux_i686 && PYTHON_PATH="$(find_compatible_python)"; then
+        LINUX_I686_SYSTEM_PYTHON=true
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+        log_warn "uv Python install failed on Linux i686; using system Python: $PYTHON_FOUND_VERSION ($PYTHON_PATH)"
     else
         log_error "Failed to install Python $PYTHON_VERSION"
-        log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
+        if is_linux_i686; then
+            log_info "Install Python 3.11, 3.12, or 3.13, or set HERMES_PYTHON=/path/to/python."
+        else
+            log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
+        fi
         exit 1
     fi
 }
@@ -1257,7 +1282,7 @@ setup_venv() {
         return 0
     fi
 
-    if is_linux_i686; then
+    if [ "$LINUX_I686_SYSTEM_PYTHON" = true ]; then
         log_info "Creating virtual environment with Linux i686 system Python..."
 
         if [ -d "venv" ]; then
