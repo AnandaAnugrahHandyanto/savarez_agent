@@ -495,6 +495,8 @@ class WeComAdapter(BasePlatformAdapter):
         if not isinstance(body, dict):
             return
 
+        msgtype = str(body.get("msgtype") or "").lower()
+
         msg_id = str(body.get("msgid") or self._payload_req_id(payload) or uuid.uuid4().hex)
         if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
@@ -536,7 +538,7 @@ class WeComAdapter(BasePlatformAdapter):
             text = reply_text
 
         if not text and not media_urls:
-            logger.debug("[%s] Empty WeCom message skipped", self.name)
+            logger.warning("[%s] Empty WeCom message skipped (msgtype=%s, body_keys=%s)", self.name, msgtype, list(body.keys())[:10])
             return
 
         source = self.build_source(
@@ -743,6 +745,8 @@ class WeComAdapter(BasePlatformAdapter):
                 path, content_type = cached
                 media_paths.append(path)
                 media_types.append(content_type)
+            else:
+                logger.warning("[%s] _cache_media failed for kind=%s", self.name, kind)
 
         return media_paths, media_types
 
@@ -773,7 +777,7 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
         except Exception as exc:
-            logger.debug("[%s] Failed to download %s from %s: %s", self.name, kind, url, exc)
+            logger.warning("[%s] Failed to download %s from %s: %s", self.name, kind, url, exc)
             return None
 
         aes_key = str(media.get("aeskey") or "").strip()
@@ -781,7 +785,7 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 raw = self._decrypt_file_bytes(raw, aes_key)
             except Exception as exc:
-                logger.debug("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
+                logger.warning("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
                 return None
 
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"

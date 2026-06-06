@@ -75,6 +75,12 @@ _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
     "multimedia.nt.qq.com.cn",
 })
 
+# Trusted domain suffixes — hostnames ending with any of these may resolve
+# to private IPs. Used for platform media CDNs (WeCom COS, QQ multimedia, etc.).
+_TRUSTED_PRIVATE_IP_SUFFIXES = (
+    ".myqcloud.com",      # Tencent COS (WeCom/QQ file & image CDN)
+)
+
 # 100.64.0.0/10 (CGNAT / Shared Address Space, RFC 6598) is NOT covered by
 # ipaddress.is_private — it returns False for both is_private and is_global.
 # Must be blocked explicitly. Used by carrier-grade NAT, Tailscale/WireGuard
@@ -267,7 +273,11 @@ def is_always_blocked_url(url: str) -> bool:
 
 def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
     """Return True when a trusted HTTPS hostname may bypass IP-class blocking."""
-    return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
+    if scheme != "https":
+        return False
+    if hostname in _TRUSTED_PRIVATE_IP_HOSTS:
+        return True
+    return hostname.endswith(_TRUSTED_PRIVATE_IP_SUFFIXES)
 
 
 def is_safe_url(url: str) -> bool:
