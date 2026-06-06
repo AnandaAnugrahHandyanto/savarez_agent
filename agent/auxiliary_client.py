@@ -4613,7 +4613,7 @@ def _resolve_task_provider_model(
         cfg_provider = str(task_config.get("provider", "")).strip() or None
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
-        cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        cfg_api_key = os.path.expandvars(str(task_config.get("api_key", "")).strip()) or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
     resolved_model = model or cfg_model
