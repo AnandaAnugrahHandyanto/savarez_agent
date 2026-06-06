@@ -113,6 +113,16 @@ CANONICAL_STATUS_FOR_STORAGE_STATUS = {
     "triage": "dormant",
     "done": "done",
 }
+LIVE_TO_STORAGE_STATUS = {
+    # Canonical live/user statuses are a presentation/API boundary during the
+    # migration.  They must never be persisted verbatim in ``tasks.status``
+    # while the dispatcher still coordinates on legacy workflow statuses.
+    "working": "ready",
+    "waiting": "todo",
+    "blocked": "blocked",
+    "dormant": "triage",
+}
+_LEAKED_ACTIVE_STORAGE_STATUSES = {"running", "ready", "blocked", "working"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 AUTONOMY_LEVELS = ("Low", "Medium", "High", "Full")
@@ -557,6 +567,23 @@ def verify_kanban_backup_restore(
         "source_schema_sha256": source_schema["schema_sha256"],
         "restored_schema_sha256": restored_schema["schema_sha256"],
     }
+
+
+def storage_status_for_request(status: str | None) -> str:
+    """Return a dispatcher-compatible storage status for a user/API status.
+
+    Dashboard/API clients may speak canonical live statuses during the Kanban
+    simplification migration.  Convert those to the internal workflow alias
+    before any direct ``tasks.status`` write so canonical values such as
+    ``working`` cannot corrupt the storage column and strand running workers.
+    Legacy storage statuses pass through unchanged for compatibility.
+    """
+    normalized = str(status or "").strip().lower()
+    if normalized in VALID_STATUSES:
+        return normalized
+    if normalized in LIVE_TO_STORAGE_STATUS:
+        return LIVE_TO_STORAGE_STATUS[normalized]
+    raise ValueError(f"unknown status: {status}")
 
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
@@ -4036,7 +4063,7 @@ def reclaim_task(
         cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
             "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
+            "WHERE id = ? AND status IN ('running', 'ready', 'blocked', 'working') "
             "AND claim_lock IS ?",
             (task_id, prev_lock),
         )
@@ -4349,7 +4376,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready', 'blocked', 'working')
                 """,
                 (result, now, task_id),
             )
@@ -4364,7 +4391,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready', 'blocked', 'working')
                    AND current_run_id = ?
                 """,
                 (result, now, task_id, int(expected_run_id)),
@@ -4773,7 +4800,7 @@ def block_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'working')
                 """,
                 (task_id,),
             )
@@ -4786,7 +4813,7 @@ def block_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'working')
                    AND current_run_id = ?
                 """,
                 (task_id, int(expected_run_id)),
@@ -6285,7 +6312,7 @@ def _record_task_failure(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status IN ('running', 'ready')",
+                    "WHERE id = ? AND status IN ('running', 'ready', 'working')",
                     (failures, error[:500], task_id),
                 )
             else:
