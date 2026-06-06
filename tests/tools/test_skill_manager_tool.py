@@ -545,6 +545,57 @@ class TestSkillManageDispatcher:
         rec = usage.get("test-skill") or {}
         assert rec.get("created_by") in {None, "", False}
 
+    def test_create_via_dispatcher_accepts_file_content_fallback(self, tmp_path):
+        with _skill_dir(tmp_path):
+            raw = skill_manage(
+                action="create",
+                name="test-skill",
+                file_content=VALID_SKILL_CONTENT,
+            )
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert (tmp_path / "test-skill" / "SKILL.md").exists()
+
+    def test_edit_via_dispatcher_accepts_file_content_fallback(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(
+                action="edit",
+                name="test-skill",
+                file_content=VALID_SKILL_CONTENT_2,
+            )
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Updated description" in (tmp_path / "test-skill" / "SKILL.md").read_text()
+
+    def test_write_file_via_dispatcher_accepts_content_fallback(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(
+                action="write_file",
+                name="test-skill",
+                file_path="references/api.md",
+                content="# API\nEndpoint docs.",
+            )
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert (
+            tmp_path / "test-skill" / "references" / "api.md"
+        ).read_text() == "# API\nEndpoint docs."
+
+    def test_write_file_via_dispatcher_allows_empty_content_fallback(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(
+                action="write_file",
+                name="test-skill",
+                file_path="references/empty.md",
+                content="",
+            )
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert (tmp_path / "test-skill" / "references" / "empty.md").read_text() == ""
+
     def test_create_from_background_review_marks_agent_created(self, tmp_path):
         """Background-review fork creates ARE marked as agent-created."""
         from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW

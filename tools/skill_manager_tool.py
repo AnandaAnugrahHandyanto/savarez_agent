@@ -831,14 +831,16 @@ def skill_manage(
     Returns JSON string with results.
     """
     if action == "create":
-        if not content:
+        skill_content = content or file_content
+        if not skill_content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
-        result = _create_skill(name, content, category)
+        result = _create_skill(name, skill_content, category)
 
     elif action == "edit":
-        if not content:
+        skill_content = content or file_content
+        if not skill_content:
             return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
-        result = _edit_skill(name, content)
+        result = _edit_skill(name, skill_content)
 
     elif action == "patch":
         if not old_string:
@@ -853,6 +855,8 @@ def skill_manage(
     elif action == "write_file":
         if not file_path:
             return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
+        if file_content is None:
+            file_content = content
         if file_content is None:
             return tool_error("file_content is required for 'write_file'.", success=False)
         result = _write_file(name, file_path, file_content)
