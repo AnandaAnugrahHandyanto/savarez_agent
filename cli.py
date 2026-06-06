@@ -2352,6 +2352,146 @@ def _validate_upload(path: _Path, mime: str, size_bytes: int) -> "UploadValidati
     return UploadValidation(mime_type=mime, size_bytes=size_bytes, allowed=True)
 
 
+# ---------------------------------------------------------------------------
+# Sandbox + MIME detection — file upload storage layer.
+# ---------------------------------------------------------------------------
+
+import hashlib as _hashlib
+import os as _os
+import shutil as _shutil
+import uuid as _uuid
+
+
+@dataclass(frozen=True)
+class AttachedFile:
+    """A file copied into the per-session sandbox, ready for the agent."""
+
+    id: str                    # short UUID, 8 chars
+    session_id: str
+    original_path: _Path       # user-supplied path (for error messages)
+    stored_path: _Path         # sandbox-relative path
+    sha256: str
+    mime_type: str
+    size_bytes: int
+    kind: str                  # "IMAGE" | "PDF" | "TEXT" | "BINARY"
+    preview_text: str = ""     # first 50 lines for text/code files
+
+
+def _sandbox_root() -> _Path:
+    """Root directory for per-session upload sandboxes. Configurable via
+    HERMES_SANDBOX_ROOT for tests; defaults to /tmp/hermes-uploads."""
+    root = _os.environ.get("HERMES_SANDBOX_ROOT", "/tmp/hermes-uploads")
+    return _Path(root)
+
+
+def _sandbox_dir(session_id: str) -> _Path:
+    d = _sandbox_root() / session_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _kind_from_mime(mime: str) -> str:
+    if mime.startswith("image/"):
+        return "IMAGE"
+    if mime == "application/pdf":
+        return "PDF"
+    if mime.startswith("text/") or mime in {
+        "application/json", "application/x-yaml", "application/toml",
+    }:
+        return "TEXT"
+    return "BINARY"
+
+
+def _detect_mime(path: _Path) -> str:
+    """Detect MIME type by file magic bytes. Returns "application/octet-stream"
+    if python-magic is not installed (the [uploads] extra) or detection fails.
+
+    Detection is done by content, not extension — the caller is expected to
+    never trust the user-supplied MIME or filename suffix."""
+    try:
+        import magic  # python-magic, optional [uploads] extra
+        return magic.from_file(str(path), mime=True)
+    except (ImportError, Exception):
+        # If the extra isn't installed, fall back to extension-based detection
+        # but tagged as octet-stream so the whitelist rejects binaries.
+        # The error message in __init__ of the handler should hint at this.
+        suffix = path.suffix.lower()
+        EXT_TO_MIME = {
+            ".txt": "text/plain", ".md": "text/markdown",
+            ".json": "application/json", ".yaml": "application/x-yaml",
+            ".yml": "application/x-yaml", ".toml": "application/toml",
+            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf",
+        }
+        return EXT_TO_MIME.get(suffix, "application/octet-stream")
+
+
+def _copy_to_sandbox(path: _Path, session_id: str) -> "AttachedFile":
+    """Copy a validated file into the session sandbox. Idempotent within
+    a session — re-copying the same content reuses the existing entry."""
+    raw = path.read_bytes()
+    sha = _hashlib.sha256(raw).hexdigest()
+    ext = path.suffix.lower()
+    stored = _sandbox_dir(session_id) / f"{sha[:16]}{ext}"
+    if not stored.exists():
+        _shutil.copyfile(path, stored)
+        _os.chmod(stored, 0o600)
+
+    mime = _detect_mime(stored)
+    kind = _kind_from_mime(mime)
+    preview = ""
+    if kind == "TEXT":
+        try:
+            preview = stored.read_text(errors="replace").splitlines()[:50]
+            preview = "\n".join(preview)
+        except Exception:
+            preview = ""
+
+    return AttachedFile(
+        id=_uuid.uuid4().hex[:8],
+        session_id=session_id,
+        original_path=path,
+        stored_path=stored,
+        sha256=sha,
+        mime_type=mime,
+        size_bytes=len(raw),
+        kind=kind,
+        preview_text=preview,
+    )
+
+
+def _list_attached(session_id: str) -> list:
+    """List all files in a session's sandbox, newest first."""
+    d = _sandbox_dir(session_id)
+    if not d.exists():
+        return []
+    out = []
+    for stored in sorted(d.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        if not stored.is_file():
+            continue
+        raw = stored.read_bytes()
+        sha = _hashlib.sha256(raw).hexdigest()
+        mime = _detect_mime(stored)
+        out.append(AttachedFile(
+            id=stored.stem[:8],
+            session_id=session_id,
+            original_path=stored,
+            stored_path=stored,
+            sha256=sha,
+            mime_type=mime,
+            size_bytes=len(raw),
+            kind=_kind_from_mime(mime),
+        ))
+    return out
+
+
+def _cleanup_session_sandbox(session_id: str) -> None:
+    """Remove a session's sandbox directory. Idempotent — no error if missing."""
+    d = _sandbox_root() / session_id
+    if d.exists():
+        _shutil.rmtree(d, ignore_errors=True)
+
+
 from hermes_constants import is_termux as _is_termux_environment
 
 

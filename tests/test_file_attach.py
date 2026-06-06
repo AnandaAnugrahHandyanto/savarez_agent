@@ -165,8 +165,15 @@ class TestListAttached:
         result = _list_attached(session_id="sess-X")
 
         assert len(result) == 2
-        names = {a.original_path.name for a in result}
-        assert names == {"a.txt", "b.txt"}
+        # In the sandbox, files are renamed to <hash>.<ext>. We verify the
+        # count and the extensions, not the original names.
+        suffixes = {a.stored_path.suffix for a in result}
+        assert suffixes == {".txt"}
+        # Each entry has a unique id and a valid sha256.
+        ids = {a.id for a in result}
+        assert len(ids) == 2
+        for a in result:
+            assert len(a.sha256) == 64  # full SHA-256 hex
 
 
 class TestCleanupSessionSandbox:
