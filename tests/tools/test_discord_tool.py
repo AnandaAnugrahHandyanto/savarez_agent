@@ -472,6 +472,21 @@ class TestCreateThread:
             body={"name": "Discussion", "auto_archive_duration": 1440},
         )
 
+    @patch("tools.discord_tool._discord_request")
+    def test_rename_thread(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "801", "name": "Better Thread Title"}
+        result = json.loads(discord_core(
+            action="rename_thread", channel_id="801", name="Better Thread Title",
+        ))
+        assert result["success"] is True
+        assert result["thread_id"] == "801"
+        assert result["name"] == "Better Thread Title"
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/801", "test-token",
+            body={"name": "Better Thread Title"},
+        )
+
 
 # ---------------------------------------------------------------------------
 # Actions: add_role / remove_role
@@ -558,14 +573,14 @@ class TestRegistration:
         from tools.registry import registry
         entry = registry._tools["discord"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        assert actions == {"fetch_messages", "search_members", "create_thread"}
+        assert actions == {"fetch_messages", "search_members", "create_thread", "rename_thread"}
 
     def test_admin_schema_actions(self):
         """Admin static schema should list only admin actions."""
         from tools.registry import registry
         entry = registry._tools["discord_admin"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread"}
+        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread", "rename_thread"}
         assert actions == expected_admin
 
     def test_all_actions_covered(self):
@@ -589,6 +604,7 @@ class TestRegistration:
         assert "fetch_messages(channel_id)" in desc
         assert "search_members(guild_id, query)" in desc
         assert "create_thread(channel_id, name)" in desc
+        assert "rename_thread(channel_id, name)" in desc
         # Admin actions should NOT be in core description
         assert "list_guilds()" not in desc
         assert "add_role(" not in desc
@@ -604,6 +620,7 @@ class TestRegistration:
         # Core actions should NOT be in admin description
         assert "fetch_messages(" not in desc
         assert "create_thread(" not in desc
+        assert "rename_thread(" not in desc
 
     def test_handler_callable(self):
         from tools.registry import registry
