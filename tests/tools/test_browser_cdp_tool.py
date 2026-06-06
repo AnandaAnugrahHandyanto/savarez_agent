@@ -195,7 +195,11 @@ def test_non_ws_endpoint_returns_error(monkeypatch):
 
 
 def test_websockets_missing_returns_error(monkeypatch):
-    monkeypatch.setattr(browser_cdp_tool, "_WS_AVAILABLE", False)
+    monkeypatch.setattr(
+        browser_cdp_tool,
+        "_load_websockets",
+        lambda: (None, Exception, False),
+    )
     result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets"))
     assert "error" in result
     assert "websockets" in result["error"].lower()

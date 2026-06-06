@@ -28,18 +28,15 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
-# ``websockets`` is a transitive dependency of hermes-agent (via fal_client
-# and firecrawl-py) and is already imported by gateway/platforms/feishu.py.
-# Wrap the import so a clean error surfaces if the package is ever absent.
-try:
-    import websockets
-    from websockets.exceptions import WebSocketException
 
-    _WS_AVAILABLE = True
-except ImportError:
-    websockets = None  # type: ignore[assignment]
-    WebSocketException = Exception  # type: ignore[assignment,misc]
-    _WS_AVAILABLE = False
+def _load_websockets():
+    """Import websockets lazily so ordinary tool loading avoids this dependency cost."""
+    try:
+        import websockets
+        from websockets.exceptions import WebSocketException
+        return websockets, WebSocketException, True
+    except ImportError:
+        return None, Exception, False
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +104,8 @@ async def _cdp_call(
     works for ``Target.*``, ``Browser.*``, ``Storage.*`` and a few other
     globally-scoped domains.
     """
-    assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
+    websockets, _, _ = _load_websockets()
+    assert websockets is not None
 
     async with websockets.connect(
         ws_url,
@@ -347,7 +345,8 @@ def browser_cdp(
             cdp_docs=CDP_DOCS_URL,
         )
 
-    if not _WS_AVAILABLE:
+    _, WebSocketException, ws_available = _load_websockets()
+    if not ws_available:
         return tool_error(
             "The 'websockets' Python package is required but not installed. "
             "Install it with: pip install websockets"
