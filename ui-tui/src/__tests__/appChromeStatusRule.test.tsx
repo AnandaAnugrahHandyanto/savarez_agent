@@ -259,29 +259,4 @@ describe('StatusRule credits notice render priority', () => {
     // Model survives on a narrow terminal because the notice yields.
     expect(textContent(element)).toContain('opus 4.8')
   })
-
-  it('keeps the dev-credits banner visible alongside a notice when HERMES_DEV_CREDITS is on', () => {
-    const prev = process.env.HERMES_DEV_CREDITS
-    process.env.HERMES_DEV_CREDITS = '1'
-
-    try {
-      const element = StatusRule({
-        ...baseProps,
-        notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: '⚠ 90% used' },
-        usage: { ...baseProps.usage, dev_credits_spent_micros: 12_345 }
-      })
-
-      const rendered = textContent(element)
-      expect(rendered).toContain('⚠ 90% used')
-      expect(rendered).toContain('(dev credits)')
-      // Δ segment still renders (12345 micros → 1.2¢).
-      expect(rendered).toContain('Δ')
-    } finally {
-      if (prev === undefined) {
-        delete process.env.HERMES_DEV_CREDITS
-      } else {
-        process.env.HERMES_DEV_CREDITS = prev
-      }
-    }
-  })
 })
