@@ -357,16 +357,32 @@ _SAFE_CONTEXT_SECTION_NAMES = {
     "recalled user context (recent/relevant)",
 }
 _USER_PEER_CARD_SECTION_NAMES = {"user peer card", "user profile", "peer card"}
+_IDENTITY_FIELD_PATTERN = (
+    r"(?:"
+    r"identity|"
+    r"alias(?:es)?|"
+    r"name|"
+    r"e-?mail|"
+    r"phone|"
+    r"address|"
+    r"website|"
+    r"location|"
+    r"org(?:anization)?|"
+    r"father|"
+    r"contractor"
+    r")"
+)
 _RAW_IDENTITY_LINE_RE = re.compile(
     r"^(?:"
-    r"identity\s*:|"
-    r"aliases?\s*:|"
-    r"name\s*:|"
-    r"e-?mail\s*:|"
-    r"phone\s*:|"
-    r"address\s*:|"
-    r"website\s*:|"
-    r"location\s*:"
+    # Bare peer-card fields: "Name: ...", "Location: ...".
+    rf"{_IDENTITY_FIELD_PATTERN}\s*:|"
+    # Honcho cards commonly prefix facts as ATTRIBUTE:/INSTRUCTION:.  Strip
+    # identity fields after those labels while preserving safe preferences.
+    rf"(?:attribute|instruction)\s*:\s*{_IDENTITY_FIELD_PATTERN}\s*:|"
+    # Relationship-prefixed facts are names by construction (Father, spouse,
+    # employer/contact, etc.); omit them conservatively instead of trying to
+    # maintain an exhaustive relationship-name allow/deny list.
+    r"relationship\s*:"
     r")",
     re.IGNORECASE,
 )

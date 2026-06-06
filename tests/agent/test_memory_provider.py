@@ -849,6 +849,34 @@ class TestMemoryContextFencing:
         assert "AI Identity Card" not in block
         assert "identity dump" not in block
 
+    def test_compact_peer_preferences_strip_prefixed_honcho_identity_lines(self):
+        from agent.memory_manager import build_memory_context_block
+
+        prefetch = (
+            "## User Peer Card\n"
+            "ATTRIBUTE: Role: Creative Director\n"
+            "ATTRIBUTE: Location: Hidden Harbor\n"
+            "ATTRIBUTE: Org: Example Studio\n"
+            "ATTRIBUTE: Website: example.invalid\n"
+            "ATTRIBUTE: E-mail: person@example.invalid\n"
+            "RELATIONSHIP: Father: Named Parent\n"
+            "RELATIONSHIP: Contractor: Named Client\n"
+            "INSTRUCTION: Name: Private Alias\n"
+            "ATTRIBUTE: Design Preference: Tight functional UI\n"
+        )
+
+        block = build_memory_context_block(prefetch)
+
+        assert "## Compact peer preferences" in block
+        assert "Tight functional UI" in block
+        assert "Hidden Harbor" not in block
+        assert "Example Studio" not in block
+        assert "example.invalid" not in block
+        assert "person@example.invalid" not in block
+        assert "Named Parent" not in block
+        assert "Named Client" not in block
+        assert "Private Alias" not in block
+
 
 # ---------------------------------------------------------------------------
 # AIAgent.commit_memory_session — routes to MemoryManager.on_session_end
