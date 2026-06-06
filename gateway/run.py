@@ -4405,6 +4405,13 @@ class GatewayRunner:
         codex_session = getattr(agent, "_codex_session", None)
         if codex_session is None:
             return
+        process_close = getattr(codex_session, "close_process_preserving_thread", None)
+        if callable(process_close):
+            try:
+                process_close()
+            except Exception:
+                pass
+            return
         try:
             codex_session.close()
         except Exception:

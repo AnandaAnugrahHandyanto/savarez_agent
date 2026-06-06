@@ -102,11 +102,12 @@ class TestAgentConfigSignature:
 
 
 class TestForegroundCodexAppServerClosePath:
-    def test_completed_foreground_codex_app_server_turn_closes_session(self):
-        """Foreground gateway turns must not leave codex app-server idle between turns."""
+    def test_completed_foreground_codex_app_server_turn_closes_process_preserves_thread(self):
+        """Foreground cleanup closes the app-server process, not Codex thread context."""
         from gateway.run import GatewayRunner
 
         codex_session = MagicMock()
+        codex_session.close_process_preserving_thread = MagicMock()
         agent = SimpleNamespace(
             api_mode="codex_app_server",
             _codex_session=codex_session,
@@ -117,14 +118,16 @@ class TestForegroundCodexAppServerClosePath:
             {"completed": True, "partial": False, "interrupted": False},
         )
 
-        codex_session.close.assert_called_once_with()
-        assert agent._codex_session is None
+        codex_session.close_process_preserving_thread.assert_called_once_with()
+        codex_session.close.assert_not_called()
+        assert agent._codex_session is codex_session
 
-    def test_interrupted_foreground_codex_app_server_turn_closes_session(self):
-        """Cancelled/interrupted foreground turns also retire codex app-server."""
+    def test_interrupted_foreground_codex_app_server_turn_closes_process_preserves_thread(self):
+        """Cancelled/interrupted foreground turns also close only process resources."""
         from gateway.run import GatewayRunner
 
         codex_session = MagicMock()
+        codex_session.close_process_preserving_thread = MagicMock()
         agent = SimpleNamespace(
             api_mode="codex_app_server",
             _codex_session=codex_session,
@@ -135,8 +138,9 @@ class TestForegroundCodexAppServerClosePath:
             {"completed": False, "partial": True, "interrupted": True},
         )
 
-        codex_session.close.assert_called_once_with()
-        assert agent._codex_session is None
+        codex_session.close_process_preserving_thread.assert_called_once_with()
+        codex_session.close.assert_not_called()
+        assert agent._codex_session is codex_session
 
     def test_non_codex_agent_is_not_touched_after_foreground_turn(self):
         """Close-after-turn is scoped to the codex app-server runtime only."""
@@ -155,6 +159,24 @@ class TestForegroundCodexAppServerClosePath:
 
         accidental_session.close.assert_not_called()
         assert agent._codex_session is accidental_session
+
+    def test_foreground_close_legacy_session_falls_back_to_full_session_close(self):
+        """Older test doubles without process-only close still get cleaned up."""
+        from gateway.run import GatewayRunner
+
+        codex_session = MagicMock(spec=["close"])
+        agent = SimpleNamespace(
+            api_mode="codex_app_server",
+            _codex_session=codex_session,
+        )
+
+        GatewayRunner._close_foreground_codex_app_server_after_turn(
+            agent,
+            {"completed": True},
+        )
+
+        codex_session.close.assert_called_once_with()
+        assert agent._codex_session is None
 
     def test_cache_take_does_not_close_active_codex_session_before_turn(self):
         """The close path must run post-turn, not when an agent is promoted."""
