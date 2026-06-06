@@ -361,6 +361,115 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
 
 
+def _maybe_inflight_compress(
+    agent: Any,
+    messages: List[Dict[str, Any]],
+    system_message: Any,
+    active_system_prompt: Any,
+    task_id: str,
+    *,
+    api_call_count: int,
+) -> tuple:
+    """Mid-turn emergency context-compression safety valve.
+
+    Preflight compression runs once per turn (before the tool-calling loop)
+    and is intentionally per-turn so it never mutates the conversation
+    mid-turn and break the prompt-cache prefix.  But a single long autonomous
+    turn that makes many tool calls can grow context unbounded and overflow
+    the model's window before the turn ends — the proactive compressor never
+    gets another look until the *next* user turn, and today only a reactive
+    post-error path (and the Ollama hard-abort) catches it.
+
+    This valve re-checks compression inside the loop, but ONLY once the
+    request approaches the model's real context window — an EMERGENCY fraction
+    (``HERMES_INFLIGHT_COMPRESS_FRACTION``, default 0.85), well above the 50%
+    preflight threshold.  Normal turns stay below it and keep their cached
+    prefix; we pay the one-time mid-turn cache bust only when a turn would
+    otherwise overflow.  Complements (does not replace) the preflight and
+    reactive-on-error compaction paths.
+
+    Returns ``(messages, active_system_prompt, fired)``.  When ``fired`` is
+    True the caller must reset its ``conversation_history`` reference so the
+    session-DB flush writes the compacted messages (mirrors preflight).
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    if (
+        not getattr(agent, "compression_enabled", False)
+        or compressor is None
+        or api_call_count <= 1
+    ):
+        return messages, active_system_prompt, False
+
+    protect = compressor.protect_first_n + compressor.protect_last_n + 1
+    ctx_len = getattr(compressor, "context_length", 0) or 0
+    if len(messages) <= protect or ctx_len <= 0:
+        return messages, active_system_prompt, False
+
+    try:
+        frac = float(os.getenv("HERMES_INFLIGHT_COMPRESS_FRACTION", "0.85"))
+    except ValueError:
+        frac = 0.85
+    frac = min(max(frac, 0.5), 0.98)
+    emergency = int(ctx_len * frac)
+
+    # Prefer the real provider prompt count from the previous API call
+    # (kept current by compressor.update_from_response); fall back to a rough
+    # estimate only when we have no real number yet.
+    inflight_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
+    if inflight_tokens <= 0:
+        inflight_tokens = estimate_request_tokens_rough(
+            messages,
+            system_prompt=active_system_prompt or "",
+            tools=getattr(agent, "tools", None) or None,
+        )
+
+    if inflight_tokens < emergency or not compressor.should_compress(inflight_tokens):
+        return messages, active_system_prompt, False
+
+    logger.warning(
+        "In-flight compression (mid-turn safety valve): ~%s tokens >= %s "
+        "emergency threshold (%.0f%% of %s ctx) at API call #%d — preflight "
+        "only runs once per turn; compacting to avoid a window overflow.",
+        f"{inflight_tokens:,}", f"{emergency:,}", frac * 100,
+        f"{ctx_len:,}", api_call_count,
+    )
+    try:
+        agent._emit_status(
+            f"📦 In-flight compression at ~{inflight_tokens:,} tokens "
+            f"(nearing the {ctx_len:,}-token context limit)."
+        )
+    except Exception:
+        pass
+
+    fired = False
+    for _pass in range(3):
+        orig_len = len(messages)
+        messages, active_system_prompt = agent._compress_context(
+            messages, system_message,
+            approx_tokens=inflight_tokens,
+            task_id=task_id,
+        )
+        if len(messages) >= orig_len:
+            break  # cannot compress further
+        fired = True
+        # Mirror preflight's post-compression resets so the model gets a fresh
+        # budget on the compacted context.
+        agent._empty_content_retries = 0
+        agent._thinking_prefill_retries = 0
+        agent._last_content_with_tools = None
+        agent._last_content_tools_all_housekeeping = False
+        agent._mute_post_response = False
+        inflight_tokens = estimate_request_tokens_rough(
+            messages,
+            system_prompt=active_system_prompt or "",
+            tools=getattr(agent, "tools", None) or None,
+        )
+        if inflight_tokens < emergency:
+            break
+
+    return messages, active_system_prompt, fired
+
+
 def run_conversation(
     agent,
     user_message: str,
@@ -837,6 +946,21 @@ def run_conversation(
             if not agent.quiet_mode:
                 agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
             break
+
+        # ── In-flight emergency context compression (mid-turn safety valve) ──
+        # Preflight compression runs only once per turn (before this loop), so a
+        # single long autonomous turn that makes many tool calls can overflow the
+        # model's window mid-turn. Re-check near the context limit (an emergency
+        # fraction, not the 50% preflight threshold) so normal turns keep their
+        # prompt-cache prefix. Pre-empts the reactive post-error / Ollama-abort paths.
+        messages, active_system_prompt, _inflight_compressed = _maybe_inflight_compress(
+            agent, messages, system_message, active_system_prompt,
+            effective_task_id, api_call_count=api_call_count,
+        )
+        if _inflight_compressed:
+            # Compaction may have created a new session — clear the history
+            # reference so the session-DB flush writes the compacted messages.
+            conversation_history = None
 
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:
