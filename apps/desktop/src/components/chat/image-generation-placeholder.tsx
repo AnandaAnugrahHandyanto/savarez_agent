@@ -267,7 +267,7 @@ const DiffusionCanvas: FC = () => {
 
 export const ImageGenerationPlaceholder: FC = () => {
   return (
-    <div aria-label="Rendering image" aria-live="polite" className="w-full max-w-136 self-start" role="status">
+    <div aria-label="이미지 렌더링 중" aria-live="polite" className="w-full max-w-136 self-start" role="status">
       <div className="relative h-(--image-preview-height) overflow-hidden rounded-4xl border border-border/55 shadow-[inset_0_0.0625rem_0_color-mix(in_srgb,white_45%,transparent),inset_0_0_0_0.0625rem_color-mix(in_srgb,var(--dt-border)_34%,transparent),inset_0_-0.75rem_1.75rem_color-mix(in_srgb,var(--dt-primary)_5%,transparent)]">
         <DiffusionCanvas />
       </div>

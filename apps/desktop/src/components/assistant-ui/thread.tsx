@@ -280,7 +280,7 @@ const ResponseLoadingIndicator: FC = () => {
   const elapsed = useElapsedSeconds()
 
   return (
-    <StatusRow data-slot="aui_response-loading" label="Hermes is loading a response">
+    <StatusRow data-slot="aui_response-loading" label="Hermes가 응답을 로드하는 중입니다">
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
@@ -385,7 +385,7 @@ const ThinkingDisclosure: FC<{
               pending && 'shimmer text-foreground/55'
             )}
           >
-            Thinking
+            생각 중
           </span>
           {pending && (
             <ActivityTimerText
@@ -501,11 +501,11 @@ function formatMessageTimestamp(value: Date | string | number | undefined): stri
   const dayDelta = Math.round((startOfDay(new Date()) - startOfDay(date)) / 86_400_000)
 
   if (dayDelta === 0) {
-    return `Today, ${TIME_FMT.format(date)}`
+    return `오늘, ${TIME_FMT.format(date)}`
   }
 
   if (dayDelta === 1) {
-    return `Yesterday, ${TIME_FMT.format(date)}`
+    return `어제, ${TIME_FMT.format(date)}`
   }
 
   return SHORT_FMT.format(date)
@@ -530,15 +530,15 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
         )}
         data-slot="aui_msg-actions"
       >
-        <CopyButton appearance="icon" buttonSize="icon" disabled={!messageText} label="Copy" text={messageText} />
+        <CopyButton appearance="icon" buttonSize="icon" disabled={!messageText} label="복사" text={messageText} />
         <ActionBarPrimitive.Reload asChild>
-          <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip="Refresh">
+          <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip="새로고침">
             <Codicon name="refresh" />
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>
         <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
           <DropdownMenuTrigger asChild>
-            <TooltipIconButton tooltip="More actions">
+            <TooltipIconButton tooltip="추가 작업">
               <Codicon name="ellipsis" />
             </TooltipIconButton>
           </DropdownMenuTrigger>
@@ -546,7 +546,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
             <MessageTimestamp />
             <DropdownMenuItem onSelect={() => onBranchInNewChat?.(messageId)}>
               <GitBranchIcon />
-              Branch in new chat
+              새 채팅으로 분기
             </DropdownMenuItem>
             <ReadAloudItem messageId={messageId} text={messageText} />
           </DropdownMenuContent>
@@ -575,7 +575,7 @@ const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, tex
     try {
       await playSpeechText(text, { messageId, source: 'read-aloud' })
     } catch (error) {
-      notifyError(error, 'Read aloud failed')
+      notifyError(error, '음성 읽기 실패')
     }
   }, [messageId, text])
 
@@ -588,7 +588,7 @@ const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, tex
       }}
     >
       <Icon className={isPreparing ? 'animate-spin' : undefined} />
-      {isPreparing ? 'Preparing audio...' : isSpeaking ? 'Stop reading' : 'Read aloud'}
+      {isPreparing ? '오디오 준비 중...' : isSpeaking ? '읽기 중지' : '음성으로 듣기'}
     </DropdownMenuItem>
   )
 }
@@ -753,10 +753,10 @@ const UserMessage: FC<{
               ) : (
                 <ActionBarPrimitive.Edit asChild>
                   <button
-                    aria-label="Edit message"
+                    aria-label="메시지 편집"
                     className={bubbleClassName}
                     onClick={() => triggerHaptic('selection')}
-                    title="Edit message"
+                    title="메시지 편집"
                     type="button"
                   >
                     {bubbleContent}
@@ -807,7 +807,7 @@ const UserMessage: FC<{
               </span>
               <BranchPickerPrimitive.Next
                 className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title="Restore next checkpoint"
+                title="다음 체크포인트 복원"
               >
                 Go forward
               </BranchPickerPrimitive.Next>
@@ -1356,7 +1356,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
             data-expanded={expanded ? 'true' : undefined}
           >
             <div
-              aria-label="Edit message"
+              aria-label="메시지 편집"
               autoFocus
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
@@ -1365,7 +1365,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
               )}
               contentEditable
-              data-placeholder="Edit message"
+              data-placeholder="메시지 편집"
               data-slot={RICH_INPUT_SLOT}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
               onDragOver={handleDragOver}

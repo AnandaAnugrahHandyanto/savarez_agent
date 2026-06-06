@@ -43,7 +43,7 @@ export default function PairingPage() {
         setPending(res.pending);
         setApproved(res.approved);
       })
-      .catch(() => showToast("Failed to load pairing requests", "error"))
+      .catch(() => showToast("페어링 요청을 로드하지 못했습니다", "error"))
       .finally(() => setLoading(false));
   }, [showToast]);
 
@@ -53,14 +53,14 @@ export default function PairingPage() {
 
   const handleApprove = async (user: PairingUser) => {
     if (!user.code) {
-      showToast("Missing pairing code", "error");
+      showToast("페어링 코드가 없습니다", "error");
       return;
     }
     const key = getUserKey(user);
     setApproving(key);
     try {
       await api.approvePairing(user.platform, user.code);
-      showToast(`Approved: "${getUserLabel(user)}"`, "success");
+      showToast(`승인됨: "${getUserLabel(user)}"`, "success");
       loadPairing();
     } catch (e) {
       showToast(`Error: ${e}`, "error");
@@ -70,11 +70,11 @@ export default function PairingPage() {
   };
 
   const handleClearPending = async () => {
-    if (!window.confirm("Clear all pending pairing requests?")) return;
+    if (!window.confirm("모든 대기 중인 페어링 요청을 지우시겠습니까?")) return;
     setClearing(true);
     try {
       const res = await api.clearPendingPairing();
-      showToast(`Cleared ${res.cleared} pending request(s)`, "success");
+      showToast(`${res.cleared}개의 대기 중인 요청이 삭제되었습니다`, "success");
       loadPairing();
     } catch (e) {
       showToast(`Error: ${e}`, "error");
@@ -91,7 +91,7 @@ export default function PairingPage() {
         try {
           await api.revokePairing(platform, user_id);
           showToast(
-            `Revoked: "${user ? getUserLabel(user) : user_id}"`,
+            `권한 철회됨: "${user ? getUserLabel(user) : user_id}"`,
             "success",
           );
           loadPairing();
@@ -114,7 +114,7 @@ export default function PairingPage() {
         disabled={clearing}
         prefix={clearing ? <Spinner /> : <Trash2 className="h-4 w-4" />}
       >
-        Clear pending
+        대기열 지우기
       </Button>,
     );
     return () => {
@@ -143,13 +143,13 @@ export default function PairingPage() {
         open={userRevoke.isOpen}
         onCancel={userRevoke.cancel}
         onConfirm={userRevoke.confirm}
-        title="Revoke access"
+        title="권한 철회"
         description={
           pendingRevokeUser
-            ? `"${getUserLabel(pendingRevokeUser)}" will lose access. This cannot be undone.`
-            : "This user will lose access. This cannot be undone."
+            ? `"${getUserLabel(pendingRevokeUser)}"의 접근 권한이 상실됩니다. 이 작업은 취소할 수 없습니다.`
+            : "이 사용자의 접근 권한이 상실됩니다. 이 작업은 취소할 수 없습니다."
         }
-        confirmLabel="Revoke"
+        confirmLabel="철회"
         loading={userRevoke.isDeleting}
       />
 
@@ -160,13 +160,13 @@ export default function PairingPage() {
           className="flex items-center gap-2 text-muted-foreground"
         >
           <Users className="h-4 w-4" />
-          Pending requests ({pending.length})
+          대기 중인 요청 ({pending.length})
         </H2>
 
         {pending.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No pending pairing requests
+              대기 중인 페어링 요청이 없습니다
             </CardContent>
           </Card>
         )}
@@ -189,7 +189,7 @@ export default function PairingPage() {
                       <span className="truncate">{user.user_name}</span>
                     )}
                     {typeof user.age_minutes === "number" && (
-                      <span>{user.age_minutes}m ago</span>
+                      <span>{user.age_minutes}분 전</span>
                     )}
                   </div>
                 </div>
@@ -208,7 +208,7 @@ export default function PairingPage() {
                       )
                     }
                   >
-                    Approve
+                    승인
                   </Button>
                 </div>
               </CardContent>
@@ -224,13 +224,13 @@ export default function PairingPage() {
           className="flex items-center gap-2 text-muted-foreground"
         >
           <ShieldCheck className="h-4 w-4" />
-          Approved users ({approved.length})
+          승인된 사용자 ({approved.length})
         </H2>
 
         {approved.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No approved users
+              승인된 사용자가 없습니다
             </CardContent>
           </Card>
         )}
@@ -258,8 +258,8 @@ export default function PairingPage() {
                   <Button
                     ghost
                     size="icon"
-                    title="Revoke"
-                    aria-label="Revoke"
+                    title="권한 철회"
+                    aria-label="권한 철회"
                     className="text-destructive"
                     onClick={() => userRevoke.requestDelete(key)}
                   >

@@ -93,7 +93,7 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
         return
       }
 
-      notifyError(error, 'Preview unavailable')
+      notifyError(error, '미리보기를 사용할 수 없음')
     } finally {
       if (mountedRef.current && requestTokenRef.current === requestToken) {
         setOpening(false)
@@ -116,7 +116,7 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
         onClick={() => void togglePreview()}
         type="button"
       >
-        {opening ? 'Opening…' : isActive ? 'Hide' : 'Open preview'}
+        {opening ? '여는 중…' : isActive ? '숨기기' : '미리보기 열기'}
       </button>
     </div>
   )

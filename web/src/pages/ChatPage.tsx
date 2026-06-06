@@ -888,8 +888,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           <Button
             ghost
             onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+            title="마지막 어시스턴트 응답을 마크다운으로 복사"
+            aria-label="마지막 어시스턴트 응답 복사"
             className={cn(
               "absolute z-10",
               "normal-case tracking-normal font-normal",

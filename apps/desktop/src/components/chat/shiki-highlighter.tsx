@@ -68,15 +68,14 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
       <CodeCardHeader>
         <CodeCardTitle>
           <CodeCardIcon name={codiconForLanguage(label)} />
-          Code
+          코드
           {label && <CodeCardSubtitle> · {label}</CodeCardSubtitle>}
         </CodeCardTitle>
         <CopyButton
-          appearance="inline"
-          className="-my-1 -mr-1 h-5 px-1 opacity-55 hover:opacity-100"
-          iconClassName="size-2.5"
-          label="Copy code"
-          showLabel={false}
+          appearance="icon"
+          buttonSize="icon"
+          className="size-6 text-(--ui-text-tertiary)"
+          label="코드 복사"
           text={trimmed}
         />
       </CodeCardHeader>
