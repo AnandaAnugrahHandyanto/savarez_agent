@@ -9762,6 +9762,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     on a PyPI install we surface a one-line notice instead of silently
     dropping the flag.
     """
+    global PROJECT_ROOT
     from hermes_cli.config import detect_install_method
     method = detect_install_method(PROJECT_ROOT)
     if method == "docker":
@@ -9789,6 +9790,19 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         return
 
     git_dir = PROJECT_ROOT / ".git"
+    if not git_dir.exists():
+        # Editable/git install: PROJECT_ROOT resolves to the venv
+        # site-packages directory (where the launcher entry-point lives),
+        # which has no .git alongside it. Resolve the real source root
+        # from HERMES_HOME/hermes-agent/ before bailing.
+        try:
+            from hermes_constants import get_hermes_home
+            _candidate = get_hermes_home() / "hermes-agent"
+            if (_candidate / ".git").exists():
+                PROJECT_ROOT = _candidate
+                git_dir = _candidate / ".git"
+        except Exception:
+            pass
     if not git_dir.exists():
         print("✗ Not a git repository — cannot check for updates.")
         sys.exit(1)
@@ -10216,6 +10230,7 @@ def _cmd_update_pip(args):
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
+    global PROJECT_ROOT
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (
         (lambda prompt, default="": _gateway_prompt(prompt, default))
@@ -10271,6 +10286,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
     use_zip_update = False
     git_dir = PROJECT_ROOT / ".git"
+
+    if not git_dir.exists():
+        # Editable/git install: PROJECT_ROOT resolves to the venv
+        # site-packages directory (where the launcher entry-point lives),
+        # which has no .git alongside it. Resolve the real source root
+        # from HERMES_HOME/hermes-agent/ before bailing.
+        try:
+            from hermes_constants import get_hermes_home
+            _candidate = get_hermes_home() / "hermes-agent"
+            if (_candidate / ".git").exists():
+                PROJECT_ROOT = _candidate
+                git_dir = _candidate / ".git"
+        except Exception:
+            pass
 
     if not git_dir.exists():
         if sys.platform == "win32":
