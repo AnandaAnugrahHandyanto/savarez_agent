@@ -7807,23 +7807,7 @@ class GatewayRunner:
             # turn, processed in FIFO order after the current run (and any
             # earlier /queue items) finishes.  Messages are NOT merged.
             if event.get_command() in {"queue", "q"}:
-                queued_text = event.get_command_args().strip()
-                if not queued_text:
-                    return "Usage: /queue <prompt>"
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    queued_event = MessageEvent(
-                        text=queued_text,
-                        message_type=MessageType.TEXT,
-                        source=event.source,
-                        message_id=event.message_id,
-                        channel_prompt=event.channel_prompt,
-                    )
-                    self._enqueue_fifo(_quick_key, queued_event, adapter)
-                depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
-                if depth <= 1:
-                    return "Queued for the next turn."
-                return f"Queued for the next turn. ({depth} queued)"
+                return await self._handle_queue_command(event, _quick_key)
 
             # /steer <prompt> — inject mid-run after the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
@@ -8331,6 +8315,9 @@ class GatewayRunner:
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical == "queue":
+            return await self._handle_queue_command(event, _quick_key)
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
@@ -10070,6 +10057,27 @@ class GatewayRunner:
             lines.append(f"◆ Endpoint: {base_url}")
 
         return "\n".join(lines)
+
+    async def _handle_queue_command(self, event: MessageEvent, _quick_key: str) -> str:
+        """Queue a prompt for the next turn (shared by active and idle paths)."""
+        queued_text = event.get_command_args().strip()
+        if not queued_text:
+            return "Usage: /queue <prompt>"
+        source = event.source
+        adapter = self.adapters.get(source.platform)
+        if adapter:
+            queued_event = MessageEvent(
+                text=queued_text,
+                message_type=MessageType.TEXT,
+                source=event.source,
+                message_id=event.message_id,
+                channel_prompt=event.channel_prompt,
+            )
+            self._enqueue_fifo(_quick_key, queued_event, adapter)
+        depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
+        if depth <= 1:
+            return "Queued for the next turn."
+        return f"Queued for the next turn. ({depth} queued)"
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
