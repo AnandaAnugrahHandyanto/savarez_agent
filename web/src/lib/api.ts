@@ -1726,7 +1726,9 @@ export interface AnalyticsDailyEntry {
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
+  cache_write_tokens: number;
   reasoning_tokens: number;
+  total_tokens: number;
   estimated_cost: number;
   actual_cost: number;
   sessions: number;
@@ -1737,6 +1739,10 @@ export interface AnalyticsModelEntry {
   model: string;
   input_tokens: number;
   output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
   estimated_cost: number;
   sessions: number;
   api_calls: number;
@@ -1765,7 +1771,9 @@ export interface AnalyticsResponse {
     total_input: number;
     total_output: number;
     total_cache_read: number;
+    total_cache_write: number;
     total_reasoning: number;
+    total_tokens: number;
     total_estimated_cost: number;
     total_actual_cost: number;
     total_sessions: number;
@@ -1812,7 +1820,9 @@ export interface ModelsAnalyticsModelEntry {
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
+  cache_write_tokens: number;
   reasoning_tokens: number;
+  total_tokens: number;
   estimated_cost: number;
   actual_cost: number;
   sessions: number;
@@ -1837,7 +1847,9 @@ export interface ModelsAnalyticsResponse {
     total_input: number;
     total_output: number;
     total_cache_read: number;
+    total_cache_write: number;
     total_reasoning: number;
+    total_tokens: number;
     total_estimated_cost: number;
     total_actual_cost: number;
     total_sessions: number;
