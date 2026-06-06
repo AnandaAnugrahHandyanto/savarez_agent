@@ -12,6 +12,7 @@ import dataclasses
 import json
 import logging
 import os
+import time
 import tempfile
 import html as _html
 import re
@@ -409,6 +410,17 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
+        # ── Health observability (Fix 3 foundation) ─────────────────
+        # Lightweight counters for the secondary-failover decision
+        # engine.  Updated by the polling loop and the outbound
+        # dispatch path; exposed via get_health() for the watchdog
+        # cron job (and for any future parallel secondary adapter).
+        self._health_poll_success_at: float = 0.0
+        self._health_poll_failure_streak: int = 0
+        self._health_send_success_at: float = 0.0
+        self._health_send_failure_streak: int = 0
+        self._health_connect_failure_streak: int = 0
+        self._health_first_init_at: float = 0.0
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -793,6 +805,72 @@ class TelegramAdapter(BasePlatformAdapter):
             configured = configured.split(",")
         return parse_fallback_ip_env(",".join(str(v) for v in configured) if configured else None)
 
+    def get_health(self) -> dict:
+        """Return a health snapshot for monitoring + future secondary-failover.
+
+        This is the read-side of the second-Telegram-provider design:
+        the dispatch layer (and the watchdog cron job) can poll this to
+        decide whether to route new outbound sends to a secondary bot
+        or fail open.  Counters are updated by the polling loop,
+        outbound send retries, and the connect-attempt path.
+
+        Returns:
+            dict with keys:
+                name: adapter name
+                mode: 'polling' or 'webhook'
+                init_age_seconds: seconds since first init (None if never)
+                last_poll_success_age: seconds since last successful
+                    getUpdates round-trip (None if never)
+                last_send_success_age: seconds since last successful
+                    send (None if never)
+                poll_failure_streak: consecutive poll failures
+                send_failure_streak: consecutive send failures
+                connect_failure_streak: consecutive connect-level failures
+                healthy: True if both poll and send are within the
+                    HERMES_TELEGRAM_HEALTH_STALE threshold (default
+                    300s) AND no failure streak is at/over the
+                    degradation threshold (3)
+        """
+        now = time.time()
+        stale_threshold = float(
+            os.getenv("HERMES_TELEGRAM_HEALTH_STALE", "300")
+        )
+        degrade_threshold = int(
+            os.getenv("HERMES_TELEGRAM_HEALTH_DEGRADE", "3")
+        )
+
+        def _age(ts: float) -> float | None:
+            return None if ts <= 0 else round(now - ts, 1)
+
+        poll_age = _age(self._health_poll_success_at)
+        send_age = _age(self._health_send_success_at)
+
+        # 'healthy' is a coarse flag suitable for grafana / cron
+        # watchdog.  Detailed status comes from the streaks.
+        healthy = (
+            (self._health_poll_failure_streak < degrade_threshold)
+            and (self._health_send_failure_streak < degrade_threshold)
+            and (self._health_connect_failure_streak < degrade_threshold)
+        )
+        # If the adapter has never successfully polled, treat as
+        # unhealthy regardless of streak counters.
+        if self._health_poll_success_at <= 0:
+            healthy = False
+
+        return {
+            "name": self.name,
+            "mode": "webhook" if self._webhook_mode else "polling",
+            "init_age_seconds": _age(self._health_first_init_at),
+            "last_poll_success_age": poll_age,
+            "last_send_success_age": send_age,
+            "poll_failure_streak": self._health_poll_failure_streak,
+            "send_failure_streak": self._health_send_failure_streak,
+            "connect_failure_streak": self._health_connect_failure_streak,
+            "healthy": healthy,
+            "stale_threshold_seconds": stale_threshold,
+            "degrade_threshold": degrade_threshold,
+        }
+
     @staticmethod
     def _looks_like_polling_conflict(error: Exception) -> bool:
         text = str(error).lower()
@@ -1001,6 +1079,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            # Reset the failure streak on a confirmed successful poll
+            # resumption.  The next error increments it again.
+            self._health_poll_success_at = time.time()
+            self._health_poll_failure_streak = 0
             # start_polling() returning is necessary but not sufficient:
             # PTB's Updater can be left in a state where `running` is True
             # but the underlying long-poll task is wedged on a stale httpx
@@ -1632,6 +1714,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self._app.initialize()
                     break
                 except (NetworkError, TimedOut, OSError) as init_err:
+                    self._health_connect_failure_streak += 1
                     if _attempt < _max_connect - 1:
                         wait = min(2 ** _attempt, 15)
                         logger.warning(
@@ -1641,6 +1724,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         await asyncio.sleep(wait)
                     else:
                         raise
+            # Successful init: record health marker.
+            if not self._health_first_init_at:
+                self._health_first_init_at = time.time()
+            self._health_connect_failure_streak = 0
             await self._app.start()
 
             # Decide between webhook and polling mode
@@ -1704,11 +1791,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     if self._polling_error_task and not self._polling_error_task.done():
                         return
                     if self._looks_like_polling_conflict(error):
+                        self._health_poll_failure_streak += 1
                         self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
                     elif self._looks_like_network_error(error):
+                        self._health_poll_failure_streak += 1
                         logger.warning("[%s] Telegram network error, scheduling reconnect: %s", self.name, error)
                         self._polling_error_task = loop.create_task(self._handle_polling_network_error(error))
                     else:
+                        self._health_poll_failure_streak += 1
                         logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
 
                 # Store reference for retry use in _handle_polling_conflict

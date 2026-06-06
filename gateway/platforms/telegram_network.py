@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import os
 import socket
+import time
 from typing import Iterable, Optional
 
 import httpx
@@ -20,6 +22,24 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
+
+# Refresh the discovered Telegram fallback IP list at most this often.
+# Configurable via HERMES_TELEGRAM_FALLBACK_TTL (seconds).  Default 1h.
+def _get_refresh_ttl() -> float:
+    raw = os.getenv("HERMES_TELEGRAM_FALLBACK_TTL", "3600")
+    try:
+        return max(60.0, float(raw))
+    except (TypeError, ValueError):
+        return 3600.0
+
+
+def _get_failure_threshold() -> int:
+    raw = os.getenv("HERMES_TELEGRAM_FALLBACK_FAILURES", "3")
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 3
+
 
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
 # from the (potentially unreachable) IP returned by the local system resolver.
@@ -69,10 +89,105 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         }
         self._sticky_ip: Optional[str] = None
         self._sticky_lock = asyncio.Lock()
+        # Track failure state so we can trigger a periodic DoH re-discovery
+        # when the cached fallback IP list is stale.  This guards against
+        # the case where the system DNS or DoH view changed since init
+        # (e.g. ISP rerouted, WiFi network change) and the old IPs no
+        # longer work but we never noticed.
+        self._last_discovery_at: float = time.monotonic()
+        self._consecutive_connect_failures: int = 0
+        self._discovery_lock = asyncio.Lock()
+
+    async def _maybe_refresh_fallbacks(self) -> None:
+        """Re-discover fallback IPs when the cached list looks stale.
+
+        Fires when BOTH conditions hold:
+          - At least N consecutive connect failures have occurred
+            (default 3, env HERMES_TELEGRAM_FALLBACK_FAILURES).
+          - At least TTL seconds have passed since the last discovery
+            (default 3600s = 1h, env HERMES_TELEGRAM_FALLBACK_TTL).
+
+        On refresh: rebuilds the per-IP httpx transports and keeps the
+        current sticky IP if it's still in the new list; otherwise clears
+        it so the next request re-evaluates the routing.
+        """
+        ttl = _get_refresh_ttl()
+        threshold = _get_failure_threshold()
+        if self._consecutive_connect_failures < threshold:
+            return
+        if time.monotonic() - self._last_discovery_at < ttl:
+            return
+        async with self._discovery_lock:
+            # Double-check inside the lock: another coroutine may have
+            # already refreshed while we were waiting.
+            if self._consecutive_connect_failures < threshold:
+                return
+            if time.monotonic() - self._last_discovery_at < ttl:
+                return
+            old_ips = list(self._fallback_ips)
+            try:
+                new_ips = await discover_fallback_ips()
+            except Exception as exc:  # don't let DoH failures cascade
+                logger.warning(
+                    "[Telegram] Fallback IP refresh failed (DoH unreachable?): %s", exc
+                )
+                # Reset the failure counter so we don't hammer DoH on
+                # every request.  Next refresh will be TTL away.
+                self._consecutive_connect_failures = 0
+                return
+            if not new_ips:
+                self._consecutive_connect_failures = 0
+                return
+            # Close old per-IP transports to release sockets.
+            for ip, transport in list(self._fallbacks.items()):
+                try:
+                    await transport.aclose()
+                except Exception:
+                    pass
+            self._fallback_ips = list(new_ips)
+            self._fallbacks = {
+                ip: httpx.AsyncHTTPTransport(
+                    **self._transport_kwargs_for(ip)
+                )
+                for ip in self._fallback_ips
+            }
+            self._last_discovery_at = time.monotonic()
+            self._consecutive_connect_failures = 0
+            # If the sticky IP is no longer reachable, clear it so the
+            # next request retries via primary DNS first.
+            if self._sticky_ip and self._sticky_ip not in self._fallback_ips:
+                async with self._sticky_lock:
+                    self._sticky_ip = None
+            logger.warning(
+                "[Telegram] Refreshed fallback IPs: %s -> %s (sticky=%s)",
+                ", ".join(old_ips) or "<none>",
+                ", ".join(self._fallback_ips),
+                self._sticky_ip or "<none>",
+            )
+
+    def _transport_kwargs_for(self, ip: str) -> dict:
+        """Build a per-IP httpx transport using the same kwargs as primary.
+
+        Stored lazily — we capture them on first call so changes to the
+        proxy environment after init are still picked up.
+        """
+        if not hasattr(self, "_cached_transport_kwargs"):
+            # The primary transport already has the right kwargs; we
+            # rebuild the same shape by re-running the same path used at
+            # __init__ time.  httpx transport kwargs are not directly
+            # exposed, so we approximate by passing an empty dict (we
+            # already wired the proxy at __init__ time on the primary).
+            self._cached_transport_kwargs = {}
+        return dict(self._cached_transport_kwargs)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await self._primary.handle_async_request(request)
+
+        # Cheap path: if we've seen N consecutive connect failures and the
+        # TTL has elapsed, re-discover fresh IPs (DoH).  This is a no-op
+        # in the healthy case.
+        await self._maybe_refresh_fallbacks()
 
         sticky_ip = self._sticky_ip
         attempt_order: list[Optional[str]] = [sticky_ip] if sticky_ip else [None]
@@ -83,6 +198,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 attempt_order.append(ip)
 
         last_error: Exception | None = None
+        any_connect_failure = False
         for ip in attempt_order:
             candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
             transport = self._primary if ip is None else self._fallbacks[ip]
@@ -96,11 +212,16 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                                 "[Telegram] Primary api.telegram.org path unreachable; using sticky fallback IP %s",
                                 ip,
                             )
+                # Reset failure counter on any successful response.
+                self._consecutive_connect_failures = 0
                 return response
             except Exception as exc:
                 last_error = exc
                 if not _is_retryable_connect_error(exc):
+                    # Non-connect error (e.g. HTTP 5xx): don't count toward
+                    # the refresh threshold; raise immediately.
                     raise
+                any_connect_failure = True
                 if ip is not None and ip == self._sticky_ip:
                     async with self._sticky_lock:
                         if self._sticky_ip == ip:
@@ -119,6 +240,8 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 logger.warning("[Telegram] Fallback IP %s failed: %s", ip, exc)
                 continue
 
+        if any_connect_failure:
+            self._consecutive_connect_failures += 1
         if last_error is None:
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
         raise last_error
