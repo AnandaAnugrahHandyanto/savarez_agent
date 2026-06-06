@@ -60,6 +60,7 @@ const {
   resolveReadableFileForIpc,
   resolveTimeoutMs
 } = require('./hardening.cjs')
+const { createValidatedHandler, schemas } = require('./ipc-validation.cjs')
 
 let nodePty = null
 
@@ -5195,7 +5196,11 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   return true
 })
 
-ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
+ipcMain.handle('hermes:saveImageFromUrl',
+  createValidatedHandler('hermes:saveImageFromUrl', schemas['hermes:saveImageFromUrl'],
+    (_event, { url }) => saveImageFromUrl(String(url || ''))
+  )
+)
 
 ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
   const data = payload?.data
@@ -5495,17 +5500,21 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   return { cwd, id, shell: name }
 })
 
-ipcMain.handle('hermes:terminal:write', (_event, id, data) => {
-  const sessionInfo = terminalSessions.get(String(id || ''))
+ipcMain.handle('hermes:terminal:write',
+  createValidatedHandler('hermes:terminal:write', schemas['hermes:terminal:write'],
+    (_event, { id, data }) => {
+      const sessionInfo = terminalSessions.get(String(id || ''))
 
-  if (!sessionInfo) {
-    return false
-  }
+      if (!sessionInfo) {
+        return false
+      }
 
-  sessionInfo.pty.write(String(data || ''))
+      sessionInfo.pty.write(String(data || ''))
 
-  return true
-})
+      return true
+    }
+  )
+)
 
 ipcMain.handle('hermes:terminal:resize', (_event, id, size = {}) => {
   const sessionInfo = terminalSessions.get(String(id || ''))
