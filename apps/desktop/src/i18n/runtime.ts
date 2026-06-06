@@ -34,6 +34,25 @@ export function setRuntimeI18nLocale(locale: Locale) {
   runtimeLocale = locale
 }
 
+/**
+ * Resolve a typed value from the active locale catalog, falling back to the
+ * default locale if the active one doesn't define it. Returns undefined when
+ * neither locale defines the value, so callers can supply a hardcoded fallback.
+ *
+ * Use this from non-React modules (stores, lib helpers) where useI18n() isn't
+ * available but you still want UI strings to follow the active locale.
+ */
+export function translateValue<T>(selector: (t: Translations) => T | undefined): T | undefined {
+  const active = selector(TRANSLATIONS[runtimeLocale])
+  if (active !== undefined) {
+    return active
+  }
+  if (runtimeLocale !== DEFAULT_LOCALE) {
+    return selector(TRANSLATIONS[DEFAULT_LOCALE])
+  }
+  return undefined
+}
+
 export function translateNow(key: string, ...args: unknown[]): string {
   const active = renderTranslation(resolvePath(TRANSLATIONS[runtimeLocale], key), args)
 

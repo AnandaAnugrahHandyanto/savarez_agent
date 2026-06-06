@@ -392,6 +392,12 @@ export interface Translations {
       autoUseMain: string
       providerDefault: string
       tasks: Record<string, AuxTaskCopy>
+      auxiliaryStale?: {
+        prefix: (count: number, names: string) => string
+        suffix: string
+        otherProviders: string
+        resetButton: string
+      }
     }
     providers: {
       connectAccount: string
@@ -1027,6 +1033,37 @@ export interface Translations {
     change: string
     startChatting: string
     docs: (provider: string) => string
+    providerTitles?: {
+      claudeCode?: string
+    }
+    store?: {
+      defaultReason: string
+      readyTitle: string
+      readyConnected: (provider: string) => string
+      toolGatewayTitle: string
+      addOrSwitchReason: string
+      couldNotStartSignIn: (error: string) => string
+      signInStatusFallback: (status: string) => string
+      pollingFailed: (error: string) => string
+      tokenExchangeFailed: string
+      stillCannotReach: (providerName: string, cmd: string) => string
+      enterValueFirst: string
+      couldNotSave: (label: string) => string
+      enterEndpointUrl: string
+      couldNotReachThatEndpoint: string
+      couldNotReachUrl: (url: string) => string
+      connectedNoModels: (url: string) => string
+      savedButCannotReach: (url: string) => string
+      localCustomEndpoint: string
+      couldNotSaveLocalEndpoint: string
+      couldNotChangeModel: string
+      connectedButUnresolved: string
+      connectedButUnresolvedWithDetail: (detail: string) => string
+    }
+  }
+
+  intro?: {
+    fallback: ReadonlyArray<{ headline: string; body: string }>
   }
 
   modelPicker: {

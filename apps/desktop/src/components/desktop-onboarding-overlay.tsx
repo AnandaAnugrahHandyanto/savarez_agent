@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { getGlobalModelOptions } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import {
   Check,
   ChevronDown,
@@ -177,7 +177,13 @@ const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
-const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
+const providerTitle = (p: OAuthProvider, t?: Translations) => {
+  if (p.id === 'claude-code') {
+    const localized = t?.onboarding.providerTitles?.claudeCode
+    if (localized) return localized
+  }
+  return PROVIDER_DISPLAY[p.id]?.title ?? p.name
+}
 const orderOf = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.order ?? 99
 
 export const sortProviders = (providers: OAuthProvider[]) =>
@@ -480,7 +486,7 @@ export function FeaturedProviderRow({
         <div className="flex items-center gap-2">
           <img alt="" className="size-5 shrink-0 rounded" src={assetPath('apple-touch-icon.png')} />
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
-            {providerTitle(provider)}
+            {providerTitle(provider, t)}
           </span>
           {loggedIn ? (
             <ConnectedTag />
@@ -547,7 +553,7 @@ export function ProviderRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
-            {providerTitle(provider)}
+            {providerTitle(provider, t)}
           </span>
           {loggedIn ? <ConnectedTag /> : null}
         </div>
@@ -714,7 +720,7 @@ export function ApiKeyForm({
 
 function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow }) {
   const { t } = useI18n()
-  const title = 'provider' in flow && flow.provider ? providerTitle(flow.provider) : ''
+  const title = 'provider' in flow && flow.provider ? providerTitle(flow.provider, t) : ''
 
   if (flow.status === 'starting') {
     return <Status>{t.onboarding.startingSignIn(title)}</Status>

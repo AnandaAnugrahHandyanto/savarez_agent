@@ -16,5 +16,5 @@ export {
   localeConfigValue,
   normalizeLocale
 } from './languages'
-export { setRuntimeI18nLocale, translateNow } from './runtime'
+export { setRuntimeI18nLocale, translateNow, translateValue } from './runtime'
 export type { Locale, Translations } from './types'

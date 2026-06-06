@@ -480,6 +480,13 @@ export const en: Translations = {
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
+      },
+      auxiliaryStale: {
+        prefix: (count, names) =>
+          `${count} auxiliary task${count === 1 ? '' : 's'} (${names}) still run on `,
+        suffix: ', not your main model.',
+        otherProviders: 'other providers',
+        resetButton: 'Reset all to main'
       }
     },
     providers: {
@@ -1354,7 +1361,62 @@ export const en: Translations = {
     price: (input, output) => `${input} in / ${output} out per Mtok`,
     change: 'Change',
     startChatting: 'Start chatting',
-    docs: provider => `${provider} docs`
+    docs: provider => `${provider} docs`,
+    providerTitles: {
+      claudeCode: 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription'
+    },
+    store: {
+      defaultReason: 'No inference provider is configured.',
+      readyTitle: 'Hermes is ready',
+      readyConnected: provider => `${provider} connected.`,
+      toolGatewayTitle: 'Tool Gateway enabled',
+      addOrSwitchReason: 'Add or switch inference provider.',
+      couldNotStartSignIn: error => `Could not start sign-in: ${error}`,
+      signInStatusFallback: status => `Sign-in ${status}.`,
+      pollingFailed: error => `Polling failed: ${error}`,
+      tokenExchangeFailed: 'Token exchange failed.',
+      stillCannotReach: (provider, cmd) =>
+        `Hermes still cannot reach ${provider}. Run \`${cmd}\` in a terminal first.`,
+      enterValueFirst: 'Enter a value first.',
+      couldNotSave: label => `Could not save ${label}`,
+      enterEndpointUrl: 'Enter the endpoint URL first.',
+      couldNotReachThatEndpoint: 'Could not reach that endpoint.',
+      couldNotReachUrl: url => `Could not reach ${url}.`,
+      connectedNoModels: url =>
+        `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`,
+      savedButCannotReach: url => `Saved, but Hermes still cannot reach ${url}.`,
+      localCustomEndpoint: 'Local / custom endpoint',
+      couldNotSaveLocalEndpoint: 'Could not save local endpoint',
+      couldNotChangeModel: 'Could not change model',
+      connectedButUnresolved: 'Connected, but Hermes still cannot resolve a usable provider.',
+      connectedButUnresolvedWithDetail: detail =>
+        `Connected, but Hermes still cannot resolve a usable provider. ${detail}`
+    }
+  },
+
+  intro: {
+    fallback: [
+      {
+        headline: 'What are we moving today?',
+        body: "Send a bug, branch, plan, or rough idea. I'll inspect the repo and turn it into the next concrete step."
+      },
+      {
+        headline: "What's on your mind?",
+        body: "Bring the code, question, or stuck part. I'll read the room before making changes."
+      },
+      {
+        headline: 'What should Hermes look at?',
+        body: "Send the task, failing path, or half-formed plan. I'll help turn it into action."
+      },
+      {
+        headline: 'Where should we start?',
+        body: "Bring the problem, goal, or file. I'll inspect first and keep the next step concrete."
+      },
+      {
+        headline: 'What needs attention?',
+        body: "Send the context you have. I'll help sort it into a plan or a fix."
+      }
+    ]
   },
 
   modelPicker: {

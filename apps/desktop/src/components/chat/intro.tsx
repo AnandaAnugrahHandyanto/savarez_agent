@@ -1,5 +1,7 @@
 import { type CSSProperties, useState } from 'react'
 
+import { useI18n } from '@/i18n'
+
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
 type IntroCopy = {
@@ -155,8 +157,20 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 }
 
 export function Intro({ personality, seed }: IntroProps) {
+  const { t } = useI18n()
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
-  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const seedTotal = mountSeed + (seed ?? 0)
+  const personalityKey = normalizeKey(personality)
+  const localized = t.intro?.fallback
+
+  // For neutral personalities (no personality / default / none / neutral),
+  // prefer the locale-provided fallback copy so the intro can render in the
+  // active language. Personality-specific copy still flows through the
+  // existing jsonl / hardcoded fallback chain.
+  const copy =
+    NEUTRAL_PERSONALITIES.has(personalityKey) && localized && localized.length > 0
+      ? localized[Math.abs(seedTotal) % localized.length]
+      : resolveCopy(personality, seedTotal)
 
   return (
     <div

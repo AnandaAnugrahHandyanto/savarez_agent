@@ -12,6 +12,7 @@ import {
   submitOAuthCode,
   validateProviderCredential
 } from '@/hermes'
+import { translateValue } from '@/i18n'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { notify, notifyError } from '@/store/notifications'
 import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
@@ -83,7 +84,8 @@ const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
 const SKIP_CACHE_KEY = 'hermes-onboarding-skipped-v1'
 const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
-const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
+const defaultOnboardingReason = () =>
+  translateValue(t => t.onboarding.store?.defaultReason) ?? 'No inference provider is configured.'
 
 function readCachedConfigured(): boolean | null {
   if (typeof window === 'undefined') {
@@ -176,13 +178,15 @@ function clearPoll() {
 
 async function checkRuntime(ctx: OnboardingContext): Promise<RuntimeReadinessResult> {
   return evaluateRuntimeReadiness(ctx.requestGateway, {
-    defaultReason: DEFAULT_ONBOARDING_REASON,
+    defaultReason: defaultOnboardingReason(),
     unknownReady: false
   })
 }
 
 function notifyReady(provider: string) {
-  notify({ kind: 'success', title: 'Hermes is ready', message: `${provider} connected.` })
+  const title = translateValue(t => t.onboarding.store?.readyTitle) ?? 'Hermes is ready'
+  const message = translateValue(t => t.onboarding.store?.readyConnected(provider)) ?? `${provider} connected.`
+  notify({ kind: 'success', title, message })
 }
 
 // Human-friendly labels for tools auto-routed through the Nous Tool Gateway,
@@ -211,7 +215,7 @@ function notifyGatewayTools(tools: string[] | undefined) {
     durationMs: 8000,
     kind: 'info',
     message: `${list} now run through your Nous subscription — no separate API keys needed.`,
-    title: 'Tool Gateway enabled'
+    title: translateValue(t => t.onboarding.store?.toolGatewayTitle) ?? 'Tool Gateway enabled'
   })
 }
 
@@ -353,8 +357,10 @@ function providerResolutionFailure(reason: null | string) {
   const detail = reason?.trim()
 
   return detail
-    ? `Connected, but Hermes still cannot resolve a usable provider. ${detail}`
-    : 'Connected, but Hermes still cannot resolve a usable provider.'
+    ? translateValue(t => t.onboarding.store?.connectedButUnresolvedWithDetail(detail)) ??
+      `Connected, but Hermes still cannot resolve a usable provider. ${detail}`
+    : translateValue(t => t.onboarding.store?.connectedButUnresolved) ??
+      'Connected, but Hermes still cannot resolve a usable provider.'
 }
 
 async function refreshProviders() {
@@ -378,8 +384,8 @@ async function refreshProviders() {
   await providersRefreshPromise
 }
 
-export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
-  patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
+export function requestDesktopOnboarding(reason = defaultOnboardingReason()) {
+  patch({ reason: reason.trim() || defaultOnboardingReason(), requested: true })
 }
 
 // Open the onboarding provider selector on demand from an already-configured
@@ -387,13 +393,16 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
 // onboarding flow (OAuth rows, API-key form, model-confirm) instead of
 // duplicating provider UI. Sets manual=true so the overlay shows the picker
 // even though configured===true, and refreshes the provider list.
-export function startManualOnboarding(reason: null | string = 'Add or switch inference provider.') {
+export function startManualOnboarding(
+  reason: null | string = translateValue(t => t.onboarding.store?.addOrSwitchReason) ??
+    'Add or switch inference provider.'
+) {
   patch({
     manual: true,
     requested: true,
     // `null` opts out of the prompt banner entirely (e.g. when the user already
     // picked a specific provider and we auto-start its sign-in).
-    reason: reason ? reason.trim() || DEFAULT_ONBOARDING_REASON : null,
+    reason: reason ? reason.trim() || defaultOnboardingReason() : null,
     flow: { status: 'idle' }
   })
   void refreshProviders()
@@ -488,7 +497,7 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   }
 
   const state = $desktopOnboarding.get()
-  const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
+  const reason = runtime.reason || state.reason || defaultOnboardingReason()
 
   writeCachedConfigured(false)
   patch({ configured: false, reason })
@@ -556,7 +565,13 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
     setFlow({ status: 'polling', provider, start, copied: false })
     pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
   } catch (error) {
-    setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}` })
+    const err = errMessage(error)
+    setFlow({
+      status: 'error',
+      provider,
+      message:
+        translateValue(t => t.onboarding.store?.couldNotStartSignIn(err)) ?? `Could not start sign-in: ${err}`
+    })
   }
 }
 
@@ -579,11 +594,23 @@ async function pollSession(provider: OAuthProvider, start: DeviceStart | Loopbac
       )
     } else if (status !== 'pending') {
       clearPoll()
-      setFlow({ status: 'error', provider, start, message: error_message || `Sign-in ${status}.` })
+      setFlow({
+        status: 'error',
+        provider,
+        start,
+        message:
+          error_message ?? translateValue(t => t.onboarding.store?.signInStatusFallback(status)) ?? `Sign-in ${status}.`
+      })
     }
   } catch (error) {
     clearPoll()
-    setFlow({ status: 'error', provider, start, message: `Polling failed: ${errMessage(error)}` })
+    const err = errMessage(error)
+    setFlow({
+      status: 'error',
+      provider,
+      start,
+      message: translateValue(t => t.onboarding.store?.pollingFailed(err)) ?? `Polling failed: ${err}`
+    })
   }
 }
 
@@ -618,7 +645,12 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
         })
       )
     } else {
-      setFlow({ status: 'error', provider, start, message: resp.message || 'Token exchange failed.' })
+      setFlow({
+        status: 'error',
+        provider,
+        start,
+        message: resp.message || translateValue(t => t.onboarding.store?.tokenExchangeFailed) || 'Token exchange failed.'
+      })
     }
   } catch (error) {
     setFlow({ status: 'error', provider, start, message: errMessage(error) })
@@ -695,7 +727,8 @@ export async function recheckExternalSignin(ctx: OnboardingContext) {
       provider,
       message:
         reason?.trim() ||
-        `Hermes still cannot reach ${provider.name}. Run \`${provider.cli_command}\` in a terminal first.`
+        (translateValue(t => t.onboarding.store?.stillCannotReach(provider.name, provider.cli_command)) ??
+          `Hermes still cannot reach ${provider.name}. Run \`${provider.cli_command}\` in a terminal first.`)
     })
   )
 }
@@ -704,7 +737,7 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
   const trimmed = value.trim()
 
   if (!trimmed) {
-    return { ok: false, message: 'Enter a value first.' }
+    return { ok: false, message: translateValue(t => t.onboarding.store?.enterValueFirst) ?? 'Enter a value first.' }
   }
 
   // The "Local / custom endpoint" option carries a base URL, not an API key.
@@ -733,7 +766,7 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
 
     return { ok: true }
   } catch (error) {
-    notifyError(error, `Could not save ${label}`)
+    notifyError(error, translateValue(t => t.onboarding.store?.couldNotSave(label)) ?? `Could not save ${label}`)
 
     return { ok: false, message: errMessage(error) }
   }
@@ -757,7 +790,10 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: Onboardi
   const url = baseUrl.trim()
 
   if (!url) {
-    return { ok: false, message: 'Enter the endpoint URL first.' }
+    return {
+      ok: false,
+      message: translateValue(t => t.onboarding.store?.enterEndpointUrl) ?? 'Enter the endpoint URL first.'
+    }
   }
 
   // Probe connectivity + discover the served models. Any HTTP response proves
@@ -769,22 +805,36 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: Onboardi
     const probe = await validateProviderCredential('OPENAI_BASE_URL', url)
 
     if (!probe.ok && probe.reachable) {
-      return { ok: false, message: probe.message || 'Could not reach that endpoint.' }
+      return {
+        ok: false,
+        message:
+          probe.message ||
+          translateValue(t => t.onboarding.store?.couldNotReachThatEndpoint) ||
+          'Could not reach that endpoint.'
+      }
     }
 
     if (!probe.reachable) {
-      return { ok: false, message: probe.message || `Could not reach ${url}.` }
+      return {
+        ok: false,
+        message: probe.message || translateValue(t => t.onboarding.store?.couldNotReachUrl(url)) || `Could not reach ${url}.`
+      }
     }
 
     model = (probe.models?.[0] ?? '').trim()
   } catch {
-    return { ok: false, message: `Could not reach ${url}.` }
+    return {
+      ok: false,
+      message: translateValue(t => t.onboarding.store?.couldNotReachUrl(url)) ?? `Could not reach ${url}.`
+    }
   }
 
   if (!model) {
     return {
       ok: false,
-      message: `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`
+      message:
+        translateValue(t => t.onboarding.store?.connectedNoModels(url)) ??
+        `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`
     }
   }
 
@@ -797,16 +847,25 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: Onboardi
     if (!runtime.ready) {
       const detail = (runtime.reason ?? '').trim()
 
-      return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${url}.` }
+      return {
+        ok: false,
+        message:
+          detail ||
+          translateValue(t => t.onboarding.store?.savedButCannotReach(url)) ||
+          `Saved, but Hermes still cannot reach ${url}.`
+      }
     }
 
-    notifyReady('Local / custom endpoint')
+    notifyReady(translateValue(t => t.onboarding.store?.localCustomEndpoint) ?? 'Local / custom endpoint')
     completeDesktopOnboarding()
     ctx.onCompleted?.()
 
     return { ok: true }
   } catch (error) {
-    notifyError(error, 'Could not save local endpoint')
+    notifyError(
+      error,
+      translateValue(t => t.onboarding.store?.couldNotSaveLocalEndpoint) ?? 'Could not save local endpoint'
+    )
 
     return { ok: false, message: errMessage(error) }
   }
@@ -837,7 +896,7 @@ export async function setOnboardingModel(model: string) {
       setFlow({ ...current, currentModel: model, saving: false })
     }
   } catch (error) {
-    notifyError(error, 'Could not change model')
+    notifyError(error, translateValue(t => t.onboarding.store?.couldNotChangeModel) ?? 'Could not change model')
     const current = $desktopOnboarding.get().flow
 
     if (current.status === 'confirming_model') {
