@@ -543,7 +543,7 @@ class TestUpDownBindsHistoryNotCursor:
     def test_up_arrow_calls_history_backward_not_auto_up(self):
         """The 'up' keybinding must call history_backward, not auto_up."""
         import re
-        with open(__import__('cli').__file__) as f:
+        with open(__import__('cli').__file__, encoding='utf-8') as f:
             source = f.read()
 
         # Find the 'up' keybinding block — look for the pattern
@@ -566,7 +566,7 @@ class TestUpDownBindsHistoryNotCursor:
     def test_down_arrow_calls_history_forward_not_auto_down(self):
         """The 'down' keybinding must call history_forward, not auto_down."""
         import re
-        with open(__import__('cli').__file__) as f:
+        with open(__import__('cli').__file__, encoding='utf-8') as f:
             source = f.read()
 
         down_block = re.search(
@@ -587,7 +587,7 @@ class TestUpDownBindsHistoryNotCursor:
     def test_cursor_movement_uses_separate_keybindings(self):
         """Ctrl+Up/Down and Shift+Up/Down exist as separate bindings."""
         import re
-        with open(__import__('cli').__file__) as f:
+        with open(__import__('cli').__file__, encoding='utf-8') as f:
             source = f.read()
 
         # Verify c-up, s-up, c-down, s-down are each registered
@@ -600,7 +600,7 @@ class TestUpDownBindsHistoryNotCursor:
     def test_cursor_movement_handlers_exist(self):
         """_move_cursor_up and _move_cursor_down are defined."""
         import re
-        with open(__import__('cli').__file__) as f:
+        with open(__import__('cli').__file__, encoding='utf-8') as f:
             source = f.read()
 
         for func in ('_move_cursor_up', '_move_cursor_down'):
