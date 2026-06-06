@@ -15,6 +15,7 @@ Exposes the full Kanban command surface documented in the design spec
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shlex
@@ -74,9 +75,6 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "completed_at": t.completed_at,
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
-        "model_override": t.model_override,
-        "model_provider_override": t.model_provider_override,
-        "model_reasoning_effort": t.model_reasoning_effort,
         "max_retries": t.max_retries,
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
@@ -364,17 +362,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
-    p_create.add_argument("--workflow-key", default=None,
-                          dest="workflow_key",
-                          help="Grouping key for tasks in the same orchestrator workflow. "
-                               "Use this to tag child tasks created in a fan-out so "
-                               "the originating chat receives a unified status report "
-                               "when the finalizer task completes.")
-    p_create.add_argument("--current-step-key", default=None,
-                          dest="current_step_key",
-                          help="Current phase of the workflow (e.g. 'finalizer', "
-                               "'synthesizer', 'implementation'). Used by the "
-                               "vault-doc-impact gate to detect finalizer tasks.")
+    p_create.add_argument(
+        "--workflow-key",
+        default=None,
+        dest="workflow_key",
+        help="Grouping key for tasks belonging to the same "
+             "orchestrator workflow. All tasks sharing a key "
+             "can be listed with ``hermes kanban workflow <key>``.",
+    )
+    p_create.add_argument(
+        "--current-step-key",
+        default=None,
+        dest="current_step_key",
+        help="Current step key identifying the active phase of "
+             "a workflow (e.g. 'finalizer', 'synthesizer'). "
+             "The vault-doc-impact gate uses this to detect "
+             "finalizer tasks that may need documentation "
+             "curation before completion.",
+    )
 
     # --- swarm ---
     p_swarm = sub.add_parser(
@@ -688,16 +693,6 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_stats.add_argument("--json", action="store_true")
 
-    # --- workflow <key> ---
-    p_wf = sub.add_parser(
-        "workflow",
-        help="List all tasks sharing a workflow key",
-    )
-    p_wf.add_argument(
-        "key",
-        help="Workflow key to query (created by passing workflow_key to kanban_create)",
-    )
-
     # --- notify subscribe / list / remove ---
     p_nsub = sub.add_parser(
         "notify-subscribe",
@@ -908,16 +903,7 @@ def kanban_command(args: argparse.Namespace) -> int:
     # keeps the patch small and inherits the exact same resolution the
     # dispatcher uses for workers — consistency is a feature here.
     board_override = getattr(args, "board", None)
-    prev_board_env = os.environ.get("HERMES_KANBAN_BOARD")
-    restore_board_env = False
-
-    def _restore_board_env() -> None:
-        if not restore_board_env:
-            return
-        if prev_board_env is None:
-            os.environ.pop("HERMES_KANBAN_BOARD", None)
-        else:
-            os.environ["HERMES_KANBAN_BOARD"] = prev_board_env
+    board_scope = contextlib.nullcontext()
     if board_override:
         try:
             normed = kb._normalize_board_slug(board_override)
@@ -936,8 +922,7 @@ def kanban_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        os.environ["HERMES_KANBAN_BOARD"] = normed
-        restore_board_env = True
+        board_scope = kb.scoped_current_board(normed)
 
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
@@ -946,67 +931,62 @@ def kanban_command(args: argparse.Namespace) -> int:
     # HERMES_HOME. Previously only `init` and `daemon` triggered
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
-    try:
-        kb.init_db()
-    except Exception as exc:
-        print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
-        _restore_board_env()
-        return 1
+    with board_scope:
+        try:
+            kb.init_db()
+        except Exception as exc:
+            print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
+            return 1
 
-    handlers = {
-        "init":     _cmd_init,
-        "create":   _cmd_create,
-        "swarm":    _cmd_swarm,
-        "list":     _cmd_list,
-        "ls":       _cmd_list,
-        "show":     _cmd_show,
-        "assign":   _cmd_assign,
-        "reclaim":  _cmd_reclaim,
-        "reassign": _cmd_reassign,
-        "diagnostics": _cmd_diagnostics,
-        "diag":     _cmd_diagnostics,
-        "link":     _cmd_link,
-        "unlink":   _cmd_unlink,
-        "claim":    _cmd_claim,
-        "comment":  _cmd_comment,
-        "complete": _cmd_complete,
-        "edit":     _cmd_edit,
-        "block":    _cmd_block,
-        "schedule": _cmd_schedule,
-        "unblock":  _cmd_unblock,
-        "promote":  _cmd_promote,
-        "archive":  _cmd_archive,
-        "tail":     _cmd_tail,
-        "dispatch": _cmd_dispatch,
-        "daemon":   _cmd_daemon,
-        "watch":    _cmd_watch,
-        "stats":    _cmd_stats,
-        "log":      _cmd_log,
-        "runs":     _cmd_runs,
-        "heartbeat": _cmd_heartbeat,
-        "assignees": _cmd_assignees,
-        "notify-subscribe":   _cmd_notify_subscribe,
-        "notify-list":        _cmd_notify_list,
-        "notify-unsubscribe": _cmd_notify_unsubscribe,
-        "context":  _cmd_context,
-        "specify":  _cmd_specify,
-        "workflow": _cmd_workflow,
-        "gc":       _cmd_gc,
-        "decompose":  _cmd_decompose,
-    }
-    handler = handlers.get(action)
-    if not handler:
-        print(f"kanban: unknown action {action!r}", file=sys.stderr)
-        _restore_board_env()
-        return 2
-    try:
-        return int(handler(args) or 0)
-    except (ValueError, RuntimeError) as exc:
-        print(f"kanban: {exc}", file=sys.stderr)
-        _restore_board_env()
-        return 1
-    finally:
-        _restore_board_env()
+        handlers = {
+            "init":     _cmd_init,
+            "create":   _cmd_create,
+            "swarm":    _cmd_swarm,
+            "list":     _cmd_list,
+            "ls":       _cmd_list,
+            "show":     _cmd_show,
+            "assign":   _cmd_assign,
+            "reclaim":  _cmd_reclaim,
+            "reassign": _cmd_reassign,
+            "diagnostics": _cmd_diagnostics,
+            "diag":     _cmd_diagnostics,
+            "link":     _cmd_link,
+            "unlink":   _cmd_unlink,
+            "claim":    _cmd_claim,
+            "comment":  _cmd_comment,
+            "complete": _cmd_complete,
+            "edit":     _cmd_edit,
+            "block":    _cmd_block,
+            "schedule": _cmd_schedule,
+            "unblock":  _cmd_unblock,
+            "promote":  _cmd_promote,
+            "archive":  _cmd_archive,
+            "tail":     _cmd_tail,
+            "dispatch": _cmd_dispatch,
+            "daemon":   _cmd_daemon,
+            "watch":    _cmd_watch,
+            "stats":    _cmd_stats,
+            "log":      _cmd_log,
+            "runs":     _cmd_runs,
+            "heartbeat": _cmd_heartbeat,
+            "assignees": _cmd_assignees,
+            "notify-subscribe":   _cmd_notify_subscribe,
+            "notify-list":        _cmd_notify_list,
+            "notify-unsubscribe": _cmd_notify_unsubscribe,
+            "context":  _cmd_context,
+            "specify":  _cmd_specify,
+            "decompose":  _cmd_decompose,
+            "gc":       _cmd_gc,
+        }
+        handler = handlers.get(action)
+        if not handler:
+            print(f"kanban: unknown action {action!r}", file=sys.stderr)
+            return 2
+        try:
+            return int(handler(args) or 0)
+        except (ValueError, RuntimeError) as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 1
 
 
 # ---------------------------------------------------------------------------
@@ -1597,10 +1577,6 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  skills:    {', '.join(task.skills)}")
     if task.model_override:
         print(f"  model:     {task.model_override}")
-    if task.model_provider_override:
-        print(f"  provider:  {task.model_provider_override}")
-    if task.model_reasoning_effort:
-        print(f"  effort:    {task.model_reasoning_effort}")
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see
@@ -2285,12 +2261,6 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
-    if res.workspace_collisions:
-        for tid, conflict_with in res.workspace_collisions:
-            print(
-                f"Deferred (workspace collision): {tid} "
-                f"(already held by running task {conflict_with})"
-            )
     return 0
 
 
@@ -2689,34 +2659,6 @@ def _cmd_specify(args: argparse.Namespace) -> int:
     # --all: succeed if at least one promotion landed; exit 1 only when
     # every candidate failed (honest signal for scripts).
     return 0 if (ok_count > 0 or not ids) else 1
-
-
-def _cmd_workflow(args: argparse.Namespace) -> int:
-    """List all tasks sharing a ``workflow_key``, one per line.
-
-    Usage: ``hermes kanban workflow <key>``
-    """
-    key = getattr(args, "key", None)
-    if not key:
-        print("kanban workflow: key is required", file=sys.stderr)
-        return 2
-    with kb.connect_closing() as conn:
-        try:
-            tasks = kb.list_tasks_by_workflow_key(conn, key)
-        except ValueError as exc:
-            print(f"kanban workflow: {exc}", file=sys.stderr)
-            return 1
-        if not tasks:
-            print(f"No tasks found for workflow_key={key!r}")
-            return 0
-        for t in tasks:
-            age = time.time() - t.created_at if t.created_at else 0
-            age_str = f"{age:.0f}s" if age < 120 else f"{age / 60:.1f}m"
-            print(
-                f"{t.id}  {t.status:<10}  @{t.assignee or '':<16}  "
-                f"{age_str:<8}  {t.title[:80]}"
-            )
-    return 0
 
 
 def _cmd_decompose(args: argparse.Namespace) -> int:
