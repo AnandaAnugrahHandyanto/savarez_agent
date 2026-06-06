@@ -151,6 +151,23 @@ class TestSyncExternalMemoryForTurn:
         # sync_all was attempted.
         agent._memory_manager.sync_all.assert_called_once()
 
+    def test_fail_closed_sync_exception_propagates(self):
+        """Owned-log mirror failures are not ordinary best-effort memory errors."""
+        agent = _bare_agent()
+        err = RuntimeError("owned-log append failed")
+        err.fail_closed_memory_sync = True
+        agent._memory_manager.sync_all.side_effect = err
+
+        with pytest.raises(RuntimeError) as exc:
+            agent._sync_external_memory_for_turn(
+                original_user_message="hi",
+                final_response="hey",
+                interrupted=False,
+            )
+
+        assert exc.value is err
+        agent._memory_manager.queue_prefetch_all.assert_not_called()
+
     def test_prefetch_exception_is_swallowed(self):
         """Same best-effort contract applies to the prefetch step — a
         failure in queue_prefetch_all must not bubble out."""

@@ -378,6 +378,9 @@ class MemoryManager:
                     "Memory provider '%s' sync_turn failed: %s",
                     provider.name, e,
                 )
+                if getattr(provider, "fail_closed_sync_errors", False) or getattr(e, "fail_closed_memory_sync", False):
+                    setattr(e, "fail_closed_memory_sync", True)
+                    raise
 
     # -- Tools ---------------------------------------------------------------
 

@@ -249,6 +249,22 @@ class TestMemoryManager:
         # p1 failed but p2 still synced
         assert p2.synced_turns == [("user", "assistant")]
 
+    def test_fail_closed_sync_failure_propagates(self):
+        """Tier-0 mirror failures must not be swallowed as best-effort memory."""
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("owned-log")
+        p1.fail_closed_sync_errors = True
+        p1.sync_turn = MagicMock(side_effect=RuntimeError("owned-log append failed"))
+        p2 = FakeMemoryProvider("external")
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+
+        with pytest.raises(RuntimeError) as exc:
+            mgr.sync_all("user", "assistant")
+
+        assert getattr(exc.value, "fail_closed_memory_sync", False) is True
+        assert p2.synced_turns == []
+
     # -- Tool routing -------------------------------------------------------
 
     def test_tool_schemas_collected(self):

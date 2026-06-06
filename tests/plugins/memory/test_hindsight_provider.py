@@ -15,6 +15,7 @@ import pytest
 
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
+    OwnedLogMirrorError,
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
@@ -40,6 +41,7 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "OWNED_LOG_DIR", "OWNED_LOG_REQUIRED",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -76,6 +78,29 @@ def _make_mock_client():
     client.aretain_batch = AsyncMock()
     client.aclose = AsyncMock()
     return client
+
+
+def _write_owned_log_marker(path):
+    path.mkdir(parents=True, exist_ok=True)
+    (path / ".owned-log.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "sc-004s.owned-log.v1",
+                "kind": "owned-log",
+                "name": "owned-log",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _owned_log_records(path):
+    segments = sorted(path.rglob("*.ndjson"))
+    assert len(segments) == 1
+    return [json.loads(line) for line in segments[0].read_text(encoding="utf-8").splitlines()]
 
 
 class _FakeSessionDB:
@@ -540,6 +565,39 @@ class TestToolHandlers:
         assert "error" in result
         assert "connection failed" in result["error"]
 
+    def test_retain_tool_writes_owned_log_before_hindsight(self, provider_with_config, tmp_path):
+        owned_log = tmp_path / "owned-log"
+        _write_owned_log_marker(owned_log)
+        p = provider_with_config(owned_log_dir=str(owned_log), owned_log_required=True)
+
+        result = json.loads(
+            p.handle_tool_call(
+                "hindsight_retain",
+                {"content": "agent retained a preference", "context": "test"},
+                tool_call_id="call-1",
+            )
+        )
+
+        assert result["result"] == "Memory stored successfully."
+        p._client.aretain.assert_called_once()
+        records = _owned_log_records(owned_log)
+        assert len(records) == 1
+        record = records[0]
+        assert record["record_type"] == "tool_write"
+        assert record["write_back"] == "hindsight"
+        assert record["provenance"]["origin"] == "agent-tool"
+        assert record["payload"]["tool_call_id"] == "call-1"
+        assert record["payload"]["retain_params"]["content"] == "agent retained a preference"
+
+    def test_retain_tool_fails_closed_before_hindsight(self, provider_with_config, tmp_path):
+        p = provider_with_config(owned_log_dir=str(tmp_path / "missing-log"), owned_log_required=True)
+
+        result = json.loads(p.handle_tool_call("hindsight_retain", {"content": "do not leak"}))
+
+        assert "error" in result
+        assert "owned-log" in result["error"]
+        p._client.aretain.assert_not_called()
+
     def test_recall_error_handling(self, provider):
         provider._client.arecall.side_effect = RuntimeError("timeout")
         result = json.loads(provider.handle_tool_call(
@@ -704,6 +762,50 @@ class TestSyncTurn:
     def test_sync_turn_skipped_when_auto_retain_off(self, provider_with_config):
         p = provider_with_config(auto_retain=False)
         p.sync_turn("hello", "hi")
+        assert p._sync_thread is None
+        p._client.aretain_batch.assert_not_called()
+
+    def test_sync_turn_writes_per_message_owned_log_records(self, provider_with_config, tmp_path):
+        owned_log = tmp_path / "owned-log"
+        _write_owned_log_marker(owned_log)
+        p = provider_with_config(owned_log_dir=str(owned_log), owned_log_required=True)
+
+        p.sync_turn("hello", "hi")
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_called_once()
+        records = _owned_log_records(owned_log)
+        assert [record["record_type"] for record in records] == ["turn", "turn"]
+        assert [record["payload"]["role"] for record in records] == ["user", "assistant"]
+        assert [record["payload"]["content"] for record in records] == ["hello", "hi"]
+        assert [record["payload"]["message_index"] for record in records] == [0, 1]
+        assert all(record["write_back"] == "hindsight" for record in records)
+        assert all(record["provenance"]["origin"] == "auto-turn" for record in records)
+
+    def test_sync_turn_mirrors_each_turn_when_retain_batches(self, provider_with_config, tmp_path):
+        owned_log = tmp_path / "owned-log"
+        _write_owned_log_marker(owned_log)
+        p = provider_with_config(
+            owned_log_dir=str(owned_log),
+            owned_log_required=True,
+            retain_every_n_turns=3,
+        )
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+
+        p._client.aretain_batch.assert_not_called()
+        records = _owned_log_records(owned_log)
+        assert len(records) == 4
+        assert records[0]["payload"]["content"] == "turn1-user"
+        assert records[3]["payload"]["content"] == "turn2-asst"
+
+    def test_sync_turn_fails_closed_before_queue(self, provider_with_config, tmp_path):
+        p = provider_with_config(owned_log_dir=str(tmp_path / "missing-log"), owned_log_required=True)
+
+        with pytest.raises(OwnedLogMirrorError):
+            p.sync_turn("hello", "hi")
+
         assert p._sync_thread is None
         p._client.aretain_batch.assert_not_called()
 
@@ -1548,4 +1650,3 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert embedded._client is None
         assert provider._client is None
-

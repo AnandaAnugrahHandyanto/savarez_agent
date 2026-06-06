@@ -30,14 +30,17 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import hashlib
 import importlib
 import json
 import logging
 import os
 import queue
+import re
 import threading
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
@@ -59,6 +62,9 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_OWNED_LOG_ZERO_HASH = "0" * 64
+_OWNED_LOG_SCHEMA_VERSION = "1.0"
+_OWNED_LOG_ID_RE = re.compile(r"^[A-Za-z0-9._:/@+=,\-]+$")
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -70,6 +76,62 @@ _PROVIDER_DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "openai_compatible": "your-model-name",
 }
+
+
+class OwnedLogMirrorError(RuntimeError):
+    """Fail-closed owned-log mirror error."""
+
+    fail_closed_memory_sync = True
+
+
+def _parse_bool_setting(value: Any, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "required", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    logger.warning("Invalid boolean Hindsight setting %r; using default %s", value, default)
+    return default
+
+
+def _owned_log_canonical_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _owned_log_sha256(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _owned_log_clean_id(value: Any, fallback: str) -> str:
+    text = str(value or "").strip() or fallback
+    text = re.sub(r"[^A-Za-z0-9._:/@+=,\-]+", "-", text).strip("-")
+    text = text[:160].strip("-") or fallback
+    if not _OWNED_LOG_ID_RE.fullmatch(text):
+        raise OwnedLogMirrorError(f"owned-log id is invalid after sanitization: {value!r}")
+    return text
+
+
+def _owned_log_record_body(record: dict[str, Any]) -> dict[str, Any]:
+    body = dict(record)
+    body.pop("record_hash", None)
+    return body
+
+
+def _owned_log_record_hash(record: dict[str, Any]) -> str:
+    prev_hash = record.get("prev_hash")
+    if not isinstance(prev_hash, str):
+        raise OwnedLogMirrorError("owned-log record prev_hash must be a string")
+    return _owned_log_sha256(prev_hash.encode("ascii") + _owned_log_canonical_bytes(_owned_log_record_body(record)))
 
 
 def _parse_int_setting(value: Any, default: int) -> int:
@@ -562,6 +624,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._session_id = ""
         self._parent_session_id = ""
         self._document_id = ""
+        self._owned_log_dir: Path | None = None
+        self._owned_log_required = False
+        self._owned_log_lock = threading.Lock()
+        self.fail_closed_sync_errors = False
 
         # Tags
         self._tags: list[str] | None = None
@@ -861,6 +927,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
+            {"key": "owned_log_dir", "description": "Operator-owned Tier-0 log directory (defaults to OWNED_LOG_DIR env var)", "default": ""},
+            {"key": "owned_log_required", "description": "Fail closed if the owned-log mirror cannot append before Hindsight retain", "default": False},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
@@ -1191,6 +1259,17 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
         self._retain_async = self._config.get("retain_async", True)
+        owned_log_dir = str(
+            self._config.get("owned_log_dir") or os.environ.get("OWNED_LOG_DIR", "")
+        ).strip()
+        self._owned_log_dir = Path(owned_log_dir).expanduser() if owned_log_dir else None
+        self._owned_log_required = _parse_bool_setting(
+            self._config.get("owned_log_required"),
+            default=_parse_bool_setting(os.environ.get("OWNED_LOG_REQUIRED"), False),
+        )
+        # If a directory is configured, it is part of the declared Tier-0 path:
+        # any append failure must stop the derived Hindsight write.
+        self.fail_closed_sync_errors = self._owned_log_required or self._owned_log_dir is not None
 
         _client_version = "unknown"
         try:
@@ -1413,6 +1492,174 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["tags"] = merged_tags
         return kwargs
 
+    def _owned_log_enabled(self) -> bool:
+        return self._owned_log_required or self._owned_log_dir is not None
+
+    def _owned_log_context(self) -> tuple[str, str, str, str, str]:
+        bank_id = _owned_log_clean_id(self._bank_id, "hermes")
+        session_id = _owned_log_clean_id(self._session_id, "sessionless")
+        source_channel = _owned_log_clean_id(self._platform or "hermes", "hermes")
+        agent_identity = _owned_log_clean_id(self._agent_identity or "hermes-agent", "hermes-agent")
+        plane = _owned_log_clean_id("memory", "memory")
+        return bank_id, session_id, source_channel, agent_identity, plane
+
+    def _owned_log_segment_path(self) -> Path:
+        root = self._owned_log_dir
+        if root is None:
+            raise OwnedLogMirrorError("OWNED_LOG_DIR is required for fail-closed owned-log mirroring")
+        marker = root / ".owned-log.json"
+        if not root.is_dir():
+            raise OwnedLogMirrorError(f"owned-log directory is missing: {root}")
+        if not marker.is_file():
+            raise OwnedLogMirrorError(f"owned-log marker is missing: {marker}")
+        try:
+            marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise OwnedLogMirrorError(f"owned-log marker is invalid JSON: {marker}") from exc
+        if marker_payload.get("kind") != "owned-log":
+            raise OwnedLogMirrorError(f"owned-log marker has wrong kind: {marker}")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        year, month = today.split("-", 2)[:2]
+        return root / "memory" / year / month / f"{today}.ndjson"
+
+    def _owned_log_tail(self, segment_path: Path) -> tuple[str, int]:
+        if not segment_path.exists():
+            return _OWNED_LOG_ZERO_HASH, 1
+        previous_hash = _OWNED_LOG_ZERO_HASH
+        next_seq = 1
+        for line_number, line in enumerate(segment_path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                raise OwnedLogMirrorError(f"owned-log segment has blank line {line_number}: {segment_path}")
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise OwnedLogMirrorError(f"owned-log segment has invalid JSON line {line_number}: {segment_path}") from exc
+            if record.get("prev_hash") != previous_hash:
+                raise OwnedLogMirrorError(f"owned-log segment hash chain is broken at line {line_number}: {segment_path}")
+            expected_hash = _owned_log_record_hash(record)
+            if record.get("record_hash") != expected_hash:
+                raise OwnedLogMirrorError(f"owned-log segment record_hash mismatch at line {line_number}: {segment_path}")
+            seq = record.get("seq")
+            if not isinstance(seq, int) or seq != next_seq:
+                raise OwnedLogMirrorError(f"owned-log segment seq gap at line {line_number}: {segment_path}")
+            previous_hash = expected_hash
+            next_seq += 1
+        return previous_hash, next_seq
+
+    def _owned_log_append_payloads(self, payloads: list[tuple[str, str, dict[str, Any]]]) -> None:
+        if not self._owned_log_enabled():
+            return
+        segment_path = self._owned_log_segment_path()
+        bank_id, session_id, source_channel, agent_identity, plane = self._owned_log_context()
+        with self._owned_log_lock:
+            previous_hash, next_seq = self._owned_log_tail(segment_path)
+            records: list[dict[str, Any]] = []
+            for record_type, origin, payload in payloads:
+                record = {
+                    "seq": next_seq,
+                    "record_type": record_type,
+                    "plane": plane,
+                    "schema_version": _OWNED_LOG_SCHEMA_VERSION,
+                    "ingested_at": _utc_timestamp(),
+                    "prev_hash": previous_hash,
+                    "record_hash": _OWNED_LOG_ZERO_HASH,
+                    "write_back": "hindsight",
+                    "bank_id": bank_id,
+                    "content_hash": _owned_log_sha256(_owned_log_canonical_bytes(payload)),
+                    "provenance": {
+                        "origin": origin,
+                        "session_id": session_id,
+                        "source_channel": source_channel,
+                        "agent_identity": agent_identity,
+                    },
+                    "payload": payload,
+                }
+                record["record_hash"] = _owned_log_record_hash(record)
+                records.append(record)
+                previous_hash = record["record_hash"]
+                next_seq += 1
+
+            segment_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with segment_path.open("a", encoding="utf-8") as fh:
+                    for record in records:
+                        fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+                        fh.write("\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            except OSError as exc:
+                raise OwnedLogMirrorError(f"owned-log append failed: {segment_path}: {exc}") from exc
+
+    def _mirror_turn(self, user_content: str, assistant_content: str) -> None:
+        if not self._owned_log_enabled():
+            return
+        if not str(user_content):
+            raise OwnedLogMirrorError("owned-log turn mirror requires non-empty user content")
+        if not str(assistant_content):
+            raise OwnedLogMirrorError("owned-log turn mirror requires non-empty assistant content")
+        _, session_id, _, _, _ = self._owned_log_context()
+        turn_index = self._turn_counter + 1
+        turn_id = _owned_log_clean_id(f"{session_id}:turn-{turn_index}", f"turn-{turn_index}")
+        message_base = max(0, (turn_index - 1) * 2)
+        self._owned_log_append_payloads(
+            [
+                (
+                    "turn",
+                    "auto-turn",
+                    {
+                        "turn_id": turn_id,
+                        "role": "user",
+                        "content": str(user_content),
+                        "message_index": message_base,
+                        "tool_call_ids": [],
+                    },
+                ),
+                (
+                    "turn",
+                    "auto-turn",
+                    {
+                        "turn_id": turn_id,
+                        "role": "assistant",
+                        "content": str(assistant_content),
+                        "message_index": message_base + 1,
+                        "tool_call_ids": [],
+                    },
+                ),
+            ]
+        )
+
+    def _mirror_tool_write(
+        self,
+        tool_name: str,
+        retain_params: dict[str, Any],
+        *,
+        tool_call_id: str | None = None,
+    ) -> None:
+        if not self._owned_log_enabled():
+            return
+        if not isinstance(retain_params, dict):
+            raise OwnedLogMirrorError("owned-log tool_write retain_params must be an object")
+        _, session_id, _, _, _ = self._owned_log_context()
+        if not tool_call_id:
+            digest = _owned_log_sha256(
+                _owned_log_canonical_bytes({"tool_name": tool_name, "retain_params": retain_params})
+            )[:24]
+            tool_call_id = f"{session_id}:tool:{digest}"
+        self._owned_log_append_payloads(
+            [
+                (
+                    "tool_write",
+                    "agent-tool",
+                    {
+                        "tool_call_id": _owned_log_clean_id(tool_call_id, "tool-call"),
+                        "tool_name": _owned_log_clean_id(tool_name, "tool"),
+                        "retain_params": retain_params,
+                        "result_summary": "pending",
+                    },
+                )
+            ]
+        )
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Enqueue a retain for the current turn. Non-blocking.
 
@@ -1430,6 +1677,8 @@ class HindsightMemoryProvider(MemoryProvider):
 
         if session_id:
             self._session_id = str(session_id).strip()
+
+        self._mirror_turn(user_content, assistant_content)
 
         turn = json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
         self._session_turns.append(turn)
@@ -1506,6 +1755,11 @@ class HindsightMemoryProvider(MemoryProvider):
                     content,
                     context=context,
                     tags=args.get("tags"),
+                )
+                self._mirror_tool_write(
+                    tool_name,
+                    retain_kwargs,
+                    tool_call_id=kwargs.get("tool_call_id"),
                 )
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
