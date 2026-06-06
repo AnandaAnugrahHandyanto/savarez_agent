@@ -964,6 +964,9 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     is_output_cap_error = (
         "max_tokens" in error_lower
         and ("available_tokens" in error_lower or "available tokens" in error_lower)
+    ) or (
+        "in the output" in error_lower
+        and "maximum context length" in error_lower
     )
     if not is_output_cap_error:
         return None
@@ -982,6 +985,22 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
             tokens = int(match.group(1))
             if tokens >= 1:
                 return tokens
+
+    # OpenRouter/Nous format: "N of text input, M of tool input, K in the output"
+    # available = context_length - text_input - tool_input
+    _m_ctx = re.search(r'maximum context length is (\d+)', error_lower)
+    _m_parts = re.search(
+        r'\((\d+)\s+of text input,\s*(\d+)\s+of tool input,\s*(\d+)\s+in the output\)',
+        error_lower,
+    )
+    if _m_ctx and _m_parts:
+        _ctx_len = int(_m_ctx.group(1))
+        _text_in = int(_m_parts.group(1))
+        _tool_in = int(_m_parts.group(2))
+        _available = _ctx_len - _text_in - _tool_in
+        if _available >= 1:
+            return _available
+
     return None
 
 

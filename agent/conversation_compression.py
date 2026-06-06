@@ -506,7 +506,12 @@ def compress_context(
             agent.commit_memory_session(messages)
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
-            agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+            _is_cron_session = (
+                getattr(agent, "platform", None) == "cron"
+                or (agent.session_id or "").startswith("cron_")
+            )
+            _sid_prefix = "cron_" if _is_cron_session else ""
+            agent.session_id = f"{_sid_prefix}{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
             try:
                 from gateway.session_context import set_current_session_id
 

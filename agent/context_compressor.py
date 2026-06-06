@@ -553,6 +553,15 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
+    def on_session_start(self, session_id: str, **kwargs) -> None:
+        """Clear stale summary state when a new session begins.
+
+        Prevents post-compression cron summaries from bleeding into live
+        conversations resumed via /resume (#38788).
+        """
+        super().on_session_start(session_id, **kwargs)
+        self._previous_summary = None
+
     def update_model(
         self,
         model: str,
