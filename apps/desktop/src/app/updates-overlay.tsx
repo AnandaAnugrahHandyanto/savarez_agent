@@ -66,7 +66,7 @@ export function UpdatesOverlay() {
 
     setUpdateOverlayOpen(next)
 
-    if (!next && (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual')) {
+    if (!next && (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'done')) {
       resetUpdateApplyState()
     }
   }
