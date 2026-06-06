@@ -27,6 +27,7 @@ import {
   confirmOnboardingModel,
   copyDeviceCode,
   copyExternalCommand,
+  dismissFirstRunOnboarding,
   type OnboardingContext,
   type OnboardingFlow,
   recheckExternalSignin,
@@ -160,6 +161,13 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
     return null
   }
 
+  // The user chose "I'll choose a provider later" on first run. Stay out of the
+  // way on every subsequent launch — they re-enter via Settings → Providers
+  // (manual mode), which sets manual=true and bypasses this gate.
+  if (onboarding.firstRunSkipped && !onboarding.manual) {
+    return null
+  }
+
   const { flow } = onboarding
   const rawReason = onboarding.reason?.trim() || null
   const reason = rawReason && !isProviderSetupErrorMessage(rawReason) ? rawReason : null
@@ -272,7 +280,7 @@ const persistShowAll = (value: boolean) => {
 }
 
 export function Picker({ ctx }: { ctx: OnboardingContext }) {
-  const { mode, providers } = useStore($desktopOnboarding)
+  const { manual, mode, providers } = useStore($desktopOnboarding)
   const [showAll, setShowAll] = useState(readShowAll)
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
@@ -314,7 +322,11 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           <ChevronDown className={cn('size-3.5 transition', showAll && 'rotate-180')} />
         </button>
       ) : null}
-      <div className="flex justify-end pt-1">
+      <div className="flex items-center justify-between gap-3 pt-1">
+        {/* First run only: let the user defer the choice and land in the app.
+            In manual mode the overlay already has a close affordance, so the
+            "choose later" escape would be redundant — hide it. */}
+        {manual ? <span /> : <ChooseLaterLink />}
         <button
           className="text-xs font-medium text-muted-foreground hover:text-foreground"
           onClick={() => setOnboardingMode('apikey')}

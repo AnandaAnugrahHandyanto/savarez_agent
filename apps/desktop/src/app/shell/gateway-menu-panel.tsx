@@ -2,6 +2,7 @@ import { IconLayoutDashboard } from '@tabler/icons-react'
 
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
+import { Tip } from '@/components/ui/tooltip'
 import { Activity, AlertCircle } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cn } from '@/lib/utils'
@@ -103,13 +104,11 @@ export function GatewayMenuPanel({
           <SectionLabel>{t('gateway.recentActivity')}</SectionLabel>
           <ul className="mt-1.5 space-y-0.5">
             {recentLogs.map((line, index) => (
-              <li
-                className="truncate font-mono text-[0.68rem] text-muted-foreground/85"
-                key={`${index}:${line}`}
-                title={line.trim()}
-              >
-                {trimLogLine(line) || '\u00A0'}
-              </li>
+              <Tip key={`${index}:${line}`} label={line.trim()}>
+                <li className="truncate font-mono text-[0.68rem] text-muted-foreground/85">
+                  {trimLogLine(line) || '\u00A0'}
+                </li>
+              </Tip>
             ))}
           </ul>
           <button

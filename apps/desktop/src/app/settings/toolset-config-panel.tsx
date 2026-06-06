@@ -3,13 +3,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getToolsetConfig, revealEnvVar, selectToolsetProvider, setEnvVar } from '@/hermes'
-import { Check, ExternalLink, Eye, EyeOff, Loader2, Save, Trash2 } from '@/lib/icons'
+import { Check, Loader2, Save } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/hooks/use-translation'
 import { notify, notifyError } from '@/store/notifications'
 import type { ToolEnvVar, ToolProvider, ToolsetConfig } from '@/types/hermes'
 import { t } from '@/store/i18n'
 
+import { EnvVarActionsMenu, EnvVarActionsTrigger } from './env-var-actions-menu'
 import { Pill } from './primitives'
 
 interface ToolsetConfigPanelProps {

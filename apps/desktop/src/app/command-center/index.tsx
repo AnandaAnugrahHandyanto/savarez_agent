@@ -56,16 +56,29 @@ interface CommandCenterViewProps {
   onOpenSession: (sessionId: string) => void
 }
 
-const SECTION_LABELS: Record<CommandCenterSection, string> = {
-  sessions: 'Sessions',
-  system: 'System',
-  usage: 'Usage'
+type NavKey = 'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts'
+
+const NAV_ROUTES: readonly { key: NavKey; route: string }[] = [
+  { key: 'newChat', route: NEW_CHAT_ROUTE },
+  { key: 'settings', route: SETTINGS_ROUTE },
+  { key: 'skills', route: SKILLS_ROUTE },
+  { key: 'messaging', route: MESSAGING_ROUTE },
+  { key: 'artifacts', route: ARTIFACTS_ROUTE }
+]
+
+interface SessionSearchHit {
+  detail?: string
+  kind: 'session'
+  sessionId: string
+  snippet: string
+  title: string
 }
 
-const SECTION_DESCRIPTIONS: Record<CommandCenterSection, string> = {
-  sessions: 'Search and manage sessions',
-  system: 'Status, logs, and system actions',
-  usage: 'Token, cost, and skill activity over time'
+interface RouteSearchHit {
+  detail?: string
+  kind: 'route'
+  route: string
+  title: string
 }
 
 interface NavigationSearchEntry {
@@ -398,7 +411,7 @@ export function CommandCenterView({
         if (!nextStatus) {
           const pendingStatus = {
             exit_code: null,
-            lines: ['Action started, waiting for status...'],
+            lines: [cc.actionStartedWaiting],
             name: started.name,
             pid: started.pid,
             running: true
@@ -413,7 +426,27 @@ export function CommandCenterView({
         void refreshSystem()
       }
     },
-    [refreshSystem]
+    [cc, refreshSystem]
+  )
+
+  const handleSearchSelect = useCallback(
+    (result: CommandCenterSearchResult) => {
+      if (result.kind === 'route') {
+        onNavigateRoute(result.route)
+
+        return
+      }
+
+      if (result.kind === 'section') {
+        setSection(result.section)
+        setQuery('')
+
+        return
+      }
+
+      onOpenSession(result.sessionId)
+    },
+    [onNavigateRoute, onOpenSession, setSection]
   )
 
   const handleSearchSelect = useCallback(
@@ -457,7 +490,7 @@ export function CommandCenterView({
               active={section === value}
               icon={value === 'sessions' ? Pin : value === 'system' ? Activity : BarChart3}
               key={value}
-              label={SECTION_LABELS[value]}
+              label={cc.sections[value]}
               onClick={() => setSection(value)}
             />
           ))}
@@ -587,8 +620,7 @@ export function CommandCenterView({
               ) : (
                 <div className="grid gap-1.5">
                   {filteredSessions.map(session => {
-                    const pinId = sessionPinId(session)
-                    const pinned = pinnedSessionIds.includes(pinId)
+                    const pinned = pinnedSessionIds.includes(session.id)
 
                     return (
                       <OverlayCard className="flex items-center gap-2 px-2.5 py-2" key={session.id}>
@@ -670,7 +702,7 @@ export function CommandCenterView({
                     {systemAction && (
                       <div className="text-xs text-muted-foreground">
                         {systemAction.name} ·{' '}
-                        {systemAction.running ? 'running' : systemAction.exit_code === 0 ? 'done' : 'failed'}
+                        {systemAction.running ? cc.actionRunning : systemAction.exit_code === 0 ? cc.actionDone : cc.actionFailed}
                       </div>
                     )}
                   </div>

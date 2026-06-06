@@ -10,6 +10,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { useI18n } from '@/i18n'
 import { Globe } from '@/lib/icons'
 import { t } from '@/store/i18n'
 import { useLocaleSync } from '@/store/use-locale-sync'

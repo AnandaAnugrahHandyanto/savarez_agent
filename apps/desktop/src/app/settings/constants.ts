@@ -73,7 +73,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'memory.provider': ['', 'builtin', 'honcho'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
-  'tts.openai.voice': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']
+  'tts.openai.voice': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
+  'updates.non_interactive_local_changes': ['stash', 'discard']
 }
 
 export const FIELD_LABELS: Record<string, string> = {
@@ -289,7 +290,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'delegation.max_iterations',
       'delegation.max_concurrent_children',
       'delegation.child_timeout_seconds',
-      'delegation.reasoning_effort'
+      'delegation.reasoning_effort',
+      'updates.non_interactive_local_changes'
     ]
   }
 ]

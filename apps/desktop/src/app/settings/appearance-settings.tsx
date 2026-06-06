@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Palette } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { notifyError } from '@/store/notifications'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
@@ -52,6 +53,7 @@ function ThemePreview({ name }: { name: string }) {
 }
 
 export function AppearanceSettings() {
+  const { t, isSavingLocale, locale, setLocale } = useI18n()
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const activeTheme = availableThemes.find(t => t.name === themeName)

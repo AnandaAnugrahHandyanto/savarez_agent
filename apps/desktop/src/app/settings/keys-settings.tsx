@@ -484,3 +484,7 @@ export function KeysSettings({ query }: SearchProps) {
     </SettingsContent>
   )
 }
+
+interface KeysSettingsProps {
+  view: KeysView
+}

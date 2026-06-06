@@ -1,6 +1,7 @@
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import * as React from 'react'
 
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { cn } from '@/lib/utils'
 import { t } from '@/store/i18n'

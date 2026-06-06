@@ -1,9 +1,11 @@
 import { useTranslation } from '@/hooks/use-translation'
 import type * as React from 'react'
 
+import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
+import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -25,22 +27,22 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
 }
 
-const AGE_TICKS: ReadonlyArray<[number, string]> = [
-  [86_400_000, 'd'],
-  [3_600_000, 'h'],
-  [60_000, 'm']
+const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
+  [86_400_000, 'ageDay'],
+  [3_600_000, 'ageHour'],
+  [60_000, 'ageMin']
 ]
 
-function formatAge(seconds: number): string {
+function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const delta = Math.max(0, Date.now() - seconds * 1000)
 
-  for (const [ms, suffix] of AGE_TICKS) {
+  for (const [ms, key] of AGE_TICKS) {
     if (delta >= ms) {
-      return `${Math.floor(delta / ms)}${suffix}`
+      return `${Math.floor(delta / ms)}${r[key]}`
     }
   }
 
-  return 'now'
+  return r.ageNow
 }
 
 export function SidebarSessionRow({
@@ -72,6 +74,7 @@ export function SidebarSessionRow({
       onDelete={onDelete}
       onPin={onPin}
       pinned={isPinned}
+      profile={session.profile}
       sessionId={session.id}
       title={title}
     >
@@ -84,6 +87,22 @@ export function SidebarSessionRow({
           className
         )}
         data-working={isWorking ? 'true' : undefined}
+        draggable
+        onDragStart={event => {
+          // Reorder drags belong to dnd-kit (the grab handle) — cancel the
+          // native drag so the two DnD systems don't fight.
+          if ((event.target as HTMLElement).closest('[data-reorder-handle]')) {
+            event.preventDefault()
+
+            return
+          }
+
+          writeSessionDrag(event.dataTransfer, {
+            id: session.id,
+            profile: session.profile || 'default',
+            title
+          })
+        }}
         ref={ref}
         style={style}
         {...rest}
@@ -141,10 +160,10 @@ export function SidebarSessionRow({
                 needsInput ? 'overflow-visible' : 'overflow-hidden'
               )}
             >
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-            </span>
+            <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+          </span>
           )}
-          <span className="truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </span>
         </button>
@@ -159,6 +178,7 @@ export function SidebarSessionRow({
             onDelete={onDelete}
             onPin={onPin}
             pinned={isPinned}
+            profile={session.profile}
             sessionId={session.id}
             title={title}
           >

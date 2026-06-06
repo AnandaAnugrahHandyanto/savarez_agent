@@ -59,7 +59,7 @@ export function SessionsSettings({ query }: SearchProps) {
     setBusyId(session.id)
 
     try {
-      await setSessionArchived(session.id, false)
+      await setSessionArchived(session.id, false, session.profile)
       setLocalSessions(prev => prev.filter(s => s.id !== session.id))
       // Surface it again in the sidebar without waiting for a full refresh.
       setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
@@ -80,7 +80,7 @@ export function SessionsSettings({ query }: SearchProps) {
     setBusyId(session.id)
 
     try {
-      await deleteSession(session.id)
+      await deleteSession(session.id, session.profile)
       setLocalSessions(prev => prev.filter(s => s.id !== session.id))
       triggerHaptic('warning')
     } catch (err) {

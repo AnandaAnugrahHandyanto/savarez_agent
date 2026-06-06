@@ -6,6 +6,7 @@ import { AlertCircle, Check, FileText, Globe, Loader2, Monitor } from '@/lib/ico
 import { useTranslation } from '@/hooks/use-translation'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $profiles, refreshActiveProfile } from '@/store/profile'
 
 import { CONTROL_TEXT } from './constants'
 import { EmptyState, ListRow, LoadingState, Pill, SettingsContent } from './primitives'
@@ -68,6 +69,23 @@ function ModeCard({
   )
 }
 
+function ScopeChip({ active, label, onSelect }: { active: boolean; label: string; onSelect: () => void }) {
+  return (
+    <button
+      className={cn(
+        'rounded-full border px-3 py-1 text-[length:var(--conversation-caption-font-size)] transition',
+        active
+          ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) text-(--ui-text-primary)'
+          : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover)'
+      )}
+      onClick={onSelect}
+      type="button"
+    >
+      {label}
+    </button>
+  )
+}
+
 export function GatewaySettings() {
   const { t } = useTranslation()
   const [loading, setLoading] = useState(true)
@@ -87,8 +105,14 @@ export function GatewaySettings() {
       return () => void (cancelled = true)
     }
 
+    setLoading(true)
+    // Clear scope-local entry state so a token from one scope can't leak into
+    // the next when switching profiles.
+    setRemoteToken('')
+    setLastTest(null)
+
     desktop
-      .getConnectionConfig()
+      .getConnectionConfig(scope)
       .then(config => {
         if (cancelled) {
           return
@@ -104,7 +128,7 @@ export function GatewaySettings() {
       })
 
     return () => void (cancelled = true)
-  }, [])
+  }, [scope])
 
   const canUseRemote = useMemo(
     () => Boolean(state.remoteUrl.trim()) && (Boolean(remoteToken.trim()) || state.remoteTokenSet),
@@ -205,6 +229,30 @@ export function GatewaySettings() {
           {t('gateway.desc')}
         </p>
       </div>
+
+      {namedProfiles.length > 0 ? (
+        <div className="mb-5 grid gap-2">
+          <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
+            Applies to
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <ScopeChip active={scope === null} label="All profiles" onSelect={() => setScope(null)} />
+            {namedProfiles.map(profile => (
+              <ScopeChip
+                active={scope === profile.name}
+                key={profile.name}
+                label={profile.name}
+                onSelect={() => setScope(profile.name)}
+              />
+            ))}
+          </div>
+          <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {scope === null
+              ? 'Default connection for every profile that has no override of its own.'
+              : `Connection used only when “${scope}” is the active profile. Set it to Local to inherit the default.`}
+          </p>
+        </div>
+      ) : null}
 
       {state.envOverride ? (
         <div className="mb-5 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-[length:var(--conversation-caption-font-size)] text-destructive">

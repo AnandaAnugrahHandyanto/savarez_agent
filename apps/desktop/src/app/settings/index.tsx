@@ -1,6 +1,7 @@
 import { IconDownload, IconRefresh, IconUpload } from '@tabler/icons-react'
 import { useEffect, useRef, useState } from 'react'
 
+import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useTranslation } from '@/hooks/use-translation'
 import { triggerHaptic } from '@/lib/haptics'
@@ -18,7 +19,7 @@ import { AppearanceSettings } from './appearance-settings'
 import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
-import { KeysSettings } from './keys-settings'
+import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { McpSettings } from './mcp-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsQueryKey, SettingsView as SettingsViewId } from './types'
@@ -64,12 +65,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
       URL.revokeObjectURL(url)
       triggerHaptic('success')
     } catch (err) {
-      notifyError(err, 'Export failed')
+      notifyError(err, t.settings.exportFailed)
     }
   }
 
   const resetConfig = async () => {
-    if (!window.confirm('Reset all settings to Hermes defaults?')) {
+    if (!window.confirm(t.settings.resetConfirm)) {
       return
     }
 
@@ -78,7 +79,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
       triggerHaptic('success')
       onConfigSaved?.()
     } catch (err) {
-      notifyError(err, 'Reset failed')
+      notifyError(err, t.settings.resetFailed)
     }
   }
 
@@ -139,6 +140,24 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
             label={t('settings.keys')}
             onClick={() => setActiveView('keys')}
           />
+          {activeView === 'keys' && (
+            <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
+              <OverlayNavItem
+                active={keysView === 'tools'}
+                icon={Wrench}
+                label="Tools"
+                nested
+                onClick={() => openKeysView('tools')}
+              />
+              <OverlayNavItem
+                active={keysView === 'settings'}
+                icon={Settings2}
+                label="Settings"
+                nested
+                onClick={() => openKeysView('settings')}
+              />
+            </div>
+          )}
           <OverlayNavItem
             active={activeView === 'mcp'}
             icon={Wrench}
