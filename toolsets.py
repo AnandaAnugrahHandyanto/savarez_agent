@@ -87,6 +87,11 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
 # These can include individual tools or reference other toolsets
 TOOLSETS = {
     # Basic toolsets - individual tool categories
+    "quick_chat": {
+        "description": "Minimal read-only tools for gateway ! quick chat mode.",
+        "tools": ["web_search", "web_extract", "safe_time", "safe_calculator"],
+        "includes": [],
+    },
     "web": {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],

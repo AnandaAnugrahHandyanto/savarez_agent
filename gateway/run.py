@@ -125,6 +125,205 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_QUICK_CHAT_DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
+_QUICK_CHAT_TOOLSETS = ["quick_chat"]
+_QUICK_CHAT_MAX_ITERATIONS = 3
+_QUICK_CHAT_MAX_TOKENS = 700
+_QUICK_CHAT_SENDER_MARKER_RE = re.compile(r"^\[[^\]\n]{1,80}\]\s+(?=!)")
+
+
+@dataclasses.dataclass(frozen=True)
+class QuickChatPrefix:
+    """Parsed state for gateway `!` / `!?` quick-chat control prefixes."""
+
+    enabled: bool
+    message: str
+    force_search: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class QuickChatSettings:
+    """Effective per-turn settings for quick-chat mode."""
+
+    model: str
+    enabled_toolsets: List[str]
+    max_iterations: int
+    max_tokens: int
+    skip_memory: bool = True
+    skip_context_files: bool = True
+
+
+def _quick_chat_enabled(user_config: Optional[dict]) -> bool:
+    quick_cfg = (user_config or {}).get("quick_chat") or {}
+    if not isinstance(quick_cfg, dict):
+        return True
+    return bool(quick_cfg.get("enabled", True))
+
+
+def _detect_quick_chat_prefix(message: Any, user_config: Optional[dict] = None) -> QuickChatPrefix:
+    """Detect and strip gateway quick-chat prefixes.
+
+    `!prompt` routes to low-latency quick chat. `!?prompt` uses the same
+    route but instructs the agent to prioritize web_search before answering.
+    Empty prefix-only messages fall back to normal handling so a user is not
+    silently routed with an empty prompt.
+    """
+
+    original = message if isinstance(message, str) else ""
+    if not isinstance(message, str) or not _quick_chat_enabled(user_config):
+        return QuickChatPrefix(False, original)
+
+    text = message.lstrip()
+    sender_match = _QUICK_CHAT_SENDER_MARKER_RE.match(text)
+    if sender_match:
+        text = text[sender_match.end() :]
+    if not text.startswith("!"):
+        return QuickChatPrefix(False, message)
+
+    force_search = text.startswith("!?")
+    stripped = text[2 if force_search else 1 :].lstrip()
+    if not stripped:
+        return QuickChatPrefix(False, message)
+    return QuickChatPrefix(True, stripped, force_search=force_search)
+
+
+def _resolve_quick_chat_settings(
+    user_config: Optional[dict],
+    *,
+    provider: Optional[str],
+    current_model: str,
+) -> QuickChatSettings:
+    """Resolve model and execution caps for quick chat.
+
+    For the OpenAI Codex provider, default to the cheapest/fastest available
+    mini model currently exposed by Codex. For other providers, inherit the
+    session model unless the user explicitly configures quick_chat.model.
+    """
+
+    quick_cfg = (user_config or {}).get("quick_chat") or {}
+    if not isinstance(quick_cfg, dict):
+        quick_cfg = {}
+
+    configured_model = str(quick_cfg.get("model") or "").strip()
+    provider_key = str(provider or "").strip().lower()
+    if configured_model:
+        model = configured_model
+    elif provider_key == "openai-codex":
+        model = _QUICK_CHAT_DEFAULT_CODEX_MODEL
+    else:
+        model = current_model
+
+    configured_toolsets = quick_cfg.get("enabled_toolsets")
+    if isinstance(configured_toolsets, str):
+        enabled_toolsets = [configured_toolsets]
+    elif isinstance(configured_toolsets, list) and configured_toolsets:
+        enabled_toolsets = [str(item) for item in configured_toolsets if str(item).strip()]
+    else:
+        enabled_toolsets = list(_QUICK_CHAT_TOOLSETS)
+
+    try:
+        max_iterations = int(quick_cfg.get("max_iterations", _QUICK_CHAT_MAX_ITERATIONS))
+    except (TypeError, ValueError):
+        max_iterations = _QUICK_CHAT_MAX_ITERATIONS
+    max_iterations = max(1, min(max_iterations, _QUICK_CHAT_MAX_ITERATIONS))
+
+    try:
+        max_tokens = int(quick_cfg.get("max_tokens", _QUICK_CHAT_MAX_TOKENS))
+    except (TypeError, ValueError):
+        max_tokens = _QUICK_CHAT_MAX_TOKENS
+    max_tokens = max(64, min(max_tokens, 4096))
+
+    return QuickChatSettings(
+        model=model,
+        enabled_toolsets=enabled_toolsets or list(_QUICK_CHAT_TOOLSETS),
+        max_iterations=max_iterations,
+        max_tokens=max_tokens,
+    )
+
+
+def _build_quick_chat_prompt(*, force_search: bool = False) -> str:
+    """Compact system prompt injected only for `!` / `!?` turns."""
+
+    prompt = "Quick chat mode is active. Answer concisely in the user's language. "
+    if force_search:
+        prompt += (
+            "Use only the available read-only tools when they materially improve "
+            "correctness: web_search, web_extract, safe_time, and safe_calculator. "
+            "Do not use memory, session search, files, terminal, browser, delegation, "
+            "or side-effecting actions. Do not mention quick chat mode unless it is "
+            "directly relevant. The user used `!?`, so the gateway has already run "
+            "web_search for this turn and attached the results as system context. "
+            "Base searchable factual/current claims on that search context; if it is "
+            "insufficient, say so briefly instead of answering purely from memory. "
+            "Cite the search result briefly when useful."
+        )
+    else:
+        prompt += (
+            "No tools are available in this `!` route; answer directly from the "
+            "model without tool calls, memory, session search, files, terminal, "
+            "browser, delegation, or side-effecting actions. Do not mention quick "
+            "chat mode unless it is directly relevant."
+        )
+    return prompt
+
+
+def _format_quick_search_context(query: str, raw_result: Any, *, max_chars: int = 3500) -> str:
+    """Compact a real gateway-run web_search result for `!?` quick turns."""
+
+    query_text = str(query or "").strip()
+    result_text = raw_result if isinstance(raw_result, str) else json.dumps(raw_result, ensure_ascii=False, default=str)
+    lines = [
+        "Gateway quick-search context: a real web_search call was executed for this `!?` turn before model answering.",
+        f"Query: {query_text}",
+    ]
+
+    try:
+        parsed = json.loads(result_text or "{}")
+    except Exception:
+        parsed = None
+
+    if isinstance(parsed, dict):
+        if parsed.get("success") is False or parsed.get("error"):
+            lines.append(f"Search error: {parsed.get('error') or 'unknown error'}")
+        results = (parsed.get("data") or {}).get("web") or parsed.get("web") or []
+        if isinstance(results, list) and results:
+            lines.append(f"Top web_search results ({min(len(results), 5)} of {len(results)}):")
+            for idx, item in enumerate(results[:5], 1):
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or item.get("name") or "Untitled").strip()
+                url = str(item.get("url") or item.get("link") or "").strip()
+                desc = str(item.get("description") or item.get("snippet") or item.get("content") or "").strip()
+                entry = f"{idx}. {title}"
+                if url:
+                    entry += f" — {url}"
+                if desc:
+                    entry += f"\n   {desc}"
+                lines.append(entry)
+        elif not (parsed.get("success") is False or parsed.get("error")):
+            lines.append("web_search returned no structured results. Raw result follows.")
+    else:
+        lines.append("Could not parse web_search result as JSON. Raw result follows.")
+
+    context = "\n".join(lines)
+    if (not isinstance(parsed, dict)) or "Raw result follows" in context:
+        raw = result_text
+        remaining = max(0, max_chars - len(context) - 16)
+        if remaining and len(raw) > remaining:
+            raw = raw[:remaining] + "…"
+        context = f"{context}\n{raw}"
+    if len(context) > max_chars:
+        context = context[: max_chars - 1] + "…"
+    return context
+
+
+def _append_system_prompt(base: Optional[str], extra: str) -> str:
+    base_text = str(base or "").strip()
+    extra_text = str(extra or "").strip()
+    if base_text and extra_text:
+        return base_text + "\n\n" + extra_text
+    return base_text or extra_text
+
 _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
@@ -16977,6 +17176,18 @@ class GatewayRunner:
         Supports interruption via new messages.
         """
         # ---- Proxy mode: delegate to remote API server ----
+        user_config = _load_gateway_config()
+        quick_chat = _detect_quick_chat_prefix(message, user_config)
+        if quick_chat.enabled:
+            message = quick_chat.message
+            context_prompt = _append_system_prompt(
+                context_prompt,
+                _build_quick_chat_prompt(force_search=quick_chat.force_search),
+            )
+            # Quick chat is intentionally stateless: keep prior transcript out
+            # of the prompt to reduce latency/cost and avoid memory/skill drag.
+            history = []
+
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
                 message=message,
@@ -16997,7 +17208,6 @@ class GatewayRunner:
                 return True
             return self._is_session_run_current(session_key, run_generation)
         
-        user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
         from hermes_cli.tools_config import _get_platform_tools
@@ -17048,7 +17258,11 @@ class GatewayRunner:
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = (
+            progress_mode != "off"
+            and source.platform != Platform.WEBHOOK
+            and (not quick_chat.enabled or quick_chat.force_search)
+        )
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -17690,7 +17904,7 @@ class GatewayRunner:
             # read *and* reassign the outer `_run_agent` parameter without
             # triggering an UnboundLocalError on the earlier read at
             # `_resolve_turn_agent_config(message, …)`.
-            nonlocal message
+            nonlocal message, enabled_toolsets, disabled_toolsets
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -17709,13 +17923,50 @@ class GatewayRunner:
             event_channel_prompt = (channel_prompt or "").strip()
             if event_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
-            if self._ephemeral_system_prompt:
+            if self._ephemeral_system_prompt and not quick_chat.enabled:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart). Keep config.yaml authoritative for
             # runtime budget settings bridged into env vars.
             _reload_runtime_env_preserving_config_authority()
+
+            if quick_chat.force_search:
+                _search_query = message
+                _search_limit = 5
+                _search_started = time.time()
+                if tool_progress_enabled:
+                    progress_callback(
+                        "tool.started",
+                        tool_name="web_search",
+                        preview=_search_query,
+                        args={"query": _search_query, "limit": _search_limit},
+                    )
+                try:
+                    from tools.web_tools import web_search_tool as _quick_web_search_tool
+                    _quick_search_raw = _quick_web_search_tool(_search_query, limit=_search_limit)
+                    logger.info(
+                        "quick_chat force-search web_search executed: session=%s query=%s chars=%d elapsed=%.2fs",
+                        session_key or session_id or "",
+                        _redact_gateway_user_facing_secrets(str(_search_query))[:160],
+                        len(str(_quick_search_raw or "")),
+                        time.time() - _search_started,
+                    )
+                except Exception as _search_exc:
+                    _quick_search_raw = json.dumps(
+                        {"success": False, "error": str(_search_exc)},
+                        ensure_ascii=False,
+                    )
+                    logger.warning(
+                        "quick_chat force-search web_search failed: session=%s query=%s error=%s",
+                        session_key or session_id or "",
+                        _redact_gateway_user_facing_secrets(str(_search_query))[:160],
+                        _search_exc,
+                    )
+                combined_ephemeral = _append_system_prompt(
+                    combined_ephemeral,
+                    _format_quick_search_context(_search_query, _quick_search_raw),
+                )
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -17734,6 +17985,18 @@ class GatewayRunner:
                     "api_calls": 0,
                     "tools": [],
                 }
+
+            quick_settings: Optional[QuickChatSettings] = None
+            if quick_chat.enabled:
+                quick_settings = _resolve_quick_chat_settings(
+                    user_config,
+                    provider=runtime_kwargs.get("provider"),
+                    current_model=model,
+                )
+                model = quick_settings.model
+                enabled_toolsets = quick_settings.enabled_toolsets if quick_chat.force_search else []
+                disabled_toolsets = []
+                max_iterations = quick_settings.max_iterations
 
             pr = self._provider_routing
             reasoning_config = self._resolve_session_reasoning_config(
@@ -17880,19 +18143,30 @@ class GatewayRunner:
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                agent_runtime = dict(turn_route["runtime"])
+                if quick_settings:
+                    # Quick mode sets these explicitly below; remove any route-level
+                    # copies so Python does not receive duplicate keyword arguments.
+                    agent_runtime.pop("max_tokens", None)
+                    agent_runtime.pop("skip_context_files", None)
+                    agent_runtime.pop("skip_memory", None)
                 agent = AIAgent(
                     model=turn_route["model"],
-                    **turn_route["runtime"],
+                    **agent_runtime,
                     max_iterations=max_iterations,
+                    tool_delay=0.0 if quick_chat.enabled else 1.0,
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     ephemeral_system_prompt=combined_ephemeral or None,
-                    prefill_messages=self._prefill_messages or None,
+                    prefill_messages=None if quick_chat.enabled else (self._prefill_messages or None),
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
+                    max_tokens=quick_settings.max_tokens if quick_settings else None,
+                    skip_context_files=quick_settings.skip_context_files if quick_settings else False,
+                    skip_memory=quick_settings.skip_memory if quick_settings else False,
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
                     providers_order=pr.get("order"),
@@ -17933,6 +18207,11 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            if quick_settings:
+                agent.max_tokens = quick_settings.max_tokens
+                agent.tool_delay = 0.0
+                agent.skip_memory = quick_settings.skip_memory
+                agent.skip_context_files = quick_settings.skip_context_files
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
