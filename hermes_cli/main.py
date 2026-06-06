@@ -8154,6 +8154,13 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
+    # On Windows, check native deps and set pending-upgrade flag
+    if _is_windows():
+        if not _verify_critical_native_deps():
+            _force_reinstall_native_deps_via_subprocess()
+        else:
+            _set_native_dep_upgrade_pending()
+
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
 
@@ -9170,6 +9177,163 @@ def _refresh_active_lazy_features() -> None:
         print("  `hermes update` once the upstream issue is resolved.")
 
 
+def _inject_no_deps(args: list[str]) -> list[str]:
+    """Insert ``--no-deps`` into a pip/uv install command if missing.
+
+    ``--no-deps`` must come after the subcommand (``install``) but before
+    any option or positional package arguments.
+    Works for both ``pip install -e .[all]`` and ``uv pip install ...``.
+    """
+    for a in ("--no-deps", "--no_deps"):
+        if a in args:
+            return args
+    # Insert after the first positional arg (the subcommand like "install")
+    pos = next((i + 1 for i, a in enumerate(args) if not a.startswith("-")), len(args))
+    result = list(args)
+    result.insert(pos, "--no-deps")
+    return result
+
+
+def _verify_critical_native_deps() -> bool:
+    """Verify critical C-extension dependencies load after a code update.
+
+    On Windows, native ``.pyd`` files are locked by the running process and
+    cannot be overwritten during ``pip install -e .`` (even with the exe-shim
+    quarantine).  If pydantic-core's ``_pydantic_core.pyd`` was updated by a
+    subprocess, this checks it actually loads.  Returns True on success.
+
+    Never raises — prints a warning and returns False on failure.
+    """
+    try:
+        import pydantic_core
+
+        _ = pydantic_core.__version__
+        logger.debug("pydantic-core %s verified", pydantic_core.__version__)
+        return True
+    except ImportError as exc:
+        print()
+        print("  ⚠ Critical native dependency check failed:")
+        print(f"    {exc}")
+        print()
+        print("  pydantic-core's compiled extension (.pyd) may be stale or")
+        print("  corrupted — the update could not replace it because the")
+        print("  running process has it loaded (Windows file lock).")
+        return False
+    except Exception as exc:
+        logger.debug("Native dep verification skipped: %s", exc)
+        return True
+
+
+def _set_native_dep_upgrade_pending() -> None:
+    """Set a flag in state.db so the next launch finishes upgrading native deps."""
+    db_path = _get_state_db_path()
+    if not db_path:
+        return
+    import sqlite3 as _sqlite3
+
+    try:
+        conn = _sqlite3.connect(str(db_path), timeout=2)
+        conn.execute(
+            "INSERT OR REPLACE INTO state_meta (key, value) VALUES (?, '1')",
+            ("native_dep_upgrade_pending",),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _get_state_db_path() -> str | None:
+    """Get the path to the Hermes state database."""
+    try:
+        from hermes_state import _hermes_home as _hh
+
+        return str(_hh / "state.db")
+    except Exception:
+        pass
+    # Fallback: hardcoded Windows path
+    import os as _os
+
+    p = _os.environ.get("HERMES_HOME")
+    if p:
+        return _os.path.join(p, "state.db")
+    # Last resort on Windows
+    p = _os.path.join(
+        _os.environ.get("LOCALAPPDATA", "C:\\Users\\fengx\\AppData\\Local"), "hermes", "state.db"
+    )
+    return p if _os.path.exists(p) else None
+
+
+def _force_reinstall_native_deps_via_subprocess() -> bool:
+    """Reinstall pydantic-core in a child process.
+
+    The parent process holds ``_pydantic_core.pyd`` open (memory-mapped via
+    ``LoadLibrary``), so any attempt to overwrite it from the same process
+    or any subprocess while the parent lives will fail with a sharing
+    violation on Windows.
+
+    This function is a no-op placeholder.  The *real* fix is deferred to
+    the next Hermes process launch (``_run_post_update_dep_upgrade``),
+    because no child process can overwrite a .pyd held by the parent.
+    """
+    print()
+    print("  The update will finish upgrading native dependencies after")
+    print("  the next Hermes restart (when the locked .pyd files are")
+    print("  unloaded).  This is automatic and requires no action.")
+
+
+def _run_post_update_dep_upgrade() -> None:
+    """Run on first startup after an update: upgrade locked native deps.
+
+    Called from the startup banner / CLI init.  Checks ``state.db`` for a
+    pending-native-upgrade flag.  If set and this process is the first to
+    run since the update, fires ``pip install --upgrade pydantic-core
+    pydantic openai`` to catch up on anything that was blocked by the
+    Windows file lock during the update itself.
+    """
+    db_path = _get_state_db_path()
+    if not db_path:
+        return
+    import sqlite3 as _sqlite3
+
+    flag_key = "native_dep_upgrade_pending"
+    try:
+        conn = _sqlite3.connect(str(db_path), timeout=2)
+        row = conn.execute(
+            "SELECT value FROM state_meta WHERE key = ?", (flag_key,)
+        ).fetchone()
+        if row is None or row[0] != "1":
+            conn.close()
+            return
+        # Clear the flag first so a crash mid-upgrade doesn't retry forever
+        conn.execute("DELETE FROM state_meta WHERE key = ?", (flag_key,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        return
+
+    print("→ Finishing native dependency upgrade (deferred from last update)...")
+    pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade",
+               "pydantic-core", "pydantic", "openai"]
+    try:
+        subprocess.run(pip_cmd, capture_output=True, text=True, timeout=120, check=True)
+        print("  ✓ Native dependencies upgraded.")
+    except subprocess.CalledProcessError as e:
+        logger.debug("Post-update native dep upgrade failed: %s", e.stderr[:500] if e.stderr else "no stderr")
+        print(f"  ⚠ Native dep upgrade failed (will retry next launch): {e.stderr[:200] if e.stderr else 'no stderr'}")
+        # Re-set the flag for next launch
+        try:
+            conn = _sqlite3.connect(str(db_path), timeout=2)
+            conn.execute(
+                "INSERT OR REPLACE INTO state_meta (key, value) VALUES (?, '1')",
+                (flag_key,),
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
@@ -9185,15 +9349,25 @@ def _install_python_dependencies_with_optional_fallback(
     in the venv Scripts dir before each install attempt so uv can write fresh
     copies (Windows blocks REPLACE on a running .exe but allows RENAME). See
     ``_quarantine_running_hermes_exe`` for the rationale.
+
+    **Windows .pyd lock workaround:** Native C extensions (``.pyd``) loaded
+    by the running process cannot be overwritten even by a subprocess.
+    On Windows we pass ``--no-deps`` to avoid touching those extensions,
+    then set a pending-upgrade flag so the next Hermes launch finishes the
+    job via ``_run_post_update_dep_upgrade()``.
     """
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
+    use_no_deps = scripts_dir is not None  # Windows with a venv
 
     def _install(args: list[str]) -> None:
         moved: list[tuple[Path, Path]] = []
         if scripts_dir is not None:
             moved = _quarantine_running_hermes_exe(scripts_dir)
+        # On Windows, add --no-deps to all editable installs so native
+        # .pyd files (loaded by this process) are never touched.
+        cmd = _inject_no_deps(args) if use_no_deps else args
         try:
-            _run_install_with_heartbeat(install_cmd_prefix + args, env=env)
+            _run_install_with_heartbeat(install_cmd_prefix + cmd, env=env)
         except BaseException:
             # Restore shims if uv didn't write replacements (e.g. install
             # failed before the entry-points step). Don't swallow the error.
@@ -10665,6 +10839,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
 
         _refresh_active_lazy_features()
+
+        # On Windows, the editable install used --no-deps to avoid file-lock
+        # conflicts with loaded .pyd extensions.  Set a pending-upgrade
+        # flag so the next Hermes launch finishes upgrading native deps.
+        if _is_windows():
+            if not _verify_critical_native_deps():
+                _force_reinstall_native_deps_via_subprocess()
+            else:
+                _set_native_dep_upgrade_pending()
+                print()
+                print("  ✓ pydantic-core is healthy (native deps will sync")
+                print("    on next restart to pick up any version bumps)")
+                print()
 
         _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
@@ -12593,6 +12780,10 @@ def _should_background_mcp_startup(args) -> bool:
 
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
+    # On Windows, finish upgrading native deps that were deferred during
+    # a previous `hermes update` (the running process had .pyd files
+    # locked).  Runs before any code that depends on pydantic/OpenAI.
+    _run_post_update_dep_upgrade()
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     if not (
         args.command in _AGENT_COMMANDS

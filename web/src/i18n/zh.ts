@@ -620,10 +620,10 @@ export const zh: Translations = {
       "Debugging Chaos": "Debugging Chaos",
       "Vibe Coding": "Vibe Coding",
       "Hermes Native": "Hermes 原生",
-      "Research / Web": "Research / Web",
+      "Research/Web": "Research/Web",
       "Tool Mastery": "Tool Mastery",
-      "Model Exploration": "Model Exploration",
-      "Endurance": "Endurance",
+      "Model Lore": "Model Lore",
+      "Lifestyle": "Lifestyle",
     },
     achievementData: {
       let_him_cook: { name: "让他发挥", description: "让 Hermes 在一次会话中自主运行一套完整的工具链。" },
