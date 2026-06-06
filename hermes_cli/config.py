@@ -5989,7 +5989,7 @@ def set_config_value(key: str, value: str):
         ):
             try:
                 parsed = json.loads(stripped)
-            except Exception:
+            except json.JSONDecodeError:
                 return raw
             if isinstance(parsed, (dict, list)):
                 return parsed
