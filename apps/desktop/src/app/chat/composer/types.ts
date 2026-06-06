@@ -51,6 +51,7 @@ export interface ChatBarProps {
     value: string,
     options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
   ) => Promise<boolean> | boolean
+  onSteer?: (text: string) => Promise<boolean> | boolean
   onTranscribeAudio?: (audio: Blob) => Promise<string>
 }
 

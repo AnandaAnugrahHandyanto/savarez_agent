@@ -131,6 +131,7 @@ export function ChatBar({
   onPickImages,
   onRemoveAttachment,
   onSubmit,
+  onSteer,
   onTranscribeAudio
 }: ChatBarProps) {
   const aui = useAui()
@@ -181,6 +182,7 @@ export function ChatBar({
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+  const canSteer = busy && hasComposerPayload && typeof onSteer === 'function'
   const showHelpHint = draft === '?'
 
   const gatewayState = useStore($gatewayState)
@@ -1033,12 +1035,46 @@ export function ChatBar({
     setQueueEdit(null)
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const steerDraft = () => {
+    // Try to steer the draft into the current running turn.  If onSteer
+    // rejects (no live tool window, agent lacks steer(), etc.), fall
+    // back to queue so the message is not lost.
+    const doSteer = () => {
+      const result = onSteer!(draft)
+
+      if (result instanceof Promise) {
+        void result.then(accepted => {
+          if (accepted) {
+            clearDraft()
+            clearComposerAttachments()
+            triggerHaptic('submit')
+          } else {
+            // steer accepted but unavailable — queue instead
+            queueCurrentDraft()
+          }
+        })
+      } else if (result) {
+        clearDraft()
+        clearComposerAttachments()
+        triggerHaptic('submit')
+      } else {
+        queueCurrentDraft()
+      }
+    }
+
+    doSteer()
+  }
+
   const submitDraft = () => {
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
       if (hasComposerPayload) {
-        queueCurrentDraft()
+        if (canSteer) {
+          steerDraft()
+        } else {
+          queueCurrentDraft()
+        }
       } else {
         // Stop button: an explicit interrupt must actually halt the running
         // turn. Mark the interrupt so the busy→false auto-drain effect skips
