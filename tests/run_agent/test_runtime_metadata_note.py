@@ -134,3 +134,68 @@ def test_runtime_metadata_note_is_injected_for_multimodal_user_turns():
     persisted_messages = persist_session.call_args.args[0]
     assert persisted_messages[0]["role"] == "user"
     assert persisted_messages[0]["content"] == user_message
+
+
+def test_runtime_metadata_note_survives_preflight_compression_rewrite():
+    agent = _make_agent()
+    user_message = "What changed after compression?"
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "one"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "two"},
+    ]
+    agent.client.chat.completions.create.return_value = _mock_response("Done")
+    agent.compression_enabled = True
+    agent.context_compressor = SimpleNamespace(
+        protect_first_n=1,
+        protect_last_n=1,
+        threshold_tokens=1,
+        context_length=1000,
+        last_prompt_tokens=0,
+        last_real_prompt_tokens=0,
+        should_compress=lambda _tokens: True,
+    )
+    captured = {}
+
+    def _fake_compress(messages, system_message, approx_tokens=None, task_id=None):
+        return (
+            [
+                {"role": "user", "content": "[compressed summary]"},
+                {"role": "assistant", "content": "[summary ack]"},
+                {"role": "user", "content": user_message},
+            ],
+            agent._cached_system_prompt,
+        )
+
+    def _fake_build_api_kwargs(api_messages):
+        captured["messages"] = api_messages
+        return {"model": agent.model, "messages": api_messages, "timeout": 1800.0}
+
+    with (
+        patch.object(agent, "_compress_context", side_effect=_fake_compress),
+        patch.object(agent, "_build_api_kwargs", side_effect=_fake_build_api_kwargs),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation(user_message, conversation_history=history)
+
+    assert result["completed"] is True
+
+    api_messages = captured["messages"]
+    summary_message = next(
+        m["content"] for m in api_messages if m["role"] == "user" and m["content"] == "[compressed summary]"
+    )
+    assert "Conversation started:" not in summary_message
+
+    current_user_message = next(
+        m["content"]
+        for m in api_messages
+        if m["role"] == "user"
+        and isinstance(m["content"], str)
+        and user_message in m["content"]
+    )
+    assert current_user_message.startswith(user_message)
+    assert "Conversation started:" in current_user_message
+    assert "Session ID: session-1234" in current_user_message
