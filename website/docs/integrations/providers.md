@@ -1156,6 +1156,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [Groq](https://groq.com) | `https://api.groq.com/openai/v1` | Ultra-fast inference |
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
+| [ForAI](https://www.forai.ai) | `https://www.forai.ai/v1` | OpenAI-compatible AI model gateway |
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
@@ -1298,9 +1299,9 @@ You can also select named custom providers from the interactive `hermes model` m
 
 ---
 
-### Cookbook: Together AI, Groq, Perplexity
+### Cookbook: Together AI, Groq, Perplexity, ForAI
 
-The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under `custom_providers:`. Three worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
+The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under `custom_providers:`. Four worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
 
 #### Together AI
 
@@ -1376,9 +1377,32 @@ model:
 PERPLEXITY_API_KEY=your-perplexity-key
 ```
 
+#### ForAI
+
+[ForAI](https://www.forai.ai) is an OpenAI-compatible AI model gateway for developers and AI agent builders. Use the ForAI base URL with a named custom provider:
+
+```yaml
+# ~/.hermes/config.yaml
+custom_providers:
+  - name: forai
+    base_url: https://www.forai.ai/v1
+    key_env: FORAI_API_KEY
+
+model:
+  default: your-forai-model
+  provider: custom:forai
+```
+
+```bash
+# ~/.hermes/.env
+FORAI_API_KEY=your-forai-key
+```
+
+For a standalone page with the same setup details, see [ForAI](/integrations/forai).
+
 #### Multiple providers in one config
 
-The three recipes compose — use all of them together and switch per turn with `/model custom:<name>:<model>`:
+The recipes compose — use them together and switch per turn with `/model custom:<name>:<model>`:
 
 ```yaml
 custom_providers:
@@ -1391,6 +1415,9 @@ custom_providers:
   - name: perplexity
     base_url: https://api.perplexity.ai
     key_env: PERPLEXITY_API_KEY
+  - name: forai
+    base_url: https://www.forai.ai/v1
+    key_env: FORAI_API_KEY
 
 model:
   default: MiniMaxAI/MiniMax-M2.7
