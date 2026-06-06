@@ -61,12 +61,10 @@ import sys
 import tempfile
 import threading
 import time
-import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value
-from hermes_cli.config import cfg_get
 
 try:
     from tools.website_policy import check_website_access
@@ -94,10 +92,12 @@ from tools.tool_backend_helpers import normalize_browser_cloud_provider
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
 # camofox REST API instead of the agent-browser CLI.
-try:
-    from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
-except ImportError:
-    _is_camofox_mode = lambda: False  # noqa: E731
+def _is_camofox_mode() -> bool:
+    try:
+        from tools.browser_camofox import is_camofox_mode as _impl
+        return bool(_impl())
+    except ImportError:
+        return False
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +232,7 @@ def _get_command_timeout() -> int:
     _command_timeout_resolved = True
     result = DEFAULT_COMMAND_TIMEOUT
     try:
-        from hermes_cli.config import read_raw_config
+        from hermes_cli.config import read_raw_config, cfg_get
         cfg = read_raw_config()
         val = cfg_get(cfg, "browser", "command_timeout")
         if val is not None:
@@ -286,6 +286,7 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         version_url = discovery_url.rstrip("/") + "/json/version"
 
     try:
+        import requests
         response = requests.get(version_url, timeout=10)
         response.raise_for_status()
         payload = response.json()
