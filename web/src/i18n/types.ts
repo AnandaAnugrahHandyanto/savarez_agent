@@ -385,6 +385,8 @@ export interface Translations {
       discord: string;
       slack: string;
       email: string;
+      needsHomeChannel?: string;
+      noneConfigured?: string;
     };
   };
 
