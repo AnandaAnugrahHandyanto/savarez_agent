@@ -196,27 +196,27 @@ export function BootFailureOverlay() {
             <div className="flex flex-wrap gap-2">
               {remoteReauth ? (
                 <Button disabled={Boolean(busy)} onClick={() => void signInRemote()}>
-                  {busy === 'signin' ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                  {busy === 'signin' ? <Loader2 className="animate-spin" /> : <LogIn />}
                   {label}
                 </Button>
               ) : (
                 <Button disabled={Boolean(busy)} onClick={() => void retry()}>
-                  {busy === 'retry' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                  {busy === 'retry' ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                   {copy.retry}
                 </Button>
               )}
               {!remoteReauth ? (
                 <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="outline">
-                  {busy === 'repair' ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
+                  {busy === 'repair' ? <Loader2 className="animate-spin" /> : <Wrench />}
                   {copy.repairInstall}
                 </Button>
               ) : null}
               <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
-                {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : null}
+                {busy === 'local' ? <Loader2 className="animate-spin" /> : null}
                 {copy.useLocalGateway}
               </Button>
               <Button onClick={openLogs} variant="ghost">
-                <FileText className="size-4" />
+                <FileText />
                 {copy.openLogs}
               </Button>
             </div>

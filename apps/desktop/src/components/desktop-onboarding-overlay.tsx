@@ -712,7 +712,7 @@ export function ApiKeyForm({
           ) : null}
         </div>
         <Button disabled={!canSave || saving} onClick={() => void submit()}>
-          {saving ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+          {saving ? <Loader2 className="animate-spin" /> : <KeyRound />}
           {saving ? t.onboarding.connecting : alreadySet ? t.onboarding.update : t.common.connect}
         </Button>
       </div>
@@ -814,7 +814,7 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
         >
           <CancelBtn />
           <Button onClick={() => void recheckExternalSignin(ctx)}>
-            <Check className="size-4" />
+            <Check />
             {t.onboarding.signedIn}
           </Button>
         </FlowFooter>
@@ -867,7 +867,7 @@ function CodeBlock({
     <div className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-secondary/30 px-4 py-3">
       <code className={cn('font-mono', large ? 'text-2xl tracking-[0.4em]' : 'text-sm')}>{text}</code>
       <Button onClick={onCopy} size="sm" variant="outline">
-        {copied ? <Check className="size-4" /> : t.onboarding.copy}
+        {copied ? <Check /> : t.onboarding.copy}
       </Button>
     </div>
   )
@@ -959,7 +959,7 @@ function ConfirmingModelPanel({
 
       <div className="flex justify-end">
         <Button disabled={flow.saving} onClick={() => confirmOnboardingModel(ctx)}>
-          {flow.saving ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+          {flow.saving ? <Loader2 className="animate-spin" /> : <Sparkles />}
           {t.onboarding.startChatting}
         </Button>
       </div>

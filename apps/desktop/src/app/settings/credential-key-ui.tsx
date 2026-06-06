@@ -96,7 +96,7 @@ export function KeyField({
         />
         {dirty && (
           <Button className="h-8 shrink-0" disabled={busy} onClick={() => void onSave(varKey)} size="sm">
-            {busy ? <Loader2 className="size-4 animate-spin" /> : <Save />}
+            {busy ? <Loader2 className="animate-spin" /> : <Save />}
             {busy ? t.settings.credentials.saving : t.common.save}
           </Button>
         )}
