@@ -8,7 +8,11 @@ history.
 """
 from __future__ import annotations
 
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    translate_windows_path_for_wsl,
+    windows_path_to_wsl,
+)
 
 import copy
 import json
@@ -28,12 +32,7 @@ logger = logging.getLogger(__name__)
 
 def _win_path_to_wsl(path: str) -> str | None:
     """Convert a Windows drive path to its WSL /mnt/<drive>/... equivalent."""
-    match = re.match(r"^([A-Za-z]):[\\/](.*)$", path)
-    if not match:
-        return None
-    drive = match.group(1).lower()
-    tail = match.group(2).replace("\\", "/")
-    return f"/mnt/{drive}/{tail}"
+    return windows_path_to_wsl(path)
 
 
 def _translate_acp_cwd(cwd: str) -> str:
@@ -45,12 +44,7 @@ def _translate_acp_cwd(cwd: str) -> str:
     sessions all agree on the usable workspace. Native Linux/macOS keeps the
     original cwd unchanged.
     """
-    from hermes_constants import is_wsl
-
-    if not is_wsl():
-        return cwd
-    translated = _win_path_to_wsl(str(cwd))
-    return translated if translated is not None else cwd
+    return translate_windows_path_for_wsl(str(cwd))
 
 
 def _normalize_cwd_for_compare(cwd: str | None) -> str:
