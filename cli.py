@@ -6663,6 +6663,27 @@ class HermesCLI:
         except Exception:
             pass
 
+    def _finalize_session_row(self, end_reason: str = "cli_close") -> None:
+        """Best-effort SQLite closeout for the active CLI session row.
+
+        Interactive ``run()`` and non-interactive ``chat -q`` follow separate
+        control-flow paths.  Keep the DB closeout in one helper so one-shot
+        modes can mark the live session ended without entering ``run()``'s
+        shutdown ``finally`` block.
+        """
+        session_db = getattr(self, "_session_db", None)
+        if not session_db:
+            return
+        agent = getattr(self, "agent", None)
+        session_id = getattr(agent, "session_id", None) if agent is not None else None
+        session_id = session_id or getattr(self, "session_id", None)
+        if not session_id:
+            return
+        try:
+            session_db.end_session(session_id, end_reason)
+        except Exception:
+            logger.debug("Could not close session in DB: %s", session_id, exc_info=True)
+
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         if self.agent and self.conversation_history:
@@ -12118,7 +12139,7 @@ class HermesCLI:
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None) -> Optional[str]:
+    def chat(self, message, images: list | None = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -15979,16 +16000,18 @@ def main(
                     except KeyboardInterrupt:
                         _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
                         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+                        cli._finalize_session_row("keyboard_interrupt")
                         sys.exit(130)
-                    # Sync session_id if mid-run compression created a
-                    # continuation session. The exit line below reports
-                    # session_id to stderr for automation wrappers; without
-                    # this sync it would point at the ended parent.
-                    if (
-                        getattr(cli.agent, "session_id", None)
-                        and cli.agent.session_id != cli.session_id
-                    ):
-                        cli.session_id = cli.agent.session_id
+                    finally:
+                        # Sync session_id if mid-run compression created a
+                        # continuation session. The exit line below reports
+                        # session_id to stderr for automation wrappers; without
+                        # this sync it would point at the ended parent.
+                        agent = getattr(cli, "agent", None)
+                        agent_session_id = getattr(agent, "session_id", None)
+                        if agent_session_id and agent_session_id != cli.session_id:
+                            cli.session_id = agent_session_id
+                        cli._finalize_session_row("cli_close")
                     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
                     # Surface backend errors that produced no visible output
                     # (e.g. invalid model slug → provider 4xx). Mirrors the
@@ -16069,7 +16092,12 @@ def main(
             # Surface security advisories before the agent runs — short
             # banner, doesn't depend on the welcome banner being shown.
             cli._show_security_advisories()
-            cli.chat(query, images=single_query_images or None)
+            try:
+                cli.chat(query, images=single_query_images or None)
+            finally:
+                # Human-facing one-shot mode also skips interactive run()
+                # closeout; finalize even when chat() returns an error.
+                cli._finalize_session_row("cli_close")
             cli._print_exit_summary()
         return
     

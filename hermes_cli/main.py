@@ -14964,6 +14964,25 @@ Examples:
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )
 
+    sessions_repair_stale = sessions_subparsers.add_parser(
+        "repair-stale-open",
+        help="Close old open sessions whose latest message is terminal",
+    )
+    sessions_repair_stale.add_argument(
+        "--older-than-hours",
+        type=float,
+        default=12.0,
+        help="Only repair sessions idle longer than N hours (default: 12)",
+    )
+    sessions_repair_stale.add_argument(
+        "--reason",
+        default="stale_closeout_repair",
+        help="end_reason to write for repaired sessions",
+    )
+    sessions_repair_stale.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation"
+    )
+
     sessions_subparsers.add_parser(
         "optimize",
         help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
@@ -15102,6 +15121,21 @@ Examples:
                 older_than_days=days, source=args.source, sessions_dir=sessions_dir
             )
             print(f"Pruned {count} session(s).")
+
+        elif action == "repair-stale-open":
+            hours = max(0.0, float(args.older_than_hours))
+            if not args.yes:
+                if not _confirm_prompt(
+                    "Close open sessions older than "
+                    f"{hours:g} hours whose latest message is terminal? [y/N] "
+                ):
+                    print("Cancelled.")
+                    return
+            count = db.repair_stale_open_sessions(
+                older_than_seconds=hours * 3600,
+                end_reason=args.reason,
+            )
+            print(f"Repaired {count} stale open session(s).")
 
         elif action == "rename":
             resolved_session_id = db.resolve_session_id(args.session_id)
