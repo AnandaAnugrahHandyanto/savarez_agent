@@ -25,7 +25,7 @@ MAX_CHOICES = 4
 _DISCORD_MENTION_RE = re.compile(
     r"<@[!&]?\d+>"       # user / role mentions: <@123>, <@!123>, <@&123>
     r"|<#\d+>"            # channel mentions: <#123>
-    r"|@(?:everyone|here)"  # mass mentions
+    r"|@(?:everyone|here)\b"  # mass mentions (word boundary prevents partial match)
 )
 
 
