@@ -1432,6 +1432,7 @@ class MCPServerTask:
                     self.initialize_result = await session.initialize()
                     self.session = session
                     await self._discover_tools()
+                    self._register_tools()
                     self._ready.set()
                     # stdio transport does not use OAuth, but we still honor
                     # _reconnect_event (e.g. future manual /mcp refresh) for
@@ -1661,6 +1662,7 @@ class MCPServerTask:
                     self.initialize_result = await session.initialize()
                     self.session = session
                     await self._discover_tools()
+                    self._register_tools()
                     self._ready.set()
                     reason = await self._wait_for_lifecycle_event()
                     if reason == "reconnect":
@@ -1710,6 +1712,7 @@ class MCPServerTask:
                         self.initialize_result = await session.initialize()
                         self.session = session
                         await self._discover_tools()
+                        self._register_tools()
                         self._ready.set()
                         reason = await self._wait_for_lifecycle_event()
                         if reason == "reconnect":
@@ -1733,6 +1736,7 @@ class MCPServerTask:
                     self.initialize_result = await session.initialize()
                     self.session = session
                     await self._discover_tools()
+                    self._register_tools()
                     self._ready.set()
                     reason = await self._wait_for_lifecycle_event()
                     if reason == "reconnect":
@@ -1751,6 +1755,20 @@ class MCPServerTask:
             tools_result.tools
             if hasattr(tools_result, "tools")
             else []
+        )
+
+    def _register_tools(self):
+        """Register discovered tools in the ToolRegistry and populate _servers.
+
+        Called inside transport methods BEFORE ``_ready.set()`` so that the
+        registry is populated before any waiter on ``_ready`` proceeds.
+        Setting ``_servers[self.name]`` here ensures ``_make_check_fn()``
+        closures can resolve the server immediately.
+        """
+        with _lock:
+            _servers[self.name] = self
+        self._registered_tool_names = _register_server_tools(
+            self.name, self, self._config
         )
 
     async def run(self, config: dict):
@@ -1981,6 +1999,21 @@ class MCPServerTask:
 # ---------------------------------------------------------------------------
 
 _servers: Dict[str, MCPServerTask] = {}
+
+_mcp_discovery_started = threading.Event()
+_mcp_discovery_complete = threading.Event()
+
+
+def wait_for_mcp_ready(timeout: float = 30) -> bool:
+    """Block until MCP tool discovery and registration is complete.
+
+    Returns ``True`` if ready (or discovery was never started),
+    ``False`` if the timeout elapsed before discovery finished.
+    """
+    if not _mcp_discovery_started.is_set():
+        return True
+    return _mcp_discovery_complete.wait(timeout=timeout)
+
 
 # Circuit breaker: consecutive error counts per server.  After
 # _CIRCUIT_BREAKER_THRESHOLD consecutive failures, the handler returns
@@ -3460,6 +3493,10 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     """Connect to a single MCP server, discover tools, and register them.
 
+    Tool registration now happens inside ``MCPServerTask._register_tools()``
+    before ``_ready.set()`` fires, so by the time ``start()`` returns the
+    registry is already populated and ``_servers[name]`` is set.
+
     Returns list of registered tool names.
     """
     connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
@@ -3467,11 +3504,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         _connect_server(name, config),
         timeout=connect_timeout,
     )
-    with _lock:
-        _servers[name] = server
-
-    registered_names = _register_server_tools(name, server, config)
-    server._registered_tool_names = list(registered_names)
+    registered_names = list(server._registered_tool_names)
 
     transport_type = "HTTP" if "url" in config else "stdio"
     logger.info(
@@ -3500,11 +3533,15 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     """
     if not _MCP_AVAILABLE:
         logger.debug("MCP SDK not available -- skipping explicit MCP registration")
+        _mcp_discovery_complete.set()
         return []
 
     if not servers:
         logger.debug("No explicit MCP servers provided")
+        _mcp_discovery_complete.set()
         return []
+
+    _mcp_discovery_started.set()
 
     # Only attempt servers that aren't already connected and are enabled
     # (enabled: false skips the server entirely without removing its config)
@@ -3522,6 +3559,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                 _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
 
     if not new_servers:
+        _mcp_discovery_complete.set()
         return _existing_tool_names()
 
     # Start the background event loop for MCP connections
@@ -3563,6 +3601,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     finally:
         if _was_interrupted:
             _set_interrupt(True)
+        _mcp_discovery_complete.set()
 
     # Log a summary so ACP callers get visibility into what was registered.
     with _lock:
