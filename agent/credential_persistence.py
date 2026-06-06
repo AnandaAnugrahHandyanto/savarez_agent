@@ -107,6 +107,8 @@ def is_borrowed_credential_source(source: Any, provider_id: Any = None) -> bool:
         return False
     if normalized_source == "manual" or normalized_source.startswith("manual:"):
         return False
+    if normalized_source == "oauth_broker":
+        return False
     normalized_provider = str(provider_id or "").strip().lower()
     return (normalized_provider, normalized_source) not in _PERSISTABLE_PROVIDER_SOURCES
 
