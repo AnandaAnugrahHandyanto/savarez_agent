@@ -608,6 +608,37 @@ class TestUpDownBindsHistoryNotCursor:
                 f"Missing function: {func}"
             )
 
+    def test_move_handlers_have_get_cwidth_in_scope(self):
+        """_move_cursor_up/_down must have get_cwidth available in scope.
+
+        Both handlers call get_cwidth() but the symbol is not imported at
+        module level in cli.py — every other use imports it locally inside
+        its own function. So each move handler needs its own local
+        ``from prompt_toolkit.utils import get_cwidth`` import; without it,
+        pressing Ctrl+Up/Down raises NameError at runtime. This parses the
+        body of each handler and asserts the local import is present.
+        """
+        import re
+        with open(__import__('cli').__file__, encoding='utf-8') as f:
+            source = f.read()
+
+        for func in ('_move_cursor_up', '_move_cursor_down'):
+            # Grab the function body: from its def line up to the next
+            # dedented def/@kb.add at the same (8-space) indentation.
+            m = re.search(
+                rf'( {{8}}def {func}\(event\):.*?)(?=\n {{8}}(?:@kb\.add|def )\b)',
+                source,
+                re.DOTALL,
+            )
+            assert m is not None, f"Could not isolate body of {func}"
+            body = m.group(1)
+            assert 'get_cwidth' in body, f"{func} should reference get_cwidth"
+            assert 'from prompt_toolkit.utils import get_cwidth' in body, (
+                f"{func} calls get_cwidth but never imports it in scope "
+                f"(get_cwidth is not module-level in cli.py) — pressing "
+                f"Ctrl+Up/Down would raise NameError at runtime"
+            )
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Edge cases: emoji, zero-width, terminal boundary conditions
