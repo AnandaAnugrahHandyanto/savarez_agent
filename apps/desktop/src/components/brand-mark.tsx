@@ -10,7 +10,7 @@ export function BrandMark({ className, ...props }: React.ComponentProps<'span'>)
   return (
     <span
       className={cn(
-        'inline-flex size-14 shrink-0 items-center justify-center',
+        'inline-flex size-14 shrink-0 items-center justify-center bg-white',
         className
       )}
       {...props}
