@@ -362,6 +362,7 @@ _IDENTITY_FIELD_PATTERN = (
     r"identity|"
     r"alias(?:es)?|"
     r"name|"
+    r"role|"
     r"e-?mail|"
     r"phone|"
     r"address|"
@@ -372,6 +373,7 @@ _IDENTITY_FIELD_PATTERN = (
     r"contractor"
     r")"
 )
+_HONCHO_LABEL_RE = re.compile(r"^(attribute|instruction)\s*:\s*(.+)$", re.IGNORECASE)
 _RAW_IDENTITY_LINE_RE = re.compile(
     r"^(?:"
     # Bare peer-card fields: "Name: ...", "Location: ...".
@@ -389,7 +391,7 @@ _RAW_IDENTITY_LINE_RE = re.compile(
 
 
 def compact_user_peer_card(body: str) -> str:
-    """Keep non-identity peer-card facts while dropping raw identity payload."""
+    """Keep non-identity peer-card facts while dropping raw Honcho labels/control payload."""
     lines: list[str] = []
     for line in sanitize_context(body).splitlines():
         stripped = line.strip()
@@ -397,6 +399,17 @@ def compact_user_peer_card(body: str) -> str:
             continue
         if _RAW_IDENTITY_LINE_RE.match(stripped):
             continue
+        label_match = _HONCHO_LABEL_RE.match(stripped)
+        if label_match:
+            label = label_match.group(1).lower()
+            # INSTRUCTION-prefixed Honcho cards are user-control shaped when
+            # pasted into prompts. They remain available through Honcho tools
+            # but are not auto-injected as active instructions.
+            if label == "instruction":
+                continue
+            stripped = label_match.group(2).strip()
+            if not stripped or _RAW_IDENTITY_LINE_RE.match(stripped):
+                continue
         lines.append(stripped)
     return _truncate_memory_context("\n".join(lines), 1200)
 

@@ -868,7 +868,10 @@ class TestMemoryContextFencing:
         block = build_memory_context_block(prefetch)
 
         assert "## Compact peer preferences" in block
-        assert "Tight functional UI" in block
+        assert "Design Preference: Tight functional UI" in block
+        assert "ATTRIBUTE:" not in block
+        assert "INSTRUCTION:" not in block
+        assert "Role: Creative Director" not in block
         assert "Hidden Harbor" not in block
         assert "Example Studio" not in block
         assert "example.invalid" not in block
