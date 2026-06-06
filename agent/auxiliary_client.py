@@ -1714,6 +1714,25 @@ def _read_main_provider() -> str:
     return ""
 
 
+def _allow_main_fallback() -> bool:
+    """Check config for auxiliary.allow_main_fallback (default True).
+
+    When False, auxiliary calls that exhaust their fallback chain will NOT
+    retry on the main agent model.  This prevents KV-cache eviction on
+    single-slot local servers where auxiliary calls should simply skip
+    rather than contend with the conversation model.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        aux = cfg.get("auxiliary", {})
+        if isinstance(aux, dict):
+            return bool(aux.get("allow_main_fallback", True))
+    except Exception:
+        pass
+    return True
+
+
 # Process-local override set by AIAgent at session/turn start. Single-threaded
 # per turn — no lock needed. Cleared by ``clear_runtime_main()``.
 _RUNTIME_MAIN_PROVIDER: str = ""
@@ -5369,7 +5388,7 @@ def call_llm(
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)
-                if fb_client is None:
+                if fb_client is None and _allow_main_fallback():
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
 
@@ -5792,7 +5811,7 @@ async def async_call_llm(
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)
-                if fb_client is None:
+                if fb_client is None and _allow_main_fallback():
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
 

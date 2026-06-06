@@ -1737,6 +1737,73 @@ class TestTryMainAgentModelFallback:
         assert client is None
 
 
+class TestAllowMainFallback:
+    """_allow_main_fallback respects auxiliary.allow_main_fallback config."""
+
+    def test_returns_true_by_default(self):
+        from agent.auxiliary_client import _allow_main_fallback
+        with patch("hermes_cli.config.load_config", side_effect=ImportError):
+            assert _allow_main_fallback() is True
+
+    def test_returns_true_when_config_missing_key(self):
+        from agent.auxiliary_client import _allow_main_fallback
+        with patch("hermes_cli.config.load_config", return_value={"auxiliary": {}}):
+            assert _allow_main_fallback() is True
+
+    def test_returns_false_when_config_set_false(self):
+        from agent.auxiliary_client import _allow_main_fallback
+        with patch("hermes_cli.config.load_config",
+                   return_value={"auxiliary": {"allow_main_fallback": False}}):
+            assert _allow_main_fallback() is False
+
+    def test_returns_true_when_config_set_true(self):
+        from agent.auxiliary_client import _allow_main_fallback
+        with patch("hermes_cli.config.load_config",
+                   return_value={"auxiliary": {"allow_main_fallback": True}}):
+            assert _allow_main_fallback() is True
+
+    def test_returns_true_when_no_auxiliary_section(self):
+        from agent.auxiliary_client import _allow_main_fallback
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert _allow_main_fallback() is True
+
+    def test_main_fallback_skipped_when_disabled(self, monkeypatch):
+        """When allow_main_fallback is False, main model is NOT used as last resort."""
+        from agent.auxiliary_client import call_llm
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        main_client = MagicMock()
+        main_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from main agent"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "glm-4v-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("glm", "glm-4v-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._allow_main_fallback",
+                   return_value=False), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(main_client, "claude-sonnet-4", "main-agent(openrouter)")):
+            try:
+                call_llm(task="vision", messages=[{"role": "user", "content": "hello"}])
+            except Exception:
+                pass  # Expected — no fallback available
+
+        main_client.chat.completions.create.assert_not_called()
+
+    @staticmethod
+    def _make_payment_err():
+        exc = Exception("Payment Required: insufficient credits")
+        exc.status_code = 402
+        return exc
+
+
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
 # ---------------------------------------------------------------------------
