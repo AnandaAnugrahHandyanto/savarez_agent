@@ -780,8 +780,8 @@ class TestSyncTurn:
         assert item["metadata"]["turn_index"] == "3"
         assert item["metadata"]["message_count"] == "6"
 
-    def test_sync_turn_accumulates_full_session(self, provider_with_config):
-        """Each retain sends the ENTIRE session, not just the latest batch."""
+    def test_sync_turn_accumulates_full_session_without_append_support(self, provider_with_config):
+        """Legacy Hindsight APIs without update_mode=append still get a full snapshot."""
         p = provider_with_config(retain_every_n_turns=2)
 
         p.sync_turn("turn1-user", "turn1-asst")
@@ -795,11 +795,46 @@ class TestSyncTurn:
         p._retain_queue.join()
 
         content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
-        # Should contain ALL turns from the session
+        # Without append support, the retain overwrites the same process document,
+        # so it must include all turns seen so far.
         assert "turn1-user" in content
         assert "turn2-user" in content
         assert "turn3-user" in content
         assert "turn4-user" in content
+
+    def test_sync_turn_appends_only_new_turns_when_append_supported(self, provider_with_config, monkeypatch):
+        """When update_mode=append is available, don't resend the whole session every retain."""
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda api_url, api_key: True,
+        )
+        p = provider_with_config(retain_every_n_turns=2)
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        first_call = p._client.aretain_batch.call_args.kwargs
+        assert first_call["document_id"] == "test-session"
+        assert first_call["items"][0]["update_mode"] == "append"
+        assert "turn1-user" in first_call["items"][0]["content"]
+        assert "turn2-user" in first_call["items"][0]["content"]
+
+        p._client.aretain_batch.reset_mock()
+
+        p.sync_turn("turn3-user", "turn3-asst")
+        p.sync_turn("turn4-user", "turn4-asst")
+        p._retain_queue.join()
+
+        second_call = p._client.aretain_batch.call_args.kwargs
+        second_item = second_call["items"][0]
+        assert second_call["document_id"] == "test-session"
+        assert second_item["update_mode"] == "append"
+        assert "turn1-user" not in second_item["content"]
+        assert "turn2-user" not in second_item["content"]
+        assert "turn3-user" in second_item["content"]
+        assert "turn4-user" in second_item["content"]
+        assert second_item["metadata"]["message_count"] == "4"
 
     def test_sync_turn_passes_document_id(self, provider):
         """sync_turn should pass document_id (session_id + per-startup ts)."""
