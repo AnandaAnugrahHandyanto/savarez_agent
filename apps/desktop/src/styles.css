@@ -618,8 +618,13 @@ button {
 [data-slot='button'][data-variant='outline'],
 [data-slot='button'][data-variant='secondary'] {
   border-color: var(--ui-stroke-secondary);
-  background: var(--ui-bg-tertiary);
   color: var(--ui-text-primary);
+}
+
+/* secondary keeps a fill; outline is a true transparent border (the cva
+   bg-transparent applies once this rule no longer forces a background). */
+[data-slot='button'][data-variant='secondary'] {
+  background: var(--ui-bg-tertiary);
 }
 
 [data-slot='button'][data-variant='ghost'] {
