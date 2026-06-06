@@ -4136,12 +4136,28 @@ class GatewayRunner:
                 continue
 
             source = entry.origin
+            if source is None:
+                continue
             adapter = self.adapters.get(source.platform)
             if adapter is None:
                 logger.debug(
                     "Skipping auto-resume for %s: adapter not ready for %s",
                     entry.session_key,
                     getattr(source.platform, "value", source.platform),
+                )
+                continue
+
+            # Fail closed before synthesizing an internal resume event. Platform
+            # inbound filters are not invoked for auto-resume, so ask adapters
+            # with strict room-whitelist support whether this saved source is
+            # still allowed. This prevents a profile from resuming a previously
+            # leaked Matrix DM outside its MATRIX_ALLOWED_ROOMS after restart.
+            strict_room_miss = getattr(adapter, "_strict_allowed_room_miss", None)
+            if callable(strict_room_miss) and strict_room_miss(source.chat_id):
+                logger.warning(
+                    "Skipping auto-resume for %s: source room %s is outside adapter room whitelist",
+                    entry.session_key,
+                    source.chat_id,
                 )
                 continue
 

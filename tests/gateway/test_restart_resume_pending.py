@@ -1060,6 +1060,42 @@ async def test_startup_auto_resume_skips_when_adapter_unavailable():
     adapter.handle_message.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_startup_auto_resume_skips_matrix_sessions_outside_strict_room_whitelist():
+    """Auto-resume must not bypass Matrix profile room isolation after restart."""
+    runner, _ = make_restart_runner()
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!admin-dm:example.org",
+        chat_type="dm",
+        user_id="@alice:example.org",
+    )
+    pending_entry = SessionEntry(
+        session_key="agent:main:matrix:dm:!admin-dm:example.org",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.MATRIX,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    matrix_adapter = MagicMock()
+    matrix_adapter._strict_allowed_room_miss = MagicMock(return_value=True)
+    matrix_adapter.handle_message = AsyncMock()
+    runner.adapters = {Platform.MATRIX: matrix_adapter}
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 0
+    matrix_adapter._strict_allowed_room_miss.assert_called_once_with("!admin-dm:example.org")
+    matrix_adapter.handle_message.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Shutdown banner wording
 # ---------------------------------------------------------------------------
