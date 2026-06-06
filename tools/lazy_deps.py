@@ -458,13 +458,40 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
 
     if prompt and sys.stdin.isatty() and sys.stdout.isatty():
         spec_list = ", ".join(missing)
+        prompt_msg = (
+            f"\nFeature {feature!r} requires: {spec_list}\n"
+            f"Install into the active venv now? [Y/n] "
+        )
+        answer = "n"
         try:
-            answer = input(
-                f"\nFeature {feature!r} requires: {spec_list}\n"
-                f"Install into the active venv now? [Y/n] "
-            ).strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            answer = "n"
+            # When prompt_toolkit owns the terminal, bare input() deadlocks
+            # because keystrokes go to prompt_toolkit, not stdin.  Temporarily
+            # release the terminal via run_in_terminal so input() can read.
+            from prompt_toolkit.application.current import get_app_or_none
+            app = get_app_or_none()
+        except Exception:
+            app = None  # prompt_toolkit not installed or detection failed
+
+        if app is not None:
+            try:
+                from prompt_toolkit.application import run_in_terminal
+
+                def _read_input():
+                    nonlocal answer
+                    try:
+                        answer = input(prompt_msg).strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        answer = "n"
+
+                run_in_terminal(_read_input)()
+            except Exception:
+                # Fallback: skip prompt if run_in_terminal fails
+                answer = "n"
+        else:
+            try:
+                answer = input(prompt_msg).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
         if answer and answer not in {"y", "yes"}:
             raise FeatureUnavailable(
                 feature, missing, "user declined install at prompt"
