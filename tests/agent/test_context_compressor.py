@@ -2299,6 +2299,75 @@ class TestSummarySafeRetryAndExtractiveFallback:
         assert mock_call.call_count == 5
         assert result.startswith(SUMMARY_PREFIX)
 
+    def test_chunked_summary_splits_large_serialized_chunks_below_char_cap(self):
+        chunk_summaries = [
+            self._mock_summary("chunk one"),
+            self._mock_summary("chunk two"),
+            self._mock_summary("chunk three"),
+            self._mock_summary("chunk four"),
+        ]
+        merged = self._mock_summary("merged")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                chunk_summary_messages=4,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+        c.chunk_summary_serialized_chars = 2_000
+        messages = [
+            {"role": "user", "content": f"chunk-marker-{idx} " + ("x" * 1_400)}
+            for idx in range(4)
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=[*chunk_summaries, merged]) as mock_call:
+            result = c._generate_chunked_summary_after_block(messages, error="blocked")
+
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert mock_call.call_count == 5
+        assert ("chunked_summary_started", {"chunk_total": 4}) in events
+        chunk_prompts = [call.kwargs["messages"][0]["content"] for call in mock_call.call_args_list[:-1]]
+        for prompt in chunk_prompts:
+            chunk_text = prompt.split("PART ", 1)[1].split("Use this structure:", 1)[0]
+            assert len(chunk_text) <= c.chunk_summary_serialized_chars + 200
+        assert "chunk-marker-0" in chunk_prompts[0]
+        assert "chunk-marker-1" in chunk_prompts[1]
+        assert "chunk-marker-2" in chunk_prompts[2]
+        assert "chunk-marker-3" in chunk_prompts[3]
+
+    def test_chunked_summary_char_cap_counts_serialized_separator_overhead(self):
+        chunk1 = self._mock_summary("chunk one")
+        chunk2 = self._mock_summary("chunk two")
+        merged = self._mock_summary("merged")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                chunk_summary_messages=10,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+        messages = [
+            {"role": "user", "content": "separator-marker-one"},
+            {"role": "assistant", "content": "separator-marker-two"},
+        ]
+        # The individual serialized messages fit exactly without the joiner,
+        # but together exceed the cap once _serialize_for_summary() inserts
+        # its "\n\n" separator between turns.
+        c.chunk_summary_serialized_chars = sum(
+            len(c._serialize_for_summary([message], safe_mode=True)) for message in messages
+        )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[chunk1, chunk2, merged]) as mock_call:
+            result = c._generate_chunked_summary_after_block(messages, error="blocked")
+
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert mock_call.call_count == 3
+        assert ("chunked_summary_started", {"chunk_total": 2}) in events
+
     def test_blocked_safe_retry_then_chunked_summary_succeeds(self):
         err = Exception("Your request was blocked.")
         chunk1 = self._mock_summary("## Active Task\npart one\n\n## Completed Actions\n1. chunk one summarized")

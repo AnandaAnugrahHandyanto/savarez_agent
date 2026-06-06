@@ -1086,6 +1086,10 @@ class ContextCompressor(ContextEngine):
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
     _CHUNK_SUMMARY_MESSAGES = 40  # messages per chunk when safe retry is still blocked
+    # Soft cap for the safe-serialized source text in each chunk.  Keeps
+    # chunked recovery from building a single large prompt when 40 retained
+    # messages each contain long but individually-valid content.
+    _CHUNK_SUMMARY_SERIALIZED_CHARS = 24_000
 
     @staticmethod
     def _looks_filter_blocked_error(exc: Exception) -> bool:
@@ -1443,7 +1447,42 @@ This fallback is lossy but preserves recent asks, tool actions, errors, and file
         partial chunk summaries are not trusted as a complete checkpoint.
         """
         chunk_size = max(1, int(getattr(self, "chunk_summary_messages", self._CHUNK_SUMMARY_MESSAGES)))
-        chunks = [turns_to_summarize[i:i + chunk_size] for i in range(0, len(turns_to_summarize), chunk_size)]
+        try:
+            chunk_char_limit = max(
+                1,
+                int(getattr(
+                    self,
+                    "chunk_summary_serialized_chars",
+                    self._CHUNK_SUMMARY_SERIALIZED_CHARS,
+                )),
+            )
+        except (TypeError, ValueError):
+            chunk_char_limit = self._CHUNK_SUMMARY_SERIALIZED_CHARS
+
+        chunks: list[list[Dict[str, Any]]] = []
+        current_chunk: list[Dict[str, Any]] = []
+        current_chars = 0
+        serialized_separator_chars = len("\n\n")
+        for turn in turns_to_summarize:
+            serialized_turn_chars = len(self._serialize_for_summary([turn], safe_mode=True))
+            additional_chars = serialized_turn_chars + (serialized_separator_chars if current_chunk else 0)
+            if current_chunk and (
+                len(current_chunk) >= chunk_size
+                or current_chars + additional_chars > chunk_char_limit
+            ):
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_chars = 0
+                additional_chars = serialized_turn_chars
+            current_chunk.append(turn)
+            current_chars += additional_chars
+            if len(current_chunk) >= chunk_size:
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_chars = 0
+        if current_chunk:
+            chunks.append(current_chunk)
+
         if len(chunks) <= 1:
             return None
 
