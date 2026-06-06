@@ -151,11 +151,13 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's absolute base directory.
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
-    paths are returned resolved-but-unanchored.
+    paths keep their lexical location so macOS symlink aliases like
+    ``/etc -> /private/etc`` and ``/var -> /private/var`` are not rewritten
+    into different paths.
     """
     p = Path(filepath).expanduser()
     if p.is_absolute():
-        return p.resolve()
+        return Path(os.path.normpath(str(p)))
     return (_resolve_base_dir(task_id) / p).resolve()
 
 

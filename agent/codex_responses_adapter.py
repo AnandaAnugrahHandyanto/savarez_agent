@@ -276,11 +276,42 @@ def _normalize_responses_message_status(value: Any, *, default: str = "completed
     return default
 
 
+def _normalize_runtime_identity_field(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().rstrip("/").lower()
+
+
+def _reasoning_item_matches_origin(
+    item: Dict[str, Any],
+    *,
+    allow_legacy_reasoning_replay: bool,
+    current_origin: Optional[Dict[str, str]],
+) -> bool:
+    origin_keys = ("_origin_provider", "_origin_base_url", "_origin_api_mode")
+    item_origin = {
+        key: _normalize_runtime_identity_field(item.get(key))
+        for key in origin_keys
+    }
+    has_origin_metadata = any(item_origin.values())
+    if not has_origin_metadata:
+        return allow_legacy_reasoning_replay
+    if not current_origin:
+        return True
+    normalized_current = {
+        key: _normalize_runtime_identity_field(current_origin.get(key))
+        for key in origin_keys
+    }
+    return item_origin == normalized_current
+
+
 def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]],
     *,
     is_xai_responses: bool = False,
     replay_encrypted_reasoning: bool = True,
+    allow_legacy_reasoning_replay: bool = True,
+    current_origin: Optional[Dict[str, str]] = None,
     current_issuer_kind: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
@@ -303,6 +334,11 @@ def _chat_messages_to_responses_input(
     ``AIAgent._disable_codex_reasoning_replay`` which both strips cached
     items from the conversation history and threads ``replay_enabled=False``
     through this converter so subsequent turns send no reasoning items.
+
+    ``allow_legacy_reasoning_replay`` and ``current_origin`` add a runtime
+    identity guard for legacy unstamped reasoning. If a session switches
+    provider/backend in-place, legacy items without origin metadata are dropped
+    instead of being replayed into a backend that cannot decrypt them.
 
     ``current_issuer_kind`` enables a per-item cross-issuer guard. The
     Responses API's ``encrypted_content`` blob is decryptable only by the
@@ -354,6 +390,12 @@ def _chat_messages_to_responses_input(
                 if isinstance(codex_reasoning, list):
                     for ri in codex_reasoning:
                         if isinstance(ri, dict) and ri.get("encrypted_content"):
+                            if not _reasoning_item_matches_origin(
+                                ri,
+                                allow_legacy_reasoning_replay=allow_legacy_reasoning_replay,
+                                current_origin=current_origin,
+                            ):
+                                continue
                             item_id = ri.get("id")
                             if item_id and item_id in seen_item_ids:
                                 continue
@@ -389,7 +431,13 @@ def _chat_messages_to_responses_input(
                             # of the Responses API schema.
                             replay_item = {
                                 k: v for k, v in ri.items()
-                                if k not in ("id", "_issuer_kind")
+                                if k not in (
+                                    "id",
+                                    "_issuer_kind",
+                                    "_origin_provider",
+                                    "_origin_base_url",
+                                    "_origin_api_mode",
+                                )
                             }
                             items.append(replay_item)
                             if item_id:

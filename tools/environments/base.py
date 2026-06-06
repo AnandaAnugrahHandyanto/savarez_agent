@@ -540,6 +540,18 @@ class BaseEnvironment(ABC):
                         output_chunks.append(decoder.decode(piece))
                     else:
                         output_chunks.append(str(piece))
+            except TypeError:
+                reader = getattr(stream, "read", None)
+                if callable(reader):
+                    try:
+                        data = reader()
+                    except Exception:
+                        data = None
+                    if data:
+                        if isinstance(data, bytes):
+                            output_chunks.append(decoder.decode(data))
+                        else:
+                            output_chunks.append(str(data))
             except Exception:
                 pass
             finally:

@@ -49,6 +49,10 @@ class ResponsesApiTransport(ProviderTransport):
             replay_encrypted_reasoning=bool(
                 kwargs.get("replay_encrypted_reasoning", True)
             ),
+            allow_legacy_reasoning_replay=kwargs.get(
+                "allow_legacy_codex_reasoning_replay", True
+            ),
+            current_origin=kwargs.get("codex_reasoning_origin"),
             current_issuer_kind=issuer,
         )
 
@@ -143,6 +147,10 @@ class ResponsesApiTransport(ProviderTransport):
                 payload_messages,
                 is_xai_responses=is_xai_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning,
+                allow_legacy_reasoning_replay=params.get(
+                    "allow_legacy_codex_reasoning_replay", True
+                ),
+                current_origin=params.get("codex_reasoning_origin"),
                 current_issuer_kind=issuer_kind,
             ),
             "store": False,
