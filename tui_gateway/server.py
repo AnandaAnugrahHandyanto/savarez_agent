@@ -5184,7 +5184,7 @@ def _(rid, params: dict) -> dict:
         except ValueError as ve:
             return _err(rid, 4017, str(ve))
 
-        attached = _copy_to_sandbox(resolved, session_id=session["id"])
+        attached = _copy_to_sandbox(resolved, session_id=str(params.get("session_id", "")))
         meta = _image_meta(resolved)
         return _ok(
             rid,
