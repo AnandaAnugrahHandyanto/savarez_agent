@@ -97,6 +97,19 @@ class TestAgentConfigSignature:
         )
         assert sig1 != sig2
 
+    def test_max_iterations_change_different_signature(self):
+        """Iteration budget is frozen at construction and must bust cache."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1", "provider": "openrouter"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", max_iterations=3
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", max_iterations=6
+        )
+        assert sig1 != sig2
+
     def test_reasoning_not_in_signature(self):
         """Reasoning config is set per-message, not part of the signature."""
         from gateway.run import GatewayRunner

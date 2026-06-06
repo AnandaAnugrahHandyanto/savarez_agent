@@ -16393,6 +16393,7 @@ class GatewayRunner:
         user_id: str | None = None,
         user_id_alt: str | None = None,
         disabled_toolsets: list | None = None,
+        max_iterations: int | None = None,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -16441,6 +16442,7 @@ class GatewayRunner:
                 runtime.get("api_mode", ""),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 sorted(disabled_toolsets) if disabled_toolsets else [],
+                max_iterations,
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
@@ -18053,6 +18055,7 @@ class GatewayRunner:
                 user_id=getattr(source, "user_id", None),
                 user_id_alt=getattr(source, "user_id_alt", None),
                 disabled_toolsets=disabled_toolsets,
+                max_iterations=max_iterations,
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
