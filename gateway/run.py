@@ -3339,7 +3339,25 @@ class GatewayRunner:
             and busy_text_mode == "queue"
             and effective_mode != "steer"
         ):
-            return False
+            # Slash commands must not be silently dropped even in queue mode.
+            # /steer, /stop, /new and other control commands need to reach
+            # the dispatcher regardless of busy_text_mode — returning False
+            # here causes them to fall through to _handle_message as plain
+            # text and get queued for the next turn (#40683).
+            _cmd = event.get_command()
+            if _cmd:
+                from hermes_cli.commands import resolve_command as _resolve_busy_cmd
+                try:
+                    _cmd_def = _resolve_busy_cmd(_cmd)
+                except Exception:
+                    _cmd_def = None
+                if _cmd_def is not None:
+                    # Let the busy handler continue to command dispatch below.
+                    pass
+                else:
+                    return False
+            else:
+                return False
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
