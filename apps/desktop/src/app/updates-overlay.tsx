@@ -29,7 +29,8 @@ const STAGE_LABELS: Record<DesktopUpdateStage, string> = {
   pydeps: 'Finishing up…',
   restart: 'Restarting Hermes…',
   manual: 'Update from your terminal',
-  error: 'Update paused'
+  error: 'Update paused',
+  done: 'Update complete'
 }
 
 function totalItems(groups: readonly CommitGroup[]) {
