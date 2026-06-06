@@ -69,14 +69,19 @@ _ALWAYS_BLOCKED_NETWORKS = (
 )
 
 # Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs.
-# This is intentionally narrow: QQ media downloads can legitimately resolve
-# to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
+# These hostnames belong to CDN providers whose real public IPs are
+# redirected to private ranges by local DNS proxies (e.g. Clash Fake IP
+# mode). The trust anchor is the domain name, not the IP range.
 _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
     "multimedia.nt.qq.com.cn",
 })
 
-# Trusted domain suffixes — hostnames ending with any of these may resolve
-# to private IPs. Used for platform media CDNs (WeCom COS, QQ multimedia, etc.).
+# Trusted domain suffixes — hostnames ending with any of these may bypass
+# the private-IP block. Same rationale as _TRUSTED_PRIVATE_IP_HOSTS:
+# local DNS proxies (Clash Fake IP, corporate DNS, VPNs) may return
+# private-range addresses for these domains even though their real IPs
+# are public. Only trusts HTTPS; loopback/multicast/unspecified are
+# still blocked regardless.
 _TRUSTED_PRIVATE_IP_SUFFIXES = (
     ".myqcloud.com",      # Tencent COS (WeCom/QQ file & image CDN)
 )
@@ -272,7 +277,14 @@ def is_always_blocked_url(url: str) -> bool:
 
 
 def _is_trusted_cdn_hostname(hostname: str, scheme: str) -> bool:
-    """Return True for HTTPS CDN hostnames with constrained IP exceptions."""
+    """Return True for HTTPS hostnames matching a trusted CDN suffix.
+
+    Trusted-suffix hosts get a narrower bypass than exact-match trusted
+    hosts: only loopback, multicast, and unspecified addresses are still
+    blocked. All other private ranges (RFC1918, CGNAT, benchmark) are
+    allowed — necessary for environments where DNS proxies return fake
+    IPs from these ranges (e.g. Clash Fake IP mode uses 198.18.0.0/15).
+    """
     return scheme == "https" and hostname.endswith(_TRUSTED_PRIVATE_IP_SUFFIXES)
 
 
