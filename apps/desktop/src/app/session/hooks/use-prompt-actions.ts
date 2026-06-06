@@ -697,7 +697,7 @@ export function usePromptActions({
 
     setAwaitingResponse(false)
 
-    // Cursor-style: interrupting keeps whatever was already generated and just
+    // Interrupting keeps whatever was already generated and just
     // stops — no "[interrupted]" marker. A pending/streaming message with no
     // body text is dropped entirely so we never leave an empty bubble behind.
     const finalizeMessages = (messages: ChatMessage[], streamId?: string | null) =>

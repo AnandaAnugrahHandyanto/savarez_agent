@@ -1292,7 +1292,7 @@ export function ChatBar({
             // Out of flow so the queue never inflates the composer's measured
             // height (that drives thread bottom padding → chat resizes on
             // queue). Overlaps -mb-2 onto the surface's top border for a shared
-            // edge; capped + scrollable. Cursor-style overlay.
+            // edge; capped + scrollable. Overlays the chat instead of pushing it.
             <div className="absolute inset-x-0 bottom-full z-6 -mb-2 max-h-[40vh] overflow-y-auto">
               <QueuePanel
                 busy={busy}
