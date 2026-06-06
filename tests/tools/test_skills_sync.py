@@ -254,8 +254,25 @@ class TestSyncSkills:
         assert len(manifest["new-skill"]) == 32
         assert len(manifest["old-skill"]) == 32
 
-    def test_user_deleted_skill_not_re_added(self, tmp_path):
-        """Skill in manifest but not on disk = user deleted it. Don't re-add."""
+    def test_dir_hash_ignores_runtime_metadata(self, tmp_path):
+        skill = tmp_path / "skill"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("# Skill\n", encoding="utf-8")
+        before = _dir_hash(skill)
+
+        (skill / "__pycache__").mkdir()
+        (skill / "__pycache__" / "helper.cpython-312.pyc").write_bytes(b"cache")
+        (skill / ".DS_Store").write_bytes(b"finder")
+
+        assert _dir_hash(skill) == before
+
+    def test_missing_manifest_skill_is_reseeded(self, tmp_path):
+        """Manifest entry with no on-disk copy self-heals by re-seeding.
+
+        Intentional built-in pruning is represented by .curator_suppressed;
+        an unsuppressed missing bundled skill usually means a curator/agent
+        deleted a first-party command surface and update must restore it.
+        """
         bundled = self._setup_bundled(tmp_path)
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
@@ -268,9 +285,9 @@ class TestSyncSkills:
             result = sync_skills(quiet=True)
 
         assert "new-skill" in result["copied"]
-        assert "old-skill" not in result["copied"]
+        assert "old-skill" in result["copied"]
         assert "old-skill" not in result.get("updated", [])
-        assert not (skills_dir / "old-skill").exists()
+        assert (skills_dir / "old-skill" / "SKILL.md").exists()
 
     def test_unmodified_skill_gets_updated(self, tmp_path):
         """Skill in manifest + on disk + user hasn't modified = update from bundled."""

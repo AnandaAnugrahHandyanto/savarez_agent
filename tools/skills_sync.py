@@ -15,7 +15,10 @@ Update logic:
       * If user copy matches origin hash: user hasn't modified it → safe to
         update from bundled if bundled changed. New origin hash recorded.
       * If user copy differs from origin hash: user customized it → SKIP.
-  - DELETED by user (in manifest, absent from user dir): respected, not re-added.
+  - MISSING skills (in manifest, absent from user dir): restored from bundled
+    unless the skill is explicitly listed in .curator_suppressed. This keeps
+    first-party slash-command/discovery skills self-healing after accidental
+    deletion; durable built-in pruning must use the suppression workflow.
   - REMOVED from bundled (in manifest, gone from repo): cleaned from manifest.
 
 The manifest lives at ~/.hermes/skills/.bundled_manifest.
@@ -201,10 +204,19 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
 
 
 def _dir_hash(directory: Path) -> str:
-    """Compute a hash of all file contents in a directory for change detection."""
+    """Compute a stable hash of skill contents for change detection.
+
+    Ignore cache/metadata paths so executing a skill script (creating
+    __pycache__) or macOS touching .DS_Store does not falsely mark a bundled
+    skill as user-modified and block future upstream updates.
+    """
     hasher = hashlib.md5()
     try:
         for fpath in sorted(directory.rglob("*")):
+            if is_excluded_skill_path(fpath):
+                continue
+            if any(part in {"__pycache__", ".DS_Store"} for part in fpath.parts):
+                continue
             if fpath.is_file():
                 rel = fpath.relative_to(directory)
                 hasher.update(str(rel).encode("utf-8"))
@@ -593,8 +605,24 @@ def sync_skills(quiet: bool = False) -> dict:
                 skipped += 1  # bundled unchanged, user unchanged
 
         else:
-            # ── In manifest but not on disk — user deleted it ──
-            skipped += 1
+            # ── In manifest but not on disk ──
+            # Re-seed the bundled skill unless it is explicitly suppressed.
+            # A missing destination with a still-present manifest entry can be
+            # caused by curator/agent deletion, and the old "skip forever"
+            # behavior made first-party slash-command skills disappear in a
+            # state `hermes update` could not self-heal from. Intentional
+            # built-in pruning is represented by .curator_suppressed and is
+            # handled before this branch.
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(skill_src, dest)
+                manifest[skill_name] = bundled_hash
+                copied.append(skill_name)
+                if not quiet:
+                    print(f"  + {skill_name} (restored missing bundled skill)")
+            except (OSError, IOError) as e:
+                if not quiet:
+                    print(f"  ! Failed to restore {skill_name}: {e}")
 
     # Clean stale manifest entries (skills removed from bundled dir)
     cleaned = sorted(set(manifest.keys()) - bundled_names)
