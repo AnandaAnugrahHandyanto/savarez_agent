@@ -7231,12 +7231,14 @@ def _skill_create_response(payload: Dict[str, Any], slug: str) -> Dict[str, Any]
         result = json.loads(payload) if isinstance(payload, str) else payload
     except (json.JSONDecodeError, TypeError):
         result = {}
-    if isinstance(result, dict) and result.get("success") is False:
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=500, detail="Unexpected response from skill manager")
+    if result.get("success") is False:
         raise HTTPException(status_code=400, detail=str(result.get("error", "Unknown error")))
     return {
         "ok": True,
         "name": slug,
-        "skill_md": result.get("skill_md") if isinstance(result, dict) else None,
+        "skill_md": result.get("skill_md"),
     }
 
 
@@ -7437,22 +7439,12 @@ async def promote_session_to_skill(session_id: str, body: PromoteSkillBody):
 
     token = set_current_write_origin(BACKGROUND_REVIEW)
     try:
-        try:
-            raw = skill_manage(
-                action="create",
-                name=slug,
-                content=skill_md,
-                category=_PROMOTE_SKILL_CATEGORY,
-            )
-        except Exception:
-            _log.exception(
-                "POST /api/sessions/%s/promote-skill: skill_manage raised",
-                session_id,
-            )
-            raise HTTPException(
-                status_code=400,
-                detail=f"A skill named '{slug}' already exists or could not be created.",
-            )
+        raw = skill_manage(
+            action="create",
+            name=slug,
+            content=skill_md,
+            category=_PROMOTE_SKILL_CATEGORY,
+        )
     finally:
         from tools.skill_provenance import reset_current_write_origin
         reset_current_write_origin(token)
