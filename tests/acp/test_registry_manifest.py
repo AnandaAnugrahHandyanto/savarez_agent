@@ -66,6 +66,24 @@ def test_agent_json_pins_uvx_package_to_pyproject_version():
     )
 
 
+def test_desktop_package_json_version_matches_pyproject():
+    """apps/desktop/package.json version must match pyproject.toml version."""
+    desktop_pkg = ROOT / "apps" / "desktop" / "package.json"
+    if not desktop_pkg.exists():
+        pytest.skip("apps/desktop/package.json not present in this branch")
+    data = json.loads(desktop_pkg.read_text(encoding="utf-8"))
+    assert data["version"] == _pyproject_version()
+
+
+def test_desktop_package_json_pins_pyproject_version():
+    """The desktop package.json must pin the exact PyPI version from pyproject.toml."""
+    desktop_pkg = ROOT / "apps" / "desktop" / "package.json"
+    if not desktop_pkg.exists():
+        pytest.skip("apps/desktop/package.json not present in this branch")
+    data = json.loads(desktop_pkg.read_text(encoding="utf-8"))
+    assert data["version"] == _pyproject_version()
+
+
 def test_icon_svg_is_16x16_current_color():
     root = ET.fromstring(ICON.read_text(encoding="utf-8"))
 
