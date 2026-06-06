@@ -368,6 +368,8 @@ const StatusRulePane = memo(function StatusRulePane({
         indicatorStyle={ui.indicatorStyle}
         liveSessionCount={ui.liveSessionCount}
         model={ui.info?.model ?? ''}
+        configuredModel={ui.info?.configured_model ?? ''}
+        routedModel={ui.info?.routed_model ?? ''}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
         modelReasoningEffort={ui.info?.reasoning_effort}
         onSessionCountClick={() => patchOverlayState({ sessions: true })}

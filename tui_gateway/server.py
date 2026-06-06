@@ -1781,6 +1781,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = False
     info: dict = {
         "model": getattr(agent, "model", ""),
+        # For Nous provider routing transparency (issue #40296)
+        "configured_model": getattr(agent, "configured_model", ""),
+        "routed_model": getattr(agent, "routed_model", None),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",

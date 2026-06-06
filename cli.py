@@ -3224,6 +3224,13 @@ class HermesCLI:
             not _config_model or _config_model == _DEFAULT_CONFIG_MODEL
         )
 
+        # Store the originally configured model (before any runtime resolution).
+        # Used to detect Nous Portal routing where the API returns a different
+        # model than what was configured. See issue #40296.
+        self.configured_model = self.model
+        # Will be updated by AIAgent after first Nous API response if routing occurs.
+        self.routed_model: Optional[str] = None
+
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
 
@@ -3681,16 +3688,35 @@ class HermesCLI:
         # _try_activate_fallback() switches provider/model.
         agent = getattr(self, "agent", None)
         model_name = (getattr(agent, "model", None) or self.model or "unknown")
+
+        # For Nous provider, capture routed model from agent if available
+        routed_model = None
+        if agent and getattr(agent, "provider", "") == "nous":
+            routed_model = getattr(agent, "routed_model", None)
+
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        # Build display string: show both configured and routed if they differ
+        if routed_model and routed_model != model_name:
+            routed_short = routed_model.split("/")[-1] if "/" in routed_model else routed_model
+            if len(routed_short) > 20:
+                routed_short = f"{routed_short[:17]}..."
+            # Store both for display
+            model_display = f"{model_short} → {routed_short}"
+            model_short = model_display  # Use for status bar (truncated if too long)
+            if len(model_short) > 30:
+                model_short = f"{model_short[:27]}..."
+
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "model_routed": routed_model,
+            "configured_model": getattr(self, "configured_model", None),
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -6165,6 +6191,14 @@ class HermesCLI:
         if len(model_short) > 30:
             model_short = model_short[:27] + "..."
 
+        # If Nous provider and routed model differs, show both
+        routed_display = ""
+        if self.provider == "nous" and self.routed_model and self.routed_model != self.model:
+            routed_short = self.routed_model.split("/")[-1] if "/" in self.routed_model else self.routed_model
+            if len(routed_short) > 20:
+                routed_short = f"{routed_short[:17]}..."
+            routed_display = f" [dim]→ {routed_short}[/]"
+
         # Get API status indicator
         if self.api_key:
             api_indicator = "[green bold]●[/]"
@@ -6189,7 +6223,7 @@ class HermesCLI:
             provider_info += f" [dim {separator_color}]·[/] [dim]auth: {self._provider_source}[/]"
 
         self._console_print(
-            f"  {api_indicator} [{accent_color}]{model_short}[/] "
+            f"  {api_indicator} [{accent_color}]{model_short}[/]{routed_display}"
             f"[dim {separator_color}]·[/] [bold {label_color}]{tool_status}[/]"
             f"{toolsets_info}{provider_info}"
         )
@@ -6228,6 +6262,8 @@ class HermesCLI:
         total_tokens = getattr(agent, "session_total_tokens", 0) or 0
         provider = getattr(self, "provider", None) or "unknown"
         model = getattr(self, "model", None) or "(unknown)"
+        # Include routed model for Nous provider (issue #40296)
+        routed_model = getattr(self, "routed_model", None) if provider == "nous" else None
         is_running = bool(getattr(self, "_agent_running", False))
 
         lines = [
@@ -6238,8 +6274,12 @@ class HermesCLI:
         ]
         if title:
             lines.append(f"Title: {title}")
+        # Show both configured and routed model if they differ
+        if routed_model and routed_model != model:
+            lines.append(f"Model: {model} → {routed_model} ({provider})")
+        else:
+            lines.append(f"Model: {model} ({provider})")
         lines.extend([
-            f"Model: {model} ({provider})",
             f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",
             f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"Tokens: {total_tokens:,}",
@@ -6512,6 +6552,9 @@ class HermesCLI:
         print()
         print("  -- Model --")
         print(f"  Model:     {self.model}")
+        # Show routed model for Nous provider (issue #40296)
+        if self.provider == "nous" and self.routed_model and self.routed_model != self.model:
+            print(f"  Routed:    {self.routed_model} (via Nous Portal)")
         print(f"  Base URL:  {self.base_url}")
         print(f"  API Key:   {api_key_display}")
         print()
@@ -7864,6 +7907,10 @@ class HermesCLI:
 
         old_model = self.model
         self.model = result.new_model
+        # Update configured_model so Nous routing display tracks the user's active choice (issue #40296)
+        self.configured_model = result.new_model
+        # Reset routed_model since the new model may route differently
+        self.routed_model = None
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
         # Always overwrite explicit overrides so stale credentials from the

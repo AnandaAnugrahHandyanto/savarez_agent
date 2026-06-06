@@ -149,6 +149,11 @@ export interface SessionInfo {
   lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  // For Nous provider routing transparency (issue #40296)
+  // configured_model: the model explicitly configured by user
+  // routed_model: the actual model the Nous Portal routed to (may differ)
+  configured_model?: string
+  routed_model?: string
   profile_name?: string
   reasoning_effort?: string
   release_date?: string

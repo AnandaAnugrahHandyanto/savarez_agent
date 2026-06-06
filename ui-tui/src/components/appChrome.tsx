@@ -341,6 +341,15 @@ const shortModelLabel = (model: string) =>
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
+// Build model display string for Nous provider routing transparency (issue #40296)
+// Shows "configured → routed" when they differ, otherwise just the model
+const buildModelDisplay = (model: string, configured: string, routed: string) => {
+  if (routed && routed !== configured && configured) {
+    return `${configured} → ${routed}`
+  }
+  return model
+}
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -373,6 +382,8 @@ export function StatusRule({
   status,
   statusColor,
   model,
+  configuredModel,
+  routedModel,
   modelFast,
   modelReasoningEffort,
   indicatorStyle = 'kaomoji',
@@ -390,6 +401,10 @@ export function StatusRule({
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
 
+  // Build model display: show both configured and routed if they differ (issue #40296)
+  const modelDisplay = buildModelDisplay(model, configuredModel, routedModel)
+  const modelText = modelLabel(modelDisplay, modelReasoningEffort, modelFast)
+
   // On narrow terminals the context read-out collapses to a bare token count
   // (`12k tok`) and the visual fill bar is dropped entirely.
   const ctxLabel = usage.context_max
@@ -401,7 +416,6 @@ export function StatusRule({
       : ''
 
   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
 
   // Width of the must-keep left segments (indicator + model + context). They
   // are pinned (never shrink) and reserved so the cwd/branch on the right
@@ -650,6 +664,8 @@ interface StatusRuleProps {
   busy: boolean
   cols: number
   cwdLabel: string
+  configuredModel: string
+  routedModel: string
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string

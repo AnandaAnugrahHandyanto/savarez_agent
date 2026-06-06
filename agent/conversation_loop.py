@@ -1350,12 +1350,25 @@ def run_conversation(
                 
                 if not agent.quiet_mode:
                     agent._vprint(f"{agent.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
-                
+
+                # Capture routed model for Nous provider (issue #40296)
+                # Nous Portal routes requests to different models than configured.
+                # Store the actual model from the response so CLI can display both.
+                if agent.provider == "nous" and response and hasattr(response, 'model') and response.model:
+                    routed_model = response.model
+                    if routed_model != agent.model:
+                        agent.routed_model = routed_model
+                        if agent.verbose_logging:
+                            logging.debug(
+                                "Nous Portal routing: configured=%s routed=%s",
+                                agent.model, routed_model
+                            )
+
                 if agent.verbose_logging:
                     # Log response with provider info if available
                     resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
                     logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
-                
+
                 # Validate response shape before proceeding
                 response_invalid = False
                 error_details = []

@@ -252,6 +252,9 @@ def init_agent(
     _install_safe_stdio()
 
     agent.model = model
+    # Track configured model (user intent) and routed model (actual API response) for Nous Portal transparency (issue #40296)
+    agent.configured_model = model
+    agent.routed_model = None
     agent.max_iterations = max_iterations
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.
