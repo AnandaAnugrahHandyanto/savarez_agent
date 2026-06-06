@@ -33,6 +33,7 @@ the raw strings the server sent (never re-parsed to float).
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -467,3 +468,63 @@ def parse_credits_headers(
 
     except Exception:
         return None
+
+
+# ── Dev test fixtures (HERMES_DEV_CREDITS_FIXTURE) ───────────────────────────
+# Throwaway dev scaffolding: trigger any notice state on demand for testing,
+# without real spend or Redis seeding. Set HERMES_DEV_CREDITS_FIXTURE to either a
+# state NAME (fixed for the session) or a FILE PATH whose contents are a state
+# name (re-read every turn → flip states live: `echo depleted > /tmp/cf`, take a
+# turn; `echo healthy > /tmp/cf`, take a turn → recovery). Delete with the rest
+# of the HERMES_DEV_CREDITS scaffolding.
+_DEV_FIXTURES: dict[str, dict] = {
+    "healthy": dict(  # used_fraction ~0.1, paid → no notice (recovery target)
+        remaining_micros=30_340_000, remaining_usd="30.34",
+        subscription_micros=18_000_000, subscription_usd="18.00",
+        subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
+        purchased_micros=12_340_000, purchased_usd="12.34",
+        denominator_kind="subscription_cap", paid_access=True,
+    ),
+    "sub_90pct": dict(  # used_fraction == 0.9 → credits.warn90
+        remaining_micros=2_000_000, remaining_usd="2.00",
+        subscription_micros=2_000_000, subscription_usd="2.00",
+        subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
+        denominator_kind="subscription_cap", paid_access=True,
+    ),
+    "grant_exhausted": dict(  # used_fraction == 1.0 + purchased>0 → credits.grant_spent
+        remaining_micros=12_340_000, remaining_usd="12.34",
+        subscription_micros=0, subscription_usd="0.00",
+        subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
+        purchased_micros=12_340_000, purchased_usd="12.34",
+        denominator_kind="subscription_cap", paid_access=True,
+    ),
+    "depleted": dict(  # paid_access False → credits.depleted (sticky)
+        remaining_micros=0, remaining_usd="0.00",
+        subscription_micros=0, subscription_usd="0.00",
+        purchased_micros=0, purchased_usd="0.00",
+        paid_access=False, disabled_reason="out_of_credits",
+    ),
+}
+
+
+def dev_fixture_credits_state() -> Optional[CreditsState]:
+    """Return a fixture CreditsState for HERMES_DEV_CREDITS_FIXTURE, or None.
+
+    The env value is a state name, OR a path to a file whose contents are a state
+    name (re-read each call → flip states live without a restart). Unknown name /
+    "clear" / "none" / unset → None (normal behaviour). Throwaway test scaffolding.
+    """
+    raw = os.environ.get("HERMES_DEV_CREDITS_FIXTURE", "").strip()
+    if not raw:
+        return None
+    name = raw
+    if os.path.sep in raw or "/" in raw:  # looks like a path → read the name from the file
+        try:
+            with open(raw, "r", encoding="utf-8") as fh:
+                name = fh.read().strip()
+        except OSError:
+            return None
+    spec = _DEV_FIXTURES.get(name.lower())
+    if not spec:
+        return None
+    return CreditsState(**spec, from_header=True, captured_at=time.time())

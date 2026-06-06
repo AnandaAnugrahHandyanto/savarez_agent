@@ -2726,6 +2726,32 @@ class AIAgent:
         EVALUATION/EMIT is a SEPARATE block that WARNS on failure (R1-M2): a bug in the
         depletion-notice path must not vanish silently under the parse swallow.
         """
+        # Dev test fixture (HERMES_DEV_CREDITS_FIXTURE): inject a chosen notice state
+        # each turn for repeatable testing, bypassing real headers. Throwaway scaffolding.
+        try:
+            from agent.credits_tracker import dev_fixture_credits_state
+            _fixture = dev_fixture_credits_state()
+        except Exception:
+            _fixture = None
+        if _fixture is not None:
+            self._credits_state = _fixture
+            if self._credits_session_start_micros is None:
+                self._credits_session_start_micros = _fixture.remaining_micros
+            _latch = getattr(self, "_credits_latch", None)
+            if isinstance(_latch, dict):
+                _latch["seen_below_90"] = True  # let warn90 fire without a real crossing
+            _used = _fixture.used_fraction
+            logger.info(
+                "credits ▸ [FIXTURE] remaining=%d (%s) · paid=%s · denom=%s · used=%s "
+                "(real headers bypassed — `echo clear` / unset HERMES_DEV_CREDITS_FIXTURE to restore)",
+                _fixture.remaining_micros,
+                _fixture.remaining_usd or "?",
+                _fixture.paid_access,
+                _fixture.denominator_kind,
+                ("%.0f%%" % (_used * 100)) if _used is not None else "n/a",
+            )
+            self._emit_credits_notices()
+            return
         if http_response is None:
             return
         headers = getattr(http_response, "headers", None)
