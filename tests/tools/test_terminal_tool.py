@@ -311,8 +311,13 @@ def test_terminal_tool_blocks_background_bare_codex_impl_before_execution():
     assert "codex_impl_guard.py" in result["error"]
     assert "codex_review_guard.py --prompt <TEXT>" in result["error"]
     assert "新会话或 runtime 重载" in result["error"]
+    assert "不代表 Codex provider 不可用" in result["error"]
+    assert "可用性说明：" in result["error"]
+    assert "不要用裸 `codex-yuna exec` / `codex exec` 判断 Codex 是否可用" in result["error"]
     assert result["user_message_zh"] == result["error"]
     assert "unguarded Codex implementation" in result["technical_detail"]
+    assert "Codex provider availability" in result["technical_detail"]
+    assert "raw `codex-yuna exec` / `codex exec` as a Codex availability probe" in result["technical_detail"]
     assert "codex_staged_implement" in result["technical_detail"]
 
 

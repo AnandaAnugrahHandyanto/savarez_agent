@@ -1947,12 +1947,14 @@ def _codex_unguarded_impl_launch_error(command: str, _depth: int = 0) -> str | N
         return (
             "Blocked unguarded Codex implementation launch. Raw `codex-yuna exec` / "
             "`codex exec` prompts do not include the stage allowlist, dirty-baseline "
-            "policy, or review stop contract needed to prevent diff flood. If the "
+            "policy, or review stop contract needed to prevent diff flood. This block "
+            "does not prove Codex provider availability one way or the other; do not use "
+            "raw `codex-yuna exec` / `codex exec` as a Codex availability probe. If the "
             "`codex_staged_implement` tool is available, use it with explicit "
             "`allowed_files` / `allowed_globs`. Otherwise use "
             "`python scripts/runtime/codex_stage_runner.py --plan-file <JSON>` for staged "
             "work, or `python scripts/runtime/codex_impl_guard.py ...` for one bounded "
-            "implementation slice. For read-only review, use "
+            "implementation slice. For read-only review or connectivity checks, use "
             "`python scripts/runtime/codex_review_guard.py --prompt <TEXT>`."
         )
     return None
@@ -1963,13 +1965,15 @@ def _codex_unguarded_impl_user_message_zh() -> str:
         "已拦截裸 Codex 开发调用。\n\n"
         "原因：裸 `codex-yuna exec` / `codex exec` 没有文件范围、dirty baseline、"
         "review 停止边界，容易造成 diff flood。\n\n"
+        "可用性说明：这个拦截不代表 Codex provider 不可用；"
+        "也不要用裸 `codex-yuna exec` / `codex exec` 判断 Codex 是否可用。\n\n"
         "请改用：\n"
         "- 如果当前会话有 `codex_staged_implement` tool：用它，并显式传入 "
         "`allowed_files` / `allowed_globs`\n"
         "- 如果当前会话还看不到该 tool：用 "
         "`python scripts/runtime/codex_stage_runner.py --plan-file <JSON>`\n"
         "- 单个有界实现切片：用 `python scripts/runtime/codex_impl_guard.py ...`\n\n"
-        "如果只是只读 review，请用 `python scripts/runtime/codex_review_guard.py --prompt <TEXT>`。\n"
+        "如果只是连通探测或只读 review，请用 `python scripts/runtime/codex_review_guard.py --prompt <TEXT>`。\n"
         "注意：新 tool 需要新会话或 runtime 重载后才会出现在 tool schema 里。"
     )
 
