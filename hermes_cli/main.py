@@ -7648,6 +7648,22 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
+def _port_is_in_use(host: str, port: int, timeout: float = 0.25) -> bool:
+    """Return True if a TCP server is already listening on ``host:port``.
+
+    Used by ``hermes dashboard --detach`` to fail fast on an occupied
+    bind address instead of letting the user wait 15s for the grandchild
+    to fail to bind.  Lives at module scope so it can be patched in
+    tests without monkey-patching the global ``socket`` module (which
+    trips up ``socketserver`` and other stdlib consumers that import it
+    at interpreter startup).
+    """
+    import socket as _socket
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _probe:
+        _probe.settimeout(timeout)
+        return _probe.connect_ex((host, port)) == 0
+
+
 def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
@@ -7691,8 +7707,8 @@ def _find_stale_dashboard_pids(
     # (for instance, if the user re-execs under a different interpreter).
     pid_file_pids: list[int] = []
     try:
-        from hermes_constants import get_hermes_dir
-        _pid_path = get_hermes_dir("run") / "dashboard.pid"
+        from hermes_constants import get_hermes_home
+        _pid_path = get_hermes_home() / "run" / "dashboard.pid"
     except Exception:
         _pid_path = None
     if _pid_path and _pid_path.exists():
@@ -12446,9 +12462,9 @@ def cmd_dashboard(args):
         # and --stop can find the detached process without depending on
         # pgrep heuristics.  Skip if HOME isn't writable; the caller
         # already passed --pid-file in that case.
-        from hermes_constants import get_hermes_dir
+        from hermes_constants import get_hermes_home
         try:
-            pid_dir = get_hermes_dir("run")
+            pid_dir = get_hermes_home() / "run"
             pid_dir.mkdir(parents=True, exist_ok=True)
             pid_file = str(pid_dir / "dashboard.pid")
         except OSError:
@@ -12457,16 +12473,14 @@ def cmd_dashboard(args):
     if detach:
         # Reject obvious misuses early with a clean error rather than
         # letting the detach path struggle with a port we know is taken.
-        import socket as _socket
-        with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _probe:
-            _probe.settimeout(0.25)
-            if _probe.connect_ex((args.host, args.port)) == 0:
-                print(
-                    f"Port {args.port} on {args.host} is already in use. "
-                    f"Pick another with --port, or run `hermes dashboard --stop` first.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
+        _chk = _port_is_in_use(args.host, args.port)
+        if _chk:
+            print(
+                f"Port {args.port} on {args.host} is already in use. "
+                f"Pick another with --port, or run `hermes dashboard --stop` first.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # When we're the detached grandchild, --detach is NOT in our argv
     # (the launcher stripped it before re-execing us), but --pid-file IS
