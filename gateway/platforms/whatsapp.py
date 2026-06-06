@@ -632,7 +632,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
                                 self._mark_connected()
                                 self._bridge_process = None  # Not managed by us
                                 self._http_session = aiohttp.ClientSession()
-                                self._poll_task = asyncio.create_task(self._poll_messages())
+                                try:
+                                    self._poll_task = asyncio.create_task(self._poll_messages())
+                                except Exception:
+                                    await self._http_session.close()
+                                    self._http_session = None
+                                    raise
                                 return True
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
@@ -751,6 +756,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
             
         except Exception as e:
             logger.error("[%s] Failed to start bridge: %s", self.name, e, exc_info=True)
+            if self._http_session:
+                await self._http_session.close()
+                self._http_session = None
             return False
         finally:
             if not self._running:
