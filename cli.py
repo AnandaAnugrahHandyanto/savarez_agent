@@ -968,6 +968,11 @@ def _run_cleanup():
     except Exception:
         pass
     try:
+        from tools.process_registry import process_registry
+        process_registry.kill_all()
+    except Exception:
+        pass
+    try:
         _cleanup_all_browsers()
     except Exception:
         pass
