@@ -199,3 +199,192 @@ def test_cache_cleanup_never_deletes_original_dirty_source(tmp_path, monkeypatch
     assert source_path.exists()
     assert cache_path.exists()
     assert calls == []
+
+
+def _verified_evidence(repo: Path, *, touched_files: list[str] | None = None, dirty_state_id: str | None = None) -> dict:
+    dirty = workflow.staged._dirty_check(repo)
+    return {
+        "stage_id": "phase-4",
+        "allowed_files": ["README.md"],
+        "allowed_globs": [],
+        "touched_files": touched_files if touched_files is not None else dirty["dirty_paths"],
+        "dirty_state_id": dirty_state_id if dirty_state_id is not None else dirty["dirty_state_id"],
+        "codex_implementation_status": "completed",
+        "codex_review_status": "packet_only_passed",
+        "hermes_verification_commands": [{"id": "diff-check", "status": "passed"}],
+        "verified_at": "2026-06-06T00:00:00Z",
+    }
+
+
+def test_checkpoint_valid_evidence_commits_touched_files(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    evidence = {}
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\nchanged\n", encoding="utf-8")
+        evidence.update(_verified_evidence(repo))
+        return json.dumps({"status": "ready_for_review", "candidate_id": "cand-1"})
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        standing_authorization=True,
+        checkpoint_verified_diff=True,
+        verification_evidence=evidence,
+        checkpoint_message="checkpoint phase 4",
+        stage_id="phase-4",
+    )
+
+    assert result["status"] == "staged_called"
+    assert result["checkpoint"]["status"] == "committed"
+    assert result["checkpoint"]["message"] == "checkpoint phase 4"
+    assert result["checkpoint"]["touched_files"] == ["README.md"]
+    assert _git(repo, "status", "--porcelain=v1", "--untracked-files=all") == ""
+    assert _git(repo, "log", "-1", "--pretty=%s") == "checkpoint phase 4"
+
+
+def test_checkpoint_without_evidence_does_not_commit(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\nchanged\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review"})
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        standing_authorization=True,
+        checkpoint_verified_diff=True,
+    )
+
+    assert result["status"] == "checkpoint_blocked"
+    assert result["checkpoint"]["status"] == "blocked"
+    assert result["checkpoint"]["reason"] == "missing_verification_evidence"
+    assert _git(repo, "log", "--oneline").count("\n") == 0
+    assert "README.md" in _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+
+
+def test_checkpoint_dirty_state_id_mismatch_blocks(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    evidence = {}
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\nchanged\n", encoding="utf-8")
+        evidence.update(_verified_evidence(repo, dirty_state_id="stale"))
+        return json.dumps({"status": "ready_for_review"})
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        standing_authorization=True,
+        checkpoint_verified_diff=True,
+        verification_evidence=evidence,
+    )
+
+    assert result["status"] == "checkpoint_blocked"
+    assert result["checkpoint"]["reason"] == "dirty_state_id_mismatch"
+    assert "README.md" in _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+
+
+def test_checkpoint_without_standing_authorization_blocks(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    evidence = {}
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\nchanged\n", encoding="utf-8")
+        evidence.update(_verified_evidence(repo))
+        return json.dumps({"status": "ready_for_review"})
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        checkpoint_verified_diff=True,
+        verification_evidence=evidence,
+    )
+
+    assert result["status"] == "checkpoint_blocked"
+    assert result["checkpoint"]["reason"] == "authorization_required"
+    assert result["checkpoint"]["authorization_required"] is True
+    assert "README.md" in _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+
+
+def test_leftover_candidate_reported_after_staged_leaves_dirty(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\ncandidate\n", encoding="utf-8")
+        return json.dumps(
+            {
+                "status": "ready_for_review",
+                "candidate_id": "cand-left",
+                "candidate_disposition": "pending_review",
+                "completion_trusted": False,
+            }
+        )
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(workdir=str(repo))
+
+    assert result["status"] == "staged_called"
+    assert result["leftover_candidate"]["requires_review"] is True
+    assert result["leftover_candidate"]["requires_hermes_verification"] is True
+    assert result["leftover_candidate"]["candidate_id"] == "cand-left"
+    assert result["leftover_candidate"]["candidate_disposition"] == "pending_review"
+    assert result["leftover_candidate"]["completion_trusted"] is False
+    assert result["leftover_candidate"]["touched_files"] == ["README.md"]
+
+
+def test_checkpoint_touched_files_outside_current_dirty_blocks(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    evidence = {}
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\nchanged\n", encoding="utf-8")
+        evidence.update(_verified_evidence(repo, touched_files=["README.md", "missing.txt"]))
+        return json.dumps({"status": "ready_for_review"})
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        standing_authorization=True,
+        checkpoint_verified_diff=True,
+        verification_evidence=evidence,
+    )
+
+    assert result["status"] == "checkpoint_blocked"
+    assert result["checkpoint"]["reason"] == "touched_files_do_not_match_dirty_paths"
+    assert "README.md" in _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+
+
+def test_checkpoint_touched_files_outside_allowlist_blocks(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    (repo / "other.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "other.txt")
+    _git(repo, "commit", "-m", "add other")
+    evidence = {}
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\nchanged\n", encoding="utf-8")
+        (Path(args["workdir"]) / "other.txt").write_text("base\nchanged\n", encoding="utf-8")
+        evidence.update(_verified_evidence(repo, touched_files=["README.md", "other.txt"]))
+        return json.dumps({"status": "ready_for_review"})
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        standing_authorization=True,
+        checkpoint_verified_diff=True,
+        verification_evidence=evidence,
+    )
+
+    assert result["status"] == "checkpoint_blocked"
+    assert result["checkpoint"]["reason"] == "touched_files_outside_allowlist"
+    assert "README.md" in _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+    assert "other.txt" in _git(repo, "status", "--porcelain=v1", "--untracked-files=all")

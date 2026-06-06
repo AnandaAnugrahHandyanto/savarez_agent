@@ -1,4 +1,5 @@
 import datetime as _datetime
+import fnmatch
 import json
 import re
 import shutil
@@ -109,6 +110,190 @@ def _call_staged(normalized: dict[str, Any]) -> dict[str, Any]:
     return decoded if isinstance(decoded, dict) else {"status": "malformed", "raw": decoded}
 
 
+def _current_dirty_paths(dirty: dict[str, Any]) -> list[str]:
+    paths = dirty.get("dirty_paths")
+    return list(paths) if isinstance(paths, list) else []
+
+
+def _path_in_allowlist(path: str, allowlist: dict[str, list[str]]) -> bool:
+    if path in allowlist.get("files", []):
+        return True
+    return any(fnmatch.fnmatchcase(path, pattern) for pattern in allowlist.get("globs", []))
+
+
+def _checkpoint_blocked(
+    reason: str,
+    *,
+    authorization_required: bool = False,
+    dirty_state_id: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        "reason": reason,
+        "authorization_required": authorization_required,
+        "dirty_state_id": dirty_state_id,
+    }
+
+
+def _validate_checkpoint_evidence(
+    *,
+    evidence: Any,
+    normalized: dict[str, Any],
+    allowlist: dict[str, list[str]],
+    dirty: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    dirty_paths = _current_dirty_paths(dirty)
+    dirty_state_id = dirty.get("dirty_state_id")
+    if not isinstance(evidence, dict) or not evidence:
+        return None, _checkpoint_blocked("missing_verification_evidence", dirty_state_id=dirty_state_id)
+
+    if not (isinstance(evidence.get("stage_id"), str) and evidence["stage_id"].strip()) and not (
+        isinstance(evidence.get("task_id"), str) and evidence["task_id"].strip()
+    ):
+        return None, _checkpoint_blocked("missing_stage_or_task_id", dirty_state_id=dirty_state_id)
+
+    if evidence.get("allowed_files") != normalized.get("allowed_files") or evidence.get(
+        "allowed_globs"
+    ) != normalized.get("allowed_globs"):
+        return None, _checkpoint_blocked("allowlist_mismatch", dirty_state_id=dirty_state_id)
+
+    touched_files = evidence.get("touched_files")
+    if not isinstance(touched_files, list) or any(not isinstance(path, str) or not path for path in touched_files):
+        return None, _checkpoint_blocked("invalid_touched_files", dirty_state_id=dirty_state_id)
+    if sorted(touched_files) != sorted(dirty_paths):
+        return None, _checkpoint_blocked("touched_files_do_not_match_dirty_paths", dirty_state_id=dirty_state_id)
+    if any(not _path_in_allowlist(path, allowlist) for path in touched_files):
+        return None, _checkpoint_blocked("touched_files_outside_allowlist", dirty_state_id=dirty_state_id)
+
+    if evidence.get("dirty_state_id") != dirty_state_id:
+        return None, _checkpoint_blocked("dirty_state_id_mismatch", dirty_state_id=dirty_state_id)
+
+    if not evidence.get("codex_implementation_status"):
+        return None, _checkpoint_blocked("missing_codex_implementation_status", dirty_state_id=dirty_state_id)
+    if evidence.get("codex_review_status") not in {"packet_only_passed", "full_review_passed"}:
+        return None, _checkpoint_blocked("codex_review_not_passed", dirty_state_id=dirty_state_id)
+    commands = evidence.get("hermes_verification_commands")
+    if not isinstance(commands, list) or not commands:
+        return None, _checkpoint_blocked("missing_hermes_verification_commands", dirty_state_id=dirty_state_id)
+    if not evidence.get("verified_at"):
+        return None, _checkpoint_blocked("missing_verified_at", dirty_state_id=dirty_state_id)
+
+    return {"touched_files": list(touched_files), "dirty_state_id": dirty_state_id}, None
+
+
+def _commit_checkpoint(repo: Path, *, touched_files: list[str], message: str | None) -> dict[str, Any]:
+    commit_message = message.strip() if isinstance(message, str) and message.strip() else "Codex verified checkpoint"
+    add_proc = subprocess.run(
+        ["git", "-C", str(repo), "add", "--", *touched_files],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+    if add_proc.returncode != 0:
+        return _checkpoint_blocked("git_add_failed")
+    commit_proc = subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", commit_message],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+    )
+    if commit_proc.returncode != 0:
+        return _checkpoint_blocked("git_commit_failed")
+    sha_proc = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+    return {
+        "status": "committed",
+        "commit_sha": sha_proc.stdout.strip() if sha_proc.returncode == 0 else None,
+        "message": commit_message,
+        "touched_files": list(touched_files),
+    }
+
+
+def _leftover_candidate(dirty: dict[str, Any], codex_staged_result: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        "requires_review": True,
+        "requires_hermes_verification": True,
+        "touched_files": _current_dirty_paths(dirty),
+        "dirty_state_id": dirty.get("dirty_state_id"),
+    }
+    for key in ("candidate_id", "candidate_disposition", "completion_trusted"):
+        if key in codex_staged_result:
+            result[key] = codex_staged_result.get(key)
+    return result
+
+
+def _finish_after_staged(
+    *,
+    args: dict[str, Any],
+    repo: Path,
+    git_head: str | None,
+    initial_dirty: dict[str, Any],
+    normalized: dict[str, Any],
+    allowlist: dict[str, list[str]],
+    staged_result: dict[str, Any],
+    dirty_recovery_update: dict[str, Any] | None = None,
+) -> str:
+    result = _base(
+        "staged_called",
+        repo=repo,
+        git_head=git_head,
+        dirty=initial_dirty,
+        codex_staged_result=staged_result,
+    )
+    if dirty_recovery_update:
+        result["dirty_recovery"].update(dirty_recovery_update)
+
+    post_dirty = staged._dirty_check(repo)
+    checkpoint_requested = bool(args.get("checkpoint_verified_diff"))
+    if checkpoint_requested:
+        if not bool(args.get("standing_authorization")):
+            result["status"] = "checkpoint_blocked"
+            result["checkpoint"] = _checkpoint_blocked(
+                "authorization_required",
+                authorization_required=True,
+                dirty_state_id=post_dirty.get("dirty_state_id"),
+            )
+            return _json_result(result)
+        if post_dirty.get("is_clean"):
+            result["status"] = "checkpoint_blocked"
+            result["checkpoint"] = _checkpoint_blocked(
+                "no_dirty_diff_to_checkpoint",
+                dirty_state_id=post_dirty.get("dirty_state_id"),
+            )
+            return _json_result(result)
+        verified, blocked = _validate_checkpoint_evidence(
+            evidence=args.get("verification_evidence"),
+            normalized=normalized,
+            allowlist=allowlist,
+            dirty=post_dirty,
+        )
+        if blocked is not None:
+            result["status"] = "checkpoint_blocked"
+            result["checkpoint"] = blocked
+            return _json_result(result)
+        assert verified is not None
+        checkpoint = _commit_checkpoint(
+            repo,
+            touched_files=verified["touched_files"],
+            message=args.get("checkpoint_message"),
+        )
+        if checkpoint.get("status") != "committed":
+            result["status"] = "checkpoint_blocked"
+        result["checkpoint"] = checkpoint
+        return _json_result(result)
+
+    if not post_dirty.get("is_clean"):
+        result["leftover_candidate"] = _leftover_candidate(post_dirty, staged_result)
+    return _json_result(result)
+
+
 def _dirty_buckets(dirty: dict[str, Any]) -> set[str]:
     classes = dirty.get("dirty_path_classes", {})
     return {name for name, paths in classes.items() if paths}
@@ -206,14 +391,14 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
 
     if dirty.get("is_clean"):
         staged_result = _call_staged(normalized)
-        return _json_result(
-            _base(
-                "staged_called",
-                repo=repo,
-                git_head=git_head,
-                dirty=dirty,
-                codex_staged_result=staged_result,
-            )
+        return _finish_after_staged(
+            args=args,
+            repo=repo,
+            git_head=git_head,
+            initial_dirty=dirty,
+            normalized=normalized,
+            allowlist=validated["allowlist"],
+            staged_result=staged_result,
         )
 
     standing_auth = bool(args.get("standing_authorization"))
@@ -222,21 +407,20 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
         after = staged._dirty_check(repo)
         if after.get("is_clean"):
             staged_result = _call_staged(normalized)
-            result = _base(
-                "staged_called",
+            return _finish_after_staged(
+                args=args,
                 repo=repo,
                 git_head=git_head,
-                dirty=dirty,
-                codex_staged_result=staged_result,
-            )
-            result["dirty_recovery"].update(
-                {
+                initial_dirty=dirty,
+                normalized=normalized,
+                allowlist=validated["allowlist"],
+                staged_result=staged_result,
+                dirty_recovery_update={
                     "strategy": "cache_cleanup",
                     "cache_cleaned_paths": cleaned_paths,
                     "post_cleanup_dirty_check": after,
-                }
+                },
             )
-            return _json_result(result)
         result = _base("dirty_recovery_required", repo=repo, git_head=git_head, dirty=dirty)
         result["dirty_recovery"].update(
             {
@@ -257,15 +441,16 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
         isolated_args = dict(normalized)
         isolated_args["workdir"] = worktree_info["path"]
         staged_result = _call_staged(isolated_args)
-        result = _base(
-            "staged_called",
-            repo=repo,
+        return _finish_after_staged(
+            args=args,
+            repo=Path(worktree_info["path"]),
             git_head=git_head,
-            dirty=dirty,
-            codex_staged_result=staged_result,
+            initial_dirty=dirty,
+            normalized=isolated_args,
+            allowlist=validated["allowlist"],
+            staged_result=staged_result,
+            dirty_recovery_update={"strategy": "isolated_worktree", "isolated_worktree": worktree_info},
         )
-        result["dirty_recovery"].update({"strategy": "isolated_worktree", "isolated_worktree": worktree_info})
-        return _json_result(result)
 
     result = _base("dirty_recovery_required", repo=repo, git_head=git_head, dirty=dirty)
     result["dirty_recovery"].update(staged._dirty_decision_metadata(dirty))
@@ -297,6 +482,9 @@ _SCHEMA = {
             "auto_clean_cache": {"type": "boolean"},
             "allow_isolated_worktree": {"type": "boolean"},
             "stage_id": {"type": "string"},
+            "checkpoint_verified_diff": {"type": "boolean"},
+            "verification_evidence": {"type": "object"},
+            "checkpoint_message": {"type": "string"},
             "mode": {"type": "string", "enum": ["execute", "dry_run"]},
         },
         "required": ["workdir", "task"],
