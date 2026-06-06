@@ -1,7 +1,7 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { type MutableRefObject, useCallback } from 'react'
 
-import { getProfiles, transcribeAudio } from '@/hermes'
+import { getProfiles, transcribeAudio, uploadAttachment } from '@/hermes'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
   attachmentDisplayText,
@@ -186,22 +186,49 @@ export function usePromptActions({
       const updateComposerAttachments = options.updateComposerAttachments ?? true
       const images = attachments.filter(attachment => attachment.kind === 'image' && attachment.path)
 
+      // Attach an image by path on the backend. Throws when the backend can't
+      // resolve/read the path. Returns the (possibly backend-rewritten) path.
+      const attachByPath = async (path: string): Promise<string> => {
+        const result = await requestGateway<ImageAttachResponse>('image.attach', {
+          session_id: sessionId,
+          path
+        })
+
+        if (!result.attached) {
+          throw new Error(result.message || 'image not attached')
+        }
+
+        return result.path || path
+      }
+
       for (const attachment of images) {
         if (attachment.attachedSessionId === sessionId) {
           continue
         }
 
-        const result = await requestGateway<ImageAttachResponse>('image.attach', {
-          session_id: sessionId,
-          path: attachment.path
-        })
+        const localPath = attachment.path as string
+        let attachedPath: string
 
-        if (!result.attached) {
-          const label = attachment.label || (attachment.path ? pathLabel(attachment.path) : 'image')
-          throw new Error(result.message || `Could not attach ${label}`)
+        try {
+          // Fast path: the backend shares this filesystem (local session) -- the
+          // path resolves directly, exactly as before.
+          attachedPath = await attachByPath(localPath)
+        } catch (attachError) {
+          // The backend couldn't read the path. On a REMOTE dashboard the
+          // composer image lives only on this (desktop) machine, so upload the
+          // bytes and retry with the backend-stored path. If recovery isn't
+          // possible, surface the original attach error rather than a confusing
+          // upload error.
+          let backendPath: string
+          try {
+            const dataUrl = await window.hermesDesktop.readFileDataUrl(localPath)
+            backendPath = await uploadAttachment(dataUrl, pathLabel(localPath))
+          } catch {
+            throw attachError
+          }
+
+          attachedPath = await attachByPath(backendPath)
         }
-
-        const attachedPath = result.path || attachment.path
 
         if (updateComposerAttachments) {
           addComposerAttachment({

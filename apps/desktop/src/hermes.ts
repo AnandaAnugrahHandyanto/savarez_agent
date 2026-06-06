@@ -127,6 +127,27 @@ function profileScoped(): { profile?: string } {
   return _apiProfile ? { profile: _apiProfile } : {}
 }
 
+// Upload an attachment's bytes (a base64 data URL) to the active backend and
+// return the backend-stored path. Used when the desktop drives a REMOTE
+// dashboard: composer images live on this machine, so the backend can't read
+// the local path -- we upload the bytes and reference the backend's copy.
+// Routed through the same `profile`-scoped proxy as other REST calls so it
+// reaches the owning (possibly remote) backend with the correct auth.
+export async function uploadAttachment(dataUrl: string, filename?: string): Promise<string> {
+  const result = await window.hermesDesktop.api<{ ok?: boolean; path?: string; message?: string }>({
+    ...profileScoped(),
+    path: '/api/attachments',
+    method: 'POST',
+    body: { data_url: dataUrl, filename }
+  })
+
+  if (!result?.path) {
+    throw new Error(result?.message || 'Attachment upload failed')
+  }
+
+  return result.path
+}
+
 export async function listSessions(
   limit = 40,
   minMessages = 0,

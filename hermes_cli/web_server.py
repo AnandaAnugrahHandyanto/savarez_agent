@@ -618,6 +618,44 @@ _AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
 _MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
+class AttachmentUploadRequest(BaseModel):
+    data_url: str
+    filename: Optional[str] = None
+    mime_type: Optional[str] = None
+
+
+# Allow-list of attachment types the backend will cache. Images plus a small set
+# of documents the agent can actually ingest -- deliberately NOT "any bytes", so
+# the upload endpoint can't be used to drop arbitrary executables onto the host.
+_IMAGE_MIME_EXTENSIONS: Dict[str, str] = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+}
+_DOCUMENT_MIME_EXTENSIONS: Dict[str, str] = {
+    "application/pdf": ".pdf",
+    "text/plain": ".txt",
+    "text/markdown": ".md",
+    "text/csv": ".csv",
+    "application/json": ".json",
+}
+_MAX_ATTACHMENT_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+def _safe_attachment_filename(raw_name: Optional[str], ext: str) -> str:
+    """Sanitize a client-supplied filename to a safe basename ending in *ext*."""
+    base = os.path.basename((raw_name or "").strip())
+    base = "".join(ch if (ch.isalnum() or ch in "._- ") else "_" for ch in base).strip()
+    if not base or base in {".", ".."}:
+        base = "attachment"
+    if not base.lower().endswith(ext.lower()):
+        base = f"{base}{ext}"
+    return base
+
+
 def _audio_extension_for_mime(mime_type: str) -> str:
     normalized = (mime_type or "").split(";", 1)[0].strip().lower()
     return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
@@ -1408,6 +1446,83 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
         "transcript": str(result.get("transcript") or "").strip(),
         "provider": result.get("provider"),
     }
+
+
+@app.post("/api/attachments")
+async def upload_attachment(payload: AttachmentUploadRequest):
+    """Cache an uploaded attachment (image or document) on the backend host.
+
+    The desktop app writes composer images to *its own* machine. When the
+    desktop drives a REMOTE dashboard, that local path is meaningless to this
+    backend, so the bytes are uploaded here as a base64 data URL, cached on the
+    backend filesystem, and the returned ``path`` is what the chat references
+    (e.g. ``@image:<backend path>``). Mirrors the base64 data-URL encoding used
+    by ``/api/audio/transcribe``. Auth is enforced by the dashboard auth
+    middleware -- this route is not in the public-paths allow-list.
+    """
+    data_url = (payload.data_url or "").strip()
+    if not data_url.startswith("data:") or "," not in data_url:
+        raise HTTPException(status_code=400, detail="Invalid attachment payload")
+
+    header, encoded = data_url.split(",", 1)
+    if ";base64" not in header:
+        raise HTTPException(
+            status_code=400, detail="Attachment payload must be base64 encoded"
+        )
+
+    mime_type = (
+        payload.mime_type or header[5:].split(";", 1)[0] or "application/octet-stream"
+    ).strip()
+    normalized_mime_type = mime_type.split(";", 1)[0].lower()
+
+    is_image = normalized_mime_type in _IMAGE_MIME_EXTENSIONS
+    is_document = normalized_mime_type in _DOCUMENT_MIME_EXTENSIONS
+    if not is_image and not is_document:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported attachment type: {normalized_mime_type}",
+        )
+
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(
+            status_code=400, detail="Attachment payload is not valid base64"
+        )
+
+    if not raw:
+        raise HTTPException(status_code=400, detail="Attachment is empty")
+    if len(raw) > _MAX_ATTACHMENT_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Attachment is too large")
+
+    loop = asyncio.get_running_loop()
+    try:
+        if is_image:
+            from gateway.platforms.base import cache_image_from_bytes
+
+            ext = _IMAGE_MIME_EXTENSIONS[normalized_mime_type]
+            stored_path = await loop.run_in_executor(
+                None, cache_image_from_bytes, raw, ext
+            )
+        else:
+            from gateway.platforms.base import cache_document_from_bytes
+
+            ext = _DOCUMENT_MIME_EXTENSIONS[normalized_mime_type]
+            filename = _safe_attachment_filename(payload.filename, ext)
+            stored_path = await loop.run_in_executor(
+                None, cache_document_from_bytes, raw, filename
+            )
+    except ValueError as exc:
+        # cache_image_from_bytes refuses data whose magic bytes aren't an image
+        # (e.g. an HTML error page mislabeled as image/png).
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Attachment upload failed")
+        raise HTTPException(status_code=500, detail=f"Attachment upload failed: {exc}")
+
+    return {"ok": True, "path": str(stored_path), "bytes": len(raw)}
 
 
 class TTSSpeakRequest(BaseModel):
