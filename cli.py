@@ -25,6 +25,7 @@ except ModuleNotFoundError:
 
 import logging
 import os
+import posixpath
 import shutil
 import sys
 import json
@@ -2295,8 +2296,8 @@ def _termux_example_image_path(filename: str = "cat.png") -> str:
     ]
     for root in candidates:
         if os.path.isdir(root):
-            return os.path.join(root, "Pictures", filename)
-    return os.path.join("~/storage/shared", "Pictures", filename)
+            return posixpath.join(root, "Pictures", filename)
+    return posixpath.join("~/storage/shared", "Pictures", filename)
 
 
 def _split_path_input(raw: str) -> tuple[str, str]:
