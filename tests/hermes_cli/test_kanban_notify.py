@@ -126,9 +126,16 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
             timeout=10.0,
         )
 
-    # The user is notified about the abnormal event...
+    # The user is notified about the abnormal event.  ``gave_up`` is now
+    # rendered as a coordinator-actionable waiting state, not a human blocker
+    # or a literal "gave up" user-facing blocker label.
     fake_adapter.send.assert_called_once()
-    assert kind.replace('_', ' ') in fake_adapter.send.call_args[0][1]
+    call_msg = fake_adapter.send.call_args[0][1]
+    if kind == "gave_up":
+        assert "waiting" in call_msg
+        assert "worker retry limit reached" in call_msg
+    else:
+        assert kind.replace('_', ' ') in call_msg
 
     # ...but the subscription survives so a respawn-then-same-event cycle
     # reaches the user too. The cursor (last_event_id) advanced inside
