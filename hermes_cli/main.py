@@ -7704,6 +7704,10 @@ def _find_stale_dashboard_pids(
             )
             if result.returncode != 0 or result.stdout is None:
                 return []
+            # On Windows restrict to processes whose command line runs from
+            # the current user's home directory, preventing cross-user
+            # interference on shared hosts.  Ref: issue #40028.
+            _win_home = os.path.expanduser("~").lower()
             current_cmd = ""
             for line in result.stdout.split("\n"):
                 line = line.strip()
@@ -7714,20 +7718,29 @@ def _find_stale_dashboard_pids(
                     if (
                         any(p in current_cmd for p in patterns)
                         and int(pid_str) != self_pid
+                        and _win_home in current_cmd.lower()
                     ):
                         try:
                             dashboard_pids.append(int(pid_str))
                         except ValueError:
                             pass
         else:
-            # Linux / macOS: scan the process table via ps and match against
-            # the same explicit patterns list used on Windows.  Using ps
-            # (rather than `pgrep -f "hermes.*dashboard"`) keeps us consistent
-            # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
-            # greedy regex matching unrelated cmdlines that merely contain
-            # both words (e.g. a chat session discussing "dashboard").
+            # Linux / macOS: scan only the *current user's* processes so we
+            # never attempt to stop dashboards owned by other Unix users on a
+            # shared host.  ps -u <uid> restricts the table to the calling
+            # UID; -A (all processes) was the previous, unsafe default.
+            # Ref: issue #40028.
+            try:
+                _uid_arg = str(os.getuid())
+            except AttributeError:
+                _uid_arg = None  # shouldn't happen on non-Windows, but be safe
+            ps_args = (
+                ["ps", "-u", _uid_arg, "-o", "pid=,command="]
+                if _uid_arg is not None
+                else ["ps", "-A", "-o", "pid=,command="]
+            )
             result = subprocess.run(
-                ["ps", "-A", "-o", "pid=,command="],
+                ps_args,
                 capture_output=True,
                 text=True,
                 timeout=10,
